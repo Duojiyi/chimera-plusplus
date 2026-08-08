@@ -358,23 +358,34 @@ jobs:
             printf '%s\n' "$rpm_contents"
             exit 1
           fi
+          rpm_payload="$smoke_root/rpm-payload.cpio"
+          set +e
+          rpm2cpio "$rpm_package" >"$rpm_payload"
+          rpm2cpio_status=$?
+          set -e
+          if [[ "$rpm2cpio_status" -ne 0 || ! -s "$rpm_payload" ]]; then
+            echo "::error::Failed to convert RPM payload (status $rpm2cpio_status)"
+            exit 1
+          fi
           (
             cd "$smoke_root/rpm"
-            rpm_archive_contents=$(rpm2cpio "$rpm_package" | cpio -t --quiet)
-            if ! grep -Eq '(^|[[:space:]])(\./)?usr/share/applications/[^[:space:]]+\.desktop([[:space:]]|$)' <<<"$rpm_archive_contents" ||
-               ! grep -Eq '(^|[[:space:]])(\./)?usr/share/icons/[^[:space:]]+([[:space:]]|$)' <<<"$rpm_archive_contents"; then
-              echo "::error::RPM archive does not contain a desktop entry or icon"
-              printf '%s\n' "$rpm_archive_contents"
+            set +e
+            cpio -idm --quiet --no-absolute-filenames <"$rpm_payload"
+            cpio_status=$?
+            set -e
+            if [[ "$cpio_status" -gt 1 ]]; then
+              echo "::error::Failed to extract RPM payload (status $cpio_status)"
               exit 1
             fi
-            rpm2cpio "$rpm_package" | cpio -idm --quiet --no-absolute-filenames
-            extracted_file=$(find . -mindepth 1 \( -type f -o -type l \) -print -quit 2>/dev/null || true)
-            if [[ -z "$extracted_file" ]]; then
-              echo "::error::RPM extraction did not produce any files"
+            extracted_files=$(find . -mindepth 1 \( -type f -o -type l \) -print 2>/dev/null || true)
+            rpm_desktop=$(grep -E '(^|/)usr/share/applications/[^/]+\.desktop$' <<<"$extracted_files" | head -1 || true)
+            rpm_icon=$(grep -E '(^|/)usr/share/icons/[^/]+(/[^/]+)*/[^/]+$' <<<"$extracted_files" | head -1 || true)
+            if [[ -z "$rpm_desktop" || -z "$rpm_icon" ]]; then
+              echo "::error::Extracted RPM payload does not contain a desktop entry or icon"
+              printf '%s\n' "$extracted_files" | head -100
               exit 1
             fi
-            rpm_desktop=$(grep -E '(^|[[:space:]])(\./)?usr/share/applications/[^[:space:]]+\.desktop([[:space:]]|$)' <<<"$rpm_archive_contents" | head -1)
-            echo "Validated RPM archive desktop entry: $rpm_desktop"
+            echo "Validated RPM desktop entry: $rpm_desktop (cpio status $cpio_status)"
           )
 
       - name: Collect candidate evidence
