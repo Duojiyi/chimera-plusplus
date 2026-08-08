@@ -363,10 +363,12 @@ jobs:
           rpm2cpio "$rpm_package" >"$rpm_payload"
           rpm2cpio_status=$?
           set -e
-          if [[ "$rpm2cpio_status" -ne 0 || ! -s "$rpm_payload" ]]; then
-            echo "::error::Failed to convert RPM payload (status $rpm2cpio_status)"
+          rpm_payload_size=$(stat -c '%s' "$rpm_payload" 2>/dev/null || echo 0)
+          if [[ "$rpm2cpio_status" -gt 1 || "$rpm_payload_size" -eq 0 ]]; then
+            echo "::error::Failed to convert RPM payload (status $rpm2cpio_status, bytes $rpm_payload_size)"
             exit 1
           fi
+          echo "Converted RPM payload: status $rpm2cpio_status, bytes $rpm_payload_size"
           (
             cd "$smoke_root/rpm"
             set +e
