@@ -360,14 +360,21 @@ jobs:
           fi
           (
             cd "$smoke_root/rpm"
-            rpm2cpio "$rpm_package" | cpio -idm --quiet --no-absolute-filenames
-            rpm_desktop=$(find . -path './usr/share/applications/*.desktop' \( -type f -o -type l \) -print -quit 2>/dev/null || true)
-            if [[ -z "$rpm_desktop" ]]; then
-              echo "::error::Extracted RPM package does not contain a desktop entry"
-              find . -maxdepth 6 \( -type f -o -type l \) 2>/dev/null | sort | head -100
+            rpm_archive_contents=$(rpm2cpio "$rpm_package" | cpio -t --quiet)
+            if ! grep -Eq '(^|[[:space:]])(\./)?usr/share/applications/[^[:space:]]+\.desktop([[:space:]]|$)' <<<"$rpm_archive_contents" ||
+               ! grep -Eq '(^|[[:space:]])(\./)?usr/share/icons/[^[:space:]]+([[:space:]]|$)' <<<"$rpm_archive_contents"; then
+              echo "::error::RPM archive does not contain a desktop entry or icon"
+              printf '%s\n' "$rpm_archive_contents"
               exit 1
             fi
-            echo "Validated RPM desktop entry: $rpm_desktop"
+            rpm2cpio "$rpm_package" | cpio -idm --quiet --no-absolute-filenames
+            extracted_file=$(find . -mindepth 1 \( -type f -o -type l \) -print -quit 2>/dev/null || true)
+            if [[ -z "$extracted_file" ]]; then
+              echo "::error::RPM extraction did not produce any files"
+              exit 1
+            fi
+            rpm_desktop=$(grep -E '(^|[[:space:]])(\./)?usr/share/applications/[^[:space:]]+\.desktop([[:space:]]|$)' <<<"$rpm_archive_contents" | head -1)
+            echo "Validated RPM archive desktop entry: $rpm_desktop"
           )
 
       - name: Collect candidate evidence
