@@ -96,7 +96,15 @@ jobs:
           New-Item -ItemType Directory -Force -Path candidate-assets | Out-Null
           $msi = Get-ChildItem src-tauri/target/release/bundle/msi/*.msi | Select-Object -First 1
           if ($null -eq $msi) { throw 'Windows MSI was not produced' }
+          $msiSignature = Get-Item -LiteralPath "$($msi.FullName).sig" -ErrorAction SilentlyContinue
+          if ($null -eq $msiSignature -or $msiSignature.Length -eq 0) {
+            throw "Windows MSI updater signature was not produced: $($msi.FullName).sig"
+          }
           Copy-Item $msi.FullName candidate-assets/
+          Copy-Item $msiSignature.FullName candidate-assets/
+          node scripts/verify-updater-signatures.mjs `
+            --assets-dir candidate-assets `
+            --asset $msi.Name
           Get-FileHash candidate-assets/* -Algorithm SHA256 | ForEach-Object {
             "$($_.Hash.ToLowerInvariant())  $($_.Path | Split-Path -Leaf)"
           } | Set-Content candidate-assets/SHA256SUMS.txt
@@ -107,6 +115,8 @@ jobs:
             requestedRef = $env:REQUESTED_REF
             commit = $env:SOURCE_COMMIT
             platform = 'windows-x86_64'
+            authenticodeSigned = $false
+            updaterSigned = $true
           } | ConvertTo-Json | Set-Content candidate-assets/build-provenance.json
 
       - name: Upload Windows candidate
@@ -190,22 +200,41 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p candidate-assets
-          app_path=$(find src-tauri/target/universal-apple-darwin/release/bundle/macos -maxdepth 1 -name '*.app' -type d | head -1)
+          bundle_dir=src-tauri/target/universal-apple-darwin/release/bundle/macos
+          app_path=$(find "$bundle_dir" -maxdepth 1 -name '*.app' -type d | head -1)
+          updater_artifact=$(find "$bundle_dir" -maxdepth 1 -name '*.tar.gz' -type f | head -1)
           test -n "$app_path"
-          artifact_name="Chimera++-${{ inputs.candidate_version }}-macOS-universal.zip"
-          ditto -c -k --sequesterRsrc --keepParent "$app_path" "candidate-assets/$artifact_name"
+          test -s "$updater_artifact"
+          test -s "$updater_artifact.sig"
+          zip_name="Chimera++-$EXPECTED_VERSION-macOS-universal.zip"
+          updater_name="Chimera++-$EXPECTED_VERSION-macOS.tar.gz"
+          ditto -c -k --sequesterRsrc --keepParent "$app_path" "candidate-assets/$zip_name"
+          cp "$updater_artifact" "candidate-assets/$updater_name"
+          cp "$updater_artifact.sig" "candidate-assets/$updater_name.sig"
+          node scripts/verify-updater-signatures.mjs \
+            --assets-dir candidate-assets \
+            --asset "$updater_name"
           (
             cd candidate-assets
-            shasum -a 256 "$artifact_name" > SHA256SUMS.txt
+            shasum -a 256 Chimera++-* > SHA256SUMS.txt
           )
           pnpm list --prod --json > candidate-assets/frontend-sbom.json
-          cargo metadata --manifest-path src-tauri/Cargo.toml --format-version 1 > candidate-assets/rust-sbom.json
+          cargo metadata --manifest-path src-tauri/Cargo.toml --format-version 1 --locked > candidate-assets/rust-sbom.json
           jq -n \
             --arg candidate_version "$EXPECTED_VERSION" \
             --arg requested_ref "$REQUESTED_REF" \
             --arg commit "$SOURCE_COMMIT" \
             --arg platform "darwin-universal" \
-            '{candidateVersion: $candidate_version, requestedRef: $requested_ref, commit: $commit, platform: $platform}' \
+            '{
+              candidateVersion: $candidate_version,
+              requestedRef: $requested_ref,
+              commit: $commit,
+              platform: $platform,
+              target: "universal-apple-darwin",
+              appleDeveloperIdSigned: false,
+              notarized: false,
+              updaterSigned: true
+            }' \
             > candidate-assets/build-provenance.json
 
       - name: Upload macOS candidate
@@ -406,6 +435,9 @@ jobs:
           cp "$appimage.sig" "candidate-assets/Chimera++-$EXPECTED_VERSION-Linux-x86_64.AppImage.sig"
           cp "$deb" "candidate-assets/Chimera++-$EXPECTED_VERSION-Linux-x86_64.deb"
           cp "$rpm_package" "candidate-assets/Chimera++-$EXPECTED_VERSION-Linux-x86_64.rpm"
+          node scripts/verify-updater-signatures.mjs \
+            --assets-dir candidate-assets \
+            --asset "Chimera++-$EXPECTED_VERSION-Linux-x86_64.AppImage"
           (
             cd candidate-assets
             sha256sum Chimera++-* > SHA256SUMS.txt
@@ -417,7 +449,15 @@ jobs:
             --arg requested_ref "$REQUESTED_REF" \
             --arg commit "$SOURCE_COMMIT" \
             --arg platform "linux-x86_64" \
-            '{candidateVersion: $candidate_version, requestedRef: $requested_ref, commit: $commit, platform: $platform, target: "x86_64-unknown-linux-gnu"}' \
+            '{
+              candidateVersion: $candidate_version,
+              requestedRef: $requested_ref,
+              commit: $commit,
+              platform: $platform,
+              target: "x86_64-unknown-linux-gnu",
+              publisherSigned: false,
+              updaterSigned: true
+            }' \
             > candidate-assets/build-provenance.json
 
       - name: Upload Linux candidate
