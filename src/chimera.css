@@ -1066,8 +1066,9 @@ body.is-mac
 .titlebar-update {
   position: relative;
   cursor: pointer;
+  transform: translateZ(0);
   transition:
-    background 160ms var(--ease),
+    background-color 160ms var(--ease),
     color 160ms var(--ease);
 }
 .titlebar-update:disabled {
@@ -1080,6 +1081,10 @@ body.is-mac
 .route-window-tools > button.titlebar-update.is-available:hover {
   background: #fde8e4;
   color: #c7372f;
+}
+.route-window-tools > button.titlebar-update.is-available:active {
+  background: #fbded9;
+  transform: translateZ(0);
 }
 /* Badge dot, so an available update reads at a glance without relying on the
    icon tint alone (which fails for red/green colour blindness). */
@@ -1802,6 +1807,47 @@ body.is-mac
   justify-content: center;
   gap: 8px;
   margin: 18px 0 10px;
+}
+.runtime-update-ready {
+  width: min(700px, 100%);
+  margin: 0 auto 10px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  border: 1px solid var(--soft-border);
+  border-radius: var(--r-md);
+  background: var(--soft);
+  color: var(--ch-accent);
+  text-align: left;
+}
+.runtime-update-ready > span {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  gap: 2px;
+}
+.runtime-update-ready b {
+  color: var(--ink);
+  font-size: 12px;
+}
+.runtime-update-ready small {
+  color: var(--ch-muted);
+  font-size: 11px;
+}
+.runtime-update-recheck {
+  flex: 0 0 auto;
+  border: 0;
+  padding: 4px 2px;
+  background: transparent;
+  color: var(--ch-accent);
+  font-size: 11px;
+  font-weight: 650;
+}
+.runtime-update-recheck:hover:not(:disabled) {
+  color: #c7372f;
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 .runtime-reference-progress {
   max-width: 700px;

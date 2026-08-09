@@ -10,6 +10,15 @@ numbers belong to a separate upstream line.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.3] - 2026-08-09
+
+### Fixed
+
+- **Codex runtime updates:** after checking for a newer Codex release, the primary action now becomes an explicit download-and-install action and respects the selected standard or portable installation mode.
+- **Application updates:** the titlebar and settings update actions now start the signed download/install flow directly instead of redirecting to another settings page.
+- **Update presentation:** clarified the distinction between installation mode and update source, aligned the update banner styling with Chimera++ tokens, and removed titlebar hover/active flicker.
+- **Release safety:** restored candidate-build updater signature verification and provenance metadata checks for Windows, macOS, and Linux.
+
 ## [2.4.1] - 2026-08-06
 
 ### Security

@@ -838,7 +838,7 @@ dependencies = [
 
 [[package]]
 name = "chimera-plus-plus"
-version = "2.4.2"
+version = "2.4.3"
 dependencies = [
  "anyhow",
  "arboard",
