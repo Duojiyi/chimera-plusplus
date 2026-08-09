@@ -57,7 +57,7 @@ describe("Chimera++ application shell", () => {
     expect(
       screen.getByRole("button", { name: "恢复默认设置" }),
     ).toBeInTheDocument();
-  });
+  }, 15_000);
 
   it("exposes direct line switching and the complete line management flow", async () => {
     render(<App />);

@@ -214,6 +214,14 @@ type DownloadProgress = {
   stage?: "downloading" | "installing";
 };
 type RuntimeAction = "update" | "repair" | "rollback" | "uninstall";
+type RuntimeUpdatePreferences = {
+  source: "auto" | "mirror";
+  installMode: "standard" | "portable";
+};
+type PendingRuntimeAction = {
+  action: RuntimeAction;
+  preferences?: RuntimeUpdatePreferences;
+};
 type RuntimeOperation = {
   action: RuntimeAction;
   stage: "preparing" | "downloading" | "installing";
@@ -348,9 +356,8 @@ export default function ChimeraApp() {
   const [commonConfigDirty, setCommonConfigDirty] = useState(false);
   const [fetchingModels, setFetchingModels] = useState(false);
   const [showKey, setShowKey] = useState(false);
-  const [pendingAction, setPendingAction] = useState<RuntimeAction | null>(
-    null,
-  );
+  const [pendingAction, setPendingAction] =
+    useState<PendingRuntimeAction | null>(null);
   const [runtimeOperation, setRuntimeOperation] =
     useState<RuntimeOperation | null>(null);
   const [diagnosing, setDiagnosing] = useState(false);
@@ -382,9 +389,11 @@ export default function ChimeraApp() {
   // into 设置 just to find out whether a release is waiting.
   const {
     hasUpdate: titlebarHasUpdate,
+    updateInfo: titlebarUpdateInfo,
     isChecking: titlebarChecking,
     isInstalling: titlebarInstalling,
     checkUpdate: titlebarCheckUpdate,
+    installUpdate: titlebarInstallUpdate,
     resetDismiss: titlebarResetDismiss,
   } = useUpdate();
 
@@ -394,8 +403,18 @@ export default function ChimeraApp() {
       return;
     }
     if (titlebarHasUpdate) {
-      titlebarResetDismiss();
-      setView("settings");
+      try {
+        const installed = await titlebarInstallUpdate();
+        if (!installed) {
+          toast.info("该更新已不可用", {
+            description: "已重新检查更新。",
+          });
+        }
+      } catch (error) {
+        toast.error("应用更新失败", {
+          description: error instanceof Error ? error.message : String(error),
+        });
+      }
       return;
     }
     try {
@@ -405,8 +424,7 @@ export default function ChimeraApp() {
         // explicit click is a request to see it again.
         titlebarResetDismiss();
         toast.success("发现新版本", {
-          description: "可在供应商页横幅或设置页安装。",
-          action: { label: "前往设置", onClick: () => setView("settings") },
+          description: "再次点击标题栏更新按钮即可下载并安装。",
         });
       } else {
         toast.success("已是最新版本");
@@ -416,7 +434,12 @@ export default function ChimeraApp() {
         description: error instanceof Error ? error.message : String(error),
       });
     }
-  }, [titlebarCheckUpdate, titlebarHasUpdate, titlebarResetDismiss]);
+  }, [
+    titlebarCheckUpdate,
+    titlebarHasUpdate,
+    titlebarInstallUpdate,
+    titlebarResetDismiss,
+  ]);
 
   const handleTitlebarMouseDown = useCallback(
     (event: React.MouseEvent<HTMLElement>) => {
@@ -1026,11 +1049,11 @@ export default function ChimeraApp() {
     }
   };
 
-  const checkRuntime = async () => {
+  const checkRuntime = async (preferences?: RuntimeUpdatePreferences) => {
     try {
       const result = await invoke<ReleaseStatus>("check_codex_runtime_update", {
-        source: null,
-        installMode: null,
+        source: preferences?.source ?? null,
+        installMode: preferences?.installMode ?? null,
       });
       setRelease(result);
       note(
@@ -1064,7 +1087,7 @@ export default function ChimeraApp() {
 
   const runRuntimeAction = async () => {
     if (!pendingAction) return;
-    const action = pendingAction;
+    const { action, preferences } = pendingAction;
     const started = performance.now();
     // Close the confirmation immediately. Keeping it mounted allows a second
     // click to enter the backend lock and produces a misleading duplicate-app
@@ -1090,8 +1113,8 @@ export default function ChimeraApp() {
       if (action === "update") {
         await invoke("apply_codex_runtime_update", {
           expectedVersion: release?.latestVersion ?? null,
-          source: null,
-          installMode: null,
+          source: preferences?.source ?? null,
+          installMode: preferences?.installMode ?? null,
           confirm: true,
         });
       } else if (action === "repair") {
@@ -1165,7 +1188,7 @@ export default function ChimeraApp() {
                   : titlebarChecking
                     ? "正在检查更新"
                     : titlebarHasUpdate
-                      ? "下载并安装可用更新"
+                      ? `下载并安装 Chimera++ ${titlebarUpdateInfo?.availableVersion ?? "更新"}`
                       : "检查更新"
               }
               title={
@@ -1174,7 +1197,7 @@ export default function ChimeraApp() {
                   : titlebarChecking
                     ? "正在检查更新…"
                     : titlebarHasUpdate
-                      ? "下载并安装可用更新"
+                      ? `下载并安装 Chimera++ ${titlebarUpdateInfo?.availableVersion ?? "更新"}`
                       : "检查更新"
               }
               disabled={titlebarChecking || titlebarInstalling}
@@ -1182,6 +1205,8 @@ export default function ChimeraApp() {
             >
               {titlebarChecking || titlebarInstalling ? (
                 <LoaderCircle size={16} className="spin" />
+              ) : titlebarHasUpdate ? (
+                <Download size={16} />
               ) : (
                 <ArrowUp size={16} />
               )}
@@ -1236,7 +1261,9 @@ export default function ChimeraApp() {
               onCheck={checkRuntime}
               onDiagnose={diagnose}
               diagnosing={diagnosing}
-              onAction={setPendingAction}
+              onAction={(action, preferences) =>
+                setPendingAction({ action, preferences })
+              }
             />
           )}
           <Suspense
@@ -1380,7 +1407,7 @@ export default function ChimeraApp() {
       )}
       {pendingAction && (
         <ConfirmOperation
-          action={pendingAction}
+          action={pendingAction.action}
           onCancel={() => setPendingAction(null)}
           onConfirm={runRuntimeAction}
         />
@@ -1664,7 +1691,7 @@ function ProvidersView({
   );
 }
 
-function NewRuntimeView({
+export function NewRuntimeView({
   runtime,
   release,
   progress,
@@ -1678,10 +1705,13 @@ function NewRuntimeView({
   release: ReleaseStatus | null;
   progress: DownloadProgress | null;
   operation: RuntimeOperation | null;
-  onCheck: () => void;
+  onCheck: (preferences?: RuntimeUpdatePreferences) => void;
   onDiagnose: () => void;
   diagnosing: boolean;
-  onAction: (value: RuntimeAction) => void;
+  onAction: (
+    value: RuntimeAction,
+    preferences?: RuntimeUpdatePreferences,
+  ) => void;
 }) {
   const [maintenanceOpen, setMaintenanceOpen] = useState(false);
   const [installMode, setInstallMode] = useState<"standard" | "portable">(
@@ -1690,13 +1720,26 @@ function NewRuntimeView({
   const [updateSource, setUpdateSource] = useState<"auto" | "mirror">("auto");
   const version = runtime?.version ?? "等待识别";
   const runtimeSupported = runtime?.supported !== false;
+  const updateAvailable = release?.updateAvailable === true;
+  const selectedInstallLabel = runtimeText(installMode);
+  const updateActionLabel = updateAvailable
+    ? `下载并安装 ${selectedInstallLabel}`
+    : "检查更新";
   const percent = progress?.total
     ? Math.min(100, Math.round((progress.downloaded / progress.total) * 100))
     : 0;
-  const startAction = (action: RuntimeAction) => {
+  const startAction = (
+    action: RuntimeAction,
+    preferences?: RuntimeUpdatePreferences,
+  ) => {
     setMaintenanceOpen(false);
-    onAction(action);
+    onAction(action, preferences);
   };
+  const selectedPreferences: RuntimeUpdatePreferences = {
+    source: updateSource,
+    installMode,
+  };
+  const checkSelectedRuntime = () => onCheck(selectedPreferences);
   const runDiagnostics = () => {
     setMaintenanceOpen(false);
     onDiagnose();
@@ -1788,12 +1831,16 @@ function NewRuntimeView({
         </div>
         <div className="runtime-reference-actions">
           <button
-            className="secondary"
-            onClick={onCheck}
+            className={updateAvailable ? "primary" : "secondary"}
+            onClick={() =>
+              updateAvailable
+                ? startAction("update", selectedPreferences)
+                : checkSelectedRuntime()
+            }
             disabled={!runtimeSupported || Boolean(operation)}
           >
-            <RefreshCw size={14} />
-            检查更新
+            {updateAvailable ? <Download size={14} /> : <RefreshCw size={14} />}
+            {updateActionLabel}
           </button>
           <button
             className="secondary"
@@ -1811,9 +1858,36 @@ function NewRuntimeView({
             disabled={!runtimeSupported || Boolean(operation)}
           >
             <Settings2 size={14} />
-            管理更新源
+            安装方式与更新源
           </button>
         </div>
+        {updateAvailable && release && (
+          <div
+            className="runtime-update-ready"
+            role="status"
+            aria-live="polite"
+          >
+            <CircleCheck size={16} aria-hidden="true" />
+            <span>
+              <b>Codex {release.latestVersion} 可用</b>
+              <small>
+                {selectedInstallLabel}
+                {release.sizeBytes > 0
+                  ? ` · ${(release.sizeBytes / 1024 / 1024).toFixed(1)} MB`
+                  : ""}
+                {" · 点击上方按钮后确认下载并安装"}
+              </small>
+            </span>
+            <button
+              type="button"
+              className="runtime-update-recheck"
+              onClick={checkSelectedRuntime}
+              disabled={Boolean(operation)}
+            >
+              重新检查
+            </button>
+          </div>
+        )}
         {operationLabel && (
           <div className="runtime-reference-progress">
             <span>{operationLabel}</span>
@@ -1844,7 +1918,7 @@ function NewRuntimeView({
             <header>
               <div>
                 <h2>安装与维护</h2>
-                <p>选择适合当前电脑的更新方式</p>
+                <p>分别选择安装方式与下载更新源</p>
               </div>
               <button
                 aria-label="关闭安装与维护"
@@ -1956,11 +2030,11 @@ function NewRuntimeView({
             </div>
             <button
               className="primary runtime-maintenance-primary"
-              onClick={() => startAction("update")}
+              onClick={() => startAction("update", selectedPreferences)}
               disabled={Boolean(operation)}
             >
               <Download size={15} />
-              下载并安装稳定版
+              下载并安装 {selectedInstallLabel}
             </button>
           </section>
         </div>
@@ -3717,8 +3791,8 @@ export function NewSettingsView() {
         </button>
         <div className="settings-reference-row settings-segment-row">
           <span>
-            <b>更新通道</b>
-            <small>只提供稳定版和免安装版</small>
+            <b>Codex 更新源</b>
+            <small>安装方式请在“更新”页的“安装方式与更新源”中选择</small>
           </span>
           <div className="settings-segment">
             <button
@@ -3728,7 +3802,7 @@ export function NewSettingsView() {
               aria-pressed={settings?.codexUpdateSource !== "mirror"}
               onClick={() => void save({ codexUpdateSource: "auto" })}
             >
-              稳定版
+              自动选择
             </button>
             <button
               className={
@@ -3737,7 +3811,7 @@ export function NewSettingsView() {
               aria-pressed={settings?.codexUpdateSource === "mirror"}
               onClick={() => void save({ codexUpdateSource: "mirror" })}
             >
-              免安装版
+              镜像安装
             </button>
           </div>
         </div>

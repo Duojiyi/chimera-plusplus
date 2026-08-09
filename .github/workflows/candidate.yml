@@ -11,7 +11,7 @@ on:
       candidate_version:
         description: "Expected semantic version (without v)"
         required: true
-        default: "2.4.2"
+        default: "2.4.3"
         type: string
 
 permissions:
@@ -109,7 +109,7 @@ jobs:
             "$($_.Hash.ToLowerInvariant())  $($_.Path | Split-Path -Leaf)"
           } | Set-Content candidate-assets/SHA256SUMS.txt
           pnpm list --prod --json | Set-Content candidate-assets/frontend-sbom.json
-          cargo metadata --manifest-path src-tauri/Cargo.toml --format-version 1 | Set-Content candidate-assets/rust-sbom.json
+          cargo metadata --manifest-path src-tauri/Cargo.toml --format-version 1 --locked | Set-Content candidate-assets/rust-sbom.json
           @{
             candidateVersion = $env:EXPECTED_VERSION
             requestedRef = $env:REQUESTED_REF

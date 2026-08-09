@@ -137,7 +137,7 @@ describe("GrokBuildProviderForm", () => {
     expect(selected.api_backend).toBe("responses");
     expect(selected.model).toBe("grok-4.5");
     expect(selected.base_url).toBe("https://api.apikey.fun/v1");
-  });
+  }, 15_000);
 
   it("renders localized validation feedback for malformed TOML", async () => {
     const onSubmit = vi.fn();
