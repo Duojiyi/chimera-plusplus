@@ -53,3 +53,27 @@ pub async fn detect_codex_api_format(
     )
     .await
 }
+
+/// Detect the upstream protocol for each selected model independently. Models
+/// that reject the safe probe are omitted while successful detections remain
+/// usable by the Codex router.
+#[tauri::command(rename_all = "camelCase")]
+pub async fn detect_codex_api_formats(
+    base_url: String,
+    api_key: String,
+    is_full_url: Option<bool>,
+    models: Vec<String>,
+    custom_user_agent: Option<String>,
+) -> Result<model_fetch::DetectedCodexApiFormats, String> {
+    let user_agent = crate::provider::parse_custom_user_agent(custom_user_agent.as_deref())
+        .ok()
+        .flatten();
+    model_fetch::detect_codex_api_formats(
+        &base_url,
+        &api_key,
+        is_full_url.unwrap_or(false),
+        models,
+        user_agent,
+    )
+    .await
+}

@@ -196,6 +196,8 @@ export interface ProviderMeta {
     "anthropic" | "openai_chat" | "openai_responses" | "gemini_native";
   // Codex 自动检测意图标记：apiFormat 保存具体结果，此字段保留“自动”选择状态
   apiFormatAutoDetected?: boolean;
+  // Codex 上游协议按模型保存的自动探测结果；apiFormat 仍作为旧配置/默认回退
+  codexModelApiFormats?: Record<string, CodexApiFormat>;
   // 通用认证绑定
   authBinding?: AuthBinding;
   // Claude 认证字段名

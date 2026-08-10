@@ -59,12 +59,15 @@ pub use codex::CodexAdapter;
 pub use codex::{
     // 自动协议检测
     apply_codex_auto_detected_api_format,
-    apply_codex_chat_upstream_model,
+    apply_codex_chat_upstream_model_for_model,
     apply_codex_upstream_model,
     codex_eligible_for_chat_auto_detect,
+    codex_model_protocol_mapping_is_missing,
+    codex_provider_has_model_level_routing,
     codex_provider_is_auto_detect_candidate,
     codex_provider_upstream_model,
     codex_provider_uses_anthropic,
+    codex_provider_uses_anthropic_api_key,
     codex_provider_uses_chat_completions,
     inject_codex_chat_prompt_cache_key,
     is_codex_official_provider,
@@ -72,7 +75,9 @@ pub use codex::{
     resolve_codex_catalog_tool_profile,
     resolve_codex_chat_reasoning_config,
     should_convert_codex_responses_to_anthropic,
+    should_convert_codex_responses_to_anthropic_for_model,
     should_convert_codex_responses_to_chat,
+    should_convert_codex_responses_to_chat_for_model,
 };
 pub use gemini::GeminiAdapter;
 

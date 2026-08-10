@@ -456,6 +456,13 @@ pub struct ProviderMeta {
         skip_serializing_if = "Option::is_none"
     )]
     pub api_format_auto_detected: Option<bool>,
+    /// Codex 上游协议按模型保存的自动探测结果。
+    #[serde(
+        default,
+        rename = "codexModelApiFormats",
+        skip_serializing_if = "HashMap::is_empty"
+    )]
+    pub codex_model_api_formats: HashMap<String, String>,
     /// 通用认证绑定（provider_config / managed_account）
     ///
     /// 新代码应只写入该字段；githubAccountId 仅保留兼容读取。
@@ -1059,6 +1066,28 @@ mod tests {
             decoded.models_url.as_deref(),
             Some("https://api.example.com/v1/models")
         );
+    }
+
+    #[test]
+    fn provider_meta_preserves_model_level_codex_protocol_detection() {
+        let decoded: ProviderMeta = serde_json::from_value(serde_json::json!({
+            "apiFormat": "openai_responses",
+            "apiFormatAutoDetected": true,
+            "codexModelApiFormats": {
+                "gpt-responses": "openai_responses",
+                "claude-chat": "openai_chat",
+                "claude-native": "anthropic"
+            }
+        }))
+        .expect("deserialize ProviderMeta");
+
+        let value = serde_json::to_value(decoded).expect("serialize ProviderMeta");
+        assert_eq!(
+            value["codexModelApiFormats"]["gpt-responses"],
+            "openai_responses"
+        );
+        assert_eq!(value["codexModelApiFormats"]["claude-chat"], "openai_chat");
+        assert_eq!(value["codexModelApiFormats"]["claude-native"], "anthropic");
     }
 
     #[test]

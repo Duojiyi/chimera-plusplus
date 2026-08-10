@@ -3703,7 +3703,7 @@ body.is-mac
   color: var(--ch-accent);
 }
 .route-line-rail {
-  height: 80px;
+  height: 88px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 140px;
   gap: 8px;
@@ -3718,18 +3718,73 @@ body.is-mac
   -webkit-backdrop-filter: saturate(1.2) contrast(1.03);
   backdrop-filter: saturate(1.2) contrast(1.03);
 }
+.route-line-scroll-shell {
+  position: relative;
+  min-width: 0;
+  height: 100%;
+}
 .route-line-scroll {
   min-width: 0;
+  height: 100%;
+  box-sizing: border-box;
   display: flex;
   gap: 8px;
+  padding: 0 40px 8px;
   overflow-x: auto;
   overflow-y: hidden;
+  scroll-padding-inline: 40px;
   scroll-snap-type: x proximity;
-  scrollbar-width: none;
-  -ms-overflow-style: none;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(71, 105, 90, 0.5) transparent;
+  scrollbar-gutter: stable;
 }
 .route-line-scroll::-webkit-scrollbar {
-  display: none;
+  height: 6px;
+}
+.route-line-scroll::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(71, 105, 90, 0.5);
+}
+.route-line-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.route-line-scroll-arrow {
+  position: absolute;
+  z-index: 1;
+  top: 50%;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  transform: translateY(-58%);
+  border: 1px solid rgba(147, 161, 170, 0.72);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 2px 6px rgba(39, 51, 59, 0.16);
+  color: #53636c;
+  transition:
+    border-color 160ms var(--ease),
+    color 160ms var(--ease),
+    opacity 160ms var(--ease);
+}
+.route-line-scroll-arrow.is-previous {
+  left: 6px;
+}
+.route-line-scroll-arrow.is-next {
+  right: 6px;
+}
+.route-line-scroll-arrow:hover {
+  border-color: rgba(255, 133, 110, 0.8);
+  color: var(--ch-accent);
+}
+.route-line-scroll-arrow:focus-visible {
+  outline: 2px solid rgba(255, 133, 110, 0.85);
+  outline-offset: 2px;
+}
+.route-line-scroll-arrow:disabled {
+  visibility: hidden;
+  pointer-events: none;
 }
 .route-line-card {
   /* `flex: 1 1 160px` with `min-width: 0` let cards shrink without limit, so

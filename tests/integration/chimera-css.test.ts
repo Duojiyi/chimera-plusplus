@@ -2,9 +2,9 @@
  * Integration test — Bug 3: CSS scrollbar fix + update banner styles.
  *
  * Reads src/chimera.css directly and asserts:
- *  - .route-line-scroll uses `scrollbar-width: none` (not `thin`)
- *  - webkit scrollbar is hidden via display:none
- *  - .route-line-card uses the shrinkable flex shorthand (1 1 160px)
+ *  - .route-line-scroll exposes a compact native scrollbar when overflow exists
+ *  - the scrollbar is allocated below the cards instead of being hidden/overlaid
+ *  - .route-line-card keeps a readable minimum width so the fourth route remains reachable
  *  - .route-update-banner block is present (Bug 2 styles)
  */
 import { describe, expect, it } from "vitest";
@@ -26,31 +26,34 @@ function extractBlock(selector: string): string {
 }
 
 describe("chimera.css — Bug 3 scrollbar fix", () => {
-  it(".route-line-scroll hides the native scrollbar via scrollbar-width: none", () => {
+  it(".route-line-scroll exposes a thin native scrollbar", () => {
     const block = extractBlock(".route-line-scroll");
-    expect(block).toContain("scrollbar-width: none");
+    expect(block).toContain("scrollbar-width: thin");
+    expect(block).not.toContain("scrollbar-width: none");
   });
 
-  it(".route-line-scroll does NOT use scrollbar-width: thin", () => {
+  it(".route-line-scroll reserves room for the scrollbar below route cards", () => {
     const block = extractBlock(".route-line-scroll");
-    expect(block).not.toContain("scrollbar-width: thin");
+    expect(block).toMatch(/scrollbar-gutter:\s*stable/);
   });
 
-  it(".route-line-scroll hides webkit scrollbar via -ms-overflow-style: none", () => {
+  it(".route-line-scroll does not suppress the native scrollbar", () => {
     const block = extractBlock(".route-line-scroll");
-    expect(block).toContain("-ms-overflow-style: none");
+    expect(block).not.toContain("-ms-overflow-style: none");
   });
 
-  it("::-webkit-scrollbar rule has display: none to hide it in Chrome/Edge", () => {
-    // This rule appears OUTSIDE the .route-line-scroll block
-    expect(css).toMatch(/\.route-line-scroll::-webkit-scrollbar\s*\{[^}]*display:\s*none/s);
+  it("webkit route scrollbar is compact rather than hidden", () => {
+    expect(css).toMatch(
+      /\.route-line-scroll::-webkit-scrollbar\s*\{[^}]*height:\s*[4-9]px/s,
+    );
+    expect(css).not.toMatch(
+      /\.route-line-scroll::-webkit-scrollbar\s*\{[^}]*display:\s*none/s,
+    );
   });
 
-  it(".route-line-card uses shrinkable flex (1 1 160px), not the rigid 1 0 260px", () => {
+  it(".route-line-card keeps a readable minimum width", () => {
     const block = extractBlock(".route-line-card");
-    // The value we fixed to — allows cards to shrink when container is narrow
-    expect(block).toMatch(/flex:\s*1\s+1\s+160px/);
-    expect(block).not.toMatch(/flex:\s*1\s+0\s+260px/);
+    expect(block).toMatch(/min-width:\s*184px/);
   });
 });
 

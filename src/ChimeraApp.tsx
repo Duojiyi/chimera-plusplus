@@ -15,6 +15,8 @@ import {
   BarChart3,
   Check,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   CircleCheck,
   CircleAlert,
   Command,
@@ -58,7 +60,7 @@ import { useUpdate } from "@/contexts/UpdateContext";
 import type { RequestLog } from "@/types/usage";
 import type { Settings } from "@/types";
 import {
-  detectCodexApiFormat,
+  detectCodexApiFormats,
   fetchModelsForConfig,
   type DetectedCodexApiFormat,
   type FetchedModel,
@@ -292,6 +294,7 @@ type CodexEndpointInput = {
 type CodexApiFormatDetection = {
   identity: string;
   result: DetectedCodexApiFormat;
+  formats: Record<string, DetectedCodexApiFormat>;
 };
 
 function codexEndpointIdentity(input: CodexEndpointInput): string {
@@ -702,7 +705,7 @@ export default function ChimeraApp() {
             : "Codex 已启动",
       );
       if (result.modelUnlockError) {
-        toast.warning("Codex 已启动，但第三方模型列表注入未生效", {
+        toast.warning("模型目录已保存；桌面端模型选择器增强未连接", {
           description: result.modelUnlockError,
         });
       }
@@ -979,6 +982,7 @@ export default function ChimeraApp() {
       let resolvedApiFormat: CodexApiFormat =
         draft.apiFormat === "auto" ? "openai_responses" : draft.apiFormat;
       let resolvedAnthropicAuthField = draft.anthropicAuthField;
+      let detectedModelFormats: Record<string, DetectedCodexApiFormat> = {};
       if (draft.apiFormat === "auto") {
         const detectionIdentity = codexDetectionIdentity(draft, draft.model);
         const cachedDetection =
@@ -989,16 +993,25 @@ export default function ChimeraApp() {
           resolvedApiFormat = cachedDetection.apiFormat;
           resolvedAnthropicAuthField =
             cachedDetection.anthropicAuthField ?? draft.anthropicAuthField;
+          detectedModelFormats =
+            apiFormatDetection?.formats ??
+            (draft.model.trim()
+              ? { [draft.model.trim()]: cachedDetection }
+              : {});
         } else {
           const seq = ++protocolProbeSeqRef.current;
           setFetchingModels(true);
           setApiFormatDetectionError(null);
           try {
-            const detected = await detectCodexApiFormat(
+            const detectionModels = [
+              draft.model.trim(),
+              ...fetchedForSave.map((model) => model.id.trim()),
+            ].filter(Boolean);
+            const detectedFormats = await detectCodexApiFormats(
               draft.baseUrl,
               draft.apiKey,
+              detectionModels,
               draft.isFullUrl,
-              draft.model,
               draft.customUserAgent.trim() || undefined,
             );
             if (
@@ -1008,15 +1021,21 @@ export default function ChimeraApp() {
               toast.info("线路配置已变化，请重新保存");
               return;
             }
-            resolvedApiFormat = detected.apiFormat;
+            detectedModelFormats = detectedFormats;
+            const defaultDetection = detectedFormats[draft.model.trim()];
+            if (!defaultDetection) {
+              throw new Error("默认模型未能识别上游协议，请手动选择协议后重试");
+            }
+            resolvedApiFormat = defaultDetection.apiFormat;
             resolvedAnthropicAuthField =
-              detected.anthropicAuthField ?? draft.anthropicAuthField;
+              defaultDetection.anthropicAuthField ?? draft.anthropicAuthField;
             setApiFormatDetection({
               identity: detectionIdentity,
-              result: detected,
+              result: defaultDetection,
+              formats: detectedFormats,
             });
             toast.success(
-              `已自动识别上游协议：${codexApiFormatLabel(detected.apiFormat)}`,
+              `已识别 ${Object.keys(detectedFormats).length} 个模型的上游协议`,
             );
           } catch (error) {
             const message = String(error);
@@ -1068,6 +1087,14 @@ export default function ChimeraApp() {
           ...draft.original?.meta,
           apiFormat: resolvedApiFormat,
           apiFormatAutoDetected: draft.apiFormat === "auto" ? true : undefined,
+          codexModelApiFormats:
+            draft.apiFormat === "auto"
+              ? Object.fromEntries(
+                  Object.entries(detectedModelFormats).map(
+                    ([model, detected]) => [model, detected.apiFormat],
+                  ),
+                )
+              : undefined,
           apiKeyField:
             resolvedApiFormat === "anthropic"
               ? resolvedAnthropicAuthField
@@ -1259,11 +1286,11 @@ export default function ChimeraApp() {
       const probeIdentity = codexDetectionIdentity(latest, probeModel);
       const probeSeq = ++protocolProbeSeqRef.current;
       try {
-        const detected = await detectCodexApiFormat(
+        const detectedFormats = await detectCodexApiFormats(
           latest.baseUrl,
           latest.apiKey,
+          [probeModel, ...result.map((model) => model.id.trim())],
           latest.isFullUrl,
-          probeModel,
           latest.customUserAgent.trim() || undefined,
         );
         const current = editorRef.current;
@@ -1279,7 +1306,15 @@ export default function ChimeraApp() {
         ) {
           return;
         }
-        setApiFormatDetection({ identity: probeIdentity, result: detected });
+        const detected = detectedFormats[probeModel];
+        if (!detected) {
+          throw new Error("默认模型未能识别上游协议");
+        }
+        setApiFormatDetection({
+          identity: probeIdentity,
+          result: detected,
+          formats: detectedFormats,
+        });
         setApiFormatDetectionError(null);
         if (detected.anthropicAuthField) {
           setEditor((currentEditor) =>
@@ -1295,7 +1330,7 @@ export default function ChimeraApp() {
           );
         }
         toast.success(
-          `已获取 ${result.length} 个模型，并识别为 ${codexApiFormatLabel(detected.apiFormat)}`,
+          `已获取 ${result.length} 个模型，并识别 ${Object.keys(detectedFormats).length} 个模型的上游协议`,
         );
       } catch (error) {
         if (probeSeq !== protocolProbeSeqRef.current) return;
@@ -1666,7 +1701,7 @@ export default function ChimeraApp() {
               setPendingModelReload(null);
               toast.success("Codex 已重新加载模型列表");
               if (result.modelUnlockError) {
-                toast.warning("第三方模型列表注入未生效", {
+                toast.warning("模型目录已保存；桌面端模型选择器增强未连接", {
                   description: result.modelUnlockError,
                 });
               }
@@ -2368,6 +2403,49 @@ export function NewProvidersView({
   const [query, setQuery] = useState("");
   const [switchingId, setSwitchingId] = useState<string | null>(null);
   const managerTriggerRef = useRef<HTMLButtonElement>(null);
+  const routeLineScrollRef = useRef<HTMLDivElement>(null);
+  const [routeLineScrollState, setRouteLineScrollState] = useState({
+    previous: false,
+    next: false,
+  });
+  const syncRouteLineScrollControls = useCallback(() => {
+    const element = routeLineScrollRef.current;
+    const nextState = element
+      ? {
+          previous: element.scrollLeft > 1,
+          next:
+            element.scrollLeft + element.clientWidth < element.scrollWidth - 1,
+        }
+      : { previous: false, next: false };
+    setRouteLineScrollState((currentState) =>
+      currentState.previous === nextState.previous &&
+      currentState.next === nextState.next
+        ? currentState
+        : nextState,
+    );
+  }, []);
+  const scrollRouteLines = useCallback((direction: -1 | 1) => {
+    const element = routeLineScrollRef.current;
+    if (!element) return;
+    element.scrollBy({
+      left: direction * Math.max(200, element.clientWidth * 0.7),
+      behavior: "smooth",
+    });
+  }, []);
+  useEffect(() => {
+    const element = routeLineScrollRef.current;
+    if (!element) return;
+    syncRouteLineScrollControls();
+    element.addEventListener("scroll", syncRouteLineScrollControls, {
+      passive: true,
+    });
+    const observer = new ResizeObserver(syncRouteLineScrollControls);
+    observer.observe(element);
+    return () => {
+      element.removeEventListener("scroll", syncRouteLineScrollControls);
+      observer.disconnect();
+    };
+  }, [providers.length, syncRouteLineScrollControls]);
   const managerRef = useDialogFocus<HTMLElement>(
     () => setManagerOpen(false),
     managerOpen,
@@ -2590,36 +2668,71 @@ export function NewProvidersView({
             </button>
           </header>
           <div className="route-line-rail">
-            <div className="route-line-scroll" role="list" aria-label="线路">
-              {railLines.map((provider) => {
-                const active = provider.id === current.id;
-                const switching = switchingId === provider.id;
-                return (
-                  <button
-                    key={provider.id}
-                    type="button"
-                    className={`route-line-card${active ? " is-active" : ""}`}
-                    aria-pressed={active}
-                    aria-label={`${lineName(provider)}，${lineSource(provider)}${active ? "，当前线路" : ""}`}
-                    onClick={() => void activateLine(provider)}
-                  >
-                    <span className="route-line-mark" aria-hidden="true">
-                      {switching ? (
-                        <LoaderCircle className="spin" size={16} />
-                      ) : (
-                        lineMark(provider)
-                      )}
-                    </span>
-                    <span className="route-line-copy">
-                      <b>
-                        {active && <i aria-hidden="true" />}
-                        {lineName(provider)}
-                      </b>
-                      <small>{lineSource(provider)}</small>
-                    </span>
-                  </button>
-                );
-              })}
+            <div className="route-line-scroll-shell">
+              <button
+                type="button"
+                className="route-line-scroll-arrow is-previous"
+                aria-label="显示上一条线路"
+                disabled={!routeLineScrollState.previous}
+                onClick={() => scrollRouteLines(-1)}
+              >
+                <ChevronLeft size={16} aria-hidden="true" />
+              </button>
+              <div
+                ref={routeLineScrollRef}
+                className="route-line-scroll"
+                role="list"
+                aria-label="线路"
+                tabIndex={0}
+                onKeyDown={(event) => {
+                  if (event.key === "ArrowLeft") {
+                    event.preventDefault();
+                    scrollRouteLines(-1);
+                  } else if (event.key === "ArrowRight") {
+                    event.preventDefault();
+                    scrollRouteLines(1);
+                  }
+                }}
+              >
+                {railLines.map((provider) => {
+                  const active = provider.id === current.id;
+                  const switching = switchingId === provider.id;
+                  return (
+                    <button
+                      key={provider.id}
+                      type="button"
+                      className={`route-line-card${active ? " is-active" : ""}`}
+                      aria-pressed={active}
+                      aria-label={`${lineName(provider)}，${lineSource(provider)}${active ? "，当前线路" : ""}`}
+                      onClick={() => void activateLine(provider)}
+                    >
+                      <span className="route-line-mark" aria-hidden="true">
+                        {switching ? (
+                          <LoaderCircle className="spin" size={16} />
+                        ) : (
+                          lineMark(provider)
+                        )}
+                      </span>
+                      <span className="route-line-copy">
+                        <b>
+                          {active && <i aria-hidden="true" />}
+                          {lineName(provider)}
+                        </b>
+                        <small>{lineSource(provider)}</small>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              <button
+                type="button"
+                className="route-line-scroll-arrow is-next"
+                aria-label="显示下一条线路"
+                disabled={!routeLineScrollState.next}
+                onClick={() => scrollRouteLines(1)}
+              >
+                <ChevronRight size={16} aria-hidden="true" />
+              </button>
             </div>
             <button type="button" className="route-line-add" onClick={onAdd}>
               <span aria-hidden="true">
