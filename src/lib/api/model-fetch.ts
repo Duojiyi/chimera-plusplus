@@ -56,6 +56,22 @@ export async function detectCodexApiFormat(
   });
 }
 
+export async function detectCodexApiFormats(
+  baseUrl: string,
+  apiKey: string,
+  models: string[],
+  isFullUrl?: boolean,
+  customUserAgent?: string,
+): Promise<Record<string, DetectedCodexApiFormat>> {
+  return invoke("detect_codex_api_formats", {
+    baseUrl,
+    apiKey,
+    isFullUrl,
+    models,
+    customUserAgent,
+  });
+}
+
 /**
  * 获取 Codex OAuth (ChatGPT Plus/Pro 反代) 可用模型列表
  *

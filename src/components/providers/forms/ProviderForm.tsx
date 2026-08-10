@@ -13,7 +13,7 @@ import {
   formatRequestOverrideObject,
 } from "@/lib/requestOverrides";
 import { providersApi, settingsApi, type AppId } from "@/lib/api";
-import { detectCodexApiFormat } from "@/lib/api/model-fetch";
+import { detectCodexApiFormats } from "@/lib/api/model-fetch";
 import { useDarkMode } from "@/hooks/useDarkMode";
 import type {
   ProviderCategory,
@@ -1370,6 +1370,14 @@ function ProviderFormFull({
       baseUrl.includes("githubcopilot.com");
     const isCodexOauthProvider = activeProviderType === "codex_oauth";
     const isXaiOauthProvider = activeProviderType === "xai_oauth";
+    const normalizedCatalogModels =
+      appId === "codex" && category !== "official"
+        ? normalizeCodexCatalogModelsForSave(codexCatalogModels)
+        : [];
+    let detectedCodexModelFormats: Record<
+      string,
+      { apiFormat: CodexApiFormat; anthropicAuthField?: ClaudeApiKeyField }
+    > = {};
 
     let resolvedCodexApiFormat: CodexApiFormat =
       localCodexApiFormat === "auto" ? "openai_responses" : localCodexApiFormat;
@@ -1381,31 +1389,40 @@ function ProviderFormFull({
       localCodexApiFormat === "auto"
     ) {
       try {
-        const probeModel =
-          codexModel.trim() ||
-          codexCatalogModels
-            .find((entry) => entry.model.trim())
-            ?.model.trim() ||
-          undefined;
-        const detected = await detectCodexApiFormat(
+        const detectionModels = Array.from(
+          new Set(
+            [
+              codexModel.trim(),
+              ...normalizedCatalogModels.map((entry) => entry.model.trim()),
+            ].filter(Boolean),
+          ),
+        );
+        const detectedFormats = await detectCodexApiFormats(
           codexBaseUrl,
           codexApiKey,
+          detectionModels,
           localIsFullUrl,
-          probeModel,
           customUserAgent,
         );
-        resolvedCodexApiFormat = detected.apiFormat;
-        if (detected.anthropicAuthField) {
-          resolvedCodexAnthropicAuthField = detected.anthropicAuthField;
-          setLocalCodexAnthropicAuthField(detected.anthropicAuthField);
+        const defaultDetection = detectedFormats[codexModel.trim()];
+        if (!defaultDetection) {
+          throw new Error("默认模型未能识别上游协议");
+        }
+        detectedCodexModelFormats = detectedFormats;
+        resolvedCodexApiFormat = defaultDetection.apiFormat;
+        if (defaultDetection.anthropicAuthField) {
+          resolvedCodexAnthropicAuthField = defaultDetection.anthropicAuthField;
+          setLocalCodexAnthropicAuthField(defaultDetection.anthropicAuthField);
         }
         toast.success(
           t("codexConfig.upstreamFormatDetected", {
-            defaultValue: "已自动识别上游协议：{{format}}",
+            defaultValue:
+              "已自动识别 {{count}} 个模型的上游协议；默认模型协议：{{format}}",
+            count: Object.keys(detectedFormats).length,
             format:
-              detected.apiFormat === "openai_responses"
+              defaultDetection.apiFormat === "openai_responses"
                 ? "Responses"
-                : detected.apiFormat === "openai_chat"
+                : defaultDetection.apiFormat === "openai_chat"
                   ? "Chat Completions"
                   : "Anthropic Messages",
           }),
@@ -1434,10 +1451,6 @@ function ProviderFormFull({
         // 模型映射与「路由接管」解耦：对所有非官方供应商，填了就持久化
         //（Chat 生成兼容路由、原生 Responses 生成 model-catalogs.json），
         // 留空归一化为 [] 即不写。后端只看 modelCatalog.models 是否非空。
-        const normalizedCatalogModels =
-          category !== "official"
-            ? normalizeCodexCatalogModelsForSave(codexCatalogModels)
-            : [];
         // The default-model field writes the top-level `model` into the TOML
         // as the user types; only when it was left empty fall back to the
         // first catalog row so "fill mapping only" keeps its old behavior.
@@ -1671,6 +1684,17 @@ function ProviderFormFull({
         !isXaiOauthProvider &&
         localCodexApiFormat === "auto"
           ? true
+          : undefined,
+      codexModelApiFormats:
+        appId === "codex" &&
+        category !== "official" &&
+        !isXaiOauthProvider &&
+        localCodexApiFormat === "auto"
+          ? Object.fromEntries(
+              Object.entries(detectedCodexModelFormats).map(
+                ([model, detected]) => [model, detected.apiFormat],
+              ),
+            )
           : undefined,
       apiFormat:
         appId === "claude" && category !== "official"

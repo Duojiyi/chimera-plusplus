@@ -22,6 +22,98 @@ static CODEX_CLIENT_REGEX: LazyLock<Regex> =
 /// Codex 适配器
 pub struct CodexAdapter;
 
+fn codex_api_format_for_model<'a>(provider: &'a Provider, model: Option<&str>) -> Option<&'a str> {
+    let model = model
+        .map(crate::proxy::model_mapper::strip_one_m_suffix_for_upstream)
+        .map(str::trim)
+        .filter(|model| !model.is_empty());
+    provider
+        .meta
+        .as_ref()
+        .and_then(|meta| {
+            model.and_then(|model| meta.codex_model_api_formats.get(model).map(String::as_str))
+        })
+        .or_else(|| {
+            provider
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.api_format.as_deref())
+        })
+        .or_else(|| {
+            provider
+                .settings_config
+                .get("api_format")
+                .and_then(|value| value.as_str())
+        })
+        .or_else(|| {
+            provider
+                .settings_config
+                .get("apiFormat")
+                .and_then(|value| value.as_str())
+        })
+}
+
+/// Once automatic per-model detection is enabled, accepting an unmapped model
+/// would be unsafe: it would inherit the default model's protocol and can send
+/// a Responses request to a Chat/Anthropic-only model. The caller must reject
+/// the request with actionable configuration guidance instead.
+pub fn codex_model_protocol_mapping_is_missing(provider: &Provider, model: Option<&str>) -> bool {
+    let Some(model) = model
+        .map(crate::proxy::model_mapper::strip_one_m_suffix_for_upstream)
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+    else {
+        return false;
+    };
+
+    let Some(meta) = provider.meta.as_ref() else {
+        return false;
+    };
+
+    meta.api_format_auto_detected == Some(true)
+        && !meta.codex_model_api_formats.is_empty()
+        && !meta.codex_model_api_formats.contains_key(model)
+}
+
+pub fn codex_provider_uses_chat_completions_for_model(
+    provider: &Provider,
+    model: Option<&str>,
+) -> bool {
+    codex_api_format_for_model(provider, model)
+        .map(is_chat_wire_api)
+        .unwrap_or_else(|| codex_provider_uses_chat_completions(provider))
+}
+
+pub fn codex_provider_uses_anthropic_for_model(provider: &Provider, model: Option<&str>) -> bool {
+    codex_api_format_for_model(provider, model)
+        .map(is_anthropic_wire_api)
+        .unwrap_or_else(|| codex_provider_uses_anthropic(provider))
+}
+
+pub fn codex_provider_uses_anthropic_api_key(provider: &Provider) -> bool {
+    provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.api_key_field.as_deref())
+        .map(|field| field.eq_ignore_ascii_case("ANTHROPIC_API_KEY"))
+        .unwrap_or(false)
+}
+
+/// Whether any individually detected Codex model requires local protocol
+/// translation. A mixed model catalog must keep takeover enabled even when the
+/// provider's default model uses native Responses.
+pub fn codex_provider_has_model_level_routing(provider: &Provider) -> bool {
+    provider
+        .meta
+        .as_ref()
+        .map(|meta| {
+            meta.codex_model_api_formats
+                .values()
+                .any(|api_format| is_chat_wire_api(api_format) || is_anthropic_wire_api(api_format))
+        })
+        .unwrap_or(false)
+}
+
 /// Whether this Codex provider's real upstream should be called through
 /// OpenAI Chat Completions, even if the local Codex client is talking to CC
 /// Switch through the Responses API.
@@ -74,6 +166,14 @@ pub fn codex_provider_uses_chat_completions(provider: &Provider) -> bool {
 }
 
 pub fn should_convert_codex_responses_to_chat(provider: &Provider, endpoint: &str) -> bool {
+    should_convert_codex_responses_to_chat_for_model(provider, endpoint, None)
+}
+
+pub fn should_convert_codex_responses_to_chat_for_model(
+    provider: &Provider,
+    endpoint: &str,
+    model: Option<&str>,
+) -> bool {
     let path = endpoint
         .split_once('?')
         .map_or(endpoint, |(path, _query)| path);
@@ -81,7 +181,7 @@ pub fn should_convert_codex_responses_to_chat(provider: &Provider, endpoint: &st
     matches!(
         path,
         "/responses" | "/v1/responses" | "/responses/compact" | "/v1/responses/compact"
-    ) && codex_provider_uses_chat_completions(provider)
+    ) && codex_provider_uses_chat_completions_for_model(provider, model)
 }
 
 /// 判断该 provider 是否满足自动 Responses→Chat 协议检测的条件。
@@ -294,6 +394,14 @@ pub fn codex_provider_uses_anthropic(provider: &Provider) -> bool {
 }
 
 pub fn should_convert_codex_responses_to_anthropic(provider: &Provider, endpoint: &str) -> bool {
+    should_convert_codex_responses_to_anthropic_for_model(provider, endpoint, None)
+}
+
+pub fn should_convert_codex_responses_to_anthropic_for_model(
+    provider: &Provider,
+    endpoint: &str,
+    model: Option<&str>,
+) -> bool {
     let path = endpoint
         .split_once('?')
         .map_or(endpoint, |(path, _query)| path);
@@ -301,7 +409,7 @@ pub fn should_convert_codex_responses_to_anthropic(provider: &Provider, endpoint
     matches!(
         path,
         "/responses" | "/v1/responses" | "/responses/compact" | "/v1/responses/compact"
-    ) && codex_provider_uses_anthropic(provider)
+    ) && codex_provider_uses_anthropic_for_model(provider, model)
 }
 
 /// Whether a native-Responses Codex upstream needs Codex `namespace`/plugin
@@ -392,19 +500,18 @@ fn codex_provider_catalog_model_ids(provider: &Provider) -> HashSet<String> {
         .unwrap_or_default()
 }
 
-/// For Codex Chat providers, ensure the request uses the configured upstream
-/// model before converting the request to Chat Completions.
-pub fn apply_codex_chat_upstream_model(
+pub fn apply_codex_chat_upstream_model_for_model(
     provider: &Provider,
     body: &mut JsonValue,
+    model: Option<&str>,
 ) -> Option<String> {
-    if !codex_provider_uses_chat_completions(provider) {
+    if !codex_provider_uses_chat_completions_for_model(provider, model) {
         return None;
     }
     apply_codex_upstream_model(provider, body)
 }
 
-/// Same model-substitution logic as `apply_codex_chat_upstream_model`, but without
+/// Same model-substitution logic as the chat model mapper, but without
 /// the chat gating check. Reused by the anthropic conversion path (the forwarder has
 /// already confirmed this provider uses anthropic).
 pub fn apply_codex_upstream_model(provider: &Provider, body: &mut JsonValue) -> Option<String> {
@@ -843,13 +950,7 @@ impl ProviderAdapter for CodexAdapter {
         // The two are mutually exclusive to avoid a 401 from the gateway receiving
         // both auth headers at once. All other Codex upstreams stay pure Bearer.
         let strategy = if codex_provider_uses_anthropic(provider) {
-            let uses_x_api_key = provider
-                .meta
-                .as_ref()
-                .and_then(|meta| meta.api_key_field.as_deref())
-                .map(|field| field.eq_ignore_ascii_case("ANTHROPIC_API_KEY"))
-                .unwrap_or(false);
-            if uses_x_api_key {
+            if codex_provider_uses_anthropic_api_key(provider) {
                 AuthStrategy::Anthropic
             } else {
                 AuthStrategy::Bearer
@@ -935,6 +1036,77 @@ mod tests {
             icon_color: None,
             in_failover_queue: false,
         }
+    }
+
+    #[test]
+    fn model_level_api_formats_override_the_provider_default() {
+        let mut provider = create_provider(json!({}));
+        provider.meta = Some(crate::provider::ProviderMeta {
+            api_format: Some("openai_responses".to_string()),
+            codex_model_api_formats: [
+                ("chat-model".to_string(), "openai_chat".to_string()),
+                ("anthropic-model".to_string(), "anthropic".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        });
+
+        assert!(!should_convert_codex_responses_to_chat_for_model(
+            &provider,
+            "/responses",
+            Some("responses-model"),
+        ));
+        assert!(should_convert_codex_responses_to_chat_for_model(
+            &provider,
+            "/responses",
+            Some("chat-model"),
+        ));
+        assert!(should_convert_codex_responses_to_anthropic_for_model(
+            &provider,
+            "/responses",
+            Some("anthropic-model"),
+        ));
+        assert!(should_convert_codex_responses_to_anthropic_for_model(
+            &provider,
+            "/responses",
+            Some("anthropic-model[1m]"),
+        ));
+        assert!(!should_convert_codex_responses_to_anthropic_for_model(
+            &provider,
+            "/responses",
+            Some("chat-model"),
+        ));
+        assert!(codex_provider_has_model_level_routing(&provider));
+    }
+
+    #[test]
+    fn automatic_model_level_routing_requires_a_mapping_for_every_requested_model() {
+        let mut provider = create_provider(json!({}));
+        provider.meta = Some(crate::provider::ProviderMeta {
+            api_format: Some("openai_responses".to_string()),
+            api_format_auto_detected: Some(true),
+            codex_model_api_formats: [(
+                "responses-model".to_string(),
+                "openai_responses".to_string(),
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        });
+
+        assert!(!codex_model_protocol_mapping_is_missing(
+            &provider,
+            Some("responses-model")
+        ));
+        assert!(!codex_model_protocol_mapping_is_missing(
+            &provider,
+            Some("responses-model[1m]")
+        ));
+        assert!(codex_model_protocol_mapping_is_missing(
+            &provider,
+            Some("unmapped-model")
+        ));
     }
 
     #[test]
@@ -1467,7 +1639,7 @@ wire_api = "chat"
     }
 
     #[test]
-    fn test_apply_codex_chat_upstream_model_uses_provider_config_model() {
+    fn test_apply_codex_chat_upstream_model_for_model_uses_provider_config_model() {
         let mut provider = create_provider(json!({
             "config": r#"
 model_provider = "deepseek"
@@ -1488,7 +1660,11 @@ wire_api = "responses"
             "input": "ping"
         });
 
-        let upstream_model = apply_codex_chat_upstream_model(&provider, &mut body);
+        let upstream_model = apply_codex_chat_upstream_model_for_model(
+            &provider,
+            &mut body,
+            Some("placeholder-client-model"),
+        );
 
         assert_eq!(upstream_model.as_deref(), Some("deepseek-v4-flash"));
         assert_eq!(
@@ -1498,7 +1674,7 @@ wire_api = "responses"
     }
 
     #[test]
-    fn test_apply_codex_chat_upstream_model_preserves_catalog_model_selection() {
+    fn test_apply_codex_chat_upstream_model_for_model_preserves_catalog_model_selection() {
         let mut provider = create_provider(json!({
             "config": r#"
 model_provider = "deepseek"
@@ -1525,7 +1701,8 @@ wire_api = "responses"
             "input": "ping"
         });
 
-        let upstream_model = apply_codex_chat_upstream_model(&provider, &mut body);
+        let upstream_model =
+            apply_codex_chat_upstream_model_for_model(&provider, &mut body, Some("kimi-k2"));
 
         assert_eq!(upstream_model.as_deref(), Some("kimi-k2"));
         assert_eq!(body.get("model").and_then(|v| v.as_str()), Some("kimi-k2"));

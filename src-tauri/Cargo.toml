@@ -1,6 +1,6 @@
 [package]
 name = "chimera-plus-plus"
-version = "2.4.4"
+version = "2.4.5"
 description = "Clean Codex provider switcher and desktop runtime manager"
 authors = ["Duojiyi", "CC Switch contributors"]
 license = "MIT"

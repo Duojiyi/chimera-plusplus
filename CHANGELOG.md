@@ -10,6 +10,15 @@ numbers belong to a separate upstream line.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.5] - 2026-08-10
+
+### Fixed
+
+- **Per-model protocol routing:** model discovery now probes the complete catalog with bounded concurrency and persists the detected protocol for each model. Mixed Responses, Chat Completions, and Anthropic providers are routed by the selected model instead of inheriting a potentially incompatible default.
+- **Safe automatic routing:** an automatically managed route now reports a configuration error when the selected model has no verified protocol mapping, rather than sending it through an unsafe fallback format.
+- **Model catalog feedback:** successful model catalog persistence is no longer reported as a failure merely because the optional ChatGPT Desktop model-picker integration is unavailable.
+- **Route list accessibility:** provider routes beyond the third card remain reachable through visible horizontal scrolling, arrow controls, and keyboard navigation without covering the final route.
+
 ## [2.4.4] - 2026-08-10
 
 ### Security

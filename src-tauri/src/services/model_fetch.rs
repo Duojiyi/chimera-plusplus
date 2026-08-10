@@ -4,7 +4,7 @@
 //! 主要面向第三方聚合站（硅基流动、OpenRouter 等），以及把 Anthropic
 //! 协议挂在兼容子路径上的官方供应商（DeepSeek、Kimi、智谱 GLM 等）。
 
-use futures::{future::join_all, StreamExt};
+use futures::{future::join_all, stream, StreamExt};
 use reqwest::header::{HeaderValue, CONTENT_TYPE, USER_AGENT};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
@@ -37,6 +37,10 @@ const API_FORMAT_PROBE_TIMEOUT_SECS: u64 = 8;
 const MAX_MODEL_DISCOVERY_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 /// 协议探测及错误诊断只消费有限响应体；协议判断所需标记远小于该上限。
 const MAX_PROTOCOL_PROBE_RESPONSE_BYTES: usize = 64 * 1024;
+/// A model probe fans out to three protocol endpoints. Keep the request burst
+/// modest while still scanning every saved model so an unscanned model can
+/// never silently inherit another model's wire protocol.
+const CODEX_MODEL_PROTOCOL_PROBE_CONCURRENCY: usize = 8;
 
 /// 404/405 响应体截断长度：避免把几十 KB HTML 404 页整页保留到错误串里。
 const ERROR_BODY_MAX_CHARS: usize = 512;
@@ -218,6 +222,10 @@ pub struct DetectedCodexApiFormat {
     pub anthropic_auth_field: Option<String>,
 }
 
+/// Successful per-model protocol detections. Failed models are omitted so one
+/// unsupported model cannot hide usable protocols exposed by the same gateway.
+pub type DetectedCodexApiFormats = std::collections::HashMap<String, DetectedCodexApiFormat>;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CodexApiProbe {
     Responses,
@@ -338,6 +346,70 @@ pub async fn detect_codex_api_format(
     Err(format!(
         "Could not safely identify a supported API protocol. Verify the endpoint, API Key, and model, or choose the protocol manually. {diagnostics}"
     ))
+}
+
+/// Detect the upstream protocol independently for each model in a catalog.
+///
+/// The endpoint may expose a mixed catalog (for example, Responses models next
+/// to Chat Completions or Anthropic models). This function deliberately returns
+/// partial success and keeps the request count bounded.
+pub async fn detect_codex_api_formats(
+    base_url: &str,
+    api_key: &str,
+    is_full_url: bool,
+    models: Vec<String>,
+    user_agent: Option<HeaderValue>,
+) -> Result<DetectedCodexApiFormats, String> {
+    if api_key.trim().is_empty() {
+        return Err("API Key is required to detect the upstream API format".to_string());
+    }
+
+    let unique_models = collect_codex_protocol_probe_models(models);
+    if unique_models.is_empty() {
+        return Err("At least one model is required to detect the upstream API format".to_string());
+    }
+
+    let results = stream::iter(unique_models.into_iter().map(|model| {
+        let user_agent = user_agent.clone();
+        async move {
+            let result =
+                detect_codex_api_format(base_url, api_key, is_full_url, Some(&model), user_agent)
+                    .await;
+            (model, result)
+        }
+    }))
+    .buffer_unordered(CODEX_MODEL_PROTOCOL_PROBE_CONCURRENCY)
+    .collect::<Vec<_>>()
+    .await;
+
+    let detections = results
+        .into_iter()
+        .filter_map(|(model, result)| result.ok().map(|detected| (model, detected)))
+        .collect::<DetectedCodexApiFormats>();
+
+    if detections.is_empty() {
+        return Err(
+            "Could not safely identify a supported API protocol for any selected model. Verify the endpoint, API Key, and model, or choose the protocol manually."
+                .to_string(),
+        );
+    }
+    Ok(detections)
+}
+
+/// Normalize a catalog before per-model probing without truncating it. A
+/// truncated catalog produces a partial protocol map, and a partial map is
+/// unsafe for a mixed-protocol provider because unmapped models might otherwise
+/// borrow the default model's protocol.
+fn collect_codex_protocol_probe_models(models: Vec<String>) -> Vec<String> {
+    let mut unique_models = Vec::new();
+    for model in models {
+        let model = model.trim();
+        if model.is_empty() || unique_models.iter().any(|known| known == model) {
+            continue;
+        }
+        unique_models.push(model.to_string());
+    }
+    unique_models
 }
 
 async fn resolve_codex_api_probe_model(
@@ -520,16 +592,20 @@ async fn send_codex_api_format_probe(
 /// validation before inference can begin.
 fn invalid_probe_body(probe: CodexApiProbe, model: &str) -> String {
     let invalid_token_budget = serde_json::json!({ "chimeraProbe": true });
+    let inert_input = "Chimera protocol compatibility probe. Do not process.";
     match probe {
         CodexApiProbe::Responses => serde_json::json!({
             "model": model,
-            "input": [],
+            "input": inert_input,
             "max_output_tokens": invalid_token_budget,
         })
         .to_string(),
         CodexApiProbe::ChatCompletions | CodexApiProbe::AnthropicMessages => serde_json::json!({
             "model": model,
-            "messages": [],
+            "messages": [{
+                "role": "user",
+                "content": inert_input,
+            }],
             "max_tokens": invalid_token_budget,
         })
         .to_string(),
@@ -567,10 +643,46 @@ fn response_indicates_protocol_support(
         return false;
     }
 
+    // A proxy can reject a model's capability while echoing the malformed
+    // fields we sent (`input`, `max_output_tokens`, `messages`, ...). That is
+    // evidence for neither endpoint nor model support, so reject it before
+    // looking for field-validation markers.
+    if response_indicates_model_capability_rejection(&normalized) {
+        return false;
+    }
+
     probe
         .validation_markers()
         .iter()
         .any(|marker| normalized.contains(marker))
+}
+
+/// Gateways use many equivalent wordings for a model-level capability error.
+/// Treat these as negative evidence before matching echoed request fields:
+/// `input` and `max_output_tokens` may be present in an error even when that
+/// model cannot use the Responses endpoint at all.
+fn response_indicates_model_capability_rejection(normalized_body: &str) -> bool {
+    [
+        "does not support",
+        "doesn't support",
+        "doesnt support",
+        "not supported",
+        "unsupported for this model",
+        "unsupported by this model",
+        "unsupported_model",
+        "model_unsupported",
+        "unsupported model capability",
+        "not available for this model",
+        "model is not available",
+        "this model cannot",
+        "model cannot",
+    ]
+    .iter()
+    .any(|marker| normalized_body.contains(marker))
+        || (normalized_body.contains("for this model")
+            && ["unsupported", "invalid", "not allowed", "unavailable"]
+                .iter()
+                .any(|marker| normalized_body.contains(marker)))
 }
 
 /// Derive the three protocol endpoints from either a base URL or a full API URL.
@@ -847,11 +959,20 @@ mod tests {
             assert_eq!(body["model"], "claude-sonnet-4-6");
             match probe {
                 CodexApiProbe::Responses => {
-                    assert!(body["input"].as_array().unwrap().is_empty());
+                    assert_eq!(
+                        body["input"],
+                        "Chimera protocol compatibility probe. Do not process."
+                    );
                     assert!(body["max_output_tokens"].is_object());
                 }
                 CodexApiProbe::ChatCompletions | CodexApiProbe::AnthropicMessages => {
-                    assert!(body["messages"].as_array().unwrap().is_empty());
+                    assert_eq!(
+                        body["messages"][0],
+                        serde_json::json!({
+                            "role": "user",
+                            "content": "Chimera protocol compatibility probe. Do not process."
+                        })
+                    );
                     assert!(body["max_tokens"].is_object());
                 }
             }
@@ -872,6 +993,49 @@ mod tests {
                 r#"{"error":"未指定模型名称，模型名称不能为空"}"#
             ));
         }
+    }
+
+    #[test]
+    fn protocol_probe_rejects_model_capability_errors_that_echo_probe_fields() {
+        // Some gateways echo `input` / `max_output_tokens` in a model-level
+        // capability error even though the route is not usable for that model.
+        // Field names alone must never promote an unsupported Responses model.
+        assert!(!response_indicates_protocol_support(
+            CodexApiProbe::Responses,
+            StatusCode::BAD_REQUEST,
+            r#"{"error":{"message":"This model does not support the Responses API. input and max_output_tokens are unsupported for this model."}}"#
+        ));
+        assert!(!response_indicates_protocol_support(
+            CodexApiProbe::ChatCompletions,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            r#"{"error":{"message":"messages and max_tokens are not supported by this model on this endpoint"}}"#
+        ));
+    }
+
+    #[test]
+    fn protocol_probe_rejects_contracted_capability_errors_that_echo_probe_fields() {
+        assert!(!response_indicates_protocol_support(
+            CodexApiProbe::Responses,
+            StatusCode::BAD_REQUEST,
+            r#"{"error":{"message":"This model doesn't support the Responses API. input and max_output_tokens are invalid for this model."}}"#
+        ));
+        assert!(!response_indicates_protocol_support(
+            CodexApiProbe::AnthropicMessages,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            r#"{"error":{"code":"unsupported_model_capability","message":"messages and max_tokens are rejected for this model"}}"#
+        ));
+    }
+
+    #[test]
+    fn protocol_probe_model_collection_keeps_models_beyond_the_legacy_limit() {
+        let models = (0..25)
+            .map(|index| format!("model-{index}"))
+            .collect::<Vec<_>>();
+
+        let unique = collect_codex_protocol_probe_models(models);
+
+        assert_eq!(unique.len(), 25);
+        assert_eq!(unique.last().map(String::as_str), Some("model-24"));
     }
 
     #[test]

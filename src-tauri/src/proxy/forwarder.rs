@@ -1142,13 +1142,6 @@ impl RequestForwarder {
             == Some("github_copilot")
             || base_url.contains("githubcopilot.com");
 
-        // Codex upstream conversion mode — computed early because the [1m]-suffix strip
-        // below must be skipped on the Anthropic path (the marker has to survive to
-        // catalog matching and to the transform's own strip+beta detection).
-        let codex_responses_to_chat = matches!(app_type, AppType::Codex | AppType::GrokBuild)
-            && super::providers::should_convert_codex_responses_to_chat(provider, endpoint);
-        let codex_responses_to_anthropic = matches!(app_type, AppType::Codex | AppType::GrokBuild)
-            && super::providers::should_convert_codex_responses_to_anthropic(provider, endpoint);
         let codex_official_auth_passthrough = matches!(app_type, AppType::Codex)
             && super::providers::is_codex_official_provider(provider);
 
@@ -1170,6 +1163,43 @@ impl RequestForwarder {
 
         // 与 CCH 对齐：请求前不做 thinking 主动改写（仅保留兼容入口）
         let mut mapped_body = normalize_thinking_type(mapped_body);
+
+        // Codex 的上游协议可随模型不同而变化。必须先执行模型映射，再根据实际
+        // 发往上游的模型决定转换路径；否则混合模型目录会把所有模型误判成默认协议。
+        let codex_upstream_model = mapped_body
+            .get("model")
+            .and_then(|model| model.as_str())
+            .map(str::to_string);
+        let codex_responses_endpoint = matches!(
+            endpoint
+                .split_once('?')
+                .map_or(endpoint, |(path, _query)| path),
+            "/responses" | "/v1/responses" | "/responses/compact" | "/v1/responses/compact"
+        );
+        if matches!(app_type, AppType::Codex | AppType::GrokBuild)
+            && codex_responses_endpoint
+            && super::providers::codex_model_protocol_mapping_is_missing(
+                provider,
+                codex_upstream_model.as_deref(),
+            )
+        {
+            return Err(ProxyError::ConfigError(format!(
+                "模型「{}」尚未完成自动协议探测。请在 Chimera++ 中重新保存该线路以完成探测，或手动选择上游协议。",
+                codex_upstream_model.as_deref().unwrap_or("未命名模型")
+            )));
+        }
+        let codex_responses_to_chat = matches!(app_type, AppType::Codex | AppType::GrokBuild)
+            && super::providers::should_convert_codex_responses_to_chat_for_model(
+                provider,
+                endpoint,
+                codex_upstream_model.as_deref(),
+            );
+        let codex_responses_to_anthropic = matches!(app_type, AppType::Codex | AppType::GrokBuild)
+            && super::providers::should_convert_codex_responses_to_anthropic_for_model(
+                provider,
+                endpoint,
+                codex_upstream_model.as_deref(),
+            );
 
         // Grok Build exposes a stable client-side model profile in config.toml.
         // Route requests to the provider's real upstream model before applying
@@ -1430,7 +1460,11 @@ impl RequestForwarder {
                     "[Codex] Restored or enriched {restored} cached function call item(s) for Chat upstream"
                 );
             }
-            super::providers::apply_codex_chat_upstream_model(provider, &mut mapped_body);
+            super::providers::apply_codex_chat_upstream_model_for_model(
+                provider,
+                &mut mapped_body,
+                codex_upstream_model.as_deref(),
+            );
             let reasoning_config =
                 super::providers::resolve_codex_chat_reasoning_config(provider, &mapped_body);
             let mut chat_body = super::providers::transform_codex_chat::responses_to_chat_completions_with_reasoning(
@@ -1612,6 +1646,13 @@ impl RequestForwarder {
         // 精确认证材料。实际日志永远不输出这些值。
         let mut log_secrets: Vec<String> = Vec::new();
         let mut auth_headers = if let Some(mut auth) = adapter.extract_auth(provider) {
+            if codex_responses_to_anthropic
+                && adapter.name() == "Codex"
+                && auth.strategy == AuthStrategy::Bearer
+                && super::providers::codex_provider_uses_anthropic_api_key(provider)
+            {
+                auth.strategy = AuthStrategy::Anthropic;
+            }
             // GitHub Copilot 特殊处理：从 CopilotAuthManager 获取真实 token
             if auth.strategy == AuthStrategy::GitHubCopilot {
                 if let Some(app_handle) = &self.app_handle {

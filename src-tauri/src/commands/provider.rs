@@ -408,6 +408,7 @@ fn provider_requires_automatic_routing(app_type: &AppType, provider: &Provider) 
         || uses_local_proxy_features
         || crate::proxy::providers::codex_provider_uses_chat_completions(provider)
         || crate::proxy::providers::codex_provider_uses_anthropic(provider)
+        || crate::proxy::providers::codex_provider_has_model_level_routing(provider)
         // api_format=None ("自动") 的供应商需走代理，代理层才能触发 Responses→Chat 自动检测
         || crate::proxy::providers::codex_provider_is_auto_detect_candidate(provider)
 }
@@ -1955,6 +1956,26 @@ mod automatic_routing_tests {
         assert!(provider_requires_automatic_routing(
             &AppType::Codex,
             &chat_provider
+        ));
+    }
+
+    #[test]
+    fn mixed_model_catalog_requires_routing_even_when_default_model_is_responses() {
+        let mut provider = provider(json!({}), Some("openai_responses"));
+        provider.meta = Some(ProviderMeta {
+            api_format: Some("openai_responses".to_string()),
+            codex_model_api_formats: [
+                ("gpt-responses".to_string(), "openai_responses".to_string()),
+                ("claude-chat".to_string(), "openai_chat".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+            ..ProviderMeta::default()
+        });
+
+        assert!(provider_requires_automatic_routing(
+            &AppType::Codex,
+            &provider
         ));
     }
 

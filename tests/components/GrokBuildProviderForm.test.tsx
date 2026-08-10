@@ -8,11 +8,11 @@ import {
 } from "@/components/providers/forms/GrokBuildProviderForm";
 
 const modelFetchApiMock = vi.hoisted(() => ({
-  detectCodexApiFormat: vi.fn(),
+  detectCodexApiFormats: vi.fn(),
 }));
 
 vi.mock("@/lib/api/model-fetch", () => ({
-  detectCodexApiFormat: modelFetchApiMock.detectCodexApiFormat,
+  detectCodexApiFormats: modelFetchApiMock.detectCodexApiFormats,
 }));
 
 vi.mock("@/components/JsonEditor", () => ({
@@ -33,9 +33,11 @@ vi.mock("@/components/JsonEditor", () => ({
 
 describe("GrokBuildProviderForm", () => {
   beforeEach(() => {
-    modelFetchApiMock.detectCodexApiFormat.mockReset();
-    modelFetchApiMock.detectCodexApiFormat.mockResolvedValue({
-      apiFormat: "openai_responses",
+    modelFetchApiMock.detectCodexApiFormats.mockReset();
+    modelFetchApiMock.detectCodexApiFormats.mockResolvedValue({
+      "grok-4.5": {
+        apiFormat: "openai_responses",
+      },
     });
   });
   it("offers curated Grok Build presets and applies one", async () => {
@@ -96,6 +98,9 @@ describe("GrokBuildProviderForm", () => {
     const config = parseToml(settings.config) as any;
 
     expect(config.models.default).toBe("grok-4.5");
+    expect(submitted.meta.codexModelApiFormats).toEqual({
+      "grok-4.5": "openai_responses",
+    });
     expect(config.model["grok-4.5"]).toEqual({
       model: "grok-4.5",
       base_url: "https://relay.example.com/v1",
