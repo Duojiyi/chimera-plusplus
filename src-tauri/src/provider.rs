@@ -450,6 +450,12 @@ pub struct ProviderMeta {
     /// - "openai_responses": OpenAI Responses API 格式，需要转换
     #[serde(rename = "apiFormat", skip_serializing_if = "Option::is_none")]
     pub api_format: Option<String>,
+    /// Codex 自动检测意图标记。api_format 保存已识别的具体协议，本字段保留 UI 的“自动”选择。
+    #[serde(
+        rename = "apiFormatAutoDetected",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub api_format_auto_detected: Option<bool>,
     /// 通用认证绑定（provider_config / managed_account）
     ///
     /// 新代码应只写入该字段；githubAccountId 仅保留兼容读取。
@@ -461,6 +467,9 @@ pub struct ProviderMeta {
     /// 是否将 base_url 视为完整 API 端点（不拼接 endpoint 路径）
     #[serde(rename = "isFullUrl", skip_serializing_if = "Option::is_none")]
     pub is_full_url: Option<bool>,
+    /// Optional exact endpoint used only for model discovery.
+    #[serde(rename = "modelsUrl", skip_serializing_if = "Option::is_none")]
+    pub models_url: Option<String>,
     /// Prompt cache key for OpenAI Responses-compatible endpoints.
     /// When set, injected into converted Responses requests to improve cache hit rate.
     /// If not set, Claude -> Responses conversions use a client-provided session/thread
@@ -1026,6 +1035,30 @@ mod tests {
     fn provider_meta_omits_max_output_tokens_when_none() {
         let value = serde_json::to_value(ProviderMeta::default()).expect("serialize ProviderMeta");
         assert!(value.get("maxOutputTokens").is_none());
+    }
+
+    #[test]
+    fn provider_meta_roundtrips_codex_detection_and_models_url() {
+        let meta = ProviderMeta {
+            api_format: Some("openai_chat".to_string()),
+            api_format_auto_detected: Some(true),
+            models_url: Some("https://api.example.com/v1/models".to_string()),
+            ..ProviderMeta::default()
+        };
+
+        let value = serde_json::to_value(&meta).expect("serialize ProviderMeta");
+        assert_eq!(value["apiFormat"], "openai_chat");
+        assert_eq!(value["apiFormatAutoDetected"], true);
+        assert_eq!(value["modelsUrl"], "https://api.example.com/v1/models");
+
+        let decoded: ProviderMeta =
+            serde_json::from_value(value).expect("deserialize ProviderMeta");
+        assert_eq!(decoded.api_format.as_deref(), Some("openai_chat"));
+        assert_eq!(decoded.api_format_auto_detected, Some(true));
+        assert_eq!(
+            decoded.models_url.as_deref(),
+            Some("https://api.example.com/v1/models")
+        );
     }
 
     #[test]

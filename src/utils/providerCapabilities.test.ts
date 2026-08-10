@@ -175,6 +175,42 @@ describe("providerNeedsRouting", () => {
         ),
       ).toBe(false);
     });
+
+    it("apiFormat 与 wire_api 都缺省时需要路由完成兼容性探测", () => {
+      expect(providerNeedsRouting("codex", mkProvider({ meta: {} }))).toBe(
+        true,
+      );
+    });
+
+    it("原生 Responses 配置自定义 User-Agent 时仍需路由", () => {
+      expect(
+        providerNeedsRouting(
+          "codex",
+          mkProvider({
+            meta: {
+              apiFormat: "openai_responses",
+              customUserAgent: "Chimera-Test/1.0",
+            },
+          }),
+        ),
+      ).toBe(true);
+    });
+
+    it("原生 Responses 配置请求覆盖时仍需路由", () => {
+      expect(
+        providerNeedsRouting(
+          "codex",
+          mkProvider({
+            meta: {
+              apiFormat: "openai_responses",
+              localProxyRequestOverrides: {
+                headers: { "x-test": "enabled" },
+              },
+            },
+          }),
+        ),
+      ).toBe(true);
+    });
   });
 
   describe("Claude Desktop 路由判定", () => {

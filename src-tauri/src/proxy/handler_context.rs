@@ -251,6 +251,20 @@ impl RequestContext {
         self.providers.clone()
     }
 
+    /// Apply a runtime-only update to every in-memory copy of a provider.
+    ///
+    /// `RequestContext` deliberately keeps both the selected provider and the
+    /// failover chain. Updating only `self.provider` makes routing continue with
+    /// the stale copy returned by `get_providers()`, so protocol detection and
+    /// other request-local overrides would appear to succeed without affecting
+    /// the actual forwarded request.
+    pub fn update_provider_by_id<F>(&mut self, provider_id: &str, update: F) -> bool
+    where
+        F: FnMut(&mut Provider),
+    {
+        update_provider_copies(&mut self.provider, &mut self.providers, provider_id, update)
+    }
+
     /// 计算请求延迟（毫秒）
     #[inline]
     pub fn latency_ms(&self) -> u64 {
@@ -280,6 +294,29 @@ impl RequestContext {
     }
 }
 
+fn update_provider_copies<F>(
+    selected: &mut Provider,
+    providers: &mut [Provider],
+    provider_id: &str,
+    mut update: F,
+) -> bool
+where
+    F: FnMut(&mut Provider),
+{
+    let mut updated = false;
+    if selected.id == provider_id {
+        update(selected);
+        updated = true;
+    }
+    for provider in providers {
+        if provider.id == provider_id {
+            update(provider);
+            updated = true;
+        }
+    }
+    updated
+}
+
 /// Pull the Gemini model name out of an API path.
 ///
 /// Accepts forms like `/v1beta/models/gemini-pro:generateContent`,
@@ -300,7 +337,43 @@ pub(crate) fn extract_gemini_model_from_path(endpoint: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::extract_gemini_model_from_path;
+    use super::{extract_gemini_model_from_path, update_provider_copies};
+    use crate::provider::{Provider, ProviderMeta};
+    use serde_json::json;
+
+    fn provider(id: &str) -> Provider {
+        Provider::with_id(id.to_string(), id.to_string(), json!({}), None)
+    }
+
+    #[test]
+    fn provider_runtime_update_reaches_selected_and_forwarding_copies() {
+        let mut selected = provider("p1");
+        let mut providers = vec![provider("p1"), provider("p2")];
+
+        let updated = update_provider_copies(&mut selected, &mut providers, "p1", |provider| {
+            provider.meta = Some(ProviderMeta {
+                api_format: Some("openai_chat".to_string()),
+                ..Default::default()
+            });
+        });
+
+        assert!(updated);
+        assert_eq!(
+            selected
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.api_format.as_deref()),
+            Some("openai_chat")
+        );
+        assert_eq!(
+            providers[0]
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.api_format.as_deref()),
+            Some("openai_chat")
+        );
+        assert!(providers[1].meta.is_none());
+    }
 
     #[test]
     fn extract_model_with_action() {

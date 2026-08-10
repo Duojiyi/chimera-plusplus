@@ -36,7 +36,7 @@ use super::{
         read_decoded_body, strip_entity_headers_for_rebuilt_body,
         strip_hop_by_hop_response_headers, usage_logging_enabled, SseUsageCollector,
     },
-    server::ProxyState,
+    server::{CodexWireApiDetection, ProxyState},
     sse::{strip_sse_field, take_sse_block},
     types::*,
     usage::parser::TokenUsage,
@@ -44,10 +44,12 @@ use super::{
 };
 use crate::app_config::AppType;
 use crate::database::PRICING_SOURCE_REQUEST;
+use crate::provider::Provider;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use bytes::Bytes;
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 // ============================================================================
 // 健康检查和状态查询（简单端点）
@@ -770,39 +772,196 @@ pub async fn handle_chat_completions(
 /// therefore what lets a provider stop being routed once its protocol is known —
 /// without it, a native-Responses gateway stays proxied for the life of the
 /// install even though it never needed translating.
+fn codex_provider_detection_fingerprint(provider: &Provider) -> String {
+    let mut meta = provider.meta.clone().unwrap_or_default();
+    // The detected value itself and separately stored endpoint history are not
+    // inputs to protocol selection. Excluding them keeps the fingerprint stable
+    // after persistence and after endpoint-health bookkeeping.
+    meta.api_format = None;
+    meta.api_format_auto_detected = None;
+    meta.custom_endpoints.clear();
+
+    let routing_config = json!({
+        "settings_config": &provider.settings_config,
+        "category": &provider.category,
+        "meta": meta,
+    });
+    let encoded = serde_json::to_vec(&routing_config).unwrap_or_default();
+    format!("{:x}", Sha256::digest(encoded))
+}
+
+fn codex_wire_api_cache_entry_applies(provider: &Provider, entry: &CodexWireApiDetection) -> bool {
+    super::providers::codex_provider_is_auto_detect_candidate(provider)
+        && codex_provider_detection_fingerprint(provider) == entry.provider_fingerprint
+}
+
+async fn apply_codex_wire_api_cache(state: &ProxyState, ctx: &mut RequestContext) {
+    let providers = ctx.get_providers();
+    let mut cache = state.codex_wire_api_auto.write().await;
+
+    for provider in providers {
+        let Some(entry) = cache.get(&provider.id).cloned() else {
+            continue;
+        };
+
+        if !codex_wire_api_cache_entry_applies(&provider, &entry) {
+            // Same id, different URL/key/protocol (or an explicit user choice):
+            // the old runtime conclusion no longer belongs to this provider.
+            cache.remove(&provider.id);
+            continue;
+        }
+
+        let provider_id = provider.id.clone();
+        ctx.update_provider_by_id(&provider_id, |provider_copy| {
+            super::providers::apply_codex_auto_detected_api_format(
+                provider_copy,
+                &entry.api_format,
+            );
+        });
+    }
+}
+
+fn providers_with_codex_api_format(
+    providers: Vec<Provider>,
+    provider_id: &str,
+    api_format: &str,
+) -> Vec<Provider> {
+    providers
+        .into_iter()
+        .map(|mut provider| {
+            if provider.id == provider_id {
+                super::providers::apply_codex_auto_detected_api_format(&mut provider, api_format);
+            }
+            provider
+        })
+        .collect()
+}
+
+fn body_indicates_unsupported_responses_endpoint(body: Option<&str>) -> bool {
+    let Some(body) = body else {
+        return false;
+    };
+    let body = body.to_ascii_lowercase();
+    [
+        "unsupported endpoint",
+        "endpoint not found",
+        "unsupported route",
+        "route not found",
+        "unknown route",
+        "no route",
+        "unsupported protocol",
+        "responses api is not supported",
+        "responses api not supported",
+        "does not support responses",
+        "not support responses",
+    ]
+    .iter()
+    .any(|marker| body.contains(marker))
+}
+
+/// Runtime fallback is a compatibility path, not a general retry policy. Only
+/// endpoint/protocol incompatibility is evidence that a provider should be
+/// permanently classified as Chat Completions. Transient overload, auth, rate
+/// limits and timeouts must retain the original protocol.
+fn should_try_codex_chat_auto_fallback(error: &ProxyError) -> bool {
+    match error {
+        ProxyError::UpstreamError { status, body } => match *status {
+            400 | 404 | 405 | 406 | 415 | 422 | 501 => true,
+            503 => body_indicates_unsupported_responses_endpoint(body.as_deref()),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+fn codex_auto_fallback_matches_provider(
+    failed_provider: Option<&Provider>,
+    detected_provider: Option<&Provider>,
+) -> bool {
+    matches!(
+        (failed_provider, detected_provider),
+        (Some(failed), Some(detected)) if failed.id == detected.id
+    )
+}
+
+fn codex_auto_fallback_error_class(error: &ProxyError) -> String {
+    match error {
+        ProxyError::UpstreamError { status, .. } => format!("upstream_http_{status}"),
+        ProxyError::Timeout(_) => "timeout".to_string(),
+        ProxyError::AuthError(_) => "auth".to_string(),
+        ProxyError::ForwardFailed(_) => "forward_failed".to_string(),
+        _ => "other".to_string(),
+    }
+}
+
 fn persist_codex_auto_detected_api_format(
     state: &ProxyState,
     app_type_str: &'static str,
-    provider_id: &str,
+    provider: &Provider,
     api_format: &'static str,
 ) {
-    let provider_id = provider_id.to_string();
+    let mut expected_provider = provider.clone();
+    if let Some(meta) = expected_provider.meta.as_mut() {
+        // Runtime injection must not become part of the compare-before-write
+        // snapshot; the database still has None at this point.
+        meta.api_format = None;
+        meta.api_format_auto_detected = None;
+    }
+    let provider_id = expected_provider.id.clone();
+    let provider_fingerprint = codex_provider_detection_fingerprint(&expected_provider);
     let app_type_str_owned = app_type_str.to_string();
     let db = state.db.clone();
     let cache_arc = state.codex_wire_api_auto.clone();
     tokio::spawn(async move {
-        // Claim the cache slot first and bail if this protocol was already
-        // recorded. Callers fire on every eligible request, and while the cache
-        // injection normally makes the next request ineligible, concurrent
-        // in-flight requests all reach here before the first one lands. Without
-        // this guard a burst of parallel requests would each issue the same
-        // redundant write.
+        let detection = CodexWireApiDetection {
+            api_format: api_format.to_string(),
+            provider_fingerprint,
+        };
+
         {
             let mut cache = cache_arc.write().await;
-            if cache.get(&provider_id).map(String::as_str) == Some(api_format) {
+            if cache.get(&provider_id) == Some(&detection) {
                 return;
             }
-            cache.insert(provider_id.clone(), api_format.to_string());
+            cache.insert(provider_id.clone(), detection);
         }
 
-        if let Err(e) =
-            db.update_provider_meta_api_format(&app_type_str_owned, &provider_id, api_format)
-        {
-            log::warn!("[Codex] 自动协议检测持久化失败 (provider={provider_id}): {e}");
-        } else {
-            log::info!(
-                "[Codex] 自动协议检测: provider={provider_id} 已记录为 {api_format} 并持久化"
-            );
+        match db.update_provider_meta_api_format_if_unchanged(
+            &app_type_str_owned,
+            &expected_provider,
+            api_format,
+        ) {
+            Ok(true) => {
+                log::info!(
+                    "[Codex] 自动协议检测: provider={provider_id} 已记录为 {api_format} 并持久化"
+                );
+            }
+            Ok(false) => {
+                // A user edit won the race. Remove this exact stale cache entry;
+                // do not remove a newer detection installed by another request.
+                let mut cache = cache_arc.write().await;
+                if cache.get(&provider_id).is_some_and(|entry| {
+                    entry.api_format == api_format
+                        && entry.provider_fingerprint
+                            == codex_provider_detection_fingerprint(&expected_provider)
+                }) {
+                    cache.remove(&provider_id);
+                }
+                log::info!("[Codex] 自动协议检测结果未持久化：provider={provider_id} 配置已变化");
+            }
+            Err(e) => {
+                // Do not let a failed database write make the in-memory result
+                // permanent for the rest of the process; a later request may retry.
+                let mut cache = cache_arc.write().await;
+                if cache.get(&provider_id).is_some_and(|entry| {
+                    entry.api_format == api_format
+                        && entry.provider_fingerprint
+                            == codex_provider_detection_fingerprint(&expected_provider)
+                }) {
+                    cache.remove(&provider_id);
+                }
+                log::warn!("[Codex] 自动协议检测持久化失败 (provider={provider_id}): {e}");
+            }
         }
     });
 }
@@ -854,13 +1013,9 @@ async fn handle_responses_for_app(
         RequestContext::new(&state, &body, &headers, app_type.clone(), tag, app_type_str).await?;
     let endpoint = endpoint_with_query(&uri, "/responses");
 
-    // 检查运行时自动协议检测缓存：若之前已成功检测到 Chat 模式，注入 api_format 以跳过重试开销
-    {
-        let cache = state.codex_wire_api_auto.read().await;
-        if let Some(auto_fmt) = cache.get(&ctx.provider.id).cloned() {
-            super::providers::apply_codex_auto_detected_api_format(&mut ctx.provider, &auto_fmt);
-        }
-    }
+    // Apply a cached result only when it still belongs to this exact provider
+    // configuration, and update both RequestContext copies used by forwarding.
+    apply_codex_wire_api_cache(&state, &mut ctx).await;
 
     let is_stream = body
         .get("stream")
@@ -875,6 +1030,7 @@ async fn handle_responses_for_app(
     // 若符合自动检测条件，保留用于 Chat fallback 重试的副本（Bytes/HeaderMap/Extensions clone 均廉价）
     let eligible_for_chat_auto =
         super::providers::codex_eligible_for_chat_auto_detect(&ctx.provider, &endpoint);
+    let auto_detect_provider = eligible_for_chat_auto.then(|| ctx.provider.clone());
     let method_for_retry = if eligible_for_chat_auto {
         Some(method.clone())
     } else {
@@ -906,23 +1062,34 @@ async fn handle_responses_for_app(
     {
         Ok(result) => result,
         Err(mut err) => {
+            let failed_provider = err.provider.as_ref().cloned();
             if let Some(provider) = err.provider.take() {
                 ctx.provider = provider;
             }
 
-            // Responses 端点转发失败 → 尝试 Chat Completions 自动回退
-            // 仅在满足自动检测条件时执行（未显式配置 api_format，URL 未指向 Chat 端点）
-            if eligible_for_chat_auto {
-                if let (Some(m2), Some(h2), Some(ext2)) =
-                    (method_for_retry, headers_for_retry, extensions_for_retry)
-                {
+            // Responses 端点转发失败 → 仅在错误能证明端点/协议不兼容，且错误确实
+            // 来自当前被检测 provider 时尝试 Chat Completions。备用线路的错误不能误分类
+            // 主线路；普通 503、限流、认证错误和超时也不得污染协议缓存。
+            if should_try_codex_chat_auto_fallback(&err.error)
+                && codex_auto_fallback_matches_provider(
+                    failed_provider.as_ref(),
+                    auto_detect_provider.as_ref(),
+                )
+            {
+                if let (Some(detected_provider), Some(m2), Some(h2), Some(ext2)) = (
+                    auto_detect_provider.as_ref(),
+                    method_for_retry,
+                    headers_for_retry,
+                    extensions_for_retry,
+                ) {
                     // 重新解析 body（body_bytes 未被 move，Bytes 引用计数克隆廉价）
                     match serde_json::from_slice::<Value>(&body_bytes) {
                         Ok(body2) => {
                             let tool_ctx2 =
                                 transform_codex_chat::build_codex_tool_context_from_request(&body2);
-                            super::providers::apply_codex_auto_detected_api_format(
-                                &mut ctx.provider,
+                            let retry_providers = providers_with_codex_api_format(
+                                ctx.get_providers(),
+                                &detected_provider.id,
                                 "openai_chat",
                             );
 
@@ -935,18 +1102,21 @@ async fn handle_responses_for_app(
                                     body2,
                                     h2,
                                     ext2,
-                                    ctx.get_providers(),
+                                    retry_providers,
                                 )
                                 .await
                             {
                                 Ok(mut result2) => {
-                                    // Chat 回退成功 → 异步持久化检测结果，不阻塞当前响应
-                                    persist_codex_auto_detected_api_format(
-                                        &state,
-                                        app_type_str,
-                                        &ctx.provider.id,
-                                        "openai_chat",
-                                    );
+                                    // Only persist when the provider we classified is
+                                    // the provider that actually succeeded on retry.
+                                    if result2.provider.id == detected_provider.id {
+                                        persist_codex_auto_detected_api_format(
+                                            &state,
+                                            app_type_str,
+                                            detected_provider,
+                                            "openai_chat",
+                                        );
+                                    }
 
                                     let connection_guard2 = result2.connection_guard.take();
                                     ctx.outbound_model = result2.outbound_model.take();
@@ -962,11 +1132,12 @@ async fn handle_responses_for_app(
                                     )
                                     .await;
                                 }
-                                Err(_) => {
-                                    // Chat 也失败 → 还原注入的 api_format，走原始 Responses 错误路径
-                                    if let Some(meta) = ctx.provider.meta.as_mut() {
-                                        meta.api_format = None;
-                                    }
+                                Err(fallback_err) => {
+                                    log::warn!(
+                                        "[Codex] Chat 自动回退失败 (provider={}, class={})",
+                                        detected_provider.id,
+                                        codex_auto_fallback_error_class(&fallback_err.error)
+                                    );
                                 }
                             }
                         }
@@ -993,13 +1164,15 @@ async fn handle_responses_for_app(
     // 只有 Chat 回退成功才落库是不对称的：原生 Responses 供应商的
     // `meta.api_format` 会永远为空，于是永远被判定为「需要自动检测」，也就永远
     // 被强制走本地路由（127.0.0.1:15721），即便它根本不需要任何协议转换。
-    if eligible_for_chat_auto {
-        persist_codex_auto_detected_api_format(
-            &state,
-            app_type_str,
-            &ctx.provider.id,
-            "openai_responses",
-        );
+    if let Some(detected_provider) = auto_detect_provider.as_ref() {
+        if ctx.provider.id == detected_provider.id {
+            persist_codex_auto_detected_api_format(
+                &state,
+                app_type_str,
+                detected_provider,
+                "openai_responses",
+            );
+        }
     }
 
     if super::providers::should_convert_codex_responses_to_anthropic(&ctx.provider, &endpoint) {
@@ -1101,13 +1274,8 @@ async fn handle_responses_compact_for_app(
         RequestContext::new(&state, &body, &headers, app_type.clone(), tag, app_type_str).await?;
     let endpoint = endpoint_with_query(&uri, "/responses/compact");
 
-    // 检查运行时自动协议检测缓存
-    {
-        let cache = state.codex_wire_api_auto.read().await;
-        if let Some(auto_fmt) = cache.get(&ctx.provider.id).cloned() {
-            super::providers::apply_codex_auto_detected_api_format(&mut ctx.provider, &auto_fmt);
-        }
-    }
+    // 检查运行时自动协议检测缓存（带配置指纹与显式配置保护）
+    apply_codex_wire_api_cache(&state, &mut ctx).await;
 
     let is_stream = body
         .get("stream")
@@ -1118,6 +1286,7 @@ async fn handle_responses_compact_for_app(
 
     let eligible_for_chat_auto =
         super::providers::codex_eligible_for_chat_auto_detect(&ctx.provider, &endpoint);
+    let auto_detect_provider = eligible_for_chat_auto.then(|| ctx.provider.clone());
     let method_for_retry = if eligible_for_chat_auto {
         Some(method.clone())
     } else {
@@ -1149,20 +1318,30 @@ async fn handle_responses_compact_for_app(
     {
         Ok(result) => result,
         Err(mut err) => {
+            let failed_provider = err.provider.as_ref().cloned();
             if let Some(provider) = err.provider.take() {
                 ctx.provider = provider;
             }
 
-            if eligible_for_chat_auto {
-                if let (Some(m2), Some(h2), Some(ext2)) =
-                    (method_for_retry, headers_for_retry, extensions_for_retry)
-                {
+            if should_try_codex_chat_auto_fallback(&err.error)
+                && codex_auto_fallback_matches_provider(
+                    failed_provider.as_ref(),
+                    auto_detect_provider.as_ref(),
+                )
+            {
+                if let (Some(detected_provider), Some(m2), Some(h2), Some(ext2)) = (
+                    auto_detect_provider.as_ref(),
+                    method_for_retry,
+                    headers_for_retry,
+                    extensions_for_retry,
+                ) {
                     match serde_json::from_slice::<Value>(&body_bytes) {
                         Ok(body2) => {
                             let tool_ctx2 =
                                 transform_codex_chat::build_codex_tool_context_from_request(&body2);
-                            super::providers::apply_codex_auto_detected_api_format(
-                                &mut ctx.provider,
+                            let retry_providers = providers_with_codex_api_format(
+                                ctx.get_providers(),
+                                &detected_provider.id,
                                 "openai_chat",
                             );
                             let forwarder2 = ctx.create_forwarder(&state);
@@ -1174,17 +1353,19 @@ async fn handle_responses_compact_for_app(
                                     body2,
                                     h2,
                                     ext2,
-                                    ctx.get_providers(),
+                                    retry_providers,
                                 )
                                 .await
                             {
                                 Ok(mut result2) => {
-                                    persist_codex_auto_detected_api_format(
-                                        &state,
-                                        app_type_str,
-                                        &ctx.provider.id,
-                                        "openai_chat",
-                                    );
+                                    if result2.provider.id == detected_provider.id {
+                                        persist_codex_auto_detected_api_format(
+                                            &state,
+                                            app_type_str,
+                                            detected_provider,
+                                            "openai_chat",
+                                        );
+                                    }
                                     let connection_guard2 = result2.connection_guard.take();
                                     ctx.outbound_model = result2.outbound_model.take();
                                     ctx.provider = result2.provider;
@@ -1199,10 +1380,12 @@ async fn handle_responses_compact_for_app(
                                     )
                                     .await;
                                 }
-                                Err(_) => {
-                                    if let Some(meta) = ctx.provider.meta.as_mut() {
-                                        meta.api_format = None;
-                                    }
+                                Err(fallback_err) => {
+                                    log::warn!(
+                                        "[Codex/compact] Chat 自动回退失败 (provider={}, class={})",
+                                        detected_provider.id,
+                                        codex_auto_fallback_error_class(&fallback_err.error)
+                                    );
                                 }
                             }
                         }
@@ -1226,13 +1409,15 @@ async fn handle_responses_compact_for_app(
     let response = result.response;
 
     // 与 /responses 同理：直接成功即证明上游是原生 Responses 网关。
-    if eligible_for_chat_auto {
-        persist_codex_auto_detected_api_format(
-            &state,
-            app_type_str,
-            &ctx.provider.id,
-            "openai_responses",
-        );
+    if let Some(detected_provider) = auto_detect_provider.as_ref() {
+        if ctx.provider.id == detected_provider.id {
+            persist_codex_auto_detected_api_format(
+                &state,
+                app_type_str,
+                detected_provider,
+                "openai_responses",
+            );
+        }
     }
 
     if super::providers::should_convert_codex_responses_to_anthropic(&ctx.provider, &endpoint) {
@@ -2062,7 +2247,7 @@ fn codex_proxy_error_json(
             concat!(
                 "Upstream provider rejected the request with HTTP 413 (Payload Too Large). ",
                 "The request body exceeds the upstream gateway's size limit; this is the ",
-                "provider's server-side limit, not a CC Switch limit. ",
+                "provider's server-side limit, not a Chimera++ limit. ",
                 "Provider: {provider}; model: {model}; endpoint: {endpoint}. ",
                 "To recover, shrink the request: run /compact, remove large pasted logs or ",
                 "inline images, or ask the provider to raise its request body limit ",
@@ -2083,7 +2268,7 @@ fn codex_proxy_error_json(
             .map(|status| format!("; upstream_status: HTTP {status}"))
             .unwrap_or_default();
         format!(
-            "CC Switch local proxy failed while handling Codex endpoint {endpoint}. Provider: {provider_name}; model: {request_model}{status_fragment}; cause: {cause}"
+            "Chimera++ local proxy failed while handling Codex endpoint {endpoint}. Provider: {provider_name}; model: {request_model}{status_fragment}; cause: {cause}"
         )
     };
 
@@ -2913,10 +3098,145 @@ async fn log_usage(
 mod tests {
     use super::{
         body_looks_like_sse, chat_sse_to_response_value, classify_body_for_diagnostics,
-        codex_proxy_error_json, responses_sse_to_response_value,
-        should_use_claude_transform_streaming, transform, upstream_body_parse_error,
+        codex_auto_fallback_matches_provider, codex_provider_detection_fingerprint,
+        codex_proxy_error_json, codex_wire_api_cache_entry_applies,
+        providers_with_codex_api_format, responses_sse_to_response_value,
+        should_try_codex_chat_auto_fallback, should_use_claude_transform_streaming, transform,
+        upstream_body_parse_error,
     };
-    use crate::proxy::ProxyError;
+    use crate::{
+        provider::{Provider, ProviderMeta},
+        proxy::{server::CodexWireApiDetection, ProxyError},
+    };
+    use serde_json::json;
+
+    fn codex_test_provider(id: &str, base_url: &str, api_key: &str) -> Provider {
+        Provider::with_id(
+            id.to_string(),
+            id.to_string(),
+            json!({
+                "auth": { "OPENAI_API_KEY": api_key },
+                "base_url": base_url
+            }),
+            None,
+        )
+    }
+
+    #[test]
+    fn codex_chat_fallback_requires_protocol_evidence() {
+        for status in [400, 404, 405, 406, 415, 422, 501] {
+            assert!(should_try_codex_chat_auto_fallback(
+                &ProxyError::UpstreamError { status, body: None }
+            ));
+        }
+
+        for status in [401, 403, 408, 429, 500, 502, 504] {
+            assert!(!should_try_codex_chat_auto_fallback(
+                &ProxyError::UpstreamError { status, body: None }
+            ));
+        }
+        assert!(!should_try_codex_chat_auto_fallback(&ProxyError::Timeout(
+            "upstream timed out".to_string()
+        )));
+    }
+
+    #[test]
+    fn ordinary_503_does_not_reclassify_codex_protocol() {
+        assert!(!should_try_codex_chat_auto_fallback(
+            &ProxyError::UpstreamError {
+                status: 503,
+                body: Some("Unknown error".to_string()),
+            }
+        ));
+        assert!(should_try_codex_chat_auto_fallback(
+            &ProxyError::UpstreamError {
+                status: 503,
+                body: Some("route not found: /v1/responses".to_string()),
+            }
+        ));
+    }
+
+    #[test]
+    fn fallback_error_must_belong_to_detected_provider() {
+        let detected = codex_test_provider("p1", "https://one.example/v1", "sk-one");
+        let same = detected.clone();
+        let failover = codex_test_provider("p2", "https://two.example/v1", "sk-two");
+
+        assert!(codex_auto_fallback_matches_provider(
+            Some(&same),
+            Some(&detected)
+        ));
+        assert!(!codex_auto_fallback_matches_provider(
+            Some(&failover),
+            Some(&detected)
+        ));
+        assert!(!codex_auto_fallback_matches_provider(None, Some(&detected)));
+        assert!(!codex_auto_fallback_matches_provider(Some(&same), None));
+    }
+
+    #[test]
+    fn codex_wire_cache_is_bound_to_provider_configuration() {
+        let provider = codex_test_provider("p1", "https://one.example/v1", "sk-one");
+        let entry = CodexWireApiDetection {
+            api_format: "openai_chat".to_string(),
+            provider_fingerprint: codex_provider_detection_fingerprint(&provider),
+        };
+        assert!(codex_wire_api_cache_entry_applies(&provider, &entry));
+
+        let changed_url = codex_test_provider("p1", "https://two.example/v1", "sk-one");
+        assert!(!codex_wire_api_cache_entry_applies(&changed_url, &entry));
+
+        let changed_key = codex_test_provider("p1", "https://one.example/v1", "sk-two");
+        assert!(!codex_wire_api_cache_entry_applies(&changed_key, &entry));
+    }
+
+    #[test]
+    fn explicit_codex_protocol_always_wins_over_runtime_cache() {
+        for api_format in ["openai_responses", "openai_chat", "anthropic"] {
+            let mut provider = codex_test_provider("p1", "https://one.example/v1", "sk-one");
+            provider.meta = Some(ProviderMeta {
+                api_format: Some(api_format.to_string()),
+                ..Default::default()
+            });
+            let entry = CodexWireApiDetection {
+                api_format: "openai_chat".to_string(),
+                provider_fingerprint: codex_provider_detection_fingerprint(&provider),
+            };
+            assert!(!codex_wire_api_cache_entry_applies(&provider, &entry));
+        }
+    }
+
+    #[test]
+    fn chat_retry_updates_the_forwarded_provider_copy() {
+        let first = codex_test_provider("p1", "https://one.example/v1", "sk-one");
+        let second = codex_test_provider("p2", "https://two.example/v1", "sk-two");
+        let retry = providers_with_codex_api_format(
+            vec![first.clone(), second.clone()],
+            "p1",
+            "openai_chat",
+        );
+
+        assert_eq!(
+            retry[0]
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.api_format.as_deref()),
+            Some("openai_chat")
+        );
+        assert!(retry[1]
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.api_format.as_deref())
+            .is_none());
+        assert!(
+            first.meta.is_none(),
+            "the original provider remains unchanged"
+        );
+        assert!(
+            second.meta.is_none(),
+            "unmatched providers remain unchanged"
+        );
+    }
 
     #[test]
     fn body_looks_like_sse_detects_unlabeled_sse_prefixes() {
@@ -3536,7 +3856,7 @@ data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\"}}\n
         let body = codex_proxy_error_json("DeepSeek", "deepseek-chat", "/responses", &error);
 
         let message = body["error"]["message"].as_str().unwrap();
-        assert!(message.contains("CC Switch local proxy failed"));
+        assert!(message.contains("Chimera++ local proxy failed"));
         assert!(message.contains("DeepSeek"));
         assert!(message.contains("deepseek-chat"));
         assert!(message.contains("/responses"));
@@ -3581,7 +3901,7 @@ data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\"}}\n
 
         let message = body["error"]["message"].as_str().unwrap();
         // 不再误导成「本地代理失败」
-        assert!(!message.contains("CC Switch local proxy failed"));
+        assert!(!message.contains("Chimera++ local proxy failed"));
         // 明确指向上游 + 体积超限 + 可操作指引
         assert!(message.contains("413"));
         assert!(message.to_lowercase().contains("upstream"));

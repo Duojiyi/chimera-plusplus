@@ -65,12 +65,36 @@ export const providersApi = {
     return await invoke("add_provider", { provider, app: appId, addToLive });
   },
 
+  async addAndActivate(
+    provider: Provider,
+    appId: AppId,
+    addToLive?: boolean,
+  ): Promise<boolean> {
+    return await invoke("add_and_activate_provider", {
+      provider,
+      app: appId,
+      addToLive,
+    });
+  },
+
   async update(
     provider: Provider,
     appId: AppId,
     originalId?: string,
   ): Promise<boolean> {
     return await invoke("update_provider", {
+      provider,
+      app: appId,
+      originalId,
+    });
+  },
+
+  async updateAndActivate(
+    provider: Provider,
+    appId: AppId,
+    originalId?: string,
+  ): Promise<boolean> {
+    return await invoke("update_and_activate_provider", {
       provider,
       app: appId,
       originalId,

@@ -105,18 +105,10 @@ pub fn codex_eligible_for_chat_auto_detect(provider: &Provider, endpoint: &str) 
         return false;
     }
 
-    // 已有显式 api_format 配置（用户手动设置）→ 不做自动检测
-    if provider
-        .meta
-        .as_ref()
-        .and_then(|m| m.api_format.as_deref())
-        .is_some()
-    {
-        return false;
-    }
-
-    // URL / config.toml 已指向 Chat 端点 → 已经是 Chat 模式，不需要检测
-    !codex_provider_uses_chat_completions(provider)
+    // Keep request-time fallback aligned with proxy-takeover eligibility. In
+    // particular, a provider that explicitly declares native Responses must not
+    // be reclassified merely because its upstream is temporarily unavailable.
+    codex_provider_is_auto_detect_candidate(provider)
 }
 
 /// Whether the provider's own config explicitly declares the native Responses
@@ -180,9 +172,11 @@ pub fn codex_provider_is_auto_detect_candidate(provider: &Provider) -> bool {
 pub fn apply_codex_auto_detected_api_format(provider: &mut Provider, api_format: &str) {
     if let Some(meta) = provider.meta.as_mut() {
         meta.api_format = Some(api_format.to_string());
+        meta.api_format_auto_detected = Some(true);
     } else {
         provider.meta = Some(crate::provider::ProviderMeta {
             api_format: Some(api_format.to_string()),
+            api_format_auto_detected: Some(true),
             ..Default::default()
         });
     }
@@ -1804,6 +1798,19 @@ wire_api = "responses"
         let provider = create_provider(json!({
             "auth": { "OPENAI_API_KEY": "sk-test" },
             "config": "base_url = \"https://hub.example.com/v1\"\nwire_api = \"chat\""
+        }));
+        assert!(!codex_eligible_for_chat_auto_detect(
+            &provider,
+            "/v1/responses"
+        ));
+    }
+
+    /// config.toml 明确声明原生 Responses → 不应在临时错误后猜测为 Chat
+    #[test]
+    fn auto_detect_not_eligible_when_toml_declares_native_responses() {
+        let provider = create_provider(json!({
+            "auth": { "OPENAI_API_KEY": "sk-test" },
+            "config": "base_url = \"https://hub.example.com/v1\"\nwire_api = \"responses\""
         }));
         assert!(!codex_eligible_for_chat_auto_detect(
             &provider,
