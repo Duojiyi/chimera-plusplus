@@ -11,7 +11,7 @@ on:
       candidate_version:
         description: "Expected semantic version (without v)"
         required: true
-        default: "2.4.4"
+        default: "2.4.5"
         type: string
 
 permissions:
