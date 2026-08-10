@@ -63,19 +63,32 @@ export function providerNeedsRouting(
 
   if (appId === "codex" || appId === "grokbuild") {
     const fmt = provider.meta?.apiFormat;
-    // Codex 原生是 Responses，仅 Chat / Anthropic 需要转换（Responses 直连）。
+    const overrides = provider.meta?.localProxyRequestOverrides;
+    const usesLocalProxyFeatures =
+      !!provider.meta?.customUserAgent?.trim() ||
+      (!!overrides &&
+        (Object.keys(overrides.headers ?? {}).length > 0 ||
+          overrides.body !== undefined));
+
+    // 完整 URL、协议转换以及仅在本地代理生效的请求改写都必须接管。
     if (
       provider.meta?.isFullUrl === true ||
       fmt === "openai_chat" ||
-      fmt === "anthropic"
+      fmt === "anthropic" ||
+      usesLocalProxyFeatures
     )
       return true;
+
     const config = (provider.settingsConfig as Record<string, unknown>)?.config;
-    return (
-      typeof config === "string" &&
-      (isCodexChatWireApi(extractCodexWireApi(config)) ||
-        isCodexAnthropicWireApi(extractCodexWireApi(config)))
-    );
+    const wireApi =
+      typeof config === "string" ? extractCodexWireApi(config) : undefined;
+    if (isCodexChatWireApi(wireApi) || isCodexAnthropicWireApi(wireApi)) {
+      return true;
+    }
+    if (wireApi?.trim().toLowerCase() === "responses") return false;
+
+    // apiFormat 缺省且 config 未明确声明 Responses，代表仍需代理执行兼容性探测。
+    return fmt == null;
   }
 
   return false;

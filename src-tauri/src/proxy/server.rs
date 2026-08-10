@@ -29,6 +29,15 @@ use std::sync::Arc;
 use tokio::sync::{oneshot, RwLock};
 use tokio::task::JoinHandle;
 
+/// A Codex wire-protocol detection is valid only for the exact provider
+/// configuration that produced it. Binding the cache entry to a fingerprint
+/// prevents an old runtime result from overriding a provider edited in place.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CodexWireApiDetection {
+    pub api_format: String,
+    pub provider_fingerprint: String,
+}
+
 /// 代理服务器状态（共享）
 #[derive(Clone)]
 pub struct ProxyState {
@@ -51,8 +60,8 @@ pub struct ProxyState {
     /// Codex 自动协议检测缓存 (provider_id → detected api_format, e.g. "openai_chat")
     ///
     /// 运行时加速：避免每次请求都回退试探。进程重启后由 provider.meta.api_format 接管
-    /// （若已通过 `update_provider_meta_api_format` 持久化）。
-    pub codex_wire_api_auto: Arc<RwLock<std::collections::HashMap<String, String>>>,
+    /// （若已通过 `update_provider_meta_api_format_if_unchanged` 持久化）。
+    pub codex_wire_api_auto: Arc<RwLock<std::collections::HashMap<String, CodexWireApiDetection>>>,
 }
 
 /// 代理HTTP服务器

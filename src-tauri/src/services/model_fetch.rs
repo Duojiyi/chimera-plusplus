@@ -4,7 +4,7 @@
 //! 主要面向第三方聚合站（硅基流动、OpenRouter 等），以及把 Anthropic
 //! 协议挂在兼容子路径上的官方供应商（DeepSeek、Kimi、智谱 GLM 等）。
 
-use futures::future::join_all;
+use futures::{future::join_all, StreamExt};
 use reqwest::header::{HeaderValue, CONTENT_TYPE, USER_AGENT};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
@@ -32,6 +32,11 @@ struct ModelEntry {
 
 const FETCH_TIMEOUT_SECS: u64 = 15;
 const API_FORMAT_PROBE_TIMEOUT_SECS: u64 = 8;
+
+/// 模型列表只需要一小段 JSON。限制实际读取量，避免异常或恶意端点耗尽内存。
+const MAX_MODEL_DISCOVERY_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+/// 协议探测及错误诊断只消费有限响应体；协议判断所需标记远小于该上限。
+const MAX_PROTOCOL_PROBE_RESPONSE_BYTES: usize = 64 * 1024;
 
 /// 404/405 响应体截断长度：避免把几十 KB HTML 404 页整页保留到错误串里。
 const ERROR_BODY_MAX_CHARS: usize = 512;
@@ -93,9 +98,13 @@ pub async fn fetch_models(
         let status = response.status();
 
         if status.is_success() {
-            let resp: ModelsResponse = response
-                .json()
-                .await
+            let body = read_response_body_limited(
+                response,
+                MAX_MODEL_DISCOVERY_RESPONSE_BYTES,
+                "model discovery response",
+            )
+            .await?;
+            let resp: ModelsResponse = serde_json::from_slice(&body)
                 .map_err(|e| format!("Failed to parse response: {e}"))?;
 
             let mut models: Vec<FetchedModel> = resp
@@ -113,19 +122,88 @@ pub async fn fetch_models(
         }
 
         if status == StatusCode::NOT_FOUND || status == StatusCode::METHOD_NOT_ALLOWED {
-            let body = truncate_body(response.text().await.unwrap_or_default());
-            last_err = Some(format!("HTTP {status}: {body}"));
+            let body = read_response_text_limited(
+                response,
+                MAX_PROTOCOL_PROBE_RESPONSE_BYTES,
+                "model discovery error response",
+            )
+            .await?;
+            last_err = Some(format!("HTTP {status}: {}", truncate_body(body)));
             continue;
         }
 
-        let body = truncate_body(response.text().await.unwrap_or_default());
-        return Err(format!("HTTP {status}: {body}"));
+        let body = read_response_text_limited(
+            response,
+            MAX_PROTOCOL_PROBE_RESPONSE_BYTES,
+            "model discovery error response",
+        )
+        .await?;
+        return Err(format!("HTTP {status}: {}", truncate_body(body)));
     }
 
     Err(format!(
         "All candidates failed: {}",
         last_err.unwrap_or_else(|| "no candidates".to_string())
     ))
+}
+
+async fn read_response_body_limited(
+    response: reqwest::Response,
+    max_bytes: usize,
+    label: &str,
+) -> Result<Vec<u8>, String> {
+    ensure_response_length_within_limit(response.content_length(), max_bytes, label)?;
+
+    let mut body = Vec::with_capacity(
+        response
+            .content_length()
+            .and_then(|length| usize::try_from(length).ok())
+            .unwrap_or(0)
+            .min(max_bytes),
+    );
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| format!("Failed to read {label}: {error}"))?;
+        append_response_chunk(&mut body, &chunk, max_bytes, label)?;
+    }
+    Ok(body)
+}
+
+async fn read_response_text_limited(
+    response: reqwest::Response,
+    max_bytes: usize,
+    label: &str,
+) -> Result<String, String> {
+    let body = read_response_body_limited(response, max_bytes, label).await?;
+    Ok(String::from_utf8_lossy(&body).into_owned())
+}
+
+fn ensure_response_length_within_limit(
+    content_length: Option<u64>,
+    max_bytes: usize,
+    label: &str,
+) -> Result<(), String> {
+    if content_length.is_some_and(|length| length > max_bytes as u64) {
+        return Err(format!(
+            "{label} exceeds the configured limit of {max_bytes} bytes"
+        ));
+    }
+    Ok(())
+}
+
+fn append_response_chunk(
+    body: &mut Vec<u8>,
+    chunk: &[u8],
+    max_bytes: usize,
+    label: &str,
+) -> Result<(), String> {
+    if body.len().saturating_add(chunk.len()) > max_bytes {
+        return Err(format!(
+            "{label} exceeds the configured limit of {max_bytes} bytes"
+        ));
+    }
+    body.extend_from_slice(chunk);
+    Ok(())
 }
 
 /// A protocol selected by the non-billable Codex API capability probe.
@@ -412,14 +490,25 @@ async fn send_codex_api_format_probe(
     match request.send().await {
         Ok(response) => {
             let status = response.status();
-            let body = truncate_body(response.text().await.unwrap_or_default());
-            let supported = response_indicates_protocol_support(probe, status, &body);
-            let classification = if supported {
-                "protocol validation"
-            } else {
-                "inconclusive"
-            };
-            (supported, format!("HTTP {status} ({classification})"))
+            match read_response_text_limited(
+                response,
+                MAX_PROTOCOL_PROBE_RESPONSE_BYTES,
+                "protocol probe response",
+            )
+            .await
+            {
+                Ok(body) => {
+                    let body = truncate_body(body);
+                    let supported = response_indicates_protocol_support(probe, status, &body);
+                    let classification = if supported {
+                        "protocol validation"
+                    } else {
+                        "inconclusive"
+                    };
+                    (supported, format!("HTTP {status} ({classification})"))
+                }
+                Err(error) => (false, error),
+            }
         }
         Err(error) => (false, format!("request failed: {error}")),
     }
@@ -1061,5 +1150,27 @@ mod tests {
         let json = r#"{"object":"list","data":[]}"#;
         let resp: ModelsResponse = serde_json::from_str(json).unwrap();
         assert!(resp.data.unwrap().is_empty());
+    }
+
+    #[test]
+    fn response_limit_rejects_excessive_declared_length() {
+        let error = ensure_response_length_within_limit(Some(65), 64, "test response")
+            .expect_err("oversized declared response must be rejected");
+        assert!(error.contains("test response"));
+        assert!(error.contains("64 bytes"));
+        assert!(ensure_response_length_within_limit(Some(64), 64, "test response").is_ok());
+        assert!(ensure_response_length_within_limit(None, 64, "test response").is_ok());
+    }
+
+    #[test]
+    fn response_limit_stops_before_appending_oversized_chunk() {
+        let mut body = vec![1_u8; 60];
+        let error = append_response_chunk(&mut body, &[2_u8; 5], 64, "test response")
+            .expect_err("streamed response must stop at the limit");
+        assert_eq!(body.len(), 60, "oversized chunk must not be appended");
+        assert!(error.contains("64 bytes"));
+
+        append_response_chunk(&mut body, &[2_u8; 4], 64, "test response").unwrap();
+        assert_eq!(body.len(), 64);
     }
 }

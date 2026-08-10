@@ -52,6 +52,29 @@ pub async fn add_provider(
     .await
 }
 
+/// Add a provider and activate it in the same compensated routing transaction.
+///
+/// This command is intended for UI flows whose user-visible action is
+/// "save and apply". Unlike calling `add_provider` and `switch_provider`
+/// separately, a failed activation restores the previous provider, Live
+/// configuration and proxy state instead of leaving an inactive staged row.
+#[tauri::command]
+pub async fn add_and_activate_provider(
+    state: State<'_, AppState>,
+    app: String,
+    provider: Provider,
+    #[allow(non_snake_case)] addToLive: Option<bool>,
+) -> Result<bool, String> {
+    let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    add_and_activate_provider_with_automatic_routing_state(
+        state.inner().clone(),
+        app_type,
+        provider,
+        addToLive.unwrap_or(true),
+    )
+    .await
+}
+
 #[tauri::command]
 pub async fn update_provider(
     state: State<'_, AppState>,
@@ -69,6 +92,28 @@ pub async fn update_provider(
     .await
 }
 
+/// Update a provider and activate it in one compensated Codex-family
+/// transaction. This is the UI's "save and apply" path for an existing row:
+/// if switching the edited inactive provider fails, both its old row and the
+/// prior current/Live/routing state are restored.
+#[tauri::command]
+pub async fn update_and_activate_provider(
+    state: State<'_, AppState>,
+    app: String,
+    provider: Provider,
+    #[allow(non_snake_case)] originalId: Option<String>,
+) -> Result<bool, String> {
+    let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    update_provider_with_automatic_routing_mode(
+        state.inner().clone(),
+        app_type,
+        originalId,
+        provider,
+        true,
+    )
+    .await
+}
+
 /// Update a provider and atomically reconcile Codex-family routing when the
 /// edited row is current. The old provider row, current pointers, Live files,
 /// takeover backup and route/process state are captured under the same locks so
@@ -78,6 +123,16 @@ pub(crate) async fn update_provider_with_automatic_routing_state(
     app_type: AppType,
     original_id: Option<String>,
     provider: Provider,
+) -> Result<bool, String> {
+    update_provider_with_automatic_routing_mode(state, app_type, original_id, provider, false).await
+}
+
+async fn update_provider_with_automatic_routing_mode(
+    state: AppState,
+    app_type: AppType,
+    original_id: Option<String>,
+    provider: Provider,
+    activate_when_inactive: bool,
 ) -> Result<bool, String> {
     // Profile application owns this lock for its complete multi-resource
     // transaction. Provider edits must wait until that transaction commits so
@@ -102,10 +157,10 @@ pub(crate) async fn update_provider_with_automatic_routing_state(
         .map_err(|e| format!("读取 {} 当前供应商失败: {e}", app_type.as_str()))?;
     let is_current = previous_current.as_deref() == Some(original_id.as_str());
 
-    // Editing an inactive provider does not affect Live or route ownership, but
-    // it is still serialized with current switches to avoid it becoming current
-    // between the current check and the DB update.
-    if !is_current {
+    // A normal edit of an inactive provider only changes its stored row. The
+    // explicit "save and apply" flow instead continues below with the same
+    // snapshots and compensation used for a current-provider edit.
+    if !is_current && !activate_when_inactive {
         return ProviderService::update(&state, app_type, Some(&original_id), provider)
             .map_err(|e| e.to_string());
     }
@@ -171,9 +226,9 @@ pub(crate) async fn update_provider_with_automatic_routing_state(
         .await;
         return Err(match rollback {
             Some(rollback_error) => {
-                format!("更新当前供应商失败: {error}；回滚失败: {rollback_error}")
+                format!("更新供应商失败: {error}；回滚失败: {rollback_error}")
             }
-            None => format!("更新当前供应商失败: {error}"),
+            None => format!("更新供应商失败: {error}"),
         });
     }
 
@@ -203,7 +258,7 @@ pub(crate) async fn update_provider_with_automatic_routing_state(
             .await;
             Err(match rollback {
                 Some(rollback_error) => {
-                    format!("{error}；更新当前供应商回滚失败: {rollback_error}")
+                    format!("{error}；更新供应商回滚失败: {rollback_error}")
                 }
                 None => error,
             })
@@ -336,14 +391,21 @@ fn provider_requires_automatic_routing(app_type: &AppType, provider: &Provider) 
         return false;
     }
 
-    let is_full_url = provider
-        .meta
-        .as_ref()
-        .and_then(|meta| meta.is_full_url)
-        .unwrap_or(false);
+    let meta = provider.meta.as_ref();
+    let is_full_url = meta.and_then(|meta| meta.is_full_url).unwrap_or(false);
+    let uses_local_proxy_features = meta.is_some_and(|meta| {
+        meta.custom_user_agent
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+            || meta
+                .local_proxy_request_overrides
+                .as_ref()
+                .is_some_and(|overrides| !overrides.is_empty())
+    });
 
     provider.uses_managed_account_auth()
         || is_full_url
+        || uses_local_proxy_features
         || crate::proxy::providers::codex_provider_uses_chat_completions(provider)
         || crate::proxy::providers::codex_provider_uses_anthropic(provider)
         // api_format=None ("自动") 的供应商需走代理，代理层才能触发 Responses→Chat 自动检测
@@ -1840,7 +1902,8 @@ mod automatic_routing_tests {
     use super::{
         add_and_activate_provider_with_automatic_routing_state,
         add_provider_with_automatic_routing_state, provider_requires_automatic_routing,
-        switch_provider_with_automatic_routing_state, update_provider_with_automatic_routing_state,
+        switch_provider_with_automatic_routing_state, update_provider_with_automatic_routing_mode,
+        update_provider_with_automatic_routing_state,
     };
     use crate::app_config::AppType;
     use crate::codex_config::{
@@ -1989,6 +2052,32 @@ mod automatic_routing_tests {
             &full_url
         ));
         assert!(provider_requires_automatic_routing(&AppType::Codex, &oauth));
+    }
+
+    #[test]
+    fn local_proxy_only_features_require_routing() {
+        let mut custom_ua = provider(json!({}), Some("openai_responses"));
+        custom_ua.meta.as_mut().unwrap().custom_user_agent = Some("Chimera-Test/1.0".into());
+
+        let mut overrides = provider(json!({}), Some("openai_responses"));
+        let request_overrides = crate::provider::LocalProxyRequestOverrides {
+            headers: std::collections::HashMap::from([("x-test".into(), "enabled".into())]),
+            body: None,
+        };
+        overrides
+            .meta
+            .as_mut()
+            .unwrap()
+            .local_proxy_request_overrides = Some(request_overrides);
+
+        assert!(provider_requires_automatic_routing(
+            &AppType::Codex,
+            &custom_ua
+        ));
+        assert!(provider_requires_automatic_routing(
+            &AppType::Codex,
+            &overrides
+        ));
     }
 
     #[test]
@@ -2438,6 +2527,112 @@ mod automatic_routing_tests {
         let live = std::fs::read_to_string(get_codex_config_path()).expect("read direct live");
         assert!(live.contains("https://responses-after.example.invalid/v1"));
         assert!(!live.contains("127.0.0.1"));
+
+        match original {
+            Some(v) => std::env::set_var("CC_SWITCH_TEST_HOME", v),
+            None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+        }
+        crate::settings::reload_settings().expect("restore settings");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn failed_inactive_provider_update_and_activation_restores_everything() {
+        let original = std::env::var_os("CC_SWITCH_TEST_HOME");
+        let home = tempfile::tempdir().expect("create test home");
+        std::env::set_var("CC_SWITCH_TEST_HOME", home.path());
+        crate::settings::reload_settings().expect("reload settings");
+        let db = Arc::new(Database::memory().expect("init db"));
+        let occupied = std::net::TcpListener::bind("127.0.0.1:0").expect("occupy port");
+        let port = occupied.local_addr().expect("local addr").port();
+        db.update_proxy_config(ProxyConfig {
+            listen_port: port,
+            ..Default::default()
+        })
+        .await
+        .expect("set occupied port");
+        let state = AppState::new(db.clone());
+
+        let mut current = provider(
+            json!({
+                "auth": {"OPENAI_API_KEY": "current-test-key"},
+                "config": "model_provider = \"current\"\nmodel = \"gpt-current\"\n[model_providers.current]\nname = \"Current\"\nbase_url = \"https://current-responses.example.invalid/v1\"\nwire_api = \"responses\"\n"
+            }),
+            Some("openai_responses"),
+        );
+        current.id = "current-provider".to_string();
+        add_provider_with_automatic_routing_state(state.clone(), AppType::Codex, current, true)
+            .await
+            .expect("activate direct current provider");
+
+        let mut editable = provider(
+            json!({
+                "auth": {"OPENAI_API_KEY": "editable-before-key"},
+                "config": "model_provider = \"editable\"\nmodel = \"gpt-before\"\n[model_providers.editable]\nname = \"Editable\"\nbase_url = \"https://editable-before.example.invalid/v1\"\nwire_api = \"responses\"\n"
+            }),
+            Some("openai_responses"),
+        );
+        editable.id = "editable-provider".to_string();
+        add_provider_with_automatic_routing_state(state.clone(), AppType::Codex, editable, true)
+            .await
+            .expect("stage inactive provider");
+
+        let mut updated = provider(
+            json!({
+                "auth": {"OPENAI_API_KEY": "editable-after-key"},
+                "config": "model_provider = \"editable\"\nmodel = \"claude-after\"\n[model_providers.editable]\nname = \"Editable\"\nbase_url = \"https://editable-after.example.invalid/v1\"\nwire_api = \"chat\"\n"
+            }),
+            Some("openai_chat"),
+        );
+        updated.id = "editable-provider".to_string();
+        let error = update_provider_with_automatic_routing_mode(
+            state.clone(),
+            AppType::Codex,
+            Some("editable-provider".to_string()),
+            updated,
+            true,
+        )
+        .await
+        .expect_err("occupied proxy port must fail save-and-apply");
+        assert!(error.contains("自动开启本地路由失败") || error.contains("启动"));
+
+        let stored = db
+            .get_provider_by_id("editable-provider", "codex")
+            .expect("read editable provider")
+            .expect("editable provider exists");
+        assert_eq!(
+            stored
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.api_format.as_deref()),
+            Some("openai_responses")
+        );
+        assert!(stored
+            .settings_config
+            .to_string()
+            .contains("editable-before.example.invalid"));
+        assert_eq!(
+            db.get_current_provider("codex")
+                .expect("db current")
+                .as_deref(),
+            Some("current-provider")
+        );
+        assert_eq!(
+            crate::settings::get_current_provider(&AppType::Codex).as_deref(),
+            Some("current-provider")
+        );
+        assert!(
+            !db.get_proxy_config_for_app("codex")
+                .await
+                .expect("routing")
+                .enabled
+        );
+        assert!(!state.proxy_service.is_running().await);
+        assert!(db.get_live_backup("codex").await.expect("backup").is_none());
+        let live = std::fs::read_to_string(get_codex_config_path()).expect("read restored live");
+        assert!(live.contains("https://current-responses.example.invalid/v1"));
+        assert!(!live.contains("editable-after.example.invalid"));
+        drop(occupied);
 
         match original {
             Some(v) => std::env::set_var("CC_SWITCH_TEST_HOME", v),

@@ -194,6 +194,8 @@ export interface ProviderMeta {
   // - "gemini_native": Gemini Native generateContent API 格式，需要格式转换
   apiFormat?:
     "anthropic" | "openai_chat" | "openai_responses" | "gemini_native";
+  // Codex 自动检测意图标记：apiFormat 保存具体结果，此字段保留“自动”选择状态
+  apiFormatAutoDetected?: boolean;
   // 通用认证绑定
   authBinding?: AuthBinding;
   // Claude 认证字段名

@@ -330,38 +330,73 @@ impl Database {
         Ok(())
     }
 
-    /// 更新 provider meta 中的 api_format 字段。
+    /// Persist an auto-detected Codex wire protocol only when the provider has
+    /// not changed since the request started.
     ///
-    /// 由 Codex 自动协议检测在运行时写入，以便进程重启后仍能直接走 Chat 路由。
-    /// 读取现有 meta → 更新单字段 → 写回，避免破坏其他 meta 字段。
-    pub fn update_provider_meta_api_format(
+    /// Detection runs off the request path. Without the compare-before-write, a
+    /// late task could overwrite a user's newly selected explicit protocol (or a
+    /// newly edited URL/key) for the same provider id. The connection mutex keeps
+    /// the read/compare/write sequence atomic relative to all other database
+    /// operations in this process.
+    pub fn update_provider_meta_api_format_if_unchanged(
         &self,
         app_type: &str,
-        provider_id: &str,
+        expected_provider: &Provider,
         api_format: &str,
-    ) -> Result<(), AppError> {
+    ) -> Result<bool, AppError> {
         let conn = lock_conn!(self.conn);
 
-        let meta_str: String = conn
+        let current: (String, Option<String>, String) = conn
             .query_row(
-                "SELECT meta FROM providers WHERE id = ?1 AND app_type = ?2",
-                params![provider_id, app_type],
-                |row| row.get(0),
+                "SELECT settings_config, category, meta FROM providers WHERE id = ?1 AND app_type = ?2",
+                params![expected_provider.id, app_type],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
 
-        let mut meta: ProviderMeta = serde_json::from_str(&meta_str).unwrap_or_default();
-        meta.api_format = Some(api_format.to_string());
+        let current_settings: serde_json::Value = serde_json::from_str(&current.0)
+            .map_err(|e| AppError::Database(format!("invalid provider settings_config: {e}")))?;
+        let mut current_meta: ProviderMeta = serde_json::from_str(&current.2)
+            .map_err(|e| AppError::Database(format!("invalid provider meta: {e}")))?;
+
+        // An explicit value always wins, including one saved while detection was
+        // in flight. Never reinterpret it as an auto-detected result.
+        if current_meta.api_format.is_some() {
+            return Ok(false);
+        }
+
+        let mut expected_meta = expected_provider.meta.clone().unwrap_or_default();
+        expected_meta.api_format = None;
+        expected_meta.api_format_auto_detected = None;
+        expected_meta.custom_endpoints.clear();
+        current_meta.api_format = None;
+        current_meta.api_format_auto_detected = None;
+        current_meta.custom_endpoints.clear();
+
+        let expected_meta_value =
+            serde_json::to_value(&expected_meta).map_err(|e| AppError::Database(e.to_string()))?;
+        let current_meta_value =
+            serde_json::to_value(&current_meta).map_err(|e| AppError::Database(e.to_string()))?;
+
+        if current_settings != expected_provider.settings_config
+            || current.1 != expected_provider.category
+            || current_meta_value != expected_meta_value
+        {
+            return Ok(false);
+        }
+
+        current_meta.api_format = Some(api_format.to_string());
+        current_meta.api_format_auto_detected = Some(true);
         let new_meta =
-            serde_json::to_string(&meta).map_err(|e| AppError::Database(e.to_string()))?;
+            serde_json::to_string(&current_meta).map_err(|e| AppError::Database(e.to_string()))?;
 
         conn.execute(
             "UPDATE providers SET meta = ?1 WHERE id = ?2 AND app_type = ?3",
-            params![new_meta, provider_id, app_type],
+            params![new_meta, expected_provider.id, app_type],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
 
-        Ok(())
+        Ok(true)
     }
 
     pub fn add_custom_endpoint(
@@ -747,6 +782,108 @@ mod ensure_official_seed_tests {
     use crate::database::{
         Database, CLAUDE_DESKTOP_OFFICIAL_PROVIDER_ID, GROKBUILD_OFFICIAL_PROVIDER_ID,
     };
+    use crate::provider::{Provider, ProviderMeta};
+    use serde_json::json;
+
+    fn auto_detect_provider() -> Provider {
+        Provider::with_id(
+            "auto-detect".to_string(),
+            "Auto detect".to_string(),
+            json!({
+                "auth": { "OPENAI_API_KEY": "sk-test" },
+                "base_url": "https://one.example/v1"
+            }),
+            None,
+        )
+    }
+
+    #[test]
+    fn auto_detect_protocol_persists_when_provider_is_unchanged() {
+        let db = Database::memory().expect("memory db");
+        let provider = auto_detect_provider();
+        db.save_provider(AppType::Codex.as_str(), &provider)
+            .expect("save provider");
+
+        assert!(db
+            .update_provider_meta_api_format_if_unchanged(
+                AppType::Codex.as_str(),
+                &provider,
+                "openai_chat",
+            )
+            .expect("persist detection"));
+
+        let saved = db
+            .get_provider_by_id(&provider.id, AppType::Codex.as_str())
+            .expect("read provider")
+            .expect("provider exists");
+        let saved_meta = saved.meta.expect("saved meta");
+        assert_eq!(saved_meta.api_format, Some("openai_chat".to_string()));
+        assert_eq!(saved_meta.api_format_auto_detected, Some(true));
+    }
+
+    #[test]
+    fn stale_detection_cannot_overwrite_edited_provider() {
+        let db = Database::memory().expect("memory db");
+        let original = auto_detect_provider();
+        db.save_provider(AppType::Codex.as_str(), &original)
+            .expect("save original");
+
+        let mut edited = original.clone();
+        edited.settings_config["base_url"] = json!("https://two.example/v1");
+        db.save_provider(AppType::Codex.as_str(), &edited)
+            .expect("save edit");
+
+        assert!(!db
+            .update_provider_meta_api_format_if_unchanged(
+                AppType::Codex.as_str(),
+                &original,
+                "openai_chat",
+            )
+            .expect("reject stale detection"));
+
+        let saved = db
+            .get_provider_by_id(&original.id, AppType::Codex.as_str())
+            .expect("read provider")
+            .expect("provider exists");
+        assert_eq!(
+            saved.settings_config["base_url"],
+            json!("https://two.example/v1")
+        );
+        assert!(saved.meta.and_then(|meta| meta.api_format).is_none());
+    }
+
+    #[test]
+    fn stale_detection_cannot_override_explicit_protocol() {
+        let db = Database::memory().expect("memory db");
+        let original = auto_detect_provider();
+        db.save_provider(AppType::Codex.as_str(), &original)
+            .expect("save original");
+
+        let mut edited = original.clone();
+        edited.meta = Some(ProviderMeta {
+            api_format: Some("openai_responses".to_string()),
+            ..Default::default()
+        });
+        db.save_provider(AppType::Codex.as_str(), &edited)
+            .expect("save explicit protocol");
+
+        assert!(!db
+            .update_provider_meta_api_format_if_unchanged(
+                AppType::Codex.as_str(),
+                &original,
+                "openai_chat",
+            )
+            .expect("reject stale detection"));
+
+        let saved = db
+            .get_provider_by_id(&original.id, AppType::Codex.as_str())
+            .expect("read provider")
+            .expect("provider exists");
+        assert_eq!(
+            saved.meta.and_then(|meta| meta.api_format),
+            Some("openai_responses".to_string())
+        );
+    }
 
     #[test]
     fn ensure_inserts_when_missing() {

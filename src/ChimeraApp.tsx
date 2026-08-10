@@ -43,6 +43,7 @@ import {
 import { toast } from "sonner";
 import type {
   ClaudeApiKeyField,
+  CodexApiFormat,
   CodexApiFormatSelection,
   CodexCatalogModel,
   Provider,
@@ -56,7 +57,12 @@ import { WindowControls } from "@/components/WindowControls";
 import { useUpdate } from "@/contexts/UpdateContext";
 import type { RequestLog } from "@/types/usage";
 import type { Settings } from "@/types";
-import { fetchModelsForConfig, type FetchedModel } from "@/lib/api/model-fetch";
+import {
+  detectCodexApiFormat,
+  fetchModelsForConfig,
+  type DetectedCodexApiFormat,
+  type FetchedModel,
+} from "@/lib/api/model-fetch";
 import { getChimeraHubTemplate } from "@/config/codexTemplates";
 import {
   extractCodexBaseUrl,
@@ -67,6 +73,7 @@ import {
   setCodexGoalMode,
   setCodexModelName,
   setCodexRemoteCompaction,
+  setCodexWireApi,
 } from "@/utils/providerConfigUtils";
 import { generateUUID } from "@/utils/uuid";
 import {
@@ -274,6 +281,42 @@ const runtimeText = (mode?: string | null) =>
 const runtimeChannelText = (source?: string | null) =>
   source === "mirror" ? "镜像通道" : "稳定通道";
 
+type CodexEndpointInput = {
+  baseUrl: string;
+  apiKey: string;
+  isFullUrl: boolean;
+  modelsUrl: string;
+  customUserAgent: string;
+};
+
+type CodexApiFormatDetection = {
+  identity: string;
+  result: DetectedCodexApiFormat;
+};
+
+function codexEndpointIdentity(input: CodexEndpointInput): string {
+  return JSON.stringify([
+    input.baseUrl.trim(),
+    input.apiKey,
+    input.isFullUrl,
+    input.modelsUrl.trim(),
+    input.customUserAgent.trim(),
+  ]);
+}
+
+function codexDetectionIdentity(
+  input: CodexEndpointInput,
+  probeModel: string,
+): string {
+  return JSON.stringify([codexEndpointIdentity(input), probeModel.trim()]);
+}
+
+function codexApiFormatLabel(format: CodexApiFormat): string {
+  if (format === "openai_responses") return "Responses";
+  if (format === "openai_chat") return "Chat Completions";
+  return "Anthropic Messages";
+}
+
 function providerDraft(provider?: Provider | null, suggestedName?: string) {
   const template = getChimeraHubTemplate();
   const config = String(provider?.settingsConfig?.config ?? template.config);
@@ -282,12 +325,16 @@ function providerDraft(provider?: Provider | null, suggestedName?: string) {
     unknown
   >;
   const meta = provider?.meta ?? {};
-  const apiFormat: CodexApiFormatSelection =
+  const persistedApiFormat: CodexApiFormat | undefined =
     meta.apiFormat === "openai_chat" ||
     meta.apiFormat === "anthropic" ||
     meta.apiFormat === "openai_responses"
       ? meta.apiFormat
-      : "auto"; // null/undefined → 自动检测模式
+      : undefined;
+  const apiFormat: CodexApiFormatSelection =
+    meta.apiFormatAutoDetected === true || !persistedApiFormat
+      ? "auto"
+      : persistedApiFormat;
   const anthropicAuthField: ClaudeApiKeyField =
     meta.apiKeyField === "ANTHROPIC_API_KEY"
       ? "ANTHROPIC_API_KEY"
@@ -349,12 +396,21 @@ export default function ChimeraApp() {
     null,
   );
   const [models, setModels] = useState<FetchedModel[] | null>(null);
+  const [modelFetchIdentity, setModelFetchIdentity] = useState<string | null>(
+    null,
+  );
+  const [apiFormatDetection, setApiFormatDetection] =
+    useState<CodexApiFormatDetection | null>(null);
+  const [apiFormatDetectionError, setApiFormatDetectionError] = useState<
+    string | null
+  >(null);
   const [modelFetchError, setModelFetchError] = useState<string | null>(null);
   const [commonConfigSnippet, setCommonConfigSnippet] = useState("");
   const [commonConfigLoading, setCommonConfigLoading] = useState(false);
   const [commonConfigLoaded, setCommonConfigLoaded] = useState(false);
   const [commonConfigDirty, setCommonConfigDirty] = useState(false);
   const [fetchingModels, setFetchingModels] = useState(false);
+  const [savingProvider, setSavingProvider] = useState(false);
   const [showKey, setShowKey] = useState(false);
   const [pendingAction, setPendingAction] =
     useState<PendingRuntimeAction | null>(null);
@@ -365,6 +421,10 @@ export default function ChimeraApp() {
   const [activity, setActivity] = useState<OperationRecord[]>([]);
   const activityKeyRef = useRef<string | null>(null);
   const startupProviderCheckRef = useRef(false);
+  const fetchModelsSeqRef = useRef(0);
+  const protocolProbeSeqRef = useRef(0);
+  const providerSaveInFlightRef = useRef(false);
+  const editorRef = useRef(editor);
   const [connection, setConnection] = useState<ConnectionState>({
     kind: "unknown",
     message: "尚未验证连接",
@@ -382,6 +442,34 @@ export default function ChimeraApp() {
     execute: () => void;
   } | null>(null);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
+
+  const activeEndpointIdentity = editor ? codexEndpointIdentity(editor) : null;
+
+  useEffect(() => {
+    editorRef.current = editor;
+  }, [editor]);
+
+  useEffect(() => {
+    fetchModelsSeqRef.current += 1;
+    protocolProbeSeqRef.current += 1;
+    setModels(null);
+    setModelFetchIdentity(null);
+    setModelFetchError(null);
+    setApiFormatDetectionError(null);
+    setModelPickerOpen(false);
+
+    setApiFormatDetection(null);
+  }, [activeEndpointIdentity, editor?.id]);
+
+  useEffect(() => {
+    protocolProbeSeqRef.current += 1;
+    if (!editor?.model.trim()) return;
+    const expectedIdentity = codexDetectionIdentity(editor, editor.model);
+    setApiFormatDetection((current) =>
+      current?.identity === expectedIdentity ? current : null,
+    );
+    setApiFormatDetectionError(null);
+  }, [activeEndpointIdentity, editor?.model]);
   const [onboardingDeferred, setOnboardingDeferred] = useState(false);
   void activity;
 
@@ -835,155 +923,256 @@ export default function ChimeraApp() {
 
   const saveProvider = async () => {
     if (!editor) return;
+    const draft = editor;
     if (
-      !editor.name.trim() ||
-      !editor.baseUrl.trim() ||
-      !editor.apiKey.trim() ||
-      !editor.model.trim()
+      !draft.name.trim() ||
+      !draft.baseUrl.trim() ||
+      !draft.apiKey.trim() ||
+      !draft.model.trim()
     ) {
       toast.error("请填写线路名称、API 请求地址、API Key 和默认模型");
       return;
     }
-    let config = setCodexModelName(
-      setCodexBaseUrl(editor.config, editor.baseUrl),
-      editor.model,
-    );
-    config = setCodexGoalMode(config, editor.goalModeEnabled);
-    config = setCodexRemoteCompaction(
-      config,
-      editor.remoteCompactionEnabled,
-      editor.name.trim(),
-    );
-    const auth = setCodexProviderApiKey(editor.auth, editor.apiKey);
-    let fetchedForSave = models ?? [];
-    let automaticFetchFailed = false;
-    if (models === null) {
-      setFetchingModels(true);
-      try {
-        fetchedForSave = await fetchModelsForConfig(
-          editor.baseUrl,
-          editor.apiKey,
-          editor.isFullUrl,
-          editor.modelsUrl.trim() || undefined,
-          editor.customUserAgent.trim() || undefined,
-        );
-        setModels(fetchedForSave);
-      } catch {
-        automaticFetchFailed = true;
-        fetchedForSave = [];
-      } finally {
-        setFetchingModels(false);
-      }
-    }
-    const catalogModels = buildCodexModelCatalog(
-      editor.model,
-      editor.catalogModels,
-      fetchedForSave,
-    );
-    const provider: Provider = {
-      id: editor.id,
-      name: editor.name.trim(),
-      websiteUrl: editor.websiteUrl.trim() || undefined,
-      notes: editor.notes.trim() || undefined,
-      category: "custom",
-      meta: {
-        ...editor.original?.meta,
-        apiFormat:
-          editor.apiFormat === "auto"
-            ? undefined // 不持久化 auto，让运行时检测决定
-            : editor.apiFormat,
-        apiKeyField:
-          editor.apiFormat === "anthropic"
-            ? editor.anthropicAuthField
-            : undefined,
-        impersonateClaudeCode:
-          editor.apiFormat === "anthropic" && editor.impersonateClaudeCode
-            ? true
-            : undefined,
-        maxOutputTokens:
-          editor.apiFormat === "anthropic" && Number(editor.maxOutputTokens) > 0
-            ? Number(editor.maxOutputTokens)
-            : undefined,
-        isFullUrl: editor.isFullUrl || undefined,
-        modelsUrl: editor.modelsUrl.trim() || undefined,
-        customUserAgent: editor.customUserAgent.trim() || undefined,
-        promptCacheRouting:
-          editor.apiFormat === "openai_chat" &&
-          editor.promptCacheRouting !== "auto"
-            ? editor.promptCacheRouting
-            : undefined,
-        codexChatReasoning:
-          editor.apiFormat === "openai_chat" &&
-          (editor.codexChatReasoning.supportsThinking ||
-            editor.codexChatReasoning.supportsEffort)
-            ? editor.codexChatReasoning
-            : undefined,
-        commonConfigEnabled: editor.commonConfigEnabled,
-      },
-      settingsConfig: {
-        ...editor.original?.settingsConfig,
-        auth,
-        config,
-        modelCatalog: { models: catalogModels },
-      },
-    };
+
+    if (providerSaveInFlightRef.current) return;
+    providerSaveInFlightRef.current = true;
+    setSavingProvider(true);
+    setModelPickerOpen(false);
+
     try {
-      if (editor.original)
-        await providersApi.update(provider, "codex", editor.original.id);
-      else await providersApi.add(provider, "codex", false);
-      if (commonConfigLoaded && commonConfigDirty) {
-        await configApi.setCommonConfigSnippet("codex", commonConfigSnippet);
+      const endpointIdentity = codexEndpointIdentity(draft);
+      let fetchedForSave =
+        models !== null && modelFetchIdentity === endpointIdentity
+          ? models
+          : [];
+      let automaticFetchFailed = false;
+      if (models === null || modelFetchIdentity !== endpointIdentity) {
+        const seq = ++fetchModelsSeqRef.current;
+        setFetchingModels(true);
+        try {
+          fetchedForSave = await fetchModelsForConfig(
+            draft.baseUrl,
+            draft.apiKey,
+            draft.isFullUrl,
+            draft.modelsUrl.trim() || undefined,
+            draft.customUserAgent.trim() || undefined,
+          );
+          if (
+            seq !== fetchModelsSeqRef.current ||
+            !editorRef.current ||
+            codexEndpointIdentity(editorRef.current) !== endpointIdentity
+          ) {
+            toast.info("线路配置已变化，请重新保存");
+            return;
+          }
+          setModels(fetchedForSave);
+          setModelFetchIdentity(endpointIdentity);
+          setModelFetchError(null);
+        } catch {
+          automaticFetchFailed = true;
+          fetchedForSave = [];
+        } finally {
+          if (seq === fetchModelsSeqRef.current) setFetchingModels(false);
+        }
       }
-      await providersApi.switch(provider.id, "codex");
-      // 文件级校验失败才算真错（目录没写对）；运行时交叉验证跑不起来只是
-      // 环境限制（如 macOS 图形进程 PATH 里没有 node），不该报成保存失败。
-      let catalogStatus: CodexModelCatalogStatus | null = null;
-      try {
-        catalogStatus = await invoke<CodexModelCatalogStatus>(
-          "verify_codex_model_catalog",
-          {
-            expectedModel: editor.model.trim(),
-            expectedModels: catalogModels.map((item) => ({
-              model: item.model.trim(),
-              displayName: item.displayName?.trim() || item.model.trim(),
-            })),
-          },
-        );
-      } catch (error) {
-        await loadProviders();
-        setEditor(null);
-        note("应用模型目录", "error", String(error), provider.name);
-        toast.error("线路已保存，但模型目录未正确应用", {
-          description: String(error),
-        });
+
+      let resolvedApiFormat: CodexApiFormat =
+        draft.apiFormat === "auto" ? "openai_responses" : draft.apiFormat;
+      let resolvedAnthropicAuthField = draft.anthropicAuthField;
+      if (draft.apiFormat === "auto") {
+        const detectionIdentity = codexDetectionIdentity(draft, draft.model);
+        const cachedDetection =
+          apiFormatDetection?.identity === detectionIdentity
+            ? apiFormatDetection.result
+            : null;
+        if (cachedDetection) {
+          resolvedApiFormat = cachedDetection.apiFormat;
+          resolvedAnthropicAuthField =
+            cachedDetection.anthropicAuthField ?? draft.anthropicAuthField;
+        } else {
+          const seq = ++protocolProbeSeqRef.current;
+          setFetchingModels(true);
+          setApiFormatDetectionError(null);
+          try {
+            const detected = await detectCodexApiFormat(
+              draft.baseUrl,
+              draft.apiKey,
+              draft.isFullUrl,
+              draft.model,
+              draft.customUserAgent.trim() || undefined,
+            );
+            if (
+              seq !== protocolProbeSeqRef.current ||
+              editorRef.current !== draft
+            ) {
+              toast.info("线路配置已变化，请重新保存");
+              return;
+            }
+            resolvedApiFormat = detected.apiFormat;
+            resolvedAnthropicAuthField =
+              detected.anthropicAuthField ?? draft.anthropicAuthField;
+            setApiFormatDetection({
+              identity: detectionIdentity,
+              result: detected,
+            });
+            toast.success(
+              `已自动识别上游协议：${codexApiFormatLabel(detected.apiFormat)}`,
+            );
+          } catch (error) {
+            const message = String(error);
+            setApiFormatDetectionError(
+              "无法自动识别上游协议，请重试或手动选择协议。",
+            );
+            toast.error("无法自动识别上游 API 协议", {
+              description: message,
+            });
+            return;
+          } finally {
+            if (seq === protocolProbeSeqRef.current) setFetchingModels(false);
+          }
+        }
+      }
+
+      if (editorRef.current !== draft) {
+        toast.info("线路配置已变化，请重新保存");
         return;
       }
-      await loadProviders();
-      setEditor(null);
-      setPendingModelReload(editor.model.trim());
-      const writtenSummary = automaticFetchFailed
-        ? "供应商未返回模型列表，已确保默认模型可用。"
-        : `已写入 ${catalogModels.length} 个模型，重启 Codex 后生效。`;
-      if (catalogStatus && !catalogStatus.runtimeVerified) {
-        note(
-          "保存并应用线路",
-          "success",
-          catalogStatus.runtimeMessage ?? undefined,
-          provider.name,
-        );
-        toast.warning("线路与模型目录已保存，但未能自动验证实际模型列表", {
-          description: [writtenSummary, catalogStatus.runtimeMessage]
-            .filter(Boolean)
-            .join(" "),
-        });
-      } else {
-        note("保存并应用线路", "success", undefined, provider.name);
-        toast.success("线路与模型目录已保存", {
-          description: writtenSummary,
-        });
+
+      let config = setCodexModelName(
+        setCodexBaseUrl(draft.config, draft.baseUrl),
+        draft.model,
+      );
+      // Codex itself always speaks Responses. Chat Completions and Anthropic
+      // are upstream formats converted by the local router, never Codex wire
+      // formats. Normalize stale/imported TOML before routing is evaluated.
+      config = setCodexWireApi(config, "responses");
+      config = setCodexGoalMode(config, draft.goalModeEnabled);
+      config = setCodexRemoteCompaction(
+        config,
+        draft.remoteCompactionEnabled,
+        draft.name.trim(),
+      );
+      const auth = setCodexProviderApiKey(draft.auth, draft.apiKey);
+      const catalogModels = buildCodexModelCatalog(
+        draft.model,
+        draft.catalogModels,
+        fetchedForSave,
+      );
+      const provider: Provider = {
+        id: draft.id,
+        name: draft.name.trim(),
+        websiteUrl: draft.websiteUrl.trim() || undefined,
+        notes: draft.notes.trim() || undefined,
+        category: "custom",
+        meta: {
+          ...draft.original?.meta,
+          apiFormat: resolvedApiFormat,
+          apiFormatAutoDetected: draft.apiFormat === "auto" ? true : undefined,
+          apiKeyField:
+            resolvedApiFormat === "anthropic"
+              ? resolvedAnthropicAuthField
+              : undefined,
+          impersonateClaudeCode:
+            resolvedApiFormat === "anthropic" && draft.impersonateClaudeCode
+              ? true
+              : undefined,
+          maxOutputTokens:
+            resolvedApiFormat === "anthropic" &&
+            Number(draft.maxOutputTokens) > 0
+              ? Number(draft.maxOutputTokens)
+              : undefined,
+          isFullUrl: draft.isFullUrl || undefined,
+          modelsUrl: draft.modelsUrl.trim() || undefined,
+          customUserAgent: draft.customUserAgent.trim() || undefined,
+          promptCacheRouting:
+            resolvedApiFormat === "openai_chat" &&
+            draft.promptCacheRouting !== "auto"
+              ? draft.promptCacheRouting
+              : undefined,
+          codexChatReasoning:
+            resolvedApiFormat === "openai_chat" &&
+            (draft.codexChatReasoning.supportsThinking ||
+              draft.codexChatReasoning.supportsEffort)
+              ? draft.codexChatReasoning
+              : undefined,
+          commonConfigEnabled: draft.commonConfigEnabled,
+        },
+        settingsConfig: {
+          ...draft.original?.settingsConfig,
+          auth,
+          config,
+          modelCatalog: { models: catalogModels },
+        },
+      };
+      try {
+        if (draft.original) {
+          // "保存并应用" must not leave an edited inactive provider behind if
+          // its activation fails. The backend updates, switches and compensates
+          // under one transaction using its own current pointer.
+          await providersApi.updateAndActivate(
+            provider,
+            "codex",
+            draft.original.id,
+          );
+        } else {
+          await providersApi.addAndActivate(provider, "codex", false);
+        }
+        if (commonConfigLoaded && commonConfigDirty) {
+          await configApi.setCommonConfigSnippet("codex", commonConfigSnippet);
+        }
+        // 文件级校验失败才算真错（目录没写对）；运行时交叉验证跑不起来只是
+        // 环境限制（如 macOS 图形进程 PATH 里没有 node），不该报成保存失败。
+        let catalogStatus: CodexModelCatalogStatus | null = null;
+        try {
+          catalogStatus = await invoke<CodexModelCatalogStatus>(
+            "verify_codex_model_catalog",
+            {
+              expectedModel: draft.model.trim(),
+              expectedModels: catalogModels.map((item) => ({
+                model: item.model.trim(),
+                displayName: item.displayName?.trim() || item.model.trim(),
+              })),
+            },
+          );
+        } catch (error) {
+          await loadProviders();
+          setEditor(null);
+          note("应用模型目录", "error", String(error), provider.name);
+          toast.error("线路已保存，但模型目录未正确应用", {
+            description: String(error),
+          });
+          return;
+        }
+        await loadProviders();
+        setEditor(null);
+        setPendingModelReload(draft.model.trim());
+        const writtenSummary = automaticFetchFailed
+          ? "供应商未返回模型列表，已确保默认模型可用。"
+          : `已写入 ${catalogModels.length} 个模型，重启 Codex 后生效。`;
+        if (catalogStatus && !catalogStatus.runtimeVerified) {
+          note(
+            "保存并应用线路",
+            "success",
+            catalogStatus.runtimeMessage ?? undefined,
+            provider.name,
+          );
+          toast.warning("线路与模型目录已保存，但未能自动验证实际模型列表", {
+            description: [writtenSummary, catalogStatus.runtimeMessage]
+              .filter(Boolean)
+              .join(" "),
+          });
+        } else {
+          note("保存并应用线路", "success", undefined, provider.name);
+          toast.success("线路与模型目录已保存", {
+            description: writtenSummary,
+          });
+        }
+      } catch (error) {
+        toast.error("保存失败", { description: String(error) });
       }
-    } catch (error) {
-      toast.error("保存失败", { description: String(error) });
+    } finally {
+      providerSaveInFlightRef.current = false;
+      setSavingProvider(false);
     }
   };
 
@@ -1012,16 +1201,33 @@ export default function ChimeraApp() {
       toast.error("请先填写 API 请求地址和 API Key");
       return;
     }
+
+    const draft = editor;
+    const endpointIdentity = codexEndpointIdentity(draft);
+    const fetchSeq = ++fetchModelsSeqRef.current;
     setFetchingModels(true);
+    setModelFetchError(null);
+    setApiFormatDetectionError(null);
     try {
       const result = await fetchModelsForConfig(
-        editor.baseUrl,
-        editor.apiKey,
-        editor.isFullUrl,
-        editor.modelsUrl.trim() || undefined,
-        editor.customUserAgent.trim() || undefined,
+        draft.baseUrl,
+        draft.apiKey,
+        draft.isFullUrl,
+        draft.modelsUrl.trim() || undefined,
+        draft.customUserAgent.trim() || undefined,
       );
+      const latest = editorRef.current;
+      if (
+        fetchSeq !== fetchModelsSeqRef.current ||
+        !latest ||
+        latest.id !== draft.id ||
+        codexEndpointIdentity(latest) !== endpointIdentity
+      ) {
+        return;
+      }
+
       setModels(result);
+      setModelFetchIdentity(endpointIdentity);
       setModelFetchError(
         result.length
           ? null
@@ -1032,20 +1238,90 @@ export default function ChimeraApp() {
         "获取模型",
         "success",
         `获取到 ${result.length} 个模型`,
-        editor.name || "未命名供应商",
+        latest.name || "未命名供应商",
       );
-      toast.success(`已获取 ${result.length} 个模型`);
+
+      if (latest.apiFormat !== "auto") {
+        toast.success(`已获取 ${result.length} 个模型`);
+        return;
+      }
+
+      const probeModel = latest.model.trim() || result[0]?.id?.trim();
+      if (!probeModel) {
+        setApiFormatDetection(null);
+        setApiFormatDetectionError(
+          "没有可用于安全探测的模型，请手动填写默认模型后重试。",
+        );
+        toast.warning(`已获取 ${result.length} 个模型，但暂时无法探测协议`);
+        return;
+      }
+
+      const probeIdentity = codexDetectionIdentity(latest, probeModel);
+      const probeSeq = ++protocolProbeSeqRef.current;
+      try {
+        const detected = await detectCodexApiFormat(
+          latest.baseUrl,
+          latest.apiKey,
+          latest.isFullUrl,
+          probeModel,
+          latest.customUserAgent.trim() || undefined,
+        );
+        const current = editorRef.current;
+        if (
+          probeSeq !== protocolProbeSeqRef.current ||
+          !current ||
+          current.id !== latest.id ||
+          current.apiFormat !== "auto" ||
+          codexDetectionIdentity(
+            current,
+            current.model.trim() || probeModel,
+          ) !== probeIdentity
+        ) {
+          return;
+        }
+        setApiFormatDetection({ identity: probeIdentity, result: detected });
+        setApiFormatDetectionError(null);
+        if (detected.anthropicAuthField) {
+          setEditor((currentEditor) =>
+            currentEditor &&
+            currentEditor.id === latest.id &&
+            currentEditor.apiFormat === "auto" &&
+            codexEndpointIdentity(currentEditor) === endpointIdentity
+              ? {
+                  ...currentEditor,
+                  anthropicAuthField: detected.anthropicAuthField!,
+                }
+              : currentEditor,
+          );
+        }
+        toast.success(
+          `已获取 ${result.length} 个模型，并识别为 ${codexApiFormatLabel(detected.apiFormat)}`,
+        );
+      } catch (error) {
+        if (probeSeq !== protocolProbeSeqRef.current) return;
+        console.warn("[CODEX_API_FORMAT_AUTO_DETECT_FAILED]", error);
+        setApiFormatDetection(null);
+        setApiFormatDetectionError(
+          "模型已获取，但无法自动识别协议。请重试或手动选择协议。",
+        );
+        toast.warning(`已获取 ${result.length} 个模型，但协议识别失败`, {
+          description: String(error),
+        });
+      }
     } catch (error) {
-      note("获取模型", "error", String(error), editor?.name || "未命名供应商");
+      if (fetchSeq !== fetchModelsSeqRef.current) return;
+      note("获取模型", "error", String(error), draft.name || "未命名供应商");
       toast.error("获取模型失败，可手动输入模型名称", {
         description: String(error),
       });
       setModels([]);
+      setModelFetchIdentity(endpointIdentity);
+      setApiFormatDetection(null);
       setModelFetchError(
         "未能获取模型列表，请确认地址、密钥与供应商权限后重试。",
       );
     } finally {
-      setFetchingModels(false);
+      if (fetchSeq === fetchModelsSeqRef.current) setFetchingModels(false);
     }
   };
 
@@ -1308,20 +1584,28 @@ export default function ChimeraApp() {
             className="provider-sheet-backdrop"
             role="presentation"
             onMouseDown={(event) =>
-              event.target === event.currentTarget && setEditor(null)
+              !savingProvider &&
+              event.target === event.currentTarget &&
+              setEditor(null)
             }
           >
             <ProviderEditor
               editor={editor}
-              setEditor={setEditor}
+              setEditor={(value) => {
+                if (!savingProvider) setEditor(value);
+              }}
               showKey={showKey}
               setShowKey={setShowKey}
               fetchingModels={fetchingModels}
+              savingProvider={savingProvider}
               modelFetchError={modelFetchError}
+              apiFormatDetection={apiFormatDetection}
+              apiFormatDetectionError={apiFormatDetectionError}
               commonConfigSnippet={commonConfigSnippet}
               commonConfigLoading={commonConfigLoading}
               commonConfigLoaded={commonConfigLoaded}
               onCommonConfigChange={(value) => {
+                if (savingProvider) return;
                 setCommonConfigSnippet(value);
                 setCommonConfigDirty(true);
               }}
@@ -1333,7 +1617,7 @@ export default function ChimeraApp() {
               onDelete={() => {
                 if (editor.original) setPendingProviderDelete(editor.original);
               }}
-              escapeDisabled={Boolean(pendingProviderDelete)}
+              escapeDisabled={Boolean(pendingProviderDelete) || savingProvider}
             />
           </div>
         )}
@@ -2474,7 +2758,10 @@ function ProviderEditor({
   showKey,
   setShowKey,
   fetchingModels,
+  savingProvider,
   modelFetchError,
+  apiFormatDetection,
+  apiFormatDetectionError,
   commonConfigSnippet,
   commonConfigLoading,
   commonConfigLoaded,
@@ -2490,7 +2777,10 @@ function ProviderEditor({
   showKey: boolean;
   setShowKey: (value: boolean) => void;
   fetchingModels: boolean;
+  savingProvider: boolean;
   modelFetchError: string | null;
+  apiFormatDetection: CodexApiFormatDetection | null;
+  apiFormatDetectionError: string | null;
   commonConfigSnippet: string;
   commonConfigLoading: boolean;
   commonConfigLoaded: boolean;
@@ -2599,7 +2889,10 @@ function ProviderEditor({
               onChange={(event) => patch("model", event.target.value)}
               placeholder="先获取模型列表，或手动输入"
             />
-            <button onClick={onFetchModels} disabled={fetchingModels}>
+            <button
+              onClick={onFetchModels}
+              disabled={fetchingModels || savingProvider}
+            >
               {fetchingModels ? (
                 <LoaderCircle className="spin" size={15} />
               ) : (
@@ -2727,7 +3020,7 @@ function ProviderEditor({
                   )
                 }
               >
-                <option value="auto">自动检测（首次失败时自动切换）</option>
+                <option value="auto">自动检测（获取模型后识别）</option>
                 <option value="openai_responses">Responses（明确指定）</option>
                 <option value="openai_chat">
                   Chat Completions（明确指定，需路由接管）
@@ -2737,9 +3030,20 @@ function ProviderEditor({
                 </option>
               </select>
               <small>
-                自动：先尝试
-                Responses，失败后自动切换并记住选择。明确指定时强制使用所选格式。
+                自动模式会在获取模型后或保存前主动识别协议，再据此决定是否开启本地路由；不会把首次真实请求当作常规探测。
               </small>
+              {editor.apiFormat === "auto" && apiFormatDetection && (
+                <small>
+                  已识别：
+                  {codexApiFormatLabel(apiFormatDetection.result.apiFormat)}
+                  {apiFormatDetection.result.apiFormat === "openai_responses"
+                    ? "（可直连；若启用代理专属功能仍会自动开启路由）"
+                    : "（保存后自动开启路由）"}
+                </small>
+              )}
+              {editor.apiFormat === "auto" && apiFormatDetectionError && (
+                <small className="error-text">{apiFormatDetectionError}</small>
+              )}
             </label>
             <div className="advanced-group">
               <label className="toggle-field">
@@ -3002,17 +3306,35 @@ function ProviderEditor({
         )}
       </div>
       <footer>
-        <button className="secondary" onClick={onTest}>
+        <button
+          className="secondary"
+          onClick={onTest}
+          disabled={savingProvider}
+        >
           测试连接
         </button>
         <div>
           {editor.original && (
-            <button className="danger" onClick={onDelete}>
+            <button
+              className="danger"
+              onClick={onDelete}
+              disabled={savingProvider}
+            >
               <Trash2 size={15} /> 删除
             </button>
           )}
-          <button className="primary" onClick={onSave}>
-            保存并应用
+          <button
+            className="primary"
+            onClick={onSave}
+            disabled={savingProvider || fetchingModels}
+          >
+            {savingProvider ? (
+              <>
+                <LoaderCircle className="spin" size={15} /> 正在保存…
+              </>
+            ) : (
+              "保存并应用"
+            )}
           </button>
         </div>
       </footer>

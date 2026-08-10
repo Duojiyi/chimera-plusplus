@@ -588,7 +588,7 @@ function ProviderFormFull({
     resetCodexConfig,
   } = useCodexConfigState({ initialData });
 
-  const initialCodexApiFormat: CodexApiFormat =
+  const initialConcreteCodexApiFormat: CodexApiFormat =
     initialData?.meta?.apiFormat === "openai_chat"
       ? "openai_chat"
       : initialData?.meta?.apiFormat === "anthropic"
@@ -602,6 +602,10 @@ function ProviderFormFull({
                   : "",
               ),
             ) ?? "openai_responses");
+  const initialCodexApiFormat: CodexApiFormatSelection =
+    initialData?.meta?.apiFormatAutoDetected === true
+      ? "auto"
+      : initialConcreteCodexApiFormat;
 
   const [localCodexApiFormat, setLocalCodexApiFormat] =
     useState<CodexApiFormatSelection>(initialCodexApiFormat);
@@ -1391,7 +1395,6 @@ function ProviderFormFull({
           customUserAgent,
         );
         resolvedCodexApiFormat = detected.apiFormat;
-        setLocalCodexApiFormat(detected.apiFormat);
         if (detected.anthropicAuthField) {
           resolvedCodexAnthropicAuthField = detected.anthropicAuthField;
           setLocalCodexAnthropicAuthField(detected.anthropicAuthField);
@@ -1661,6 +1664,13 @@ function ProviderFormFull({
       pricingModelSource:
         pricingConfig.enabled && pricingConfig.pricingModelSource !== "inherit"
           ? pricingConfig.pricingModelSource
+          : undefined,
+      apiFormatAutoDetected:
+        appId === "codex" &&
+        category !== "official" &&
+        !isXaiOauthProvider &&
+        localCodexApiFormat === "auto"
+          ? true
           : undefined,
       apiFormat:
         appId === "claude" && category !== "official"

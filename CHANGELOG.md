@@ -10,6 +10,20 @@ numbers belong to a separate upstream line.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.4] - 2026-08-10
+
+### Security
+
+- **Bounded provider discovery:** model discovery, protocol probes, and diagnostic error bodies now enforce declared and streamed response-size limits, preventing abnormal upstream responses from exhausting renderer or backend memory.
+- **Safe protocol state:** background protocol detection only persists when the provider endpoint and credentials still match the configuration that was probed; malformed provider metadata now fails safely instead of silently falling back to an unintended format.
+
+### Fixed
+
+- **Automatic Codex routing:** protocol detection now distinguishes native Responses endpoints from Chat Completions and Anthropic Messages endpoints before the first real request. Codex continues to use its native Responses wire API while Chimera++ enables local routing whenever upstream translation or proxy-only features are required.
+- **Provider save-and-apply:** adding or editing a provider now updates its record, current selection, Live config, takeover backup, routing state, and proxy process as one compensated operation. A failed activation restores every prior state instead of leaving a partially applied provider.
+- **Concurrent editor actions:** stale model-fetch and protocol-probe results can no longer overwrite a newer URL, API key, model, or manual protocol choice while a provider is being edited.
+- **Runtime forwarding:** corrected active-provider attribution during failover, endpoint-aware protocol cache keys, failure classification, and safe handling of empty response metadata or malformed provider metadata.
+
 ## [2.4.3] - 2026-08-09
 
 ### Fixed
