@@ -729,8 +729,7 @@ async fn confirm_responses_tool_capability(
         MAX_PROTOCOL_PROBE_RESPONSE_BYTES,
         "tool capability probe response",
     )
-    .await
-    .map_err(|e| e)?;
+    .await?;
 
     let normalized = body.to_ascii_lowercase();
     if response_rejects_responses_tools(&normalized) {
