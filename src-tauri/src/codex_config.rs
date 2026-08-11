@@ -123,6 +123,26 @@ fn codex_native_gateway_rejects_web_search(config_text: &str) -> bool {
     }
     false
 }
+/// Whether the generated catalog declares that its models cannot host Codex's
+/// built-in `web_search` tool. The native `/responses` template ships with
+/// `supports_search_tool: false` for unknown/aggregator gateways, and Codex
+/// ignores that declaration when deciding whether to *send* the tool — the
+/// request-time tool is config-driven and defaults on — so the config must be
+/// written to `web_search = "disabled"` to match. Vendor-mirrored catalogs
+/// (DeepSeek and friends) declare `supports_search_tool: true` when supported.
+fn codex_catalog_declares_search_unsupported(catalog: &Value) -> bool {
+    catalog
+        .get("models")
+        .and_then(Value::as_array)
+        .filter(|models| !models.is_empty())
+        .map(|models| {
+            models
+                .iter()
+                .all(|entry| entry.get("supports_search_tool") == Some(&Value::Bool(false)))
+        })
+        .unwrap_or(false)
+}
+
 const CODEX_MODEL_CATALOG_TEMPLATE_SLUG: &str = "gpt-5.5";
 
 /// Which Codex tool surface the generated model catalog should target.
@@ -1583,7 +1603,17 @@ pub fn prepare_codex_config_text_with_model_catalog(
             // hosted tool, so always disable it here rather than present a dead tool.
             CodexCatalogToolProfile::Anthropic => true,
             CodexCatalogToolProfile::NativeResponses => {
+                // Blacklist hit (MiMo/LongCat/MiniMax by host or model brand;
+                // Qwen3-Coder by model) OR the generated catalog itself declares
+                // the model cannot host web_search (native template defaults to
+                // `supports_search_tool: false`). The catalog declaration is the
+                // safer signal for unknown/aggregator gateways: it fails closed
+                // (disable search → feature loss) instead of hard-400ing every
+                // request with `RESPONSES_FEATURE_NOT_SUPPORTED` because Codex
+                // still sent the tool. Vendors whose official catalog declares
+                // `supports_search_tool: true` (e.g. DeepSeek) keep it enabled.
                 codex_native_gateway_rejects_web_search(&config_text)
+                    || codex_catalog_declares_search_unsupported(&catalog)
             }
             CodexCatalogToolProfile::ProxyChat => false,
         };
@@ -3953,6 +3983,47 @@ wire_api = "responses"
     }
 
     #[test]
+    fn native_profile_catalog_carries_code_mode_only_tool_mode() {
+        // Codex 0.147+ (desktop 2026.8+) emits ChatGPT-backend-private
+        // `{"type":"namespace",…}` tool declarations when the model catalog does
+        // not pin `tool_mode`. Strict third-party Responses gateways reject those
+        // with `RESPONSES_FEATURE_NOT_SUPPORTED` (verified against a real relay:
+        // `type:"namespace"` → hard 400, and the model picker surfaces it as
+        // "不支持 Responses 能力：tool.namespace"). Pinning `code_mode_only`
+        // makes Codex send flat `function`/`custom` tools only — the same signal
+        // the official gpt-5.6 catalog carries. The native template must ship
+        // the field so every generated NativeResponses entry inherits it.
+        let template = load_codex_native_responses_template();
+        assert_eq!(
+            template.get("tool_mode").and_then(Value::as_str),
+            Some("code_mode_only"),
+            "native template must declare code_mode_only to suppress namespace tools"
+        );
+
+        let specs = vec![CodexCatalogModelSpec {
+            model: "qwen3.8-max".to_string(),
+            display_name: Some("Qwen3.8 Max".to_string()),
+            context_window: Some(128_000),
+            supports_parallel_tool_calls: None,
+            input_modalities: None,
+            base_instructions: None,
+        }];
+        let catalog = codex_model_catalog_from_specs(
+            &specs,
+            &template,
+            CodexCatalogToolProfile::NativeResponses,
+            128_000,
+        );
+        assert_eq!(
+            catalog["models"][0]
+                .get("tool_mode")
+                .and_then(Value::as_str),
+            Some("code_mode_only"),
+            "NativeResponses catalog entries must inherit tool_mode from the template"
+        );
+    }
+
+    #[test]
     fn model_catalog_json_field_writes_relative_filename() {
         let input = r#"model_provider = "any"
 
@@ -4138,6 +4209,72 @@ web_search = "disabled"
                 "{model} @ {host} should NOT be blacklisted"
             );
         }
+    }
+
+    #[test]
+    fn catalog_search_declaration_fails_closed_for_unknown_native_gateways() {
+        // Unknown aggregator gateways (e.g. tokenrhythm.studio) generate a native
+        // catalog with `supports_search_tool: false` and are NOT on the web_search
+        // host/model blacklist. The config must still write `web_search = "disabled"`
+        // so Codex stops sending the tool and stops hitting a hard
+        // `RESPONSES_FEATURE_NOT_SUPPORTED` 400 on every turn.
+        let settings = json!({
+            "config": "model_provider = \"custom\"\nmodel = \"qwen3.8-max\"\n\n[model_providers.custom]\nbase_url = \"https://tokenrhythm.studio/v1\"\nwire_api = \"responses\"\n",
+            "modelCatalog": {
+                "models": [
+                    { "model": "qwen3.8-max", "displayName": "Qwen3.8 Max" },
+                    { "model": "deepseek-v4-flash-0731", "displayName": "DeepSeek V4 Flash" }
+                ]
+            }
+        });
+        let config = "model_provider = \"custom\"\nmodel = \"qwen3.8-max\"\n\n[model_providers.custom]\nbase_url = \"https://tokenrhythm.studio/v1\"\nwire_api = \"responses\"\n";
+
+        let catalog = codex_model_catalog_from_settings(
+            &settings,
+            config,
+            CodexCatalogToolProfile::NativeResponses,
+        )
+        .expect("native catalog generation should not error")
+        .expect("non-empty modelCatalog must yield a catalog");
+        assert!(
+            codex_catalog_declares_search_unsupported(&catalog),
+            "native template must declare search unsupported"
+        );
+
+        let prepared = prepare_codex_config_text_with_model_catalog(
+            &settings,
+            config,
+            CodexCatalogToolProfile::NativeResponses,
+        )
+        .expect("config preparation should not error");
+        let parsed: toml::Value = toml::from_str(&prepared).expect("TOML parses");
+        assert_eq!(
+            parsed.get("web_search").and_then(|v| v.as_str()),
+            Some("disabled"),
+            "unknown native gateway with search-unsupported catalog must write web_search = \"disabled\""
+        );
+    }
+
+    #[test]
+    fn vendor_catalog_with_search_support_keeps_web_search_enabled() {
+        // A vendor-mirrored catalog declaring `supports_search_tool: true`
+        // (e.g. DeepSeek) must NOT get `web_search = "disabled"`.
+        let catalog = json!({
+            "models": [
+                { "slug": "deepseek-v4-flash", "supports_search_tool": true }
+            ]
+        });
+        assert!(
+            !codex_catalog_declares_search_unsupported(&catalog),
+            "vendor catalog with search support must not disable web_search"
+        );
+
+        // Empty catalog is not evidence of anything: keep the existing host
+        // blacklist behavior (no catalog → no forced disable).
+        assert!(!codex_catalog_declares_search_unsupported(&json!({})));
+        assert!(!codex_catalog_declares_search_unsupported(&json!({
+            "models": []
+        })));
     }
 
     #[test]

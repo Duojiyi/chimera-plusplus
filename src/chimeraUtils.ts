@@ -172,6 +172,38 @@ export function setCodexProviderApiKey(
   return auth;
 }
 
+/** Build the catalog row's `input_modalities` list from the image-input toggle.
+ * Text-only is the safe default: an unknown custom model must never be declared
+ * image-capable without an explicit user choice, or the upstream rejects images
+ * with a confusing client-side error. */
+export function catalogInputModalities(supportsImage: boolean): string[] {
+  return supportsImage ? ["text", "image"] : ["text"];
+}
+
+/** Whether a catalog model row explicitly declares image-input support. */
+export function catalogRowSupportsImage(model: CodexCatalogModel): boolean {
+  return (model.inputModalities ?? []).some(
+    (modality) => String(modality).trim().toLowerCase() === "image",
+  );
+}
+
+/** Catalog models with no detected upstream protocol after auto-detection.
+ * The backend probe returns partial success; every model missing from the map
+ * would fail closed at request time (400), so callers must surface these at
+ * save time instead of persisting a half-detected catalog. */
+export function findCodexCatalogModelsWithoutProtocol(
+  catalogModels: CodexCatalogModel[],
+  detectedFormats: Record<string, unknown>,
+): string[] {
+  const undetected: string[] = [];
+  for (const entry of catalogModels) {
+    const model = entry.model.trim();
+    if (!model || detectedFormats[model]) continue;
+    undetected.push(model);
+  }
+  return Array.from(new Set(undetected));
+}
+
 /** Build a stable Codex catalog from fetched, manually mapped, and default models. */
 export function buildCodexModelCatalog(
   defaultModel: string,

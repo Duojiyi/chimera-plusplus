@@ -318,6 +318,10 @@ pub async fn detect_codex_api_format(
     )
     .await?;
     let candidates = build_api_format_probe_urls(base_url, is_full_url)?;
+    let responses_url = candidates
+        .iter()
+        .find(|(probe, _)| *probe == CodexApiProbe::Responses)
+        .map(|(_, url)| url.clone());
     let client = crate::proxy::http_client::get();
     let probes = candidates.into_iter().map(|(probe, url)| {
         probe_codex_api_format_endpoint(
@@ -330,6 +334,51 @@ pub async fn detect_codex_api_format(
         )
     });
     let outcomes = join_all(probes).await;
+
+    // Level 2: the endpoint probe confirms a bare Responses route exists, but a
+    // truncated gateway (e.g. tokenrhythm.studio) accepts the bare schema yet
+    // rejects the Codex tool surface (`RESPONSES_FEATURE_NOT_SUPPORTED`). Only
+    // direct-connect Responses is affected — Chat/Anthropic go through the proxy
+    // which flattens custom/namespace tools. Confirm tool capability before
+    // committing to native Responses, and demote Responses when the gateway
+    // cannot carry the tools a third-party-model client emits by default.
+    let mut outcomes = outcomes;
+    let responses_selected = select_codex_api_probe_outcome(&outcomes, &probe_model)
+        .is_some_and(|outcome| outcome.probe == CodexApiProbe::Responses);
+    if responses_selected {
+        if let Some(url) = responses_url {
+            match confirm_responses_tool_capability(
+                &client,
+                &url,
+                api_key,
+                &probe_model,
+                user_agent.clone(),
+            )
+            .await
+            {
+                Ok(true) => {
+                    log::debug!("[Codex] Responses 工具能力确认通过: {url}");
+                }
+                Ok(false) => {
+                    log::warn!(
+                        "[Codex] Responses 端点 {url} 拒绝 Codex 工具（custom/namespace/web_search），将回退到转换路由"
+                    );
+                    for outcome in &mut outcomes {
+                        if outcome.probe == CodexApiProbe::Responses {
+                            outcome.supported = false;
+                            outcome.diagnostic = format!(
+                                "{}; Responses 工具能力拒绝 (RESPONSES_FEATURE_NOT_SUPPORTED)",
+                                outcome.diagnostic
+                            );
+                        }
+                    }
+                }
+                Err(error) => {
+                    log::warn!("[Codex] Responses 工具能力探测失败（保留端点探测结果）: {error}");
+                }
+            }
+        }
+    }
 
     if let Some(outcome) = select_codex_api_probe_outcome(&outcomes, &probe_model) {
         return Ok(DetectedCodexApiFormat {
@@ -590,6 +639,11 @@ async fn send_codex_api_format_probe(
 /// present so a generic model-required response cannot masquerade as support,
 /// while the token-budget value has an impossible JSON type and must fail schema
 /// validation before inference can begin.
+///
+/// This is the *endpoint existence* probe: it confirms the route accepts the
+/// protocol's schema. Tool capability is confirmed separately by
+/// [`responses_tool_capability_probe_body`] (a truncated Responses gateway can
+/// pass this bare check yet reject the Codex tool surface).
 fn invalid_probe_body(probe: CodexApiProbe, model: &str) -> String {
     let invalid_token_budget = serde_json::json!({ "chimeraProbe": true });
     let inert_input = "Chimera protocol compatibility probe. Do not process.";
@@ -612,6 +666,84 @@ fn invalid_probe_body(probe: CodexApiProbe, model: &str) -> String {
     }
 }
 
+/// A minimal *valid* Responses request that carries the Codex tool surface a
+/// third-party-model client emits by default (`type:"custom"`). A gateway that
+/// accepts the bare schema probe yet rejects these tools with
+/// `RESPONSES_FEATURE_NOT_SUPPORTED` is a truncated Responses surface that
+/// must route through the proxy's Chat Completions path instead of direct
+/// connect. `max_output_tokens` is kept at the minimum so a fully-capable
+/// gateway that validates tools before generation still costs nothing.
+fn responses_tool_capability_probe_body(model: &str) -> String {
+    serde_json::json!({
+        "model": model,
+        "input": "hi",
+        "max_output_tokens": 1,
+        "stream": false,
+        "tools": [{
+            "type": "custom",
+            "name": "chimera_probe_exec",
+            "description": "Chimera protocol compatibility probe tool.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": { "type": "string" }
+                }
+            }
+        }]
+    })
+    .to_string()
+}
+
+/// Confirm a bare-Responses endpoint can actually carry the Codex tool surface.
+///
+/// Returns `Ok(true)` when the gateway accepts the custom tool (a completed or
+/// in-flight response, or a non-tool schema rejection), `Ok(false)` when it
+/// rejects the tool surface with `RESPONSES_FEATURE_NOT_SUPPORTED`, and `Err`
+/// on transport/ambiguous failures so the caller can keep the endpoint-probe
+/// result rather than making a wrong turn on a flaky network.
+async fn confirm_responses_tool_capability(
+    client: &reqwest::Client,
+    url: &str,
+    api_key: &str,
+    probe_model: &str,
+    user_agent: Option<HeaderValue>,
+) -> Result<bool, String> {
+    let mut request = client
+        .post(url)
+        .header(CONTENT_TYPE, "application/json")
+        .header("Accept", "application/json")
+        .header("Authorization", format!("Bearer {api_key}"))
+        .body(responses_tool_capability_probe_body(probe_model))
+        .timeout(Duration::from_secs(API_FORMAT_PROBE_TIMEOUT_SECS));
+    if let Some(ua) = user_agent {
+        request = request.header(USER_AGENT, ua);
+    }
+
+    let response = request
+        .send()
+        .await
+        .map_err(|e| format!("tool capability probe request failed: {e}"))?;
+    let status = response.status();
+    let body = read_response_text_limited(
+        response,
+        MAX_PROTOCOL_PROBE_RESPONSE_BYTES,
+        "tool capability probe response",
+    )
+    .await?;
+
+    let normalized = body.to_ascii_lowercase();
+    if response_rejects_responses_tools(&normalized) {
+        return Ok(false);
+    }
+
+    // A 2xx means the gateway generated (or started generating) with the custom
+    // tool accepted — full Responses capability. A 4xx that is NOT a tool
+    // rejection is a plain schema/other error, which still proves the tool was
+    // accepted (otherwise it would have been the tool rejection above). 5xx and
+    // transport errors are ambiguous.
+    Ok(status.is_success() || status.is_client_error())
+}
+
 /// Accept only protocol-shaped request-validation responses from an existing
 /// endpoint. A generic model error is intentionally insufficient: catch-all
 /// gateways may return it for every unknown route, which previously made
@@ -621,10 +753,6 @@ fn response_indicates_protocol_support(
     status: StatusCode,
     body: &str,
 ) -> bool {
-    if status != StatusCode::BAD_REQUEST && status != StatusCode::UNPROCESSABLE_ENTITY {
-        return false;
-    }
-
     let normalized = body.to_ascii_lowercase();
     if [
         "not found",
@@ -651,10 +779,79 @@ fn response_indicates_protocol_support(
         return false;
     }
 
+    // Defense in depth: even if a truncated gateway surfaces a tool rejection
+    // here (some gateways validate tools before the token budget), it must not
+    // be auto-detected as native Responses. The canonical gate is the level-2
+    // `confirm_responses_tool_capability` probe in `detect_codex_api_format`.
+    if probe == CodexApiProbe::Responses && response_rejects_responses_tools(&normalized) {
+        return false;
+    }
+
+    // Most gateways reject our deliberately malformed token-budget field with a
+    // 400/422 schema error. Some (e.g. new-api based gateways such as
+    // chimerahub) instead surface it as a 500 "cannot unmarshal" deserialization
+    // error whose message still names the protocol-specific field
+    // (`max_output_tokens` for Responses, `max_tokens` for Chat/Anthropic).
+    // Treat that as equivalent evidence so such gateways are detected instead
+    // of "no conclusion on every protocol".
+    let schema_validation_status =
+        status == StatusCode::BAD_REQUEST || status == StatusCode::UNPROCESSABLE_ENTITY;
+    let deserialization_500 = status == StatusCode::INTERNAL_SERVER_ERROR
+        && response_is_deserialization_error(&normalized);
+    if !schema_validation_status && !deserialization_500 {
+        return false;
+    }
+
     probe
         .validation_markers()
         .iter()
         .any(|marker| normalized.contains(marker))
+}
+
+/// Whether an error body is a JSON deserialization failure that names a
+/// request field we sent (Go-style `cannot unmarshal ... into struct field
+/// ...max_output_tokens`). Some gateways map schema validation to HTTP 500
+/// instead of 400/422; the field name in the message is still protocol-shaped.
+fn response_is_deserialization_error(normalized_body: &str) -> bool {
+    [
+        "cannot unmarshal",
+        "unmarshal error",
+        "error decoding",
+        "cannot parse json",
+        "invalid json type",
+        "expected uint",
+        "expected integer",
+        "expected number",
+    ]
+    .iter()
+    .any(|marker| normalized_body.contains(marker))
+}
+
+/// Whether a Responses error indicates that the gateway rejects the Codex tool
+/// surface (`custom`/`namespace`/`web_search`) that third-party-model clients
+/// emit by default. Such a gateway is "Responses-shaped" but not usable for
+/// Codex without the proxy's tool flattening.
+fn response_rejects_responses_tools(normalized_body: &str) -> bool {
+    [
+        "responses_feature_not_supported",
+        "feature not supported",
+        "not supported by this gateway phase",
+        "unsupported tool",
+        "tool not supported",
+        "unsupported tool type",
+        "unknown variant \"namespace\"",
+        "tool.custom",
+        "tool.namespace",
+        "tool type 'custom'",
+        "tool type 'namespace'",
+        "不支持 responses 能力",
+        "能力：tool.",
+        "tool.web_search",
+        "web_search\"",
+        "'web_search'",
+    ]
+    .iter()
+    .any(|marker| normalized_body.contains(marker))
 }
 
 /// Gateways use many equivalent wordings for a model-level capability error.
@@ -964,6 +1161,11 @@ mod tests {
                         "Chimera protocol compatibility probe. Do not process."
                     );
                     assert!(body["max_output_tokens"].is_object());
+                    // The level-1 endpoint probe is deliberately tool-free: an
+                    // invalid token budget must short-circuit to schema
+                    // validation. Tool capability is probed separately by
+                    // `responses_tool_capability_probe_body`.
+                    assert!(body.get("tools").is_none());
                 }
                 CodexApiProbe::ChatCompletions | CodexApiProbe::AnthropicMessages => {
                     assert_eq!(
@@ -977,6 +1179,97 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn responses_tool_capability_probe_is_valid_and_carries_custom_tool() {
+        let body: serde_json::Value =
+            serde_json::from_str(&responses_tool_capability_probe_body("qwen3.8-max")).unwrap();
+        assert_eq!(body["model"], "qwen3.8-max");
+        assert!(body["max_output_tokens"].is_u64());
+        assert_eq!(body["max_output_tokens"], 1);
+        assert_eq!(body["stream"], false);
+        let tools = body["tools"].as_array().expect("tools array");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["type"], "custom");
+        assert_eq!(tools[0]["name"], "chimera_probe_exec");
+        assert!(body["max_output_tokens"].as_u64().unwrap() <= 1);
+    }
+
+    #[test]
+    fn protocol_probe_rejects_truncated_responses_gateways() {
+        // Real-world truncated Responses gateways (e.g. tokenrhythm.studio)
+        // accept a bare schema check but reject the Codex tool surface with
+        // `RESPONSES_FEATURE_NOT_SUPPORTED`. The probe now includes a custom
+        // tool, so these must be treated as negative evidence for Responses
+        // even though the body echoes field names.
+        let truncated_bodies = [
+            // tokenrhythm verbatim (Chinese message + english code)
+            r#"{"error":{"message":"当前模型或上游不支持 Responses 能力：tool.custom","type":"invalid_request_error","code":"RESPONSES_FEATURE_NOT_SUPPORTED"}}"#,
+            // namespace variant
+            r#"{"error":{"message":"当前模型或上游不支持 Responses 能力：tool.namespace","code":"RESPONSES_FEATURE_NOT_SUPPORTED"}}"#,
+            // web_search variant
+            r#"{"error":{"message":"当前模型或上游不支持 Responses 能力：web_search","code":"RESPONSES_FEATURE_NOT_SUPPORTED"}}"#,
+            // English gateway-phase rejection
+            r#"{"error":{"code":"responses_feature_not_supported","message":"tool type 'web_search' is not supported by this gateway phase"}}"#,
+            // strict parser namespace rejection (xAI-style)
+            r#"{"error":{"message":"422 unknown variant \"namespace\", expected one of [...]"}}"#,
+        ];
+        for body in truncated_bodies {
+            assert!(
+                !response_indicates_protocol_support(
+                    CodexApiProbe::Responses,
+                    StatusCode::BAD_REQUEST,
+                    body,
+                ),
+                "truncated Responses gateway must not be detected as Responses: {body}"
+            );
+        }
+
+        // A full gateway that accepts the custom tool and rejects only the
+        // malformed token budget must still be detected as Responses.
+        assert!(response_indicates_protocol_support(
+            CodexApiProbe::Responses,
+            StatusCode::BAD_REQUEST,
+            r#"{"error":"max_output_tokens must be an integer"}"#
+        ));
+    }
+
+    #[test]
+    fn protocol_probe_truncated_gateway_detection_is_responses_only() {
+        // The tool-rejection heuristic must not leak into Chat/Anthropic probes:
+        // those protocols legitimately surface tool errors and are handled by
+        // the proxy conversion layer.
+        for probe in [
+            CodexApiProbe::ChatCompletions,
+            CodexApiProbe::AnthropicMessages,
+        ] {
+            assert!(
+                response_indicates_protocol_support(
+                    probe,
+                    StatusCode::BAD_REQUEST,
+                    r#"{"error":{"message":"当前模型或上游不支持 Responses 能力：tool.custom","code":"RESPONSES_FEATURE_NOT_SUPPORTED"}}"#,
+                ) == false,
+                "tool-rejection must not affect {probe:?} detection semantics"
+            );
+        }
+    }
+
+    #[test]
+    fn protocol_probe_responses_tool_rejection_detector() {
+        assert!(response_rejects_responses_tools(
+            "responses_feature_not_supported"
+        ));
+        assert!(response_rejects_responses_tools(
+            "不支持 responses 能力：tool.custom"
+        ));
+        assert!(response_rejects_responses_tools(
+            "tool type 'custom' is not supported"
+        ));
+        assert!(!response_rejects_responses_tools(
+            "max_output_tokens must be an integer"
+        ));
+        assert!(!response_rejects_responses_tools("input must not be empty"));
     }
 
     #[test]
@@ -1084,6 +1377,42 @@ mod tests {
             CodexApiProbe::ChatCompletions,
             StatusCode::BAD_REQUEST,
             "Bad request"
+        ));
+    }
+
+    #[test]
+    fn protocol_probe_accepts_500_deserialization_errors_with_protocol_fields() {
+        // new-api based gateways (e.g. chimerahub) map schema validation to
+        // HTTP 500 with a Go "cannot unmarshal" message that still names the
+        // protocol-specific field. The probe must recognize those as protocol
+        // evidence, otherwise every protocol comes back "no conclusion".
+        assert!(response_indicates_protocol_support(
+            CodexApiProbe::ChatCompletions,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            r#"{"error":{"message":"json: cannot unmarshal object into Go struct field GeneralOpenAIRequest.max_tokens of type uint"}}"#
+        ));
+        assert!(response_indicates_protocol_support(
+            CodexApiProbe::AnthropicMessages,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            r#"{"error":{"message":"json: cannot unmarshal object into Go struct field ClaudeRequest.max_tokens of type uint"}}"#
+        ));
+        assert!(response_indicates_protocol_support(
+            CodexApiProbe::Responses,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            r#"{"error":{"message":"json: cannot unmarshal object into Go struct field OpenAIResponsesRequest.max_output_tokens of type uint"}}"#
+        ));
+
+        // A bare 500 without a deserialization marker is still not evidence.
+        assert!(!response_indicates_protocol_support(
+            CodexApiProbe::ChatCompletions,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            r#"{"error":"internal server error"}"#
+        ));
+        // `convert_request_failed` remains a route-missing signal even at 500.
+        assert!(!response_indicates_protocol_support(
+            CodexApiProbe::Responses,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            r#"{"error":{"code":"convert_request_failed","message":"not implemented"}}"#
         ));
     }
 

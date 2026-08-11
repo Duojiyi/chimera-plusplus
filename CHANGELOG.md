@@ -10,6 +10,25 @@ numbers belong to a separate upstream line.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.6] - 2026-08-11
+
+### Added
+
+- **Renderer model-picker unlock for manually launched Codex:** a new `probe_codex_renderer_unlock` probe reports whether the running Codex desktop instance exposes a CDP debug port and has the third-party model catalog injected. When Codex was started outside Chimera++ (manual launch, MSIX, or a custom `CODEX_HOME`), the provider view now labels the launch control "重启解锁" and shows a guidance hint, so the model picker can display all custom models without requiring an official ChatGPT login. The probe is Windows-only and non-fatal on every other platform.
+- **Per-row image-input toggle in the Codex model catalog:** each catalog row gains an explicit "图片输入" checkbox. New rows and "add default model" rows default to text-only, so an unknown custom model is never declared image-capable without an explicit choice — matching the proxy's text-only sanitizer and preventing upstream image rejections.
+
+### Fixed
+
+- **Automatic protocol detection no longer picks a truncated Responses gateway:** a gateway whose `/responses` route answers a bare schema probe yet rejects the Codex tool surface (`custom`/`namespace`/`web_search`) is now detected by a second, valid tool-capability probe and falls back to Chat Completions/Anthropic routing (where the proxy flattens tools) instead of being auto-detected as native Responses direct-connect — the failure mode that surfaced as `tool.custom`, `tool.namespace`, and `web_search` errors on every turn.
+- **Protocol detection recognizes 500 deserialization errors:** new-api based gateways (e.g. chimerahub) map schema validation to HTTP 500 with a Go "cannot unmarshal ... of type uint" message instead of 400/422. Such responses are now accepted as protocol evidence, so these gateways are detected instead of returning "no conclusion on every protocol".
+- **`web_search` disabled for gateways whose catalog declares no search support:** the generated native model catalog now drives `web_search = "disabled"` in `config.toml` when every model declares `supports_search_tool: false`, closing the gap where unknown/aggregator gateways (not on the host/model blacklist) still received Codex's built-in `web_search` tool and hard-400ed.
+- **Namespace tools suppressed for third-party native gateways:** the native Responses catalog template now declares `tool_mode = "code_mode_only"`, so Codex 0.147+ stops emitting ChatGPT-backend-private `type:"namespace"` tools (multi-agent/MCP) that strict gateways reject.
+- **Stale takeover backup no longer resurrects a superseded API key:** clearing the per-app Live backup during takeover reconciliation prevents an old `proxy_live_backup` row from restoring a stale, revoked credential on the next restart.
+
+### Security
+
+- **Tool-capability probe stays zero-billing:** the level-2 Responses tool probe uses a valid request with `max_output_tokens: 1`, so confirming a gateway's tool surface never generates a completion or bills output tokens.
+
 ## [2.4.5] - 2026-08-10
 
 ### Fixed

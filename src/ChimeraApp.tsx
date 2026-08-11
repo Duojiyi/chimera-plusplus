@@ -81,6 +81,7 @@ import { generateUUID } from "@/utils/uuid";
 import {
   activityStorageKey,
   buildCodexModelCatalog,
+  findCodexCatalogModelsWithoutProtocol,
   formatDuration,
   formatVersion,
   loadOperationRecords,
@@ -187,6 +188,12 @@ type CodexProcessStatus = {
   running: boolean;
   installMode?: string | null;
   officialLoginAvailable: boolean;
+};
+type CodexRendererUnlockProbe = {
+  attachable: boolean;
+  injected: boolean;
+  modelCount: number;
+  error?: string | null;
 };
 type CodexModelCatalogStatus = {
   valid: boolean;
@@ -394,6 +401,8 @@ export default function ChimeraApp() {
   );
   const [launchingCodex, setLaunchingCodex] = useState(false);
   const [codexRestartRequired, setCodexRestartRequired] = useState(false);
+  const [rendererUnlock, setRendererUnlock] =
+    useState<CodexRendererUnlockProbe | null>(null);
   const [release, setRelease] = useState<ReleaseStatus | null>(null);
   const [editor, setEditor] = useState<ReturnType<typeof providerDraft> | null>(
     null,
@@ -637,6 +646,21 @@ export default function ChimeraApp() {
     }
   };
 
+  const refreshRendererUnlock = useCallback(async () => {
+    if (!runningInTauri) {
+      setRendererUnlock(null);
+      return;
+    }
+    try {
+      const probe = await invoke<CodexRendererUnlockProbe>(
+        "probe_codex_renderer_unlock",
+      );
+      setRendererUnlock(probe);
+    } catch {
+      setRendererUnlock(null);
+    }
+  }, []);
+
   const loadCodexProcess = useCallback(async () => {
     if (!runningInTauri) {
       const status: CodexProcessStatus = {
@@ -647,6 +671,7 @@ export default function ChimeraApp() {
         officialLoginAvailable: false,
       };
       setCodexProcess(status);
+      setRendererUnlock(null);
       return status;
     }
     try {
@@ -654,6 +679,7 @@ export default function ChimeraApp() {
         "get_codex_process_status",
       );
       setCodexProcess(status);
+      void refreshRendererUnlock();
       return status;
     } catch {
       // Unsupported platforms return a structured status. A rejected probe
@@ -666,6 +692,7 @@ export default function ChimeraApp() {
         officialLoginAvailable: false,
       };
       setCodexProcess(status);
+      setRendererUnlock(null);
       return status;
     }
   }, []);
@@ -696,6 +723,7 @@ export default function ChimeraApp() {
       // an existing path-pinned Codex instance before launching a new one.
       const result = await invoke<CodexLaunchResult>("open_codex_runtime");
       await loadCodexProcess();
+      await refreshRendererUnlock();
       setCodexRestartRequired(false);
       toast.success(
         result.action === "restarted"
@@ -983,6 +1011,14 @@ export default function ChimeraApp() {
         draft.apiFormat === "auto" ? "openai_responses" : draft.apiFormat;
       let resolvedAnthropicAuthField = draft.anthropicAuthField;
       let detectedModelFormats: Record<string, DetectedCodexApiFormat> = {};
+      // The saved catalog is the union of the default model, user-mapped rows,
+      // and fetched /models entries. Detection must cover exactly this set so a
+      // later addition to the mapping table can never be saved undetected.
+      const catalogModels = buildCodexModelCatalog(
+        draft.model,
+        draft.catalogModels,
+        fetchedForSave,
+      );
       if (draft.apiFormat === "auto") {
         const detectionIdentity = codexDetectionIdentity(draft, draft.model);
         const cachedDetection =
@@ -1003,10 +1039,9 @@ export default function ChimeraApp() {
           setFetchingModels(true);
           setApiFormatDetectionError(null);
           try {
-            const detectionModels = [
-              draft.model.trim(),
-              ...fetchedForSave.map((model) => model.id.trim()),
-            ].filter(Boolean);
+            const detectionModels = catalogModels
+              .map((model) => model.model.trim())
+              .filter(Boolean);
             const detectedFormats = await detectCodexApiFormats(
               draft.baseUrl,
               draft.apiKey,
@@ -1050,6 +1085,24 @@ export default function ChimeraApp() {
             if (seq === protocolProbeSeqRef.current) setFetchingModels(false);
           }
         }
+        // Also covers the cached path: a mapping row added without changing the
+        // detection identity would otherwise be saved undetected and fail closed
+        // (HTTP 400) on the first request.
+        const undetectedCatalogModels = findCodexCatalogModelsWithoutProtocol(
+          catalogModels,
+          detectedModelFormats,
+        );
+        if (undetectedCatalogModels.length > 0) {
+          setApiFormatDetectionError(
+            "无法自动识别上游协议，请重试或手动选择协议。",
+          );
+          toast.error("无法自动识别上游 API 协议", {
+            description: `无法确认以下模型的上游协议：${undetectedCatalogModels.join(
+              "、",
+            )}。请重试自动识别、移除这些模型，或在高级设置中手动选择协议。`,
+          });
+          return;
+        }
       }
 
       if (editorRef.current !== draft) {
@@ -1072,11 +1125,6 @@ export default function ChimeraApp() {
         draft.name.trim(),
       );
       const auth = setCodexProviderApiKey(draft.auth, draft.apiKey);
-      const catalogModels = buildCodexModelCatalog(
-        draft.model,
-        draft.catalogModels,
-        fetchedForSave,
-      );
       const provider: Provider = {
         id: draft.id,
         name: draft.name.trim(),
@@ -1545,6 +1593,7 @@ export default function ChimeraApp() {
               connection={connection}
               loading={loading}
               codexProcess={codexProcess}
+              rendererUnlock={rendererUnlock}
               launchingCodex={launchingCodex}
               restartRequired={codexRestartRequired}
               onOpenCodex={openCodex}
@@ -2369,6 +2418,7 @@ export function NewProvidersView({
   connection,
   loading,
   codexProcess,
+  rendererUnlock,
   launchingCodex,
   restartRequired,
   onOpenCodex,
@@ -2382,6 +2432,7 @@ export function NewProvidersView({
   connection: ConnectionState;
   loading: boolean;
   codexProcess: CodexProcessStatus | null;
+  rendererUnlock?: CodexRendererUnlockProbe | null;
   launchingCodex: boolean;
   restartRequired: boolean;
   onOpenCodex: () => Promise<void>;
@@ -2541,6 +2592,10 @@ export function NewProvidersView({
         : connection.kind === "error"
           ? "连接异常"
           : "等待检测";
+  const rendererUnlockPending =
+    codexProcess?.running === true &&
+    rendererUnlock != null &&
+    rendererUnlock.attachable === false;
   const codexStatusLabel =
     codexProcess === null
       ? "正在检测 Codex"
@@ -2551,7 +2606,12 @@ export function NewProvidersView({
           : officialLoginRequired
             ? "官方账户需要登录"
             : codexProcess.running
-              ? "Codex 正在运行"
+              ? rendererUnlockPending
+                ? "Codex 运行中 · 模型列表未解锁"
+                : rendererUnlock?.attachable === true &&
+                    rendererUnlock.injected === false
+                  ? "Codex 运行中 · 模型列表待刷新"
+                  : "Codex 正在运行"
               : "Codex 已就绪";
   const codexButtonLabel = launchingCodex
     ? "正在启动…"
@@ -2568,7 +2628,9 @@ export function NewProvidersView({
             : officialLoginRequired
               ? "启动并登录"
               : codexProcess?.running
-                ? "打开 Codex"
+                ? rendererUnlockPending || !rendererUnlock
+                  ? "重启解锁"
+                  : "打开 Codex"
                 : "启动 Codex";
   return (
     <section className="route-gate-view route-gate-reference">
@@ -2633,6 +2695,19 @@ export function NewProvidersView({
                 <code title={model}>当前模型 · {model}</code>
               </span>
             </div>
+            {rendererUnlockPending && (
+              <p className="route-codex-unlock-hint">
+                当前 Codex 为手动启动，模型列表未解锁。点击「重启解锁」通过
+                Chimera++ 重新启动，即可在桌面端模型选择器显示全部自定义模型。
+              </p>
+            )}
+            {codexProcess?.running === true &&
+              rendererUnlock?.attachable === true &&
+              rendererUnlock.injected === false && (
+                <p className="route-codex-unlock-hint">
+                  模型解锁已附加，正在等待 Codex 刷新模型列表…
+                </p>
+              )}
             <button
               type="button"
               onClick={() => void onOpenCodex()}

@@ -1,16 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { resolveCurrentProvider } from "@/chimeraUtils";
+import {
+  catalogInputModalities,
+  catalogRowSupportsImage,
+  findCodexCatalogModelsWithoutProtocol,
+  resolveCurrentProvider,
+} from "@/chimeraUtils";
 import type { Provider } from "@/types";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeProvider(
-  id: string,
-  baseUrl: string,
-  model = "gpt-4o",
-): Provider {
+function makeProvider(id: string, baseUrl: string, model = "gpt-4o"): Provider {
   const config = [
     `model_provider = "openai"`,
     baseUrl ? `base_url = "${baseUrl}"` : "",
@@ -163,5 +164,98 @@ describe("resolveCurrentProvider", () => {
       true,
     );
     expect(result).toEqual({ provider: relay, source: "live" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// catalogInputModalities / catalogRowSupportsImage
+// ---------------------------------------------------------------------------
+
+describe("catalogInputModalities", () => {
+  it("declares image support only when the user opts in", () => {
+    expect(catalogInputModalities(true)).toEqual(["text", "image"]);
+    expect(catalogInputModalities(false)).toEqual(["text"]);
+  });
+});
+
+describe("catalogRowSupportsImage", () => {
+  it("returns true when a row explicitly declares image input", () => {
+    expect(
+      catalogRowSupportsImage({
+        model: "custom",
+        inputModalities: ["text", "image"],
+      }),
+    ).toBe(true);
+  });
+
+  it("returns false for text-only rows", () => {
+    expect(
+      catalogRowSupportsImage({ model: "custom", inputModalities: ["text"] }),
+    ).toBe(false);
+  });
+
+  it("returns false when a row has no explicit declaration", () => {
+    expect(catalogRowSupportsImage({ model: "custom" })).toBe(false);
+  });
+
+  it("matches image case-insensitively", () => {
+    expect(
+      catalogRowSupportsImage({
+        model: "custom",
+        inputModalities: ["TEXT", "IMAGE"],
+      }),
+    ).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// findCodexCatalogModelsWithoutProtocol
+// ---------------------------------------------------------------------------
+
+describe("findCodexCatalogModelsWithoutProtocol", () => {
+  const detected: Record<string, { apiFormat: string }> = {
+    "model-a": { apiFormat: "openai_chat" },
+    "model-b": { apiFormat: "openai_responses" },
+  };
+
+  it("returns an empty list when every catalog model is detected", () => {
+    const catalog = [{ model: "model-a" }, { model: "model-b" }];
+    expect(findCodexCatalogModelsWithoutProtocol(catalog, detected)).toEqual(
+      [],
+    );
+  });
+
+  it("lists catalog models missing from the detection map", () => {
+    const catalog = [
+      { model: "model-a" },
+      { model: "model-c" },
+      { model: "model-d" },
+    ];
+    expect(findCodexCatalogModelsWithoutProtocol(catalog, detected)).toEqual([
+      "model-c",
+      "model-d",
+    ]);
+  });
+
+  it("trims model ids and skips empty rows", () => {
+    const catalog = [{ model: "  model-a  " }, { model: "  " }, { model: "" }];
+    expect(findCodexCatalogModelsWithoutProtocol(catalog, detected)).toEqual(
+      [],
+    );
+  });
+
+  it("deduplicates repeated undetected models", () => {
+    const catalog = [
+      { model: "model-x" },
+      { model: "model-x" },
+      { model: "model-a" },
+    ];
+    expect(findCodexCatalogModelsWithoutProtocol(catalog, detected)).toEqual([
+      "model-x",
+    ]);
+  });
+
+  it("returns an empty list for an empty catalog", () => {
+    expect(findCodexCatalogModelsWithoutProtocol([], detected)).toEqual([]);
   });
 });

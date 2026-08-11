@@ -1244,7 +1244,7 @@ body.is-mac
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  background: var(--accent, #ff6b50);
+  background: var(--ch-accent);
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='white'%3E%3Cpath d='M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2Zm.75 3.5a.75.75 0 0 0-1.5 0v3.25l1.97 1.97a.75.75 0 1 0 1.06-1.06L8.75 8.19V5.5Z'/%3E%3C/svg%3E");
   background-size: cover;
 }
@@ -1287,7 +1287,7 @@ body.is-mac
   border-color: #c8d2d8;
 }
 .route-update-banner-actions button.primary {
-  background: var(--accent, #ff6b50);
+  background: var(--ch-accent);
   border-color: transparent;
   color: #fff;
 }
@@ -3614,6 +3614,23 @@ body.is-mac
   font-size: 10px;
   line-height: 1.25;
   white-space: nowrap;
+}
+.route-codex-unlock-hint {
+  position: absolute;
+  z-index: 3;
+  left: 50%;
+  bottom: calc(100% + 8px);
+  width: 368px;
+  transform: translateX(-50%);
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(35, 44, 51, 0.92);
+  color: #f2f5f7;
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: left;
+  box-shadow: 0 4px 10px rgba(32, 40, 48, 0.18);
 }
 .route-codex-launch.is-missing .route-codex-launch-status > i {
   background: #8d98a2;

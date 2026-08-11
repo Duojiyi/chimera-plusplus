@@ -35,5 +35,6 @@
     "text",
     "image"
   ],
-  "supports_search_tool": false
+  "supports_search_tool": false,
+  "tool_mode": "code_mode_only"
 }

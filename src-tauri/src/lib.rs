@@ -1580,6 +1580,7 @@ pub fn run() {
             commands::save_settings,
             commands::get_codex_runtime_status,
             commands::get_codex_process_status,
+            commands::probe_codex_renderer_unlock,
             commands::open_codex_runtime,
             commands::verify_codex_model_catalog,
             commands::restart_codex_for_model_catalog,
