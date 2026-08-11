@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { FormLabel } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -37,6 +38,10 @@ import {
 import { CustomUserAgentField } from "./CustomUserAgentField";
 import { LocalProxyRequestOverridesField } from "./LocalProxyRequestOverridesField";
 import { cn } from "@/lib/utils";
+import {
+  catalogInputModalities,
+  catalogRowSupportsImage,
+} from "@/chimeraUtils";
 import type {
   ClaudeApiKeyField,
   CodexApiFormatSelection,
@@ -415,7 +420,12 @@ export function CodexFormFields({
 
   const handleAddCatalogRow = useCallback(() => {
     if (!onCatalogModelsChange) return;
-    setCatalogRows((current) => [...current, createCatalogRow()]);
+    // New rows are text-only by default: an unknown custom model must never be
+    // declared image-capable without an explicit user choice (see the toggle).
+    setCatalogRows((current) => [
+      ...current,
+      createCatalogRow({ inputModalities: ["text"] }),
+    ]);
   }, [onCatalogModelsChange]);
 
   const handleUpdateCatalogRow = useCallback(
@@ -468,6 +478,7 @@ export function CodexFormFields({
       createCatalogRow({
         model: trimmedDefaultModel,
         displayName: trimmedDefaultModel,
+        inputModalities: ["text"],
       }),
     ]);
   }, [onCatalogModelsChange, trimmedDefaultModel]);
@@ -960,7 +971,7 @@ export function CodexFormFields({
                 {catalogRows.length > 0 && (
                   <div className="space-y-2">
                     {/* 列头：md+ 显示 */}
-                    <div className="hidden grid-cols-[1fr_1fr_140px_36px] gap-2 px-1 text-xs font-medium text-muted-foreground md:grid">
+                    <div className="hidden grid-cols-[1fr_1fr_120px_110px_36px] gap-2 px-1 text-xs font-medium text-muted-foreground md:grid">
                       <span>
                         {t("codexConfig.catalogColumnDisplay", {
                           defaultValue: "菜单显示名",
@@ -976,13 +987,18 @@ export function CodexFormFields({
                           defaultValue: "上下文窗口",
                         })}
                       </span>
+                      <span>
+                        {t("codexConfig.catalogColumnImage", {
+                          defaultValue: "图片输入",
+                        })}
+                      </span>
                       <span />
                     </div>
 
                     {catalogRows.map((row, index) => (
                       <div
                         key={row.rowId}
-                        className="grid grid-cols-1 gap-2 md:grid-cols-[1fr_1fr_140px_36px]"
+                        className="grid grid-cols-1 gap-2 md:grid-cols-[1fr_1fr_120px_110px_36px]"
                       >
                         <Input
                           value={row.displayName ?? ""}
@@ -1057,6 +1073,26 @@ export function CodexFormFields({
                             defaultValue: "上下文窗口",
                           })}
                         />
+                        <div className="flex items-center gap-2">
+                          <Checkbox
+                            id={`catalog-image-${row.rowId}`}
+                            checked={catalogRowSupportsImage(row)}
+                            onCheckedChange={(checked: boolean) =>
+                              handleUpdateCatalogRow(index, {
+                                inputModalities:
+                                  catalogInputModalities(checked),
+                              })
+                            }
+                          />
+                          <label
+                            htmlFor={`catalog-image-${row.rowId}`}
+                            className="text-xs text-muted-foreground"
+                          >
+                            {t("codexConfig.catalogColumnImage", {
+                              defaultValue: "图片输入",
+                            })}
+                          </label>
+                        </div>
                         <Button
                           type="button"
                           variant="ghost"

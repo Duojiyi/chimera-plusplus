@@ -8,7 +8,11 @@ use serde_json::{json, Value};
 use tungstenite::{client::client, Message, WebSocket};
 use url::Url;
 
-pub const CODEX_RENDERER_DEBUG_PORT: u16 = 9229;
+// 9229 was the original CDP port, but a stale kernel-held socket from an older
+// crash could pin it after the owning process exited, making a fresh Codex
+// launch unable to bind it. 9330 is the current default; the constant is the
+// single source of truth for both the launch argument and the injection client.
+pub const CODEX_RENDERER_DEBUG_PORT: u16 = 9330;
 
 const TARGET_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 const TARGET_POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -53,6 +57,32 @@ impl CodexModelUnlockStatus {
             injected: true,
             model_count,
             error: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexRendererUnlockProbe {
+    /// Whether the running Codex instance exposes a CDP debug port we can
+    /// attach to. A manual launch (or an MSIX/custom-home launch) leaves it
+    /// false, which means the model-picker unlock can only take effect after
+    /// Chimera++ restarts the instance with the debug port attached.
+    pub attachable: bool,
+    /// Whether the renderer already reports the Chimera++ model unlock patch
+    /// installed. Only meaningful when `attachable` is true.
+    pub injected: bool,
+    pub model_count: usize,
+    pub error: Option<String>,
+}
+
+impl CodexRendererUnlockProbe {
+    fn not_attachable(error: impl Into<String>) -> Self {
+        Self {
+            attachable: false,
+            injected: false,
+            model_count: 0,
+            error: Some(error.into()),
         }
     }
 }
@@ -156,6 +186,107 @@ pub fn unavailable_model_unlock(reason: impl Into<String>) -> CodexModelUnlockSt
         Ok(Some(payload)) => CodexModelUnlockStatus::failed(payload.models.len(), reason),
         Ok(None) => CodexModelUnlockStatus::not_configured(),
         Err(error) => CodexModelUnlockStatus::failed(0, error),
+    }
+}
+
+/// Probe an already-running Codex instance for whether the Chimera++ renderer
+/// unlock patch can be (or has been) attached.
+///
+/// This is the read-side counterpart of `inject_codex_model_unlock`: it answers
+/// "does this instance expose a CDP debug port, and has the model unlock patch
+/// already been installed?" without mutating the renderer. A negative result
+/// means the instance was launched outside Chimera++ (or from an MSIX/custom
+/// CODEX_HOME), so the user must restart Codex through Chimera++ to unlock the
+/// model picker. Errors are intentionally non-fatal and returned as diagnostics.
+pub fn probe_codex_renderer_unlock(debug_port: u16) -> CodexRendererUnlockProbe {
+    let targets = match list_targets(debug_port) {
+        Ok(targets) => targets,
+        Err(error) => {
+            return CodexRendererUnlockProbe::not_attachable(format!(
+                "无法连接 Codex 调试端口 {debug_port}（可能是手动启动或 MSIX/自定义 CODEX_HOME 启动，未附加调试端口）：{error}"
+            ));
+        }
+    };
+    let Ok(target) = pick_codex_page_target(&targets) else {
+        return CodexRendererUnlockProbe::not_attachable(
+            "已连接调试端口，但未找到可注入的 Codex 主页面 target".to_string(),
+        );
+    };
+    let Some(websocket_url) = target.web_socket_debugger_url.as_deref() else {
+        return CodexRendererUnlockProbe::not_attachable(
+            "Codex renderer target 缺少 WebSocket 地址".to_string(),
+        );
+    };
+    let Ok(parsed) = validate_cdp_websocket_url(websocket_url, debug_port) else {
+        return CodexRendererUnlockProbe::not_attachable(
+            "Codex renderer WebSocket 地址校验失败".to_string(),
+        );
+    };
+
+    let host = parsed.host_str().unwrap_or("127.0.0.1").to_string();
+    let port = parsed.port().unwrap_or(debug_port);
+    let stream = match TcpStream::connect_timeout(
+        &SocketAddr::new(
+            host.trim_start_matches('[')
+                .trim_end_matches(']')
+                .parse()
+                .unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            port,
+        ),
+        IO_TIMEOUT,
+    ) {
+        Ok(stream) => stream,
+        Err(error) => {
+            return CodexRendererUnlockProbe::not_attachable(format!(
+                "连接 Codex renderer WebSocket 失败：{error}"
+            ));
+        }
+    };
+    stream
+        .set_read_timeout(Some(IO_TIMEOUT))
+        .ok()
+        .and_then(|_| stream.set_write_timeout(Some(IO_TIMEOUT)).ok());
+    let (mut socket, _) = match client(websocket_url, stream) {
+        Ok(socket) => socket,
+        Err(error) => {
+            return CodexRendererUnlockProbe::not_attachable(format!(
+                "Codex renderer WebSocket 握手失败：{error}"
+            ));
+        }
+    };
+    let result = send_cdp_command(
+        &mut socket,
+        1,
+        "Runtime.evaluate",
+        json!({
+            "expression": "globalThis.__CHIMERA_CODEX_MODEL_UNLOCK_STATUS__ ?? null",
+            "returnByValue": true,
+        }),
+    )
+    .map(|evaluated| parse_model_unlock_status(&evaluated));
+    let _ = socket.close(None);
+    match result {
+        Ok(Ok(Some(status))) => CodexRendererUnlockProbe {
+            attachable: true,
+            injected: status.installed,
+            model_count: status.model_count,
+            error: None,
+        },
+        Ok(Ok(None)) => CodexRendererUnlockProbe {
+            attachable: true,
+            injected: false,
+            model_count: 0,
+            error: None,
+        },
+        Ok(Err(error)) => CodexRendererUnlockProbe {
+            attachable: true,
+            injected: false,
+            model_count: 0,
+            error: Some(format!("读取 renderer 注入状态失败：{error}")),
+        },
+        Err(error) => {
+            CodexRendererUnlockProbe::not_attachable(format!("读取 renderer 注入状态失败：{error}"))
+        }
     }
 }
 
@@ -602,7 +733,7 @@ mod tests {
     use super::{
         build_model_unlock_config, build_model_unlock_script, model_catalog_ready_after_reload,
         parse_model_unlock_status, parse_targets_http_response, pick_codex_page_target,
-        validate_cdp_websocket_url, CodexRendererModelUnlockConfig,
+        validate_cdp_websocket_url, CodexRendererModelUnlockConfig, CodexRendererUnlockProbe,
         CodexRendererUnlockRuntimeStatus, CODEX_RENDERER_DEBUG_PORT,
     };
     use serde_json::json;
@@ -743,5 +874,39 @@ mod tests {
                 .expect("null status is valid")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn probe_serializes_attachable_injected_and_diagnostic_states() {
+        let attached = CodexRendererUnlockProbe {
+            attachable: true,
+            injected: true,
+            model_count: 16,
+            error: None,
+        };
+        let value = serde_json::to_value(&attached).expect("serializes");
+        assert_eq!(value["attachable"], true);
+        assert_eq!(value["injected"], true);
+        assert_eq!(value["modelCount"], 16);
+        assert!(value["error"].is_null());
+
+        let unattached = CodexRendererUnlockProbe {
+            attachable: false,
+            injected: false,
+            model_count: 0,
+            error: Some("no debug port".to_string()),
+        };
+        let value = serde_json::to_value(&unattached).expect("serializes");
+        assert_eq!(value["attachable"], false);
+        assert_eq!(value["error"], "no debug port");
+    }
+
+    #[test]
+    fn probe_not_attachable_keeps_diagnostic() {
+        let probe = CodexRendererUnlockProbe::not_attachable("手动启动未附加调试端口");
+        assert!(!probe.attachable);
+        assert!(!probe.injected);
+        assert_eq!(probe.model_count, 0);
+        assert!(probe.error.is_some());
     }
 }

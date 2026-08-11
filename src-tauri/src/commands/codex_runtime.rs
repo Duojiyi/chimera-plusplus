@@ -717,6 +717,35 @@ pub async fn get_codex_process_status() -> Result<CodexProcessStatus, String> {
     .map_err(|error| format!("读取 Codex 进程状态时任务中断: {error}"))?
 }
 
+/// Probe a running Codex instance for whether the Chimera++ renderer model
+/// unlock is attachable and already injected.
+///
+/// This is the read-side diagnostics for the "模型列表未解锁" guidance. A
+/// `attachable: false` result means the running instance was started outside
+/// Chimera++ (manual launch, or an MSIX/custom-CODEX_HOME launch without a
+/// debug port), so the model picker shows only the gated default until Codex
+/// is restarted through Chimera++. Errors are non-fatal diagnostics.
+#[tauri::command]
+pub async fn probe_codex_renderer_unlock(
+) -> Result<crate::codex_cdp::CodexRendererUnlockProbe, String> {
+    // Renderer injection is Windows-only today; other platforms have no Codex
+    // desktop renderer to attach to, so report not-attachable without probing.
+    if !cfg!(target_os = "windows") {
+        return Ok(crate::codex_cdp::CodexRendererUnlockProbe {
+            attachable: false,
+            injected: false,
+            model_count: 0,
+            error: Some("Codex 桌面版渲染注入仅支持 Windows".to_string()),
+        });
+    }
+    let debug_port = crate::codex_cdp::CODEX_RENDERER_DEBUG_PORT;
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(crate::codex_cdp::probe_codex_renderer_unlock(debug_port))
+    })
+    .await
+    .map_err(|error| format!("探测 Codex renderer 注入状态时任务中断: {error}"))?
+}
+
 /// Launch the managed Codex installation, replacing a running managed instance
 /// first. The deprecated optional flag is accepted only for IPC compatibility:
 /// lifecycle policy is backend-owned and a running target is always restarted.

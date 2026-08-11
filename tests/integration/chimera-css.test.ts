@@ -66,11 +66,23 @@ describe("chimera.css — Bug 2 update banner styles", () => {
     expect(css).toContain(".route-update-banner-copy");
   });
 
+  it("uses the Chimera brand color token for the update indicator", () => {
+    const block = extractBlock(".route-update-banner > i");
+    expect(block).toContain("background: var(--ch-accent)");
+    expect(block).not.toContain("var(--accent");
+  });
+
   it(".route-update-banner-actions block exists", () => {
     expect(css).toContain(".route-update-banner-actions");
   });
 
   it(".route-update-banner-actions button.primary block exists", () => {
     expect(css).toContain("button.primary");
+  });
+
+  it("uses the Chimera brand color token for the update action default state", () => {
+    const block = extractBlock(".route-update-banner-actions button.primary");
+    expect(block).toContain("background: var(--ch-accent)");
+    expect(block).not.toContain("var(--accent");
   });
 });

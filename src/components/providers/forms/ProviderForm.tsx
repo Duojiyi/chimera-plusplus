@@ -61,6 +61,7 @@ import {
   hasApiKeyField,
 } from "@/utils/providerConfigUtils";
 import { mergeProviderMeta } from "@/utils/providerMetaUtils";
+import { findCodexCatalogModelsWithoutProtocol } from "@/chimeraUtils";
 import {
   codexApiFormatFromWireApi,
   extractCodexWireApi,
@@ -1409,6 +1410,21 @@ function ProviderFormFull({
           throw new Error("默认模型未能识别上游协议");
         }
         detectedCodexModelFormats = detectedFormats;
+        // The backend probe returns partial success: models that fail to probe
+        // are simply absent from the map. An unmapped catalog model would fail
+        // closed (HTTP 400) at request time, so reject the save now instead of
+        // persisting a half-detected catalog the user only discovers later.
+        const undetectedCatalogModels = findCodexCatalogModelsWithoutProtocol(
+          normalizedCatalogModels,
+          detectedCodexModelFormats,
+        );
+        if (undetectedCatalogModels.length > 0) {
+          throw new Error(
+            `无法确认以下模型的上游协议：${undetectedCatalogModels.join(
+              "、",
+            )}。请重试自动识别、移除这些模型，或在高级设置中手动选择协议。`,
+          );
+        }
         resolvedCodexApiFormat = defaultDetection.apiFormat;
         if (defaultDetection.anthropicAuthField) {
           resolvedCodexAnthropicAuthField = defaultDetection.anthropicAuthField;
