@@ -1434,6 +1434,26 @@ pub fn run() {
                     }
                 });
 
+                // v2.5.0 M3（TASK-008）：启动时把上次进程内未完结的 Codex 安装
+                // 事务标记为 interrupted，由运行时页提示用户恢复。只改日志文件，
+                // 绝不在启动阶段自动改动安装目录。
+                #[cfg(target_os = "windows")]
+                tauri::async_runtime::spawn_blocking(|| {
+                    let journal_root = crate::config::get_app_config_dir().join("codex-runtime");
+                    let journal =
+                        crate::services::codex_install_journal::InstallJournal::at(&journal_root);
+                    match journal.mark_interrupted() {
+                        Ok(entries) if !entries.is_empty() => log::warn!(
+                            "[InstallJournal] 检测到 {} 个未完成的 Codex 安装事务，等待用户在运行时页处理",
+                            entries.len()
+                        ),
+                        Ok(_) => {}
+                        Err(error) => {
+                            log::warn!("[InstallJournal] 启动恢复检查失败: {error}");
+                        }
+                    }
+                });
+
                 if product_policy::sync_session_usage_on_startup() {
                     let db_for_session_sync = state.db.clone();
                     tauri::async_runtime::spawn(async move {
@@ -1591,6 +1611,13 @@ pub fn run() {
             commands::repair_codex_runtime,
             commands::rollback_codex_runtime,
             commands::uninstall_codex_runtime,
+            commands::list_codex_runtime_releases,
+            commands::plan_codex_runtime_release,
+            commands::install_codex_runtime_release,
+            commands::inspect_codex_runtime_package,
+            commands::install_codex_runtime_offline,
+            commands::get_codex_install_recovery,
+            commands::acknowledge_codex_install_recovery,
             commands::list_skin_catalog,
             commands::install_catalog_skin,
             commands::import_skin_package,

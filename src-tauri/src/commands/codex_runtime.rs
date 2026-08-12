@@ -12,9 +12,11 @@ use chimera_platform::lock::{LockGuard, OperationLock};
 use chimera_runtime::manager::{
     detect_portable_codex, detect_windows_codex, diagnose_windows_codex,
     fetch_windows_release_plan, install_windows_release, latest_portable_rollback,
-    maintenance_route, rollback_portable_install, uninstall_windows_codex, InstallMode,
-    MaintenanceRoute, UpdateSource,
+    maintenance_route, parse_windows_release_plan, rollback_portable_install,
+    uninstall_windows_codex, InstallMode, MaintenanceRoute, UpdateSource, WindowsReleasePlan,
 };
+
+use crate::services::codex_install_journal::{InstallJournal, InstallJournalEntry};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_opener::OpenerExt;
@@ -1011,15 +1013,32 @@ async fn install_release(
                 serde_json::json!({ "downloaded": downloaded, "total": total }),
             );
         };
-        install_windows_release(
+        // 安装事务日志（TASK-007）：破坏性操作前落盘，崩溃后启动时可发现。
+        let journal = InstallJournal::at(&root);
+        let journal_id = journal
+            .begin(
+                &plan.version,
+                &mode_label(install_mode),
+                "mirror:latest",
+                Some(&plan.sha256),
+            )
+            .map_err(|error| format!("写入安装事务日志失败，已中止安装: {error}"))?;
+        let result = install_windows_release(
             &plan,
             install_mode,
             &root.join("downloads"),
             &portable_root,
             &progress,
-        )
-        .map(operation_dto)
-        .map_err(|error| error.to_string())
+        );
+        match &result {
+            Ok(operation) => {
+                let _ = journal.finish(&journal_id, "completed", Some(operation.message.clone()));
+            }
+            Err(error) => {
+                let _ = journal.finish(&journal_id, "failed", Some(error.to_string()));
+            }
+        }
+        result.map(operation_dto).map_err(|error| error.to_string())
     })
     .await
     .map_err(|_| "Codex 安装任务中断，请先运行诊断".to_string())?
@@ -1094,6 +1113,426 @@ pub async fn uninstall_codex_runtime(confirm: bool) -> Result<CodexRuntimeOperat
     })
     .await
     .map_err(|_| "Codex 卸载任务中断，请运行诊断".to_string())?
+}
+
+// ─── v2.5.0 M3：历史版本、离线安装与安装事务恢复 ─────────────────────────
+
+/// Chimera 自有 Codex 镜像仓库（与 `chimera_runtime` 的 latest 端点同源）。
+const MIRROR_REPO: &str = "Duojiyi/codex-app-mirror";
+/// 离线安装包大小上限：防御异常/恶意文件的无界读取。
+const OFFLINE_PACKAGE_MAX_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+
+/// 镜像仓库某个发布 tag 的资产下载前缀。
+fn mirror_tag_download_base(tag: &str) -> String {
+    format!("https://github.com/{MIRROR_REPO}/releases/download/{tag}")
+}
+
+/// tag 只允许 GitHub release tag 的保守字符集，防止 URL 注入。
+fn validate_mirror_tag(tag: &str) -> Result<(), String> {
+    let valid = !tag.is_empty()
+        && tag.len() <= 100
+        && tag
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'));
+    if valid {
+        Ok(())
+    } else {
+        Err("版本 tag 含有非法字符".to_string())
+    }
+}
+
+/// 当前主机对应的 MSIX 架构标识。
+fn msix_architecture_for_current_host() -> &'static str {
+    match std::env::consts::ARCH {
+        "x86_64" => "x64",
+        "aarch64" => "arm64",
+        other => other,
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexRuntimeRelease {
+    pub tag: String,
+    pub name: Option<String>,
+    pub published_at: Option<String>,
+    pub prerelease: bool,
+    /// 该发布是否带有可安装的 Windows 资产（manifest + checksums）。
+    pub installable: bool,
+}
+
+/// 分页列出镜像仓库的历史 Codex 版本（TASK-009）。
+#[tauri::command]
+pub async fn list_codex_runtime_releases(
+    page: Option<u32>,
+) -> Result<Vec<CodexRuntimeRelease>, String> {
+    require_windows()?;
+    let page = page.unwrap_or(1).clamp(1, 50);
+    tauri::async_runtime::spawn_blocking(move || {
+        let url =
+            format!("https://api.github.com/repos/{MIRROR_REPO}/releases?per_page=10&page={page}");
+        let body = codex_win_engine::fetch_text(&url)
+            .map_err(|error| format!("获取历史版本目录失败: {error}"))?;
+        let releases: serde_json::Value = serde_json::from_str(&body)
+            .map_err(|error| format!("解析历史版本目录失败: {error}"))?;
+        let Some(items) = releases.as_array() else {
+            return Err("历史版本目录格式异常".to_string());
+        };
+        Ok(items
+            .iter()
+            .filter_map(|item| {
+                let tag = item.get("tag_name")?.as_str()?.to_string();
+                let asset_names: Vec<&str> = item
+                    .get("assets")
+                    .and_then(|assets| assets.as_array())
+                    .map(|assets| {
+                        assets
+                            .iter()
+                            .filter_map(|asset| asset.get("name").and_then(|name| name.as_str()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let installable = asset_names.contains(&"release-manifest.json")
+                    && asset_names.contains(&"SHA256SUMS-windows.txt");
+                Some(CodexRuntimeRelease {
+                    tag,
+                    name: item
+                        .get("name")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string),
+                    published_at: item
+                        .get("published_at")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string),
+                    prerelease: item
+                        .get("prerelease")
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or(false),
+                    installable,
+                })
+            })
+            .collect())
+    })
+    .await
+    .map_err(|_| "获取历史版本目录任务中断".to_string())?
+}
+
+/// 解析指定历史版本的安装计划（TASK-009 / TASK-028）。
+///
+/// 返回的 `WindowsReleasePlan` 就是安装确认对象：版本、构建、资产、来源、
+/// SHA-256 与大小全部锁定；前端确认后原样传回 `install_codex_runtime_release`，
+/// 后台目录刷新不会改变已确认的目标。
+#[tauri::command]
+pub async fn plan_codex_runtime_release(tag: String) -> Result<WindowsReleasePlan, String> {
+    require_windows()?;
+    validate_mirror_tag(&tag)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let base = mirror_tag_download_base(&tag);
+        let manifest = codex_win_engine::fetch_text(&format!("{base}/release-manifest.json"))
+            .map_err(|error| format!("获取该版本清单失败: {error}"))?;
+        let checksums = codex_win_engine::fetch_text(&format!("{base}/SHA256SUMS-windows.txt"))
+            .map_err(|error| format!("获取该版本校验和失败: {error}"))?;
+        let mut plan = parse_windows_release_plan(
+            &manifest,
+            &checksums,
+            UpdateSource::Mirror,
+            Some(std::env::consts::ARCH),
+        )
+        .map_err(|error| error.to_string())?;
+        // parse_windows_release_plan 生成的下载地址指向 latest；
+        // 历史安装必须把下载源锁定到所选 tag，与该 tag 的校验和绑定。
+        plan.package_url = format!("{base}/{}.Msix", plan.package_moniker);
+        Ok(plan)
+    })
+    .await
+    .map_err(|_| "解析历史版本任务中断".to_string())?
+}
+
+/// 按用户确认过的安装计划安装指定版本（TASK-009 / TASK-028）。
+#[tauri::command]
+pub async fn install_codex_runtime_release(
+    app: tauri::AppHandle,
+    plan: WindowsReleasePlan,
+    install_mode: Option<String>,
+    confirm: bool,
+) -> Result<CodexRuntimeOperation, String> {
+    require_confirmation(confirm, "安装所选 Codex 版本")?;
+    require_windows()?;
+    let install_mode = parse_install_mode(install_mode)?;
+    // 目标锁定：确认对象的下载地址必须位于受信任的镜像发布源内。
+    let trusted_prefix = format!("https://github.com/{MIRROR_REPO}/releases/");
+    if !plan.package_url.starts_with(&trusted_prefix) {
+        return Err("安装包地址不在受信任的镜像发布源内".to_string());
+    }
+    let root = runtime_root();
+    let portable_root = portable_root()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = acquire_operation_lock("codex_runtime_install")?;
+        let journal = InstallJournal::at(&root);
+        let journal_id = journal
+            .begin(
+                &plan.version,
+                &mode_label(install_mode),
+                &format!("mirror:{}", plan.package_moniker),
+                Some(&plan.sha256),
+            )
+            .map_err(|error| format!("写入安装事务日志失败，已中止安装: {error}"))?;
+        let total = plan.size_bytes;
+        let progress_app = app.clone();
+        let progress = move |downloaded: u64| {
+            let _ = progress_app.emit(
+                "codex-runtime-download-progress",
+                serde_json::json!({ "downloaded": downloaded, "total": total }),
+            );
+        };
+        let result = install_windows_release(
+            &plan,
+            install_mode,
+            &root.join("downloads"),
+            &portable_root,
+            &progress,
+        );
+        match &result {
+            Ok(operation) => {
+                let _ = journal.finish(&journal_id, "completed", Some(operation.message.clone()));
+            }
+            Err(error) => {
+                let _ = journal.finish(&journal_id, "failed", Some(error.to_string()));
+            }
+        }
+        result.map(operation_dto).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|_| "Codex 安装任务中断，请先运行诊断".to_string())?
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexOfflinePackageInspection {
+    pub file_name: String,
+    pub size_bytes: u64,
+    pub sha256: String,
+    pub signature_valid: bool,
+    pub package_name: String,
+    pub publisher: String,
+    pub package_version: String,
+    pub architecture: String,
+    pub architecture_matches: bool,
+    pub identity_valid: bool,
+}
+
+/// 检查本地离线安装包并返回确认页所需的全部校验信息（TASK-010）。
+///
+/// 只读操作：读取 → 大小上限 → SHA-256 → Authenticode → MSIX 身份/架构。
+#[tauri::command]
+pub async fn inspect_codex_runtime_package(
+    file_path: String,
+) -> Result<CodexOfflinePackageInspection, String> {
+    require_windows()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = PathBuf::from(&file_path);
+        if !path.is_file() {
+            return Err("离线安装包不存在".to_string());
+        }
+        let is_msix = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("msix"));
+        if !is_msix {
+            return Err("离线安装当前仅支持官方 .Msix 安装包".to_string());
+        }
+        let size_bytes = path
+            .metadata()
+            .map_err(|error| format!("读取安装包信息失败: {error}"))?
+            .len();
+        if size_bytes == 0 || size_bytes > OFFLINE_PACKAGE_MAX_BYTES {
+            return Err("安装包大小异常，已拒绝".to_string());
+        }
+        let sha256 = codex_win_engine::sha256_file(&path)
+            .map_err(|error| format!("计算安装包哈希失败: {error}"))?;
+        let signature_valid = codex_win_engine::verify_openai_authenticode(&path)
+            .map(|report| report.is_valid_openai())
+            .unwrap_or(false);
+        let identity = codex_win_engine::read_msix_identity(&path)
+            .map_err(|error| format!("读取 MSIX 身份失败: {error}"))?;
+        let expected_arch = msix_architecture_for_current_host();
+        Ok(CodexOfflinePackageInspection {
+            file_name: path
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            size_bytes,
+            sha256,
+            signature_valid,
+            package_name: identity.name.clone(),
+            publisher: identity.publisher.clone(),
+            package_version: identity.version.clone(),
+            architecture: identity.processor_architecture.clone(),
+            architecture_matches: identity
+                .processor_architecture
+                .eq_ignore_ascii_case(expected_arch),
+            identity_valid: identity.name == codex_win_engine::OPENAI_PACKAGE_IDENTITY,
+        })
+    })
+    .await
+    .map_err(|_| "检查离线安装包任务中断".to_string())?
+}
+
+/// 离线安装本地 `.Msix`（TASK-007 / TASK-010）。
+///
+/// 全部校验在安装前完成且不访问网络：哈希必须与确认页一致（目标锁定）、
+/// Authenticode 必须是 OpenAI 发行者、包身份必须是 Codex、架构必须匹配。
+/// 安装走便携模式，并通过 `PortableBoundary` 观察者把每个 rename 边界
+/// 与真实备份目录写入安装事务日志，供崩溃恢复使用。
+#[tauri::command]
+pub async fn install_codex_runtime_offline(
+    file_path: String,
+    expected_sha256: String,
+    confirm: bool,
+) -> Result<CodexRuntimeOperation, String> {
+    require_confirmation(confirm, "离线安装 Codex")?;
+    require_windows()?;
+    let root = runtime_root();
+    let portable_root = portable_root()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = acquire_operation_lock("codex_runtime_install")?;
+        let path = PathBuf::from(&file_path);
+        if !path.is_file() {
+            return Err("离线安装包不存在".to_string());
+        }
+        let size_bytes = path
+            .metadata()
+            .map_err(|error| format!("读取安装包信息失败: {error}"))?
+            .len();
+        if size_bytes == 0 || size_bytes > OFFLINE_PACKAGE_MAX_BYTES {
+            return Err("安装包大小异常，已拒绝".to_string());
+        }
+        let sha256 = codex_win_engine::sha256_file(&path)
+            .map_err(|error| format!("计算安装包哈希失败: {error}"))?;
+        if !sha256.eq_ignore_ascii_case(expected_sha256.trim()) {
+            return Err("安装包内容在确认后发生变化，已中止安装".to_string());
+        }
+        let signature = codex_win_engine::verify_openai_authenticode(&path)
+            .map_err(|error| format!("验证安装包签名失败: {error}"))?;
+        if !signature.is_valid_openai() {
+            return Err("安装包未通过 OpenAI 发行者签名校验，已拒绝安装".to_string());
+        }
+        let identity = codex_win_engine::read_msix_identity(&path)
+            .map_err(|error| format!("读取 MSIX 身份失败: {error}"))?;
+        if identity.name != codex_win_engine::OPENAI_PACKAGE_IDENTITY {
+            return Err(format!("包身份不是 Codex（{}），已拒绝安装", identity.name));
+        }
+        let expected_arch = msix_architecture_for_current_host();
+        if !identity
+            .processor_architecture
+            .eq_ignore_ascii_case(expected_arch)
+        {
+            return Err(format!(
+                "安装包架构 {} 与本机 {expected_arch} 不匹配，已拒绝安装",
+                identity.processor_architecture
+            ));
+        }
+
+        let journal = InstallJournal::at(&root);
+        let file_name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let journal_id = journal
+            .begin(
+                &identity.version,
+                "portable",
+                &format!("offline:{file_name}"),
+                Some(&sha256),
+            )
+            .map_err(|error| format!("写入安装事务日志失败，已中止安装: {error}"))?;
+
+        let journal_ref = &journal;
+        let journal_entry_id = journal_id.clone();
+        let mut observer = |boundary: codex_win_engine::PortableBoundary| {
+            use codex_win_engine::PortableBoundary as Boundary;
+            let (state, backup) = match &boundary {
+                Boundary::BeforeMoveOld { backup, .. } => {
+                    ("moving:before_move_old", Some(backup.clone()))
+                }
+                Boundary::AfterMoveOld { backup, .. } => {
+                    ("moving:after_move_old", Some(backup.clone()))
+                }
+                Boundary::BeforeMoveNew { backup, .. } => {
+                    ("moving:before_move_new", Some(backup.clone()))
+                }
+                Boundary::AfterMoveNew { backup, .. } => {
+                    ("moving:after_move_new", Some(backup.clone()))
+                }
+                Boundary::RollbackCompleted { backup, .. } => {
+                    ("moving:rollback_completed", Some(backup.clone()))
+                }
+            };
+            // 日志写入失败不得中断破坏性窗口内的安装，仅告警。
+            if let Err(error) = journal_ref.update(&journal_entry_id, |entry| {
+                entry.state = state.to_string();
+                if let Some(backup) = &backup {
+                    entry.backup_path = Some(backup.to_string_lossy().to_string());
+                }
+            }) {
+                log::warn!("[InstallJournal] 边界状态写入失败: {error}");
+            }
+            Ok(())
+        };
+        let result = codex_win_engine::install_portable_from_msix_with_observer(
+            &path,
+            &portable_root,
+            true,
+            false,
+            &mut observer,
+        );
+        match result {
+            Ok(report) => {
+                let _ = journal.finish(&journal_id, "completed", Some(report.message.clone()));
+                Ok(CodexRuntimeOperation {
+                    version: report.version,
+                    requested_mode: "portable".to_string(),
+                    actual_mode: "portable".to_string(),
+                    affected_path: Some(report.install_root),
+                    backup_path: report.backup_path,
+                    message: report.message,
+                    notes: report.notes,
+                })
+            }
+            Err(error) => {
+                let _ = journal.finish(&journal_id, "failed", Some(error.to_string()));
+                Err(format!("离线安装失败: {error}"))
+            }
+        }
+    })
+    .await
+    .map_err(|_| "离线安装任务中断".to_string())?
+}
+
+/// 读取等待用户处理的中断安装事务（TASK-008）。
+#[tauri::command]
+pub async fn get_codex_install_recovery() -> Result<Vec<InstallJournalEntry>, String> {
+    if !cfg!(target_os = "windows") {
+        return Ok(Vec::new());
+    }
+    let root = runtime_root();
+    tauri::async_runtime::spawn_blocking(move || Ok(InstallJournal::at(&root).pending_recovery()))
+        .await
+        .map_err(|_| "读取安装恢复记录任务中断".to_string())?
+}
+
+/// 用户处理完一个中断事务（已回滚或确认忽略）后关闭该记录（TASK-008）。
+#[tauri::command]
+pub async fn acknowledge_codex_install_recovery(id: String) -> Result<(), String> {
+    require_windows()?;
+    let root = runtime_root();
+    tauri::async_runtime::spawn_blocking(move || {
+        InstallJournal::at(&root)
+            .acknowledge(&id)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|_| "更新安装恢复记录任务中断".to_string())?
 }
 
 #[cfg(test)]

@@ -9,6 +9,7 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { open as openNativeFileDialog } from "@tauri-apps/plugin-dialog";
 import {
   Activity,
   ArrowUp,
@@ -241,6 +242,45 @@ type PendingRuntimeAction = {
 type RuntimeOperation = {
   action: RuntimeAction;
   stage: "preparing" | "downloading" | "installing";
+};
+// v2.5.0 M3：历史版本 / 离线安装 / 安装事务恢复
+type CodexRuntimeReleaseItem = {
+  tag: string;
+  name?: string | null;
+  publishedAt?: string | null;
+  prerelease: boolean;
+  installable: boolean;
+};
+type CodexRuntimeReleasePlan = {
+  version: string;
+  packageVersion: string;
+  packageMoniker: string;
+  packageUrl: string;
+  sha256: string;
+  sizeBytes: number;
+  releasedAt?: string | null;
+};
+type CodexOfflineInspection = {
+  fileName: string;
+  sizeBytes: number;
+  sha256: string;
+  signatureValid: boolean;
+  packageName: string;
+  publisher: string;
+  packageVersion: string;
+  architecture: string;
+  architectureMatches: boolean;
+  identityValid: boolean;
+};
+type CodexInstallRecoveryEntry = {
+  id: string;
+  startedAt: number;
+  version: string;
+  installMode: string;
+  source: string;
+  state: string;
+  detail?: string | null;
+  backupPath?: string | null;
 };
 type CatalogSkin = {
   id: string;
@@ -1626,6 +1666,7 @@ export default function ChimeraApp() {
               onAction={(action, preferences) =>
                 setPendingAction({ action, preferences })
               }
+              onRuntimeChanged={loadRuntime}
             />
           )}
           <Suspense
@@ -2070,6 +2111,7 @@ export function NewRuntimeView({
   onDiagnose,
   diagnosing,
   onAction,
+  onRuntimeChanged,
 }: {
   runtime: RuntimeStatus | null;
   release: ReleaseStatus | null;
@@ -2082,12 +2124,164 @@ export function NewRuntimeView({
     value: RuntimeAction,
     preferences?: RuntimeUpdatePreferences,
   ) => void;
+  onRuntimeChanged?: () => void | Promise<void>;
 }) {
   const [maintenanceOpen, setMaintenanceOpen] = useState(false);
   const [installMode, setInstallMode] = useState<"standard" | "portable">(
     "standard",
   );
   const [updateSource, setUpdateSource] = useState<"auto" | "mirror">("auto");
+  // v2.5.0 M3：历史版本 / 离线导入 / 安装事务恢复
+  const [recovery, setRecovery] = useState<CodexInstallRecoveryEntry[]>([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyPage, setHistoryPage] = useState(1);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyReleases, setHistoryReleases] = useState<
+    CodexRuntimeReleaseItem[]
+  >([]);
+  const [pendingPlan, setPendingPlan] =
+    useState<CodexRuntimeReleasePlan | null>(null);
+  const [planningTag, setPlanningTag] = useState<string | null>(null);
+  const [installingHistory, setInstallingHistory] = useState(false);
+  const [offlineInspection, setOfflineInspection] = useState<
+    (CodexOfflineInspection & { filePath: string }) | null
+  >(null);
+  const [inspectingOffline, setInspectingOffline] = useState(false);
+  const [installingOffline, setInstallingOffline] = useState(false);
+
+  const loadRecovery = useCallback(async () => {
+    if (!runningInTauri) return;
+    try {
+      const entries = await invoke<CodexInstallRecoveryEntry[]>(
+        "get_codex_install_recovery",
+      );
+      setRecovery(entries);
+    } catch {
+      // 恢复记录是提示性信息，读取失败不打扰用户
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadRecovery();
+  }, [loadRecovery]);
+
+  const acknowledgeRecovery = async (id: string) => {
+    try {
+      await invoke("acknowledge_codex_install_recovery", { id });
+      await loadRecovery();
+    } catch (reason) {
+      toast.error("更新恢复记录失败", { description: String(reason) });
+    }
+  };
+
+  const loadHistoryReleases = useCallback(async (page: number) => {
+    setHistoryLoading(true);
+    try {
+      const items = await invoke<CodexRuntimeReleaseItem[]>(
+        "list_codex_runtime_releases",
+        { page },
+      );
+      setHistoryReleases(items);
+      setHistoryPage(page);
+    } catch (reason) {
+      toast.error("获取历史版本失败", { description: String(reason) });
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
+
+  const openHistory = () => {
+    setMaintenanceOpen(false);
+    setHistoryOpen(true);
+    setPendingPlan(null);
+    if (!historyReleases.length) void loadHistoryReleases(1);
+  };
+
+  const planHistoryRelease = async (tag: string) => {
+    setPlanningTag(tag);
+    try {
+      const plan = await invoke<CodexRuntimeReleasePlan>(
+        "plan_codex_runtime_release",
+        { tag },
+      );
+      setPendingPlan(plan);
+    } catch (reason) {
+      toast.error("解析该版本失败", { description: String(reason) });
+    } finally {
+      setPlanningTag(null);
+    }
+  };
+
+  const installHistoryRelease = async () => {
+    if (!pendingPlan) return;
+    setInstallingHistory(true);
+    try {
+      // 确认对象原样传回：版本、资产、SHA-256 与下载地址全部锁定，
+      // 目录刷新不会改变本次安装的目标。
+      await invoke("install_codex_runtime_release", {
+        plan: pendingPlan,
+        installMode,
+        confirm: true,
+      });
+      toast.success(`Codex ${pendingPlan.version} 安装完成`);
+      setPendingPlan(null);
+      setHistoryOpen(false);
+      await onRuntimeChanged?.();
+      await loadRecovery();
+    } catch (reason) {
+      toast.error("安装所选版本失败", { description: String(reason) });
+    } finally {
+      setInstallingHistory(false);
+    }
+  };
+
+  const pickOfflinePackage = async () => {
+    setMaintenanceOpen(false);
+    let filePath: string | null = null;
+    try {
+      const selected = await openNativeFileDialog({
+        multiple: false,
+        filters: [{ name: "Codex 安装包", extensions: ["msix", "Msix"] }],
+      });
+      filePath = typeof selected === "string" ? selected : null;
+    } catch (reason) {
+      toast.error("选择安装包失败", { description: String(reason) });
+      return;
+    }
+    if (!filePath) return;
+    setInspectingOffline(true);
+    try {
+      const inspection = await invoke<CodexOfflineInspection>(
+        "inspect_codex_runtime_package",
+        { filePath },
+      );
+      setOfflineInspection({ ...inspection, filePath });
+    } catch (reason) {
+      toast.error("检查离线安装包失败", { description: String(reason) });
+    } finally {
+      setInspectingOffline(false);
+    }
+  };
+
+  const installOfflinePackage = async () => {
+    if (!offlineInspection) return;
+    setInstallingOffline(true);
+    try {
+      await invoke("install_codex_runtime_offline", {
+        filePath: offlineInspection.filePath,
+        expectedSha256: offlineInspection.sha256,
+        confirm: true,
+      });
+      toast.success(`Codex ${offlineInspection.packageVersion} 离线安装完成`);
+      setOfflineInspection(null);
+      await onRuntimeChanged?.();
+      await loadRecovery();
+    } catch (reason) {
+      toast.error("离线安装失败", { description: String(reason) });
+    } finally {
+      setInstallingOffline(false);
+    }
+  };
   const version = runtime?.version ?? "等待识别";
   const runtimeSupported = runtime?.supported !== false;
   const updateAvailable = release?.updateAvailable === true;
@@ -2199,6 +2393,29 @@ export function NewRuntimeView({
             </span>
           </div>
         </div>
+        {recovery.length > 0 && (
+          <div className="runtime-update-ready" role="alert">
+            <CircleAlert size={16} aria-hidden="true" />
+            <span>
+              <b>检测到 {recovery.length} 个未完成的安装事务</b>
+              <small>
+                上次安装（{recovery[0].version} · {recovery[0].source}
+                ）未正常结束。
+                {recovery[0].backupPath
+                  ? "备份目录仍在，可通过「安装方式与更新源 → 回滚」恢复上一版本，"
+                  : "如 Codex 工作正常可直接忽略，"}
+                处理后点击“我已处理”。
+              </small>
+            </span>
+            <button
+              type="button"
+              className="runtime-update-recheck"
+              onClick={() => void acknowledgeRecovery(recovery[0].id)}
+            >
+              我已处理
+            </button>
+          </div>
+        )}
         <div className="runtime-reference-actions">
           <button
             className={updateAvailable ? "primary" : "secondary"}
@@ -2384,6 +2601,29 @@ export function NewRuntimeView({
                   </span>
                   <ChevronDown size={15} />
                 </button>
+                <button onClick={openHistory} disabled={Boolean(operation)}>
+                  <Activity size={16} />
+                  <span>
+                    <strong>安装历史版本</strong>
+                    <small>从镜像发布目录选择并锁定指定版本</small>
+                  </span>
+                  <ChevronDown size={15} />
+                </button>
+                <button
+                  onClick={() => void pickOfflinePackage()}
+                  disabled={Boolean(operation) || inspectingOffline}
+                >
+                  <Package size={16} />
+                  <span>
+                    <strong>
+                      {inspectingOffline ? "正在检查安装包…" : "离线导入安装包"}
+                    </strong>
+                    <small>
+                      校验本地 .Msix 的哈希与 OpenAI 签名后安装（免安装版）
+                    </small>
+                  </span>
+                  <ChevronDown size={15} />
+                </button>
                 <button
                   className="danger"
                   onClick={() => startAction("uninstall")}
@@ -2406,6 +2646,190 @@ export function NewRuntimeView({
               <Download size={15} />
               下载并安装 {selectedInstallLabel}
             </button>
+          </section>
+        </div>
+      )}
+      {historyOpen && (
+        <div
+          className="modal-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !installingHistory)
+              setHistoryOpen(false);
+          }}
+        >
+          <section
+            className="diagnostics-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="runtime-history-title"
+            tabIndex={-1}
+          >
+            <header>
+              <div>
+                <h2 id="runtime-history-title">安装历史版本</h2>
+                <p>
+                  版本来自 Chimera 镜像发布目录；选定后版本、安装包与 SHA-256
+                  即被锁定。
+                </p>
+              </div>
+              <button
+                className="icon-button"
+                aria-label="关闭历史版本"
+                onClick={() => setHistoryOpen(false)}
+                disabled={installingHistory}
+              >
+                <X size={16} />
+              </button>
+            </header>
+            {pendingPlan ? (
+              <div className="runtime-maintenance-content">
+                <b>确认安装目标</b>
+                <p>
+                  Codex <strong>{pendingPlan.version}</strong>（包版本{" "}
+                  {pendingPlan.packageVersion}）
+                  {pendingPlan.sizeBytes > 0
+                    ? ` · ${(pendingPlan.sizeBytes / 1024 / 1024).toFixed(1)} MB`
+                    : ""}
+                </p>
+                <p>
+                  <small>
+                    SHA-256：<code>{pendingPlan.sha256}</code>
+                  </small>
+                </p>
+                <p>
+                  <small>
+                    安装方式：{runtimeText(installMode)}
+                    ；历史版本降级不会被后台更新静默覆盖，安装前后都会复核哈希与
+                    OpenAI 签名。
+                  </small>
+                </p>
+                <footer style={{ display: "flex", gap: 8 }}>
+                  <button
+                    onClick={() => setPendingPlan(null)}
+                    disabled={installingHistory}
+                  >
+                    返回列表
+                  </button>
+                  <button
+                    className="primary"
+                    onClick={() => void installHistoryRelease()}
+                    disabled={installingHistory}
+                  >
+                    {installingHistory ? "正在安装…" : "确认安装此版本"}
+                  </button>
+                </footer>
+              </div>
+            ) : (
+              <div className="runtime-maintenance-content">
+                {historyLoading && <p>正在加载版本目录…</p>}
+                {!historyLoading && !historyReleases.length && (
+                  <p>该页没有可安装的版本。</p>
+                )}
+                <div className="runtime-maintenance-list">
+                  {historyReleases.map((item) => (
+                    <button
+                      key={item.tag}
+                      onClick={() => void planHistoryRelease(item.tag)}
+                      disabled={!item.installable || planningTag !== null}
+                    >
+                      <Download size={16} />
+                      <span>
+                        <strong>
+                          {item.name || item.tag}
+                          {item.prerelease ? "（预发布）" : ""}
+                        </strong>
+                        <small>
+                          {item.installable
+                            ? (item.publishedAt ?? "").slice(0, 10) ||
+                              "发布时间未知"
+                            : "缺少 Windows 安装资产"}
+                          {planningTag === item.tag ? " · 正在解析…" : ""}
+                        </small>
+                      </span>
+                      <ChevronDown size={15} />
+                    </button>
+                  ))}
+                </div>
+                <footer style={{ display: "flex", gap: 8 }}>
+                  <button
+                    onClick={() => void loadHistoryReleases(historyPage - 1)}
+                    disabled={historyLoading || historyPage <= 1}
+                  >
+                    上一页
+                  </button>
+                  <button
+                    onClick={() => void loadHistoryReleases(historyPage + 1)}
+                    disabled={historyLoading || historyReleases.length < 10}
+                  >
+                    下一页
+                  </button>
+                </footer>
+              </div>
+            )}
+          </section>
+        </div>
+      )}
+      {offlineInspection && (
+        <div className="modal-backdrop">
+          <section
+            className="confirm-dialog"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="runtime-offline-title"
+            tabIndex={-1}
+          >
+            {offlineInspection.signatureValid &&
+            offlineInspection.identityValid &&
+            offlineInspection.architectureMatches ? (
+              <CircleCheck size={26} />
+            ) : (
+              <CircleAlert size={26} />
+            )}
+            <h2 id="runtime-offline-title">确认离线安装？</h2>
+            <p>
+              {offlineInspection.fileName} · Codex{" "}
+              {offlineInspection.packageVersion} ·{" "}
+              {offlineInspection.architecture} ·{" "}
+              {(offlineInspection.sizeBytes / 1024 / 1024).toFixed(1)} MB
+            </p>
+            <p>
+              <small>
+                SHA-256：<code>{offlineInspection.sha256}</code>
+              </small>
+            </p>
+            <p>
+              <small>
+                OpenAI 发行者签名：
+                {offlineInspection.signatureValid ? "已通过" : "未通过"} ·
+                包身份：
+                {offlineInspection.identityValid
+                  ? "Codex"
+                  : offlineInspection.packageName}{" "}
+                · 架构
+                {offlineInspection.architectureMatches ? "匹配" : "不匹配"}
+                。安装走免安装版，安装前会再次复核哈希。
+              </small>
+            </p>
+            <footer>
+              <button
+                onClick={() => setOfflineInspection(null)}
+                disabled={installingOffline}
+              >
+                取消
+              </button>
+              <button
+                className="primary"
+                onClick={() => void installOfflinePackage()}
+                disabled={
+                  installingOffline ||
+                  !offlineInspection.signatureValid ||
+                  !offlineInspection.identityValid ||
+                  !offlineInspection.architectureMatches
+                }
+              >
+                {installingOffline ? "正在安装…" : "确认安装"}
+              </button>
+            </footer>
           </section>
         </div>
       )}
