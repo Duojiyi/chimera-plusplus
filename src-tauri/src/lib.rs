@@ -1436,8 +1436,8 @@ pub fn run() {
 
                 // v2.5.0 M3（TASK-008）：启动时把上次进程内未完结的 Codex 安装
                 // 事务标记为 interrupted，由运行时页提示用户恢复。只改日志文件，
-                // 绝不在启动阶段自动改动安装目录。
-                #[cfg(target_os = "windows")]
+                // 绝不在启动阶段自动改动安装目录。非 Windows 平台没有运行时安装，
+                // 日志文件不存在，此检查是无害的空操作。
                 tauri::async_runtime::spawn_blocking(|| {
                     let journal_root = crate::config::get_app_config_dir().join("codex-runtime");
                     let journal =
