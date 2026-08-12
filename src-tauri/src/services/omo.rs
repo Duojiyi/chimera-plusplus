@@ -1405,9 +1405,14 @@ mod tests {
     }
 
     // ── 统一配置写入（round-trip 保真） ──────────────────────
+    //
+    // 能力边界（与上游 v3.19.2 一致）：行注释、CRLF、尾逗号、未触碰分区
+    // 在编辑后逐字节保留；块注释若位于被改写的空白区域，json-five 序列化
+    // 无法安全保留——此时 save() 拒绝写入并保持文件原样（见下方两个
+    // rejection 测试），绝不落盘损坏内容。
 
-    /// 带注释/尾逗号/多分区/CRLF 的真实样本。
-    const UNIFIED_SAMPLE: &str = "{\r\n  // OMO 全局配置\r\n  \"model\": \"top-level\", // 行内注释\r\n  \"[opencode]\": {\r\n    \"agents\": { \"dev\": {} },\r\n  },\r\n  /* 其他分区 */\r\n  \"[other]\": { \"keep\": true },\r\n}\r\n";
+    /// 带行注释/尾逗号/多分区/CRLF 的真实样本。
+    const UNIFIED_SAMPLE: &str = "{\r\n  // OMO 全局配置\r\n  \"model\": \"top-level\", // 行内注释\r\n  \"[opencode]\": {\r\n    \"agents\": { \"dev\": {} },\r\n  },\r\n  // 其他分区说明\r\n  \"[other]\": { \"keep\": true },\r\n}\r\n";
 
     #[test]
     fn unified_write_preserves_comments_and_untouched_sections() {
@@ -1423,10 +1428,10 @@ mod tests {
         document.save().unwrap();
 
         let written = std::fs::read_to_string(&path).unwrap();
-        // 注释、CRLF 与未触碰分区必须原样保留
+        // 行注释、CRLF 与未触碰分区必须原样保留
         assert!(written.contains("// OMO 全局配置"));
         assert!(written.contains("// 行内注释"));
-        assert!(written.contains("/* 其他分区 */"));
+        assert!(written.contains("// 其他分区说明"));
         assert!(written.contains("\r\n"));
         assert!(written.contains("\"[other]\": { \"keep\": true }"));
         // 语义上分区已更新
@@ -1509,6 +1514,49 @@ mod tests {
         let second = OmoService::remove_unified_config_section(&path).unwrap();
         assert!(second.is_none());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), written);
+    }
+
+    #[test]
+    fn unified_write_rejects_block_comment_corruption_and_keeps_file() {
+        // 上游已知的 json-five 限制：块注释位于被改写的空白区域时无法安全
+        // 序列化。契约是拒绝写入而不是写出损坏文件（与上游 v3.19.2 相同）。
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("omo.jsonc");
+        let original = r#"{ /* keep */ "[opencode]": {"agents": {}} }"#;
+        std::fs::write(&path, original).unwrap();
+
+        let mut document = UnifiedConfigDocument::load(&path).unwrap();
+        document
+            .set_opencode_section(&serde_json::json!({"agents": {"new": {}}}))
+            .unwrap();
+        let result = document.save();
+
+        assert!(matches!(result, Err(AppError::Config(_))));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn unified_write_rejects_parseable_semantic_corruption_and_keeps_file() {
+        // 序列化结果即使可解析，语义与目标状态不一致也必须拒绝（三重防线
+        // 的最后一道），文件保持原样。样本移植自上游 v3.19.2。
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("omo.jsonc");
+        let original = r#"{
+  /* block */
+  "[codex]": {"agents": {"reviewer": {}}},
+  // tail */
+  "[opencode]": {"agents": {}}
+}"#;
+        std::fs::write(&path, original).unwrap();
+
+        let mut document = UnifiedConfigDocument::load(&path).unwrap();
+        document
+            .set_opencode_section(&serde_json::json!({"agents": {"new": {}}}))
+            .unwrap();
+        let result = document.save();
+
+        assert!(result.is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
     }
 
     #[test]
