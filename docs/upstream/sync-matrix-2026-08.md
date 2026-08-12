@@ -1,0 +1,71 @@
+# 上游同步矩阵（2026-08 / v2.5.0 周期）
+
+> 状态：M1 审计完成（TASK-001、TASK-002、TASK-027）
+> 基线：Chimera++ `origin/main` `f44b103e`（v2.4.6）
+> 处置词表：`parity`（行为已对齐）/ `adapt`（按 Chimera++ 架构适配实现）/ `planned`（v2.5.0 任务）/ `deferred`（明确延后并记录原因）/ `not-applicable`（不适用）
+> 配套计划：[v2.5.0-upgrade-plan-zh.md](../plans/v2.5.0-upgrade-plan-zh.md)、[v2.5.0-todo-zh.md](../plans/v2.5.0-todo-zh.md)
+
+## 1. 依赖固定与上游版本映射（TASK-001）
+
+| 依赖 | 固定 rev | 来源 | 上游最新 | 差距 |
+| --- | --- | --- | --- | --- |
+| `chimera-runtime` / `chimera-platform` | `a5075e6e` | 本仓库分支 `v2-task-10-owned-mirror`（该分支 tip 即固定 rev） | 同 rev | 无差距。该分支是 Chimera 自有镜像适配层工作区（workspace `1.2.42-chimera.1`），内部以 workspace 依赖引用 `codex-win-engine`，同样固定 `89b542b9` |
+| `codex-win-engine` / `codex-theme-engine` | `89b542b9` | [Wangnov/Codex-App-Manager](https://github.com/Wangnov/Codex-App-Manager) | `v0.5.2`（`d29fda32`） | 17 提交 / 50 文件，其中 `crates/` 15 文件（见 §2） |
+
+依赖引用关系：`src-tauri` 直接固定引擎 rev，`chimera-runtime`（runtime 分支 workspace）也固定同一 rev；升级引擎必须同时更新两处并重新固定 runtime 分支，否则产生双拷贝。
+
+## 2. Codex App Manager `89b542b9` → `v0.5.2` 逐提交处置（TASK-002）
+
+| commit | 内容 | 涉及 | 处置 |
+| --- | --- | --- | --- |
+| `98ef9b02` | feat: install historical GitHub Release builds (#257) | `codex-win-engine`（`app_version.rs` +140、`msix.rs` +71、`portable.rs` +89/−59、`sys.rs` +88/−34、`lib.rs`）+ App Manager 应用层 | `adapt` → v2.5.0 M3（TASK-009/010/028）。历史版本目录与离线导入在 `src-tauri` 应用层实现，不升级引擎 rev（原因见 §2.1）；上游新增的 ASAR 读取上限（`MAX_ASAR_PACKAGE_OFFSET_BYTES` 256MiB、`MAX_PACKAGE_JSON_BYTES` 1MiB）与 MSIX `resource_id`/publisher-ID 校验，由应用层导入前置校验（文件大小上限、SHA-256、authenticode、身份/架构/版本）等效覆盖 |
+| `79f70945` | fix(themes): support Codex 26.727 main surface (#246) | `codex-theme-engine` | `deferred` → 随引擎 rev 升级一并带入（v2.5.1 计划，需配套主题回归测试） |
+| `9bd21ba0` | fix(themes): harden composer scroll ownership (#248) | `codex-theme-engine` | `deferred` 同上 |
+| `3036e05d` | fix(themes): invalidate composer overflow cache (#249) | `codex-theme-engine` | `deferred` 同上 |
+| `f0379ee6` | feat(themes): add CSP-safe motion video intros (#226) | `codex-theme-engine` | `deferred`（主题能力扩展，P2 边界） |
+| `d29fda32` / `fd730290` | 0.5.1 / 0.5.2 版本号 | — | `not-applicable` |
+| `66487369` | base64 0.22 → 0.23（src-tauri 依赖） | App Manager 自身 | `not-applicable`（Chimera++ 独立管理自身依赖） |
+| 其余 9 项 | App Manager 前端/CI 依赖升级（globals、vite、jsdom、@types/react 等） | App Manager 自身 | `not-applicable` |
+
+### 2.1 决策：v2.5.0 不升级引擎 rev
+
+- 引擎核心变更全部来自 `98ef9b02`，为**加法 API**（`read_codex_app_version_from_msix`）与**读取上限加固**；无我方可达路径上的安全修复缺失——当前引擎只处理来源受控（镜像 + SHA-256 锁定）的安装包，用户自选文件的离线导入是 v2.5.0 新增入口，由应用层前置校验覆盖。
+- 升级 rev 会同时带入 4 项主题引擎行为变更，与"不破坏现有功能"的发布约束冲突；且需要联动重固定 runtime 分支 workspace。
+- 结论：引擎 rev 升级 + 主题回归测试单独立项到 v2.5.1；本周期在应用层按上游 #257 语义实现历史版本安装。
+
+## 3. CC Switch v3.19.2 处置（对照 v2.5.0 升级计划 §0）
+
+| 上游能力 | 处置 | 证据 / 任务 |
+| --- | --- | --- |
+| Codex 用量交错计数、fork/sub-agent 去重、重建入口 | `parity`（v2.4.x 已落地） | 升级计划 §0.1；回归测试随 TASK-023 |
+| 日志轮转、URL/body 脱敏、响应上限、MCP 字段保护 | `parity`（v2.4.x 已落地） | 升级计划 §0.1 |
+| 工具调用缺函数名显式处理 | `parity` | `proxy/handlers.rs`、`proxy/providers/streaming.rs` |
+| MCP/Skills/Prompts 搜索 + 批量启停 | `planned` | G5 / TASK-017、018 |
+| 用量导入批处理、备份批量 INSERT、恢复单事务 | `planned` | G7 / TASK-020、030 |
+| blocking 解析移出异步线程、single-flight | `planned` | TASK-031 |
+| 逐账号 OAuth 订阅用量 | `planned` | G6 / TASK-019 |
+| OMO `~/.omo/omo.jsonc` + `[opencode]` 分区 | `planned` | G8 / TASK-021 |
+| Hermes `SOUL.md` | `planned` | G8 / TASK-022 |
+
+## 4. CodexPlusPlus v1.2.47 处置
+
+| 上游能力 | 处置 | 证据 / 任务 |
+| --- | --- | --- |
+| 供应商内单模型路由（协议维度） | `parity`（v2.4.5 `codexModelApiFormats`） | 升级计划 §0.1 |
+| 供应商内单模型路由（上游维度：不同 base_url/凭据） | `planned` | G4 / TASK-013～016 |
+| 系统证书链 | `planned`（本周期 M2 已实现：`combined_root_store()` 统一直连 + CONNECT 隧道，reqwest 启用 `rustls-tls-native-roots`） | G1 / TASK-004～006 |
+| 会话删除撤销后的刷新一致性 | `planned`（审计任务） | TASK-032 |
+| 新版 Codex 顶部栏注入兼容、DreamSkin、注入脚本 | `not-applicable`（P2 边界，产品定位不同） | 升级计划 §0.3 |
+
+## 5. 回归基线（TASK-003）
+
+- 用量正确性：`src-tauri/src/services/session_usage_codex.rs`、`session_usage.rs` 现有单元测试为基线；重建/去重行为以 v2.4.6 测试快照为准。
+- 代理脱敏：`src-tauri/src/lib.rs` 的 `redact_url_for_log_with_secrets` 测试集为基线。
+- 安装事务：v2.4.6 的 `commands/codex_runtime.rs` 行为（`fetch_windows_release_plan` / `install_windows_release` / `latest_portable_rollback` / `rollback_portable_install`）为基线；M3 改动不得改变既有安装入口语义。
+- 跨平台 CI：`ci.yml` 三平台（windows-2022 / macos-15 / ubuntu-22.04）矩阵产物为基线。
+
+## 6. 审计记录
+
+- 审计日期：2026-08-12；审计人：v2.5.0 实施代理
+- 数据来源：GitHub compare API（`89b542b9...v0.5.2`：17 commits / 50 files）、本仓库 `v2-task-10-owned-mirror` 分支、`src-tauri/Cargo.toml`/`Cargo.lock`
+- 本矩阵随各实施 PR 持续更新；新增 `deferred` 或 `not-applicable` 项必须附原因
