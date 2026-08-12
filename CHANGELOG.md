@@ -10,6 +10,20 @@ numbers belong to a separate upstream line.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.2] - 2026-08-12
+
+Safety patch for the 2.5.1 OMO unified-config writer, driven by an independent post-release review that reproduced a defect in the `json-five` 0.3.1 serializer with an executable probe.
+
+### Fixed
+
+- **Closed a silent-corruption path in OMO unified-config writes.** `json-five` 0.3.1 truncates the closing `/` of every serialized block comment (an upstream tokenizer off-by-one, present at any position in the file, not only in edited regions). In one arrangement — the truncated `/*…*` re-closing at a later `*/` inside a line comment, with only comments in the swallowed span — the corrupted output stayed parseable and semantically equal, slipping past all three save-time defenses and being written to disk. A fourth defense now runs at load: if re-serializing the untouched document does not reproduce the original bytes exactly, every programmatic edit is refused up front with an explanation (reads and imports are unaffected). No corrupted bytes can reach disk through arrangements the existing defenses already caught either; those now fail earlier with a clearer message.
+- **Disabling OMO no longer fails on unified configs the writer cannot edit.** In 2.5.1, a unified config containing any block comment made the disable flow error out entirely, leaving legacy files and the opencode plugin in place (a regression against 2.5.0). The disable flow now skips the `[opencode]` section removal with a logged warning — the section is inert once the plugin is removed — and completes legacy-file and plugin cleanup. The file is left byte-identical for manual cleanup.
+- The semantic-mismatch refusal now hints at the most likely cause (duplicate keys inside the section), which previously produced a misleading error.
+
+### Changed
+
+- Documentation and in-code capability notes corrected: block comments anywhere in a unified config (not just in reflowed whitespace) make the file read-only for the writer until the upstream serializer defect is fixed.
+
 ## [2.5.1] - 2026-08-12
 
 Deferred-scope completion release for the 2.5.0 cycle. Scope and decision-gate outcomes are tracked in `docs/plans/v2.5.1-*.md` and `docs/upstream/sync-matrix-2026-08.md`.
@@ -17,7 +31,7 @@ Deferred-scope completion release for the 2.5.0 cycle. Scope and decision-gate o
 ### Changed
 
 - **Codex engines upgraded to App Manager v0.5.2** (`89b542b9` → `d29fda32`, re-pinned on both the app and the runtime workspace so a single copy resolves everywhere). The upgrade is API-additive and activates the upstream hardening inside every existing install path: bounded ASAR reads (256 MiB package offset / 1 MiB package.json caps), stricter MSIX identity validation with publisher-ID and `resourceId` awareness, and the theme runtime's fixes for the Codex 26.727 main surface, composer scroll ownership, composer overflow cache, plus CSP-safe motion intros.
-- **OMO unified config writes:** Chimera++ now writes the `[opencode]` section of `~/.omo/omo.jsonc` / `omo.json` in place, using the same round-trip JSON5 machinery as upstream CC Switch v3.19.2 (`json5` + `json-five`). Line comments, indentation, line endings (including CRLF), trailing commas, and unrelated sections are preserved byte-for-byte. A save is refused outright — leaving the file untouched — when the file changed on disk since loading, when the serialized output fails to re-parse, when the re-parsed semantics diverge from the intended state, or when a block comment sits in whitespace the edit would reflow (a known upstream `json-five` limitation that is fail-safe by design). Disabling OMO now removes only the `[opencode]` section from a unified config instead of refusing, and never deletes the user's `omo.jsonc`. The v2.5.0 "import-only" guard is gone. Legacy plugin-file setups keep the previous behavior, with rollbacks now guarded so they never overwrite manual edits made after a failed write.
+- **OMO unified config writes:** Chimera++ now writes the `[opencode]` section of `~/.omo/omo.jsonc` / `omo.json` in place, using the same round-trip JSON5 machinery as upstream CC Switch v3.19.2 (`json5` + `json-five`). Line comments, indentation, line endings (including CRLF), trailing commas, and unrelated sections are preserved byte-for-byte. A save is refused outright — leaving the file untouched — when the file changed on disk since loading, when the serialized output fails to re-parse, or when the re-parsed semantics diverge from the intended state. *(Correction in 2.5.2: the block-comment boundary stated here at release time was wrong — `json-five` 0.3.1 truncates block comments anywhere in the file, one arrangement could slip past these defenses, and disabling OMO could fail outright on such files; 2.5.2 closes all of this.)* Disabling OMO now removes only the `[opencode]` section from a unified config instead of refusing, and never deletes the user's `omo.jsonc`. Legacy plugin-file setups keep the previous behavior, with rollbacks now guarded so they never overwrite manual edits made after a failed write.
 - **OMO config parsing** switched from a comment-stripping pre-pass to a real JSON5 parser, matching upstream: single quotes, identifier keys, and trailing commas are now accepted everywhere OMO configs are read.
 
 ### Deferred (recorded with reasons in the sync matrix)

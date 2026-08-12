@@ -66,6 +66,11 @@ struct UnifiedConfigDocument {
     original_source: String,
     semantic: Value,
     text: RtJSONText,
+    /// 第四道防线（v2.5.2）：加载时即验证"重序列化 == 原文"。json-five
+    /// 0.3.1 的分词器缺陷会截断所有块注释的收尾 `/`，特定排列下损坏
+    /// 输出可解析且语义一致，能穿透 save() 的三道防线被静默落盘。
+    /// 不保真的文件一律拒绝编辑（读取/导入不受影响）。
+    serialization_faithful: bool,
 }
 
 impl UnifiedConfigDocument {
@@ -97,16 +102,31 @@ impl UnifiedConfigDocument {
                 "OMO config contains duplicate [opencode] sections".to_string(),
             ));
         }
+        let serialization_faithful = text.to_string() == original_source;
 
         Ok(Self {
             path: path.to_path_buf(),
             original_source,
             semantic,
             text,
+            serialization_faithful,
         })
     }
 
+    /// 编辑前的保真门：序列化器无法逐字节复现原文（例如文件含块注释，
+    /// json-five 0.3.1 会截断其收尾 `/`）时拒绝一切程序化编辑。
+    fn require_faithful_serialization(&self) -> Result<(), AppError> {
+        if self.serialization_faithful {
+            return Ok(());
+        }
+        Err(AppError::Config(format!(
+            "OMO 统一配置 {} 包含当前 round-trip 序列化器无法逐字节复现的内容（已知：块注释会被 json-five 0.3.1 截断）。为避免损坏文件已拒绝程序化编辑；读取与导入不受影响，请手动编辑该文件或移除相关内容。",
+            self.path.display()
+        )))
+    }
+
     fn set_opencode_section(&mut self, value: &Value) -> Result<bool, AppError> {
+        self.require_faithful_serialization()?;
         if !value.is_object() {
             return Err(AppError::Config(
                 "OMO [opencode] section must be an object".to_string(),
@@ -197,6 +217,7 @@ impl UnifiedConfigDocument {
     }
 
     fn remove_opencode_section(&mut self) -> Result<bool, AppError> {
+        self.require_faithful_serialization()?;
         let RtJSONValue::JSONObject {
             key_value_pairs,
             context,
@@ -247,7 +268,7 @@ impl UnifiedConfigDocument {
         })?;
         if reparsed != self.semantic {
             return Err(AppError::Config(
-                "Refusing to write OMO config: serialized output does not match the intended state"
+                "Refusing to write OMO config: serialized output does not match the intended state（若分区内存在重复键，请先手动去重后重试）"
                     .to_string(),
             ));
         }
@@ -999,10 +1020,25 @@ impl OmoService {
 
         let result = (|| -> Result<(), AppError> {
             if let Some(path) = &unified_path {
-                if let Some((snapshot, expected_contents)) =
-                    Self::remove_unified_config_section(path)?
-                {
-                    applied_changes.push((path.clone(), Some(snapshot), Some(expected_contents)));
+                // v2.5.2：统一配置无法安全编辑（如含块注释触发保真门）时不
+                // 阻塞禁用——插件解除后 [opencode] 分区即失效，原文件原样保留
+                // 供手动清理（恢复 v2.5.0 的禁用语义，避免"禁用整体失败且
+                // 插件残留"的回退）。
+                match Self::remove_unified_config_section(path) {
+                    Ok(Some((snapshot, expected_contents))) => {
+                        applied_changes.push((
+                            path.clone(),
+                            Some(snapshot),
+                            Some(expected_contents),
+                        ));
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        log::warn!(
+                            "[OMO] 统一配置的 [opencode] 分区未移除（{error}）；插件解除后该分区即失效，文件保留在 {} 供手动清理",
+                            path.display()
+                        );
+                    }
                 }
             }
             for path in &legacy_paths {
@@ -1406,10 +1442,12 @@ mod tests {
 
     // ── 统一配置写入（round-trip 保真） ──────────────────────
     //
-    // 能力边界（与上游 v3.19.2 一致）：行注释、CRLF、尾逗号、未触碰分区
-    // 在编辑后逐字节保留；块注释若位于被改写的空白区域，json-five 序列化
-    // 无法安全保留——此时 save() 拒绝写入并保持文件原样（见下方两个
-    // rejection 测试），绝不落盘损坏内容。
+    // 能力边界（v2.5.2 修正）：行注释、CRLF、尾逗号、未触碰分区在编辑后
+    // 逐字节保留。json-five 0.3.1 会截断**文件中任何位置**的块注释收尾
+    // `/`（上游分词器 off-by-one），因此含块注释的文件在加载时即判定为
+    // "序列化不保真"，一切程序化编辑被保真门拒绝（读取/导入不受影响），
+    // 绝不落盘损坏内容；禁用流程遇到此类文件会跳过分区移除继续完成
+    // 插件解除。
 
     /// 带行注释/尾逗号/多分区/CRLF 的真实样本。
     const UNIFIED_SAMPLE: &str = "{\r\n  // OMO 全局配置\r\n  \"model\": \"top-level\", // 行内注释\r\n  \"[opencode]\": {\r\n    \"agents\": { \"dev\": {} },\r\n  },\r\n  // 其他分区说明\r\n  \"[other]\": { \"keep\": true },\r\n}\r\n";
@@ -1518,46 +1556,98 @@ mod tests {
     }
 
     #[test]
-    fn unified_write_rejects_block_comment_corruption_and_keeps_file() {
-        // 上游已知的 json-five 限制：块注释位于被改写的空白区域时无法安全
-        // 序列化。契约是拒绝写入而不是写出损坏文件（与上游 v3.19.2 相同）。
+    fn unified_edit_is_refused_by_fidelity_gate_for_block_comments() {
+        // json-five 0.3.1 截断块注释收尾 `/`：文件在加载时即判定不保真，
+        // 编辑被保真门拒绝（而不是等到 save），文件保持原样。
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("omo.jsonc");
         let original = r#"{ /* keep */ "[opencode]": {"agents": {}} }"#;
         std::fs::write(&path, original).unwrap();
 
         let mut document = UnifiedConfigDocument::load(&path).unwrap();
-        document
-            .set_opencode_section(&serde_json::json!({"agents": {"new": {}}}))
-            .unwrap();
-        let result = document.save();
+        let set_result = document.set_opencode_section(&serde_json::json!({"agents": {"new": {}}}));
+        assert!(matches!(set_result, Err(AppError::Config(_))));
+
+        let mut document = UnifiedConfigDocument::load(&path).unwrap();
+        let remove_result = document.remove_opencode_section();
+        assert!(matches!(remove_result, Err(AppError::Config(_))));
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn unified_edit_is_refused_for_silent_swallow_arrangement() {
+        // P1 回归样本（审查探针 T16 形态）：截断的 `/*…*` 会在后方行注释里的
+        // `*/` 处重新闭合，吞掉的区段只含注释——损坏输出可解析且语义一致，
+        // 能穿透 save() 的三道防线。保真门必须在编辑前拦下。
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("omo.jsonc");
+        let original = "{\n  /* a */\n  // note */\n  \"[opencode]\": {\"agents\": {}}\n}";
+        std::fs::write(&path, original).unwrap();
+
+        let mut document = UnifiedConfigDocument::load(&path).unwrap();
+        let result = document.set_opencode_section(&serde_json::json!({"agents": {"new": {}}}));
 
         assert!(matches!(result, Err(AppError::Config(_))));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
     }
 
     #[test]
-    fn unified_write_rejects_parseable_semantic_corruption_and_keeps_file() {
-        // 序列化结果即使可解析，语义与目标状态不一致也必须拒绝（三重防线
-        // 的最后一道），文件保持原样。样本移植自上游 v3.19.2。
+    fn unified_write_refuses_duplicate_keys_inside_section() {
+        // 分区内重复键：json5 语义为末值生效，rt 去重保留首现——期望值与
+        // 末值相同时语义视图与文本视图不一致，save 必须拒绝（fail-safe），
+        // 报错含去重提示。
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("omo.jsonc");
-        let original = r#"{
-  /* block */
-  "[codex]": {"agents": {"reviewer": {}}},
-  // tail */
-  "[opencode]": {"agents": {}}
-}"#;
+        let original =
+            "{\n  \"[opencode]\": {\"agents\": {\"a\": 1, \"a\": 2}, \"model\": \"x\"}\n}";
         std::fs::write(&path, original).unwrap();
 
         let mut document = UnifiedConfigDocument::load(&path).unwrap();
-        document
-            .set_opencode_section(&serde_json::json!({"agents": {"new": {}}}))
-            .unwrap();
-        let result = document.save();
+        // 期望 agents.a == 2（与末值一致）+ 一个真实变更触发写出
+        let set_result =
+            document.set_opencode_section(&serde_json::json!({"agents": {"a": 2}, "model": "y"}));
+        let result = set_result.and_then(|_| document.save().map(|_| ()));
 
-        assert!(result.is_err());
+        assert!(matches!(result, Err(AppError::Config(_))));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn delete_config_file_completes_when_unified_cannot_be_edited() {
+        // P2 回归：统一配置含块注释（保真门拒绝编辑）时，禁用流程必须
+        // 继续完成——legacy 文件删除、插件解除，统一配置原样保留。
+        let original_home = std::env::var_os("CC_SWITCH_TEST_HOME");
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("CC_SWITCH_TEST_HOME", home.path());
+        crate::settings::reload_settings().expect("reload settings");
+
+        let omo_dir = home.path().join(".omo");
+        std::fs::create_dir_all(&omo_dir).unwrap();
+        let unified_path = omo_dir.join("omo.jsonc");
+        let unified_original = r#"{ /* keep */ "[opencode]": {"agents": {}} }"#;
+        std::fs::write(&unified_path, unified_original).unwrap();
+
+        let opencode_dir = home.path().join(".config").join("opencode");
+        std::fs::create_dir_all(&opencode_dir).unwrap();
+        let legacy_path = opencode_dir.join("oh-my-openagent.jsonc");
+        std::fs::write(&legacy_path, r#"{"agents":{}}"#).unwrap();
+
+        let result = OmoService::delete_config_file(&STANDARD);
+        match original_home {
+            Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
+            None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+        }
+        crate::settings::reload_settings().expect("restore settings");
+
+        assert!(result.is_ok(), "disable must not fail: {result:?}");
+        assert!(!legacy_path.exists(), "legacy file must be removed");
+        assert_eq!(
+            std::fs::read_to_string(&unified_path).unwrap(),
+            unified_original,
+            "unified config must remain byte-identical"
+        );
     }
 
     #[test]
