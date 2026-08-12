@@ -51,6 +51,10 @@ impl OmoConfigLocation {
 /// （回滚快照, 我方写出的期望内容）——用于"仅当磁盘仍是我们写出的内容时才回滚"。
 type OptionalConfigFileVersions = Option<(Vec<u8>, Vec<u8>)>;
 
+/// 删除流程中一条已应用的文件变更：（路径, 回滚快照, 我方写出内容；
+/// 写出内容为 None 表示文件被删除）。
+type AppliedConfigChange = (PathBuf, Option<Vec<u8>>, Option<Vec<u8>>);
+
 /// `~/.omo/omo.jsonc|omo.json` 的往返编辑封装（移植自上游 CC Switch v3.19.2）。
 ///
 /// 同一份文件持有两个视图：`semantic`（json5 语义值，用于比较与校验）与
@@ -991,8 +995,7 @@ impl OmoService {
             }
         }
 
-        // (路径, 回滚快照, 我方写出内容或 None=文件被删除)
-        let mut applied_changes: Vec<(PathBuf, Option<Vec<u8>>, Option<Vec<u8>>)> = Vec::new();
+        let mut applied_changes: Vec<AppliedConfigChange> = Vec::new();
 
         let result = (|| -> Result<(), AppError> {
             if let Some(path) = &unified_path {
