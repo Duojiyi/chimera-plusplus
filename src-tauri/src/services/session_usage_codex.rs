@@ -1028,6 +1028,12 @@ fn sync_single_codex_file(
     }
 
     let mut result = CodexFileSyncResult::default();
+    // 整个文件共用一次锁 + 单事务批量提交（v2.5.0 G7）：旧实现每个 token
+    // 事件独立取 Mutex 并隐式提交，大历史库导入时明显拖慢并阻塞 UI 查询。
+    let conn = lock_conn!(db.conn);
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| AppError::Database(format!("开启导入事务失败: {e}")))?;
     for (token_offset, event) in parsed.token_events.iter().enumerate() {
         let Some(event_index) = event.event_index else {
             continue;
@@ -1044,7 +1050,7 @@ fn sync_single_codex_file(
 
         let request_id = format!("{CODEX_THREAD_REQUEST_ID_PREFIX}:{root_thread_id}:{event_index}");
         match insert_codex_session_entry(
-            db,
+            &tx,
             &request_id,
             &event.delta,
             &event.model,
@@ -1060,14 +1066,20 @@ fn sync_single_codex_file(
             }
         }
     }
+    tx.commit()
+        .map_err(|e| AppError::Database(format!("提交导入事务失败: {e}")))?;
+    drop(conn);
 
     update_sync_state(db, &file_path_str, file_modified, parsed.line_offset)?;
     Ok(result)
 }
 
 /// 插入单条 Codex 会话记录到 proxy_request_logs
+///
+/// 调用方负责持锁并（可选地）套事务：批量导入路径传入同一个
+/// `Transaction`（Deref 到 `Connection`），单元测试可直接传裸连接。
 fn insert_codex_session_entry(
-    db: &Database,
+    conn: &rusqlite::Connection,
     request_id: &str,
     delta: &DeltaTokens,
     model: &str,
@@ -1075,8 +1087,6 @@ fn insert_codex_session_entry(
     timestamp: Option<&str>,
     suspected_duplicates: &mut u32,
 ) -> Result<bool, AppError> {
-    let conn = lock_conn!(db.conn);
-
     let created_at = timestamp
         .and_then(|ts| {
             chrono::DateTime::parse_from_rfc3339(ts)
@@ -1808,15 +1818,18 @@ mod tests {
             output: 2,
         };
         let mut suspected_duplicates = 0;
-        let inserted = insert_codex_session_entry(
-            &db,
-            "codex-session-dup",
-            &delta,
-            "gpt-5.4",
-            Some("session-1"),
-            Some("1970-01-01T00:16:45Z"),
-            &mut suspected_duplicates,
-        )?;
+        let inserted = {
+            let conn = lock_conn!(db.conn);
+            insert_codex_session_entry(
+                &conn,
+                "codex-session-dup",
+                &delta,
+                "gpt-5.4",
+                Some("session-1"),
+                Some("1970-01-01T00:16:45Z"),
+                &mut suspected_duplicates,
+            )?
+        };
         assert!(!inserted);
 
         let conn = lock_conn!(db.conn);
@@ -1837,24 +1850,27 @@ mod tests {
             output: 2,
         };
         let mut suspected_duplicates = 0;
-        assert!(insert_codex_session_entry(
-            &db,
-            "codex-session-a",
-            &delta,
-            "gpt-5.4",
-            Some("session-a"),
-            Some("1970-01-01T00:16:40Z"),
-            &mut suspected_duplicates,
-        )?);
-        assert!(insert_codex_session_entry(
-            &db,
-            "codex-session-b",
-            &delta,
-            "gpt-5.4",
-            Some("session-b"),
-            Some("1970-01-01T00:16:45Z"),
-            &mut suspected_duplicates,
-        )?);
+        {
+            let conn = lock_conn!(db.conn);
+            assert!(insert_codex_session_entry(
+                &conn,
+                "codex-session-a",
+                &delta,
+                "gpt-5.4",
+                Some("session-a"),
+                Some("1970-01-01T00:16:40Z"),
+                &mut suspected_duplicates,
+            )?);
+            assert!(insert_codex_session_entry(
+                &conn,
+                "codex-session-b",
+                &delta,
+                "gpt-5.4",
+                Some("session-b"),
+                Some("1970-01-01T00:16:45Z"),
+                &mut suspected_duplicates,
+            )?);
+        }
         assert_eq!(suspected_duplicates, 1);
 
         let conn = lock_conn!(db.conn);

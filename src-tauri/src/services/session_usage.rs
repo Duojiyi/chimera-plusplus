@@ -375,9 +375,16 @@ fn sync_single_file(db: &Database, file_path: &Path) -> Result<(u32, u32), AppEr
         }
     }
 
-    // 写入数据库
+    // 写入数据库：整个文件共用一次锁 + 单事务批量提交（v2.5.0 G7）。
+    // 旧实现每行独立取 Mutex 并隐式提交，大历史库导入时锁竞争与 fsync
+    // 开销使 UI 明显卡顿；改为文件级事务后行为不变、提交次数从 N 降为 1。
     let mut imported: u32 = 0;
     let mut skipped: u32 = 0;
+
+    let conn = lock_conn!(db.conn);
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| AppError::Database(format!("开启导入事务失败: {e}")))?;
 
     for msg in messages.values() {
         // 只要产生了真实计费 token 就导入，不再强制要求 stop_reason 或 output>0。
@@ -406,7 +413,7 @@ fn sync_single_file(db: &Database, file_path: &Path) -> Result<(u32, u32), AppEr
             msg.message_id
         );
 
-        match insert_session_log_entry(db, &request_id, msg) {
+        match insert_session_log_entry(&tx, &request_id, msg) {
             Ok(true) => imported += 1,
             Ok(false) => skipped += 1,
             Err(e) => {
@@ -415,6 +422,10 @@ fn sync_single_file(db: &Database, file_path: &Path) -> Result<(u32, u32), AppEr
             }
         }
     }
+
+    tx.commit()
+        .map_err(|e| AppError::Database(format!("提交导入事务失败: {e}")))?;
+    drop(conn);
 
     // 更新同步状态
     update_sync_state(db, &file_path_str, file_modified, line_offset)?;
@@ -473,13 +484,14 @@ pub(crate) fn update_sync_state(
 }
 
 /// 插入单条会话日志到 proxy_request_logs，返回是否成功插入 (true=新插入, false=已存在)
+///
+/// 调用方负责持锁并（可选地）套事务：批量导入路径传入同一个
+/// `Transaction`（Deref 到 `Connection`），单元测试可直接传裸连接。
 fn insert_session_log_entry(
-    db: &Database,
+    conn: &rusqlite::Connection,
     request_id: &str,
     msg: &ParsedAssistantUsage,
 ) -> Result<bool, AppError> {
-    let conn = lock_conn!(db.conn);
-
     let created_at = msg
         .timestamp
         .as_ref()
@@ -766,7 +778,10 @@ mod tests {
             session_id: Some("session-1".to_string()),
         };
 
-        let inserted = insert_session_log_entry(&db, "session:msg_1", &msg)?;
+        let inserted = {
+            let conn = lock_conn!(db.conn);
+            insert_session_log_entry(&conn, "session:msg_1", &msg)?
+        };
         assert!(!inserted);
 
         let conn = lock_conn!(db.conn);
