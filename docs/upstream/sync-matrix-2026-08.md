@@ -45,7 +45,7 @@
 | 备份导出批量 INSERT、恢复单事务 | `not-applicable`（Chimera++ 备份为整库文件级；SQL 导入已是"备份→临时库→原子替换"，优于上游方案） | TASK-030 |
 | blocking 解析移出异步线程、single-flight | `parity`（v2.4.x 已落地：`session_sync_mutex` + `spawn_blocking` + `MissedTickBehavior::Skip` + 单次刷新通知） | TASK-031 |
 | 逐账号 OAuth 订阅用量 | `adapt`（v2.5.0 实现于实际挂载的 `CodexOAuthSection` 账号列表；`AuthCenterPanel` 未挂载） | G6 / TASK-019 |
-| OMO `~/.omo/omo.jsonc` + `[opencode]` 分区 | `parity`（v2.5.1 完成写入端：round-trip 编辑器随 `json5`+`json-five` 依赖与上游辅助函数移植落地，分区写入/删除带磁盘变化检测与重解析校验，读取端切换 json5 解析；v2.5.0 的写入拒绝守卫已移除） | G8 / v2.5.1 TASK-110～113 |
+| OMO `~/.omo/omo.jsonc` + `[opencode]` 分区 | `parity+fix`（v2.5.1 完成写入端：round-trip 编辑器随 `json5`+`json-five` 依赖与上游辅助函数移植落地，分区写入/删除带磁盘变化检测与重解析校验，读取端切换 json5 解析。v2.5.2 修复：`json-five` 0.3.1 分词器 off-by-one 会截断文件中任何位置的块注释收尾 `/`，特定排列可穿透三重防线静默落盘——新增加载期保真门（重序列化 ≠ 原文即拒绝编辑，读取/导入不受影响），禁用流程遇不可编辑文件降级为跳过分区移除。**上游 CC Switch v3.19.2 同样受此缺陷影响**（同一实现、无第四道防线），crates.io 尚无修复版本） | G8 / v2.5.1 TASK-110～113、v2.5.2 修复 |
 | Hermes `SOUL.md` | `adapt`（v2.5.0：写入/读取切换到 `SOUL.md`，旧 `AGENTS.md` 首访一次性迁移并保留备份） | G8 / TASK-022 |
 
 ## 4. CodexPlusPlus v1.2.47 处置
