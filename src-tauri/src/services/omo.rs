@@ -1599,14 +1599,14 @@ mod tests {
         // 报错含去重提示。
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("omo.jsonc");
-        let original =
-            "{\n  \"[opencode]\": {\"agents\": {\"a\": 1, \"a\": 2}, \"model\": \"x\"}\n}";
+        let original = "{\n  \"[opencode]\": {\"agents\": {\"a\": 1, \"a\": 2, \"keep\": true}}\n}";
         std::fs::write(&path, original).unwrap();
 
         let mut document = UnifiedConfigDocument::load(&path).unwrap();
-        // 期望 agents.a == 2（与末值一致）+ 一个真实变更触发写出
+        // 期望 agents.a == 2（与末值一致），同时改动同对象内的 keep 迫使
+        // merge 进入含重复键的对象：首现 a:1 保留、次现被删 → 语义不一致。
         let set_result =
-            document.set_opencode_section(&serde_json::json!({"agents": {"a": 2}, "model": "y"}));
+            document.set_opencode_section(&serde_json::json!({"agents": {"a": 2, "keep": false}}));
         let result = set_result.and_then(|_| document.save().map(|_| ()));
 
         assert!(matches!(result, Err(AppError::Config(_))));
