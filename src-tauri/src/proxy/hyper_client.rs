@@ -70,10 +70,19 @@ fn combined_root_store() -> rustls::RootCertStore {
 }
 
 /// TLS client configuration built on [`combined_root_store`].
+///
+/// Pins the ring provider explicitly instead of relying on the process-wide
+/// default installed during app startup: unit tests (and any pre-startup
+/// caller) would otherwise hit the rustls multi-provider ambiguity panic,
+/// because both ring and aws-lc-rs backends are compiled into this binary.
 fn combined_tls_config() -> rustls::ClientConfig {
-    rustls::ClientConfig::builder()
-        .with_root_certificates(combined_root_store())
-        .with_no_client_auth()
+    rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .expect("ring provider supports the default TLS protocol versions")
+    .with_root_certificates(combined_root_store())
+    .with_no_client_auth()
 }
 
 /// Lazily-initialized hyper client with header-case preservation enabled.
