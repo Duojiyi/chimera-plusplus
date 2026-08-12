@@ -10,6 +10,21 @@ numbers belong to a separate upstream line.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.1] - 2026-08-12
+
+Deferred-scope completion release for the 2.5.0 cycle. Scope and decision-gate outcomes are tracked in `docs/plans/v2.5.1-*.md` and `docs/upstream/sync-matrix-2026-08.md`.
+
+### Changed
+
+- **Codex engines upgraded to App Manager v0.5.2** (`89b542b9` → `d29fda32`, re-pinned on both the app and the runtime workspace so a single copy resolves everywhere). The upgrade is API-additive and activates the upstream hardening inside every existing install path: bounded ASAR reads (256 MiB package offset / 1 MiB package.json caps), stricter MSIX identity validation with publisher-ID and `resourceId` awareness, and the theme runtime's fixes for the Codex 26.727 main surface, composer scroll ownership, composer overflow cache, plus CSP-safe motion intros.
+- **OMO unified config writes:** Chimera++ now writes the `[opencode]` section of `~/.omo/omo.jsonc` / `omo.json` in place, using the same round-trip JSON5 machinery as upstream CC Switch v3.19.2 (`json5` + `json-five`). Comments, indentation, line endings, and unrelated sections are preserved byte-for-byte; a save is refused outright when the file changed on disk since loading, when the serialized output fails to re-parse, or when the re-parsed semantics diverge from the intended state. Disabling OMO now removes only the `[opencode]` section from a unified config instead of refusing, and never deletes the user's `omo.jsonc`. The v2.5.0 "import-only" guard is gone. Legacy plugin-file setups keep the previous behavior, with rollbacks now guarded so they never overwrite manual edits made after a failed write.
+- **OMO config parsing** switched from a comment-stripping pre-pass to a real JSON5 parser, matching upstream: single quotes, identifier keys, and trailing commas are now accepted everywhere OMO configs are read.
+
+### Deferred (recorded with reasons in the sync matrix)
+
+- macOS runtime management: no verifiable acceptance environment available this cycle.
+- MCP/Skills/Prompts panel mounting (and their search/bulk operations): a product-surface decision reserved for the maintainer; neither mounting nor removal was exercised autonomously.
+
 ## [2.5.0] - 2026-08-12
 
 Reliability-focused integration release. Upstream references: CC Switch v3.19.2, CodexPlusPlus v1.2.47, Codex App Manager v0.5.2; the per-item audit and dispositions live in `docs/upstream/sync-matrix-2026-08.md`.

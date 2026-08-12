@@ -10,7 +10,7 @@
 | 依赖 | 固定 rev | 来源 | 上游最新 | 差距 |
 | --- | --- | --- | --- | --- |
 | `chimera-runtime` / `chimera-platform` | `a5075e6e` | 本仓库分支 `v2-task-10-owned-mirror`（该分支 tip 即固定 rev） | 同 rev | 无差距。该分支是 Chimera 自有镜像适配层工作区（workspace `1.2.42-chimera.1`），内部以 workspace 依赖引用 `codex-win-engine`，同样固定 `89b542b9` |
-| `codex-win-engine` / `codex-theme-engine` | `89b542b9` | [Wangnov/Codex-App-Manager](https://github.com/Wangnov/Codex-App-Manager) | `v0.5.2`（`d29fda32`） | 17 提交 / 50 文件，其中 `crates/` 15 文件（见 §2） |
+| `codex-win-engine` / `codex-theme-engine` | ~~`89b542b9`~~ → **`d29fda32`（v0.5.2，v2.5.1 已升级）** | [Wangnov/Codex-App-Manager](https://github.com/Wangnov/Codex-App-Manager) | `v0.5.2`（`d29fda32`） | 已对齐。v2.5.1 双侧联动重固定（runtime 分支新 tip `b12a02ce`），API 纯加法零适配；上游加固（ASAR 上限、MSIX 身份严格化）随升级生效；主题引擎 4 项变更随升级带入，实机皮肤回归开放给维护者（v2.5.1 TODO TASK-108） |
 
 依赖引用关系：`src-tauri` 直接固定引擎 rev，`chimera-runtime`（runtime 分支 workspace）也固定同一 rev；升级引擎必须同时更新两处并重新固定 runtime 分支，否则产生双拷贝。
 
@@ -45,7 +45,7 @@
 | 备份导出批量 INSERT、恢复单事务 | `not-applicable`（Chimera++ 备份为整库文件级；SQL 导入已是"备份→临时库→原子替换"，优于上游方案） | TASK-030 |
 | blocking 解析移出异步线程、single-flight | `parity`（v2.4.x 已落地：`session_sync_mutex` + `spawn_blocking` + `MissedTickBehavior::Skip` + 单次刷新通知） | TASK-031 |
 | 逐账号 OAuth 订阅用量 | `adapt`（v2.5.0 实现于实际挂载的 `CodexOAuthSection` 账号列表；`AuthCenterPanel` 未挂载） | G6 / TASK-019 |
-| OMO `~/.omo/omo.jsonc` + `[opencode]` 分区 | `adapt`（v2.5.0：统一配置优先的读取/导入已实现；写入检测到统一配置时显式报错。完整往返写入依赖上游 round-trip JSON5 编辑器【`rt_from_str`/`merge_rt_value` 等整套基础设施】，`deferred` v2.5.1 移植） | G8 / TASK-021 |
+| OMO `~/.omo/omo.jsonc` + `[opencode]` 分区 | `parity`（v2.5.1 完成写入端：round-trip 编辑器随 `json5`+`json-five` 依赖与上游辅助函数移植落地，分区写入/删除带磁盘变化检测与重解析校验，读取端切换 json5 解析；v2.5.0 的写入拒绝守卫已移除） | G8 / v2.5.1 TASK-110～113 |
 | Hermes `SOUL.md` | `adapt`（v2.5.0：写入/读取切换到 `SOUL.md`，旧 `AGENTS.md` 首访一次性迁移并保留备份） | G8 / TASK-022 |
 
 ## 4. CodexPlusPlus v1.2.47 处置
