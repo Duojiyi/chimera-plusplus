@@ -40,12 +40,13 @@
 | Codex 用量交错计数、fork/sub-agent 去重、重建入口 | `parity`（v2.4.x 已落地） | 升级计划 §0.1；回归测试随 TASK-023 |
 | 日志轮转、URL/body 脱敏、响应上限、MCP 字段保护 | `parity`（v2.4.x 已落地） | 升级计划 §0.1 |
 | 工具调用缺函数名显式处理 | `parity` | `proxy/handlers.rs`、`proxy/providers/streaming.rs` |
-| MCP/Skills/Prompts 搜索 + 批量启停 | `planned` | G5 / TASK-017、018 |
-| 用量导入批处理、备份批量 INSERT、恢复单事务 | `planned` | G7 / TASK-020、030 |
-| blocking 解析移出异步线程、single-flight | `planned` | TASK-031 |
-| 逐账号 OAuth 订阅用量 | `planned` | G6 / TASK-019 |
-| OMO `~/.omo/omo.jsonc` + `[opencode]` 分区 | `planned` | G8 / TASK-021 |
-| Hermes `SOUL.md` | `planned` | G8 / TASK-022 |
+| MCP/Skills/Prompts 搜索 + 批量启停 | `deferred`（2026-08-12 实施期修正：三面板在线上外壳 `ChimeraApp` 无挂载点，仅测试引用；在未挂载组件上实现属于死代码。待面板挂载策略确定后随面板一起交付） | G5 / TASK-017、018 |
+| 用量导入批处理 | `adapt`（v2.5.0 实现：每文件一次锁 + 单事务提交，Claude/Codex 两路径） | G7 / TASK-020 |
+| 备份导出批量 INSERT、恢复单事务 | `not-applicable`（Chimera++ 备份为整库文件级；SQL 导入已是"备份→临时库→原子替换"，优于上游方案） | TASK-030 |
+| blocking 解析移出异步线程、single-flight | `parity`（v2.4.x 已落地：`session_sync_mutex` + `spawn_blocking` + `MissedTickBehavior::Skip` + 单次刷新通知） | TASK-031 |
+| 逐账号 OAuth 订阅用量 | `adapt`（v2.5.0 实现于实际挂载的 `CodexOAuthSection` 账号列表；`AuthCenterPanel` 未挂载） | G6 / TASK-019 |
+| OMO `~/.omo/omo.jsonc` + `[opencode]` 分区 | `adapt`（v2.5.0：统一配置优先的读取/导入已实现；写入检测到统一配置时显式报错。完整往返写入依赖上游 round-trip JSON5 编辑器【`rt_from_str`/`merge_rt_value` 等整套基础设施】，`deferred` v2.5.1 移植） | G8 / TASK-021 |
+| Hermes `SOUL.md` | `adapt`（v2.5.0：写入/读取切换到 `SOUL.md`，旧 `AGENTS.md` 首访一次性迁移并保留备份） | G8 / TASK-022 |
 
 ## 4. CodexPlusPlus v1.2.47 处置
 
@@ -54,7 +55,7 @@
 | 供应商内单模型路由（协议维度） | `parity`（v2.4.5 `codexModelApiFormats`） | 升级计划 §0.1 |
 | 供应商内单模型路由（上游维度：不同 base_url/凭据） | `planned` | G4 / TASK-013～016 |
 | 系统证书链 | `planned`（本周期 M2 已实现：`combined_root_store()` 统一直连 + CONNECT 隧道，reqwest 启用 `rustls-tls-native-roots`） | G1 / TASK-004～006 |
-| 会话删除撤销后的刷新一致性 | `planned`（审计任务） | TASK-032 |
+| 会话删除撤销后的刷新一致性 | `not-applicable`（2026-08-12 审计：Chimera++ 会话删除无撤销机制，删除即终态；`useDeleteSessionMutation` 删除后乐观移除缓存 + `invalidateQueries(["sessions"])` 全量刷新 + `removeQueries` 清消息缓存，链路一致，上游缺陷类不存在） | TASK-032 |
 | 新版 Codex 顶部栏注入兼容、DreamSkin、注入脚本 | `not-applicable`（P2 边界，产品定位不同） | 升级计划 §0.3 |
 
 ## 5. 回归基线（TASK-003）
