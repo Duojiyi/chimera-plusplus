@@ -516,7 +516,7 @@ fn insert_session_log_entry(
         cache_creation_tokens: msg.cache_creation_tokens,
         created_at,
     };
-    if should_skip_session_insert(&conn, request_id, &dedup_key)? {
+    if should_skip_session_insert(conn, request_id, &dedup_key)? {
         return Ok(false);
     }
 
@@ -530,7 +530,7 @@ fn insert_session_log_entry(
         message_id: None,
     };
 
-    let pricing = find_model_pricing_for_session(&conn, &msg.model);
+    let pricing = find_model_pricing_for_session(conn, &msg.model);
     let multiplier = Decimal::from(1);
     let (input_cost, output_cost, cache_read_cost, cache_creation_cost, total_cost) = match pricing
     {
