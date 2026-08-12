@@ -1428,11 +1428,12 @@ mod tests {
         document.save().unwrap();
 
         let written = std::fs::read_to_string(&path).unwrap();
-        // 行注释、CRLF 与未触碰分区必须原样保留
-        assert!(written.contains("// OMO 全局配置"));
-        assert!(written.contains("// 行内注释"));
-        assert!(written.contains("// 其他分区说明"));
-        assert!(written.contains("\r\n"));
+        // 未触碰区域必须逐字节保留：编辑只发生在 [opencode] 值内部，
+        // 其前缀（含行注释与 CRLF）与其后的 [other] 分区行原样不动。
+        assert!(written.starts_with(
+            "{\r\n  // OMO 全局配置\r\n  \"model\": \"top-level\", // 行内注释\r\n  \"[opencode]\": {"
+        ));
+        assert!(written.contains("\r\n  // 其他分区说明\r\n  \"[other]\": { \"keep\": true },\r\n"));
         assert!(written.contains("\"[other]\": { \"keep\": true }"));
         // 语义上分区已更新
         let reparsed: Value = json5::from_str(&written).unwrap();
