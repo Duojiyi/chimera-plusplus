@@ -138,3 +138,26 @@ export function useCodexOauthQuota(
 
   return useQuotaKeepLastGood(query, accountId ?? "default");
 }
+
+/**
+ * 账号列表用：按账号 ID 直接查询 Codex OAuth 订阅额度（v2.5.0 逐账号用量）。
+ *
+ * 与 `useCodexOauthQuota` 共享同一 query key（`["codex_oauth","quota",id]`），
+ * 供应商卡片与账号列表因此共享缓存与在途请求，不会重复触发后端查询。
+ * 不开启自动轮询：列表可能同时渲染多个账号，额度在 staleTime 内复用缓存、
+ * 过期后按需手动刷新。
+ */
+export function useCodexOauthQuotaForAccount(
+  accountId: string,
+  enabled = true,
+) {
+  const query = useQuery({
+    queryKey: ["codex_oauth", "quota", accountId],
+    queryFn: () => subscriptionApi.getCodexOauthQuota(accountId),
+    enabled: enabled && accountId.length > 0,
+    staleTime: REFETCH_INTERVAL,
+    retry: 1,
+  });
+
+  return useQuotaKeepLastGood(query, accountId);
+}
