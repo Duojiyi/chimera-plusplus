@@ -19,6 +19,28 @@ pub struct OmoLocalFileData {
 
 type OmoProfileData = (Option<Value>, Option<Value>, Option<Value>);
 
+/// 上游 OMO v3.19.2 起的统一配置：`~/.omo/omo.jsonc` / `omo.json`，
+/// oh-my-openagent 配置存放在字面量键 `"[opencode]"` 分区内。
+const UNIFIED_CONFIG_FILENAMES: [&str; 2] = ["omo.jsonc", "omo.json"];
+const OPENCODE_SECTION_KEY: &str = "[opencode]";
+
+/// OMO 配置的实际位置：统一配置优先于 legacy 插件式文件（与上游一致）。
+#[derive(Debug, PartialEq)]
+enum OmoConfigLocation {
+    /// `~/.omo/omo.jsonc|omo.json`，读取其 `"[opencode]"` 分区
+    Unified(PathBuf),
+    /// opencode 目录下的插件式配置文件
+    Legacy(PathBuf),
+}
+
+impl OmoConfigLocation {
+    fn path(&self) -> &Path {
+        match self {
+            Self::Unified(path) | Self::Legacy(path) => path,
+        }
+    }
+}
+
 // ── Variant descriptor ─────────────────────────────────────────
 
 pub struct OmoVariant {
@@ -88,8 +110,48 @@ impl OmoService {
             .unwrap_or_else(|| base_dir.join(v.preferred_filename))
     }
 
-    fn resolve_local_config_path(v: &OmoVariant) -> Result<PathBuf, AppError> {
-        Self::find_existing_config_path(v, &get_opencode_dir()).ok_or(AppError::OmoConfigNotFound)
+    /// 统一配置只对 STANDARD 变体生效（与上游一致；SLIM 只有插件式文件）。
+    fn find_unified_config_path(v: &OmoVariant, home_dir: &Path) -> Option<PathBuf> {
+        if v.category != STANDARD.category {
+            return None;
+        }
+        let config_dir = home_dir.join(".omo");
+        UNIFIED_CONFIG_FILENAMES
+            .iter()
+            .map(|name| config_dir.join(name))
+            .find(|path| path.exists())
+    }
+
+    fn find_config_location(
+        v: &OmoVariant,
+        home_dir: &Path,
+        legacy_dir: &Path,
+    ) -> Option<OmoConfigLocation> {
+        if let Some(path) = Self::find_unified_config_path(v, home_dir) {
+            return Some(OmoConfigLocation::Unified(path));
+        }
+        Self::find_existing_config_path(v, legacy_dir).map(OmoConfigLocation::Legacy)
+    }
+
+    fn resolve_local_config_location(v: &OmoVariant) -> Result<OmoConfigLocation, AppError> {
+        Self::find_config_location(v, &crate::config::get_home_dir(), &get_opencode_dir())
+            .ok_or(AppError::OmoConfigNotFound)
+    }
+
+    /// 读取配置对象；统一配置取其 `[opencode]` 分区，插件式文件取根对象。
+    fn read_config_object(location: &OmoConfigLocation) -> Result<Map<String, Value>, AppError> {
+        let mut root = Self::read_jsonc_object(location.path())?;
+        match location {
+            OmoConfigLocation::Unified(path) => match root.remove(OPENCODE_SECTION_KEY) {
+                None => Err(AppError::OmoConfigNotFound),
+                Some(Value::Object(section)) => Ok(section),
+                Some(_) => Err(AppError::Config(format!(
+                    "OMO [opencode] section must be an object: {}",
+                    path.display()
+                ))),
+            },
+            OmoConfigLocation::Legacy(_) => Ok(root),
+        }
     }
 
     fn read_jsonc_object(path: &Path) -> Result<Map<String, Value>, AppError> {
@@ -171,6 +233,19 @@ impl OmoService {
         v: &OmoVariant,
         profile_data: Option<&OmoProfileData>,
     ) -> Result<(), AppError> {
+        // v2.5.0：检测到上游统一配置（~/.omo/omo.jsonc|omo.json）时拒绝写入
+        // 插件式文件——上游优先读取统一配置，写 legacy 文件会被静默忽略。
+        // 统一配置的往返写入依赖上游的 round-trip JSON5 编辑器（保留注释与
+        // 格式），移植计划记录在 docs/upstream/sync-matrix-2026-08.md；当前
+        // 版本支持从统一配置导入（read/import），写入路径显式失败优于假成功。
+        if let Some(unified) = Self::find_unified_config_path(v, &crate::config::get_home_dir()) {
+            return Err(AppError::Config(format!(
+                "检测到 OMO 统一配置 {}；当前版本支持从该文件导入，但暂不支持写入其 [opencode] 分区。请直接编辑该文件，或移除它以回到 {} 写入模式。",
+                unified.display(),
+                v.preferred_filename
+            )));
+        }
+
         let merged = Self::build_config(v, profile_data);
         let config_path = Self::config_path(v);
 
@@ -246,8 +321,8 @@ impl OmoService {
         state: &AppState,
         v: &OmoVariant,
     ) -> Result<crate::provider::Provider, AppError> {
-        let actual_path = Self::resolve_local_config_path(v)?;
-        let obj = Self::read_jsonc_object(&actual_path)?;
+        let location = Self::resolve_local_config_location(v)?;
+        let obj = Self::read_config_object(&location)?;
 
         let mut settings = Map::new();
         if let Some(agents) = obj.get("agents") {
@@ -297,13 +372,14 @@ impl OmoService {
     }
 
     pub fn read_local_file(v: &OmoVariant) -> Result<OmoLocalFileData, AppError> {
-        let actual_path = Self::resolve_local_config_path(v)?;
-        let metadata = std::fs::metadata(&actual_path).ok();
+        let location = Self::resolve_local_config_location(v)?;
+        let actual_path = location.path();
+        let metadata = std::fs::metadata(actual_path).ok();
         let last_modified = metadata
             .and_then(|m| m.modified().ok())
             .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339());
 
-        let obj = Self::read_jsonc_object(&actual_path)?;
+        let obj = Self::read_config_object(&location)?;
 
         Ok(Self::build_local_file_data(
             v,
@@ -556,5 +632,100 @@ mod tests {
             old_path,
             "When only the old config file exists, it should still be found"
         );
+    }
+
+    #[test]
+    fn test_unified_config_takes_priority_over_legacy() {
+        let home = tempfile::tempdir().unwrap();
+        let legacy = tempfile::tempdir().unwrap();
+        let omo_dir = home.path().join(".omo");
+        std::fs::create_dir_all(&omo_dir).unwrap();
+        let unified_path = omo_dir.join("omo.jsonc");
+        std::fs::write(&unified_path, r#"{"[opencode]":{"agents":{}}}"#).unwrap();
+        std::fs::write(
+            legacy.path().join("oh-my-openagent.jsonc"),
+            r#"{"agents":{}}"#,
+        )
+        .unwrap();
+
+        let location =
+            OmoService::find_config_location(&STANDARD, home.path(), legacy.path()).unwrap();
+        assert_eq!(location, OmoConfigLocation::Unified(unified_path));
+    }
+
+    #[test]
+    fn test_unified_config_prefers_jsonc_then_json() {
+        let home = tempfile::tempdir().unwrap();
+        let omo_dir = home.path().join(".omo");
+        std::fs::create_dir_all(&omo_dir).unwrap();
+        std::fs::write(omo_dir.join("omo.json"), r#"{"[opencode]":{}}"#).unwrap();
+
+        let found = OmoService::find_unified_config_path(&STANDARD, home.path());
+        assert_eq!(found.unwrap(), omo_dir.join("omo.json"));
+
+        std::fs::write(omo_dir.join("omo.jsonc"), r#"{"[opencode]":{}}"#).unwrap();
+        let found = OmoService::find_unified_config_path(&STANDARD, home.path());
+        assert_eq!(found.unwrap(), omo_dir.join("omo.jsonc"));
+    }
+
+    #[test]
+    fn test_unified_config_is_ignored_for_slim_variant() {
+        let home = tempfile::tempdir().unwrap();
+        let omo_dir = home.path().join(".omo");
+        std::fs::create_dir_all(&omo_dir).unwrap();
+        std::fs::write(omo_dir.join("omo.jsonc"), r#"{"[opencode]":{}}"#).unwrap();
+
+        assert!(OmoService::find_unified_config_path(&SLIM, home.path()).is_none());
+    }
+
+    #[test]
+    fn test_read_config_object_extracts_opencode_section() {
+        let home = tempfile::tempdir().unwrap();
+        let omo_dir = home.path().join(".omo");
+        std::fs::create_dir_all(&omo_dir).unwrap();
+        let path = omo_dir.join("omo.jsonc");
+        std::fs::write(
+            &path,
+            r#"{
+  // 顶层是 OMO 自己的配置，[opencode] 分区才属于 oh-my-openagent
+  "model": "top-level",
+  "[opencode]": { "agents": { "dev": {} }, "categories": { "x": {} }, "extra": 1 }
+}"#,
+        )
+        .unwrap();
+
+        let obj =
+            OmoService::read_config_object(&OmoConfigLocation::Unified(path.clone())).unwrap();
+        assert!(obj.contains_key("agents"));
+        assert!(obj.contains_key("categories"));
+        assert_eq!(obj["extra"], 1);
+        assert!(
+            !obj.contains_key("model"),
+            "top-level OMO fields must not leak into the [opencode] section"
+        );
+    }
+
+    #[test]
+    fn test_read_config_object_reports_missing_opencode_section() {
+        let home = tempfile::tempdir().unwrap();
+        let omo_dir = home.path().join(".omo");
+        std::fs::create_dir_all(&omo_dir).unwrap();
+        let path = omo_dir.join("omo.jsonc");
+        std::fs::write(&path, r#"{"model":"top-level"}"#).unwrap();
+
+        let result = OmoService::read_config_object(&OmoConfigLocation::Unified(path));
+        assert!(matches!(result, Err(AppError::OmoConfigNotFound)));
+    }
+
+    #[test]
+    fn test_read_config_object_rejects_non_object_opencode_section() {
+        let home = tempfile::tempdir().unwrap();
+        let omo_dir = home.path().join(".omo");
+        std::fs::create_dir_all(&omo_dir).unwrap();
+        let path = omo_dir.join("omo.jsonc");
+        std::fs::write(&path, r#"{"[opencode]": 42}"#).unwrap();
+
+        let result = OmoService::read_config_object(&OmoConfigLocation::Unified(path));
+        assert!(matches!(result, Err(AppError::Config(_))));
     }
 }
