@@ -198,6 +198,8 @@ export interface ProviderMeta {
   apiFormatAutoDetected?: boolean;
   // Codex 上游协议按模型保存的自动探测结果；apiFormat 仍作为旧配置/默认回退
   codexModelApiFormats?: Record<string, CodexApiFormat>;
+  // Codex 按模型的独立上游路由（v2.5.0）：键为 catalog 模型名
+  codexModelRoutes?: Record<string, CodexModelRoute>;
   // 通用认证绑定
   authBinding?: AuthBinding;
   // Claude 认证字段名
@@ -252,6 +254,21 @@ export type ClaudeApiFormat =
 // - "openai_chat": OpenAI Chat Completions 格式，需要本地路由转换
 // - "anthropic": native Anthropic Messages format, needs local routing to convert to Responses
 export type CodexApiFormat = "openai_responses" | "openai_chat" | "anthropic";
+
+// Codex 单模型独立上游路由（per-model upstream route，v2.5.0）。
+// 所有字段可选：未设置的字段沿用 provider 级配置。
+export interface CodexModelRoute {
+  // 覆盖上游端点；未设置时沿用 provider base_url
+  baseUrl?: string;
+  // 覆盖上游凭据；未设置时沿用 provider API Key
+  apiKey?: string;
+  // 该上游的协议；未设置时回落 codexModelApiFormats / provider apiFormat
+  apiFormat?: CodexApiFormat;
+  // baseUrl 是否为完整 API 端点（不拼接 endpoint 路径）
+  isFullUrl?: boolean;
+  // 显式 false 时路由暂停，请求回落 provider 默认上游
+  enabled?: boolean;
+}
 
 // Form-only selection. `auto` is resolved to a concrete CodexApiFormat before
 // saving, so persisted provider metadata never depends on runtime re-detection.

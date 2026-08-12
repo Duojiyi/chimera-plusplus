@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -24,6 +31,7 @@ import {
   Download,
   Loader2,
   Plus,
+  Route,
   Trash2,
 } from "lucide-react";
 import EndpointSpeedTest from "./EndpointSpeedTest";
@@ -44,9 +52,11 @@ import {
 } from "@/chimeraUtils";
 import type {
   ClaudeApiKeyField,
+  CodexApiFormat,
   CodexApiFormatSelection,
   CodexCatalogModel,
   CodexChatReasoning,
+  CodexModelRoute,
   PromptCacheRoutingMode,
   ProviderCategory,
 } from "@/types";
@@ -112,6 +122,10 @@ interface CodexFormFieldsProps {
   // Model Catalog
   catalogModels?: CodexCatalogModel[];
   onCatalogModelsChange?: (models: CodexCatalogModel[]) => void;
+
+  // Per-model upstream routes (v2.5.0)：键为实际请求模型名
+  modelRoutes?: Record<string, CodexModelRoute>;
+  onModelRoutesChange?: (routes: Record<string, CodexModelRoute>) => void;
 
   // Speed Test Endpoints
   speedTestEndpoints: EndpointCandidate[];
@@ -211,6 +225,8 @@ export function CodexFormFields({
   onPromptCacheRoutingChange,
   catalogModels = [],
   onCatalogModelsChange,
+  modelRoutes = {},
+  onModelRoutesChange,
   speedTestEndpoints,
   customUserAgent,
   onCustomUserAgentChange,
@@ -430,16 +446,63 @@ export function CodexFormFields({
 
   const handleUpdateCatalogRow = useCallback(
     (index: number, patch: Partial<CodexCatalogModel>) => {
+      // 模型名变化时，把已配置的独立上游线路跟随迁移到新模型名。
+      if (patch.model !== undefined && onModelRoutesChange) {
+        const previousModel = catalogRows[index]?.model.trim() ?? "";
+        const nextModel = (patch.model ?? "").trim();
+        if (
+          previousModel &&
+          previousModel !== nextModel &&
+          modelRoutes[previousModel]
+        ) {
+          const nextRoutes = { ...modelRoutes };
+          const moved = nextRoutes[previousModel];
+          delete nextRoutes[previousModel];
+          if (nextModel && !nextRoutes[nextModel]) {
+            nextRoutes[nextModel] = moved;
+          }
+          onModelRoutesChange(nextRoutes);
+        }
+      }
       setCatalogRows((current) =>
         current.map((row, i) => (i === index ? { ...row, ...patch } : row)),
       );
     },
-    [],
+    [catalogRows, modelRoutes, onModelRoutesChange],
   );
 
-  const handleRemoveCatalogRow = useCallback((index: number) => {
-    setCatalogRows((current) => current.filter((_, i) => i !== index));
-  }, []);
+  const handleRemoveCatalogRow = useCallback(
+    (index: number) => {
+      const model = catalogRows[index]?.model.trim();
+      if (model && onModelRoutesChange && modelRoutes[model]) {
+        const nextRoutes = { ...modelRoutes };
+        delete nextRoutes[model];
+        onModelRoutesChange(nextRoutes);
+      }
+      setCatalogRows((current) => current.filter((_, i) => i !== index));
+    },
+    [catalogRows, modelRoutes, onModelRoutesChange],
+  );
+
+  // 独立上游线路：每行一个可展开编辑器（手风琴式，同时最多展开一个）。
+  const canEditRoutes = Boolean(onModelRoutesChange);
+  const [routeEditorRowId, setRouteEditorRowId] = useState<string | null>(null);
+
+  const patchRouteForModel = useCallback(
+    (model: string, patch: Partial<CodexModelRoute> | null) => {
+      if (!onModelRoutesChange) return;
+      const key = model.trim();
+      if (!key) return;
+      const nextRoutes = { ...modelRoutes };
+      if (patch === null) {
+        delete nextRoutes[key];
+      } else {
+        nextRoutes[key] = { ...nextRoutes[key], ...patch };
+      }
+      onModelRoutesChange(nextRoutes);
+    },
+    [modelRoutes, onModelRoutesChange],
+  );
 
   // 默认模型下拉建议 = 模型映射的"实际请求模型"列 ∪ 拉取到的 /models 列表
   const defaultModelSuggestions = useMemo<FetchedModel[]>(() => {
@@ -971,7 +1034,7 @@ export function CodexFormFields({
                 {catalogRows.length > 0 && (
                   <div className="space-y-2">
                     {/* 列头：md+ 显示 */}
-                    <div className="hidden grid-cols-[1fr_1fr_120px_110px_36px] gap-2 px-1 text-xs font-medium text-muted-foreground md:grid">
+                    <div className="hidden grid-cols-[1fr_1fr_120px_110px_36px_36px] gap-2 px-1 text-xs font-medium text-muted-foreground md:grid">
                       <span>
                         {t("codexConfig.catalogColumnDisplay", {
                           defaultValue: "菜单显示名",
@@ -993,117 +1056,306 @@ export function CodexFormFields({
                         })}
                       </span>
                       <span />
+                      <span />
                     </div>
 
                     {catalogRows.map((row, index) => (
-                      <div
-                        key={row.rowId}
-                        className="grid grid-cols-1 gap-2 md:grid-cols-[1fr_1fr_120px_110px_36px]"
-                      >
-                        <Input
-                          value={row.displayName ?? ""}
-                          onChange={(event) =>
-                            handleUpdateCatalogRow(index, {
-                              displayName: event.target.value,
-                            })
-                          }
-                          placeholder={t(
-                            "codexConfig.catalogDisplayNamePlaceholder",
-                            {
-                              defaultValue: "例如: DeepSeek V4 Flash",
-                            },
-                          )}
-                          aria-label={t("codexConfig.catalogColumnDisplay", {
-                            defaultValue: "菜单显示名",
-                          })}
-                        />
-                        <div className="flex gap-1">
+                      <Fragment key={row.rowId}>
+                        <div className="grid grid-cols-1 gap-2 md:grid-cols-[1fr_1fr_120px_110px_36px_36px]">
                           <Input
-                            value={row.model}
+                            value={row.displayName ?? ""}
                             onChange={(event) =>
                               handleUpdateCatalogRow(index, {
-                                model: event.target.value,
+                                displayName: event.target.value,
                               })
                             }
                             placeholder={t(
-                              "codexConfig.catalogModelPlaceholder",
+                              "codexConfig.catalogDisplayNamePlaceholder",
                               {
-                                defaultValue: "例如: deepseek-v4-flash",
+                                defaultValue: "例如: DeepSeek V4 Flash",
                               },
                             )}
-                            aria-label={t("codexConfig.catalogColumnModel", {
-                              defaultValue: "实际请求模型",
+                            aria-label={t("codexConfig.catalogColumnDisplay", {
+                              defaultValue: "菜单显示名",
                             })}
-                            className="flex-1"
                           />
-                          {fetchedModels.length > 0 && (
-                            <ModelDropdown
-                              models={fetchedModels}
-                              onSelect={(id) =>
+                          <div className="flex gap-1">
+                            <Input
+                              value={row.model}
+                              onChange={(event) =>
                                 handleUpdateCatalogRow(index, {
-                                  model: id,
-                                  displayName: row.displayName?.trim()
-                                    ? row.displayName
-                                    : id,
+                                  model: event.target.value,
+                                })
+                              }
+                              placeholder={t(
+                                "codexConfig.catalogModelPlaceholder",
+                                {
+                                  defaultValue: "例如: deepseek-v4-flash",
+                                },
+                              )}
+                              aria-label={t("codexConfig.catalogColumnModel", {
+                                defaultValue: "实际请求模型",
+                              })}
+                              className="flex-1"
+                            />
+                            {fetchedModels.length > 0 && (
+                              <ModelDropdown
+                                models={fetchedModels}
+                                onSelect={(id) =>
+                                  handleUpdateCatalogRow(index, {
+                                    model: id,
+                                    displayName: row.displayName?.trim()
+                                      ? row.displayName
+                                      : id,
+                                  })
+                                }
+                              />
+                            )}
+                          </div>
+                          <Input
+                            type="number"
+                            min={1}
+                            inputMode="numeric"
+                            value={row.contextWindow ?? ""}
+                            onChange={(event) =>
+                              handleUpdateCatalogRow(index, {
+                                contextWindow: event.target.value.replace(
+                                  /[^\d]/g,
+                                  "",
+                                ),
+                              })
+                            }
+                            placeholder={t(
+                              "codexConfig.contextWindowPlaceholder",
+                              {
+                                defaultValue: "例如: 128000",
+                              },
+                            )}
+                            aria-label={t("codexConfig.catalogColumnContext", {
+                              defaultValue: "上下文窗口",
+                            })}
+                          />
+                          <div className="flex items-center gap-2">
+                            <Checkbox
+                              id={`catalog-image-${row.rowId}`}
+                              checked={catalogRowSupportsImage(row)}
+                              onCheckedChange={(checked: boolean) =>
+                                handleUpdateCatalogRow(index, {
+                                  inputModalities:
+                                    catalogInputModalities(checked),
                                 })
                               }
                             />
+                            <label
+                              htmlFor={`catalog-image-${row.rowId}`}
+                              className="text-xs text-muted-foreground"
+                            >
+                              {t("codexConfig.catalogColumnImage", {
+                                defaultValue: "图片输入",
+                              })}
+                            </label>
+                          </div>
+                          {canEditRoutes && (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className={cn(
+                                "h-9 w-9",
+                                modelRoutes[row.model.trim()]
+                                  ? modelRoutes[row.model.trim()]?.enabled ===
+                                    false
+                                    ? "text-muted-foreground/60"
+                                    : "text-primary"
+                                  : "text-muted-foreground",
+                              )}
+                              disabled={!row.model.trim()}
+                              onClick={() =>
+                                setRouteEditorRowId((current) =>
+                                  current === row.rowId ? null : row.rowId,
+                                )
+                              }
+                              title={t("codexConfig.modelRouteToggle", {
+                                defaultValue: "独立上游线路",
+                              })}
+                              aria-label={t("codexConfig.modelRouteToggle", {
+                                defaultValue: "独立上游线路",
+                              })}
+                              aria-expanded={routeEditorRowId === row.rowId}
+                            >
+                              <Route className="h-4 w-4" />
+                            </Button>
                           )}
-                        </div>
-                        <Input
-                          type="number"
-                          min={1}
-                          inputMode="numeric"
-                          value={row.contextWindow ?? ""}
-                          onChange={(event) =>
-                            handleUpdateCatalogRow(index, {
-                              contextWindow: event.target.value.replace(
-                                /[^\d]/g,
-                                "",
-                              ),
-                            })
-                          }
-                          placeholder={t(
-                            "codexConfig.contextWindowPlaceholder",
-                            {
-                              defaultValue: "例如: 128000",
-                            },
-                          )}
-                          aria-label={t("codexConfig.catalogColumnContext", {
-                            defaultValue: "上下文窗口",
-                          })}
-                        />
-                        <div className="flex items-center gap-2">
-                          <Checkbox
-                            id={`catalog-image-${row.rowId}`}
-                            checked={catalogRowSupportsImage(row)}
-                            onCheckedChange={(checked: boolean) =>
-                              handleUpdateCatalogRow(index, {
-                                inputModalities:
-                                  catalogInputModalities(checked),
-                              })
-                            }
-                          />
-                          <label
-                            htmlFor={`catalog-image-${row.rowId}`}
-                            className="text-xs text-muted-foreground"
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="h-9 w-9 text-muted-foreground hover:text-destructive"
+                            onClick={() => handleRemoveCatalogRow(index)}
+                            title={t("common.delete", { defaultValue: "删除" })}
                           >
-                            {t("codexConfig.catalogColumnImage", {
-                              defaultValue: "图片输入",
-                            })}
-                          </label>
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
                         </div>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="h-9 w-9 text-muted-foreground hover:text-destructive"
-                          onClick={() => handleRemoveCatalogRow(index)}
-                          title={t("common.delete", { defaultValue: "删除" })}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </div>
+                        {canEditRoutes &&
+                          routeEditorRowId === row.rowId &&
+                          row.model.trim() && (
+                            <div className="space-y-2 rounded-md border border-border-default bg-muted/30 p-3">
+                              <div className="flex items-center justify-between">
+                                <p className="text-xs font-medium">
+                                  {t("codexConfig.modelRouteTitle", {
+                                    defaultValue: "独立上游线路：{{model}}",
+                                    model: row.model.trim(),
+                                  })}
+                                </p>
+                                <div className="flex items-center gap-2">
+                                  <label className="flex items-center gap-1 text-xs text-muted-foreground">
+                                    <Switch
+                                      checked={
+                                        modelRoutes[row.model.trim()]
+                                          ?.enabled !== false
+                                      }
+                                      onCheckedChange={(checked: boolean) =>
+                                        patchRouteForModel(row.model, {
+                                          enabled: checked ? undefined : false,
+                                        })
+                                      }
+                                      aria-label={t(
+                                        "codexConfig.modelRouteEnabled",
+                                        { defaultValue: "启用线路" },
+                                      )}
+                                    />
+                                    {t("codexConfig.modelRouteEnabled", {
+                                      defaultValue: "启用线路",
+                                    })}
+                                  </label>
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-7 px-2 text-xs text-muted-foreground hover:text-destructive"
+                                    onClick={() => {
+                                      patchRouteForModel(row.model, null);
+                                      setRouteEditorRowId(null);
+                                    }}
+                                  >
+                                    {t("codexConfig.modelRouteRemove", {
+                                      defaultValue: "移除线路",
+                                    })}
+                                  </Button>
+                                </div>
+                              </div>
+                              <p className="text-xs text-muted-foreground">
+                                {t("codexConfig.modelRouteHint", {
+                                  defaultValue:
+                                    "该模型的请求将发往下面的独立上游；留空的字段沿用本线路的默认配置。",
+                                })}
+                              </p>
+                              <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                                <Input
+                                  value={
+                                    modelRoutes[row.model.trim()]?.baseUrl ?? ""
+                                  }
+                                  onChange={(event) =>
+                                    patchRouteForModel(row.model, {
+                                      baseUrl: event.target.value || undefined,
+                                    })
+                                  }
+                                  placeholder={t(
+                                    "codexConfig.modelRouteBaseUrlPlaceholder",
+                                    {
+                                      defaultValue:
+                                        "上游地址，例如 https://api.example.com/v1",
+                                    },
+                                  )}
+                                  aria-label={t(
+                                    "codexConfig.modelRouteBaseUrl",
+                                    { defaultValue: "线路上游地址" },
+                                  )}
+                                />
+                                <Input
+                                  type="password"
+                                  autoComplete="off"
+                                  value={
+                                    modelRoutes[row.model.trim()]?.apiKey ?? ""
+                                  }
+                                  onChange={(event) =>
+                                    patchRouteForModel(row.model, {
+                                      apiKey: event.target.value || undefined,
+                                    })
+                                  }
+                                  placeholder={t(
+                                    "codexConfig.modelRouteApiKeyPlaceholder",
+                                    {
+                                      defaultValue: "线路 API Key（可选）",
+                                    },
+                                  )}
+                                  aria-label={t(
+                                    "codexConfig.modelRouteApiKey",
+                                    {
+                                      defaultValue: "线路 API Key",
+                                    },
+                                  )}
+                                />
+                              </div>
+                              <div className="flex flex-wrap items-center gap-3">
+                                <Select
+                                  value={
+                                    modelRoutes[row.model.trim()]?.apiFormat ??
+                                    "inherit"
+                                  }
+                                  onValueChange={(value) =>
+                                    patchRouteForModel(row.model, {
+                                      apiFormat:
+                                        value === "inherit"
+                                          ? undefined
+                                          : (value as CodexApiFormat),
+                                    })
+                                  }
+                                >
+                                  <SelectTrigger className="w-56">
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="inherit">
+                                      {t(
+                                        "codexConfig.modelRouteFormatInherit",
+                                        {
+                                          defaultValue: "协议：沿用探测结果",
+                                        },
+                                      )}
+                                    </SelectItem>
+                                    <SelectItem value="openai_responses">
+                                      OpenAI Responses
+                                    </SelectItem>
+                                    <SelectItem value="openai_chat">
+                                      OpenAI Chat Completions
+                                    </SelectItem>
+                                    <SelectItem value="anthropic">
+                                      Anthropic Messages
+                                    </SelectItem>
+                                  </SelectContent>
+                                </Select>
+                                <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                                  <Checkbox
+                                    checked={
+                                      modelRoutes[row.model.trim()]
+                                        ?.isFullUrl === true
+                                    }
+                                    onCheckedChange={(checked: boolean) =>
+                                      patchRouteForModel(row.model, {
+                                        isFullUrl: checked ? true : undefined,
+                                      })
+                                    }
+                                  />
+                                  {t("codexConfig.modelRouteFullUrl", {
+                                    defaultValue: "地址为完整 API 端点",
+                                  })}
+                                </label>
+                              </div>
+                            </div>
+                          )}
+                      </Fragment>
                     ))}
                   </div>
                 )}

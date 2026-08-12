@@ -69,6 +69,42 @@ describe("Codex auto protocol detection in provider forms", () => {
   });
 });
 
+describe("Codex per-model upstream routes (v2.5.0)", () => {
+  it("ProviderForm persists sanitized per-model routes in provider meta", () => {
+    expect(providerFormSource).toContain("sanitizeCodexModelRoutesForSave");
+    expect(providerFormSource).toContain("codexModelRoutes:");
+    expect(providerFormSource).toContain("setCodexModelRoutes");
+  });
+
+  it("ProviderForm exempts explicitly routed models from the undetected-protocol guard", () => {
+    expect(providerFormSource).toContain(
+      "sanitizeCodexModelRoutesForSave(codexModelRoutes),",
+    );
+  });
+
+  it("ChimeraApp editor save preserves existing per-model routes and honors their protocols", () => {
+    // The Chimera route editor spreads the original meta, so codexModelRoutes
+    // must survive a save from this second path.
+    expect(appSource).toContain("...draft.original?.meta");
+    expect(appSource).toContain("draft.original?.meta?.codexModelRoutes");
+  });
+
+  it("CodexFormFields exposes a per-row route editor bound to the model id", () => {
+    expect(codexFormFieldsSource).toContain("modelRoutes");
+    expect(codexFormFieldsSource).toContain("onModelRoutesChange");
+    expect(codexFormFieldsSource).toContain("patchRouteForModel");
+    expect(codexFormFieldsSource).toContain("codexConfig.modelRouteToggle");
+  });
+
+  it("CodexFormFields migrates a route when its model id is renamed or removed", () => {
+    expect(codexFormFieldsSource).toContain(
+      "把已配置的独立上游线路跟随迁移到新模型名",
+    );
+    expect(codexFormFieldsSource).toContain("delete nextRoutes[previousModel]");
+    expect(codexFormFieldsSource).toContain("delete nextRoutes[model]");
+  });
+});
+
 describe("Codex model catalog image capability toggle", () => {
   it("CodexFormFields defaults new catalog rows to text-only", () => {
     expect(codexFormFieldsSource).toContain(
