@@ -815,7 +815,7 @@ dependencies = [
 [[package]]
 name = "chimera-domain"
 version = "1.2.42-chimera.1"
-source = "git+https://github.com/Duojiyi/chimera-codex.git?rev=a5075e6e4d58aad13db259e3eebeabdc0417e3b3#a5075e6e4d58aad13db259e3eebeabdc0417e3b3"
+source = "git+https://github.com/Duojiyi/chimera-codex.git?rev=b12a02ce05785f0b6ce336abd1e2e41001624c40#b12a02ce05785f0b6ce336abd1e2e41001624c40"
 dependencies = [
  "serde",
  "thiserror 2.0.19",
@@ -826,7 +826,7 @@ dependencies = [
 [[package]]
 name = "chimera-platform"
 version = "1.2.42-chimera.1"
-source = "git+https://github.com/Duojiyi/chimera-codex.git?rev=a5075e6e4d58aad13db259e3eebeabdc0417e3b3#a5075e6e4d58aad13db259e3eebeabdc0417e3b3"
+source = "git+https://github.com/Duojiyi/chimera-codex.git?rev=b12a02ce05785f0b6ce336abd1e2e41001624c40#b12a02ce05785f0b6ce336abd1e2e41001624c40"
 dependencies = [
  "anyhow",
  "chimera-domain",
@@ -838,7 +838,7 @@ dependencies = [
 
 [[package]]
 name = "chimera-plus-plus"
-version = "2.5.0"
+version = "2.5.1"
 dependencies = [
  "anyhow",
  "arboard",
@@ -917,7 +917,7 @@ dependencies = [
 [[package]]
 name = "chimera-runtime"
 version = "1.2.42-chimera.1"
-source = "git+https://github.com/Duojiyi/chimera-codex.git?rev=a5075e6e4d58aad13db259e3eebeabdc0417e3b3#a5075e6e4d58aad13db259e3eebeabdc0417e3b3"
+source = "git+https://github.com/Duojiyi/chimera-codex.git?rev=b12a02ce05785f0b6ce336abd1e2e41001624c40#b12a02ce05785f0b6ce336abd1e2e41001624c40"
 dependencies = [
  "anyhow",
  "chimera-domain",
@@ -987,7 +987,7 @@ dependencies = [
 [[package]]
 name = "codex-theme-engine"
 version = "0.1.0"
-source = "git+https://github.com/Wangnov/Codex-App-Manager.git?rev=89b542b9299453dcd833757b10cdb15f6d14d527#89b542b9299453dcd833757b10cdb15f6d14d527"
+source = "git+https://github.com/Wangnov/Codex-App-Manager.git?rev=d29fda32d8813f9af879c0a80c86ddaa26024c6d#d29fda32d8813f9af879c0a80c86ddaa26024c6d"
 dependencies = [
  "base64 0.22.1",
  "futures-util",
@@ -1006,7 +1006,7 @@ dependencies = [
 [[package]]
 name = "codex-win-engine"
 version = "0.1.0"
-source = "git+https://github.com/Wangnov/Codex-App-Manager.git?rev=89b542b9299453dcd833757b10cdb15f6d14d527#89b542b9299453dcd833757b10cdb15f6d14d527"
+source = "git+https://github.com/Wangnov/Codex-App-Manager.git?rev=d29fda32d8813f9af879c0a80c86ddaa26024c6d#d29fda32d8813f9af879c0a80c86ddaa26024c6d"
 dependencies = [
  "log",
  "roxmltree",
