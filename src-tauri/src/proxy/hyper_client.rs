@@ -55,12 +55,33 @@ type HyperClient = Client<
     http_body_util::Full<Bytes>,
 >;
 
+/// Shared TLS root store trusting both webpki (Mozilla) roots and native
+/// system certificates, so corporate proxies and private CAs installed in
+/// the OS trust store work on every outbound path (direct, CONNECT tunnel).
+fn combined_root_store() -> rustls::RootCertStore {
+    let mut root_store = rustls::RootCertStore::empty();
+    // Baseline: Mozilla/webpki roots
+    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    // Native system certs (includes user-installed proxy/enterprise CAs)
+    let native = rustls_native_certs::load_native_certs();
+    let (added, _errors) = root_store.add_parsable_certificates(native.certs);
+    log::debug!("[HyperClient] TLS root store: webpki + {added} native certs");
+    root_store
+}
+
+/// TLS client configuration built on [`combined_root_store`].
+fn combined_tls_config() -> rustls::ClientConfig {
+    rustls::ClientConfig::builder()
+        .with_root_certificates(combined_root_store())
+        .with_no_client_auth()
+}
+
 /// Lazily-initialized hyper client with header-case preservation enabled.
 fn global_hyper_client() -> &'static HyperClient {
     static CLIENT: OnceLock<HyperClient> = OnceLock::new();
     CLIENT.get_or_init(|| {
         let connector = HttpsConnectorBuilder::new()
-            .with_webpki_roots()
+            .with_tls_config(combined_tls_config())
             .https_or_http()
             .enable_http1()
             .build();
@@ -601,23 +622,13 @@ async fn connect_via_proxy(
 
 /// Lazily-initialized TLS connector for raw connections.
 ///
-/// Loads both webpki roots AND native system certificates so that
-/// proxy MITM CAs (e.g. Clash, mitmproxy) installed in the system
+/// Uses [`combined_tls_config`] (webpki + native system certificates) so
+/// that proxy MITM CAs (e.g. Clash, mitmproxy) installed in the system
 /// keychain are trusted through the CONNECT tunnel.
 fn global_tls_connector() -> &'static tokio_rustls::TlsConnector {
     static CONNECTOR: OnceLock<tokio_rustls::TlsConnector> = OnceLock::new();
     CONNECTOR.get_or_init(|| {
-        let mut root_store = rustls::RootCertStore::empty();
-        // Baseline: Mozilla/webpki roots
-        root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        // Native system certs (includes user-installed proxy CAs)
-        let native = rustls_native_certs::load_native_certs();
-        let (added, _errors) = root_store.add_parsable_certificates(native.certs);
-        log::debug!("[HyperClient] TLS root store: webpki + {added} native certs");
-        let config = rustls::ClientConfig::builder()
-            .with_root_certificates(root_store)
-            .with_no_client_auth();
-        tokio_rustls::TlsConnector::from(std::sync::Arc::new(config))
+        tokio_rustls::TlsConnector::from(std::sync::Arc::new(combined_tls_config()))
     })
 }
 
@@ -817,5 +828,22 @@ mod tests {
         assert!(buffered_with_content_type(Some("application/problem+json")).is_json());
         assert!(!buffered_with_content_type(Some("text/event-stream")).is_json());
         assert!(!buffered_with_content_type(None).is_json());
+    }
+
+    #[test]
+    fn combined_root_store_keeps_webpki_baseline_and_adds_native_certs() {
+        let store = combined_root_store();
+        // The store must never be smaller than the bundled webpki baseline;
+        // native certs are additive so enterprise/private CAs extend rather
+        // than replace the Mozilla roots.
+        assert!(store.len() >= webpki_roots::TLS_SERVER_ROOTS.len());
+    }
+
+    #[test]
+    fn combined_tls_config_builds_without_panicking() {
+        // Guards against provider/root-store misconfiguration at startup:
+        // every outbound path (direct hyper client, CONNECT tunnel) shares
+        // this config, so it must always be constructible.
+        let _ = combined_tls_config();
     }
 }
