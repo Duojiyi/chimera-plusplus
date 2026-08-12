@@ -1464,6 +1464,10 @@ pub async fn install_codex_runtime_offline(
                 Boundary::AfterMoveNew { backup, .. } => {
                     ("moving:after_move_new", Some(backup.clone()))
                 }
+                // v0.5.2 新增：安装失败决定回滚时、消耗备份之前先持久化意图。
+                Boundary::BeforeRollback { backup, .. } => {
+                    ("moving:before_rollback", Some(backup.clone()))
+                }
                 Boundary::RollbackCompleted { backup, .. } => {
                     ("moving:rollback_completed", Some(backup.clone()))
                 }
