@@ -1,4 +1,4 @@
-import type { CodexCatalogModel, Provider } from "@/types";
+import type { CodexCatalogModel, CodexModelRoute, Provider } from "@/types";
 import type { FetchedModel } from "@/lib/api/model-fetch";
 import {
   extractCodexBaseUrl,
@@ -190,18 +190,48 @@ export function catalogRowSupportsImage(model: CodexCatalogModel): boolean {
 /** Catalog models with no detected upstream protocol after auto-detection.
  * The backend probe returns partial success; every model missing from the map
  * would fail closed at request time (400), so callers must surface these at
- * save time instead of persisting a half-detected catalog. */
+ * save time instead of persisting a half-detected catalog. Models whose
+ * per-model upstream route declares an explicit protocol are exempt: the
+ * request follows the route, not the probe result (mirrors the backend
+ * `codex_model_protocol_mapping_is_missing` guard). */
 export function findCodexCatalogModelsWithoutProtocol(
   catalogModels: CodexCatalogModel[],
   detectedFormats: Record<string, unknown>,
+  modelRoutes?: Record<string, CodexModelRoute>,
 ): string[] {
   const undetected: string[] = [];
   for (const entry of catalogModels) {
     const model = entry.model.trim();
     if (!model || detectedFormats[model]) continue;
+    const route = modelRoutes?.[model];
+    if (route && route.enabled !== false && route.apiFormat) continue;
     undetected.push(model);
   }
   return Array.from(new Set(undetected));
+}
+
+/** Normalize per-model upstream routes for persistence: trim values, drop
+ * rows without any meaningful override, and return undefined when nothing
+ * remains so the meta key is omitted entirely. */
+export function sanitizeCodexModelRoutesForSave(
+  routes: Record<string, CodexModelRoute>,
+): Record<string, CodexModelRoute> | undefined {
+  const entries: Array<[string, CodexModelRoute]> = [];
+  for (const [model, route] of Object.entries(routes)) {
+    const trimmedModel = model.trim();
+    if (!trimmedModel || !route) continue;
+    const sanitized: CodexModelRoute = {};
+    const baseUrl = route.baseUrl?.trim();
+    if (baseUrl) sanitized.baseUrl = baseUrl;
+    const apiKey = route.apiKey?.trim();
+    if (apiKey) sanitized.apiKey = apiKey;
+    if (route.apiFormat) sanitized.apiFormat = route.apiFormat;
+    if (route.isFullUrl === true) sanitized.isFullUrl = true;
+    if (route.enabled === false) sanitized.enabled = false;
+    if (Object.keys(sanitized).length === 0) continue;
+    entries.push([trimmedModel, sanitized]);
+  }
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
 /** Build a stable Codex catalog from fetched, manually mapped, and default models. */

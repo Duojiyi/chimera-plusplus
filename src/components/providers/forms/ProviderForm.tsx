@@ -23,6 +23,7 @@ import type {
   CodexApiFormatSelection,
   CodexCatalogModel,
   CodexChatReasoning,
+  CodexModelRoute,
   PromptCacheRoutingMode,
   ClaudeApiKeyField,
 } from "@/types";
@@ -61,7 +62,10 @@ import {
   hasApiKeyField,
 } from "@/utils/providerConfigUtils";
 import { mergeProviderMeta } from "@/utils/providerMetaUtils";
-import { findCodexCatalogModelsWithoutProtocol } from "@/chimeraUtils";
+import {
+  findCodexCatalogModelsWithoutProtocol,
+  sanitizeCodexModelRoutesForSave,
+} from "@/chimeraUtils";
 import {
   codexApiFormatFromWireApi,
   extractCodexWireApi,
@@ -558,6 +562,13 @@ function ProviderFormFull({
   const [customUserAgent, setCustomUserAgent] = useState<string>(
     () => initialData?.meta?.customUserAgent ?? "",
   );
+  // Codex 按模型的独立上游线路（v2.5.0）：键为实际请求模型名
+  const [codexModelRoutes, setCodexModelRoutes] = useState<
+    Record<string, CodexModelRoute>
+  >(() => initialData?.meta?.codexModelRoutes ?? {});
+  useEffect(() => {
+    setCodexModelRoutes(initialData?.meta?.codexModelRoutes ?? {});
+  }, [initialData]);
   const [localProxyHeadersOverride, setLocalProxyHeadersOverride] =
     useState<string>(() =>
       formatRequestOverrideObject(
@@ -664,6 +675,7 @@ function ProviderFormFull({
       setLocalCodexApiFormat("auto");
       setCodexChatReasoning({});
       setPromptCacheRouting("auto");
+      setCodexModelRoutes({});
     }
   }, [appId, initialData, selectedPresetId, resetCodexConfig]);
 
@@ -1417,6 +1429,7 @@ function ProviderFormFull({
         const undetectedCatalogModels = findCodexCatalogModelsWithoutProtocol(
           normalizedCatalogModels,
           detectedCodexModelFormats,
+          sanitizeCodexModelRoutesForSave(codexModelRoutes),
         );
         if (undetectedCatalogModels.length > 0) {
           throw new Error(
@@ -1712,6 +1725,10 @@ function ProviderFormFull({
               ),
             )
           : undefined,
+      codexModelRoutes:
+        appId === "codex" && category !== "official" && !isXaiOauthProvider
+          ? sanitizeCodexModelRoutesForSave(codexModelRoutes)
+          : undefined,
       apiFormat:
         appId === "claude" && category !== "official"
           ? isXaiOauthProvider
@@ -1873,6 +1890,7 @@ function ProviderFormFull({
         setCodexChatReasoning({});
         setPromptCacheRouting("auto");
         setLocalCodexApiFormat("auto");
+        setCodexModelRoutes({});
       }
       if (appId === "gemini") {
         resetGeminiConfig({}, {});
@@ -1911,6 +1929,7 @@ function ProviderFormFull({
       resetCodexConfig(auth, config, preset.modelCatalog ?? []);
       setCodexChatReasoning(preset.codexChatReasoning ?? {});
       setPromptCacheRouting(preset.promptCacheRouting ?? "auto");
+      setCodexModelRoutes({});
       setLocalCodexApiFormat(
         preset.apiFormat ??
           codexApiFormatFromWireApi(extractCodexWireApi(config)) ??
@@ -2409,6 +2428,8 @@ function ProviderFormFull({
               onPromptCacheRoutingChange={setPromptCacheRouting}
               catalogModels={codexCatalogModels}
               onCatalogModelsChange={setCodexCatalogModels}
+              modelRoutes={codexModelRoutes}
+              onModelRoutesChange={setCodexModelRoutes}
               speedTestEndpoints={speedTestEndpoints}
               customUserAgent={customUserAgent}
               onCustomUserAgentChange={setCustomUserAgent}

@@ -4,8 +4,9 @@ import {
   catalogRowSupportsImage,
   findCodexCatalogModelsWithoutProtocol,
   resolveCurrentProvider,
+  sanitizeCodexModelRoutesForSave,
 } from "@/chimeraUtils";
-import type { Provider } from "@/types";
+import type { CodexModelRoute, Provider } from "@/types";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -257,5 +258,85 @@ describe("findCodexCatalogModelsWithoutProtocol", () => {
 
   it("returns an empty list for an empty catalog", () => {
     expect(findCodexCatalogModelsWithoutProtocol([], detected)).toEqual([]);
+  });
+
+  it("exempts models whose enabled route declares an explicit protocol", () => {
+    const catalog = [{ model: "routed-model" }, { model: "plain-model" }];
+    const routes: Record<string, CodexModelRoute> = {
+      "routed-model": {
+        baseUrl: "https://route.example.com/v1",
+        apiFormat: "anthropic",
+      },
+    };
+    expect(
+      findCodexCatalogModelsWithoutProtocol(catalog, detected, routes),
+    ).toEqual(["plain-model"]);
+  });
+
+  it("does not exempt disabled or protocol-less routes", () => {
+    const catalog = [{ model: "paused-model" }, { model: "keyless-model" }];
+    const routes: Record<string, CodexModelRoute> = {
+      "paused-model": {
+        baseUrl: "https://paused.example.com",
+        apiFormat: "openai_chat",
+        enabled: false,
+      },
+      "keyless-model": { baseUrl: "https://route.example.com" },
+    };
+    expect(
+      findCodexCatalogModelsWithoutProtocol(catalog, detected, routes),
+    ).toEqual(["paused-model", "keyless-model"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sanitizeCodexModelRoutesForSave
+// ---------------------------------------------------------------------------
+
+describe("sanitizeCodexModelRoutesForSave", () => {
+  it("returns undefined when no route carries a meaningful override", () => {
+    expect(sanitizeCodexModelRoutesForSave({})).toBeUndefined();
+    expect(
+      sanitizeCodexModelRoutesForSave({
+        "model-a": {},
+        "model-b": { baseUrl: "   ", apiKey: "" },
+        "  ": { baseUrl: "https://ignored.example.com" },
+      }),
+    ).toBeUndefined();
+  });
+
+  it("trims values and keeps only explicit overrides", () => {
+    const sanitized = sanitizeCodexModelRoutesForSave({
+      "  routed-model  ": {
+        baseUrl: " https://route.example.com/v1 ",
+        apiKey: " route-key ",
+        apiFormat: "anthropic",
+        isFullUrl: false,
+      },
+    });
+    expect(sanitized).toEqual({
+      "routed-model": {
+        baseUrl: "https://route.example.com/v1",
+        apiKey: "route-key",
+        apiFormat: "anthropic",
+      },
+    });
+  });
+
+  it("preserves explicit disable and full-url flags", () => {
+    const sanitized = sanitizeCodexModelRoutesForSave({
+      "paused-model": {
+        baseUrl: "https://paused.example.com",
+        isFullUrl: true,
+        enabled: false,
+      },
+    });
+    expect(sanitized).toEqual({
+      "paused-model": {
+        baseUrl: "https://paused.example.com",
+        isFullUrl: true,
+        enabled: false,
+      },
+    });
   });
 });

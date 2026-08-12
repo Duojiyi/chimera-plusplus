@@ -1980,6 +1980,33 @@ mod automatic_routing_tests {
     }
 
     #[test]
+    fn per_model_upstream_route_requires_routing_even_for_native_responses() {
+        // 独立上游路由只能由本地代理按模型分流；即使 provider 默认协议是
+        // 原生 Responses 直连，也必须接管。
+        let mut routed = provider(json!({}), Some("openai_responses"));
+        routed.meta = Some(ProviderMeta {
+            api_format: Some("openai_responses".to_string()),
+            codex_model_routes: [(
+                "claude-native".to_string(),
+                crate::provider::CodexModelRoute {
+                    base_url: Some("https://anthropic.example.com".to_string()),
+                    api_key: Some("route-key".to_string()),
+                    api_format: Some("anthropic".to_string()),
+                    ..crate::provider::CodexModelRoute::default()
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..ProviderMeta::default()
+        });
+
+        assert!(provider_requires_automatic_routing(
+            &AppType::Codex,
+            &routed
+        ));
+    }
+
+    #[test]
     fn declared_native_responses_provider_stays_direct_even_on_auto() {
         // 前端把"自动"刻意不持久化，所以 meta.api_format 为 None 是默认状态。
         // 但 config.toml 已经声明了 wire_api = "responses"：这是第一方声明，

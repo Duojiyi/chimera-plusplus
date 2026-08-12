@@ -395,6 +395,62 @@ impl LocalProxyRequestOverrides {
     }
 }
 
+/// Codex 单模型独立上游路由（per-model upstream route）。
+///
+/// 同一 Codex 供应商内，把指定模型的请求转发到独立上游：可覆盖
+/// base_url、API Key、协议与 full-URL 语义。所有字段可选，None 时沿用
+/// provider 级配置。键为 catalog 模型名（不含 `[1m]` 后缀）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct CodexModelRoute {
+    /// 覆盖上游端点；None 时沿用 provider base_url。
+    #[serde(rename = "baseUrl", skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    /// 覆盖上游凭据；None 时沿用 provider API Key。
+    #[serde(rename = "apiKey", skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    /// 该上游的协议（openai_responses / openai_chat / anthropic）；
+    /// None 时回落 codexModelApiFormats 与 provider apiFormat。
+    #[serde(rename = "apiFormat", skip_serializing_if = "Option::is_none")]
+    pub api_format: Option<String>,
+    /// baseUrl 是否为完整 API 端点（不拼接 endpoint 路径）；None 时沿用 provider。
+    #[serde(rename = "isFullUrl", skip_serializing_if = "Option::is_none")]
+    pub is_full_url: Option<bool>,
+    /// 显式 false 时路由暂停，请求回落 provider 默认上游。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+}
+
+impl CodexModelRoute {
+    /// 路由未被显式停用。
+    pub fn is_enabled(&self) -> bool {
+        self.enabled != Some(false)
+    }
+
+    fn trimmed(value: Option<&str>) -> Option<&str> {
+        value.map(str::trim).filter(|value| !value.is_empty())
+    }
+
+    /// 生效的 base_url 覆盖值（去除首尾空白，空串视为未设置）。
+    pub fn base_url_override(&self) -> Option<&str> {
+        Self::trimmed(self.base_url.as_deref())
+    }
+
+    /// 生效的 API Key 覆盖值。
+    pub fn api_key_override(&self) -> Option<&str> {
+        Self::trimmed(self.api_key.as_deref())
+    }
+
+    /// 生效的协议覆盖值。
+    pub fn api_format_override(&self) -> Option<&str> {
+        Self::trimmed(self.api_format.as_deref())
+    }
+
+    /// 是否真的会改变请求去向（存在 base_url 或凭据覆盖）。
+    pub fn has_target_override(&self) -> bool {
+        self.base_url_override().is_some() || self.api_key_override().is_some()
+    }
+}
+
 /// 供应商元数据
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProviderMeta {
@@ -463,6 +519,13 @@ pub struct ProviderMeta {
         skip_serializing_if = "HashMap::is_empty"
     )]
     pub codex_model_api_formats: HashMap<String, String>,
+    /// Codex 按模型的独立上游路由（v2.5.0）。键为 catalog 模型名。
+    #[serde(
+        default,
+        rename = "codexModelRoutes",
+        skip_serializing_if = "HashMap::is_empty"
+    )]
+    pub codex_model_routes: HashMap<String, CodexModelRoute>,
     /// 通用认证绑定（provider_config / managed_account）
     ///
     /// 新代码应只写入该字段；githubAccountId 仅保留兼容读取。
@@ -988,8 +1051,9 @@ pub struct OpenCodeModelLimit {
 #[cfg(test)]
 mod tests {
     use super::{
-        ClaudeModelConfig, CodexModelConfig, GeminiModelConfig, LocalProxyRequestOverrides,
-        OpenCodeProviderConfig, Provider, ProviderManager, ProviderMeta, UniversalProvider,
+        ClaudeModelConfig, CodexModelConfig, CodexModelRoute, GeminiModelConfig,
+        LocalProxyRequestOverrides, OpenCodeProviderConfig, Provider, ProviderManager,
+        ProviderMeta, UniversalProvider,
     };
     use serde_json::json;
     use std::collections::HashMap;
@@ -1066,6 +1130,75 @@ mod tests {
             decoded.models_url.as_deref(),
             Some("https://api.example.com/v1/models")
         );
+    }
+
+    #[test]
+    fn provider_meta_roundtrips_codex_model_routes() {
+        let decoded: ProviderMeta = serde_json::from_value(serde_json::json!({
+            "codexModelRoutes": {
+                "claude-native": {
+                    "baseUrl": "https://anthropic.example.com",
+                    "apiKey": "route-key",
+                    "apiFormat": "anthropic",
+                    "isFullUrl": false
+                },
+                "paused-model": {
+                    "baseUrl": "https://paused.example.com",
+                    "enabled": false
+                }
+            }
+        }))
+        .expect("deserialize ProviderMeta");
+
+        let active = decoded
+            .codex_model_routes
+            .get("claude-native")
+            .expect("route for claude-native");
+        assert!(active.is_enabled());
+        assert!(active.has_target_override());
+        assert_eq!(
+            active.base_url_override(),
+            Some("https://anthropic.example.com")
+        );
+        assert_eq!(active.api_key_override(), Some("route-key"));
+        assert_eq!(active.api_format_override(), Some("anthropic"));
+
+        let paused = decoded
+            .codex_model_routes
+            .get("paused-model")
+            .expect("route for paused-model");
+        assert!(!paused.is_enabled());
+
+        let value = serde_json::to_value(&decoded).expect("serialize ProviderMeta");
+        assert_eq!(
+            value["codexModelRoutes"]["claude-native"]["baseUrl"],
+            "https://anthropic.example.com"
+        );
+        assert_eq!(value["codexModelRoutes"]["paused-model"]["enabled"], false);
+    }
+
+    #[test]
+    fn provider_meta_without_codex_model_routes_serializes_without_key() {
+        let meta = ProviderMeta::default();
+        let value = serde_json::to_value(&meta).expect("serialize ProviderMeta");
+        assert!(value.get("codexModelRoutes").is_none());
+
+        let decoded: ProviderMeta =
+            serde_json::from_value(serde_json::json!({})).expect("deserialize empty ProviderMeta");
+        assert!(decoded.codex_model_routes.is_empty());
+    }
+
+    #[test]
+    fn codex_model_route_ignores_blank_overrides() {
+        let route = CodexModelRoute {
+            base_url: Some("   ".to_string()),
+            api_key: Some(String::new()),
+            ..CodexModelRoute::default()
+        };
+        assert!(route.is_enabled());
+        assert!(!route.has_target_override());
+        assert_eq!(route.base_url_override(), None);
+        assert_eq!(route.api_key_override(), None);
     }
 
     #[test]

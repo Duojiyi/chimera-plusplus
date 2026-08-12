@@ -1208,6 +1208,38 @@ impl RequestForwarder {
             super::providers::apply_codex_upstream_model(provider, &mut mapped_body);
         }
 
+        // Per-model upstream route (v2.5.0): once the outbound model is known,
+        // an enabled route can redirect this request to its own upstream. The
+        // lookup happens after GrokBuild model substitution so it always keys
+        // on the model actually sent upstream. Official OAuth passthrough
+        // providers never use per-model routes.
+        let codex_model_route = if matches!(app_type, AppType::Codex | AppType::GrokBuild)
+            && !codex_official_auth_passthrough
+        {
+            let route_model = mapped_body
+                .get("model")
+                .and_then(|model| model.as_str())
+                .map(str::to_string);
+            super::providers::codex_model_route_for_model(provider, route_model.as_deref())
+        } else {
+            None
+        };
+        if let Some(route_base) = codex_model_route.and_then(|route| route.base_url_override()) {
+            log::debug!(
+                "[Forwarder] per-model route overrides upstream for model {:?}",
+                codex_upstream_model.as_deref().unwrap_or("<unknown>")
+            );
+            base_url = route_base.trim_end_matches('/').to_string();
+        }
+        // Route-level full-URL semantics only apply when the route actually
+        // replaces the endpoint; otherwise the provider-level flag stands.
+        let is_full_url = match codex_model_route {
+            Some(route) if route.base_url_override().is_some() => {
+                route.is_full_url.unwrap_or(is_full_url)
+            }
+            _ => is_full_url,
+        };
+
         if is_copilot {
             mapped_body =
                 super::providers::copilot_model_map::apply_copilot_model_normalization(mapped_body);
@@ -1646,10 +1678,26 @@ impl RequestForwarder {
         // 精确认证材料。实际日志永远不输出这些值。
         let mut log_secrets: Vec<String> = Vec::new();
         let mut auth_headers = if let Some(mut auth) = adapter.extract_auth(provider) {
+            // Per-model upstream route credential override. Applied before the
+            // log-secret collection below so the route key is always redacted.
+            let codex_route_uses_own_key = if let Some(route_key) =
+                codex_model_route.and_then(|route| route.api_key_override())
+            {
+                auth.api_key = route_key.to_string();
+                true
+            } else {
+                false
+            };
             if codex_responses_to_anthropic
                 && adapter.name() == "Codex"
                 && auth.strategy == AuthStrategy::Bearer
-                && super::providers::codex_provider_uses_anthropic_api_key(provider)
+                && (super::providers::codex_provider_uses_anthropic_api_key(provider)
+                    // A route-scoped key bound to an Anthropic upstream must be
+                    // sent as x-api-key, not as a Bearer token.
+                    || (codex_route_uses_own_key
+                        && codex_model_route
+                            .and_then(|route| route.api_format_override())
+                            .is_some_and(|api_format| api_format == "anthropic")))
             {
                 auth.strategy = AuthStrategy::Anthropic;
             }

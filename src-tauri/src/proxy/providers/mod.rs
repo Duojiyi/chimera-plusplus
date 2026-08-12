@@ -63,6 +63,7 @@ pub use codex::{
     apply_codex_upstream_model,
     codex_eligible_for_chat_auto_detect,
     codex_model_protocol_mapping_is_missing,
+    codex_model_route_for_model,
     codex_provider_has_model_level_routing,
     codex_provider_is_auto_detect_candidate,
     codex_provider_upstream_model,

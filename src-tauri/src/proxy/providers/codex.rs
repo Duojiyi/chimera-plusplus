@@ -6,7 +6,7 @@
 //! 支持检测官方 Codex 客户端 (codex_vscode, codex_cli_rs)
 
 use super::{AuthInfo, AuthStrategy, ProviderAdapter};
-use crate::provider::{CodexChatReasoningConfig, Provider};
+use crate::provider::{CodexChatReasoningConfig, CodexModelRoute, Provider};
 use crate::proxy::error::ProxyError;
 use regex::Regex;
 use serde_json::Value as JsonValue;
@@ -31,7 +31,19 @@ fn codex_api_format_for_model<'a>(provider: &'a Provider, model: Option<&str>) -
         .meta
         .as_ref()
         .and_then(|meta| {
-            model.and_then(|model| meta.codex_model_api_formats.get(model).map(String::as_str))
+            // 独立上游路由声明的协议优先：请求会发往该路由的上游，
+            // 协议必须跟随路由而不是 provider 默认探测结果。
+            model.and_then(|model| {
+                meta.codex_model_routes
+                    .get(model)
+                    .filter(|route| route.is_enabled())
+                    .and_then(CodexModelRoute::api_format_override)
+            })
+        })
+        .or_else(|| {
+            provider.meta.as_ref().and_then(|meta| {
+                model.and_then(|model| meta.codex_model_api_formats.get(model).map(String::as_str))
+            })
         })
         .or_else(|| {
             provider
@@ -73,6 +85,32 @@ pub fn codex_model_protocol_mapping_is_missing(provider: &Provider, model: Optio
     meta.api_format_auto_detected == Some(true)
         && !meta.codex_model_api_formats.is_empty()
         && !meta.codex_model_api_formats.contains_key(model)
+        && meta
+            .codex_model_routes
+            .get(model)
+            .filter(|route| route.is_enabled())
+            .and_then(|route| route.api_format_override())
+            .is_none()
+}
+
+/// Resolve the enabled per-model upstream route for the outbound model.
+///
+/// Only routes that actually change the upstream target (base_url or API key
+/// override) are returned; protocol-only routes are consumed by
+/// [`codex_api_format_for_model`] and need no special forwarding.
+pub fn codex_model_route_for_model<'a>(
+    provider: &'a Provider,
+    model: Option<&str>,
+) -> Option<&'a CodexModelRoute> {
+    let model = model
+        .map(crate::proxy::model_mapper::strip_one_m_suffix_for_upstream)
+        .map(str::trim)
+        .filter(|model| !model.is_empty())?;
+    provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.codex_model_routes.get(model))
+        .filter(|route| route.is_enabled() && route.has_target_override())
 }
 
 pub fn codex_provider_uses_chat_completions_for_model(
@@ -110,6 +148,12 @@ pub fn codex_provider_has_model_level_routing(provider: &Provider) -> bool {
             meta.codex_model_api_formats
                 .values()
                 .any(|api_format| is_chat_wire_api(api_format) || is_anthropic_wire_api(api_format))
+                // 独立上游路由必须经过本地代理才能按模型分流，
+                // 即使 provider 默认协议是原生 Responses 直连。
+                || meta
+                    .codex_model_routes
+                    .values()
+                    .any(|route| route.is_enabled() && route.has_target_override())
         })
         .unwrap_or(false)
 }
@@ -1106,6 +1150,169 @@ mod tests {
         assert!(codex_model_protocol_mapping_is_missing(
             &provider,
             Some("unmapped-model")
+        ));
+    }
+
+    fn route(
+        base_url: Option<&str>,
+        api_key: Option<&str>,
+        api_format: Option<&str>,
+        enabled: Option<bool>,
+    ) -> CodexModelRoute {
+        CodexModelRoute {
+            base_url: base_url.map(str::to_string),
+            api_key: api_key.map(str::to_string),
+            api_format: api_format.map(str::to_string),
+            is_full_url: None,
+            enabled,
+        }
+    }
+
+    #[test]
+    fn per_model_route_resolution_requires_enabled_route_with_target() {
+        let mut provider = create_provider(json!({}));
+        provider.meta = Some(crate::provider::ProviderMeta {
+            codex_model_routes: [
+                (
+                    "routed-model".to_string(),
+                    route(
+                        Some("https://route.example.com/v1"),
+                        Some("route-key"),
+                        Some("anthropic"),
+                        None,
+                    ),
+                ),
+                (
+                    "paused-model".to_string(),
+                    route(Some("https://paused.example.com"), None, None, Some(false)),
+                ),
+                (
+                    "protocol-only-model".to_string(),
+                    route(None, None, Some("openai_chat"), None),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        });
+
+        let resolved = codex_model_route_for_model(&provider, Some("routed-model"))
+            .expect("route for routed-model");
+        assert_eq!(
+            resolved.base_url_override(),
+            Some("https://route.example.com/v1")
+        );
+        assert_eq!(resolved.api_key_override(), Some("route-key"));
+
+        // The [1m] marker must resolve to the same route as the bare model.
+        assert!(codex_model_route_for_model(&provider, Some("routed-model[1m]")).is_some());
+        // Disabled routes fall back to the provider default upstream.
+        assert!(codex_model_route_for_model(&provider, Some("paused-model")).is_none());
+        // Protocol-only routes are handled by the api-format chain, not forwarding.
+        assert!(codex_model_route_for_model(&provider, Some("protocol-only-model")).is_none());
+        assert!(codex_model_route_for_model(&provider, Some("unknown-model")).is_none());
+        assert!(codex_model_route_for_model(&provider, None).is_none());
+    }
+
+    #[test]
+    fn per_model_route_protocol_takes_precedence_over_detected_formats() {
+        let mut provider = create_provider(json!({}));
+        provider.meta = Some(crate::provider::ProviderMeta {
+            api_format: Some("openai_responses".to_string()),
+            codex_model_api_formats: [("routed-model".to_string(), "openai_chat".to_string())]
+                .into_iter()
+                .collect(),
+            codex_model_routes: [(
+                "routed-model".to_string(),
+                route(
+                    Some("https://anthropic.example.com"),
+                    None,
+                    Some("anthropic"),
+                    None,
+                ),
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        });
+
+        // Route protocol (anthropic) wins over the detected format (chat).
+        assert!(should_convert_codex_responses_to_anthropic_for_model(
+            &provider,
+            "/responses",
+            Some("routed-model"),
+        ));
+        assert!(!should_convert_codex_responses_to_chat_for_model(
+            &provider,
+            "/responses",
+            Some("routed-model"),
+        ));
+    }
+
+    #[test]
+    fn per_model_route_counts_as_model_level_routing() {
+        let mut provider = create_provider(json!({}));
+        provider.meta = Some(crate::provider::ProviderMeta {
+            api_format: Some("openai_responses".to_string()),
+            codex_model_routes: [(
+                "routed-model".to_string(),
+                route(Some("https://route.example.com"), None, None, None),
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        });
+        assert!(codex_provider_has_model_level_routing(&provider));
+
+        // A disabled route must not force takeover routing.
+        provider.meta = Some(crate::provider::ProviderMeta {
+            api_format: Some("openai_responses".to_string()),
+            codex_model_routes: [(
+                "routed-model".to_string(),
+                route(Some("https://route.example.com"), None, None, Some(false)),
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        });
+        assert!(!codex_provider_has_model_level_routing(&provider));
+    }
+
+    #[test]
+    fn per_model_route_protocol_satisfies_the_missing_mapping_guard() {
+        let mut provider = create_provider(json!({}));
+        provider.meta = Some(crate::provider::ProviderMeta {
+            api_format: Some("openai_responses".to_string()),
+            api_format_auto_detected: Some(true),
+            codex_model_api_formats: [(
+                "responses-model".to_string(),
+                "openai_responses".to_string(),
+            )]
+            .into_iter()
+            .collect(),
+            codex_model_routes: [(
+                "routed-model".to_string(),
+                route(
+                    Some("https://route.example.com"),
+                    None,
+                    Some("openai_chat"),
+                    None,
+                ),
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        });
+
+        // The routed model declares its protocol on the route, so it is not
+        // treated as an unmapped model even though auto-detection is on.
+        assert!(!codex_model_protocol_mapping_is_missing(
+            &provider,
+            Some("routed-model")
+        ));
+        assert!(codex_model_protocol_mapping_is_missing(
+            &provider,
+            Some("still-unmapped-model")
         ));
     }
 

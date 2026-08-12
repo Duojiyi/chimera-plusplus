@@ -1087,10 +1087,12 @@ export default function ChimeraApp() {
         }
         // Also covers the cached path: a mapping row added without changing the
         // detection identity would otherwise be saved undetected and fail closed
-        // (HTTP 400) on the first request.
+        // (HTTP 400) on the first request. Models routed to a dedicated upstream
+        // with an explicit protocol are exempt (the request follows the route).
         const undetectedCatalogModels = findCodexCatalogModelsWithoutProtocol(
           catalogModels,
           detectedModelFormats,
+          draft.original?.meta?.codexModelRoutes,
         );
         if (undetectedCatalogModels.length > 0) {
           setApiFormatDetectionError(
