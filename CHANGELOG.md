@@ -10,6 +10,35 @@ numbers belong to a separate upstream line.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.0] - 2026-08-12
+
+Reliability-focused integration release. Upstream references: CC Switch v3.19.2, CodexPlusPlus v1.2.47, Codex App Manager v0.5.2; the per-item audit and dispositions live in `docs/upstream/sync-matrix-2026-08.md`.
+
+### Added
+
+- **Per-model upstream routes:** a Codex provider can now send individual catalog models to their own upstreams. Each model-mapping row gains an optional route with its own base URL, API key, wire protocol, and full-URL semantics (`ProviderMeta.codexModelRoutes`). Routes ride the existing per-model protocol machinery from 2.4.5: a route's declared protocol outranks the probe result, models with a routed protocol are exempt from the undetected-protocol save guard, and any enabled route with a target forces takeover routing so the local proxy can actually split traffic. Route keys follow model renames, are dropped with their row, and the route's API key joins the log-redaction set before the first byte is sent.
+- **Historical version catalog:** the runtime maintenance drawer can list the Chimera mirror's published Codex releases (paginated, Windows-asset aware), resolve any tag into a checksum-bound install plan, and install it. The confirmed plan is the lock: version, package, download URL, size, and SHA-256 travel from the confirmation dialog to the installer unchanged, a background catalog refresh cannot retarget the install, and the download URL must stay inside the trusted mirror release path.
+- **Offline package import:** a local `.Msix` can be inspected (size cap, SHA-256, OpenAI Authenticode, package identity, architecture) and installed as the portable build without any network access. The hash shown at confirmation is re-verified immediately before install, and a package that fails signature, identity, or architecture checks cannot be confirmed.
+- **Install transaction journal:** every runtime install/update/import persists a journal entry before destructive work begins; the offline path additionally records each rename boundary with the real staging and backup directories via the engine's `PortableBoundary` observer. On startup, transactions that never finished are marked interrupted and surfaced in the runtime view with a recovery hint (rollback uses the preserved backup); startup itself never touches the install directory.
+- **Per-account Codex OAuth quota:** the ChatGPT account list now shows each account's subscription quota inline (shared query cache with the provider card, no duplicate backend calls) plus a "needs re-auth" badge.
+
+### Changed
+
+- **System certificate trust everywhere:** the direct hyper path, the CONNECT-tunnel path, and every reqwest client now share one root store combining Mozilla webpki roots with the OS trust store (`rustls-tls-native-roots`), so corporate proxies and private CAs work on all outbound paths, not just tunneled ones. The TLS config pins the ring provider explicitly, removing the dependence on process-global crypto state.
+- **Batched usage imports:** Claude and Codex session-log imports now take the database lock once per file and commit one transaction per file instead of locking and committing per row, keeping the UI responsive during large history imports. Import results and dedup behavior are unchanged.
+- **OMO unified config:** reading and importing understands the upstream unified layout (`~/.omo/omo.jsonc` / `omo.json` with the literal `"[opencode]"` section), which takes priority over the legacy plugin files exactly as upstream routes it. When a unified config exists, writes fail with an explicit message instead of silently writing a legacy file the upstream would ignore; full round-trip writing is planned for 2.5.1.
+- **Hermes prompts:** prompts now read and write `~/.hermes/SOUL.md` — the file Hermes actually loads — instead of `AGENTS.md`. An existing `AGENTS.md` is migrated once on first access and kept in place as a backup.
+
+### Security
+
+- Offline install enforces, in order: file-size bound, SHA-256 equality with the user-confirmed hash, OpenAI Authenticode validity, Codex package identity, and host architecture match; any failure aborts before the installer runs.
+- Historical installs only accept download URLs under the Chimera mirror's release path, and the checksum binding comes from the same tag's `SHA256SUMS-windows.txt`.
+- A note on signatures, unchanged from previous releases: the Tauri updater signature verifies update bytes; it is not an operating-system publisher signature. SHA-256 checksums, Windows Authenticode (present on the official Codex MSIX we install, not on all Chimera++ installers), and Apple notarization are separate guarantees.
+
+### Deferred (documented in the sync matrix)
+
+- macOS runtime install/update management, MCP/Skills/Prompts panel search and bulk toggles (those panels are not mounted in the current shell), full OMO unified-config writing, and the `codex-win-engine`/`codex-theme-engine` dependency upgrade (upstream v0.5.2 brings theme-engine behavior changes that need their own regression pass).
+
 ## [2.4.6] - 2026-08-11
 
 ### Added
