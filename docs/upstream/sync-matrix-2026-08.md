@@ -70,3 +70,30 @@
 - 审计日期：2026-08-12；审计人：v2.5.0 实施代理
 - 数据来源：GitHub compare API（`89b542b9...v0.5.2`：17 commits / 50 files）、本仓库 `v2-task-10-owned-mirror` 分支、`src-tauri/Cargo.toml`/`Cargo.lock`
 - 本矩阵随各实施 PR 持续更新；新增 `deferred` 或 `not-applicable` 项必须附原因
+
+## 7. v2.6.0 周期同步（2026-08-18）
+
+> 漂移扫描（2026-08-18）：CC Switch HEAD `a98829b`（v3.19.2 之后 17+ 提交，至 2026-08-17）；CodexPlusPlus `v1.2.48`（2026-08-17）；Codex App Manager `v0.5.2`（`d29fda32`，与我们固定 rev 完全一致，之后仅 1 条 dev-deps 提交，无漂移）。
+
+### 7.1 CC Switch 推理等级能力移植（本周期完成）
+
+| 上游提交 | 内容 | 处置 |
+| --- | --- | --- |
+| `40cac1a` #6228 | 模型目录 per-model reasoning levels：模型映射行新增 `reasoningLevels`/`defaultReasoningLevel`，后端叠加在原生模板与官方 vendor 目录之上（未知档位丢弃、按规范序输出、默认值回退校验）；代理 Chat/Anthropic transform 处理 `ultra` 档位 | `adapt`（cherry-pick 移植；CodexFormFields 冲突按"保留 v2.4.6 图片输入列 + 新增思考等级列"合并为 7 列网格） |
+| `e163a67` | 预设预填第一轮：火山 Agent/Coding Plan low/medium/high、DouBaoSeed、Hunyuan（新增预设）、Longcat high、Grok low/medium/high | `adapt`（新增"火山 Coding Plan"与"Tencent Hunyuan"预设） |
+| `c6247d1` | 预设预填第二轮：DeepSeek low/high/max、MiniMax/MiMo none/high、GLM none/high（补 Chat 路由关思考入口） | `adapt`（测试预设名对齐本 fork 既有"火山Agentplan"命名） |
+
+### 7.2 漂移处置（本周期未合并，记录原因）
+
+| 上游 | 内容 | 处置 |
+| --- | --- | --- |
+| CC Switch `3f75bbd` | StepFun effort 推断扩展到 step-3.7-flash | `deferred`（同属推理机制，未随本周期合并；后续周期可 cherry-pick） |
+| CC Switch `af06356`/`9dcd348`/`e12fc62`/`d01eab9` | Kimi effort、Qianfan/BytePlus thinking 方言、OpenCode Zen 平台路由 | `deferred`（同上，reasoning 方言修正族） |
+| CC Switch `46f19a1` | DeepSeek chat 缓存命中 token 计入用量 | `deferred`（用量正确性独立项） |
+| CC Switch `bdeaac7` | 代理支持 Codex Alpha Search + Claude hosted WebSearch | `deferred`（代理功能面，独立评估） |
+| CC Switch `de9af49` | Windows CLI 从注册表 PATH 检测 | `deferred` |
+| CC Switch `d4fefef` | Windows 启动白黑闪（FOUC）修复 | `deferred` |
+| CC Switch `a2e22f3` | 受管 OAuth 账户选择（54 文件） | `deferred`（大面改动，独立周期） |
+| CC Switch 其余 | IME 字段加固、设备登录取消、多年趋势 tooltip、Grok 表单文案 | `deferred`（小修复） |
+| CodexPlusPlus `v1.2.48` | 微信连接、Remote Control 会话恢复、临时线程 ID 防护、隐藏官方用量提醒、DeepSeek Responses code_mode 兼容 | `not-applicable`（Codex++ 自身产品面：注入/远程控制/微信；按既定政策不吸收注入与产品面；DeepSeek 兼容能力本 fork 已有等价处理） |
+| Codex App Manager | 仅 `fa871cf`（js-yaml/postcss dev-deps bump） | `not-applicable`（dev-deps，与 Rust 引擎无关） |

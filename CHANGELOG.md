@@ -10,6 +10,49 @@ numbers belong to a separate upstream line.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.0] - 2026-08-18
+
+Feature release synced from CC Switch upstream (#6228 and its two preset
+pre-fill follow-ups, ported by cherry-pick): the generated Codex model
+catalog can now carry real per-model reasoning levels instead of the native
+template's conservative none/high default.
+
+### Added
+
+- **Per-model reasoning levels in the model catalog.** The generated Codex
+  catalog previously hardcoded `supported_reasoning_levels` to `none`/`high`
+  from the native template, so users of gateways that accept more effort
+  levels (e.g. LiteLLM serving `deepseek-v4-flash` with
+  low/medium/high/xhigh/max) could not select anything above High in the
+  Codex model picker. Each model-mapping row now carries optional
+  `reasoningLevels` / `defaultReasoningLevel` fields, exposed as a
+  reasoning-level multi-select plus a default-level picker in the Codex
+  provider form. The backend applies them on top of the native template AND
+  the official vendor catalog: unknown efforts are dropped (canonical
+  order is always emitted), and the default falls back to the
+  template/vendor default when it stays in the list, otherwise to the
+  highest declared level.
+- **Vendor reasoning-level presets.** Pre-filled effort tiers from official
+  vendor documentation for native Responses presets: Volcengine Agent Plan
+  and Coding Plan (low/medium/high), DouBaoSeed (minimal/low/medium/high),
+  Tencent Hunyuan (low/high), Longcat (high), xAI Grok (low/medium/high),
+  DeepSeek direct (low/high/max, mirroring the official catalog), Zhipu GLM
+  (none/high two-state on the Chat route), MiniMax and Xiaomi MiMo
+  (none/high, declared for form visibility). Presets remain user-editable
+  per provider.
+- **New Tencent Hunyuan and Volcengine Coding Plan presets** in the Codex
+  provider list, alongside the existing Volcengine Agent Plan preset.
+
+### Fixed
+
+- **Proxy no longer drops the `ultra` reasoning effort.** Chat-transform
+  passthrough now forwards `ultra` verbatim (the per-model declaration
+  vouches for upstream support); the deepseek and openrouter modes clamp it
+  to their highest legal tier (`max` / `xhigh`) instead of dropping the
+  effort parameter. The Anthropic transform maps `ultra` to the max
+  thinking budget; previously it fell through to `None`, so picking the
+  deepest level disabled extended thinking altogether.
+
 ## [2.5.2] - 2026-08-12
 
 Safety patch for the 2.5.1 OMO unified-config writer, driven by an independent post-release review that reproduced a defect in the `json-five` 0.3.1 serializer with an executable probe.
