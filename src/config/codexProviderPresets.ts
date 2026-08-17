@@ -92,6 +92,12 @@ function modelCatalog(
         // Vendor's OFFICIAL base_instructions; omit to inherit the neutral
         // template default. Required by Codex, so the backend always emits one.
         baseInstructions?: string;
+        // Reasoning efforts the vendor's endpoint actually accepts (subset of
+        // none/minimal/low/medium/high/xhigh/max/ultra). Omit to keep the
+        // template's conservative none/high default. Pre-filled from official
+        // vendor docs; users can still edit per provider in the form.
+        reasoningLevels?: string[];
+        defaultReasoningLevel?: string;
       }
   >,
 ): CodexCatalogModel[] {
@@ -105,6 +111,8 @@ function modelCatalog(
           supportsParallelToolCalls: entry.supportsParallelToolCalls,
           inputModalities: entry.inputModalities,
           baseInstructions: entry.baseInstructions,
+          reasoningLevels: entry.reasoningLevels,
+          defaultReasoningLevel: entry.defaultReasoningLevel,
         },
   );
 }
@@ -473,6 +481,10 @@ requires_openai_auth = false`,
         model: "ark-code-latest",
         displayName: "Ark Code Latest",
         contextWindow: 256000,
+        // 四份官方 Codex 接入文档（82379/2556054~2556057）一致限定
+        // model_reasoning_effort 只能是 low/medium/high；none/xhigh/max 是
+        // glm-5-2 专属值（82379/1449737），别名可指向任意后端模型故不可填
+        reasoningLevels: ["low", "medium", "high"],
       },
     ]),
     category: "cn_official",
@@ -482,6 +494,42 @@ requires_openai_auth = false`,
     iconColor: "#3370FF",
   },
   {
+    name: "火山 Coding Plan",
+    websiteUrl:
+      "https://www.volcengine.com/activity/codingplan?ac=MMAP8JTTCAQ2&rc=6J6FV5N2&utm_campaign=hw&utm_content=ccswitch&utm_medium=devrel_tool_web&utm_source=OWO&utm_term=ccswitch",
+    apiKeyUrl:
+      "https://www.volcengine.com/activity/codingplan?ac=MMAP8JTTCAQ2&rc=6J6FV5N2&utm_campaign=hw&utm_content=ccswitch&utm_medium=devrel_tool_web&utm_source=OWO&utm_term=ccswitch",
+    auth: generateThirdPartyAuth(""),
+    config: generateThirdPartyConfig(
+      "ark_codingplan",
+      "https://ark.cn-beijing.volces.com/api/coding/v3",
+      "ark-code-latest",
+    ),
+    // ⚠️ 计费红线（官方 warning）：Coding Plan 必须走 /api/coding/v3；
+    // 按量端点 /api/v3 不消耗套餐额度、按量另计费，Agent Plan 的
+    // /api/plan/v3 是另一份订阅——两者都绝不能混入候选
+    endpointCandidates: ["https://ark.cn-beijing.volces.com/api/coding/v3"],
+    // 官方 Codex 文档（volcengine.com/docs/82379/2556056，2026-07 更新）：
+    // Coding Plan /api/coding/v3 已支持 Responses API（wire_api=responses），
+    // 无需路由接管转换
+    apiFormat: "openai_responses",
+    modelCatalog: modelCatalog([
+      {
+        model: "ark-code-latest",
+        displayName: "Ark Code Latest",
+        contextWindow: 256000,
+        // 同 Agent Plan：官方 Codex 文档钉死 low/medium/high 三档
+        reasoningLevels: ["low", "medium", "high"],
+      },
+    ]),
+    category: "cn_official",
+    isPartner: true,
+    partnerPromotionKey: "volcengine_codingplan",
+    icon: "huoshan",
+    iconColor: "#3370FF",
+  },
+  {
+ (feat(presets): pre-fill vendor-documented Codex reasoning levels)
     name: "BytePlus",
     websiteUrl:
       "https://www.byteplus.com/en/product/modelark?utm_campaign=hw&utm_content=ccswitch&utm_medium=devrel_tool_web&utm_source=OWO&utm_term=ccswitch",
@@ -532,6 +580,10 @@ requires_openai_auth = false`,
         model: "doubao-seed-2-1-pro-260628",
         displayName: "Doubao Seed 2.1 Pro",
         contextWindow: 262144,
+        // 方舟深度思考文档（82379/1449737）7 值枚举中本模型无限制的通用四档；
+        // none/xhigh 仅 glm-5-2、max 的 deepseek 名单标注 Responses 待支持。
+        // minimal=方舟的"关闭思考直接回答"档；官方点名本模型服务端默认 high
+        reasoningLevels: ["minimal", "low", "medium", "high"],
       },
     ]),
     category: "cn_official",
@@ -936,6 +988,8 @@ requires_openai_auth = false`,
     // deepseek-v4-flash 原生 Responses（wire_api=responses 对自家 base_url），无需路由接管转换。
     // 后端按 deepseek.com host 直接镜像官方 models.json（freeform apply_patch +
     // GPT-5 harness + low/high/max 思考档，需 codex >= 0.144.0），这里只保留行清单与展示名。
+    // 档位不预填：镜像的官方 catalog 已带 low/high/max 默认 high（2026-08-15
+    // 复核 flash/pro 逐字节一致），预填 reasoningLevels 反而会覆盖官方声明
     apiFormat: "openai_responses",
     modelCatalog: modelCatalog([
       {
@@ -1057,6 +1111,56 @@ requires_openai_auth = false`,
     iconColor: "#624AFF",
   },
   {
+    name: "Tencent Hunyuan",
+    websiteUrl: "https://cloud.tencent.com/product/tokenhub",
+    apiKeyUrl: "https://console.cloud.tencent.com/tokenhub/apikey",
+    auth: generateThirdPartyAuth(""),
+    config: generateThirdPartyConfig(
+      "hy3_tokenhub",
+      "https://tokenhub.tencentmaas.com/v1",
+      "hy3",
+    ),
+    // 官方备用域名 tencentmaas.cn（文档 1823/130078）；国际站 tokenhub-intl
+    // 属不同地域，API Key 不跨站通用，不作候选
+    endpointCandidates: [
+      "https://tokenhub.tencentmaas.com/v1",
+      "https://tokenhub.tencentmaas.cn/v1",
+    ],
+    // 腾讯 TokenHub 官方 Codex 文档（cloud.tencent.com/document/product/1823/133532）：
+    // hy3 原生 Responses（wire_api=responses；官方硬性要求的
+    // disable_response_storage=true 已由 generateThirdPartyConfig 输出）。
+    // ⚠️ 须用 TokenHub API Key（创建时范围需勾选 Hy3）；Coding Plan / Token Plan
+    // 订阅 Key 只能走各自 chat 端点，对本预设的 /v1 不通。
+    // hy3 在带 tools 的请求里会把 reasoning_effort=low 服务端自动升为 high
+    // （Codex 恒带 tools），默认 high 即真实行为。
+    apiFormat: "openai_responses",
+    // 无官方 catalog：合成 MiMo 式（shell_command 编辑、不发 freeform apply_patch）
+    modelCatalog: modelCatalog([
+      {
+        model: "hy3",
+        displayName: "Hy3",
+        contextWindow: 256000,
+        // hy3 不在官方多模态理解模型名单（1823/130988），纯文本
+        inputModalities: ["text"],
+        // 官方档位枚举只有 low/high（1823/131208 + 开源权重 chat template
+        // 对其他 effort 值直接 raise）；带 tools 时 low 被服务端升为 high
+        reasoningLevels: ["low", "high"],
+      },
+      {
+        model: "hy3-preview",
+        displayName: "Hy3 Preview",
+        contextWindow: 256000,
+        inputModalities: ["text"],
+        // 同 hy3：官方枚举 low/high（1823/130930 交错式思考模式文档）
+        reasoningLevels: ["low", "high"],
+      },
+    ]),
+    category: "cn_official",
+    icon: "hunyuan",
+    iconColor: "#0055E9",
+  },
+  {
+ (feat(presets): pre-fill vendor-documented Codex reasoning levels)
     name: "StepFun",
     websiteUrl: "https://platform.stepfun.com/step-plan",
     apiKeyUrl: "https://platform.stepfun.com/interface-key",
@@ -1172,6 +1276,10 @@ requires_openai_auth = false`,
         model: "LongCat-2.0",
         displayName: "LongCat 2.0",
         contextWindow: 1048576,
+        // LongCat 无档位可调：全站唯一 effort 证据=官方 Codex 示例的 high；
+        // 关思考走另一字段 thinking:{type:disabled}（effort 拼写无文档），
+        // models API 的 supported_parameters 也不含 reasoning，故不提供 none 假开关
+        reasoningLevels: ["high"],
       },
     ]),
     category: "cn_official",
@@ -1192,7 +1300,9 @@ requires_openai_auth = false`,
     // MiniMax 官方 API 参考已列 /v1/responses 为正式端点（CN/intl 双区，POST /v1/responses），原生 Responses，无需路由接管转换
     apiFormat: "openai_responses",
     // 官方 Codex catalog（platform.minimaxi.com/docs/token-plan/codex-cli）：
-    // shell_command 编辑、并行工具、文本+图像，不声明 freeform apply_patch
+    // shell_command 编辑、并行工具、文本+图像，不声明 freeform apply_patch。
+    // 档位不预填：官方 catalog 就是 none/high 与模板默认一致（M3 的 effort
+    // 是思考开关，minimal/low/medium 端点接受但与 high 行为完全等价）
     modelCatalog: modelCatalog([
       {
         model: "MiniMax-M3",
@@ -1227,7 +1337,9 @@ requires_openai_auth = false`,
     // MiniMax 官方 API 参考已列 /v1/responses 为正式端点（CN/intl 双区，POST /v1/responses），原生 Responses，无需路由接管转换
     apiFormat: "openai_responses",
     // 官方 Codex catalog（platform.minimax.io/docs/token-plan/codex）：
-    // shell_command 编辑、并行工具、文本+图像，不声明 freeform apply_patch
+    // shell_command 编辑、并行工具、文本+图像，不声明 freeform apply_patch。
+    // 档位不预填：官方 catalog 就是 none/high 与模板默认一致（M3 的 effort
+    // 是思考开关，minimal/low/medium 端点接受但与 high 行为完全等价）
     modelCatalog: modelCatalog([
       {
         model: "MiniMax-M3",
@@ -1283,7 +1395,9 @@ requires_openai_auth = false`,
     // 小米 MiMo 官方 Codex 文档已声明原生支持 Responses API（wire_api=responses 对自家 base_url），无需路由接管转换
     apiFormat: "openai_responses",
     // 官方 Codex catalog（mimo.mi.com/.../codex-configuration）：
-    // shell_command 编辑、不声明 freeform apply_patch
+    // shell_command 编辑、不声明 freeform apply_patch。
+    // 档位不预填：官方 catalog 就是 none/high 与模板默认一致（端点另收
+    // low/medium 但官方自述三档"效果一致，暂不区分推理强度"）
     modelCatalog: modelCatalog([
       {
         model: "mimo-v2.5-pro",
@@ -1320,7 +1434,9 @@ requires_openai_auth = false`,
     // 小米 MiMo 官方 Codex 文档已声明原生支持 Responses API（wire_api=responses 对自家 base_url），无需路由接管转换
     apiFormat: "openai_responses",
     // 官方 Codex catalog（mimo.mi.com/.../codex-configuration）：
-    // shell_command 编辑、不声明 freeform apply_patch
+    // shell_command 编辑、不声明 freeform apply_patch。
+    // 档位不预填：官方 catalog 就是 none/high 与模板默认一致（端点另收
+    // low/medium 但官方自述三档"效果一致，暂不区分推理强度"）
     modelCatalog: modelCatalog([
       {
         model: "mimo-v2.5-pro",
@@ -1391,6 +1507,11 @@ requires_openai_auth = false`,
         contextWindow: 500000,
         supportsParallelToolCalls: true,
         inputModalities: ["text", "image"],
+        // xAI Reasoning guide（docs.x.ai，2026-08）模型级枚举 low/medium/high
+        // 默认 high；"Reasoning cannot be disabled" 故无 none 档（模板默认的
+        // none 对 grok-4.5 是无效选项）；xhigh 是 grok-4.6 起才有的档位。
+        // ⚠️ docs.x.ai/developers/grok-4-5 页面实际渲染的是 grok-4.6 内容勿引
+        reasoningLevels: ["low", "medium", "high"],
       },
     ]),
     category: "third_party",
@@ -1414,6 +1535,11 @@ requires_openai_auth = false`,
         contextWindow: 500000,
         supportsParallelToolCalls: true,
         inputModalities: ["text", "image"],
+        // xAI Reasoning guide（docs.x.ai，2026-08）模型级枚举 low/medium/high
+        // 默认 high；"Reasoning cannot be disabled" 故无 none 档（模板默认的
+        // none 对 grok-4.5 是无效选项）；xhigh 是 grok-4.6 起才有的档位。
+        // ⚠️ docs.x.ai/developers/grok-4-5 页面实际渲染的是 grok-4.6 内容勿引
+        reasoningLevels: ["low", "medium", "high"],
       },
     ]),
     category: "third_party",
