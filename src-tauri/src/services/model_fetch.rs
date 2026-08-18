@@ -620,9 +620,21 @@ async fn send_codex_api_format_probe(
             {
                 Ok(body) => {
                     let body = truncate_body(body);
-                    let supported = response_indicates_protocol_support(probe, status, &body);
-                    let classification = if supported {
+                    let strong_evidence = response_indicates_protocol_support(probe, status, &body);
+                    // Unknown aggregators often normalize all schema failures
+                    // into a generic validation error instead of echoing the
+                    // field we deliberately made invalid. Treat that as weak
+                    // evidence only for conversion protocols: an unknown
+                    // gateway should automatically prefer Chat/Anthropic, but
+                    // must never be promoted to native Responses without a
+                    // Responses-shaped field error.
+                    let weak_evidence = !strong_evidence
+                        && response_indicates_generic_validation_support(probe, status, &body);
+                    let supported = strong_evidence || weak_evidence;
+                    let classification = if strong_evidence {
                         "protocol validation"
+                    } else if weak_evidence {
+                        "generic validation (weak evidence)"
                     } else {
                         "inconclusive"
                     };
@@ -806,6 +818,71 @@ fn response_indicates_protocol_support(
         .validation_markers()
         .iter()
         .any(|marker| normalized.contains(marker))
+}
+
+/// Accept generic request-validation failures from unknown conversion gateways.
+///
+/// Many aggregators intentionally normalize provider errors and do not echo the
+/// request field that failed. A generic validation response still proves that
+/// the route accepted the protocol-shaped request, but it is deliberately weak
+/// evidence: native Responses keeps requiring an explicit Responses marker to
+/// avoid selecting a direct-connect path that cannot carry Codex tools.
+fn response_indicates_generic_validation_support(
+    probe: CodexApiProbe,
+    status: StatusCode,
+    body: &str,
+) -> bool {
+    if probe == CodexApiProbe::Responses
+        || !(status == StatusCode::BAD_REQUEST
+            || status == StatusCode::UNPROCESSABLE_ENTITY
+            || (status == StatusCode::INTERNAL_SERVER_ERROR
+                && response_is_deserialization_error(&body.to_ascii_lowercase())))
+    {
+        return false;
+    }
+
+    let normalized = body.to_ascii_lowercase();
+    if [
+        "not found",
+        "unknown endpoint",
+        "unknown route",
+        "unsupported endpoint",
+        "route not found",
+        "invalid api key",
+        "unauthorized",
+        "forbidden",
+        "model is required",
+        "model not found",
+        "model_not_found",
+        "model is not available",
+        "unsupported model",
+        "unsupported_model",
+        "not supported by this model",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+    {
+        return false;
+    }
+
+    [
+        "invalid request",
+        "invalid_request_error",
+        "invalid_request",
+        "request error",
+        "请求无效",
+        "invalid parameter",
+        "invalid params",
+        "request validation",
+        "validation failed",
+        "validation error",
+        "参数错误",
+        "请求参数",
+        "请求体错误",
+        "字段错误",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
 }
 
 /// Whether an error body is a JSON deserialization failure that names a
@@ -1377,6 +1454,43 @@ mod tests {
             CodexApiProbe::ChatCompletions,
             StatusCode::BAD_REQUEST,
             "Bad request"
+        ));
+    }
+
+    #[test]
+    fn protocol_probe_accepts_generic_validation_for_unknown_aggregators() {
+        // Aggregators such as TokenRhythm normalize schema failures instead of
+        // echoing `messages`/`max_tokens`. This is enough to select the
+        // conversion route, but never enough to select native Responses.
+        for probe in [
+            CodexApiProbe::ChatCompletions,
+            CodexApiProbe::AnthropicMessages,
+        ] {
+            assert!(response_indicates_generic_validation_support(
+                probe,
+                StatusCode::BAD_REQUEST,
+                r#"{"error":{"message":"request validation failed"}}"#
+            ));
+            assert!(response_indicates_generic_validation_support(
+                probe,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                r#"{"message":"参数错误"}"#
+            ));
+        }
+        assert!(!response_indicates_generic_validation_support(
+            CodexApiProbe::Responses,
+            StatusCode::BAD_REQUEST,
+            r#"{"error":{"message":"request validation failed"}}"#
+        ));
+        assert!(!response_indicates_generic_validation_support(
+            CodexApiProbe::ChatCompletions,
+            StatusCode::BAD_REQUEST,
+            "Bad request"
+        ));
+        assert!(!response_indicates_generic_validation_support(
+            CodexApiProbe::ChatCompletions,
+            StatusCode::BAD_REQUEST,
+            r#"{"error":"model is required"}"#
         ));
     }
 
