@@ -10,6 +10,12 @@ numbers belong to a separate upstream line.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.1] - 2026-08-18
+
+### Fixed
+
+- **Unknown aggregator gateways are detected automatically.** Generic request-validation errors from OpenAI-compatible aggregation gateways no longer leave protocol detection inconclusive. Chat Completions and Anthropic conversion routes accept these responses as weak evidence, while native Responses still requires explicit Responses-shaped validation to avoid unsafe direct-connect selection. Users can save a gateway with its URL, API key, and model catalog without manually selecting a protocol unless all automatic evidence is genuinely insufficient.
+
 ## [2.6.0] - 2026-08-18
 
 Feature release synced from CC Switch upstream (#6228 and its two preset
@@ -278,13 +284,13 @@ Development since v3.17.0 is headlined by Grok Build joining as the eighth manag
 - **Codex 0.144.5+ No Longer Fails to Start on CC Switch-Generated Model Catalogs**: codex ≥ 0.144.5 parses external model catalogs strictly and rejects the whole file when an entry is missing `supports_reasoning_summaries` — so both the Codex CLI and desktop app failed to launch, and deleting the generated catalog didn't help because any provider save regenerated it the same way. The root cause is that CC Switch clones its catalog template from the machine-shared `models_cache.json`, whose field set is whatever the last-writing codex process produced — a coexisting older codex build kept rewriting the cache without the field the newer parser requires. Generated catalogs now backfill parser-required fields from the bundled static template, only when absent (dynamic values always win), and deliberately do not backfill optional capability fields whose "missing = parser default" semantics must survive.
 - **Windows: No More Console Flash or UI Freeze When Switching Providers**: Switching providers or toggling takeover on Windows flashed a transient console window and froze the UI for up to ~2 seconds. Three causes, three fixes: the `codex debug models --bundled` probe launches `codex.cmd` through `cmd.exe`, which in a GUI-subsystem app spawns its own console — the child process is now created with `CREATE_NO_WINDOW`; the model-catalog template was regenerated on every switch — it is now cached process-wide after the first successful load (failures stay retryable so a bad first probe cannot poison the cache), so the Codex CLI starts at most once per app run; and `switch_provider` was a synchronous command running on the main thread — it is now async with the real work on a blocking thread, still serialized by the per-app switch lock. The freeze fix benefits all platforms; the console-flash fix is Windows-specific.
 - **Codex Tool Schemas With Null, Missing, or Union Parameter Types Are Accepted by Strict Upstreams**: Built-in Codex tools such as `codex_app__automation_update` declare `parameters: null` (or `type: null`), which strict OpenAI-compatible upstreams like DeepSeek reject with a 400 for the entire request, killing tool-using sessions routed through the proxy. The Responses→Chat bridge now normalizes every tool's parameters to a `type:"object"` schema — null or missing parameters (including the nested-form missing case) become `{"type":"object","properties":{}}`, a non-object `type` (including `type: null`) is coerced to `"object"` in place, and top-level `oneOf` union schemas get a root `type:"object"` added while their branches are preserved untouched. The same object-type guarantee was extended to the Codex→Anthropic tool path's `input_schema`. Existing `properties`/`required` are never dropped. (#4706, #5315; issues #4705, #4783)
-- **Reasoning Models Keep Their Thinking Across Multi-Turn Codex Chat Conversations**: With a reasoning model (e.g. kimi-k2-thinking) behind the proxy's Responses→Chat bridge, multi-turn history mangled the thinking: each turn's `reasoning` item was glued onto the tail of the _previous_ assistant message, leaving the following assistant turn with no `reasoning_content` — models would visibly break off mid-conversation. Responses semantics place reasoning _before_ the message it belongs to, so the bridge now attaches reasoning forward to the assistant message or tool call that follows it; genuine trailing reasoning back-attaches only at the true tail (end of input, or a turn boundary such as an incoming user message — where it was previously silently discarded), appending to any embedded reasoning already present, and pending reasoning is always consumed at boundaries so it can never leak across a user turn into a later assistant message. (#5508)
+- **Reasoning Models Keep Their Thinking Across Multi-Turn Codex Chat Conversations**: With a reasoning model (e.g. kimi-k2-thinking) behind the proxy's Responses→Chat bridge, multi-turn history mangled the thinking: each turn's `reasoning` item was glued onto the tail of the *previous* assistant message, leaving the following assistant turn with no `reasoning_content` — models would visibly break off mid-conversation. Responses semantics place reasoning *before* the message it belongs to, so the bridge now attaches reasoning forward to the assistant message or tool call that follows it; genuine trailing reasoning back-attaches only at the true tail (end of input, or a turn boundary such as an incoming user message — where it was previously silently discarded), appending to any embedded reasoning already present, and pending reasoning is always consumed at boundaries so it can never leak across a user turn into a later assistant message. (#5508)
 - **Streamed Parallel Tool Calls Keep Their IDs and Their Order**: Two bugs in the Chat→Responses streaming bridge corrupted parallel tool calls from upstreams that split identity across chunks: a continuation delta carrying an empty `id` overwrote the real `call_id` (the Codex client then saw `call_id:""` and couldn't match tool results to calls), and tool calls were emitted the moment they individually became ready, so a later index whose name arrived early could jump ahead of an earlier one — reordering parallel calls. Empty ids are now ignored, and emission goes through a consecutive-index gate that releases tool calls strictly in Chat `index` order, waiting on any not-yet-identified earlier index; no fake call id is ever synthesized mid-stream (only as a last resort at stream finalization, which also skips nameless calls defensively and still emits sparse indexes). (#5310)
 - **Managed-OAuth Providers Are Reliably Flagged as Needing Local Routing**: The "needs routing" badge and switch-time warning were derived from the provider's API format, which is the wrong signal for managed-OAuth providers (Copilot, Codex OAuth, xAI) whose credential is injected by the proxy regardless of upstream format — a managed provider on a native format got no warning and failed silently without takeover. Routing need is now decided by a single shared predicate: official providers never need routing, managed-OAuth providers always do, and format-based rules apply only to the remaining cases per app. The switch-time gate also checks the right readiness signal per app: per-app takeover for most apps (the old gate looked only at a global proxy-running flag, missing the case where the proxy runs but the current app is not taken over), while Claude Desktop keeps watching the proxy process itself — the backend's takeover status has no Claude Desktop field, so a uniform per-app gate would have left Desktop warning forever. Claude Desktop provider forms now force proxy mode and lock the model-mapping toggle for every managed-OAuth type, not just xAI. Localized in all four locales (zh/en/ja/zh-TW).
 - **Tool Updates Work When Node Lives in nvm/fnm/mise Under a GUI Launch**: Anchored npm update and repair commands invoked npm by absolute path, but npm's launcher resolves `node` via its `#!/usr/bin/env node` shebang against PATH — and a GUI-launched app inherits only the system PATH, not the user's version-manager directories, so updates silently failed for tools installed via nvm/fnm/mise. Every anchored npm invocation now prefixes PATH with npm's own sibling `bin` directory, so both npm and its shebang resolve to the same Node install; the Codex self-repair (uninstall + reinstall) path is covered too.
 - **Deleted Default Skill Repositories Stay Deleted**: Default Skill repositories were re-seeded on every startup by a "supplement missing defaults" pass, so a default repo the user deleted silently returned on the next launch. Seeding is now one-time per database, tracked by a settings flag; databases that already contain repositories at upgrade time get the flag set without any re-seeding, so existing selections are untouched. (#5356)
 - **First-Run Tray Language Follows the System Locale**: Before any language was chosen in settings, the tray menu was hardcoded to Simplified Chinese even on English/Japanese/Traditional-Chinese systems where the main UI correctly followed the OS locale — tray and UI disagreed until the user switched language once. The tray now derives its first-run language from the OS locale with the same precedence rules as the frontend (including `zh-TW`/`zh-HK`/`zh-Hant` → Traditional Chinese); an explicitly chosen language always wins, and unreadable locales fall back to Chinese as before. (#4355)
-- **Failed Live-Config Imports Show the Real Error and Refresh the List**: Every failed "import from live config" produced an empty error toast, because Tauri's `invoke` rejects with the backend's error _string_ while the handler read `.message` off it; the actual backend message is now shown (with a localized generic fallback), and the provider list is refreshed even on failure so side effects committed before the error are visible immediately.
+- **Failed Live-Config Imports Show the Real Error and Refresh the List**: Every failed "import from live config" produced an empty error toast, because Tauri's `invoke` rejects with the backend's error *string* while the handler read `.message` off it; the actual backend message is now shown (with a localized generic fallback), and the provider list is refreshed even on failure so side effects committed before the error are visible immediately.
 - **OpenClaw Preset Model Costs Corrected to Official List Prices**: Fifteen OpenClaw preset entries carried cost values in the wrong unit or unconverted currency — the `cost` field is USD per million tokens, but e.g. `glm-5.1` was listed at `0.001/0.001` (≈1000× undervalued, so its usage showed near-zero cost) while `deepseek-v4-pro` carried unconverted CNY values (overvalued). All entries now carry official list prices in $/M; subscription-plan and free-tier endpoints deliberately show list prices too, so plan users see the standard value of their usage. Providers created from these presets going forward get the corrected values; previously added providers keep the config they were created with.
 - **AiHubMix Icon on the Codex Preset**: The Codex app's AiHubMix preset was the only one missing its brand icon fields and rendered a generic icon; it now matches the other apps.
 - **Two Missing Locale Keys Backfilled in All Four Locales**: The Codex "needs routing because it uses Anthropic Messages format" toast rendered its reason fragment in Chinese inside an otherwise-localized sentence because `proxyReasonAnthropicMessages` existed in no locale file, and the provider-form key-status loading label had shipped only as a hardcoded default since April; both now exist in zh/en/ja/zh-TW.
@@ -1449,7 +1455,7 @@ This release introduces **OpenClaw** as the fifth supported application, a full 
 
 - **OpenClaw /v1 Prefix**: Removed /v1 prefix from OpenClaw anthropic-messages presets to prevent double path (/v1/v1/messages) with Anthropic SDK auto-append
 - **Opus Pricing**: Corrected Opus pricing from $15/$75 to $5/$25 and upgraded model ID to claude-opus-4-6
-- **AIGoCode URLs**: Unified API base URL to https://api.aigocode.com across all apps; removed trailing /v1 suffix
+- **AIGoCode URLs**: Unified API base URL to <https://api.aigocode.com> across all apps; removed trailing /v1 suffix
 - **Zhipu GLM**: Removed outdated partner status from Claude, OpenCode, and OpenClaw presets
 - **API Key Visibility**: Restored API Key input field when creating new Claude providers (was incorrectly hidden for non-cloud_provider categories)
 
@@ -1756,23 +1762,28 @@ Third beta release with important bug fixes for Windows compatibility, UI improv
 ### Fixed
 
 #### Windows
+
 - Wrap npx/npm commands with `cmd /c` for MCP export
 - Prevent terminal windows from appearing during version check
 
 #### macOS
+
 - Use .app bundle path for autostart to prevent terminal window popup
 
 #### UI
+
 - Resolve Dialog/Modal not opening on first click (#492)
 - Improve dark mode text contrast for form labels
 - Reduce header spacing and fix layout shift on view switch
 - Prevent header layout shift when switching views
 
 #### Database & Schema
+
 - Add missing base columns migration for proxy_config
 - Add backward compatibility check for proxy_config seed insert
 
 #### Other
+
 - Use local timezone and robust DST handling in usage stats (#500)
 - Remove deprecated `sync_enabled_to_codex` call
 - Gracefully handle invalid Codex config.toml during MCP sync
@@ -1831,28 +1842,33 @@ This beta release introduces the **Local API Proxy** feature, along with Skills 
 ### Major Features
 
 #### Local Proxy Server
+
 - **Local HTTP Proxy** - High-performance proxy server built on Axum framework
 - **Multi-app Support** - Unified proxy for Claude Code, Codex, and Gemini CLI API requests
 - **Per-app Takeover** - Independent control over which apps route through the proxy
 - **Live Config Takeover** - Automatically backs up and redirects CLI configurations to local proxy
 
 #### Auto Failover
+
 - **Circuit Breaker** - Automatically detects provider failures and triggers protection
 - **Smart Failover** - Automatically switches to backup provider when current one is unavailable
 - **Health Tracking** - Real-time monitoring of provider availability
 - **Independent Failover Queues** - Each app maintains its own failover queue
 
 #### Monitoring
+
 - **Request Logging** - Detailed logging of all proxy requests
 - **Usage Statistics** - Token consumption, latency, success rate metrics
 - **Real-time Status** - Frontend displays proxy status and statistics
 
 #### Skills Multi-App Support
+
 - **Multi-app Support** - Skills now support both Claude and Codex (#365)
 - **Multi-app Migration** - Existing Skills auto-migrate to multi-app structure (#378)
 - **Installation Path Fix** - Use directory basename for skill installation path (#358)
 
 ### Added
+
 - **Provider Icon Colors** - Customize provider icon colors (#385)
 - **Deeplink Usage Config** - Import usage query config via deeplink (#400)
 - **Error Request Logging** - Detailed logging for proxy requests (#401)
@@ -1862,6 +1878,7 @@ This beta release introduces the **Local API Proxy** feature, along with Skills 
 ### Fixed
 
 #### Proxy Related
+
 - Takeover Codex base_url via model_provider
 - Harden crash recovery with fallback detection
 - Sync UI when active provider differs from current setting
@@ -1879,17 +1896,20 @@ This beta release introduces the **Local API Proxy** feature, along with Skills 
 - Resolve 404 error and auto-setup proxy targets
 
 #### MCP Related
+
 - Skip sync when target CLI app is not installed
 - Improve upsert and import robustness
 - Use browser-compatible platform detection for MCP presets
 
 #### UI Related
+
 - Restore fade transition for Skills button
 - Add close button to all success toasts
 - Prevent card jitter when health badge appears
 - Update SettingsPage tab styles (#342)
 
 #### Other
+
 - Fix Azure website link (#407)
 - Add fallback to provider config for usage credentials (#360)
 - Fix Windows black screen on startup (use system titlebar)
@@ -1898,11 +1918,13 @@ This beta release introduces the **Local API Proxy** feature, along with Skills 
 - Security fixes for JavaScript executor and usage script (#151)
 
 ### Improved
+
 - **Proxy Active Theme** - Apply emerald theme when proxy takeover is active
 - **Card Animation** - Improved provider card hover animation
 - **Remove Restart Prompt** - No longer prompts restart when switching providers
 
 ### Technical
+
 - Implement per-app takeover mode
 - Proxy module contains 20+ Rust files with complete layered architecture
 - Add 5 new database tables for proxy functionality
@@ -1910,6 +1932,7 @@ This beta release introduces the **Local API Proxy** feature, along with Skills 
 - Remove is_proxy_target in favor of failover_queue
 
 ### Stats
+
 - 55 commits since v3.8.2
 - 164 files changed
 - +22,164 / -570 lines
@@ -2389,8 +2412,8 @@ v3.7.0 represents a major evolution from "Provider Switcher" to **"All-in-One AI
 
 ### ✨ Features
 
-- Add “Apply to VS Code / Remove from VS Code” actions on provider cards, writing settings for Code/Insiders/VSCodium variants _(Removed in 3.4.x)_
-- Enable VS Code auto-sync by default with window broadcast and tray hooks so Codex switches sync silently _(Removed in 3.4.x)_
+- Add “Apply to VS Code / Remove from VS Code” actions on provider cards, writing settings for Code/Insiders/VSCodium variants *(Removed in 3.4.x)*
+- Enable VS Code auto-sync by default with window broadcast and tray hooks so Codex switches sync silently *(Removed in 3.4.x)*
 - Extend the Codex provider wizard with display name, dedicated API key URL, and clearer guidance
 - Introduce shared common config snippets with JSON/TOML reuse, validation, and consistent error surfaces
 
