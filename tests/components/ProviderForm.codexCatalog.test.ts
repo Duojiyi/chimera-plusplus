@@ -50,6 +50,23 @@ describe("ProviderForm Codex catalog helpers", () => {
     ]);
   });
 
+  it("canonicalizes reasoning levels and drops an unsupported default", () => {
+    expect(
+      normalizeCodexCatalogModelsForSave([
+        {
+          model: "gpt-5.5",
+          reasoningLevels: [" HIGH ", "low", "low", "bogus", "MEDIUM"],
+          defaultReasoningLevel: "xhigh",
+        },
+      ]),
+    ).toEqual([
+      {
+        model: "gpt-5.5",
+        reasoningLevels: ["low", "medium", "high"],
+      },
+    ]);
+  });
+
   it("preserves per-model reasoning levels and default level", () => {
     expect(
       normalizeCodexCatalogModelsForSave([

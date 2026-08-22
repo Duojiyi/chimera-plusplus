@@ -10,6 +10,16 @@ numbers belong to a separate upstream line.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.2] - 2026-08-22
+
+### Fixed
+
+- **Reasoning-level selection is no longer stuck on High.** Codex model catalogs now preserve and normalize per-model effort capabilities, infer conservative levels for supported native model families, and retain capabilities through live-catalog and database fallback paths.
+- **Claude / Anthropic thinking controls are model-aware.** Claude legacy extended-thinking models expose `none/low/medium/high/max`, adaptive-thinking models expose only supported effort levels, and unsupported `xhigh/ultra` choices are not advertised.
+- **Third-party Codex presets are more accurate.** Kimi, Qwen, StepFun, and GLM presets now expose only documented reasoning options; unknown multi-vendor gateways remain conservative rather than showing options that may cause upstream 400 errors.
+- **Protocol auto-detection is hardened.** Detection now validates real models, uses a non-generating Responses probe, handles versioned and compatibility URL paths, protects against ambiguous catch-all gateways, limits response sizes, and prevents stale concurrent results from being saved.
+- **Runtime update status refreshes after installation.** Successful online, historical, repair, and offline installs now refresh the local runtime and remote release state automatically, so the UI immediately reports that the installed version is up to date.
+
 ## [2.6.1] - 2026-08-18
 
 ### Fixed

@@ -142,6 +142,44 @@ type PresetEntry = {
     | HermesProviderPreset;
 };
 
+const CODEX_REASONING_LEVELS = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra",
+] as const;
+
+type CodexReasoningLevel = (typeof CODEX_REASONING_LEVELS)[number];
+
+const CODEX_REASONING_LEVEL_INDEX = new Map<CodexReasoningLevel, number>(
+  CODEX_REASONING_LEVELS.map((level, index) => [level, index]),
+);
+
+function isCodexReasoningLevel(level: string): level is CodexReasoningLevel {
+  return CODEX_REASONING_LEVEL_INDEX.has(level as CodexReasoningLevel);
+}
+
+function normalizeCodexReasoningLevels(levels: unknown): string[] | undefined {
+  if (!Array.isArray(levels)) return undefined;
+  const normalized = Array.from(
+    new Set(
+      levels
+        .filter((level): level is string => typeof level === "string")
+        .map((level) => level.trim().toLowerCase())
+        .filter(isCodexReasoningLevel),
+    ),
+  ).sort(
+    (left, right) =>
+      (CODEX_REASONING_LEVEL_INDEX.get(left) ?? Number.MAX_SAFE_INTEGER) -
+      (CODEX_REASONING_LEVEL_INDEX.get(right) ?? Number.MAX_SAFE_INTEGER),
+  );
+  return normalized.length > 0 ? normalized : undefined;
+}
+
 export const normalizeCodexCatalogModelsForSave = (
   models: CodexCatalogModel[],
 ): CodexCatalogModel[] => {
@@ -167,10 +205,15 @@ export const normalizeCodexCatalogModelsForSave = (
     );
 
     const baseInstructions = item.baseInstructions?.trim();
-    const reasoningLevels = item.reasoningLevels?.filter(
-      (level) => typeof level === "string" && level.trim(),
-    );
-    const defaultReasoningLevel = item.defaultReasoningLevel?.trim();
+    const reasoningLevels = normalizeCodexReasoningLevels(item.reasoningLevels);
+    const requestedDefault = item.defaultReasoningLevel?.trim().toLowerCase();
+    // A default effort without a matching supported list is ignored. Keeping
+    // that invariant here prevents Codex from loading a catalog whose default
+    // points at an option the picker cannot select.
+    const defaultReasoningLevel =
+      requestedDefault && reasoningLevels?.includes(requestedDefault)
+        ? requestedDefault
+        : undefined;
 
     normalized.push({
       model,

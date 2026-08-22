@@ -571,7 +571,11 @@ fn codex_reasoning_level_description(effort: &str) -> Option<&'static str> {
 fn codex_canonical_efforts(levels: &[String]) -> Vec<&str> {
     CODEX_REASONING_LEVEL_DESCRIPTIONS
         .iter()
-        .filter(|(effort, _)| levels.iter().any(|candidate| candidate == effort))
+        .filter(|(effort, _)| {
+            levels
+                .iter()
+                .any(|candidate| candidate.trim().eq_ignore_ascii_case(effort))
+        })
         .map(|(effort, _)| *effort)
         .collect()
 }
@@ -587,6 +591,100 @@ fn codex_supported_reasoning_levels(levels: &[String]) -> Value {
         })
         .collect();
     json!(entries)
+}
+
+/// Infer a conservative, documented effort set for model families whose public
+/// API contract is stable enough to make the catalog useful without making an
+/// unknown provider claim support for every Codex level. Explicit per-row
+/// settings always win and unknown model ids still keep the template default.
+fn codex_inferred_reasoning_levels(
+    model: &str,
+    profile: CodexCatalogToolProfile,
+) -> Option<Vec<String>> {
+    let model = model.trim().to_ascii_lowercase();
+    let model = model.rsplit('/').next().unwrap_or(model.as_str());
+    let model = model.strip_prefix("anthropic.").unwrap_or(model);
+
+    if profile == CodexCatalogToolProfile::Anthropic
+        && (model.starts_with("fable-5")
+            || model.starts_with("mythos-5")
+            || model.starts_with("claude-fable-5")
+            || model.starts_with("claude-mythos-5"))
+    {
+        // These adaptive models require thinking, so exposing `none` would be
+        // dishonest: the wire adapter can only approximate an explicit none as
+        // the lowest adaptive effort.
+        return Some(
+            ["low", "medium", "high", "max"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        );
+    }
+
+    if profile == CodexCatalogToolProfile::Anthropic
+        && (model.starts_with("claude-3-7")
+            || model.starts_with("claude-3.7")
+            || model.starts_with("claude-4")
+            || model.starts_with("claude-opus-4")
+            || model.starts_with("claude-sonnet-4")
+            || model.starts_with("claude-sonnet-5")
+            || model.starts_with("claude-haiku-4"))
+    {
+        // Claude's legacy extended-thinking API has a disabled state plus a
+        // token budget, while current adaptive models expose low/medium/high/max
+        // effort. These are the common intersection supported by the adapter;
+        // xhigh/ultra are deliberately not advertised because Anthropic has no
+        // corresponding public effort values (the wire mapper folds them into
+        // max when explicitly supplied by an advanced user).
+        return Some(
+            ["none", "low", "medium", "high", "max"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        );
+    }
+
+    if profile == CodexCatalogToolProfile::NativeResponses
+        && (model.starts_with("gpt-5") || model.starts_with("grok-4.5"))
+    {
+        return Some(
+            ["low", "medium", "high", "xhigh"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        );
+    }
+    if profile == CodexCatalogToolProfile::NativeResponses
+        && model.starts_with('o')
+        && model
+            .as_bytes()
+            .get(1)
+            .is_some_and(|byte| byte.is_ascii_digit())
+    {
+        return Some(
+            ["low", "medium", "high"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        );
+    }
+    // DeepSeek's public reasoning contract uses low/high/max rather than the
+    // GPT/o-series medium tier. Keep this aligned with the built-in official
+    // DeepSeek catalog so a missing per-row declaration cannot manufacture an
+    // unsupported medium option.
+    if profile == CodexCatalogToolProfile::NativeResponses
+        && (model.starts_with("deepseek-reasoner") || model.starts_with("deepseek-r"))
+    {
+        return Some(
+            ["low", "high", "max"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        );
+    }
+
+    None
 }
 
 /// Apply a per-model reasoning-level override onto a catalog entry. Returns
@@ -616,8 +714,20 @@ fn apply_codex_reasoning_level_override(
     let default_level = spec
         .default_reasoning_level
         .as_deref()
-        .filter(|level| canonical.contains(level))
-        .or_else(|| template_default.filter(|level| canonical.contains(level)))
+        .and_then(|level| {
+            canonical
+                .iter()
+                .copied()
+                .find(|candidate| level.trim().eq_ignore_ascii_case(candidate))
+        })
+        .or_else(|| {
+            template_default.and_then(|level| {
+                canonical
+                    .iter()
+                    .copied()
+                    .find(|candidate| level.trim().eq_ignore_ascii_case(candidate))
+            })
+        })
         .or_else(|| canonical.last().copied());
     if let Some(default_level) = default_level {
         entry_obj.insert("default_reasoning_level".to_string(), json!(default_level));
@@ -698,11 +808,23 @@ fn codex_catalog_model_entry(
 
     // Per-model reasoning levels override the template's conservative
     // none/high default (e.g. a LiteLLM gateway serving a model that accepts
-    // low/medium/high/xhigh/max). Applies to every profile.
+    // low/medium/high/xhigh/max). Applies to every profile. For native
+    // Responses, known GPT/Grok/o-series/DeepSeek reasoning families also get
+    // a bounded fallback so old rows saved before the editor existed do not
+    // collapse to a single high-only choice. Unknown models retain the
+    // template's conservative declaration until the user supplies evidence.
     let template_default = template
         .get("default_reasoning_level")
         .and_then(|value| value.as_str());
-    apply_codex_reasoning_level_override(entry_obj, template_default, spec);
+    let mut effective_spec = spec.clone();
+    if matches!(
+        profile,
+        CodexCatalogToolProfile::NativeResponses | CodexCatalogToolProfile::Anthropic
+    ) && effective_spec.reasoning_levels.is_none()
+    {
+        effective_spec.reasoning_levels = codex_inferred_reasoning_levels(&spec.model, profile);
+    }
+    apply_codex_reasoning_level_override(entry_obj, template_default, &effective_spec);
 
     entry
 }
@@ -1898,6 +2020,30 @@ fn build_simplified_catalog_from_texts(config_text: &str, catalog_text: &str) ->
             let inferred = codex_catalog_input_modalities(model, None);
             if !mods.is_empty() && mods != inferred {
                 obj.insert("inputModalities".to_string(), json!(mods));
+            }
+        }
+
+        // Keep the reasoning override during a live -> DB fallback round-trip.
+        // Without this, editing a provider after its DB catalog was lost would
+        // silently restore the template's conservative none/high levels.
+        if let Some(levels) = entry
+            .get("supported_reasoning_levels")
+            .and_then(|v| v.as_array())
+        {
+            let efforts: Vec<String> = levels
+                .iter()
+                .filter_map(|level| level.get("effort").and_then(|v| v.as_str()))
+                .map(str::to_string)
+                .collect();
+            if !efforts.is_empty() {
+                obj.insert("reasoningLevels".to_string(), json!(efforts));
+                if let Some(default_level) = entry
+                    .get("default_reasoning_level")
+                    .and_then(|v| v.as_str())
+                    .filter(|default_level| efforts.iter().any(|level| level == default_level))
+                {
+                    obj.insert("defaultReasoningLevel".to_string(), json!(default_level));
+                }
             }
         }
 
@@ -3819,6 +3965,81 @@ base_url = "https://production.api/v1"
     }
 
     #[test]
+    fn native_catalog_infers_reasoning_levels_for_known_families() {
+        let settings = json!({
+            "modelCatalog": {
+                "models": [
+                    { "model": "gpt-5.5" },
+                    { "model": "o3-mini" },
+                    { "model": "deepseek-reasoner" },
+                    { "model": "unknown-chat-model" }
+                ]
+            }
+        });
+
+        let catalog = codex_model_catalog_from_settings(
+            &settings,
+            "",
+            CodexCatalogToolProfile::NativeResponses,
+        )
+        .expect("catalog generation should not error")
+        .expect("non-empty modelCatalog must yield a catalog");
+
+        let efforts = |index: usize| {
+            catalog["models"][index]["supported_reasoning_levels"]
+                .as_array()
+                .expect("supported_reasoning_levels array")
+                .iter()
+                .filter_map(|level| level.get("effort").and_then(|v| v.as_str()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(efforts(0), vec!["low", "medium", "high", "xhigh"]);
+        assert_eq!(efforts(1), vec!["low", "medium", "high"]);
+        assert_eq!(efforts(2), vec!["low", "high", "max"]);
+        // Unknown models remain conservative instead of being over-declared.
+        assert_eq!(efforts(3), vec!["none", "high"]);
+    }
+
+    #[test]
+    fn anthropic_catalog_infers_claude_thinking_levels_conservatively() {
+        let settings = json!({
+            "modelCatalog": {
+                "models": [
+                    { "model": "claude-3-7-sonnet-latest" },
+                    { "model": "anthropic/claude-opus-4.8" },
+                    { "model": "claude-3-5-sonnet" },
+                    {
+                        "model": "claude-sonnet-5",
+                        "reasoningLevels": ["none", "medium"],
+                        "defaultReasoningLevel": "medium"
+                    }
+                ]
+            }
+        });
+
+        let catalog =
+            codex_model_catalog_from_settings(&settings, "", CodexCatalogToolProfile::Anthropic)
+                .expect("catalog generation should not error")
+                .expect("non-empty modelCatalog must yield a catalog");
+
+        let efforts = |index: usize| {
+            catalog["models"][index]["supported_reasoning_levels"]
+                .as_array()
+                .expect("supported_reasoning_levels array")
+                .iter()
+                .filter_map(|level| level.get("effort").and_then(|v| v.as_str()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(efforts(0), vec!["none", "low", "medium", "high", "max"]);
+        assert_eq!(efforts(1), vec!["none", "low", "medium", "high", "max"]);
+        // Claude 3.5 predates the documented extended-thinking contract; do
+        // not turn a compatible gateway's unknown capability into fake tiers.
+        assert_eq!(efforts(2), vec!["none", "high"]);
+        // An explicit declaration always wins over model-name inference.
+        assert_eq!(efforts(3), vec!["none", "medium"]);
+        assert_eq!(catalog["models"][3]["default_reasoning_level"], "medium");
+    }
+    #[test]
     fn vendor_catalog_honors_per_model_reasoning_levels() {
         // The DeepSeek official catalog declares low/high/max; a per-model
         // override must win over the official entry.
@@ -4616,7 +4837,17 @@ web_search = "disabled"
         let catalog = r#"{
             "models": [
                 { "slug": "deepseek-v4-pro", "display_name": "deepseek-v4-pro", "context_window": 1000000 },
-                { "slug": "deepseek-v4-flash", "display_name": "DeepSeek Flash", "context_window": 1000000 }
+                { "slug": "deepseek-v4-flash", "display_name": "DeepSeek Flash", "context_window": 1000000 },
+                {
+                    "slug": "gpt-5.5",
+                    "supported_reasoning_levels": [
+                        { "effort": "low" },
+                        { "effort": "medium" },
+                        { "effort": "high" },
+                        { "effort": "xhigh" }
+                    ],
+                    "default_reasoning_level": "medium"
+                }
             ]
         }"#;
         let result = build_simplified_catalog_from_texts(config, catalog).expect("entries found");
@@ -4624,7 +4855,7 @@ web_search = "disabled"
             .get("models")
             .and_then(|m| m.as_array())
             .expect("models array");
-        assert_eq!(models.len(), 2);
+        assert_eq!(models.len(), 3);
 
         // First entry: display_name == slug → displayName squashed; explicit
         // context_window != default 128_000 → preserved.
@@ -4642,6 +4873,19 @@ web_search = "disabled"
         assert_eq!(
             models[1].get("displayName").and_then(|v| v.as_str()),
             Some("DeepSeek Flash")
+        );
+
+        // Reasoning capabilities must survive live-catalog → DB fallback so
+        // an edit/save cycle cannot regress to the template's high-only list.
+        assert_eq!(
+            models[2].get("reasoningLevels"),
+            Some(&json!(["low", "medium", "high", "xhigh"]))
+        );
+        assert_eq!(
+            models[2]
+                .get("defaultReasoningLevel")
+                .and_then(|v| v.as_str()),
+            Some("medium")
         );
     }
 

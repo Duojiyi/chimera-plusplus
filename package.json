@@ -1,6 +1,6 @@
 {
   "name": "chimera-plus-plus",
-  "version": "2.6.1",
+  "version": "2.6.2",
   "description": "Clean Codex provider switcher and desktop runtime manager",
   "type": "module",
   "scripts": {

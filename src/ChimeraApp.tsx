@@ -475,6 +475,7 @@ export default function ChimeraApp() {
   const startupProviderCheckRef = useRef(false);
   const fetchModelsSeqRef = useRef(0);
   const protocolProbeSeqRef = useRef(0);
+  const runtimeCheckSeqRef = useRef(0);
   const providerSaveInFlightRef = useRef(false);
   const editorRef = useRef(editor);
   const [connection, setConnection] = useState<ConnectionState>({
@@ -1450,12 +1451,20 @@ export default function ChimeraApp() {
     }
   };
 
-  const checkRuntime = async (preferences?: RuntimeUpdatePreferences) => {
+  const checkRuntime = async (
+    preferences?: RuntimeUpdatePreferences,
+    options: { announce?: boolean } = {},
+  ): Promise<ReleaseStatus | null> => {
+    const checkSeq = ++runtimeCheckSeqRef.current;
+    const announce = options.announce !== false;
     try {
       const result = await invoke<ReleaseStatus>("check_codex_runtime_update", {
         source: preferences?.source ?? null,
         installMode: preferences?.installMode ?? null,
       });
+      // An installation-triggered refresh must not be overwritten by an older
+      // manual/startup check that happened to finish later.
+      if (checkSeq !== runtimeCheckSeqRef.current) return null;
       setRelease(result);
       note(
         "检查 Codex 更新",
@@ -1464,11 +1473,35 @@ export default function ChimeraApp() {
           ? `发现 ${result.latestVersion}`
           : "已是最新版本",
       );
-      toast.success(
-        result.updateAvailable ? "发现新版本" : "Codex 已是最新版本",
-      );
+      if (announce) {
+        toast.success(
+          result.updateAvailable ? "发现新版本" : "Codex 已是最新版本",
+        );
+      }
+      return result;
     } catch (error) {
-      toast.error("检查更新失败", { description: String(error) });
+      if (checkSeq !== runtimeCheckSeqRef.current) return null;
+      if (announce) {
+        toast.error("检查更新失败", { description: String(error) });
+      }
+      return null;
+    }
+  };
+
+  const refreshRuntimeAfterInstall = async (
+    preferences?: RuntimeUpdatePreferences,
+  ) => {
+    // Do not leave the just-consumed update offer visible while the two
+    // authoritative backend queries refresh runtime and release state.
+    setRelease(null);
+    const [, refreshedRelease] = await Promise.all([
+      loadRuntime(),
+      checkRuntime(preferences, { announce: false }),
+    ]);
+    if (!refreshedRelease) {
+      toast.warning("Codex 已安装，但更新状态刷新失败", {
+        description: "可稍后重新检查；已安装的版本不受影响。",
+      });
     }
   };
 
@@ -1537,7 +1570,12 @@ export default function ChimeraApp() {
         performance.now() - started,
       );
       toast.success("操作已完成");
-      await loadRuntime();
+      if (action === "update" || action === "repair") {
+        await refreshRuntimeAfterInstall(preferences);
+      } else {
+        setRelease(null);
+        await loadRuntime();
+      }
     } catch (error) {
       note(
         `Codex ${action}`,
@@ -1666,7 +1704,7 @@ export default function ChimeraApp() {
               onAction={(action, preferences) =>
                 setPendingAction({ action, preferences })
               }
-              onRuntimeChanged={loadRuntime}
+              onRuntimeChanged={refreshRuntimeAfterInstall}
             />
           )}
           <Suspense
@@ -2124,7 +2162,9 @@ export function NewRuntimeView({
     value: RuntimeAction,
     preferences?: RuntimeUpdatePreferences,
   ) => void;
-  onRuntimeChanged?: () => void | Promise<void>;
+  onRuntimeChanged?: (
+    preferences?: RuntimeUpdatePreferences,
+  ) => void | Promise<void>;
 }) {
   const [maintenanceOpen, setMaintenanceOpen] = useState(false);
   const [installMode, setInstallMode] = useState<"standard" | "portable">(
@@ -2226,7 +2266,7 @@ export function NewRuntimeView({
       toast.success(`Codex ${pendingPlan.version} 安装完成`);
       setPendingPlan(null);
       setHistoryOpen(false);
-      await onRuntimeChanged?.();
+      await onRuntimeChanged?.({ source: updateSource, installMode });
       await loadRecovery();
     } catch (reason) {
       toast.error("安装所选版本失败", { description: String(reason) });
@@ -2274,7 +2314,7 @@ export function NewRuntimeView({
       });
       toast.success(`Codex ${offlineInspection.packageVersion} 离线安装完成`);
       setOfflineInspection(null);
-      await onRuntimeChanged?.();
+      await onRuntimeChanged?.({ source: updateSource, installMode });
       await loadRecovery();
     } catch (reason) {
       toast.error("离线安装失败", { description: String(reason) });

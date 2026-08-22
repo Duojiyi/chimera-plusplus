@@ -9,6 +9,7 @@ use reqwest::header::{HeaderValue, CONTENT_TYPE, USER_AGENT};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+use url::Url;
 
 /// 获取到的模型信息
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -282,7 +283,7 @@ impl CodexApiProbe {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct ApiProbeOutcome {
     probe: CodexApiProbe,
     supported: bool,
@@ -318,10 +319,6 @@ pub async fn detect_codex_api_format(
     )
     .await?;
     let candidates = build_api_format_probe_urls(base_url, is_full_url)?;
-    let responses_url = candidates
-        .iter()
-        .find(|(probe, _)| *probe == CodexApiProbe::Responses)
-        .map(|(_, url)| url.clone());
     let client = crate::proxy::http_client::get();
     let probes = candidates.into_iter().map(|(probe, url)| {
         probe_codex_api_format_endpoint(
@@ -335,51 +332,12 @@ pub async fn detect_codex_api_format(
     });
     let outcomes = join_all(probes).await;
 
-    // Level 2: the endpoint probe confirms a bare Responses route exists, but a
-    // truncated gateway (e.g. tokenrhythm.studio) accepts the bare schema yet
-    // rejects the Codex tool surface (`RESPONSES_FEATURE_NOT_SUPPORTED`). Only
-    // direct-connect Responses is affected — Chat/Anthropic go through the proxy
-    // which flattens custom/namespace tools. Confirm tool capability before
-    // committing to native Responses, and demote Responses when the gateway
-    // cannot carry the tools a third-party-model client emits by default.
-    let mut outcomes = outcomes;
-    let responses_selected = select_codex_api_probe_outcome(&outcomes, &probe_model)
-        .is_some_and(|outcome| outcome.probe == CodexApiProbe::Responses);
-    if responses_selected {
-        if let Some(url) = responses_url {
-            match confirm_responses_tool_capability(
-                &client,
-                &url,
-                api_key,
-                &probe_model,
-                user_agent.clone(),
-            )
-            .await
-            {
-                Ok(true) => {
-                    log::debug!("[Codex] Responses 工具能力确认通过: {url}");
-                }
-                Ok(false) => {
-                    log::warn!(
-                        "[Codex] Responses 端点 {url} 拒绝 Codex 工具（custom/namespace/web_search），将回退到转换路由"
-                    );
-                    for outcome in &mut outcomes {
-                        if outcome.probe == CodexApiProbe::Responses {
-                            outcome.supported = false;
-                            outcome.diagnostic = format!(
-                                "{}; Responses 工具能力拒绝 (RESPONSES_FEATURE_NOT_SUPPORTED)",
-                                outcome.diagnostic
-                            );
-                        }
-                    }
-                }
-                Err(error) => {
-                    log::warn!("[Codex] Responses 工具能力探测失败（保留端点探测结果）: {error}");
-                }
-            }
-        }
-    }
-
+    // The Responses probe includes the Codex custom-tool shape while keeping
+    // `max_output_tokens` deliberately invalid. This lets a gateway reject an
+    // unsupported tool before inference begins, without the previous second
+    // request containing a valid budget and therefore potentially generating
+    // billable output. Explicit tool-rejection errors are handled by
+    // `response_indicates_protocol_support`.
     if let Some(outcome) = select_codex_api_probe_outcome(&outcomes, &probe_model) {
         return Ok(DetectedCodexApiFormat {
             api_format: outcome.probe.api_format().to_string(),
@@ -491,6 +449,23 @@ fn select_codex_api_probe_outcome<'a>(
     outcomes: &'a [ApiProbeOutcome],
     probe_model: &str,
 ) -> Option<&'a ApiProbeOutcome> {
+    // A catch-all gateway may return the same generic 400/422 for every
+    // unknown path. That is not enough to select a route: requiring a manual
+    // choice here is safer than silently routing all traffic through a guessed
+    // conversion protocol. Generic validation remains useful when only one or
+    // two conversion routes answer (the common aggregator case).
+    let supported: Vec<&ApiProbeOutcome> = outcomes
+        .iter()
+        .filter(|outcome| outcome.supported)
+        .collect();
+    if supported.len() == CodexApiProbe::ALL.len()
+        && supported
+            .iter()
+            .all(|outcome| outcome.diagnostic.contains("generic validation"))
+    {
+        return None;
+    }
+
     // A protocol-specific Responses validation error is strong evidence that
     // direct Responses is available, so prefer it over conversion routes.
     if let Some(outcome) = outcomes
@@ -652,10 +627,9 @@ async fn send_codex_api_format_probe(
 /// while the token-budget value has an impossible JSON type and must fail schema
 /// validation before inference can begin.
 ///
-/// This is the *endpoint existence* probe: it confirms the route accepts the
-/// protocol's schema. Tool capability is confirmed separately by
-/// [`responses_tool_capability_probe_body`] (a truncated Responses gateway can
-/// pass this bare check yet reject the Codex tool surface).
+/// This is the endpoint and Codex-tool-surface probe: the Responses payload
+/// includes the custom tool, while the invalid budget prevents generation. A
+/// truncated gateway can therefore be rejected in the same non-generating call.
 fn invalid_probe_body(probe: CodexApiProbe, model: &str) -> String {
     let invalid_token_budget = serde_json::json!({ "chimeraProbe": true });
     let inert_input = "Chimera protocol compatibility probe. Do not process.";
@@ -664,6 +638,15 @@ fn invalid_probe_body(probe: CodexApiProbe, model: &str) -> String {
             "model": model,
             "input": inert_input,
             "max_output_tokens": invalid_token_budget,
+            "tools": [{
+                "type": "custom",
+                "name": "chimera_probe_exec",
+                "description": "Chimera protocol compatibility probe tool.",
+                "parameters": {
+                    "type": "object",
+                    "properties": { "command": { "type": "string" } }
+                }
+            }]
         })
         .to_string(),
         CodexApiProbe::ChatCompletions | CodexApiProbe::AnthropicMessages => serde_json::json!({
@@ -676,84 +659,6 @@ fn invalid_probe_body(probe: CodexApiProbe, model: &str) -> String {
         })
         .to_string(),
     }
-}
-
-/// A minimal *valid* Responses request that carries the Codex tool surface a
-/// third-party-model client emits by default (`type:"custom"`). A gateway that
-/// accepts the bare schema probe yet rejects these tools with
-/// `RESPONSES_FEATURE_NOT_SUPPORTED` is a truncated Responses surface that
-/// must route through the proxy's Chat Completions path instead of direct
-/// connect. `max_output_tokens` is kept at the minimum so a fully-capable
-/// gateway that validates tools before generation still costs nothing.
-fn responses_tool_capability_probe_body(model: &str) -> String {
-    serde_json::json!({
-        "model": model,
-        "input": "hi",
-        "max_output_tokens": 1,
-        "stream": false,
-        "tools": [{
-            "type": "custom",
-            "name": "chimera_probe_exec",
-            "description": "Chimera protocol compatibility probe tool.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "command": { "type": "string" }
-                }
-            }
-        }]
-    })
-    .to_string()
-}
-
-/// Confirm a bare-Responses endpoint can actually carry the Codex tool surface.
-///
-/// Returns `Ok(true)` when the gateway accepts the custom tool (a completed or
-/// in-flight response, or a non-tool schema rejection), `Ok(false)` when it
-/// rejects the tool surface with `RESPONSES_FEATURE_NOT_SUPPORTED`, and `Err`
-/// on transport/ambiguous failures so the caller can keep the endpoint-probe
-/// result rather than making a wrong turn on a flaky network.
-async fn confirm_responses_tool_capability(
-    client: &reqwest::Client,
-    url: &str,
-    api_key: &str,
-    probe_model: &str,
-    user_agent: Option<HeaderValue>,
-) -> Result<bool, String> {
-    let mut request = client
-        .post(url)
-        .header(CONTENT_TYPE, "application/json")
-        .header("Accept", "application/json")
-        .header("Authorization", format!("Bearer {api_key}"))
-        .body(responses_tool_capability_probe_body(probe_model))
-        .timeout(Duration::from_secs(API_FORMAT_PROBE_TIMEOUT_SECS));
-    if let Some(ua) = user_agent {
-        request = request.header(USER_AGENT, ua);
-    }
-
-    let response = request
-        .send()
-        .await
-        .map_err(|e| format!("tool capability probe request failed: {e}"))?;
-    let status = response.status();
-    let body = read_response_text_limited(
-        response,
-        MAX_PROTOCOL_PROBE_RESPONSE_BYTES,
-        "tool capability probe response",
-    )
-    .await?;
-
-    let normalized = body.to_ascii_lowercase();
-    if response_rejects_responses_tools(&normalized) {
-        return Ok(false);
-    }
-
-    // A 2xx means the gateway generated (or started generating) with the custom
-    // tool accepted — full Responses capability. A 4xx that is NOT a tool
-    // rejection is a plain schema/other error, which still proves the tool was
-    // accepted (otherwise it would have been the tool rejection above). 5xx and
-    // transport errors are ambiguous.
-    Ok(status.is_success() || status.is_client_error())
 }
 
 /// Accept only protocol-shaped request-validation responses from an existing
@@ -791,10 +696,9 @@ fn response_indicates_protocol_support(
         return false;
     }
 
-    // Defense in depth: even if a truncated gateway surfaces a tool rejection
-    // here (some gateways validate tools before the token budget), it must not
-    // be auto-detected as native Responses. The canonical gate is the level-2
-    // `confirm_responses_tool_capability` probe in `detect_codex_api_format`.
+    // The Responses probe includes a custom tool. If the gateway rejects that
+    // tool surface before validating the malformed budget, native Responses is
+    // unsafe and must be demoted.
     if probe == CodexApiProbe::Responses && response_rejects_responses_tools(&normalized) {
         return false;
     }
@@ -966,37 +870,58 @@ fn build_api_format_probe_urls(
     base_url: &str,
     is_full_url: bool,
 ) -> Result<Vec<(CodexApiProbe, String)>, String> {
-    let trimmed = base_url.trim().trim_end_matches('/');
+    let trimmed = base_url.trim();
     if trimmed.is_empty() {
         return Err("Base URL is empty".to_string());
     }
 
-    let root = if is_full_url {
+    let parsed = Url::parse(trimmed).map_err(|error| format!("Invalid base URL: {error}"))?;
+    if parsed.host_str().is_none() || !matches!(parsed.scheme(), "http" | "https") {
+        return Err("Base URL must be an http(s) URL".to_string());
+    }
+
+    let path = parsed.path().trim_end_matches('/');
+    let root_path = if is_full_url {
         let known_suffixes = ["/chat/completions", "/responses", "/messages"];
         if let Some(suffix) = known_suffixes
             .iter()
-            .find(|suffix| trimmed.ends_with(**suffix))
+            .find(|suffix| path.ends_with(**suffix))
         {
-            &trimmed[..trimmed.len() - suffix.len()]
+            &path[..path.len() - suffix.len()]
         } else {
-            trimmed
-                .rsplit_once('/')
+            path.rsplit_once('/')
                 .map(|(parent, _)| parent)
-                .filter(|parent| parent.contains("://"))
+                .filter(|parent| !parent.is_empty())
                 .ok_or_else(|| "Cannot derive API root from full URL".to_string())?
         }
-    } else if ends_with_version_segment(trimmed) {
-        trimmed
+    } else if ends_with_version_segment(path)
+        || path.ends_with("/anthropic")
+        || path.ends_with("/claudecode")
+    {
+        path
     } else {
+        // Keep the user's path prefix (for example /api) and add the OpenAI
+        // version segment. Query parameters are retained on every candidate;
+        // some gateways use them for tenant/routing selection.
         return Ok(CodexApiProbe::ALL
             .into_iter()
-            .map(|probe| (probe, format!("{trimmed}/v1{}", probe.suffix())))
+            .map(|probe| {
+                let mut url = parsed.clone();
+                let candidate_path = format!("{}/v1{}", path.trim_end_matches('/'), probe.suffix());
+                url.set_path(&candidate_path);
+                (probe, url.to_string())
+            })
             .collect());
     };
 
     Ok(CodexApiProbe::ALL
         .into_iter()
-        .map(|probe| (probe, format!("{root}{}", probe.suffix())))
+        .map(|probe| {
+            let mut url = parsed.clone();
+            let candidate_path = format!("{}{}", root_path.trim_end_matches('/'), probe.suffix());
+            url.set_path(&candidate_path);
+            (probe, url.to_string())
+        })
         .collect())
 }
 
@@ -1226,6 +1151,37 @@ mod tests {
     }
 
     #[test]
+    fn protocol_probe_preserves_path_prefix_and_query_parameters() {
+        let candidates =
+            build_api_format_probe_urls("https://gateway.example/api/v1?tenant=acme", false)
+                .unwrap();
+        assert_eq!(
+            candidates[0].1,
+            "https://gateway.example/api/v1/responses?tenant=acme"
+        );
+
+        let full = build_api_format_probe_urls(
+            "https://gateway.example/api/v1/chat/completions?tenant=acme",
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            full[0].1,
+            "https://gateway.example/api/v1/responses?tenant=acme"
+        );
+        assert_eq!(
+            full[1].1,
+            "https://gateway.example/api/v1/chat/completions?tenant=acme"
+        );
+    }
+
+    #[test]
+    fn protocol_probe_rejects_non_http_urls() {
+        assert!(build_api_format_probe_urls("file:///tmp/codex", false).is_err());
+        assert!(build_api_format_probe_urls("not-a-url", false).is_err());
+    }
+
+    #[test]
     fn protocol_probe_bodies_use_a_real_model_and_impossible_token_type() {
         for probe in CodexApiProbe::ALL {
             let body: serde_json::Value =
@@ -1238,11 +1194,11 @@ mod tests {
                         "Chimera protocol compatibility probe. Do not process."
                     );
                     assert!(body["max_output_tokens"].is_object());
-                    // The level-1 endpoint probe is deliberately tool-free: an
-                    // invalid token budget must short-circuit to schema
-                    // validation. Tool capability is probed separately by
-                    // `responses_tool_capability_probe_body`.
-                    assert!(body.get("tools").is_none());
+                    // The invalid token budget keeps this probe non-generating,
+                    // while the custom tool lets us reject truncated Responses
+                    // gateways before selecting native routing.
+                    let tools = body["tools"].as_array().expect("tools array");
+                    assert_eq!(tools[0]["type"], "custom");
                 }
                 CodexApiProbe::ChatCompletions | CodexApiProbe::AnthropicMessages => {
                     assert_eq!(
@@ -1259,18 +1215,16 @@ mod tests {
     }
 
     #[test]
-    fn responses_tool_capability_probe_is_valid_and_carries_custom_tool() {
+    fn responses_probe_is_non_generating_and_carries_custom_tool() {
         let body: serde_json::Value =
-            serde_json::from_str(&responses_tool_capability_probe_body("qwen3.8-max")).unwrap();
+            serde_json::from_str(&invalid_probe_body(CodexApiProbe::Responses, "qwen3.8-max"))
+                .unwrap();
         assert_eq!(body["model"], "qwen3.8-max");
-        assert!(body["max_output_tokens"].is_u64());
-        assert_eq!(body["max_output_tokens"], 1);
-        assert_eq!(body["stream"], false);
+        assert!(body["max_output_tokens"].is_object());
         let tools = body["tools"].as_array().expect("tools array");
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0]["type"], "custom");
         assert_eq!(tools[0]["name"], "chimera_probe_exec");
-        assert!(body["max_output_tokens"].as_u64().unwrap() <= 1);
     }
 
     #[test]
@@ -1538,6 +1492,43 @@ mod tests {
                 .then_some("ANTHROPIC_AUTH_TOKEN"),
             diagnostic: String::new(),
         }
+    }
+
+    #[test]
+    fn protocol_probe_selection_rejects_generic_catch_all_routes() {
+        let outcomes = [
+            ApiProbeOutcome {
+                probe: CodexApiProbe::Responses,
+                supported: false,
+                anthropic_auth_field: None,
+                diagnostic: "HTTP 422 (inconclusive)".to_string(),
+            },
+            ApiProbeOutcome {
+                probe: CodexApiProbe::ChatCompletions,
+                supported: true,
+                anthropic_auth_field: None,
+                diagnostic: "HTTP 422 (generic validation (weak evidence))".to_string(),
+            },
+            ApiProbeOutcome {
+                probe: CodexApiProbe::AnthropicMessages,
+                supported: true,
+                anthropic_auth_field: Some("ANTHROPIC_API_KEY"),
+                diagnostic: "HTTP 422 (generic validation (weak evidence))".to_string(),
+            },
+        ];
+        assert!(select_codex_api_probe_outcome(&outcomes, "claude-sonnet-4-6").is_some());
+
+        let all_generic = [
+            ApiProbeOutcome {
+                probe: CodexApiProbe::Responses,
+                supported: true,
+                anthropic_auth_field: None,
+                diagnostic: "HTTP 422 (generic validation (weak evidence))".to_string(),
+            },
+            outcomes[1].clone(),
+            outcomes[2].clone(),
+        ];
+        assert!(select_codex_api_probe_outcome(&all_generic, "claude-sonnet-4-6").is_none());
     }
 
     #[test]

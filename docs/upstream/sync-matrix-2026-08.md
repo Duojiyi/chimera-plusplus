@@ -97,3 +97,25 @@
 | CC Switch 其余 | IME 字段加固、设备登录取消、多年趋势 tooltip、Grok 表单文案 | `deferred`（小修复） |
 | CodexPlusPlus `v1.2.48` | 微信连接、Remote Control 会话恢复、临时线程 ID 防护、隐藏官方用量提醒、DeepSeek Responses code_mode 兼容 | `not-applicable`（Codex++ 自身产品面：注入/远程控制/微信；按既定政策不吸收注入与产品面；DeepSeek 兼容能力本 fork 已有等价处理） |
 | Codex App Manager | 仅 `fa871cf`（js-yaml/postcss dev-deps bump） | `not-applicable`（dev-deps，与 Rust 引擎无关） |
+
+## 8. 2026-08-22 漂移复核与合并决策
+
+> 本节为 2026-08-22 的 GitHub 仓库复核结果；版本号/提交号以该日抓取结果为准，不把上游 `HEAD` 直接当作可发布依赖。
+
+| 上游 | 当前基线 | 2026-08-22 最新 | 结论 |
+| --- | --- | --- | --- |
+| [CC Switch](https://github.com/farion1231/cc-switch) | `v3.19.2` / `a98829b` | `v3.20.0` / `HEAD 5ca9459d` | 不整体合并。Pi 管理、数据库迁移、OAuth 多账号、代理/搜索等是产品级大面改动；其 1M context 入口在本项目已有等价实现。环境探测超时/进程组隔离属于可借鉴的后续加固项，需按 Tauri 架构单独适配。 |
+| [CodexPlusPlus](https://github.com/BigPizzaV3/CodexPlusPlus) | `v1.2.48` | `v1.2.50` / `HEAD 29b4819` | 不合并注入、CDP、远程控制和其管理器产品面。其 `stepwise` 多协议、Responses/VLM 回归测试与 provider 边界加固可作为本项目协议识别/代理测试的参考；本周期已完成独立的协议探测加固，不直接 cherry-pick。 |
+| [Codex App Manager](https://github.com/Wangnov/Codex-App-Manager) | `v0.5.2` / `d29fda32` | `v0.5.2` / `HEAD cc115b4` | Rust 引擎没有功能漂移；新增主要是依赖与锁文件更新。暂不升级。若未来升级，必须同时更新 `src-tauri` 和 `chimera-runtime/chimera-platform` 的 engine rev，避免 workspace 产生双份依赖。 |
+
+### 8.1 本周期可合并/已吸收
+
+- **已吸收**：CC Switch 的 per-model reasoning levels 思路及预设覆盖；并进一步补齐了 Codex 原生模型族的档位推断、live catalog round-trip 和保存前规范化。
+- **已吸收**：跨协议识别的安全边界思路。模型列表成功不再等同于协议已识别；Responses 探测使用一次性 token budget 与非生成 custom-tool 探针，并对 URL、模型和并发结果做校验。
+- **已修复**：Codex runtime 安装成功后，前端同时刷新本地安装状态与远端 release 状态；旧的并发检查结果不会覆盖安装后的新结果。更新卡片无需再次点击“重新检查”即可显示“已是最新版本”。
+
+### 8.2 暂缓项
+
+- CC Switch v3.20.0 的 Pi/多账号 OAuth/数据库迁移：与 Chimera++ 数据模型和产品边界不一致，禁止直接移植。
+- CodexPlusPlus 的 stepwise/CDP/注入体系：依赖其运行时和宿主模型，直接移植会扩大攻击面和回归面。
+- Codex App Manager 的非引擎依赖升级：不能将上游前端/CI 依赖误当成 `codex-win-engine` 功能更新。

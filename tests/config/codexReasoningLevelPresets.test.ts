@@ -35,6 +35,19 @@ function catalogModel(presetName: string, modelId: string) {
 describe("Codex preset pre-filled reasoning levels", () => {
   // 每条期望值都对应官方文档证据（见预设文件内注释）；改动任一侧前先核对来源
   const EXPECTED: Array<[string, string, string[]]> = [
+    // OpenAI-compatible Chat gateways expose thinking as a switch unless the
+    // provider explicitly documents a real effort enum.
+    ["Kimi", "kimi-k2.7-code", ["none", "high"]],
+    ["Kimi", "kimi-k3", ["none", "high"]],
+    ["Kimi For Coding", "kimi-for-coding", ["none", "high"]],
+    ["StepFun", "step-3.7-flash", ["none", "high"]],
+    ["StepFun", "step-3.5-flash-2603", ["low", "high"]],
+    ["StepFun", "step-3.5-flash", ["none", "high"]],
+    ["StepFun en", "step-3.7-flash", ["none", "high"]],
+    ["StepFun en", "step-3.5-flash-2603", ["low", "high"]],
+    ["StepFun en", "step-3.5-flash", ["none", "high"]],
+    ["Bailian", "qwen3-coder-plus", ["none", "high"]],
+    ["ModelScope", "ZhipuAI/GLM-5.1", ["none", "high"]],
     // 火山官方 Codex 接入文档四份一致：low/medium/high
     ["火山Agentplan", "ark-code-latest", ["low", "medium", "high"]],
     ["火山 Coding Plan", "ark-code-latest", ["low", "medium", "high"]],
@@ -81,11 +94,10 @@ describe("Codex preset pre-filled reasoning levels", () => {
   );
 
   it("keeps deliberately-unfilled presets unfilled", () => {
-    // Bailian qwen3-coder-plus 无 per-model 档位证据；OpenCode Go 是多厂商
+    // OpenCode Go 是多厂商
     // Chat 网关且无 codexChatReasoning 声明（思考开关不生效，填 none 会是假
     // 开关），逐模型语义未经网关验证前保持不填
     const UNFILLED: Array<[string, string]> = [
-      ["Bailian", "qwen3-coder-plus"],
       ["OpenCode Go", "glm-5.2"],
       ["OpenCode Go", "deepseek-v4-flash"],
       ["OpenCode Go", "mimo-v2.5-pro"],
