@@ -18,6 +18,12 @@ const SKINS_BASE: &str = "https://skins.agentsmirror.com";
 const CATALOG_URL: &str = "https://skins.agentsmirror.com/index.json";
 const THEME_CDP_PORT: u16 = 9345;
 const MAX_PACK_BYTES: u64 = 50 * 1024 * 1024;
+/// 皮肤目录抓取超时（秒）。
+const SKIN_CATALOG_TIMEOUT_SECS: u64 = 20;
+/// 皮肤目录响应体积上限（防御异常响应无界读取）。
+const SKIN_CATALOG_MAX_BYTES: usize = 8 * 1024 * 1024;
+/// 发送给皮肤镜像站点的标准 User-Agent。
+const SKIN_CATALOG_USER_AGENT: &str = "chimera-plus-plus";
 
 /// One verified catalog entry returned to the appearance gallery.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -140,9 +146,53 @@ fn active_id() -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn fetch_catalog() -> Result<Vec<CatalogSkin>, String> {
-    let text = codex_win_engine::fetch_text(CATALOG_URL)
+/// 通过应用内 reqwest 客户端抓取皮肤目录，跟随全局代理设置。
+///
+/// 取代进程外 `codex_win_engine::fetch_text`（curl）——后者先等进程退出再读
+/// stdout，Windows 匿名管道缓冲仅约 4KB，大响应会使 curl 背压死锁（与 v2.6.3
+/// 历史版本目录同根因，见 docs/plans/v2.6.3-audit.md 修复 2）。
+async fn fetch_catalog_text() -> Result<String, String> {
+    let client = crate::proxy::http_client::get();
+    let response = client
+        .get(CATALOG_URL)
+        .header(reqwest::header::USER_AGENT, SKIN_CATALOG_USER_AGENT)
+        .timeout(Duration::from_secs(SKIN_CATALOG_TIMEOUT_SECS))
+        .send()
+        .await
         .map_err(|_| "Could not reach the verified skin catalog.".to_string())?;
+    let status = response.status();
+    if !status.is_success() {
+        let detail = response
+            .bytes()
+            .await
+            .map(|bytes| String::from_utf8_lossy(&bytes[..bytes.len().min(512)]).into_owned())
+            .unwrap_or_default();
+        let detail = detail.trim();
+        return Err(if detail.is_empty() {
+            format!("HTTP {status}")
+        } else {
+            format!("HTTP {status}: {detail}")
+        });
+    }
+    if response
+        .content_length()
+        .is_some_and(|len| len > SKIN_CATALOG_MAX_BYTES as u64)
+    {
+        return Err("The skin catalog response is too large.".to_string());
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|_| "Could not read the skin catalog response.".to_string())?;
+    if bytes.len() > SKIN_CATALOG_MAX_BYTES {
+        return Err("The skin catalog response is too large.".to_string());
+    }
+    String::from_utf8(bytes.to_vec())
+        .map_err(|_| "The skin catalog response is not valid UTF-8.".to_string())
+}
+
+async fn fetch_catalog() -> Result<Vec<CatalogSkin>, String> {
+    let text = fetch_catalog_text().await?;
     parse_catalog(&text)
 }
 
@@ -151,12 +201,13 @@ fn fetch_catalog() -> Result<Vec<CatalogSkin>, String> {
 pub async fn list_skin_catalog() -> Result<Vec<CatalogSkin>, String> {
     let root = themes_root();
     let active = active_id();
+    // 先经应用内客户端抓取目录，再在阻塞线程上枚举本地主题。
+    let mut catalog = fetch_catalog().await?;
     tauri::async_runtime::spawn_blocking(move || {
         let installed = codex_theme_engine::theme::list_themes(&root)
             .into_iter()
             .map(|theme| theme.id)
             .collect::<std::collections::HashSet<_>>();
-        let mut catalog = fetch_catalog()?;
         for skin in &mut catalog {
             skin.installed = installed.contains(&skin.id);
             skin.applied = active.as_deref() == Some(skin.id.as_str());
@@ -176,12 +227,14 @@ pub async fn install_catalog_skin(
     let data_root = data_root();
     let root = themes_root();
     let lock_path = operation_lock();
+    // 先经应用内客户端抓取目录，再在阻塞线程上执行加锁与安装。
+    let catalog = fetch_catalog().await?;
     tauri::async_runtime::spawn_blocking(move || {
         let lock = OperationLock::new(lock_path);
         let _guard = lock
             .try_acquire("install_catalog_skin")
             .map_err(|_| "Another Chimera++ operation is already running.".to_string())?;
-        let skin = fetch_catalog()?
+        let skin = catalog
             .into_iter()
             .find(|entry| entry.id == skin_id)
             .ok_or_else(|| "That skin is not in the verified catalog.".to_string())?;
