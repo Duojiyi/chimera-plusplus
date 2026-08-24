@@ -1141,6 +1141,97 @@ fn validate_mirror_tag(tag: &str) -> Result<(), String> {
     }
 }
 
+/// 目录/清单抓取的请求超时（秒）。
+const MIRROR_FETCH_TIMEOUT_SECS: u64 = 20;
+/// 目录/清单响应体积上限（防异常响应无界读取）。
+const MIRROR_CATALOG_MAX_BYTES: usize = 8 * 1024 * 1024;
+/// 发送给镜像仓库的标准 User-Agent（避免被 GitHub API 当作脚本而拒绝）。
+const MIRROR_USER_AGENT: &str = "chimera-plus-plus";
+
+/// 通过应用内 reqwest 客户端抓取镜像仓库的文本资源，跟随全局代理设置。
+///
+/// 取代进程外 `codex_win_engine::fetch_text`（curl）：后者对大响应体存在
+/// 管道背压死锁 —— `run_capturing` 先等进程退出、之后才读 stdout，Windows
+/// 匿名管道缓冲区仅约 4KB，而 GitHub Releases 目录约 400KB+，curl 写满管道
+/// 后被阻塞、进程无法退出，历史版本目录因此长期卡在“正在加载”。
+async fn fetch_mirror_text(url: &str) -> Result<String, String> {
+    let client = crate::proxy::http_client::get();
+    let response = client
+        .get(url)
+        .header(reqwest::header::USER_AGENT, MIRROR_USER_AGENT)
+        .timeout(Duration::from_secs(MIRROR_FETCH_TIMEOUT_SECS))
+        .send()
+        .await
+        .map_err(|error| format!("请求失败: {error}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        // 附带有限错误体（如 GitHub API 速率限制信息），便于用户/日志排障。
+        let detail = response
+            .bytes()
+            .await
+            .map(|bytes| String::from_utf8_lossy(&bytes[..bytes.len().min(512)]).into_owned())
+            .unwrap_or_default();
+        let detail = detail.trim();
+        return Err(if detail.is_empty() {
+            format!("HTTP {status}")
+        } else {
+            format!("HTTP {status}: {detail}")
+        });
+    }
+    if response
+        .content_length()
+        .is_some_and(|len| len > MIRROR_CATALOG_MAX_BYTES as u64)
+    {
+        return Err(format!("响应超过 {} 字节上限", MIRROR_CATALOG_MAX_BYTES));
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| format!("读取响应失败: {error}"))?;
+    if bytes.len() > MIRROR_CATALOG_MAX_BYTES {
+        return Err(format!("响应超过 {} 字节上限", MIRROR_CATALOG_MAX_BYTES));
+    }
+    String::from_utf8(bytes.to_vec()).map_err(|error| format!("响应不是有效 UTF-8: {error}"))
+}
+
+/// 从 GitHub Releases 数组提取可展示/可安装的历史版本条目（纯函数，便于测试）。
+fn releases_from_items(items: &[serde_json::Value]) -> Vec<CodexRuntimeRelease> {
+    items
+        .iter()
+        .filter_map(|item| {
+            let tag = item.get("tag_name")?.as_str()?.to_string();
+            let asset_names: Vec<&str> = item
+                .get("assets")
+                .and_then(|assets| assets.as_array())
+                .map(|assets| {
+                    assets
+                        .iter()
+                        .filter_map(|asset| asset.get("name").and_then(|name| name.as_str()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let installable = asset_names.contains(&"release-manifest.json")
+                && asset_names.contains(&"SHA256SUMS-windows.txt");
+            Some(CodexRuntimeRelease {
+                tag,
+                name: item
+                    .get("name")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string),
+                published_at: item
+                    .get("published_at")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string),
+                prerelease: item
+                    .get("prerelease")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false),
+                installable,
+            })
+        })
+        .collect()
+}
+
 /// 当前主机对应的 MSIX 架构标识。
 fn msix_architecture_for_current_host() -> &'static str {
     match std::env::consts::ARCH {
@@ -1168,53 +1259,17 @@ pub async fn list_codex_runtime_releases(
 ) -> Result<Vec<CodexRuntimeRelease>, String> {
     require_windows()?;
     let page = page.unwrap_or(1).clamp(1, 50);
-    tauri::async_runtime::spawn_blocking(move || {
-        let url =
-            format!("https://api.github.com/repos/{MIRROR_REPO}/releases?per_page=10&page={page}");
-        let body = codex_win_engine::fetch_text(&url)
-            .map_err(|error| format!("获取历史版本目录失败: {error}"))?;
-        let releases: serde_json::Value = serde_json::from_str(&body)
-            .map_err(|error| format!("解析历史版本目录失败: {error}"))?;
-        let Some(items) = releases.as_array() else {
-            return Err("历史版本目录格式异常".to_string());
-        };
-        Ok(items
-            .iter()
-            .filter_map(|item| {
-                let tag = item.get("tag_name")?.as_str()?.to_string();
-                let asset_names: Vec<&str> = item
-                    .get("assets")
-                    .and_then(|assets| assets.as_array())
-                    .map(|assets| {
-                        assets
-                            .iter()
-                            .filter_map(|asset| asset.get("name").and_then(|name| name.as_str()))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let installable = asset_names.contains(&"release-manifest.json")
-                    && asset_names.contains(&"SHA256SUMS-windows.txt");
-                Some(CodexRuntimeRelease {
-                    tag,
-                    name: item
-                        .get("name")
-                        .and_then(|value| value.as_str())
-                        .map(str::to_string),
-                    published_at: item
-                        .get("published_at")
-                        .and_then(|value| value.as_str())
-                        .map(str::to_string),
-                    prerelease: item
-                        .get("prerelease")
-                        .and_then(|value| value.as_bool())
-                        .unwrap_or(false),
-                    installable,
-                })
-            })
-            .collect())
-    })
-    .await
-    .map_err(|_| "获取历史版本目录任务中断".to_string())?
+    let url =
+        format!("https://api.github.com/repos/{MIRROR_REPO}/releases?per_page=10&page={page}");
+    let body = fetch_mirror_text(&url)
+        .await
+        .map_err(|error| format!("获取历史版本目录失败: {error}"))?;
+    let releases: serde_json::Value =
+        serde_json::from_str(&body).map_err(|error| format!("解析历史版本目录失败: {error}"))?;
+    let Some(items) = releases.as_array() else {
+        return Err("历史版本目录格式异常".to_string());
+    };
+    Ok(releases_from_items(items))
 }
 
 /// 解析指定历史版本的安装计划（TASK-009 / TASK-028）。
@@ -1226,26 +1281,24 @@ pub async fn list_codex_runtime_releases(
 pub async fn plan_codex_runtime_release(tag: String) -> Result<WindowsReleasePlan, String> {
     require_windows()?;
     validate_mirror_tag(&tag)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let base = mirror_tag_download_base(&tag);
-        let manifest = codex_win_engine::fetch_text(&format!("{base}/release-manifest.json"))
-            .map_err(|error| format!("获取该版本清单失败: {error}"))?;
-        let checksums = codex_win_engine::fetch_text(&format!("{base}/SHA256SUMS-windows.txt"))
-            .map_err(|error| format!("获取该版本校验和失败: {error}"))?;
-        let mut plan = parse_windows_release_plan(
-            &manifest,
-            &checksums,
-            UpdateSource::Mirror,
-            Some(std::env::consts::ARCH),
-        )
-        .map_err(|error| error.to_string())?;
-        // parse_windows_release_plan 生成的下载地址指向 latest；
-        // 历史安装必须把下载源锁定到所选 tag，与该 tag 的校验和绑定。
-        plan.package_url = format!("{base}/{}.Msix", plan.package_moniker);
-        Ok(plan)
-    })
-    .await
-    .map_err(|_| "解析历史版本任务中断".to_string())?
+    let base = mirror_tag_download_base(&tag);
+    let manifest = fetch_mirror_text(&format!("{base}/release-manifest.json"))
+        .await
+        .map_err(|error| format!("获取该版本清单失败: {error}"))?;
+    let checksums = fetch_mirror_text(&format!("{base}/SHA256SUMS-windows.txt"))
+        .await
+        .map_err(|error| format!("获取该版本校验和失败: {error}"))?;
+    let mut plan = parse_windows_release_plan(
+        &manifest,
+        &checksums,
+        UpdateSource::Mirror,
+        Some(std::env::consts::ARCH),
+    )
+    .map_err(|error| error.to_string())?;
+    // parse_windows_release_plan 生成的下载地址指向 latest；
+    // 历史安装必须把下载源锁定到所选 tag，与该 tag 的校验和绑定。
+    plan.package_url = format!("{base}/{}.Msix", plan.package_moniker);
+    Ok(plan)
 }
 
 /// 按用户确认过的安装计划安装指定版本（TASK-009 / TASK-028）。
@@ -1760,5 +1813,40 @@ mod tests {
         assert_eq!(json["canRepair"], false);
         assert_eq!(json["canRollback"], false);
         assert_eq!(json["canUninstall"], false);
+    }
+
+    #[test]
+    fn release_catalog_maps_installable_windows_assets() {
+        let items = serde_json::json!([
+            {
+                "tag_name": "codex-app-26.0.0",
+                "name": "Codex 26.0.0",
+                "published_at": "2026-08-01T00:00:00Z",
+                "prerelease": false,
+                "assets": [
+                    {"name": "release-manifest.json"},
+                    {"name": "SHA256SUMS-windows.txt"},
+                    {"name": "codex-26.0.0.Msix"}
+                ]
+            },
+            {
+                "tag_name": "codex-app-25.0.0",
+                "name": null,
+                "published_at": null,
+                "prerelease": true,
+                "assets": [{"name": "codex-25.0.0.Msix"}]
+            }
+        ]);
+        let items = items.as_array().expect("array");
+        let releases = super::releases_from_items(items);
+        assert_eq!(releases.len(), 2);
+        assert_eq!(releases[0].tag, "codex-app-26.0.0");
+        assert!(releases[0].installable);
+        assert!(!releases[0].prerelease);
+        assert_eq!(releases[0].name.as_deref(), Some("Codex 26.0.0"));
+        assert_eq!(releases[1].tag, "codex-app-25.0.0");
+        assert!(!releases[1].installable);
+        assert!(releases[1].prerelease);
+        assert!(releases[1].name.is_none());
     }
 }

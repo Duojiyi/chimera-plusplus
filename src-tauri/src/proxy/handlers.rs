@@ -19,6 +19,7 @@ use super::{
     providers::{
         codex_chat_common::extract_reasoning_field_text,
         codex_chat_history::record_responses_sse_stream,
+        codex_id_normalize::normalize_responses_input_ids,
         get_adapter, get_claude_api_format,
         streaming::create_anthropic_sse_stream,
         streaming_codex_anthropic::{
@@ -1005,9 +1006,19 @@ async fn handle_responses_for_app(
         .await
         .map_err(|e| ProxyError::Internal(format!("Failed to read request body: {e}")))?
         .to_bytes();
-    let body_bytes = decode_codex_request_body(&mut headers, body_bytes)?;
-    let body: Value = serde_json::from_slice(&body_bytes)
+    let mut body_bytes = decode_codex_request_body(&mut headers, body_bytes)?;
+    let mut body: Value = serde_json::from_slice(&body_bytes)
         .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
+    // Repair type/id-prefix drift (e.g. a `custom_tool_call` carrying an `fc_` id)
+    // before the body is consumed. Codex replays such items verbatim across turns;
+    // upstream rejects them with "Expected an ID that begins with 'ctc'". Keep
+    // `body_bytes` in sync so the Chat auto-fallback retry (re-parsed from
+    // `body_bytes`) uses the repaired body.
+    if normalize_responses_input_ids(&mut body) > 0 {
+        body_bytes = serde_json::to_vec(&body)
+            .map(Bytes::from)
+            .map_err(|e| ProxyError::Internal(format!("Failed to re-encode request body: {e}")))?;
+    }
 
     let mut ctx =
         RequestContext::new(&state, &body, &headers, app_type.clone(), tag, app_type_str).await?;
@@ -1266,9 +1277,16 @@ async fn handle_responses_compact_for_app(
         .await
         .map_err(|e| ProxyError::Internal(format!("Failed to read request body: {e}")))?
         .to_bytes();
-    let body_bytes = decode_codex_request_body(&mut headers, body_bytes)?;
-    let body: Value = serde_json::from_slice(&body_bytes)
+    let mut body_bytes = decode_codex_request_body(&mut headers, body_bytes)?;
+    let mut body: Value = serde_json::from_slice(&body_bytes)
         .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
+    // Same type/id-prefix repair as /responses; keep `body_bytes` in sync for the
+    // Chat auto-fallback retry path.
+    if normalize_responses_input_ids(&mut body) > 0 {
+        body_bytes = serde_json::to_vec(&body)
+            .map(Bytes::from)
+            .map_err(|e| ProxyError::Internal(format!("Failed to re-encode request body: {e}")))?;
+    }
 
     let mut ctx =
         RequestContext::new(&state, &body, &headers, app_type.clone(), tag, app_type_str).await?;

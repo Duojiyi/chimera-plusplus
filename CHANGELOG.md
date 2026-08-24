@@ -10,6 +10,14 @@ numbers belong to a separate upstream line.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.3] - 2026-08-24
+
+### Fixed
+
+- **Repair Responses item ID/type prefix drift on the inbound path.** A `custom_tool_call` (or other item) whose `id` prefix no longer matches its `type` — e.g. an `fc_…` id on a `custom_tool_call` produced by a Chat↔Responses round-trip where the tool context was unavailable — now has its `id` prefix normalized before the request is forwarded. This prevents upstream `Invalid 'input[N].id': … Expected an ID that begins with 'ctc'` rejections that permanently poisoned replayed Codex sessions.
+
+- **Fix historical Codex version catalog hanging on "loading".** The release catalog previously used a process-spawned `curl` whose stdout pipe could deadlock on the ~400KB GitHub Releases response (Windows anonymous pipes buffer only ~4KB, and the helper waited for process exit before draining it). The catalog and per-release plan now fetch through the in-app reqwest client, honoring the global proxy, explicit timeouts, size limits, and a standard User-Agent, so the version list loads reliably.
+
 ## [2.6.2] - 2026-08-22
 
 ### Fixed
