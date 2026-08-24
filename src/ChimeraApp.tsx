@@ -99,6 +99,20 @@ import "./chimera.css";
 const runningInTauri =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
+// Canonical Codex reasoning-effort levels in ascending depth order. Mirrors
+// CODEX_REASONING_LEVELS in CodexFormFields.tsx (the backend drops unknown
+// values, so the UI only offers canonical ones).
+const CODEX_REASONING_LEVELS = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra",
+] as const;
+
 const UsageView = lazy(() =>
   import("./views/UsageView").then(({ UsageView: view }) => ({
     default: view,
@@ -2698,7 +2712,7 @@ export function NewRuntimeView({
           }}
         >
           <section
-            className="diagnostics-dialog"
+            className="history-dialog"
             role="dialog"
             aria-modal="true"
             aria-labelledby="runtime-history-title"
@@ -2722,50 +2736,34 @@ export function NewRuntimeView({
               </button>
             </header>
             {pendingPlan ? (
-              <div className="runtime-maintenance-content">
-                <b>确认安装目标</b>
-                <p>
-                  Codex <strong>{pendingPlan.version}</strong>（包版本{" "}
-                  {pendingPlan.packageVersion}）
-                  {pendingPlan.sizeBytes > 0
-                    ? ` · ${(pendingPlan.sizeBytes / 1024 / 1024).toFixed(1)} MB`
-                    : ""}
-                </p>
-                <p>
+              <div className="history-dialog-body">
+                <div className="history-confirm-meta">
+                  <strong>
+                    Codex {pendingPlan.version}
+                    {pendingPlan.packageVersion
+                      ? `（包版本 ${pendingPlan.packageVersion}）`
+                      : ""}
+                    {pendingPlan.sizeBytes > 0
+                      ? ` · ${(pendingPlan.sizeBytes / 1024 / 1024).toFixed(1)} MB`
+                      : ""}
+                  </strong>
                   <small>
                     SHA-256：<code>{pendingPlan.sha256}</code>
                   </small>
-                </p>
-                <p>
                   <small>
                     安装方式：{runtimeText(installMode)}
                     ；历史版本降级不会被后台更新静默覆盖，安装前后都会复核哈希与
                     OpenAI 签名。
                   </small>
-                </p>
-                <footer style={{ display: "flex", gap: 8 }}>
-                  <button
-                    onClick={() => setPendingPlan(null)}
-                    disabled={installingHistory}
-                  >
-                    返回列表
-                  </button>
-                  <button
-                    className="primary"
-                    onClick={() => void installHistoryRelease()}
-                    disabled={installingHistory}
-                  >
-                    {installingHistory ? "正在安装…" : "确认安装此版本"}
-                  </button>
-                </footer>
+                </div>
               </div>
             ) : (
-              <div className="runtime-maintenance-content">
+              <div className="history-dialog-body">
                 {historyLoading && <p>正在加载版本目录…</p>}
                 {!historyLoading && !historyReleases.length && (
                   <p>该页没有可安装的版本。</p>
                 )}
-                <div className="runtime-maintenance-list">
+                <div className="history-version-list">
                   {historyReleases.map((item) => (
                     <button
                       key={item.tag}
@@ -2790,7 +2788,27 @@ export function NewRuntimeView({
                     </button>
                   ))}
                 </div>
-                <footer style={{ display: "flex", gap: 8 }}>
+              </div>
+            )}
+            <footer>
+              {pendingPlan ? (
+                <>
+                  <button
+                    onClick={() => setPendingPlan(null)}
+                    disabled={installingHistory}
+                  >
+                    返回列表
+                  </button>
+                  <button
+                    className="primary"
+                    onClick={() => void installHistoryRelease()}
+                    disabled={installingHistory}
+                  >
+                    {installingHistory ? "正在安装…" : "确认安装此版本"}
+                  </button>
+                </>
+              ) : (
+                <>
                   <button
                     onClick={() => void loadHistoryReleases(historyPage - 1)}
                     disabled={historyLoading || historyPage <= 1}
@@ -2803,9 +2821,9 @@ export function NewRuntimeView({
                   >
                     下一页
                   </button>
-                </footer>
-              </div>
-            )}
+                </>
+              )}
+            </footer>
           </section>
         </div>
       )}
@@ -3446,6 +3464,7 @@ function ProviderEditor({
   escapeDisabled: boolean;
 }) {
   const [commonConfigOpen, setCommonConfigOpen] = useState(false);
+  const [openReasoningRow, setOpenReasoningRow] = useState<number | null>(null);
   const dialogRef = useDialogFocus<HTMLElement>(
     () => setEditor(null),
     !escapeDisabled,
@@ -3889,6 +3908,13 @@ function ProviderEditor({
                   添加模型
                 </button>
               </div>
+              <div className="mapping-head">
+                <span>菜单显示名</span>
+                <span>实际请求模型</span>
+                <span>上下文</span>
+                <span>思考等级</span>
+                <span aria-hidden="true" />
+              </div>
               {editor.catalogModels.map((item, index) => (
                 <div className="mapping-row" key={`${item.model}-${index}`}>
                   <input
@@ -3935,6 +3961,43 @@ function ProviderEditor({
                   />
                   <button
                     type="button"
+                    className="reasoning-trigger"
+                    aria-label="思考等级"
+                    aria-expanded={openReasoningRow === index}
+                    onClick={() =>
+                      setOpenReasoningRow(
+                        openReasoningRow === index ? null : index,
+                      )
+                    }
+                  >
+                    <span
+                      className={
+                        (item.reasoningLevels?.length ?? 0) === 0
+                          ? "reasoning-trigger-placeholder"
+                          : undefined
+                      }
+                    >
+                      {(item.reasoningLevels?.length ?? 0) > 0
+                        ? `${item.reasoningLevels!.length} 档${
+                            item.defaultReasoningLevel
+                              ? ` · ${item.defaultReasoningLevel}`
+                              : ""
+                          }`
+                        : "留空"}
+                    </span>
+                    <ChevronDown
+                      size={14}
+                      style={{
+                        transform:
+                          openReasoningRow === index
+                            ? "rotate(180deg)"
+                            : "rotate(0deg)",
+                        transition: "transform 0.15s ease",
+                      }}
+                    />
+                  </button>
+                  <button
+                    type="button"
                     className="icon-button"
                     aria-label="删除模型映射"
                     onClick={() =>
@@ -3948,6 +4011,91 @@ function ProviderEditor({
                   >
                     <Trash2 size={15} />
                   </button>
+                  {openReasoningRow === index && (
+                    <div className="reasoning-panel">
+                      <div className="reasoning-panel-head">
+                        支持等级（可多选）
+                      </div>
+                      <div className="reasoning-checkboxes">
+                        {CODEX_REASONING_LEVELS.map((level) => {
+                          const checked = (item.reasoningLevels ?? []).includes(
+                            level,
+                          );
+                          return (
+                            <label
+                              key={level}
+                              className="reasoning-level-option"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => {
+                                  const current = new Set(
+                                    item.reasoningLevels ?? [],
+                                  );
+                                  if (current.has(level)) {
+                                    current.delete(level);
+                                  } else {
+                                    current.add(level);
+                                  }
+                                  const nextLevels = (
+                                    CODEX_REASONING_LEVELS as readonly string[]
+                                  ).filter((l) => current.has(l));
+                                  const catalogModels = [
+                                    ...editor.catalogModels,
+                                  ];
+                                  const next: CodexCatalogModel = { ...item };
+                                  if (nextLevels.length > 0) {
+                                    next.reasoningLevels = nextLevels;
+                                    if (
+                                      next.defaultReasoningLevel &&
+                                      !nextLevels.includes(
+                                        next.defaultReasoningLevel,
+                                      )
+                                    ) {
+                                      delete next.defaultReasoningLevel;
+                                    }
+                                  } else {
+                                    delete next.reasoningLevels;
+                                    delete next.defaultReasoningLevel;
+                                  }
+                                  catalogModels[index] = next;
+                                  setEditor({ ...editor, catalogModels });
+                                }}
+                              />
+                              <span>{level}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                      {(item.reasoningLevels?.length ?? 0) > 0 && (
+                        <div className="reasoning-panel-default">
+                          <span>默认等级</span>
+                          <select
+                            value={item.defaultReasoningLevel ?? ""}
+                            onChange={(event) => {
+                              const catalogModels = [...editor.catalogModels];
+                              const next: CodexCatalogModel = { ...item };
+                              if (event.target.value) {
+                                next.defaultReasoningLevel = event.target.value;
+                              } else {
+                                delete next.defaultReasoningLevel;
+                              }
+                              catalogModels[index] = next;
+                              setEditor({ ...editor, catalogModels });
+                            }}
+                          >
+                            <option value="">自动</option>
+                            {item.reasoningLevels!.map((level) => (
+                              <option key={level} value={level}>
+                                {level}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
