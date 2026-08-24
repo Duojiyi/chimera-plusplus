@@ -10,6 +10,16 @@ numbers belong to a separate upstream line.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.4] - 2026-08-25
+
+### Added
+
+- **Per-model reasoning levels in the Codex model catalog editor.** Each catalog row now exposes a picker for the canonical effort levels (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`) with multi-select support and an optional default-level dropdown. Only canonical levels are offered because the backend drops unknown values.
+
+### Changed
+
+- **Runtime version-history dialog restyled with dedicated styles.** The install-confirmation flow now uses its own layout (`history-dialog`, `history-dialog-body`, `history-version-list`) instead of borrowing the diagnostics dialog styles, giving clearer metadata and stable footer actions.
+
 ## [2.6.3] - 2026-08-24
 
 ### Fixed
