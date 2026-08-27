@@ -337,14 +337,27 @@ fn ensure_portable_root_safe_for_install(portable_root: &Path) -> Result<(), Str
     ))
 }
 
-/// Keep at most the single newest `Codex.rollback-*`/`Codex.replaced-*`
-/// sibling of `portable_root` and delete the rest. `latest_portable_rollback`
-/// (used by `rollback_codex_runtime`) only ever considers the newest one by
-/// mtime regardless of prefix, so anything older is already unreachable —
-/// deleting it recovers disk space without removing any rollback capability
-/// a user could actually invoke. Best-effort: read/delete failures are
-/// logged and otherwise ignored, since this is opportunistic hygiene, not a
-/// correctness requirement of the caller.
+/// Keep at most the single newest `Codex.rollback-*` sibling and the single
+/// newest `Codex.replaced-*` sibling of `portable_root`, deleting older ones
+/// of each prefix.
+///
+/// The two prefixes must be swept as SEPARATE pools, never compared against
+/// each other by mtime: the pinned engine's `latest_portable_rollback` (the
+/// function `rollback_codex_runtime` and the crash-recovery banner act on)
+/// matches only `Codex.rollback-*` — `Codex.replaced-*` (left behind when a
+/// user rolls back) is restorable by no code path at all, only useful for
+/// manual recovery. A pooled newest-by-mtime sweep would, after a
+/// "roll back to v1, then a later update crashes" sequence, delete the
+/// journal-referenced `rollback-*` (older extraction mtime) in favor of an
+/// unrestorable `replaced-*` — destroying the exact crash-recovery backup
+/// this install flow depends on, before the new download even starts.
+///
+/// Within one prefix, older entries genuinely are unreachable: the engine
+/// deletes its `rollback-*` after each successful install, so survivors are
+/// crash artifacts, and both the engine's restore and our recovery arm pick
+/// the newest by mtime. Best-effort: read/delete failures are logged and
+/// otherwise ignored — opportunistic hygiene, not a correctness requirement
+/// of the caller.
 fn sweep_stale_portable_backups(portable_root: &Path) {
     let Some(parent) = portable_root.parent() else {
         return;
@@ -352,13 +365,18 @@ fn sweep_stale_portable_backups(portable_root: &Path) {
     let Ok(entries) = std::fs::read_dir(parent) else {
         return;
     };
-    let mut backups: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    let mut rollback_backups: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    let mut replaced_backups: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
     for entry in entries.flatten() {
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        if !(name.starts_with("Codex.rollback-") || name.starts_with("Codex.replaced-")) {
+        let pool = if name.starts_with("Codex.rollback-") {
+            &mut rollback_backups
+        } else if name.starts_with("Codex.replaced-") {
+            &mut replaced_backups
+        } else {
             continue;
-        }
+        };
         let Ok(file_type) = entry.file_type() else {
             continue;
         };
@@ -369,24 +387,26 @@ fn sweep_stale_portable_backups(portable_root: &Path) {
             .metadata()
             .and_then(|metadata| metadata.modified())
             .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-        backups.push((modified, entry.path()));
+        pool.push((modified, entry.path()));
     }
-    if backups.len() <= 1 {
-        return;
-    }
-    backups.sort_by_key(|(modified, _)| *modified);
-    // Keep the last (newest) entry; remove everything else.
-    for (_, path) in &backups[..backups.len() - 1] {
-        if let Err(error) = std::fs::remove_dir_all(path) {
-            log::warn!(
-                "[portable-backup-sweep] 清理旧回滚备份 {} 失败: {error}",
-                path.display()
-            );
-        } else {
-            log::info!(
-                "[portable-backup-sweep] 已清理旧回滚备份 {}",
-                path.display()
-            );
+    for backups in [&mut rollback_backups, &mut replaced_backups] {
+        if backups.len() <= 1 {
+            continue;
+        }
+        backups.sort_by_key(|(modified, _)| *modified);
+        // Keep the last (newest) entry of this prefix; remove the rest.
+        for (_, path) in &backups[..backups.len() - 1] {
+            if let Err(error) = std::fs::remove_dir_all(path) {
+                log::warn!(
+                    "[portable-backup-sweep] 清理旧回滚备份 {} 失败: {error}",
+                    path.display()
+                );
+            } else {
+                log::info!(
+                    "[portable-backup-sweep] 已清理旧回滚备份 {}",
+                    path.display()
+                );
+            }
         }
     }
 }
@@ -869,24 +889,26 @@ pub async fn probe_codex_renderer_unlock(
 /// message, so wording can change without breaking the confirmation flow.
 pub const OPEN_CODEX_RESTART_CONFIRMATION_REQUIRED_PREFIX: &str = "CONFIRM_RESTART_REQUIRED:";
 
-/// Launch the managed Codex installation, replacing a running managed instance
-/// first. The deprecated optional flag is accepted only for IPC compatibility:
-/// lifecycle policy is backend-owned and a running target is always restarted
-/// once the caller has confirmed that.
+/// Launch the managed Codex installation. If a managed instance is already
+/// running, it is only closed and relaunched when `confirm_restart` is
+/// `true`; otherwise this returns the
+/// [`OPEN_CODEX_RESTART_CONFIRMATION_REQUIRED_PREFIX`] sentinel error with
+/// zero side effects. The deprecated `restart_if_running` flag is accepted
+/// only for IPC compatibility: lifecycle policy is backend-owned.
 ///
 /// The cross-process lock covers discovery, shutdown, launch, and health
 /// verification. Process discovery and termination are path-pinned in
 /// `codex_win_engine`, so unrelated Electron or ChatGPT processes are never
 /// selected.
 ///
-/// A running target is only closed and relaunched when `confirm_restart` is
-/// `true` — "open Codex" clicked on an already-running instance used to
-/// silently force-close it (killing after a 30s grace period, per
-/// `close_codex_for_restart`), interrupting whatever the user was doing in
-/// Codex with no warning. Callers should check the already-known process
-/// status (e.g. the renderer's own polled `get_codex_process_status`) before
-/// invoking this, and only pass `confirm_restart: true` after the user has
-/// explicitly agreed to interrupt the running session.
+/// The confirmation gate exists because "open Codex" clicked on an
+/// already-running instance used to silently force-close it (killing after
+/// a 30s grace period, per `close_codex_for_restart`), interrupting whatever
+/// the user was doing in Codex with no warning. Callers should invoke with
+/// `confirm_restart: false` first and only retry with `true` after the user
+/// explicitly agreed in response to the sentinel error — the running check
+/// here is the source of truth, so a caller-side pre-check against its own
+/// (possibly stale) polled process status must not substitute for it.
 #[tauri::command]
 pub async fn open_codex_runtime(
     restart_if_running: Option<bool>,
@@ -994,12 +1016,22 @@ fn decode_percent_encoded_entry_name(name: &str) -> Option<String> {
     // a path separator or resolves to `.`/`..` would let a crafted
     // percent-encoded entry name (e.g. `%2e%2e%5cescape`) rename outside
     // that directory — reject it defensively rather than trust the
-    // round-trip decode alone. Reaching this at all already requires an
-    // MSIX that passed sha256 + Authenticode + package-identity checks, so
-    // this is defense-in-depth, not the primary guard.
-    if decoded.contains('/') || decoded.contains('\\') || decoded == ".." || decoded == "." {
+    // round-trip decode alone. `:` must be rejected too: on Windows,
+    // `with_file_name`/`join` treat a component with a drive prefix (e.g.
+    // `C:foo`, from `C%3Afoo`) as replacing the ENTIRE base path, escaping
+    // the parent with no separator involved; a mid-name colon (`foo:bar`)
+    // would instead target an NTFS alternate data stream. Reaching this at
+    // all already requires an MSIX that passed sha256 + Authenticode +
+    // package-identity checks, so this is defense-in-depth, not the
+    // primary guard.
+    if decoded.contains('/')
+        || decoded.contains('\\')
+        || decoded.contains(':')
+        || decoded == ".."
+        || decoded == "."
+    {
         log::warn!(
-            "[portable-payload-fixup] 拒绝可疑的百分号解码结果（包含路径分隔符）: {name} → {decoded}"
+            "[portable-payload-fixup] 拒绝可疑的百分号解码结果（包含路径分隔符/盘符/流分隔符）: {name} → {decoded}"
         );
         return None;
     }
@@ -1173,35 +1205,47 @@ fn install_portable_release_with_observer(
     )
     .map_err(|error| format!("下载安装包失败: {error}"))?;
 
+    let result =
+        verify_and_install_staged_portable_package(plan, &package_path, portable_root, observer);
+    // The staged .Msix is only useful during this one attempt — retries
+    // re-download unconditionally — so remove it on every exit. Cleaning
+    // only the success path used to leak a multi-hundred-MB package per
+    // failed attempt (one per version moniker) into the staging directory.
+    let _ = std::fs::remove_file(&package_path);
+    result
+}
+
+fn verify_and_install_staged_portable_package(
+    plan: &WindowsReleasePlan,
+    package_path: &Path,
+    portable_root: &Path,
+    observer: &mut dyn FnMut(
+        codex_win_engine::PortableBoundary,
+    ) -> Result<(), codex_win_engine::EngineError>,
+) -> Result<codex_win_engine::PortableInstallReport, String> {
     let size = package_path
         .metadata()
         .map_err(|error| format!("读取安装包信息失败: {error}"))?
         .len();
-    let digest = codex_win_engine::sha256_file(&package_path)
+    let digest = codex_win_engine::sha256_file(package_path)
         .map_err(|error| format!("计算安装包哈希失败: {error}"))?;
     if size != plan.size_bytes || !digest.eq_ignore_ascii_case(&plan.sha256) {
-        let _ = std::fs::remove_file(&package_path);
         return Err("安装包大小或哈希与发布计划不符，已拒绝".to_string());
     }
-    let signature = codex_win_engine::verify_openai_authenticode(&package_path)
+    let signature = codex_win_engine::verify_openai_authenticode(package_path)
         .map_err(|error| format!("验证安装包签名失败: {error}"))?;
     if !signature.is_valid_openai() {
-        let _ = std::fs::remove_file(&package_path);
         return Err("安装包未通过 OpenAI 发行者签名校验，已拒绝安装".to_string());
     }
 
-    let result = codex_win_engine::install_portable_from_msix_with_observer(
-        &package_path,
+    codex_win_engine::install_portable_from_msix_with_observer(
+        package_path,
         portable_root,
         true,
         false,
         observer,
     )
-    .map_err(|error| error.to_string());
-    if result.is_ok() {
-        let _ = std::fs::remove_file(&package_path);
-    }
-    result
+    .map_err(|error| error.to_string())
 }
 
 fn operation_dto(value: chimera_runtime::manager::InstallOperationResult) -> CodexRuntimeOperation {
@@ -2328,5 +2372,125 @@ mod tests {
         assert!(!releases[1].installable);
         assert!(releases[1].prerelease);
         assert!(releases[1].name.is_none());
+    }
+
+    // ── OPC percent-decode fixup ─────────────────────────────────────────
+
+    #[test]
+    fn percent_decode_entry_name_decodes_known_opc_escapes() {
+        assert_eq!(
+            super::decode_percent_encoded_entry_name("%40oai").as_deref(),
+            Some("@oai")
+        );
+        assert_eq!(
+            super::decode_percent_encoded_entry_name("%24_StatsigGlobal.js").as_deref(),
+            Some("$_StatsigGlobal.js")
+        );
+    }
+
+    #[test]
+    fn percent_decode_entry_name_leaves_plain_names_alone() {
+        // No '%' at all, and a '%' that isn't a valid escape sequence (the
+        // decode round-trips to the same string) — both mean "nothing to do".
+        assert_eq!(super::decode_percent_encoded_entry_name("app.asar"), None);
+        assert_eq!(super::decode_percent_encoded_entry_name("100%"), None);
+    }
+
+    #[test]
+    fn percent_decode_entry_name_rejects_traversal_and_drive_prefixes() {
+        // Separator smuggling (`..\escape` via mixed encodings), bare
+        // dot-dot, drive-relative prefixes (`C:foo` — with_file_name/join
+        // REPLACE the whole base path for those on Windows), NTFS alternate
+        // data streams (`foo:bar`), and invalid UTF-8 must all be refused
+        // rather than renamed.
+        for name in [
+            "%2e%2e",       // ".."
+            "%2e",          // "."
+            "%2fescape",    // "/escape"
+            "x%5cy",        // "x\y"
+            "%2e%2e%5cesc", // "..\esc"
+            "C%3afoo",      // "C:foo"
+            "foo%3Abar",    // "foo:bar"
+            "%ff",          // invalid UTF-8
+        ] {
+            assert_eq!(
+                super::decode_percent_encoded_entry_name(name),
+                None,
+                "{name} must be rejected"
+            );
+        }
+    }
+
+    // ── Portable-root install safety guard ──────────────────────────────
+
+    #[test]
+    fn portable_root_guard_accepts_missing_and_empty_roots() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let missing = dir.path().join("not-created-yet");
+        assert!(super::ensure_portable_root_safe_for_install(&missing).is_ok());
+
+        let empty = dir.path().join("empty");
+        std::fs::create_dir(&empty).expect("create empty root");
+        assert!(super::ensure_portable_root_safe_for_install(&empty).is_ok());
+    }
+
+    #[test]
+    fn portable_root_guard_rejects_a_non_codex_directory_with_content() {
+        // The destructive engine swap treats any existing directory as "a
+        // previous install to replace" — the guard must refuse anything
+        // non-empty that doesn't pass the Codex identity check. (The
+        // genuine-install accept branch depends on the pinned engine's
+        // AppxManifest/app.asar parsing and is exercised by real installs,
+        // not fixtured here.)
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("documents");
+        std::fs::create_dir(&root).expect("create root");
+        std::fs::write(root.join("thesis.docx"), b"irreplaceable").expect("write file");
+
+        let error = super::ensure_portable_root_safe_for_install(&root)
+            .expect_err("non-Codex content must be refused");
+        assert!(error.contains("已拒绝安装"), "got: {error}");
+        // Refusal must not have touched the directory.
+        assert!(root.join("thesis.docx").exists());
+    }
+
+    // ── Stale portable-backup sweep ──────────────────────────────────────
+
+    #[test]
+    fn backup_sweep_never_trades_a_rollback_backup_for_a_newer_replaced_one() {
+        // `latest_portable_rollback` (the engine fn crash recovery and the
+        // rollback command act on) matches ONLY `Codex.rollback-*`;
+        // `Codex.replaced-*` is restorable by no code path. The sweep must
+        // therefore prune the two prefixes as separate pools — a pooled
+        // newest-by-mtime sweep would delete the only restorable backup
+        // whenever an (unrestorable) replaced-* happens to be newer, which
+        // is exactly the "rolled back earlier, later update crashed" state
+        // crash recovery exists for.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let portable_root = dir.path().join("Codex");
+
+        let mkdir_ordered = |name: &str| {
+            let path = dir.path().join(name);
+            std::fs::create_dir(&path).expect("create backup dir");
+            // Distinct mtimes: directory mtime is its creation time and NTFS
+            // resolution is far finer than this sleep.
+            std::thread::sleep(std::time::Duration::from_millis(40));
+            path
+        };
+        let rollback_old = mkdir_ordered("Codex.rollback-20260101-000000");
+        let rollback_new = mkdir_ordered("Codex.rollback-20260201-000000");
+        let replaced_old = mkdir_ordered("Codex.replaced-20260301-000000");
+        let replaced_new = mkdir_ordered("Codex.replaced-20260401-000000");
+
+        super::sweep_stale_portable_backups(&portable_root);
+
+        assert!(
+            rollback_new.exists(),
+            "newest rollback-* must survive even though every replaced-* has a newer mtime"
+        );
+        assert!(replaced_new.exists(), "newest replaced-* must survive");
+        assert!(!rollback_old.exists(), "older rollback-* should be pruned");
+        assert!(!replaced_old.exists(), "older replaced-* should be pruned");
     }
 }

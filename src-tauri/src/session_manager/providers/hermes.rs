@@ -430,6 +430,9 @@ fn parse_jsonl_session(path: &Path) -> Option<SessionMeta> {
 
 /// Load messages from a Hermes JSONL transcript file.
 pub fn load_messages(path: &Path) -> Result<Vec<SessionMessage>, String> {
+    // Deliberate whole-file gate despite the streaming read below: the
+    // output message Vec crosses IPC in one piece, so it must stay bounded.
+    // See codex.rs::load_messages for the full rationale.
     let file = open_limited_regular_file(path, MAX_SESSION_FILE_BYTES)
         .map_err(|e| format!("Failed to open session file: {e}"))?;
     let reader = BufReader::new(file);

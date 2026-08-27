@@ -272,6 +272,7 @@
     "openclawNoModels": "No models configured",
     "backfillWarning": "Switched successfully, but failed to save changes back to the previous provider",
     "profileOverridesRoutingWarning": "Switched successfully, but an active Codex profile \"{{profile}}\" overrides the routing settings just written — Codex will keep routing through that profile",
+    "switchCompletedWithWarning": "Switched successfully, but with a warning: {{warning}}",
     "windowControlFailed": "Window control failed: {{error}}",
     "officialBlockedByProxy": "Cannot switch to official provider while local routing is active. Using routing with official APIs may cause account bans.",
     "proxyOfficialWarning": "Current provider {{name}} is official. Consider switching to a third-party provider before using local routing."
@@ -694,6 +695,7 @@
     "unifyCodexHistoryRestoreNothing": "No restorable migration backup for the current Codex directory",
     "unifyCodexHistoryRestoreSkippedToggleOn": "Unified session history was re-enabled; restore skipped",
     "unifyCodexHistoryRestoreDeferred": "Some session files are still active and were skipped; please retry the restore in a few minutes",
+    "unifyCodexHistoryRestorePartialDeferred": "{{count}} more session file(s) were skipped because they are still active; retry the restore in a few minutes to finish",
     "appVisibility": {
       "title": "Homepage Display",
       "description": "Choose which apps to show on the homepage",

@@ -36,7 +36,7 @@ Chimera++ 用于管理 Codex 的供应商配置、模型和本机运行时。它
 | Windows x64     | 完整支持 | 推荐平台；支持线路管理、Codex 快速启动和运行时维护                       |
 | Windows ARM64   | 完整支持 | 提供原生 MSI 与绿色版                                                    |
 | macOS Universal | 可用     | 同时支持 Intel 与 Apple Silicon；Codex 快速启动和 Windows 安装维护不可用 |
-| Linux           | 暂不发布 | 当前 Release 不提供 Linux 构建                                           |
+| Linux x86_64    | 可用     | 提供 deb / rpm / AppImage；Codex 快速启动和 Windows 安装维护不可用       |
 
 Windows 10/11 与 macOS 12 及以上版本为当前发布目标。
 
@@ -55,6 +55,12 @@ Windows 10/11 与 macOS 12 及以上版本为当前发布目标。
 
 - `Chimera++-v*-macOS.dmg`：图形安装包
 - `Chimera++-v*-macOS.zip`：压缩包
+
+### Linux
+
+- `Chimera++-v*-Linux-x86_64.deb`：Debian/Ubuntu
+- `Chimera++-v*-Linux-x86_64.rpm`：Fedora/RHEL/openSUSE
+- `Chimera++-v*-Linux-x86_64.AppImage`：通用
 
 macOS 构建目前没有 Apple Developer ID 签名和公证。如果 Gatekeeper 阻止首次打开，请在 Finder 中右键应用并选择“打开”。Release 中的 `.sig` 是 Tauri 应用内更新签名，不是 Apple 代码签名。
 

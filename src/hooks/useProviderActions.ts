@@ -253,34 +253,51 @@ export function useProviderActions(
         await syncClaudePlugin(provider);
 
         // Show a warning toast tailored to what actually went wrong. The
-        // profile-override warning is a distinct failure mode from a
-        // backfill failure — reusing the generic backfill message for it
-        // would tell the user the wrong story (see fix/2026-08-27 audit).
+        // backend emits typed `kind:detail` warning codes (see
+        // SwitchResult.warnings producers in services/provider/mod.rs);
+        // classify by prefix — startsWith + slice, not a regex, so a detail
+        // containing regex-hostile characters (even a newline in a TOML
+        // profile name) can never make a warning fall through unreported.
         if (result?.warnings?.length) {
-          const routingOverride = result.warnings
-            .map((warning) =>
-              /^active_profile_overrides_routing:(.*)$/.exec(warning),
-            )
-            .find((match): match is RegExpExecArray => match !== null);
-          if (routingOverride) {
+          const PROFILE_PREFIX = "active_profile_overrides_routing:";
+          const routingOverride = result.warnings.find((warning) =>
+            warning.startsWith(PROFILE_PREFIX),
+          );
+          if (routingOverride !== undefined) {
             toast.warning(
               t("notifications.profileOverridesRoutingWarning", {
-                profile: routingOverride[1],
+                profile: routingOverride.slice(PROFILE_PREFIX.length),
                 defaultValue:
                   "切换成功，但检测到 Codex 配置中有生效中的 profile「{{profile}}」会覆盖本次写入的路由设置，Codex 实际仍会按该 profile 路由",
               }),
               { duration: 6000 },
             );
           }
+          // The backfill message ("your manual edits may be lost") is only
+          // accurate for the two backfill_* codes. Other warnings (Hermes
+          // model defaults, common-config snippet sync) get an honest
+          // generic message carrying the code instead of a wrong story.
           if (
-            result.warnings.some(
-              (warning) => !warning.startsWith("active_profile_overrides_routing:"),
-            )
+            result.warnings.some((warning) => warning.startsWith("backfill_"))
           ) {
             toast.warning(
               t("notifications.backfillWarning", {
                 defaultValue:
                   "切换成功，但旧供应商配置回填失败，您手动修改的配置可能未保存",
+              }),
+              { duration: 5000 },
+            );
+          }
+          const otherWarning = result.warnings.find(
+            (warning) =>
+              !warning.startsWith(PROFILE_PREFIX) &&
+              !warning.startsWith("backfill_"),
+          );
+          if (otherWarning !== undefined) {
+            toast.warning(
+              t("notifications.switchCompletedWithWarning", {
+                warning: otherWarning,
+                defaultValue: "切换成功，但存在附加警告：{{warning}}",
               }),
               { duration: 5000 },
             );

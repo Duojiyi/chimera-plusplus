@@ -1909,6 +1909,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn chat_usage_normalization_reads_deepseek_prompt_cache_hit_tokens() {
+        // DeepSeek reports cache hits as a top-level `prompt_cache_hit_tokens`
+        // instead of the OpenAI `*_tokens_details/cached_tokens` shapes — the
+        // fallback must surface them into `input_tokens_details.cached_tokens`.
+        let deepseek = json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 5,
+            "prompt_cache_hit_tokens": 64
+        });
+        let normalized = chat_usage_to_responses_usage(Some(&deepseek));
+        assert_eq!(normalized["input_tokens_details"]["cached_tokens"], 64);
+
+        // The OpenAI shape still wins when both are present.
+        let both = json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 5,
+            "prompt_tokens_details": { "cached_tokens": 32 },
+            "prompt_cache_hit_tokens": 64
+        });
+        let normalized = chat_usage_to_responses_usage(Some(&both));
+        assert_eq!(normalized["input_tokens_details"]["cached_tokens"], 32);
+    }
+
+    #[test]
     fn map_reasoning_effort_handles_ultra_per_mode() {
         // passthrough 面向枚举未知的通用上游：ultra 与 max/xhigh 一样原值透传，
         // 让声明了该档位的上游能收到用户选择。

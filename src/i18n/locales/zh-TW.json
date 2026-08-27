@@ -272,6 +272,7 @@
     "openclawNoModels": "該供應商沒有設定模型",
     "backfillWarning": "切換成功，但舊供應商設定回填失敗，您手動修改的設定可能未儲存",
     "profileOverridesRoutingWarning": "切換成功，但偵測到 Codex 設定中有生效中的 profile「{{profile}}」會覆蓋本次寫入的路由設定，Codex 實際仍會依該 profile 路由",
+    "switchCompletedWithWarning": "切換成功，但存在附加警告：{{warning}}",
     "windowControlFailed": "視窗控制失敗：{{error}}",
     "officialBlockedByProxy": "本地路由模式下不能切換至官方供應商，使用路由存取官方 API 可能導致帳號被封鎖",
     "proxyOfficialWarning": "目前供應商 {{name}} 是官方供應商，建議切換至第三方供應商後再使用本地路由"
@@ -694,6 +695,7 @@
     "unifyCodexHistoryRestoreNothing": "目前 Codex 目錄沒有可恢復的遷移備份",
     "unifyCodexHistoryRestoreSkippedToggleOn": "統一會話歷史開關已重新開啟，已跳過還原",
     "unifyCodexHistoryRestoreDeferred": "部分會話檔案仍處於活躍狀態而被跳過，請幾分鐘後重試還原",
+    "unifyCodexHistoryRestorePartialDeferred": "另有 {{count}} 個會話檔案因仍處於活躍狀態被跳過，請幾分鐘後重試還原以補齊",
     "appVisibility": {
       "title": "主頁面顯示",
       "description": "選擇在主頁面顯示的應用程式",

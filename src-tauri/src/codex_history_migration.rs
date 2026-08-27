@@ -11,7 +11,7 @@ use crate::config::{atomic_write, copy_file, get_app_config_dir};
 use crate::database::{is_official_seed_id, Database};
 use crate::error::AppError;
 use crate::security_limits::{
-    open_limited_regular_file, read_to_string_limited, MAX_CONFIG_FILE_BYTES,
+    open_regular_file_no_symlink, read_to_string_limited, MAX_CONFIG_FILE_BYTES,
     MAX_SESSION_FILE_BYTES,
 };
 use crate::settings::{
@@ -371,15 +371,23 @@ fn scan_existing_codex_history_provider_ids(
 /// 会话列表时都会跑，而单个会话文件可达数十 MB，所以按行读并在拿到 meta 后立即
 /// 停止，绝不整文件读入内存。留出少量行的余量以兼容未来在 meta 前插入其他记录。
 fn collect_session_meta_provider_ids_from_head(path: &Path, ids: &mut BTreeSet<String>) {
-    use std::io::BufRead;
+    use std::io::{BufRead, Read};
 
     /// 只看开头这些行：足够覆盖 meta 位置的微小变动，又不会退化成整文件扫描。
     const MAX_SCANNED_LINES: usize = 16;
+    /// 头部字节上限：既是对"单行无换行的畸形文件"的内存兜底，也让 16 行的
+    /// 扫描保持 O(1)。session_meta 行只有几百字节，余量非常充裕。
+    const MAX_SCANNED_HEAD_BYTES: u64 = 512 * 1024;
 
-    let Ok(file) = open_limited_regular_file(path, MAX_SESSION_FILE_BYTES) else {
+    // 不做整文件大小门槛：这里只读开头有界的字节数，文件总大小与内存无关。
+    // 旧版用 `open_limited_regular_file(MAX_SESSION_FILE_BYTES)`，会把
+    // >32MB 的 rollout 静默排除在桶 id 收集之外——与本函数注释声称的
+    // "绝不整文件读入内存所以大文件也能扫"自相矛盾，导致超大会话所在的
+    // 旧桶永远不会被归拢迁移。
+    let Ok(file) = open_regular_file_no_symlink(path) else {
         return;
     };
-    for line in std::io::BufReader::new(file)
+    for line in std::io::BufReader::new(file.take(MAX_SCANNED_HEAD_BYTES))
         .lines()
         .take(MAX_SCANNED_LINES)
         .map_while(Result::ok)
@@ -526,6 +534,12 @@ fn write_backup_generation_meta(backup_root: &Path, codex_dir_key: &str) -> Resu
 pub struct CodexOfficialHistoryRestoreOutcome {
     pub restored_jsonl_files: usize,
     pub restored_state_rows: usize,
+    /// Session files that genuinely needed restoring but were deferred
+    /// because they look actively written (fresh mtime). Surfaced even when
+    /// the restore otherwise succeeds (e.g. state-DB rows restored), so the
+    /// UI can tell the user to retry shortly instead of reporting a clean
+    /// full success while jsonl files remain un-restored.
+    pub deferred_jsonl_files: usize,
     pub skipped_reason: Option<String>,
 }
 
@@ -639,6 +653,7 @@ fn restore_codex_official_history_inner(
         // just retry shortly, not that there is nothing to restore.
         if deferred_jsonl_files > 0 {
             return Ok(CodexOfficialHistoryRestoreOutcome {
+                deferred_jsonl_files,
                 skipped_reason: Some("deferred_active_session_files".to_string()),
                 ..Default::default()
             });
@@ -651,9 +666,13 @@ fn restore_codex_official_history_inner(
         });
     }
 
+    // Partial success (some files restored, or only state rows restored)
+    // still carries the deferred count so the UI can prompt a follow-up
+    // retry instead of implying everything was restored.
     Ok(CodexOfficialHistoryRestoreOutcome {
         restored_jsonl_files,
         restored_state_rows,
+        deferred_jsonl_files,
         skipped_reason: None,
     })
 }

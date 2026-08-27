@@ -33,6 +33,11 @@ pub fn scan_sessions() -> Vec<SessionMeta> {
 }
 
 pub fn load_messages(path: &Path) -> Result<Vec<SessionMessage>, String> {
+    // Deliberate asymmetry with session listing (bounded head/tail reads,
+    // no gate): even though this loop streams line-by-line, its OUTPUT — the
+    // full message Vec crossing IPC to the renderer — scales with file
+    // size, so the whole-file gate stays to keep a pathological session from
+    // freezing the UI. Same rationale as codex.rs::load_messages.
     let file = open_limited_regular_file(path, MAX_SESSION_FILE_BYTES)
         .map_err(|e| format!("Failed to open session file: {e}"))?;
     let reader = BufReader::new(file);

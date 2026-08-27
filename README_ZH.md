@@ -313,10 +313,10 @@ Chimera++ macOS 构建目前没有 Apple Developer ID 签名和公证。如果 G
 AppImage 会强制 `GDK_BACKEND=x11`（走 XWayland）以规避历史上的原生 Wayland 崩溃。但在较新的 Wayland + NVIDIA 环境下，这会导致网页内容区点不动（标题栏按钮仍可点）、窗口缩放后黑屏。可用内置的逃生开关切回原生 Wayland：
 
 ```bash
-CC_SWITCH_GDK_BACKEND=wayland ./CC-Switch-*.AppImage
+CHIMERA_GDK_BACKEND=wayland ./Chimera++-v*-Linux-x86_64.AppImage
 ```
 
-如果你是从桌面图标启动的，请把它写进 `.desktop` 的 `Exec=` 行（如 `env CC_SWITCH_GDK_BACKEND=wayland /path/to/AppImage`），或在会话环境中设置。该变量是通用的：在 tiling Wayland 合成器（sway/Hyprland）下若出现点击失效，可反过来设 `CC_SWITCH_GDK_BACKEND=x11`。不设置则保持默认行为。
+如果你是从桌面图标启动的，请把它写进 `.desktop` 的 `Exec=` 行（如 `env CHIMERA_GDK_BACKEND=wayland /path/to/AppImage`），或在会话环境中设置。该变量是通用的：在 tiling Wayland 合成器（sway/Hyprland）下若出现点击失效，可反过来设 `CHIMERA_GDK_BACKEND=x11`。不设置则保持默认行为（旧变量名 `CC_SWITCH_GDK_BACKEND` 仍兼容）。
 
 </details>
 
@@ -388,9 +388,9 @@ paru -S cc-switch-bin
 
 从 [Releases](../../releases) 页面下载最新版本的 Linux 安装包：
 
-- `Chimera++-v{版本号}-Linux.deb`（Debian/Ubuntu）
-- `Chimera++-v{版本号}-Linux.rpm`（Fedora/RHEL/openSUSE）
-- `Chimera++-v{版本号}-Linux.AppImage`（通用）
+- `Chimera++-v{版本号}-Linux-x86_64.deb`（Debian/Ubuntu）
+- `Chimera++-v{版本号}-Linux-x86_64.rpm`（Fedora/RHEL/openSUSE）
+- `Chimera++-v{版本号}-Linux-x86_64.AppImage`（通用）
 
 > **Flatpak**：官方 Release 不包含 Flatpak 包。如需使用，可从 `.deb` 自行构建 — 参见 [`flatpak/README.md`](flatpak/README.md)。
 

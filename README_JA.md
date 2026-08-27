@@ -310,10 +310,10 @@ CC Switch は「最小限の介入」という設計原則に従っています�
 AppImage は過去のネイティブ Wayland クラッシュを避けるため `GDK_BACKEND=x11`（XWayland）を強制します。新しい Wayland + NVIDIA 環境ではこれが原因で Web コンテンツ領域がクリックできなくなり（タイトルバーのボタンは動作します）、リサイズ時に黒画面になることがあります。内蔵のエスケープハッチでネイティブ Wayland に戻せます：
 
 ```bash
-CC_SWITCH_GDK_BACKEND=wayland ./CC-Switch-*.AppImage
+CHIMERA_GDK_BACKEND=wayland ./Chimera++-v*-Linux-x86_64.AppImage
 ```
 
-デスクトップアイコンから起動する場合は、`.desktop` の `Exec=` 行に追記するか（例：`env CC_SWITCH_GDK_BACKEND=wayland /path/to/AppImage`）、セッション環境で設定してください。この変数は汎用です：タイル型 Wayland コンポジタ（sway/Hyprland）でクリックが効かない場合は、逆に `CC_SWITCH_GDK_BACKEND=x11` を試してください。未設定の場合は既定の動作のままです。
+デスクトップアイコンから起動する場合は、`.desktop` の `Exec=` 行に追記するか（例：`env CHIMERA_GDK_BACKEND=wayland /path/to/AppImage`）、セッション環境で設定してください。この変数は汎用です：タイル型 Wayland コンポジタ（sway/Hyprland）でクリックが効かない場合は、逆に `CHIMERA_GDK_BACKEND=x11` を試してください。未設定の場合は既定の動作のままです（旧変数名 `CC_SWITCH_GDK_BACKEND` も引き続き使用できます）。
 
 </details>
 
@@ -385,9 +385,9 @@ paru -S cc-switch-bin
 
 [Releases](../../releases) から最新版の Linux ビルドをダウンロード：
 
-- `Chimera++-v{version}-Linux.deb`（Debian/Ubuntu）
-- `Chimera++-v{version}-Linux.rpm`（Fedora/RHEL/openSUSE）
-- `Chimera++-v{version}-Linux.AppImage`（汎用）
+- `Chimera++-v{version}-Linux-x86_64.deb`（Debian/Ubuntu）
+- `Chimera++-v{version}-Linux-x86_64.rpm`（Fedora/RHEL/openSUSE）
+- `Chimera++-v{version}-Linux-x86_64.AppImage`（汎用）
 
 > **Flatpak**：公式リリースには含まれていません。`.deb` から自分でビルドできます — 手順は [`flatpak/README.md`](flatpak/README.md) を参照してください。
 

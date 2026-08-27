@@ -26,8 +26,18 @@ const USAGE_SCRIPT_EVAL_TIMEOUT: Duration = Duration::from_secs(10);
 /// interrupt handler is polled periodically by the engine during execution
 /// and aborts evaluation once the deadline captured at call time has passed.
 fn configure_usage_script_runtime_limits(runtime: &Runtime) {
-    runtime.set_memory_limit(USAGE_SCRIPT_MEMORY_LIMIT_BYTES);
-    let deadline = Instant::now() + USAGE_SCRIPT_EVAL_TIMEOUT;
+    configure_runtime_limits_with(
+        runtime,
+        USAGE_SCRIPT_MEMORY_LIMIT_BYTES,
+        USAGE_SCRIPT_EVAL_TIMEOUT,
+    )
+}
+
+/// Parameterized form so tests can exercise the sandbox mechanisms with a
+/// short deadline instead of waiting out the production timeout.
+fn configure_runtime_limits_with(runtime: &Runtime, memory_limit: usize, timeout: Duration) {
+    runtime.set_memory_limit(memory_limit);
+    let deadline = Instant::now() + timeout;
     runtime.set_interrupt_handler(Some(Box::new(move || Instant::now() >= deadline)));
 }
 
@@ -690,5 +700,56 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn sandbox_memory_limit_aborts_an_allocation_bomb() {
+        let runtime = Runtime::new().expect("runtime");
+        // Production memory limit, generous test-local deadline (the bomb
+        // hits the 64MB heap cap in well under a second — the deadline only
+        // exists so a regression can't hang the test suite).
+        configure_runtime_limits_with(
+            &runtime,
+            USAGE_SCRIPT_MEMORY_LIMIT_BYTES,
+            Duration::from_secs(30),
+        );
+        let context = Context::full(&runtime).expect("context");
+        let result: Result<(), _> = context.with(|ctx| {
+            ctx.eval::<(), _>(
+                r#"
+                const chunks = [];
+                while (true) {
+                    chunks.push(new Array(256 * 1024).fill(0));
+                }
+                "#,
+            )
+        });
+        assert!(
+            result.is_err(),
+            "an unbounded allocation loop must fail against the heap cap"
+        );
+    }
+
+    #[test]
+    fn sandbox_interrupt_handler_aborts_an_infinite_loop() {
+        let runtime = Runtime::new().expect("runtime");
+        // Short test deadline exercising the same interrupt-handler wiring
+        // production uses with USAGE_SCRIPT_EVAL_TIMEOUT.
+        configure_runtime_limits_with(
+            &runtime,
+            USAGE_SCRIPT_MEMORY_LIMIT_BYTES,
+            Duration::from_millis(200),
+        );
+        let context = Context::full(&runtime).expect("context");
+        let started = Instant::now();
+        let result: Result<(), _> = context.with(|ctx| ctx.eval::<(), _>("while (true) {}"));
+        assert!(
+            result.is_err(),
+            "an infinite loop must be interrupted by the deadline handler"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "interruption must come from the handler, not some other slow path"
+        );
     }
 }

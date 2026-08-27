@@ -187,6 +187,14 @@ fn load_thread_titles_from_db(db_path: &Path) -> HashMap<String, String> {
 }
 
 pub fn load_messages(path: &Path) -> Result<Vec<SessionMessage>, String> {
+    // Deliberate asymmetry with session *listing* (which reads bounded
+    // head/tail lines and therefore has no whole-file gate): loading
+    // materializes every message into one Vec that crosses IPC to the
+    // renderer, so its output scales with file size no matter how the read
+    // is done. The gate keeps a pathological multi-hundred-MB rollout from
+    // freezing the UI; such a session stays visible in the list and fails
+    // here with an explicit size error. Lifting this properly means paging
+    // the message view, not removing the bound.
     let content = crate::security_limits::read_to_string_limited(
         path,
         crate::security_limits::MAX_SESSION_FILE_BYTES,

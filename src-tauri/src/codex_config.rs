@@ -355,7 +355,11 @@ pub fn detect_active_profile_routing_override(config_text: &str) -> Option<Strin
         .and_then(|item| item.as_str())
         .map(str::trim)
         .filter(|name| !name.is_empty())?;
-    let profile_table = doc.get("profiles")?.get(profile_name)?.as_table()?;
+    // `as_table_like`, not `as_table`: profiles written as inline tables
+    // (`profiles = { work = { model = "x" } }` or `work = {...}` under
+    // `[profiles]`) are valid TOML Codex honors identically — `as_table`
+    // returns None for them and would silently skip the warning.
+    let profile_table = doc.get("profiles")?.get(profile_name)?.as_table_like()?;
     const ROUTING_KEYS: &[&str] = &[
         "model_provider",
         "model",
@@ -5456,5 +5460,117 @@ model_catalog_json = "cc-switch-model-catalog.json"
             parsed.get("model_catalog_json").is_none(),
             "None arm should remove relative cc-switch-owned field"
         );
+    }
+
+    // ── Active-profile routing-override detection ────────────────────────
+
+    #[test]
+    fn profile_override_detected_for_standard_table_profiles() {
+        let config = r#"
+profile = "work"
+model_provider = "custom"
+
+[profiles.work]
+model_provider = "corp-relay"
+"#;
+        assert_eq!(
+            detect_active_profile_routing_override(config).as_deref(),
+            Some("work")
+        );
+    }
+
+    #[test]
+    fn profile_override_detected_for_inline_table_profiles() {
+        // Inline-table spellings are valid TOML Codex honors identically —
+        // `as_table()` returns None for them, which used to silently skip
+        // the warning. Both inline shapes must be detected.
+        let whole_inline = r#"
+profile = "work"
+profiles = { work = { model = "gpt-5.5-codex" } }
+"#;
+        assert_eq!(
+            detect_active_profile_routing_override(whole_inline).as_deref(),
+            Some("work")
+        );
+
+        let inner_inline = r#"
+profile = "work"
+
+[profiles]
+work = { model_provider = "corp-relay" }
+"#;
+        assert_eq!(
+            detect_active_profile_routing_override(inner_inline).as_deref(),
+            Some("work")
+        );
+    }
+
+    #[test]
+    fn profile_override_ignores_inactive_missing_or_non_routing_profiles() {
+        // No `profile` key at all: profiles exist but none is active.
+        let inactive = r#"
+[profiles.work]
+model_provider = "corp-relay"
+"#;
+        assert_eq!(detect_active_profile_routing_override(inactive), None);
+
+        // Active profile points at a table that doesn't exist.
+        let dangling = r#"
+profile = "gone"
+
+[profiles.work]
+model_provider = "corp-relay"
+"#;
+        assert_eq!(detect_active_profile_routing_override(dangling), None);
+
+        // Active profile exists but overrides nothing routing-related.
+        let non_routing = r#"
+profile = "work"
+
+[profiles.work]
+approval_policy = "never"
+"#;
+        assert_eq!(detect_active_profile_routing_override(non_routing), None);
+    }
+
+    // ── Catalog required-field backfill ──────────────────────────────────
+
+    #[test]
+    fn catalog_backfill_fills_only_missing_required_fields_and_keeps_existing() {
+        let mut template = json!({
+            "slug": "gpt-5.5",
+            "supports_parallel_tool_calls": true
+        });
+        fill_template_fields_from_static(&mut template);
+
+        // Existing value always wins — even though the fallback is `false`.
+        assert_eq!(template["supports_parallel_tool_calls"], json!(true));
+        // Missing required fields got their documented safe fallbacks.
+        assert_eq!(template["supports_reasoning_summaries"], json!(true));
+        let base_instructions = template["base_instructions"]
+            .as_str()
+            .expect("base_instructions backfilled as a string");
+        assert!(
+            base_instructions.len() > 1000,
+            "fallback must be the full neutral harness text, not a placeholder (got {} chars)",
+            base_instructions.len()
+        );
+        assert!(
+            !base_instructions.contains("apply_patch"),
+            "the neutral fallback must stay tool-agnostic"
+        );
+    }
+
+    #[test]
+    fn catalog_backfill_covers_every_declared_required_field() {
+        // A field listed as parser-required without a fallback would leave
+        // catalogs rejected on the very Codex builds the list exists to
+        // protect — the two lists must stay in lockstep.
+        for key in CODEX_CATALOG_PARSER_REQUIRED_FIELDS {
+            assert!(
+                codex_catalog_required_field_fallback(key).is_some(),
+                "required field {key} has no fallback value"
+            );
+        }
     }
 }

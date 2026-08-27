@@ -538,6 +538,39 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn cache_read_tokens_fall_back_to_deepseek_prompt_cache_hit_field() {
+        // DeepSeek's Chat Completions usage reports cache hits under a
+        // top-level `prompt_cache_hit_tokens` — none of the OpenAI shapes.
+        // Without the fallback every DeepSeek cache hit parsed as 0.
+        let deepseek = json!({
+            "id": "resp_ds",
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 5,
+                "prompt_cache_hit_tokens": 64
+            }
+        });
+        let usage = TokenUsage::from_codex_response(&deepseek).unwrap();
+        assert_eq!(usage.cache_read_tokens, 64);
+
+        // The standard OpenAI shapes still take precedence when present.
+        let openai = json!({
+            "id": "resp_oa",
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 5,
+                "prompt_tokens_details": { "cached_tokens": 32 },
+                "prompt_cache_hit_tokens": 64
+            }
+        });
+        let usage = TokenUsage::from_codex_response(&openai).unwrap();
+        assert_eq!(
+            usage.cache_read_tokens, 32,
+            "OpenAI-shaped cached_tokens must win over the DeepSeek fallback"
+        );
+    }
+
+    #[test]
     fn response_ids_produce_scoped_dedup_keys_and_empty_ids_fall_back() {
         let response = json!({
             "id": "resp_123",

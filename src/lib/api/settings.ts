@@ -22,6 +22,8 @@ export interface WebDavTestResult {
 export interface CodexUnifyHistoryRestoreResult {
   restoredJsonlFiles: number;
   restoredStateRows: number;
+  /** 本轮因文件疑似活跃而被推迟的会话文件数；成功场景下 >0 时应提示稍后重试补齐 */
+  deferredJsonlFiles: number;
   /** 还原被跳过的原因（如当前目录没有账本）；存在时不应报成功 */
   skippedReason?: string;
 }

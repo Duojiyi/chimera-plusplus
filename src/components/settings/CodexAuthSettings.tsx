@@ -88,6 +88,15 @@ export function CodexAuthSettings({
           rows: result.restoredStateRows,
         }),
       );
+      // 部分成功：有会话文件因疑似活跃被推迟改写。不提示的话用户会把
+      // 这次成功当作"全部还原完毕"，而被推迟的文件没有任何自动重试。
+      if (result.deferredJsonlFiles > 0) {
+        toast.info(
+          t("settings.unifyCodexHistoryRestorePartialDeferred", {
+            count: result.deferredJsonlFiles,
+          }),
+        );
+      }
     } catch (error) {
       console.error("Failed to restore codex unified history:", error);
       toast.error(t("settings.unifyCodexHistoryRestoreFailed"));

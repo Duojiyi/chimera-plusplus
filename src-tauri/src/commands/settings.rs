@@ -101,16 +101,17 @@ pub async fn save_settings(
     // 统一会话开关变更时立即重写当前官方 Codex 供应商的 live 配置，
     // 不必等下一次切换才生效。
     if unify_codex_changed {
-        // live 重写失败时回滚设置并把保存整体报失败：若设置保持已切换状态，
+        // live 重写失败时回滚开关并把保存整体报失败：若设置保持已切换状态，
         // live 仍跑旧桶，后续的历史迁移/还原会让会话再次分裂（开启=历史
         // 迁走而新会话仍写 openai 桶；关闭=会话还原而 live 仍写 custom）。
-        // 报错让前端 saved=false 短路还原；回滚是整次保存的事务语义
-        // （本开关的保存只携带开关相关字段）。
+        // 注意前端的保存载荷是完整设置表单（见 useSettings 的 saveSettings），
+        // 不只是开关字段——所以这里的回滚只收窄到本代码路径真正拥有的两个
+        // unify 字段，其余已合并的字段保持已提交状态（幂等，重新保存即可）。
         if let Err(err) =
             crate::services::provider::reapply_current_codex_official_live(state.inner())
         {
             log::warn!("统一 Codex 会话历史开关变更后重写 live 配置失败，回滚设置: {err}");
-            // Revert only the field this code path owns, inside a fresh
+            // Revert only the fields this code path owns, inside a fresh
             // `mutate_settings` call that reads whatever is genuinely
             // current at rollback time. A blind `update_settings(existing)`
             // here would swap in the whole pre-merge snapshot and silently
@@ -119,8 +120,10 @@ pub async fn save_settings(
             // this rollback — reintroducing the exact race this file's
             // `mutate_settings` switch was meant to close.
             let previous_unify = existing.unify_codex_session_history;
+            let previous_migrate = existing.unify_codex_migrate_existing;
             if let Err(rollback_err) = crate::settings::mutate_settings(|current| {
                 current.unify_codex_session_history = previous_unify;
+                current.unify_codex_migrate_existing = previous_migrate;
             }) {
                 log::error!("回滚统一会话开关设置失败: {rollback_err}");
             }
@@ -170,6 +173,9 @@ pub async fn save_settings(
 pub struct CodexUnifyHistoryRestoreResult {
     pub restored_jsonl_files: usize,
     pub restored_state_rows: usize,
+    /// 本轮因文件疑似活跃而被推迟改写的会话文件数。成功场景下若 >0，
+    /// 前端应提示"稍后重试以补齐"，而不是当作完全成功。
+    pub deferred_jsonl_files: usize,
     /// 还原被跳过的原因（如当前目录没有账本），前端据此提示而非报"成功 0 项"。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skipped_reason: Option<String>,
@@ -205,6 +211,7 @@ pub async fn restore_codex_unified_history() -> Result<CodexUnifyHistoryRestoreR
     Ok(CodexUnifyHistoryRestoreResult {
         restored_jsonl_files: outcome.restored_jsonl_files,
         restored_state_rows: outcome.restored_state_rows,
+        deferred_jsonl_files: outcome.deferred_jsonl_files,
         skipped_reason: outcome.skipped_reason,
     })
 }

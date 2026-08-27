@@ -977,9 +977,6 @@ impl AppSettings {
 fn save_settings_file(settings: &AppSettings) -> Result<(), AppError> {
     let mut normalized = settings.clone();
     normalized.normalize_paths();
-    if let Some(root) = normalized.codex_portable_root.as_deref() {
-        validate_codex_portable_root(root)?;
-    }
     let Some(path) = AppSettings::settings_path() else {
         return Err(AppError::Config("无法获取用户主目录".to_string()));
     };
@@ -1037,16 +1034,16 @@ pub fn get_settings_for_frontend() -> AppSettings {
     settings
 }
 
-pub fn update_settings(mut new_settings: AppSettings) -> Result<(), AppError> {
-    new_settings.normalize_paths();
-    save_settings_file(&new_settings)?;
-
-    let mut guard = settings_store().write().unwrap_or_else(|e| {
-        log::warn!("设置锁已毒化，使用恢复值: {e}");
-        e.into_inner()
-    });
-    *guard = new_settings;
-    Ok(())
+/// Wholesale settings replacement. Production writers that touch specific
+/// fields must use [`mutate_settings`] (read-merge-write under one lock)
+/// instead — a snapshot swap discards concurrent writers by design and is
+/// only appropriate when the caller genuinely owns the entire value (tests,
+/// full-file reload). Implemented on top of `mutate_settings` so even a
+/// wholesale replacement takes the same write lock for its disk write:
+/// previously this wrote the file *before* locking, so an interleaved
+/// `mutate_settings` could leave disk and memory with different winners.
+pub fn update_settings(new_settings: AppSettings) -> Result<(), AppError> {
+    mutate_settings(|current| *current = new_settings)
 }
 
 pub(crate) fn mutate_settings<F>(mutator: F) -> Result<(), AppError>
@@ -1060,6 +1057,20 @@ where
     let mut next = guard.clone();
     mutator(&mut next);
     next.normalize_paths();
+    // Validate the portable root only when this write actually changes it.
+    // Re-validating the already-stored value on every save means a root that
+    // has become environmentally invalid AFTER being accepted (drive
+    // unplugged, permissions changed, app relocated) would veto every
+    // unrelated settings write — tray provider switches, sync-status
+    // updates — with a confusing portable-root error. Consumers of the root
+    // (`resolve_codex_portable_root`, called by every install path) still
+    // re-validate at use time, so a stale-invalid root is caught where it
+    // actually matters.
+    if next.codex_portable_root != guard.codex_portable_root {
+        if let Some(root) = next.codex_portable_root.as_deref() {
+            validate_codex_portable_root(root)?;
+        }
+    }
     save_settings_file(&next)?;
     *guard = next;
     Ok(())
@@ -1160,12 +1171,15 @@ pub fn clear_codex_unify_migrate_existing() -> Result<(), AppError> {
 /// 从文件重新加载设置到内存缓存
 /// 用于导入配置等场景，确保内存缓存与文件同步
 pub fn reload_settings() -> Result<(), AppError> {
-    let fresh_settings = AppSettings::load_from_file();
+    // Read the file *inside* the write lock: reading first and locking
+    // second leaves a window where a concurrent `mutate_settings` commits
+    // (file + memory) between our read and our swap, and the swap would
+    // then silently roll memory back to the pre-write file snapshot.
     let mut guard = settings_store().write().unwrap_or_else(|e| {
         log::warn!("设置锁已毒化，使用恢复值: {e}");
         e.into_inner()
     });
-    *guard = fresh_settings;
+    *guard = AppSettings::load_from_file();
     Ok(())
 }
 
