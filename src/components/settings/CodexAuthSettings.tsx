@@ -69,11 +69,17 @@ export function CodexAuthSettings({
       const result = await settingsApi.restoreCodexUnifiedHistory();
       if (result.skippedReason) {
         // unify_toggle_on：还原排队期间开关被重新开启，后端拒绝还原
-        toast.info(
-          result.skippedReason === "unify_toggle_on"
-            ? t("settings.unifyCodexHistoryRestoreSkippedToggleOn")
-            : t("settings.unifyCodexHistoryRestoreNothing"),
-        );
+        // deferred_active_session_files：账本确实存在，但候选会话文件近期
+        // 有修改（可能仍被 Codex 进程持有写入），本轮全部推迟——不同于
+        // "确实没有可还原的备份"，必须单独提示，否则用户会误以为迁移
+        // 备份丢失而不是稍后重试即可
+        let message = t("settings.unifyCodexHistoryRestoreNothing");
+        if (result.skippedReason === "unify_toggle_on") {
+          message = t("settings.unifyCodexHistoryRestoreSkippedToggleOn");
+        } else if (result.skippedReason === "deferred_active_session_files") {
+          message = t("settings.unifyCodexHistoryRestoreDeferred");
+        }
+        toast.info(message);
         return;
       }
       toast.success(

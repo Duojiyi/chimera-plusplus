@@ -371,7 +371,7 @@ brew upgrade --cask cc-switch
 
 Laden Sie `Chimera++-v{version}-macOS.dmg` (empfohlen) oder `.zip` von der Seite [Releases](../../releases) herunter.
 
-> **Hinweis**: Chimera++-Builds für macOS sind derzeit nicht mit einer Apple Developer ID signiert oder notarisiert. Falls Gatekeeper das erste Öffnen blockiert, klicken Sie im Finder mit der rechten Maustaste auf die App und wählen Sie „Öffnen".
+> **Hinweis**: Chimera++-Builds für macOS sind derzeit nicht mit einer Apple Developer ID signiert oder notarisiert. Falls Gatekeeper das erste Öffnen blockiert, klicken Sie im Finder mit der rechten Maustaste auf die App und wählen Sie „Öffnen". Die `.sig`-Datei im Release ist die Tauri-interne Updater-Signatur, keine Apple-Codesignatur.
 
 ### Arch-Linux-Nutzer
 

@@ -768,6 +768,7 @@ jobs:
     name: Publish GitHub Release
     runs-on: ubuntu-22.04
     needs: release
+    environment: release
     permissions:
       contents: write
       actions: read
@@ -925,6 +926,7 @@ jobs:
     name: Assemble latest.json
     runs-on: ubuntu-22.04
     needs: publish-release
+    environment: release
     permissions:
       contents: write
       actions: read

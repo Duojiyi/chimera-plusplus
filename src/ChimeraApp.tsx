@@ -788,20 +788,6 @@ export default function ChimeraApp() {
       codexProcess?.installed === false
     )
       return;
-    // Codex already running: "open" used to silently force-close (30s grace,
-    // then a hard kill) and relaunch it to pick up the latest config, with
-    // no warning that whatever the user was doing in Codex would be
-    // interrupted. Ask first — the running-or-not state is already the
-    // polled `codexProcess` this button's own disabled/label logic reads,
-    // so this check is free (no extra round trip before asking).
-    if (
-      codexProcess?.running &&
-      !window.confirm(
-        "Codex 正在运行，继续将关闭并重新启动它以应用最新配置，期间的任何未完成操作都会中断。是否继续？",
-      )
-    ) {
-      return;
-    }
     setLaunchingCodex(true);
     try {
       if (!runningInTauri) {
@@ -817,15 +803,39 @@ export default function ChimeraApp() {
         toast.success("Codex 已启动");
         return;
       }
-      // Runtime policy belongs to the backend: it detects and safely replaces
-      // an existing path-pinned Codex instance before launching a new one.
-      // `confirmRestart: true` unconditionally: the backend only enforces
-      // this when it independently detects Codex is running (the source of
-      // truth, not this component's possibly-stale `codexProcess` read), at
-      // which point the user has already agreed via the confirm above.
-      const result = await invoke<CodexLaunchResult>("open_codex_runtime", {
-        confirmRestart: true,
-      });
+      // Runtime policy belongs to the backend: it independently detects
+      // whether Codex is running — the source of truth, not this
+      // component's polled `codexProcess`, which can be stale (refreshed
+      // only every few seconds, and only while the window is visible). A
+      // pre-emptive confirm here gated on that stale read could skip
+      // asking the user even though the backend's live check finds Codex
+      // running. So always attempt without confirmation first; only if the
+      // backend rejects with its `CONFIRM_RESTART_REQUIRED:` sentinel
+      // (meaning it just found Codex running for real) do we ask the user
+      // and retry with `confirmRestart: true` — "open" used to silently
+      // force-close (30s grace, then a hard kill) and relaunch Codex with
+      // no warning that whatever the user was doing would be interrupted.
+      let result: CodexLaunchResult;
+      try {
+        result = await invoke<CodexLaunchResult>("open_codex_runtime", {
+          confirmRestart: false,
+        });
+      } catch (error) {
+        if (String(error).startsWith("CONFIRM_RESTART_REQUIRED:")) {
+          if (
+            !window.confirm(
+              "Codex 正在运行，继续将关闭并重新启动它以应用最新配置，期间的任何未完成操作都会中断。是否继续？",
+            )
+          ) {
+            return;
+          }
+          result = await invoke<CodexLaunchResult>("open_codex_runtime", {
+            confirmRestart: true,
+          });
+        } else {
+          throw error;
+        }
+      }
       await loadCodexProcess();
       await refreshRendererUnlock();
       setCodexRestartRequired(false);

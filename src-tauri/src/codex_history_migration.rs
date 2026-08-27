@@ -607,11 +607,17 @@ fn restore_codex_official_history_inner(
     collect_jsonl_files(&codex_dir.join("sessions"), &mut files, 0, 8);
     collect_jsonl_files(&codex_dir.join("archived_sessions"), &mut files, 0, 4);
     let mut restored_jsonl_files = 0;
+    let mut deferred_jsonl_files = 0;
     for file_path in files {
-        if rewrite_codex_session_file_lines(&file_path, codex_dir, restore_backup_root, |line| {
-            rewrite_codex_session_meta_line_for_restore(line, &official_session_ids)
-        })? {
-            restored_jsonl_files += 1;
+        match rewrite_codex_session_file_lines(
+            &file_path,
+            codex_dir,
+            restore_backup_root,
+            |line| rewrite_codex_session_meta_line_for_restore(line, &official_session_ids),
+        )? {
+            SessionRewriteOutcome::Rewritten => restored_jsonl_files += 1,
+            SessionRewriteOutcome::Deferred => deferred_jsonl_files += 1,
+            SessionRewriteOutcome::Unchanged => {}
         }
     }
 
@@ -626,6 +632,17 @@ fn restore_codex_official_history_inner(
     }
 
     if restored_jsonl_files == 0 && restored_state_rows == 0 {
+        // This is a one-shot, user-triggered action with no auto-retry
+        // (unlike the migrate path), so a restore where every candidate
+        // file was deferred as "recently active" must not be reported the
+        // same way as a genuinely empty ledger — the user needs to know to
+        // just retry shortly, not that there is nothing to restore.
+        if deferred_jsonl_files > 0 {
+            return Ok(CodexOfficialHistoryRestoreOutcome {
+                skipped_reason: Some("deferred_active_session_files".to_string()),
+                ..Default::default()
+            });
+        }
         // 账本非空但没有任何"当前仍为 custom"的目标（如重复还原）：
         // 以 reason 告知前端，避免误报"已还原 0 项"为成功。
         return Ok(CodexOfficialHistoryRestoreOutcome {
@@ -1258,9 +1275,30 @@ fn rewrite_codex_session_file_for_provider_bucket(
     source_provider_ids: &HashSet<String>,
     backup_root: &Path,
 ) -> Result<bool, AppError> {
-    rewrite_codex_session_file_lines(path, codex_dir, backup_root, |line| {
-        rewrite_codex_session_meta_line(line, source_provider_ids)
-    })
+    // The migrate path only needs to know whether a rewrite happened — an
+    // unchanged vs. deferred file are equally "not migrated this round" to
+    // its caller, which retries unconditionally on its next scan.
+    Ok(matches!(
+        rewrite_codex_session_file_lines(path, codex_dir, backup_root, |line| {
+            rewrite_codex_session_meta_line(line, source_provider_ids)
+        })?,
+        SessionRewriteOutcome::Rewritten
+    ))
+}
+
+/// Distinguishes *why* a candidate session file was not rewritten. The
+/// migrate path only ever needs a bool (see
+/// `rewrite_codex_session_file_for_provider_bucket`): it silently retries
+/// on its next scan regardless of which reason applied. The restore path
+/// is a one-shot, user-triggered action with no such retry, so it needs to
+/// tell "this file genuinely had nothing to restore" apart from "this file
+/// would have been restored but was deferred because it looks active" —
+/// conflating them used to make an all-deferred restore report the same
+/// misleading "nothing to restore" as a genuinely empty ledger.
+enum SessionRewriteOutcome {
+    Unchanged,
+    Deferred,
+    Rewritten,
 }
 
 fn rewrite_codex_session_file_lines(
@@ -1268,7 +1306,7 @@ fn rewrite_codex_session_file_lines(
     codex_dir: &Path,
     backup_root: &Path,
     rewrite_line: impl Fn(&str) -> Option<String>,
-) -> Result<bool, AppError> {
+) -> Result<SessionRewriteOutcome, AppError> {
     let metadata_before = fs::symlink_metadata(path).map_err(|e| AppError::io(path, e))?;
     if metadata_before.file_type().is_symlink() {
         return Err(AppError::Config(format!(
@@ -1298,7 +1336,7 @@ fn rewrite_codex_session_file_lines(
     }
 
     if !changed {
-        return Ok(false);
+        return Ok(SessionRewriteOutcome::Unchanged);
     }
 
     if session_file_recently_active(modified_before) {
@@ -1307,14 +1345,14 @@ fn rewrite_codex_session_file_lines(
             ACTIVE_SESSION_SKIP_THRESHOLD_SECS,
             path.display()
         );
-        return Ok(false);
+        return Ok(SessionRewriteOutcome::Deferred);
     }
 
     ensure_codex_session_file_unchanged(path, modified_before, len_before)?;
     backup_codex_jsonl_file(path, codex_dir, backup_root)?;
     ensure_codex_session_file_unchanged(path, modified_before, len_before)?;
     atomic_write(path, rewritten.as_bytes())?;
-    Ok(true)
+    Ok(SessionRewriteOutcome::Rewritten)
 }
 
 /// Whether `modified_before` is recent enough that a Codex process might
@@ -2338,6 +2376,74 @@ base_url = "https://proxy.example/v1"
         )
         .expect("restore");
         assert_eq!(outcome.skipped_reason.as_deref(), Some("no_backup_ledger"));
+        let text = fs::read_to_string(&session_path).expect("read session");
+        assert!(text.contains("\"model_provider\":\"custom\""));
+    }
+
+    #[test]
+    fn restore_reports_deferred_reason_when_every_candidate_file_is_active() {
+        let dir = tempdir().expect("tempdir");
+        let codex_dir = dir.path().join(".codex");
+        let ledger_parent = dir.path().join("ledger");
+
+        let generation = ledger_parent.join("20260612_010101");
+        let backup_session_dir = generation.join("jsonl/sessions/2026/06/01");
+        fs::create_dir_all(&backup_session_dir).expect("create backup session dir");
+        fs::write(
+            backup_session_dir.join("official.jsonl"),
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"s1\",\"model_provider\":\"openai\"}}\n",
+        )
+        .expect("write backup session");
+
+        // `canonical_dir_string` calls `fs::canonicalize`, which requires
+        // the directory to already exist (falling back to the raw,
+        // non-canonical path otherwise) — `codex_dir` must be created
+        // before it's used to build meta.json below, or this generation's
+        // recorded `codexConfigDir` silently won't match what
+        // `restore_codex_official_history_inner` resolves later (once the
+        // directory *does* exist), and the whole ledger is rejected as
+        // belonging to a different Codex directory.
+        let session_dir = codex_dir.join("sessions/2026/06/01");
+        fs::create_dir_all(&session_dir).expect("create session dir");
+
+        fs::write(
+            generation.join("meta.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "codexConfigDir": canonical_dir_string(&codex_dir)
+            }))
+            .expect("serialize meta"),
+        )
+        .expect("write meta");
+
+        // A real ledger exists and this session genuinely needs restoring
+        // (still "custom" on disk) — but written via a plain `fs::write`
+        // rather than `write_session_fixture`, so its mtime stays "just
+        // modified" and the active-session guard defers it, the same as a
+        // Codex process that might still be holding the file open.
+        let session_path = session_dir.join("official.jsonl");
+        fs::write(
+            &session_path,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"s1\",\"model_provider\":\"custom\"}}\n",
+        )
+        .expect("write session");
+
+        let outcome = restore_codex_official_history_inner(
+            &codex_dir,
+            &ledger_parent,
+            &dir.path().join("restore-backup"),
+            "",
+        )
+        .expect("restore");
+        assert_eq!(outcome.restored_jsonl_files, 0);
+        assert_eq!(
+            outcome.skipped_reason.as_deref(),
+            Some("deferred_active_session_files"),
+            "a restore where every candidate file was deferred as active must not be \
+             reported the same way as a genuinely empty ledger"
+        );
+
+        // Deferred, not touched: the file on disk is untouched and nothing
+        // was written to the restore-backup directory for it.
         let text = fs::read_to_string(&session_path).expect("read session");
         assert!(text.contains("\"model_provider\":\"custom\""));
     }

@@ -74,7 +74,15 @@ fn read_capped_line(
             if !truncated && out.len().saturating_add(pos) <= max_len {
                 out.extend_from_slice(&buf[..pos]);
             } else {
+                // Once truncated, `bytes` must stay empty per this
+                // function's contract (see doc comment above) — without
+                // this `clear()`, bytes already accumulated from earlier
+                // `fill_buf` chunks (this only overflows across chunks for
+                // a real `BufReader`; a single-shot `Cursor`, as used by
+                // this module's own tests, never exercises the gap)
+                // survive into the truncated return, silently violating it.
                 truncated = true;
+                out.clear();
             }
             reader.consume(pos + 1);
             if !truncated && out.last() == Some(&b'\r') {
@@ -87,6 +95,7 @@ fn read_capped_line(
             out.extend_from_slice(buf);
         } else {
             truncated = true;
+            out.clear();
         }
         let consumed = buf.len();
         reader.consume(consumed);
@@ -645,12 +654,9 @@ fn parse_codex_file(
     let mut line_offset = 0i64;
     let mut has_billable_tokens = false;
 
-    loop {
-        let Some((raw_line, truncated)) = read_capped_line(&mut reader, MAX_SESSION_LINE_BYTES)
-            .map_err(|e| AppError::Config(format!("读取文件失败: {e}")))?
-        else {
-            break;
-        };
+    while let Some((raw_line, truncated)) = read_capped_line(&mut reader, MAX_SESSION_LINE_BYTES)
+        .map_err(|e| AppError::Config(format!("读取文件失败: {e}")))?
+    {
         line_offset += 1;
         if truncated {
             log::warn!(
@@ -835,12 +841,9 @@ fn parent_signatures_before(
 
     // 必须扫描完整父文件并逐行应用 cutoff，不能在首个未来时间戳处 break：
     // rollout 写入顺序不承诺时间戳严格单调。
-    loop {
-        let Some((raw_line, truncated)) = read_capped_line(&mut reader, MAX_SESSION_LINE_BYTES)
-            .map_err(|error| format!("读取父 rollout {} 失败: {error}", parent_path.display()))?
-        else {
-            break;
-        };
+    while let Some((raw_line, truncated)) = read_capped_line(&mut reader, MAX_SESSION_LINE_BYTES)
+        .map_err(|error| format!("读取父 rollout {} 失败: {error}", parent_path.display()))?
+    {
         if truncated {
             log::warn!(
                 "[CODEX-SYNC] 跳过父 rollout 超长行（>{MAX_SESSION_LINE_BYTES} 字节）: {}",
@@ -2139,6 +2142,38 @@ mod tests {
         );
 
         assert!(read_capped_line(&mut cursor, 5).unwrap().is_none());
+    }
+
+    #[test]
+    fn read_capped_line_clears_bytes_when_truncation_spans_multiple_chunks() {
+        // A plain `Cursor` hands back its entire remaining slice from a
+        // single `fill_buf()` call, so it can never exercise the case where
+        // an oversized line is detected only after several chunks have
+        // already been buffered — wrap it in a tiny-capacity `BufReader` to
+        // force the same multi-chunk behavior a real file's `BufReader`
+        // (8 KiB chunks against a 16 MiB cap) hits in practice.
+        let data = b"ok\nthis-line-is-too-long-for-the-cap\nfine\n";
+        let mut reader = BufReader::with_capacity(4, std::io::Cursor::new(&data[..]));
+
+        let (line1, truncated1) = read_capped_line(&mut reader, 5).unwrap().unwrap();
+        assert_eq!(String::from_utf8(line1).unwrap(), "ok");
+        assert!(!truncated1);
+
+        let (line2, truncated2) = read_capped_line(&mut reader, 5).unwrap().unwrap();
+        assert!(
+            truncated2,
+            "a line longer than the cap must be reported as truncated even when detected several chunks in"
+        );
+        assert!(
+            line2.is_empty(),
+            "bytes buffered from chunks before truncation was detected must not leak into the truncated result"
+        );
+
+        let (line3, truncated3) = read_capped_line(&mut reader, 5).unwrap().unwrap();
+        assert_eq!(String::from_utf8(line3).unwrap(), "fine");
+        assert!(!truncated3);
+
+        assert!(read_capped_line(&mut reader, 5).unwrap().is_none());
     }
 
     #[test]

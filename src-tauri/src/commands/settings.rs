@@ -110,7 +110,18 @@ pub async fn save_settings(
             crate::services::provider::reapply_current_codex_official_live(state.inner())
         {
             log::warn!("统一 Codex 会话历史开关变更后重写 live 配置失败，回滚设置: {err}");
-            if let Err(rollback_err) = crate::settings::update_settings(existing) {
+            // Revert only the field this code path owns, inside a fresh
+            // `mutate_settings` call that reads whatever is genuinely
+            // current at rollback time. A blind `update_settings(existing)`
+            // here would swap in the whole pre-merge snapshot and silently
+            // discard any concurrent writer (tray failover, another save)
+            // that landed on `settings_store` between the merge above and
+            // this rollback — reintroducing the exact race this file's
+            // `mutate_settings` switch was meant to close.
+            let previous_unify = existing.unify_codex_session_history;
+            if let Err(rollback_err) = crate::settings::mutate_settings(|current| {
+                current.unify_codex_session_history = previous_unify;
+            }) {
                 log::error!("回滚统一会话开关设置失败: {rollback_err}");
             }
             return Err(format!(

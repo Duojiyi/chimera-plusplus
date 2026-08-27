@@ -988,6 +988,21 @@ fn decode_percent_encoded_entry_name(name: &str) -> Option<String> {
     if decoded == name {
         return None;
     }
+    // `name` is a single filesystem entry (one path component) and the
+    // caller renames within its existing parent directory via
+    // `path.with_file_name(&decoded_name)`. A decoded value that introduces
+    // a path separator or resolves to `.`/`..` would let a crafted
+    // percent-encoded entry name (e.g. `%2e%2e%5cescape`) rename outside
+    // that directory — reject it defensively rather than trust the
+    // round-trip decode alone. Reaching this at all already requires an
+    // MSIX that passed sha256 + Authenticode + package-identity checks, so
+    // this is defense-in-depth, not the primary guard.
+    if decoded.contains('/') || decoded.contains('\\') || decoded == ".." || decoded == "." {
+        log::warn!(
+            "[portable-payload-fixup] 拒绝可疑的百分号解码结果（包含路径分隔符）: {name} → {decoded}"
+        );
+        return None;
+    }
     Some(decoded.into_owned())
 }
 
@@ -1350,9 +1365,13 @@ async fn install_release(
     let portable_root = portable_root()?;
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = acquire_operation_lock("codex_runtime_install")?;
-        if install_mode == InstallMode::Portable {
-            ensure_portable_root_safe_for_install(&portable_root)?;
-        }
+        // `install_windows_release`'s `Standard` arm can silently fall back to
+        // the same unguarded portable-install swap internally (e.g. when
+        // sideloading is policy-blocked or the post-install health check
+        // fails), so this guard must run for every mode, not just an
+        // explicit `Portable` request — see `ensure_portable_root_safe_for_install`'s
+        // doc comment for the swap it prevents.
+        ensure_portable_root_safe_for_install(&portable_root)?;
         let plan = fetch_windows_release_plan(source, Some(std::env::consts::ARCH))
             .map_err(|error| error.to_string())?;
         if expected_version
@@ -1747,9 +1766,9 @@ pub async fn install_codex_runtime_release(
     let portable_root = portable_root()?;
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = acquire_operation_lock("codex_runtime_install")?;
-        if install_mode == InstallMode::Portable {
-            ensure_portable_root_safe_for_install(&portable_root)?;
-        }
+        // See `install_release`'s matching comment: `Standard` mode can fall
+        // back internally to the same unguarded portable-install swap.
+        ensure_portable_root_safe_for_install(&portable_root)?;
         let journal = InstallJournal::at(&root);
         let journal_id = journal
             .begin(

@@ -1276,11 +1276,11 @@ mod tests {
             CodexApiProbe::AnthropicMessages,
         ] {
             assert!(
-                response_indicates_protocol_support(
+                !response_indicates_protocol_support(
                     probe,
                     StatusCode::BAD_REQUEST,
                     r#"{"error":{"message":"当前模型或上游不支持 Responses 能力：tool.custom","code":"RESPONSES_FEATURE_NOT_SUPPORTED"}}"#,
-                ) == false,
+                ),
                 "tool-rejection must not affect {probe:?} detection semantics"
             );
         }

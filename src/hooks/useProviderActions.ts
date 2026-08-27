@@ -252,15 +252,39 @@ export function useProviderActions(
         const result = await switchProviderMutation.mutateAsync(provider.id);
         await syncClaudePlugin(provider);
 
-        // Show backfill warning if present
+        // Show a warning toast tailored to what actually went wrong. The
+        // profile-override warning is a distinct failure mode from a
+        // backfill failure — reusing the generic backfill message for it
+        // would tell the user the wrong story (see fix/2026-08-27 audit).
         if (result?.warnings?.length) {
-          toast.warning(
-            t("notifications.backfillWarning", {
-              defaultValue:
-                "切换成功，但旧供应商配置回填失败，您手动修改的配置可能未保存",
-            }),
-            { duration: 5000 },
-          );
+          const routingOverride = result.warnings
+            .map((warning) =>
+              /^active_profile_overrides_routing:(.*)$/.exec(warning),
+            )
+            .find((match): match is RegExpExecArray => match !== null);
+          if (routingOverride) {
+            toast.warning(
+              t("notifications.profileOverridesRoutingWarning", {
+                profile: routingOverride[1],
+                defaultValue:
+                  "切换成功，但检测到 Codex 配置中有生效中的 profile「{{profile}}」会覆盖本次写入的路由设置，Codex 实际仍会按该 profile 路由",
+              }),
+              { duration: 6000 },
+            );
+          }
+          if (
+            result.warnings.some(
+              (warning) => !warning.startsWith("active_profile_overrides_routing:"),
+            )
+          ) {
+            toast.warning(
+              t("notifications.backfillWarning", {
+                defaultValue:
+                  "切换成功，但旧供应商配置回填失败，您手动修改的配置可能未保存",
+              }),
+              { duration: 5000 },
+            );
+          }
         }
 
         if (!proxyRequiredReason) {

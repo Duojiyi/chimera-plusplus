@@ -369,9 +369,9 @@ brew upgrade --cask cc-switch
 
 **方法 2: 手動ダウンロード**
 
-[Releases](../../releases) から `Chimera++-v{version}-macOS.zip` をダウンロードして展開。
+[Releases](../../releases) から `Chimera++-v{version}-macOS.dmg`（推奨）または `.zip` をダウンロード。
 
-> **注意**: 開発者アカウント未登録のため、初回起動時に「開発元を確認できません」と表示される場合があります。一度閉じてから「システム設定」→「プライバシーとセキュリティ」→「このまま開く」をクリックしてください。以降は通常通り起動できます。
+> **注意**: Chimera++ の macOS ビルドは現在 Apple Developer ID によるコード署名および公証を受けていません。初回起動時に Gatekeeper にブロックされた場合は、Finder でアプリを右クリックして「開く」を選択してください。Release 内の `.sig` は Tauri アプリ内アップデーターの署名であり、Apple のコード署名ではありません。
 
 ### Arch Linux ユーザー
 

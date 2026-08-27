@@ -926,12 +926,18 @@ pub fn run() {
                 .flatten()
                 .is_some_and(|value| value == "true");
             if !migration_done {
-                let mut settings = crate::settings::get_settings();
-                let mut migration_succeeded =
-                    settings.preserve_codex_official_auth_on_switch;
-                if !settings.preserve_codex_official_auth_on_switch {
-                    settings.preserve_codex_official_auth_on_switch = true;
-                    match crate::settings::update_settings(settings) {
+                let already_preserving =
+                    crate::settings::get_settings().preserve_codex_official_auth_on_switch;
+                let mut migration_succeeded = already_preserving;
+                if !already_preserving {
+                    // `mutate_settings` (read-merge-write under one lock)
+                    // instead of the old get-then-`update_settings` snapshot
+                    // swap, for the same reason as `save_settings`: a blind
+                    // overwrite here could clobber a concurrent settings
+                    // writer landing between the read and the write.
+                    match crate::settings::mutate_settings(|current| {
+                        current.preserve_codex_official_auth_on_switch = true;
+                    }) {
                         Ok(()) => migration_succeeded = true,
                         Err(e) => {
                             log::warn!(

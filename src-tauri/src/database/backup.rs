@@ -894,6 +894,21 @@ mod tests {
     // `--test-threads=1` (never fails) vs the default parallel runner
     // (flaky) before adding this.
     fn import_still_accepts_a_genuine_export() -> Result<(), AppError> {
+        // `#[serial]` alone only rules out *other* `#[serial]` tests running
+        // concurrently — it does nothing if this test never redirects
+        // `CC_SWITCH_TEST_HOME` itself, since `backup_database_file` still
+        // resolves the app-config-dir from whatever is ambient in the
+        // process at that moment. On a developer machine with a real
+        // Chimera++ install and no test harness setting this var globally,
+        // that would write a genuine backup snapshot into the real user's
+        // app-data directory. Redirect it the same way the other
+        // `#[serial]` tests in this file do.
+        let old_test_home = std::env::var_os("CC_SWITCH_TEST_HOME");
+        let test_home = std::env::temp_dir().join("cc-switch-import-genuine-export-test");
+        let _ = std::fs::remove_dir_all(&test_home);
+        std::fs::create_dir_all(&test_home).expect("create test home");
+        std::env::set_var("CC_SWITCH_TEST_HOME", &test_home);
+
         // 白名单收得紧，必须有一条回归防线证明它没误伤自家导出格式——
         // 这条测试红了就说明 dump_sql 写出了白名单没覆盖的语句。
         let source = Database::memory()?;
@@ -917,14 +932,27 @@ mod tests {
             |row| row.get(0),
         )?;
         assert_eq!(name, "Provider One");
+
+        match old_test_home {
+            Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
+            None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+        }
         Ok(())
     }
 
     #[test]
     #[serial]
     // Same reason as `import_still_accepts_a_genuine_export` above: a
-    // successful sync import also reaches `backup_database_file`.
+    // successful sync import also reaches `backup_database_file`, so this
+    // must redirect `CC_SWITCH_TEST_HOME` itself rather than relying on
+    // `#[serial]` alone to make that safe.
     fn sync_import_preserves_local_only_tables() -> Result<(), AppError> {
+        let old_test_home = std::env::var_os("CC_SWITCH_TEST_HOME");
+        let test_home = std::env::temp_dir().join("cc-switch-sync-import-local-tables-test");
+        let _ = std::fs::remove_dir_all(&test_home);
+        std::fs::create_dir_all(&test_home).expect("create test home");
+        std::env::set_var("CC_SWITCH_TEST_HOME", &test_home);
+
         let remote_db = Database::memory()?;
         {
             let conn = crate::database::lock_conn!(remote_db.conn);
@@ -1007,6 +1035,10 @@ mod tests {
             "local stream check logs should be preserved"
         );
 
+        match old_test_home {
+            Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
+            None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+        }
         Ok(())
     }
 
