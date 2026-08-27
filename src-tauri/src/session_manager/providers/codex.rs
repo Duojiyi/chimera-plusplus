@@ -252,7 +252,7 @@ pub fn load_messages(path: &Path) -> Result<Vec<SessionMessage>, String> {
     Ok(messages)
 }
 
-pub fn delete_session(_root: &Path, path: &Path, session_id: &str) -> Result<bool, String> {
+pub fn delete_session(root: &Path, path: &Path, session_id: &str) -> Result<bool, String> {
     let meta = parse_session(path)
         .ok_or_else(|| format!("Failed to parse Codex session metadata: {}", path.display()))?;
 
@@ -270,7 +270,102 @@ pub fn delete_session(_root: &Path, path: &Path, session_id: &str) -> Result<boo
         )
     })?;
 
+    // Best-effort: also drop Codex's own indexes of this thread. Without
+    // this, deleting only the rollout file left the thread still listed in
+    // Codex's own sidebar (it reads session_index.jsonl / the `threads`
+    // table, not this directory scan) — clicking it then fails with "no
+    // rollout found for thread id" (same class of bug as upstream
+    // CodexPlusPlus's session-delete-consistency fixes, #1870 and related).
+    // Never turned into a hard failure here: the rollout file is already
+    // gone, which is the state every caller of this function keys off of, so
+    // a failure tidying up Codex's own indexes is logged and swallowed
+    // rather than reported as an overall delete failure.
+    //
+    // `root` is one of `session_roots()`'s entries (`<config_dir>/sessions`
+    // or `<config_dir>/archived_sessions`) — a direct child of the Codex
+    // config dir where session_index.jsonl / state_5.sqlite actually live.
+    // Deriving it from `root` (rather than the global `get_codex_config_dir`)
+    // keeps this function's side effects scoped to what the caller actually
+    // passed in, so tests that pass a temp root never touch the real
+    // machine's Codex state.
+    if let Some(config_dir) = root.parent() {
+        let config_text =
+            std::fs::read_to_string(config_dir.join("config.toml")).unwrap_or_default();
+        if let Err(error) = remove_session_from_session_index(
+            &config_dir.join(CODEX_SESSION_INDEX_FILENAME),
+            session_id,
+        ) {
+            log::warn!(
+                "Failed to remove Codex session '{session_id}' from {CODEX_SESSION_INDEX_FILENAME}: {error}"
+            );
+        }
+        for db_path in codex_state_db_paths(config_dir, &config_text) {
+            if let Err(error) = remove_thread_from_state_db(&db_path, session_id) {
+                log::warn!(
+                    "Failed to remove Codex thread '{session_id}' from {}: {error}",
+                    db_path.display()
+                );
+            }
+        }
+    }
+
     Ok(true)
+}
+
+/// Rewrites `session_index.jsonl` without the line whose `id` matches
+/// `session_id`. Every other line is kept byte-for-byte — parsed only far
+/// enough to read `id`, never re-serialized — so no unrelated line's
+/// formatting is ever disturbed. A no-op when the file doesn't exist or has
+/// no matching line: deleting a session Codex never indexed is not an error.
+fn remove_session_from_session_index(index_path: &Path, session_id: &str) -> Result<(), String> {
+    if !index_path.exists() {
+        return Ok(());
+    }
+    let content = crate::security_limits::read_to_string_limited(
+        index_path,
+        crate::security_limits::MAX_CONFIG_FILE_BYTES,
+    )
+    .map_err(|error| error.to_string())?;
+
+    let mut changed = false;
+    let mut kept_lines: Vec<&str> = Vec::new();
+    for line in content.lines() {
+        let is_match = serde_json::from_str::<Value>(line)
+            .ok()
+            .and_then(|value| value.get("id").and_then(Value::as_str).map(str::to_string))
+            .is_some_and(|id| id == session_id);
+        if is_match {
+            changed = true;
+        } else {
+            kept_lines.push(line);
+        }
+    }
+    if !changed {
+        return Ok(());
+    }
+
+    let mut rewritten = kept_lines.join("\n");
+    if !rewritten.is_empty() {
+        rewritten.push('\n');
+    }
+    crate::config::atomic_write(index_path, rewritten.as_bytes()).map_err(|error| error.to_string())
+}
+
+/// Best-effort `DELETE FROM threads WHERE id = ?` against one resolved
+/// `state_5.sqlite`. Codex keeps this DB open — and often write-locked —
+/// while running, so this tolerates a brief wait the same way the read path
+/// above does, and simply reports failure to the caller (which logs and
+/// moves on) rather than blocking session deletion on Codex's own lock.
+fn remove_thread_from_state_db(db_path: &Path, session_id: &str) -> Result<(), String> {
+    if !db_path.exists() {
+        return Ok(());
+    }
+    let conn = Connection::open(db_path).map_err(|error| error.to_string())?;
+    conn.busy_timeout(Duration::from_secs(2))
+        .map_err(|error| error.to_string())?;
+    conn.execute("DELETE FROM threads WHERE id = ?1", [session_id])
+        .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 fn parse_session(path: &Path) -> Option<SessionMeta> {
@@ -521,9 +616,14 @@ fn collect_jsonl_files_at_depth(root: &Path, files: &mut Vec<PathBuf>, depth: us
         if metadata.is_dir() {
             collect_jsonl_files_at_depth(&path, files, depth + 1);
         } else if metadata.is_file()
-            && metadata.len() <= crate::security_limits::MAX_SESSION_FILE_BYTES
             && path.extension().and_then(|ext| ext.to_str()) == Some("jsonl")
         {
+            // No whole-file size gate here: `parse_session_with_titles` only
+            // ever reads a bounded head/tail slice of the file (see
+            // `read_head_tail_lines`), so a large rollout costs nothing
+            // extra to look at. Filtering it out here used to make it
+            // vanish from the session list entirely instead of just being
+            // slower to index.
             files.push(path);
         }
     }
@@ -590,6 +690,73 @@ mod tests {
             .expect("delete session");
 
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn delete_session_also_cleans_session_index_and_state_db() {
+        let temp = tempdir().expect("tempdir");
+        let config_dir = temp.path();
+        let sessions_root = config_dir.join("sessions");
+        std::fs::create_dir_all(&sessions_root).expect("create sessions dir");
+
+        let session_id = "019cc369-bd7c-7891-b371-7b20b4fe0b18";
+        let other_id = "029cc369-bd7c-7891-b371-7b20b4fe0b19";
+        let path = sessions_root.join(format!("rollout-2026-03-06T21-50-12-{session_id}.jsonl"));
+        std::fs::write(
+            &path,
+            format!(
+                "{{\"timestamp\":\"2026-03-06T21:50:12Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{session_id}\",\"cwd\":\"/tmp/project\"}}}}\n"
+            ),
+        )
+        .expect("write session");
+
+        // session_index.jsonl: one matching line to be removed, one other
+        // thread's line that must survive byte-for-byte.
+        let other_line = format!(r#"{{"id":"{other_id}","thread_name":"Keep me"}}"#);
+        std::fs::write(
+            config_dir.join(CODEX_SESSION_INDEX_FILENAME),
+            format!("{{\"id\":\"{session_id}\",\"thread_name\":\"Delete me\"}}\n{other_line}\n"),
+        )
+        .expect("write session_index.jsonl");
+
+        // state_5.sqlite: one matching row to be removed, one other row that
+        // must survive.
+        let db_path = config_dir.join(crate::codex_state_db::CODEX_STATE_DB_FILENAME);
+        let conn = Connection::open(&db_path).expect("open state db");
+        conn.execute_batch(
+            "CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT, first_user_message TEXT);",
+        )
+        .expect("create threads table");
+        conn.execute(
+            "INSERT INTO threads (id, title, first_user_message) VALUES (?1, 'Delete me', NULL)",
+            [session_id],
+        )
+        .expect("insert target row");
+        conn.execute(
+            "INSERT INTO threads (id, title, first_user_message) VALUES (?1, 'Keep me', NULL)",
+            [other_id],
+        )
+        .expect("insert other row");
+        drop(conn);
+
+        delete_session(&sessions_root, &path, session_id).expect("delete session");
+
+        assert!(!path.exists());
+
+        let index_content =
+            std::fs::read_to_string(config_dir.join(CODEX_SESSION_INDEX_FILENAME)).unwrap();
+        assert!(!index_content.contains(session_id));
+        assert!(index_content.contains(&other_line));
+
+        let conn = Connection::open(&db_path).expect("reopen state db");
+        let remaining: Vec<String> = conn
+            .prepare("SELECT id FROM threads")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(remaining, vec![other_id.to_string()]);
     }
 
     #[test]

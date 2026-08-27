@@ -52,6 +52,11 @@ if [[ -z "$key_b64" ]]; then
 fi
 
 if [[ -n "${GITHUB_ENV:-}" ]]; then
+  # The re-encoded value differs byte-for-byte from whatever GitHub recorded
+  # as the raw secret, so GitHub Actions' automatic log redaction (which
+  # matches on the exact registered secret string) will not catch it. Register
+  # it explicitly so the runtime masks it in logs too.
+  printf '::add-mask::%s\n' "$key_b64"
   printf 'TAURI_SIGNING_PRIVATE_KEY=%s\n' "$key_b64" >> "$GITHUB_ENV"
   if [[ -n "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" ]]; then
     printf 'TAURI_SIGNING_PRIVATE_KEY_PASSWORD=%s\n' "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" >> "$GITHUB_ENV"

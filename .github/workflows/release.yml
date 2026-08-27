@@ -562,11 +562,23 @@ jobs:
           $rustSbom = cargo metadata --manifest-path src-tauri/Cargo.toml --format-version 1 --locked
           if ($LASTEXITCODE -ne 0) { throw "Rust SBOM generation failed with exit code $LASTEXITCODE" }
           $rustSbom | Set-Content -Path (Join-Path 'release-assets' "rust-sbom-$platform.json") -Encoding UTF8
+          # Read the actually-locked revisions out of Cargo.lock instead of hardcoding
+          # them here, so this provenance can never silently drift out of sync with
+          # what was actually built.
+          function Get-CargoLockRevision([string]$PackageName) {
+            $revision = node scripts/extract-cargo-lock-revision.mjs --package $PackageName
+            if ($LASTEXITCODE -ne 0) { throw "Failed to extract Cargo.lock revision for $PackageName" }
+            return $revision.Trim()
+          }
+          $chimeraRuntimeRev = Get-CargoLockRevision 'chimera-runtime'
+          $chimeraPlatformRev = Get-CargoLockRevision 'chimera-platform'
+          $codexWinEngineRev = Get-CargoLockRevision 'codex-win-engine'
+          $codexThemeEngineRev = Get-CargoLockRevision 'codex-theme-engine'
           $externalGitDependencies = @(
-            [ordered]@{ package = 'chimera-runtime'; repository = 'https://github.com/Duojiyi/chimera-codex.git'; revision = 'a5075e6e4d58aad13db259e3eebeabdc0417e3b3' },
-            [ordered]@{ package = 'chimera-platform'; repository = 'https://github.com/Duojiyi/chimera-codex.git'; revision = 'a5075e6e4d58aad13db259e3eebeabdc0417e3b3' },
-            [ordered]@{ package = 'codex-win-engine'; repository = 'https://github.com/Wangnov/Codex-App-Manager.git'; revision = '89b542b9299453dcd833757b10cdb15f6d14d527' },
-            [ordered]@{ package = 'codex-theme-engine'; repository = 'https://github.com/Wangnov/Codex-App-Manager.git'; revision = '89b542b9299453dcd833757b10cdb15f6d14d527' }
+            [ordered]@{ package = 'chimera-runtime'; repository = 'https://github.com/Duojiyi/chimera-codex.git'; revision = $chimeraRuntimeRev },
+            [ordered]@{ package = 'chimera-platform'; repository = 'https://github.com/Duojiyi/chimera-codex.git'; revision = $chimeraPlatformRev },
+            [ordered]@{ package = 'codex-win-engine'; repository = 'https://github.com/Wangnov/Codex-App-Manager.git'; revision = $codexWinEngineRev },
+            [ordered]@{ package = 'codex-theme-engine'; repository = 'https://github.com/Wangnov/Codex-App-Manager.git'; revision = $codexThemeEngineRev }
           )
           $target = if ($env:WINDOWS_RELEASE_ARCH -eq 'arm64') { 'aarch64-pc-windows-msvc' } else { 'x86_64-pc-windows-msvc' }
           [ordered]@{
@@ -614,6 +626,24 @@ jobs:
           platform='macos-universal'
           pnpm list --prod --json > "release-assets/frontend-sbom-$platform.json"
           cargo metadata --manifest-path src-tauri/Cargo.toml --format-version 1 --locked > "release-assets/rust-sbom-$platform.json"
+          # Read the actually-locked revisions out of Cargo.lock instead of hardcoding
+          # them here, so this provenance can never silently drift out of sync with
+          # what was actually built.
+          chimera_runtime_rev=$(node scripts/extract-cargo-lock-revision.mjs --package chimera-runtime)
+          chimera_platform_rev=$(node scripts/extract-cargo-lock-revision.mjs --package chimera-platform)
+          codex_win_engine_rev=$(node scripts/extract-cargo-lock-revision.mjs --package codex-win-engine)
+          codex_theme_engine_rev=$(node scripts/extract-cargo-lock-revision.mjs --package codex-theme-engine)
+          external_git_dependencies_json=$(jq -n \
+            --arg chimera_runtime_rev "$chimera_runtime_rev" \
+            --arg chimera_platform_rev "$chimera_platform_rev" \
+            --arg codex_win_engine_rev "$codex_win_engine_rev" \
+            --arg codex_theme_engine_rev "$codex_theme_engine_rev" \
+            '[
+              {"package":"chimera-runtime","repository":"https://github.com/Duojiyi/chimera-codex.git","revision":$chimera_runtime_rev},
+              {"package":"chimera-platform","repository":"https://github.com/Duojiyi/chimera-codex.git","revision":$chimera_platform_rev},
+              {"package":"codex-win-engine","repository":"https://github.com/Wangnov/Codex-App-Manager.git","revision":$codex_win_engine_rev},
+              {"package":"codex-theme-engine","repository":"https://github.com/Wangnov/Codex-App-Manager.git","revision":$codex_theme_engine_rev}
+            ]')
           jq -n \
             --arg release_tag "$RELEASE_TAG" \
             --arg source_commit "$SOURCE_COMMIT" \
@@ -621,12 +651,7 @@ jobs:
             --arg runner_name "$RUNNER_NAME" \
             --arg runner_os "$RUNNER_OS" \
             --arg runner_arch "$RUNNER_ARCH" \
-            --argjson external_git_dependencies '[
-              {"package":"chimera-runtime","repository":"https://github.com/Duojiyi/chimera-codex.git","revision":"a5075e6e4d58aad13db259e3eebeabdc0417e3b3"},
-              {"package":"chimera-platform","repository":"https://github.com/Duojiyi/chimera-codex.git","revision":"a5075e6e4d58aad13db259e3eebeabdc0417e3b3"},
-              {"package":"codex-win-engine","repository":"https://github.com/Wangnov/Codex-App-Manager.git","revision":"89b542b9299453dcd833757b10cdb15f6d14d527"},
-              {"package":"codex-theme-engine","repository":"https://github.com/Wangnov/Codex-App-Manager.git","revision":"89b542b9299453dcd833757b10cdb15f6d14d527"}
-            ]' \
+            --argjson external_git_dependencies "$external_git_dependencies_json" \
             '{
               schemaVersion: 1,
               releaseTag: $release_tag,
@@ -660,6 +685,24 @@ jobs:
           platform='linux-x86_64'
           pnpm list --prod --json > "release-assets/frontend-sbom-$platform.json"
           cargo metadata --manifest-path src-tauri/Cargo.toml --format-version 1 --locked > "release-assets/rust-sbom-$platform.json"
+          # Read the actually-locked revisions out of Cargo.lock instead of hardcoding
+          # them here, so this provenance can never silently drift out of sync with
+          # what was actually built.
+          chimera_runtime_rev=$(node scripts/extract-cargo-lock-revision.mjs --package chimera-runtime)
+          chimera_platform_rev=$(node scripts/extract-cargo-lock-revision.mjs --package chimera-platform)
+          codex_win_engine_rev=$(node scripts/extract-cargo-lock-revision.mjs --package codex-win-engine)
+          codex_theme_engine_rev=$(node scripts/extract-cargo-lock-revision.mjs --package codex-theme-engine)
+          external_git_dependencies_json=$(jq -n \
+            --arg chimera_runtime_rev "$chimera_runtime_rev" \
+            --arg chimera_platform_rev "$chimera_platform_rev" \
+            --arg codex_win_engine_rev "$codex_win_engine_rev" \
+            --arg codex_theme_engine_rev "$codex_theme_engine_rev" \
+            '[
+              {"package":"chimera-runtime","repository":"https://github.com/Duojiyi/chimera-codex.git","revision":$chimera_runtime_rev},
+              {"package":"chimera-platform","repository":"https://github.com/Duojiyi/chimera-codex.git","revision":$chimera_platform_rev},
+              {"package":"codex-win-engine","repository":"https://github.com/Wangnov/Codex-App-Manager.git","revision":$codex_win_engine_rev},
+              {"package":"codex-theme-engine","repository":"https://github.com/Wangnov/Codex-App-Manager.git","revision":$codex_theme_engine_rev}
+            ]')
           jq -n \
             --arg release_tag "$RELEASE_TAG" \
             --arg source_commit "$SOURCE_COMMIT" \
@@ -667,12 +710,7 @@ jobs:
             --arg runner_name "$RUNNER_NAME" \
             --arg runner_os "$RUNNER_OS" \
             --arg runner_arch "$RUNNER_ARCH" \
-            --argjson external_git_dependencies '[
-              {"package":"chimera-runtime","repository":"https://github.com/Duojiyi/chimera-codex.git","revision":"a5075e6e4d58aad13db259e3eebeabdc0417e3b3"},
-              {"package":"chimera-platform","repository":"https://github.com/Duojiyi/chimera-codex.git","revision":"a5075e6e4d58aad13db259e3eebeabdc0417e3b3"},
-              {"package":"codex-win-engine","repository":"https://github.com/Wangnov/Codex-App-Manager.git","revision":"89b542b9299453dcd833757b10cdb15f6d14d527"},
-              {"package":"codex-theme-engine","repository":"https://github.com/Wangnov/Codex-App-Manager.git","revision":"89b542b9299453dcd833757b10cdb15f6d14d527"}
-            ]' \
+            --argjson external_git_dependencies "$external_git_dependencies_json" \
             '{
               schemaVersion: 1,
               releaseTag: $release_tag,
@@ -851,12 +889,21 @@ jobs:
             --asset "Chimera++-$tag-Linux-x86_64.AppImage"
 
       - name: Upload Release Assets
+        # make_latest is intentionally false here: this publishes the release
+        # with every asset already attached, but does NOT yet point
+        # `releases/latest` at it. The assemble-latest-json job below still
+        # has to build, verify, and upload latest.json — if that job fails,
+        # we must not have already made this (incomplete-for-updater)
+        # release "latest", or the updater endpoint would 404 for every
+        # existing install until someone notices and intervenes. The final
+        # step of assemble-latest-json flips make_latest to true only after
+        # latest.json is confirmed present and valid.
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
         with:
           tag_name: ${{ github.ref_name }}
           name: Chimera++ ${{ github.ref_name }}
           prerelease: false
-          make_latest: true
+          make_latest: false
           body: |
             ## Chimera++ ${{ github.ref_name }}
 
@@ -1031,3 +1078,21 @@ jobs:
         run: |
           set -euxo pipefail
           gh release upload "$GITHUB_REF_NAME" latest.json --clobber --repo "$GITHUB_REPOSITORY"
+
+      - name: Mark release as latest
+        # Only now — after every asset plus a verified latest.json is
+        # confirmed present on the release — do we point `releases/latest`
+        # (and therefore the updater endpoint) at this release. Until this
+        # step runs, existing installs keep resolving the previous, fully
+        # intact release as latest.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          release_id=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" --jq .id)
+          if [[ -z "$release_id" || "$release_id" == "null" ]]; then
+            echo "Could not resolve release id for tag $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" -f make_latest=true >/dev/null
+          echo "Marked $GITHUB_REF_NAME as the latest release."

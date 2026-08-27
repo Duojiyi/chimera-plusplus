@@ -283,6 +283,114 @@ fn portable_root() -> Result<PathBuf, String> {
     crate::settings::resolve_codex_portable_root()
 }
 
+/// Guard against the engine's install-swap treating an arbitrary existing
+/// directory as "a previous Codex install to replace".
+///
+/// `codex_win_engine::install_portable_from_msix[_with_observer]` decides
+/// whether `portable_root` holds a previous install purely from
+/// `install_root.exists()`: if it does, the directory is closed (killing
+/// every process rooted there), renamed to a rollback backup, and — once the
+/// new payload is in place — that backup is permanently deleted. There is no
+/// identity check on that path. A user-configured portable root that happens
+/// to point at an existing, non-empty, *non-Codex* directory (e.g. a
+/// document folder picked by mistake in the directory browser, which can
+/// only select directories that already exist) would therefore have its
+/// entire contents destroyed with no recovery.
+///
+/// `detect_portable_install`/`detect_portable_codex` already implements the
+/// correct identity check (AppxManifest identity, or the asar package name
+/// fallback) — it is just never consulted on the install path, only on the
+/// detection path. Consult it here, before any engine install/update call,
+/// so the destructive swap only ever runs against a directory that is either
+/// absent, empty, or already a genuine Codex install.
+fn ensure_portable_root_safe_for_install(portable_root: &Path) -> Result<(), String> {
+    // Best-effort hygiene, not part of the safety contract below: every past
+    // rollback leaves its replaced install (`Codex.replaced-*`) behind
+    // forever (nothing in this codebase or the pinned engine ever deletes
+    // it — the engine only auto-deletes the *other* backup prefix,
+    // `Codex.rollback-*`, and only right after a successful install/update).
+    // Left unchecked this is an unbounded, invisible-to-the-user leak of a
+    // full Codex install (hundreds of MB) per rollback. Keep at most the
+    // single newest spare copy — that is also the one `rollback_codex_runtime`
+    // would act on — and clean up the rest before starting a new install.
+    sweep_stale_portable_backups(portable_root);
+
+    let exists = portable_root.is_dir();
+    if !exists {
+        return Ok(());
+    }
+    let is_empty = std::fs::read_dir(portable_root)
+        .map_err(|error| format!("无法读取 Codex portable root：{error}"))?
+        .next()
+        .is_none();
+    if is_empty {
+        return Ok(());
+    }
+    if detect_portable_codex(portable_root).is_some() {
+        return Ok(());
+    }
+    Err(format!(
+        "Codex portable root（{}）已存在内容，但看起来不是一个 Codex 安装（未检测到有效的应用标识）。\
+         为避免误删该目录下的数据，已拒绝安装。请在设置中把 Codex portable root 改为一个空目录，\
+         或指向一个已有的 Codex 便携版安装目录。",
+        portable_root.display()
+    ))
+}
+
+/// Keep at most the single newest `Codex.rollback-*`/`Codex.replaced-*`
+/// sibling of `portable_root` and delete the rest. `latest_portable_rollback`
+/// (used by `rollback_codex_runtime`) only ever considers the newest one by
+/// mtime regardless of prefix, so anything older is already unreachable —
+/// deleting it recovers disk space without removing any rollback capability
+/// a user could actually invoke. Best-effort: read/delete failures are
+/// logged and otherwise ignored, since this is opportunistic hygiene, not a
+/// correctness requirement of the caller.
+fn sweep_stale_portable_backups(portable_root: &Path) {
+    let Some(parent) = portable_root.parent() else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    let mut backups: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !(name.starts_with("Codex.rollback-") || name.starts_with("Codex.replaced-")) {
+            continue;
+        }
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() || file_type.is_symlink() {
+            continue;
+        }
+        let modified = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        backups.push((modified, entry.path()));
+    }
+    if backups.len() <= 1 {
+        return;
+    }
+    backups.sort_by_key(|(modified, _)| *modified);
+    // Keep the last (newest) entry; remove everything else.
+    for (_, path) in &backups[..backups.len() - 1] {
+        if let Err(error) = std::fs::remove_dir_all(path) {
+            log::warn!(
+                "[portable-backup-sweep] 清理旧回滚备份 {} 失败: {error}",
+                path.display()
+            );
+        } else {
+            log::info!(
+                "[portable-backup-sweep] 已清理旧回滚备份 {}",
+                path.display()
+            );
+        }
+    }
+}
+
 fn process_install_mode(source: &str) -> String {
     if source == "portable" {
         "portable"
@@ -319,7 +427,7 @@ fn renderer_unlock_launch_options(
 ) -> codex_win_engine::LaunchOptions {
     let mut options = codex_win_engine::LaunchOptions::default();
     if renderer_unlock_available(installed) {
-        options.remote_debugging_port = Some(crate::codex_cdp::CODEX_RENDERER_DEBUG_PORT);
+        options.remote_debugging_port = Some(crate::codex_cdp::codex_renderer_debug_port());
     }
     options
 }
@@ -328,7 +436,7 @@ fn renderer_unlock_status(
     installed: &codex_win_engine::InstalledWindowsCodex,
 ) -> crate::codex_cdp::CodexModelUnlockStatus {
     let status = if renderer_unlock_available(installed) {
-        crate::codex_cdp::inject_codex_model_unlock(crate::codex_cdp::CODEX_RENDERER_DEBUG_PORT)
+        crate::codex_cdp::inject_codex_model_unlock(crate::codex_cdp::codex_renderer_debug_port())
     } else {
         crate::codex_cdp::unavailable_model_unlock(
             "标准 MSIX 使用自定义 CODEX_HOME 时无法同时传入 CDP 参数；请恢复默认 ~/.codex 或改用便携版 Codex",
@@ -370,9 +478,16 @@ fn official_login_available() -> bool {
 fn wait_for_codex_running(
     installed: &codex_win_engine::InstalledWindowsCodex,
 ) -> Result<bool, String> {
-    // MSIX activation can take longer than a direct portable spawn on a cold
-    // system, so allow a bounded ten-second window before declaring failure.
-    for _ in 0..40 {
+    // MSIX activation goes through the AppX deployment service, which the
+    // engine's own `MSIX_ACTIVATION_WINDOW_SECS` documents as needing up to
+    // 30s on a cold machine/low-speed disk — well above a direct portable
+    // process spawn. Using the same 10s window for both used to make
+    // successful-but-slow MSIX launches report as failures (steering users to
+    // an unnecessary "run diagnostics" prompt). Match the engine's own
+    // activation budget for MSIX; keep the shorter window for portable, whose
+    // launch is a direct child-process spawn.
+    let attempts: u32 = if installed.source == "msix" { 120 } else { 40 };
+    for _ in 0..attempts {
         if codex_is_running(installed)? {
             return Ok(true);
         }
@@ -740,7 +855,7 @@ pub async fn probe_codex_renderer_unlock(
             error: Some("Codex 桌面版渲染注入仅支持 Windows".to_string()),
         });
     }
-    let debug_port = crate::codex_cdp::CODEX_RENDERER_DEBUG_PORT;
+    let debug_port = crate::codex_cdp::codex_renderer_debug_port();
     tauri::async_runtime::spawn_blocking(move || {
         Ok(crate::codex_cdp::probe_codex_renderer_unlock(debug_port))
     })
@@ -748,28 +863,52 @@ pub async fn probe_codex_renderer_unlock(
     .map_err(|error| format!("探测 Codex renderer 注入状态时任务中断: {error}"))?
 }
 
+/// Sentinel prefix on the error returned by [`open_codex_runtime`] when Codex
+/// is already running and the caller has not set `confirm_restart`. Matched
+/// with `.startsWith(...)` by the renderer rather than the full localized
+/// message, so wording can change without breaking the confirmation flow.
+pub const OPEN_CODEX_RESTART_CONFIRMATION_REQUIRED_PREFIX: &str = "CONFIRM_RESTART_REQUIRED:";
+
 /// Launch the managed Codex installation, replacing a running managed instance
 /// first. The deprecated optional flag is accepted only for IPC compatibility:
-/// lifecycle policy is backend-owned and a running target is always restarted.
+/// lifecycle policy is backend-owned and a running target is always restarted
+/// once the caller has confirmed that.
 ///
 /// The cross-process lock covers discovery, shutdown, launch, and health
 /// verification. Process discovery and termination are path-pinned in
 /// `codex_win_engine`, so unrelated Electron or ChatGPT processes are never
 /// selected.
+///
+/// A running target is only closed and relaunched when `confirm_restart` is
+/// `true` — "open Codex" clicked on an already-running instance used to
+/// silently force-close it (killing after a 30s grace period, per
+/// `close_codex_for_restart`), interrupting whatever the user was doing in
+/// Codex with no warning. Callers should check the already-known process
+/// status (e.g. the renderer's own polled `get_codex_process_status`) before
+/// invoking this, and only pass `confirm_restart: true` after the user has
+/// explicitly agreed to interrupt the running session.
 #[tauri::command]
 pub async fn open_codex_runtime(
     restart_if_running: Option<bool>,
+    confirm_restart: Option<bool>,
 ) -> Result<CodexLaunchResult, String> {
     // Keep accepting the old renderer argument without allowing it to weaken
     // the safe restart policy. The renderer submits launch intent only.
     let _legacy_restart_preference = restart_if_running;
     require_windows()?;
     let portable_root = portable_root()?;
+    let confirm_restart = confirm_restart.unwrap_or(false);
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = acquire_operation_lock("codex_runtime_launch")?;
         let installed = codex_win_engine::detect_installed_codex(&portable_root)
             .ok_or_else(|| "未检测到 Codex 安装".to_string())?;
         let was_running = codex_is_running(&installed)?;
+        if was_running && !confirm_restart {
+            return Err(format!(
+                "{OPEN_CODEX_RESTART_CONFIRMATION_REQUIRED_PREFIX}Codex 正在运行，继续将关闭并重新启动它以应用最新配置，\
+                 期间的任何未完成操作都会中断。"
+            ));
+        }
         // Always pass through the shutdown gate. It is a no-op when the target
         // is already stopped, and it removes the discovery/launch race where a
         // just-started Electron child could otherwise survive the restart.
@@ -834,6 +973,220 @@ fn mode_label(mode: InstallMode) -> String {
         InstallMode::Portable => "portable",
     }
     .to_string()
+}
+
+/// Decode a single filesystem entry name if it contains OPC percent-escapes,
+/// returning `None` when there is nothing to do or the decode is not a clean
+/// round-trip to UTF-8 (defensive: never guess on ambiguous input).
+fn decode_percent_encoded_entry_name(name: &str) -> Option<String> {
+    if !name.contains('%') {
+        return None;
+    }
+    let decoded = percent_encoding::percent_decode_str(name)
+        .decode_utf8()
+        .ok()?;
+    if decoded == name {
+        return None;
+    }
+    Some(decoded.into_owned())
+}
+
+/// Workaround for a known extraction bug in the pinned `codex-win-engine`
+/// crate (upstream Codex App Manager issue #260): its `extract_msix` writes
+/// ZIP entry names to disk verbatim via `enclosed_name()`, without
+/// percent-decoding the OPC (Open Packaging Conventions) percent-escapes
+/// MSIX payloads use for characters outside the ASCII path-safe set — e.g. an
+/// `@oai` directory is stored in the package as `%40oai`, `$_StatsigGlobal.js`
+/// as `%24_StatsigGlobal.js`. Left undecoded, those are the literal names
+/// that land on disk, breaking anything that looks the real names up at
+/// runtime — most visibly Node's `require()` resolution for the `@oai/...`
+/// scoped packages the bundled Computer Use plugin depends on.
+///
+/// We do not control the pinned crate's extraction code, so this fixes it up
+/// ourselves immediately after a successful portable install/update: walk
+/// the install tree post-order (a directory's children are fixed up, and can
+/// still be found under its original name while that happens, before the
+/// directory itself is renamed) and rename any entry whose name is still
+/// percent-encoded back to its decoded form.
+///
+/// Best-effort by design: a failure fixing up one entry is logged and does
+/// not abort the walk or the caller's success result — a partially-fixed
+/// tree is still strictly better than an entirely unfixed one, and this must
+/// never turn an otherwise-successful install into a reported failure.
+fn fix_up_percent_encoded_portable_payload(dir: &Path) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) => {
+            log::warn!(
+                "[portable-payload-fixup] 无法读取目录 {}: {error}",
+                dir.display()
+            );
+            return;
+        }
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+            fix_up_percent_encoded_portable_payload(&path);
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(decoded_name) = decode_percent_encoded_entry_name(name) else {
+            continue;
+        };
+        let target = path.with_file_name(&decoded_name);
+        if target.exists() {
+            log::warn!(
+                "[portable-payload-fixup] 跳过重命名 {} → {}：目标已存在",
+                path.display(),
+                target.display()
+            );
+            continue;
+        }
+        if let Err(error) = std::fs::rename(&path, &target) {
+            log::warn!(
+                "[portable-payload-fixup] 重命名 {} → {} 失败: {error}",
+                path.display(),
+                target.display()
+            );
+        }
+    }
+}
+
+/// Mirrors the private `chimera_runtime::manager::safe_package_moniker`
+/// check: the moniker is interpolated into a filesystem path
+/// (`{moniker}.Msix`), so this is validated defensively before we do that
+/// ourselves in `install_portable_release_with_observer` below.
+fn safe_package_moniker(value: &str) -> bool {
+    value.starts_with("OpenAI.Codex_")
+        && value.len() <= 180
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+/// Builds a `PortableObserver` that persists each rename-boundary transition
+/// into the install journal (TASK-007), so a crash mid-swap can be found and
+/// explained on next launch. Journal write failures are logged and never
+/// abort the install itself — matching the offline-install call site this
+/// was factored out of, the observer always returns `Ok(())`.
+fn install_journal_observer<'a>(
+    journal: &'a InstallJournal,
+    journal_id: &'a str,
+) -> impl FnMut(codex_win_engine::PortableBoundary) -> Result<(), codex_win_engine::EngineError> + 'a
+{
+    move |boundary: codex_win_engine::PortableBoundary| {
+        use codex_win_engine::PortableBoundary as Boundary;
+        let (state, backup) = match &boundary {
+            Boundary::BeforeMoveOld { backup, .. } => {
+                ("moving:before_move_old", Some(backup.clone()))
+            }
+            Boundary::AfterMoveOld { backup, .. } => {
+                ("moving:after_move_old", Some(backup.clone()))
+            }
+            Boundary::BeforeMoveNew { backup, .. } => {
+                ("moving:before_move_new", Some(backup.clone()))
+            }
+            Boundary::AfterMoveNew { backup, .. } => {
+                ("moving:after_move_new", Some(backup.clone()))
+            }
+            Boundary::BeforeRollback { backup, .. } => {
+                ("moving:before_rollback", Some(backup.clone()))
+            }
+            Boundary::RollbackCompleted { backup, .. } => {
+                ("moving:rollback_completed", Some(backup.clone()))
+            }
+        };
+        if let Err(error) = journal.update(journal_id, |entry| {
+            entry.state = state.to_string();
+            if let Some(backup) = &backup {
+                entry.backup_path = Some(backup.to_string_lossy().to_string());
+            }
+        }) {
+            log::warn!("[InstallJournal] 边界状态写入失败: {error}");
+        }
+        Ok(())
+    }
+}
+
+/// Replicates `chimera_runtime::manager::install_windows_release`'s portable
+/// path (download → verify size/sha256/Authenticode → install) using only
+/// the pinned engine's public functions, but calling
+/// `install_portable_from_msix_with_observer` instead of the plain
+/// `install_windows_release`/`install_portable_from_msix` the manager crate
+/// uses internally for this mode.
+///
+/// `install_windows_release` does not accept an observer — the online
+/// install/update path (by far the most used, versus the rarely-used
+/// offline-file path) therefore could not persist rename-boundary state into
+/// the crash-recovery journal, so a crash during the destructive swap window
+/// left the journal entry stuck at "started" with no `backup_path`, and the
+/// recovery banner would tell the user "if Codex works, ignore this" even
+/// when the install root had just been destroyed (see
+/// `ensure_portable_root_safe_for_install`'s doc comment for the swap
+/// mechanics). We do not control the pinned crate, so this bypasses its
+/// convenience wrapper for the one mode where observer access actually
+/// matters — standard/MSIX installs keep going through
+/// `install_windows_release` unchanged, since that path additionally runs
+/// capability probing and standard/portable fallback logic that belongs to
+/// the engine, not to us.
+fn install_portable_release_with_observer(
+    plan: &WindowsReleasePlan,
+    staging_root: &Path,
+    portable_root: &Path,
+    on_progress: &dyn Fn(u64),
+    // `codex_win_engine::PortableObserver` (the type alias
+    // `install_portable_from_msix_with_observer` itself is declared in
+    // terms of) is a private type not re-exported from the crate root;
+    // spell out the same trait object using the two pieces that ARE
+    // exported (`PortableBoundary`, `EngineError`) instead.
+    observer: &mut dyn FnMut(
+        codex_win_engine::PortableBoundary,
+    ) -> Result<(), codex_win_engine::EngineError>,
+) -> Result<codex_win_engine::PortableInstallReport, String> {
+    if !safe_package_moniker(&plan.package_moniker) {
+        return Err("安装计划中的包名不合法".to_string());
+    }
+    std::fs::create_dir_all(staging_root).map_err(|error| format!("创建暂存目录失败: {error}"))?;
+    let package_path = staging_root.join(format!("{}.Msix", plan.package_moniker));
+    codex_win_engine::download_to_with_progress_bounded(
+        &plan.package_url,
+        &package_path,
+        plan.size_bytes,
+        on_progress,
+    )
+    .map_err(|error| format!("下载安装包失败: {error}"))?;
+
+    let size = package_path
+        .metadata()
+        .map_err(|error| format!("读取安装包信息失败: {error}"))?
+        .len();
+    let digest = codex_win_engine::sha256_file(&package_path)
+        .map_err(|error| format!("计算安装包哈希失败: {error}"))?;
+    if size != plan.size_bytes || !digest.eq_ignore_ascii_case(&plan.sha256) {
+        let _ = std::fs::remove_file(&package_path);
+        return Err("安装包大小或哈希与发布计划不符，已拒绝".to_string());
+    }
+    let signature = codex_win_engine::verify_openai_authenticode(&package_path)
+        .map_err(|error| format!("验证安装包签名失败: {error}"))?;
+    if !signature.is_valid_openai() {
+        let _ = std::fs::remove_file(&package_path);
+        return Err("安装包未通过 OpenAI 发行者签名校验，已拒绝安装".to_string());
+    }
+
+    let result = codex_win_engine::install_portable_from_msix_with_observer(
+        &package_path,
+        portable_root,
+        true,
+        false,
+        observer,
+    )
+    .map_err(|error| error.to_string());
+    if result.is_ok() {
+        let _ = std::fs::remove_file(&package_path);
+    }
+    result
 }
 
 fn operation_dto(value: chimera_runtime::manager::InstallOperationResult) -> CodexRuntimeOperation {
@@ -997,6 +1350,9 @@ async fn install_release(
     let portable_root = portable_root()?;
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = acquire_operation_lock("codex_runtime_install")?;
+        if install_mode == InstallMode::Portable {
+            ensure_portable_root_safe_for_install(&portable_root)?;
+        }
         let plan = fetch_windows_release_plan(source, Some(std::env::consts::ARCH))
             .map_err(|error| error.to_string())?;
         if expected_version
@@ -1023,6 +1379,40 @@ async fn install_release(
                 Some(&plan.sha256),
             )
             .map_err(|error| format!("写入安装事务日志失败，已中止安装: {error}"))?;
+        if install_mode == InstallMode::Portable {
+            // See `install_portable_release_with_observer`'s doc comment: the
+            // manager crate's `install_windows_release` has no observer hook,
+            // so the online path — the one users actually hit — could not
+            // record rename-boundary progress into the crash journal. Bypass
+            // it for this mode only.
+            let mut observer = install_journal_observer(&journal, &journal_id);
+            let result = install_portable_release_with_observer(
+                &plan,
+                &root.join("downloads"),
+                &portable_root,
+                &progress,
+                &mut observer,
+            );
+            return match result {
+                Ok(report) => {
+                    let _ = journal.finish(&journal_id, "completed", Some(report.message.clone()));
+                    fix_up_percent_encoded_portable_payload(Path::new(&report.install_root));
+                    Ok(CodexRuntimeOperation {
+                        version: report.version,
+                        requested_mode: "portable".to_string(),
+                        actual_mode: "portable".to_string(),
+                        affected_path: Some(report.install_root),
+                        backup_path: report.backup_path,
+                        message: report.message,
+                        notes: report.notes,
+                    })
+                }
+                Err(error) => {
+                    let _ = journal.finish(&journal_id, "failed", Some(error.clone()));
+                    Err(error)
+                }
+            };
+        }
         let result = install_windows_release(
             &plan,
             install_mode,
@@ -1085,15 +1475,51 @@ pub async fn rollback_codex_runtime(confirm: bool) -> Result<CodexRuntimeOperati
     require_windows()?;
     let portable_root = portable_root()?;
     tauri::async_runtime::spawn_blocking(move || {
-        let installed =
-            detect_windows_codex(&portable_root).ok_or_else(|| "未检测到 Codex".to_string())?;
-        if maintenance_route(Some(&installed)) != MaintenanceRoute::Portable {
-            return Err("标准安装由 Windows 管理，没有本地回滚副本".to_string());
-        }
         let _guard = acquire_operation_lock("codex_runtime_rollback")?;
-        rollback_portable_install(&portable_root)
-            .map(operation_dto)
-            .map_err(|error| error.to_string())
+        match detect_windows_codex(&portable_root) {
+            Some(installed) => {
+                if maintenance_route(Some(&installed)) != MaintenanceRoute::Portable {
+                    return Err("标准安装由 Windows 管理，没有本地回滚副本".to_string());
+                }
+                rollback_portable_install(&portable_root)
+                    .map(operation_dto)
+                    .map_err(|error| error.to_string())
+            }
+            // The install root can go missing if a portable install/update was
+            // interrupted (crash, forced exit, power loss) between "move
+            // current install to rollback backup" and "move new payload into
+            // place" — see `ensure_portable_root_safe_for_install` for the
+            // destructive-window details. The engine's own
+            // `rollback_portable_install` refuses in this exact state (it
+            // requires `portable_root.is_dir()`), even though the backup sits
+            // intact right next to it. Recover it ourselves: locate the
+            // newest `Codex.rollback-*` sibling and rename it back into
+            // place, mirroring what the engine does internally.
+            None if !portable_root.is_dir() => {
+                let backup = latest_portable_rollback(&portable_root)
+                    .map_err(|error| format!("查找回滚备份失败: {error}"))?
+                    .ok_or_else(|| "未检测到 Codex，且没有可用的回滚备份".to_string())?;
+                codex_win_engine::rename_directory_with_retry(
+                    "restore portable rollback after missing install root",
+                    &backup,
+                    &portable_root,
+                )
+                .map_err(|error| format!("恢复回滚备份失败: {error}"))?;
+                let restored = detect_portable_codex(&portable_root)
+                    .ok_or_else(|| "回滚备份恢复后仍未检测到有效的 Codex 安装".to_string())?;
+                Ok(CodexRuntimeOperation {
+                    version: restored.version,
+                    requested_mode: "portable".to_string(),
+                    actual_mode: "portable".to_string(),
+                    affected_path: Some(portable_root.to_string_lossy().to_string()),
+                    backup_path: None,
+                    message: "Codex 安装目录缺失（可能是上次安装被中断），已从回滚备份恢复。"
+                        .to_string(),
+                    notes: Vec::new(),
+                })
+            }
+            None => Err("未检测到 Codex".to_string()),
+        }
     })
     .await
     .map_err(|_| "Codex 回滚任务中断，请运行诊断".to_string())?
@@ -1321,6 +1747,9 @@ pub async fn install_codex_runtime_release(
     let portable_root = portable_root()?;
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = acquire_operation_lock("codex_runtime_install")?;
+        if install_mode == InstallMode::Portable {
+            ensure_portable_root_safe_for_install(&portable_root)?;
+        }
         let journal = InstallJournal::at(&root);
         let journal_id = journal
             .begin(
@@ -1338,6 +1767,36 @@ pub async fn install_codex_runtime_release(
                 serde_json::json!({ "downloaded": downloaded, "total": total }),
             );
         };
+        if install_mode == InstallMode::Portable {
+            // See `install_portable_release_with_observer`'s doc comment.
+            let mut observer = install_journal_observer(&journal, &journal_id);
+            let result = install_portable_release_with_observer(
+                &plan,
+                &root.join("downloads"),
+                &portable_root,
+                &progress,
+                &mut observer,
+            );
+            return match result {
+                Ok(report) => {
+                    let _ = journal.finish(&journal_id, "completed", Some(report.message.clone()));
+                    fix_up_percent_encoded_portable_payload(Path::new(&report.install_root));
+                    Ok(CodexRuntimeOperation {
+                        version: report.version,
+                        requested_mode: "portable".to_string(),
+                        actual_mode: "portable".to_string(),
+                        affected_path: Some(report.install_root),
+                        backup_path: report.backup_path,
+                        message: report.message,
+                        notes: report.notes,
+                    })
+                }
+                Err(error) => {
+                    let _ = journal.finish(&journal_id, "failed", Some(error.clone()));
+                    Err(error)
+                }
+            };
+        }
         let result = install_windows_release(
             &plan,
             install_mode,
@@ -1449,6 +1908,7 @@ pub async fn install_codex_runtime_offline(
     let portable_root = portable_root()?;
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = acquire_operation_lock("codex_runtime_install")?;
+        ensure_portable_root_safe_for_install(&portable_root)?;
         let path = PathBuf::from(&file_path);
         if !path.is_file() {
             return Err("离线安装包不存在".to_string());
@@ -1546,6 +2006,7 @@ pub async fn install_codex_runtime_offline(
         match result {
             Ok(report) => {
                 let _ = journal.finish(&journal_id, "completed", Some(report.message.clone()));
+                fix_up_percent_encoded_portable_payload(Path::new(&report.install_root));
                 Ok(CodexRuntimeOperation {
                     version: report.version,
                     requested_mode: "portable".to_string(),

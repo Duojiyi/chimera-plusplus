@@ -2,9 +2,15 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { readCargoLockRevisionFromFile } from "./lib/cargo-lock-revisions.mjs";
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 function usage() {
-  console.error("Usage: node scripts/verify-release-evidence.mjs --assets-dir <dir> --tag vX.Y.Z --commit <40-hex-sha>");
+  console.error(
+    "Usage: node scripts/verify-release-evidence.mjs --assets-dir <dir> --tag vX.Y.Z --commit <40-hex-sha> [--cargo-lock <path>]",
+  );
   process.exit(2);
 }
 
@@ -20,6 +26,7 @@ const commit = valueAfter("--commit");
 if (!assetsDirArg || !tag || !commit || !/^v\d+\.\d+\.\d+$/.test(tag) || !/^[0-9a-f]{40}$/.test(commit)) usage();
 const assetsDir = path.resolve(assetsDirArg);
 if (!fs.statSync(assetsDir).isDirectory()) throw new Error(`Assets path is not a directory: ${assetsDir}`);
+const cargoLockPath = path.resolve(valueAfter("--cargo-lock") ?? path.join(root, "src-tauri", "Cargo.lock"));
 
 function safeBasename(value, label) {
   if (typeof value !== "string" || value.length === 0 || value !== path.basename(value) || value === "." || value === ".." || value.includes("\\")) {
@@ -59,7 +66,7 @@ function assertExactString(value, expected, label) {
   if (value !== expected) throw new Error(`${label} expected ${JSON.stringify(expected)}, got ${JSON.stringify(value)}`);
 }
 
-function verifyExternalGitDependencies(value, name) {
+function verifyExternalGitDependencies(value, name, lockfilePath) {
   if (!Array.isArray(value) || value.length === 0) throw new Error(`${name}.externalGitDependencies must be a non-empty array`);
   const identities = new Set();
   for (const dependency of value) {
@@ -74,6 +81,22 @@ function verifyExternalGitDependencies(value, name) {
     const identity = `${dependency.package}\u0000${dependency.repository}`;
     if (identities.has(identity)) throw new Error(`${name}.externalGitDependencies has duplicate package/repository entries`);
     identities.add(identity);
+
+    // Cross-check the declared provenance revision against what is actually
+    // locked in Cargo.lock, so a stale/hand-edited provenance entry cannot
+    // silently misrepresent the supply chain (this previously only checked
+    // that `revision` looked like a SHA, not that it was the *right* SHA).
+    let lockedRevision;
+    try {
+      lockedRevision = readCargoLockRevisionFromFile(lockfilePath, dependency.package);
+    } catch (error) {
+      throw new Error(`${name}.externalGitDependencies entry for ${dependency.package} could not be cross-checked against ${lockfilePath}: ${error.message}`);
+    }
+    if (lockedRevision !== dependency.revision) {
+      throw new Error(
+        `${name}.externalGitDependencies revision for ${dependency.package} (${dependency.revision}) does not match the revision actually locked in Cargo.lock (${lockedRevision})`,
+      );
+    }
   }
 }
 
@@ -192,7 +215,7 @@ for (const spec of platformSpecs) {
   for (const key of ["name", "os", "arch"]) {
     if (typeof provenance.runner[key] !== "string" || !provenance.runner[key]) throw new Error(`${provenanceName}.runner.${key} is invalid`);
   }
-  verifyExternalGitDependencies(provenance.externalGitDependencies, provenanceName);
+  verifyExternalGitDependencies(provenance.externalGitDependencies, provenanceName, cargoLockPath);
   if (spec.platform.startsWith("windows-")) verifyMirrorProvenance(spec.platform, provenance);
 }
 

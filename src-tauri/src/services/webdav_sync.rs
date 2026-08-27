@@ -19,7 +19,8 @@ use crate::settings::{update_webdav_sync_status, WebDavSyncSettings, WebDavSyncS
 
 use super::sync_protocol::{
     apply_snapshot, build_local_snapshot, effective_db_compat_version, localized,
-    persist_sync_success_best_effort, sha256_hex, validate_artifact_size_limit,
+    persist_sync_success_best_effort, remote_changed_conflict_error,
+    remote_unchanged_since_last_sync, sha256_hex, validate_artifact_size_limit,
     validate_manifest_compat, verify_artifact, ArtifactMeta, RemoteLayout, SyncManifest,
     DB_COMPAT_VERSION, MAX_MANIFEST_BYTES, MAX_SYNC_ARTIFACT_BYTES, PROTOCOL_VERSION,
     REMOTE_DB_SQL, REMOTE_MANIFEST, REMOTE_SKILLS_ZIP,
@@ -70,21 +71,49 @@ pub async fn upload(
     let dir_segs = remote_dir_segments(settings, RemoteLayout::Current);
     ensure_remote_directories(&settings.base_url, &dir_segs, &auth).await?;
 
+    let manifest_url = remote_file_url(settings, RemoteLayout::Current, REMOTE_MANIFEST)?;
+
+    // Optimistic concurrency: compare the remote manifest's current ETag to
+    // what we recorded at the end of our last successful sync. A mismatch
+    // means another device uploaded since then — abort instead of silently
+    // overwriting it. See `remote_unchanged_since_last_sync` for exactly
+    // what counts as "unchanged".
+    let remote_etag_before = head_etag(&manifest_url, &auth).await?;
+    let local_known_etag = settings.status.last_remote_etag.clone();
+    if !remote_unchanged_since_last_sync(&remote_etag_before, &local_known_etag) {
+        return Err(remote_changed_conflict_error());
+    }
+
     let snapshot = build_local_snapshot(db)?;
 
     // Upload order: artifacts first, manifest last (best-effort consistency)
     let db_url = remote_file_url(settings, RemoteLayout::Current, REMOTE_DB_SQL)?;
-    put_bytes(&db_url, &auth, snapshot.db_sql, "application/sql").await?;
+    put_bytes(&db_url, &auth, snapshot.db_sql, "application/sql", None).await?;
 
     let skills_url = remote_file_url(settings, RemoteLayout::Current, REMOTE_SKILLS_ZIP)?;
-    put_bytes(&skills_url, &auth, snapshot.skills_zip, "application/zip").await?;
+    put_bytes(
+        &skills_url,
+        &auth,
+        snapshot.skills_zip,
+        "application/zip",
+        None,
+    )
+    .await?;
 
-    let manifest_url = remote_file_url(settings, RemoteLayout::Current, REMOTE_MANIFEST)?;
+    // Conditional write on the manifest itself: if the server enforces
+    // If-Match and the resource changed in the window between the HEAD
+    // check above and this PUT, the write is rejected server-side instead
+    // of silently overwriting (see `put_bytes`). `local_known_etag` is the
+    // same value the HEAD check above just confirmed still matches; when
+    // it's `None` (first sync, or a server that never returns ETags) no
+    // conditional header is sent and the PUT is unconditional, same as
+    // before this fix.
     put_bytes(
         &manifest_url,
         &auth,
         snapshot.manifest_bytes,
         "application/json",
+        local_known_etag.as_deref(),
     )
     .await?;
 

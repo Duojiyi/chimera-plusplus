@@ -245,6 +245,45 @@ pub(crate) fn validate_manifest_compat(
     Ok(())
 }
 
+// ─── Optimistic concurrency (upload conflict detection) ───────
+
+/// Localized error key shared by every transport's "remote changed"
+/// detection — both the client-side ETag comparison done before an upload
+/// starts, and (where the transport supports it) a server-side conditional
+/// write rejected during the upload itself — so callers can recognise this
+/// specific condition uniformly regardless of which backend is in use.
+pub(crate) const REMOTE_CHANGED_ERROR_KEY: &str = "sync.remote_changed";
+
+/// Whether it is safe to upload given the remote manifest's current ETag
+/// and the ETag recorded at the end of our last successful sync to this
+/// remote.
+///
+/// Equal is safe — including both sides being `None`, which covers a
+/// first-ever sync against an empty remote (nothing to lose) as well as a
+/// server that never returns ETags at all (no signal, degrade to
+/// unconditional writes rather than block every upload). Any other
+/// combination — including a `None` local value against a remote that
+/// already has data, which means *this* device never downloaded what is
+/// currently there — means the remote was written by someone else since we
+/// last synced, and the caller must not blindly overwrite it.
+pub(crate) fn remote_unchanged_since_last_sync(
+    remote_etag: &Option<String>,
+    local_known_etag: &Option<String>,
+) -> bool {
+    remote_etag == local_known_etag
+}
+
+/// Error returned when an upload is aborted (or a conditional write is
+/// rejected by the server) because the remote manifest changed since our
+/// last successful sync. See [`remote_unchanged_since_last_sync`].
+pub(crate) fn remote_changed_conflict_error() -> AppError {
+    localized(
+        REMOTE_CHANGED_ERROR_KEY,
+        "远端数据自上次同步后已被其他设备修改，为避免覆盖对方的更改，本次上传已取消。请先下载合并后再重试。",
+        "Remote data has changed since your last sync, likely from another device. Upload was cancelled to avoid overwriting those changes — please download and merge before retrying.",
+    )
+}
+
 // ─── Artifact verification ───────────────────────────────────
 
 pub(crate) fn validate_artifact_size_limit(artifact_name: &str, size: u64) -> Result<(), AppError> {
@@ -634,6 +673,34 @@ mod tests {
             err.to_string().contains("verification failed") || err.to_string().contains("校验失败"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn remote_unchanged_since_last_sync_treats_equal_etags_as_safe() {
+        let a = Some("etag-1".to_string());
+        assert!(remote_unchanged_since_last_sync(&a, &a));
+        assert!(remote_unchanged_since_last_sync(&None, &None));
+    }
+
+    #[test]
+    fn remote_unchanged_since_last_sync_flags_any_mismatch() {
+        let etag_a = Some("etag-1".to_string());
+        let etag_b = Some("etag-2".to_string());
+        assert!(!remote_unchanged_since_last_sync(&etag_b, &etag_a));
+        // Remote already has data (someone else's) but we never downloaded
+        // it: must not be treated as "first sync, safe to overwrite".
+        assert!(!remote_unchanged_since_last_sync(&etag_a, &None));
+        // Remote lost its ETag/disappeared since we last recorded one.
+        assert!(!remote_unchanged_since_last_sync(&None, &etag_a));
+    }
+
+    #[test]
+    fn remote_changed_conflict_error_uses_the_shared_key() {
+        let err = remote_changed_conflict_error();
+        match err {
+            AppError::Localized { key, .. } => assert_eq!(key, REMOTE_CHANGED_ERROR_KEY),
+            other => panic!("expected AppError::Localized, got {other:?}"),
+        }
     }
 
     #[test]

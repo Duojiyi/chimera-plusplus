@@ -540,13 +540,13 @@
 }
 .mapping-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 84px 110px 34px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 84px 110px 34px 34px;
   gap: 8px;
   align-items: center;
 }
 .mapping-head {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 84px 110px 34px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 84px 110px 34px 34px;
   gap: 8px;
   align-items: center;
   /* Match .mapping-row's card inset (10px padding + 1px border) so the
@@ -650,6 +650,58 @@
   background: #fff;
   color: var(--ink);
   font-size: 11px;
+}
+.instructions-trigger {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--ch-muted);
+  cursor: pointer;
+}
+.instructions-trigger:hover,
+.instructions-trigger[aria-expanded="true"],
+.instructions-trigger.has-value {
+  border-color: var(--ch-accent);
+  color: var(--ch-accent);
+}
+.instructions-panel {
+  grid-column: 1 / -1;
+  padding: 12px;
+  border: 1px solid #e2e7ea;
+  border-radius: 8px;
+  background: #f8f9fa;
+}
+.instructions-panel-head {
+  margin-bottom: 9px;
+  color: var(--ch-muted);
+  font-size: 10px;
+  font-weight: 600;
+}
+.instructions-panel textarea {
+  width: 100%;
+  min-height: 96px;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 9px 10px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 11px;
+  line-height: 1.55;
+}
+.instructions-panel textarea:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+.instructions-panel small {
+  display: block;
+  margin-top: 8px;
+  color: var(--ch-muted);
+  font-size: 10px;
 }
 .icon-button {
   width: 34px;
@@ -3599,7 +3651,8 @@ body.is-mac
   border-radius: 10px;
   background: #fff;
 }
-.mapping-row .icon-button {
+.mapping-row .icon-button,
+.mapping-row .instructions-trigger {
   border-radius: 10px;
 }
 @media (max-width: 760px) {

@@ -638,9 +638,28 @@ fn append_responses_item_as_chat_message(
             );
             let call_id = item.get("call_id").and_then(|v| v.as_str()).unwrap_or("");
             let output = match item.get("output") {
-                Some(Value::String(s)) => canonicalize_json_string_if_parseable(s),
-                Some(v) => canonical_json_string(v),
-                None => String::new(),
+                Some(Value::String(s)) => Value::String(canonicalize_json_string_if_parseable(s)),
+                // Array output (Responses lets a tool return structured
+                // content parts, not just text — e.g. a browser/computer-use
+                // tool returning a screenshot as an `input_image` part)
+                // used to fall into the catch-all below, which stringifies
+                // the WHOLE array — including any embedded base64 image
+                // data — into one JSON text blob. A single 2MB screenshot
+                // that way becomes ~2.7MB of base64 *text*, tokenized
+                // literally: roughly two million tokens for one image,
+                // easily overflowing the context window on its own.
+                // `responses_content_to_chat_content` already knows how to
+                // turn Responses content parts (including `input_image`)
+                // into real Chat `image_url`/`text` parts for ordinary
+                // messages; reuse it here so a tool result gets the same
+                // treatment instead of a bespoke one-off.
+                Some(array_value @ Value::Array(parts))
+                    if responses_output_array_has_binary_content_part(parts) =>
+                {
+                    responses_content_to_chat_content("tool", array_value)
+                }
+                Some(v) => Value::String(canonical_json_string(v)),
+                None => Value::String(String::new()),
             };
             messages.push(json!({
                 "role": "tool",
@@ -656,7 +675,27 @@ fn append_responses_item_as_chat_message(
                 last_assistant_index,
             );
             let call_id = item.get("call_id").and_then(|v| v.as_str()).unwrap_or("");
-            let output = canonical_json_string(item);
+            // Mirrors `function_call_output` above: the Anthropic-side
+            // transform already treats all three of function_call_output /
+            // custom_tool_call_output / tool_search_output as carrying their
+            // payload under `.output` (`tool_result_content_from_responses_item`,
+            // matched on all three together) — extract it here the same way
+            // instead of stringifying the whole item, so an image embedded
+            // in a custom/search tool's output gets the same real
+            // `image_url` treatment instead of becoming literal base64 text.
+            // Falls back to whole-item stringification only when `.output`
+            // is genuinely absent, preserving the previous behavior for
+            // whatever shape this item might otherwise have.
+            let output = match item.get("output") {
+                Some(Value::String(s)) => Value::String(canonicalize_json_string_if_parseable(s)),
+                Some(array_value @ Value::Array(parts))
+                    if responses_output_array_has_binary_content_part(parts) =>
+                {
+                    responses_content_to_chat_content("tool", array_value)
+                }
+                Some(v) => Value::String(canonical_json_string(v)),
+                None => Value::String(canonical_json_string(item)),
+            };
             messages.push(json!({
                 "role": "tool",
                 "tool_call_id": call_id,
@@ -975,6 +1014,30 @@ fn responses_item_reasoning_text(item: &Value) -> Option<String> {
 
 fn responses_reasoning_item_text(item: &Value) -> Option<String> {
     extract_reasoning_summary_text(item)
+}
+
+/// Whether `parts` is genuinely a Responses "content parts" array (as
+/// opposed to some other array shape a tool might legitimately return,
+/// e.g. a plain JSON array of filenames like `["main.rs", "lib.rs"]`) that
+/// specifically needs the special multi-modal handling
+/// `responses_content_to_chat_content` provides.
+///
+/// Only true when at least one element is a binary/rich part
+/// (`input_image`/`input_file`/`input_audio`) — the cases that function
+/// converts into a real Chat content block instead of text.
+/// `responses_content_to_chat_content`'s catch-all silently drops any array
+/// element that isn't one of its known types, so routing a plain data array
+/// through it would lose the data instead of preserving it as JSON text.
+/// Callers should fall back to whole-value JSON stringification (as before
+/// this distinction existed) for every other array shape, matching what
+/// they did before tool-output image handling was added.
+fn responses_output_array_has_binary_content_part(parts: &[Value]) -> bool {
+    parts.iter().any(|part| {
+        matches!(
+            part.get("type").and_then(Value::as_str),
+            Some("input_image" | "input_file" | "input_audio")
+        )
+    })
 }
 
 fn responses_content_to_chat_content(_role: &str, content: &Value) -> Value {
@@ -1704,6 +1767,11 @@ pub(crate) fn chat_usage_to_responses_usage(usage: Option<&Value>) -> Value {
     let cached = usage
         .pointer("/prompt_tokens_details/cached_tokens")
         .or_else(|| usage.pointer("/input_tokens_details/cached_tokens"))
+        // DeepSeek's Chat Completions usage object reports cache hits under
+        // its own top-level field instead of either shape above — without
+        // this, DeepSeek cache hits normalize to 0 cached tokens (upstream
+        // cc-switch, same finding; mirrors the parser.rs fallback).
+        .or_else(|| usage.get("prompt_cache_hit_tokens"))
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
     let cache_write = usage
@@ -2976,6 +3044,52 @@ mod tests {
         assert_eq!(messages[2]["reasoning_content"], "now I can answer");
         assert_eq!(messages[3]["role"], "user");
         assert!(messages[3].get("reasoning_content").is_none());
+    }
+
+    #[test]
+    fn responses_request_to_chat_converts_tool_output_image_instead_of_stringifying() {
+        // Regression for the tool-output image blowup (CodexPlusPlus #1996):
+        // a `function_call_output.output` array containing an `input_image`
+        // part (e.g. a browser/computer-use tool's screenshot) must produce
+        // a real `image_url` content part, not a JSON-stringified blob with
+        // the base64 payload tokenized as literal text.
+        let input = json!({
+            "model": "gpt-5.4",
+            "input": [
+                {
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "screenshot",
+                    "arguments": "{}"
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": [
+                        {"type": "output_text", "text": "captured"},
+                        {"type": "input_image", "image_url": "data:image/png;base64,abc123"}
+                    ]
+                }
+            ]
+        });
+
+        let result = responses_to_chat_completions(input).unwrap();
+        let messages = result["messages"].as_array().unwrap();
+
+        assert_eq!(messages[1]["role"], "tool");
+        let content = messages[1]["content"].as_array().expect("array content");
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "captured");
+        assert_eq!(content[1]["type"], "image_url");
+        assert_eq!(
+            content[1]["image_url"]["url"],
+            "data:image/png;base64,abc123"
+        );
+        // The whole point: the base64 payload must not appear as literal
+        // text anywhere in the message (that's the multi-million-token blowup).
+        let serialized = content.to_vec();
+        let as_text = serde_json::to_string(&serialized).unwrap();
+        assert_eq!(as_text.matches("base64,abc123").count(), 1);
     }
 
     #[test]

@@ -19,8 +19,7 @@ use crate::error::AppError;
 use crate::proxy::usage::calculator::{CostCalculator, ModelPricing};
 use crate::proxy::usage::parser::TokenUsage;
 use crate::security_limits::{
-    collect_files_with_extensions, open_limited_regular_file, MAX_SESSION_FILE_BYTES,
-    MAX_SESSION_SCAN_DEPTH,
+    collect_files_with_extensions, open_regular_file_no_symlink, MAX_SESSION_SCAN_DEPTH,
 };
 use crate::services::session_usage::{
     get_sync_state, metadata_modified_nanos, update_sync_state, SessionSyncResult,
@@ -32,12 +31,72 @@ use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
 const CODEX_THREAD_REQUEST_ID_PREFIX: &str = "codex_session:thread-v1";
+
+/// Maximum size of a single JSONL line accepted while streaming a Codex
+/// rollout file. Rollout files are parsed line-by-line (see
+/// [`read_capped_line`]) so their *total* size is unbounded by design; the
+/// only thing that can still blow up memory is one pathological line with
+/// no newline for megabytes. Lines beyond this are skipped (not fatal) so a
+/// single malformed line cannot take an otherwise-healthy session file out
+/// of sync forever.
+const MAX_SESSION_LINE_BYTES: usize = 16 * 1024 * 1024;
+
+/// Read one line from a buffered reader, bounded to `max_len` bytes.
+///
+/// Returns `Ok(None)` once there is nothing left to read. Otherwise returns
+/// `Ok(Some((bytes, truncated)))`: `bytes` holds the line's content (without
+/// its terminator) when `truncated` is `false`; when `truncated` is `true`
+/// the line exceeded `max_len` and everything up to (and including) the
+/// next `\n` was drained without being buffered, so `bytes` is empty and
+/// the reader is already positioned at the start of the next line.
+fn read_capped_line(
+    reader: &mut impl BufRead,
+    max_len: usize,
+) -> io::Result<Option<(Vec<u8>, bool)>> {
+    let mut out = Vec::new();
+    let mut truncated = false;
+    let mut saw_any_bytes = false;
+
+    loop {
+        let buf = reader.fill_buf()?;
+        if buf.is_empty() {
+            break;
+        }
+        saw_any_bytes = true;
+
+        if let Some(pos) = buf.iter().position(|&byte| byte == b'\n') {
+            if !truncated && out.len().saturating_add(pos) <= max_len {
+                out.extend_from_slice(&buf[..pos]);
+            } else {
+                truncated = true;
+            }
+            reader.consume(pos + 1);
+            if !truncated && out.last() == Some(&b'\r') {
+                out.pop();
+            }
+            return Ok(Some((out, truncated)));
+        }
+
+        if !truncated && out.len().saturating_add(buf.len()) <= max_len {
+            out.extend_from_slice(buf);
+        } else {
+            truncated = true;
+        }
+        let consumed = buf.len();
+        reader.consume(consumed);
+    }
+
+    if !saw_any_bytes {
+        return Ok(None);
+    }
+    Ok(Some((out, truncated)))
+}
 
 /// 累计 token 用量（跟踪 total_token_usage 字段）
 #[derive(Debug, Clone, Default)]
@@ -573,9 +632,9 @@ fn parse_codex_file(
     file_path: &Path,
     root_thread_id: Option<String>,
 ) -> Result<ParsedCodexFile, AppError> {
-    let file = open_limited_regular_file(file_path, MAX_SESSION_FILE_BYTES)
+    let file = open_regular_file_no_symlink(file_path)
         .map_err(|e| AppError::Config(format!("无法打开文件: {e}")))?;
-    let reader = BufReader::new(file);
+    let mut reader = BufReader::new(file);
     let mut root_meta_seen = false;
     let mut root_timestamp = None;
     let mut parent = ParentResolution::None;
@@ -586,11 +645,22 @@ fn parse_codex_file(
     let mut line_offset = 0i64;
     let mut has_billable_tokens = false;
 
-    for line_result in reader.lines() {
+    loop {
+        let Some((raw_line, truncated)) = read_capped_line(&mut reader, MAX_SESSION_LINE_BYTES)
+            .map_err(|e| AppError::Config(format!("读取文件失败: {e}")))?
+        else {
+            break;
+        };
         line_offset += 1;
-        let line = match line_result {
-            Ok(line) => line,
-            Err(_) => continue,
+        if truncated {
+            log::warn!(
+                "[CODEX-SYNC] 跳过超长行（>{MAX_SESSION_LINE_BYTES} 字节，可能是畸形数据）: {} 第 {line_offset} 行",
+                file_path.display()
+            );
+            continue;
+        }
+        let Ok(line) = String::from_utf8(raw_line) else {
+            continue;
         };
         if line.trim().is_empty() {
             continue;
@@ -757,15 +827,28 @@ fn parent_signatures_before(
         }
     }
 
-    let file = open_limited_regular_file(parent_path, MAX_SESSION_FILE_BYTES)
+    let file = open_regular_file_no_symlink(parent_path)
         .map_err(|error| format!("无法打开父 rollout {}: {error}", parent_path.display()))?;
     let mut signatures = Vec::new();
     let mut max_timestamp: Option<DateTime<Utc>> = None;
+    let mut reader = BufReader::new(file);
 
     // 必须扫描完整父文件并逐行应用 cutoff，不能在首个未来时间戳处 break：
     // rollout 写入顺序不承诺时间戳严格单调。
-    for line in BufReader::new(file).lines() {
-        let Ok(line) = line else {
+    loop {
+        let Some((raw_line, truncated)) = read_capped_line(&mut reader, MAX_SESSION_LINE_BYTES)
+            .map_err(|error| format!("读取父 rollout {} 失败: {error}", parent_path.display()))?
+        else {
+            break;
+        };
+        if truncated {
+            log::warn!(
+                "[CODEX-SYNC] 跳过父 rollout 超长行（>{MAX_SESSION_LINE_BYTES} 字节）: {}",
+                parent_path.display()
+            );
+            continue;
+        }
+        let Ok(line) = String::from_utf8(raw_line) else {
             continue;
         };
         let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
@@ -2025,5 +2108,101 @@ mod tests {
         // 实际钳制在调用侧：delta.cached_input.min(delta.input)
         let clamped = delta.cached_input.min(delta.input);
         assert_eq!(clamped, 10);
+    }
+
+    // ── 单行长度上限（超过原 32MB 整文件门槛的会话文件应仍可解析） ──
+
+    #[test]
+    fn read_capped_line_skips_oversized_lines_and_keeps_reading() {
+        let data = b"short\nthis-line-is-too-long-for-the-cap\nok\n";
+        let mut cursor = std::io::Cursor::new(&data[..]);
+
+        let (line1, truncated1) = read_capped_line(&mut cursor, 5).unwrap().unwrap();
+        assert_eq!(String::from_utf8(line1).unwrap(), "short");
+        assert!(!truncated1);
+
+        let (line2, truncated2) = read_capped_line(&mut cursor, 5).unwrap().unwrap();
+        assert!(
+            truncated2,
+            "a line longer than the cap must be reported as truncated"
+        );
+        assert!(
+            line2.is_empty(),
+            "truncated line content must be discarded, not buffered"
+        );
+
+        let (line3, truncated3) = read_capped_line(&mut cursor, 5).unwrap().unwrap();
+        assert_eq!(String::from_utf8(line3).unwrap(), "ok");
+        assert!(
+            !truncated3,
+            "a normal line following a truncated one must still parse correctly"
+        );
+
+        assert!(read_capped_line(&mut cursor, 5).unwrap().is_none());
+    }
+
+    #[test]
+    fn read_capped_line_handles_missing_trailing_newline_at_eof() {
+        let data = b"first\nsecond-no-newline";
+        let mut cursor = std::io::Cursor::new(&data[..]);
+
+        let (line1, truncated1) = read_capped_line(&mut cursor, 64).unwrap().unwrap();
+        assert_eq!(String::from_utf8(line1).unwrap(), "first");
+        assert!(!truncated1);
+
+        let (line2, truncated2) = read_capped_line(&mut cursor, 64).unwrap().unwrap();
+        assert_eq!(String::from_utf8(line2).unwrap(), "second-no-newline");
+        assert!(!truncated2);
+
+        assert!(read_capped_line(&mut cursor, 64).unwrap().is_none());
+    }
+
+    #[test]
+    fn parse_ignores_whole_file_size_and_skips_only_the_oversized_line() -> Result<(), AppError> {
+        clear_codex_replay_caches();
+        let db = Database::memory()?;
+        let temp = tempdir().unwrap();
+        let child = rollout_path(temp.path(), CHILD_A_ID);
+
+        // A single line larger than the *old* MAX_SESSION_FILE_BYTES (32
+        // MiB) whole-file gate this test exists to prove is gone from
+        // `parse_codex_file`. It also exceeds MAX_SESSION_LINE_BYTES on its
+        // own, so it must be skipped (not fatal) while the rest of the
+        // file — including the billable token_count event below it — is
+        // still imported normally.
+        let padding = serde_json::json!({
+            "type": "response_item",
+            "payload": {
+                "padding": "a".repeat(crate::security_limits::MAX_SESSION_FILE_BYTES as usize + 1024)
+            }
+        });
+        write_jsonl(
+            &child,
+            &[
+                session_meta(CHILD_A_ID),
+                padding,
+                turn_context(),
+                token_count(100, 50, 10),
+            ],
+        );
+
+        let file_len = fs::metadata(&child).unwrap().len();
+        assert!(
+            file_len > crate::security_limits::MAX_SESSION_FILE_BYTES,
+            "fixture must exceed the old whole-file limit to actually exercise this fix, got {file_len} bytes"
+        );
+
+        let result = sync_test_file(&db, &child, &[&child])?;
+        assert_eq!((result.imported, result.deferred), (1, false));
+
+        let conn = lock_conn!(db.conn);
+        let usage: (i64, i64, i64) = conn.query_row(
+            "SELECT input_tokens, cache_read_tokens, output_tokens
+             FROM proxy_request_logs WHERE request_id = ?1",
+            [format!("{CODEX_THREAD_REQUEST_ID_PREFIX}:{CHILD_A_ID}:1")],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!(usage, (100, 50, 10));
+        Ok(())
     }
 }

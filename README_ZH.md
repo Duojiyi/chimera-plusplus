@@ -276,7 +276,7 @@ CC Switch 使用“通用配置片段”功能，在不同的供应商之间传�
 <details>
 <summary><strong>macOS 安装</strong></summary>
 
-CC Switch macOS 版本已通过 Apple 代码签名和公证，可直接下载安装，无需额外操作。推荐使用 `.dmg` 安装包。
+Chimera++ macOS 构建目前没有 Apple Developer ID 签名和公证。如果 Gatekeeper 阻止首次打开，请在 Finder 中右键应用并选择"打开"。推荐使用 `.dmg` 安装包；Release 中的 `.sig` 是 Tauri 应用内更新签名，不是 Apple 代码签名。
 
 </details>
 
@@ -354,7 +354,7 @@ CC_SWITCH_GDK_BACKEND=wayland ./CC-Switch-*.AppImage
 
 ### Windows 用户
 
-从 [Releases](../../releases) 页面下载最新版本的 `CC-Switch-v{版本号}-Windows.msi` 安装包或 `CC-Switch-v{版本号}-Windows-Portable.zip` 绿色版。
+从 [Releases](../../releases) 页面下载最新版本的 `Chimera++-v{版本号}-Windows.msi` 安装包或 `Chimera++-v{版本号}-Windows-Portable.zip` 绿色版。
 
 ### macOS 用户
 
@@ -372,9 +372,9 @@ brew upgrade --cask cc-switch
 
 **方式二：手动下载**
 
-从 [Releases](../../releases) 页面下载 `CC-Switch-v{版本号}-macOS.dmg`（推荐）或 `.zip`。
+从 [Releases](../../releases) 页面下载 `Chimera++-v{版本号}-macOS.dmg`（推荐）或 `.zip`。
 
-> **注意**：CC Switch macOS 版本已通过 Apple 代码签名和公证，可直接安装打开。
+> **注意**：Chimera++ macOS 构建目前没有 Apple Developer ID 签名和公证。如果 Gatekeeper 阻止首次打开，请在 Finder 中右键应用并选择"打开"。Release 中的 `.sig` 是 Tauri 应用内更新签名，不是 Apple 代码签名。
 
 ### Arch Linux 用户
 
@@ -388,9 +388,9 @@ paru -S cc-switch-bin
 
 从 [Releases](../../releases) 页面下载最新版本的 Linux 安装包：
 
-- `CC-Switch-v{版本号}-Linux.deb`（Debian/Ubuntu）
-- `CC-Switch-v{版本号}-Linux.rpm`（Fedora/RHEL/openSUSE）
-- `CC-Switch-v{版本号}-Linux.AppImage`（通用）
+- `Chimera++-v{版本号}-Linux.deb`（Debian/Ubuntu）
+- `Chimera++-v{版本号}-Linux.rpm`（Fedora/RHEL/openSUSE）
+- `Chimera++-v{版本号}-Linux.AppImage`（通用）
 
 > **Flatpak**：官方 Release 不包含 Flatpak 包。如需使用，可从 `.deb` 自行构建 — 参见 [`flatpak/README.md`](flatpak/README.md)。
 

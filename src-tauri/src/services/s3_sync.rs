@@ -15,7 +15,8 @@ use crate::services::s3::{self, S3Credentials};
 use crate::settings::{update_s3_sync_status, S3SyncSettings, WebDavSyncStatus};
 
 use super::sync_protocol::{
-    apply_snapshot, build_local_snapshot, localized, persist_sync_success_best_effort, sha256_hex,
+    apply_snapshot, build_local_snapshot, localized, persist_sync_success_best_effort,
+    remote_changed_conflict_error, remote_unchanged_since_last_sync, sha256_hex,
     validate_artifact_size_limit, validate_manifest_compat, verify_artifact, ArtifactMeta,
     RemoteLayout, SyncManifest, DB_COMPAT_VERSION, MAX_MANIFEST_BYTES, MAX_SYNC_ARTIFACT_BYTES,
     PROTOCOL_VERSION, REMOTE_DB_SQL, REMOTE_MANIFEST, REMOTE_SKILLS_ZIP,
@@ -53,21 +54,44 @@ pub async fn upload(
     settings.validate()?;
     let creds = creds_for(settings);
 
+    let manifest_key = s3_key(settings, REMOTE_MANIFEST);
+
+    // Optimistic concurrency: compare the remote manifest's current ETag to
+    // what we recorded at the end of our last successful sync. A mismatch
+    // means another device uploaded since then — abort instead of silently
+    // overwriting it. See `remote_unchanged_since_last_sync` for exactly
+    // what counts as "unchanged".
+    let remote_etag_before = s3::head_object(&creds, &manifest_key).await?;
+    let local_known_etag = settings.status.last_remote_etag.clone();
+    if !remote_unchanged_since_last_sync(&remote_etag_before, &local_known_etag) {
+        return Err(remote_changed_conflict_error());
+    }
+
     let snapshot = build_local_snapshot(db)?;
 
     // Upload order: artifacts first, manifest last (best-effort consistency)
     let db_key = s3_key(settings, REMOTE_DB_SQL);
-    s3::put_object(&creds, &db_key, snapshot.db_sql, "application/sql").await?;
+    s3::put_object(&creds, &db_key, snapshot.db_sql, "application/sql", None).await?;
 
     let skills_key = s3_key(settings, REMOTE_SKILLS_ZIP);
-    s3::put_object(&creds, &skills_key, snapshot.skills_zip, "application/zip").await?;
+    s3::put_object(
+        &creds,
+        &skills_key,
+        snapshot.skills_zip,
+        "application/zip",
+        None,
+    )
+    .await?;
 
-    let manifest_key = s3_key(settings, REMOTE_MANIFEST);
+    // Conditional write on the manifest itself: closes most of the race
+    // window between the HEAD check above and this PUT on backends that
+    // support conditional writes (see `s3::put_object`).
     s3::put_object(
         &creds,
         &manifest_key,
         snapshot.manifest_bytes,
         "application/json",
+        local_known_etag.as_deref(),
     )
     .await?;
 

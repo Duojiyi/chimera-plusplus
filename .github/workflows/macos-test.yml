@@ -50,15 +50,18 @@ jobs:
           cargo test --manifest-path src-tauri/Cargo.toml --test provider_service provider_service_switch_codex
           cargo test --manifest-path src-tauri/Cargo.toml --test provider_commands codex_startup_import
 
-      - name: Prepare Tauri signing key
-        shell: bash
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: bash scripts/prepare-tauri-signing-key.sh
-
       - name: Build universal macOS app
-        run: pnpm tauri build --target universal-apple-darwin --bundles app
+        # This workflow only smoke-tests that the app compiles and bundles; it
+        # never consumes the updater .sig, so it must not have access to the
+        # real TAURI_SIGNING_PRIVATE_KEY secret. Disable updater artifact
+        # creation for this build only (via a config overlay) instead of
+        # signing with the production key.
+        shell: bash
+        run: |
+          set -euo pipefail
+          config_path="$RUNNER_TEMP/no-updater-artifacts.json"
+          printf '%s' '{"bundle":{"createUpdaterArtifacts":false}}' > "$config_path"
+          pnpm tauri build --target universal-apple-darwin --bundles app --config "$config_path"
 
       - name: Prepare test artifact
         shell: bash

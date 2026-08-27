@@ -7,10 +7,18 @@ use serde_json::Value;
 
 /// Maximum number of characters for session titles (shared across providers).
 pub const TITLE_MAX_CHARS: usize = 80;
-pub const SESSION_READ_LIMIT: u64 = crate::security_limits::MAX_SESSION_FILE_BYTES;
 
 /// Read the first `head_n` lines and last `tail_n` lines from a file.
 /// For small files (< 16 KB), reads all lines once to avoid unnecessary seeking.
+///
+/// There is deliberately no whole-file size gate here: this function only
+/// ever reads a bounded number of lines (`head_n` + `tail_n`, or the last
+/// ~16 KB for the tail seek), regardless of how large the file on disk is,
+/// so total file size is not a memory-safety concern. A prior version
+/// rejected any file above a fixed byte threshold, which made large-but
+/// -otherwise-healthy session files (Claude/Codex/Hermes/OpenClaw rollouts
+/// can legitimately grow past that) silently disappear from the session
+/// list instead of just being indexed normally.
 pub fn read_head_tail_lines(
     path: &Path,
     head_n: usize,
@@ -24,12 +32,6 @@ pub fn read_head_tail_lines(
         ));
     }
     let file_len = metadata.len();
-    if file_len > SESSION_READ_LIMIT {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("session file exceeds {} bytes", SESSION_READ_LIMIT),
-        ));
-    }
     let file = File::open(path)?;
 
     // For small files, read all lines once and split

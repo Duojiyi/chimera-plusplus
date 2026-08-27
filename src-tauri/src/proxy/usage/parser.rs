@@ -14,6 +14,11 @@ fn openai_cache_read_tokens(usage: &Value) -> u32 {
         .get("cache_read_input_tokens")
         .or_else(|| usage.pointer("/input_tokens_details/cached_tokens"))
         .or_else(|| usage.pointer("/prompt_tokens_details/cached_tokens"))
+        // DeepSeek's Chat Completions usage object reports cache hits under
+        // its own top-level field instead of any of the shapes above —
+        // without this, every DeepSeek cache hit was counted as 0, inflating
+        // reported cost (upstream cc-switch, same finding).
+        .or_else(|| usage.get("prompt_cache_hit_tokens"))
         .and_then(Value::as_u64)
         .unwrap_or(0) as u32
 }

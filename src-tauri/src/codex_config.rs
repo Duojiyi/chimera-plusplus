@@ -186,15 +186,21 @@ impl CodexCatalogToolProfile {
 }
 
 /// Reserved built-in provider IDs from OpenAI Codex's config/model-provider
-/// catalog. Keep in sync with Codex `RESERVED_MODEL_PROVIDER_IDS` and legacy
-/// removed provider aliases.
+/// catalog (`model-provider-info::built_in_model_providers`), current as of
+/// Codex 0.148/0.149. Keep in sync with upstream: `oss` and `ollama-chat`
+/// were removed from Codex's own reserved set (no longer built-in ids) and
+/// `amazon-bedrock-runtime` was added alongside `amazon-bedrock` as a
+/// second, more restrictive built-in id (its user-supplied table only
+/// accepts `base_url`/`auth`/`http_headers`/`aws`; any other key — including
+/// the `experimental_bearer_token` a custom-provider id would get here —
+/// makes Codex reject the whole config at startup, which is exactly the
+/// failure this list exists to prevent).
 const CODEX_RESERVED_MODEL_PROVIDER_IDS: &[&str] = &[
     "amazon-bedrock",
+    "amazon-bedrock-runtime",
     "openai",
     "ollama",
     "lmstudio",
-    "oss",
-    "ollama-chat",
 ];
 
 /// 获取 Codex 配置目录路径
@@ -327,6 +333,41 @@ pub fn read_and_validate_codex_config_text() -> Result<String, AppError> {
     Ok(s)
 }
 
+/// Codex's `profile` mechanism (a top-level `profile = "name"` selecting a
+/// `[profiles.name]` table) can override `model_provider`/`model`/
+/// `model_catalog_json`/`model_reasoning_effort` for the ACTIVE profile —
+/// values that then take precedence over the identically-named top-level
+/// keys we write on every provider switch. We never touch `[profiles.*]`
+/// tables (by design — they are the user's own, unrelated to provider
+/// switching), so a user who has configured an active profile with any of
+/// these keys will see a switch report success while Codex keeps routing
+/// through whatever the profile declares. Detect that specific conflict so
+/// the caller can surface it instead of leaving the mismatch silent.
+///
+/// Returns `Some(profile_name)` when `config_text` has both an active
+/// `profile` and a `[profiles.<name>]` table that redeclares at least one of
+/// the routing-relevant keys we write; `None` otherwise (no active profile,
+/// the profile table doesn't exist, or it doesn't touch routing).
+pub fn detect_active_profile_routing_override(config_text: &str) -> Option<String> {
+    let doc = config_text.parse::<DocumentMut>().ok()?;
+    let profile_name = doc
+        .get("profile")
+        .and_then(|item| item.as_str())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())?;
+    let profile_table = doc.get("profiles")?.get(profile_name)?.as_table()?;
+    const ROUTING_KEYS: &[&str] = &[
+        "model_provider",
+        "model",
+        "model_catalog_json",
+        "model_reasoning_effort",
+    ];
+    let overrides_routing = ROUTING_KEYS
+        .iter()
+        .any(|key| profile_table.contains_key(key));
+    overrides_routing.then(|| profile_name.to_string())
+}
+
 fn active_codex_model_provider_id(doc: &DocumentMut) -> Option<String> {
     doc.get("model_provider")
         .and_then(|item| item.as_str())
@@ -337,10 +378,15 @@ fn active_codex_model_provider_id(doc: &DocumentMut) -> Option<String> {
 
 pub(crate) fn is_custom_codex_model_provider_id(id: &str) -> bool {
     let id = id.trim();
-    !id.is_empty()
-        && !CODEX_RESERVED_MODEL_PROVIDER_IDS
-            .iter()
-            .any(|reserved| reserved.eq_ignore_ascii_case(id))
+    // Exact match, not case-insensitive: Codex itself matches
+    // `RESERVED_MODEL_PROVIDER_IDS` by exact string equality (confirmed
+    // against 0.149's provider-id resolution), so a table named e.g.
+    // `[model_providers.OpenAI]` is, to Codex, a distinct *custom* provider
+    // id that still needs the same custom-provider fields (bearer token,
+    // forced `wire_api`, ...) as any other custom id. Matching
+    // case-insensitively here used to treat that table as reserved instead,
+    // silently skipping the injection and leaving the provider unauthenticated.
+    !id.is_empty() && !CODEX_RESERVED_MODEL_PROVIDER_IDS.contains(&id)
 }
 
 /// Remove stale native-login requirements from an active third-party provider.
@@ -465,8 +511,44 @@ pub fn codex_auth_has_login_material(auth: &Value) -> bool {
     })
 }
 
+/// Parses Codex auth.json's top-level `last_refresh` (RFC 3339, e.g.
+/// `"2026-07-01T00:00:00Z"`) for freshness comparison. `None` on anything
+/// missing or unparseable — callers treat that as "cannot compare", not as
+/// "this side loses", so an unexpected auth shape never silently changes
+/// which side wins.
+fn codex_auth_last_refresh(auth: &Value) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+    auth.get("last_refresh")
+        .and_then(Value::as_str)
+        .and_then(|text| chrono::DateTime::parse_from_rfc3339(text).ok())
+}
+
 fn prepare_codex_official_auth(stored_auth: &Value, live_auth: &Value) -> Value {
-    let mut official_auth = if codex_auth_has_oauth_login_material(stored_auth) {
+    let stored_has_oauth = codex_auth_has_oauth_login_material(stored_auth);
+    // While a third-party provider was active, Codex itself kept refreshing
+    // — and rewriting, with a rotated `refresh_token` — the ChatGPT OAuth
+    // material still sitting in live auth.json (see
+    // `preserve_codex_official_auth_on_switch`, on by default). The DB
+    // snapshot in `stored_auth` was only ever captured once, back when the
+    // user first switched away from official, so despite always "having
+    // oauth material" it is frequently the STALER of the two. Switching back
+    // to official with the stale snapshot can hand Codex a `refresh_token`
+    // the ChatGPT auth server already rotated past — each refresh
+    // invalidates the previous one — forcing a surprise re-login. Prefer
+    // `live_auth` in exactly that situation: both sides have real oauth
+    // material, and live's `last_refresh` is strictly newer. Any other
+    // combination (missing/unparseable timestamps, live has no oauth
+    // material, live was never refreshed) keeps the historical
+    // stored-wins-when-present default below unchanged.
+    let prefer_live_over_stored = stored_has_oauth
+        && codex_auth_has_oauth_login_material(live_auth)
+        && matches!(
+            (
+                codex_auth_last_refresh(stored_auth),
+                codex_auth_last_refresh(live_auth),
+            ),
+            (Some(stored_refresh), Some(live_refresh)) if live_refresh > stored_refresh
+        );
+    let mut official_auth = if stored_has_oauth && !prefer_live_over_stored {
         stored_auth.clone()
     } else {
         live_auth.clone()
@@ -1506,9 +1588,18 @@ fn load_codex_model_template_static() -> Option<Value> {
 
 /// Bundled clean template for native `/responses` providers. Unlike the
 /// gpt-5.5 template it carries NO freeform `apply_patch` / `web_search` tool
-/// declarations and no GPT-5 base_instructions, so Codex never emits a
-/// `type=="custom"` tool that native gateways (MiMo/MiniMax/…) reject. Edits
-/// flow through `shell_type="shell_command"` instead. We deliberately do NOT
+/// declarations, so Codex never emits a `type=="custom"` tool that native
+/// gateways (MiMo/MiniMax/…) reject. Edits flow through
+/// `shell_type="shell_command"` instead. Its `base_instructions` is Codex's
+/// own general-purpose harness guidance (autonomy/persistence, formatting,
+/// final-answer shape, and — the one that matters most in practice —
+/// frequent intermediate progress updates) with every GPT-5-specific /
+/// tool-specific passage removed, rather than gpt-5.5's real OpenAI harness
+/// (which names `apply_patch` explicitly and would leak an unusable tool
+/// reference into a profile that just stripped that tool) or a bare identity
+/// sentence (which used to ship here and left third-party models with no
+/// instruction to narrate their work — they would run dozens of tool calls
+/// silently and only speak once at the very end). We deliberately do NOT
 /// fall back to `models_cache.json` here (that would reintroduce gpt-5.5's
 /// freeform apply_patch).
 fn load_codex_native_responses_template() -> Value {
@@ -1643,12 +1734,66 @@ fn codex_vendor_catalog_model_entry(
     entry
 }
 
-/// Fields Codex's external-catalog parser REQUIRES (no serde default): when
-/// one is missing Codex rejects the whole catalog file at startup ("missing
-/// field ..."). `base_instructions` is the other known required field; the
-/// templates always carry it and `codex_catalog_model_entry` handles it.
-/// When Codex requires a new field, add it here AND to the static templates.
-const CODEX_CATALOG_PARSER_REQUIRED_FIELDS: &[&str] = &["supports_reasoning_summaries"];
+/// Fields Codex's external-catalog parser has required at one release or
+/// another (no serde default on that field in that release's `ModelInfo`):
+/// when one is missing, Codex rejects the WHOLE catalog file at startup
+/// ("missing field ..."), taking down every model in it, not just one entry.
+/// The exact required subset has moved across releases — confirmed against
+/// the Codex source: `supports_reasoning_summaries` required since ~0.144
+/// and still present; `base_instructions` and `supports_parallel_tool_calls`
+/// required through ~0.146/0.147, then made optional or removed from
+/// `ModelInfo` entirely. We keep backfilling all three regardless of which
+/// Codex build is currently detected, because `models_cache.json` (source ①
+/// below) can be written by a DIFFERENT, newer build than the one that will
+/// actually read our generated catalog — e.g. a desktop build on ≥0.148 (no
+/// longer requiring the older fields, so it never writes them) coexisting
+/// with an npm CLI on 0.145 (which still requires them): the older CLI would
+/// reject the whole catalog on startup without this backfill. Extra fields
+/// on a newer build are harmless — Codex ignores keys it doesn't recognize.
+/// When Codex requires a new field in some release, add it here (and give it
+/// a fallback in `codex_catalog_required_field_fallback`).
+const CODEX_CATALOG_PARSER_REQUIRED_FIELDS: &[&str] = &[
+    "supports_reasoning_summaries",
+    "base_instructions",
+    "supports_parallel_tool_calls",
+];
+
+/// The fallback VALUE for a required field matters, not just its presence,
+/// because backfill happens on the generic per-vendor template BEFORE
+/// profile-specific customization (`codex_catalog_model_entry`) runs — the
+/// same fallback must be safe for every tool profile (ProxyChat, native
+/// `/responses`, Anthropic) and every vendor, since at this point we do not
+/// yet know which one it will end up serving.
+///
+/// - `base_instructions` falls back to our own neutral, tool-agnostic
+///   harness text (`codex_native_responses_template.json` — safe regardless
+///   of profile, since it never claims a specific tool exists) rather than
+///   the bundled gpt-5.5 template's real OpenAI harness, which names
+///   `apply_patch` explicitly and would leak an unusable tool reference into
+///   a profile that stripped that tool (native `/responses` gateways reject
+///   Codex's freeform `apply_patch`, which is exactly why that profile
+///   exists).
+/// - `supports_parallel_tool_calls` conservatively falls back to `false`
+///   (assume NOT supported) rather than gpt-5.5's `true`: sending concurrent
+///   tool calls to a third-party gateway that cannot batch them is a hard
+///   failure (rejected request); not batching a gateway that could have
+///   handled them is, at worst, a minor inefficiency. Prefer the failure
+///   mode that still works.
+/// - `supports_reasoning_summaries` keeps its historical fallback of `true`
+///   (matches gpt-5.5's declared value) — unlike the other two, a wrong
+///   value here degrades to "reasoning summaries silently absent/present",
+///   not a rejected request, so there is no asymmetric-risk argument for a
+///   more conservative default.
+fn codex_catalog_required_field_fallback(key: &str) -> Option<Value> {
+    match key {
+        "supports_reasoning_summaries" => Some(json!(true)),
+        "supports_parallel_tool_calls" => Some(json!(false)),
+        "base_instructions" => load_codex_native_responses_template()
+            .get("base_instructions")
+            .cloned(),
+        _ => None,
+    }
+}
 
 /// `models_cache.json` is shared by every Codex install on the machine (npm
 /// CLI, desktop-bundled binary, ...), and each version serializes its own
@@ -1656,22 +1801,17 @@ const CODEX_CATALOG_PARSER_REQUIRED_FIELDS: &[&str] = &["supports_reasoning_summ
 /// it last, so it cannot be assumed to satisfy the current external-catalog
 /// schema (observed live: 0.144.5 requires `supports_reasoning_summaries`
 /// while a coexisting build kept rewriting the cache without it). Backfill
-/// ONLY parser-required fields from the bundled static template: optional
-/// capability fields keep their missing-means-default semantics, and existing
-/// values always win.
+/// ONLY parser-required fields, using each field's own safe fallback value
+/// (see `codex_catalog_required_field_fallback`): optional capability fields
+/// keep their missing-means-default semantics, and existing values always win.
 fn fill_template_fields_from_static(template: &mut Value) {
-    let Some(static_template) = load_codex_model_template_static() else {
-        return;
-    };
-    let (Some(template_obj), Some(static_obj)) =
-        (template.as_object_mut(), static_template.as_object())
-    else {
+    let Some(template_obj) = template.as_object_mut() else {
         return;
     };
     for key in CODEX_CATALOG_PARSER_REQUIRED_FIELDS {
         if !template_obj.contains_key(*key) {
-            if let Some(value) = static_obj.get(*key) {
-                template_obj.insert((*key).to_string(), value.clone());
+            if let Some(value) = codex_catalog_required_field_fallback(key) {
+                template_obj.insert((*key).to_string(), value);
             }
         }
     }
@@ -1790,20 +1930,38 @@ fn set_codex_model_catalog_json_field(
         .parse::<DocumentMut>()
         .map_err(|e| AppError::Message(format!("Invalid Codex config.toml: {e}")))?;
 
+    // Ownership check, applied symmetrically to both directions: a value we
+    // did not write ourselves (the field is absent, or its filename is not
+    // ours) belongs to the user — never touch it either way. Before this,
+    // the `Some` branch below unconditionally overwrote `model_catalog_json`
+    // (upstream cc-switch #6087): a user who had hand-pointed it at their
+    // own catalog file would silently lose that customization the moment the
+    // active provider needed a Chimera-managed catalog. The `None` branch
+    // already had this check (only remove a value that is ours to remove);
+    // it just was not mirrored on the write side.
+    let owned_or_absent = doc
+        .get("model_catalog_json")
+        .and_then(|item| item.as_str())
+        .map(|path| {
+            Path::new(path).file_name().and_then(|name| name.to_str())
+                == Some(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)
+        })
+        .unwrap_or(true);
+
     match catalog_path {
         Some(_) => {
-            doc["model_catalog_json"] = toml_edit::value(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME);
+            if owned_or_absent {
+                doc["model_catalog_json"] =
+                    toml_edit::value(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME);
+            } else {
+                log::warn!(
+                    "model_catalog_json 已被用户指向自定义文件，跳过写入 Chimera++ 生成的模型目录；\
+                     该线路的目录编辑器配置（如逐模型思考等级）不会通过 Codex 生效"
+                );
+            }
         }
         None => {
-            let should_remove = doc
-                .get("model_catalog_json")
-                .and_then(|item| item.as_str())
-                .map(|path| {
-                    Path::new(path).file_name().and_then(|name| name.to_str())
-                        == Some(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)
-                })
-                .unwrap_or(false);
-            if should_remove {
+            if owned_or_absent {
                 doc.as_table_mut().remove("model_catalog_json");
             }
         }

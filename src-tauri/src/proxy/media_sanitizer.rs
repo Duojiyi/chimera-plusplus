@@ -192,7 +192,18 @@ fn responses_input_item_has_image_blocks(item: &Value) -> bool {
         return true;
     }
 
-    item.get("content").is_some_and(content_has_image_blocks)
+    if item.get("content").is_some_and(content_has_image_blocks) {
+        return true;
+    }
+
+    // `function_call_output`/`custom_tool_call_output` items carry their
+    // payload under `output`, not `content` (e.g. a screenshot a
+    // browser/computer-use tool captured back as an `input_image` part).
+    // Missing this scan path let images embedded in tool output leak
+    // straight through to a text-only model instead of being replaced —
+    // `content_has_image_blocks` already no-ops safely on a plain string
+    // `output`, so this is a pure additive scan.
+    item.get("output").is_some_and(content_has_image_blocks)
 }
 
 fn replace_images_in_responses_input(input: &mut Value) -> usize {
@@ -216,6 +227,13 @@ fn replace_images_in_responses_input_item(item: &mut Value) -> usize {
 
     if let Some(content) = item.get_mut("content") {
         replaced += replace_images_in_content_with_text_type(content, "input_text");
+    }
+
+    // Mirrors the `output` scan in `responses_input_item_has_image_blocks`:
+    // must stay symmetric with detection, or `contains_image_blocks` can
+    // report true while this mutator silently leaves the image in place.
+    if let Some(output) = item.get_mut("output") {
+        replaced += replace_images_in_content_with_text_type(output, "input_text");
     }
 
     replaced

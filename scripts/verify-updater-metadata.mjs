@@ -2,9 +2,14 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 function usage() {
-  console.error("Usage: node scripts/verify-updater-metadata.mjs --file latest.json --tag vX.Y.Z --assets-dir release-assets [--repository owner/repo]");
+  console.error(
+    "Usage: node scripts/verify-updater-metadata.mjs --file latest.json --tag vX.Y.Z --assets-dir release-assets [--repository owner/repo] [--config tauri.conf.json]",
+  );
   process.exit(2);
 }
 
@@ -17,12 +22,41 @@ const file = valueAfter("--file");
 const tag = valueAfter("--tag");
 const assetsDirArg = valueAfter("--assets-dir");
 const repository = valueAfter("--repository") ?? process.env.GITHUB_REPOSITORY;
+const configPath = path.resolve(valueAfter("--config") ?? path.join(root, "src-tauri", "tauri.conf.json"));
 if (!file || !assetsDirArg || !repository || !/^v\d+\.\d+\.\d+$/.test(tag ?? "") || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) usage();
 const assetsDir = path.resolve(assetsDirArg);
 const expectedVersion = tag.slice(1);
 const baseUrl = `https://github.com/${repository}/releases/download/${tag}`;
 const releaseUrl = `https://github.com/${repository}/releases/tag/${tag}`;
 const metadata = JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, ""));
+
+function assertUpdaterEndpointMatchesRepository() {
+  const tauriConfig = JSON.parse(fs.readFileSync(configPath, "utf8").replace(/^\uFEFF/, ""));
+  const endpoints = tauriConfig?.plugins?.updater?.endpoints;
+  if (!Array.isArray(endpoints) || endpoints.length === 0) {
+    console.error(`No plugins.updater.endpoints configured in ${configPath}`);
+    process.exit(1);
+  }
+  const endpointPattern = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/releases\/latest\/download\/latest\.json$/;
+  for (const endpoint of endpoints) {
+    const match = typeof endpoint === "string" ? endpointPattern.exec(endpoint) : null;
+    if (!match) {
+      console.error(`Updater endpoint is not a recognized GitHub releases/latest/download URL: ${JSON.stringify(endpoint)}`);
+      process.exit(1);
+    }
+    const endpointRepository = match[1];
+    if (endpointRepository !== repository) {
+      console.error(
+        `Updater endpoint points at repository "${endpointRepository}" but this release is publishing to "${repository}". ` +
+          `The updater endpoint in ${configPath} must match the repository CI is releasing to, or existing installs will silently ` +
+          `stop receiving updates the moment the old repository name stops redirecting. Update plugins.updater.endpoints before releasing.`,
+      );
+      process.exit(1);
+    }
+  }
+}
+
+assertUpdaterEndpointMatchesRepository();
 
 function safeBasename(value, label) {
   if (typeof value !== "string" || value.length === 0 || value !== path.basename(value) || value === "." || value === ".." || value.includes("\\")) {

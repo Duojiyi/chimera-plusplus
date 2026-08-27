@@ -69,12 +69,34 @@ pub async fn save_settings(
     state: tauri::State<'_, crate::store::AppState>,
     settings: crate::settings::AppSettings,
 ) -> Result<bool, String> {
-    let existing = crate::settings::get_settings();
-    let merged = merge_settings_for_save(settings, &existing);
-    let unify_codex_changed =
-        merged.unify_codex_session_history != existing.unify_codex_session_history;
-    let unify_codex_enabled = merged.unify_codex_session_history;
-    crate::settings::update_settings(merged).map_err(|e| e.to_string())?;
+    // Read-then-write on a plain snapshot (the previous shape here) races
+    // any concurrent backend-side write to settings — most notably the tray
+    // menu / failover switching `current_provider_*` via `mutate_settings`
+    // while this frontend save is in flight. The frontend's `settings`
+    // payload is built from whatever `get_settings()` returned when its
+    // panel last loaded, which can already be stale by the time the user
+    // clicks save; merging it against a snapshot taken *now* (but still
+    // outside any lock) does not fix that — a switch landing between this
+    // read and the final `update_settings` write below would still be
+    // silently reverted, taking the proxy's routing (which trusts settings
+    // as authoritative) out of sync with what the DB/UI just switched to.
+    // Do the read-merge-write inside `mutate_settings`'s write lock instead,
+    // so "current" is genuinely current at the moment of merge and no
+    // concurrent writer can land in between.
+    let mut existing: Option<crate::settings::AppSettings> = None;
+    let mut unify_codex_changed = false;
+    let mut unify_codex_enabled = false;
+    crate::settings::mutate_settings(|current| {
+        let merged = merge_settings_for_save(settings, current);
+        unify_codex_changed =
+            merged.unify_codex_session_history != current.unify_codex_session_history;
+        unify_codex_enabled = merged.unify_codex_session_history;
+        existing = Some(current.clone());
+        *current = merged;
+    })
+    .map_err(|e| e.to_string())?;
+    let existing =
+        existing.expect("mutate_settings invokes its mutator exactly once before returning Ok");
 
     // 统一会话开关变更时立即重写当前官方 Codex 供应商的 live 配置，
     // 不必等下一次切换才生效。

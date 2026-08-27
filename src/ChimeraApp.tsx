@@ -24,6 +24,7 @@ import {
   Download,
   Eye,
   EyeOff,
+  FileText,
   LoaderCircle,
   FolderOpen,
   MessagesSquare,
@@ -344,6 +345,22 @@ const runtimeText = (mode?: string | null) =>
 const runtimeChannelText = (source?: string | null) =>
   source === "mirror" ? "镜像通道" : "稳定通道";
 
+// UTC slicing (`publishedAt.slice(0, 10)`) shows the wrong calendar day in
+// timezones ahead of UTC (e.g. UTC+8 late-evening releases). Format in the
+// viewer's local timezone instead, and fall back gracefully for
+// missing/unparseable timestamps rather than throwing or showing 1970-01-01
+// (`new Date(null)` resolves to the epoch, not an invalid date).
+const formatReleaseDate = (publishedAt?: string | null): string => {
+  if (!publishedAt) return "发布时间未知";
+  const parsed = new Date(publishedAt);
+  if (Number.isNaN(parsed.getTime())) return "发布时间未知";
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(parsed);
+};
+
 type CodexEndpointInput = {
   baseUrl: string;
   apiKey: string;
@@ -453,6 +470,11 @@ export default function ChimeraApp() {
   const [codexProcess, setCodexProcess] = useState<CodexProcessStatus | null>(
     null,
   );
+  // Mirrors `codexProcess` so a transient probe failure can fall back to the
+  // last known-good status synchronously (loadCodexProcess is a stable
+  // useCallback with an empty dep array, so the closed-over `codexProcess`
+  // state variable itself is always stale).
+  const codexProcessRef = useRef<CodexProcessStatus | null>(null);
   const [launchingCodex, setLaunchingCodex] = useState(false);
   const [codexRestartRequired, setCodexRestartRequired] = useState(false);
   const [rendererUnlock, setRendererUnlock] =
@@ -490,6 +512,7 @@ export default function ChimeraApp() {
   const fetchModelsSeqRef = useRef(0);
   const protocolProbeSeqRef = useRef(0);
   const runtimeCheckSeqRef = useRef(0);
+  const testConnectionSeqRef = useRef(0);
   const providerSaveInFlightRef = useRef(false);
   const editorRef = useRef(editor);
   const [connection, setConnection] = useState<ConnectionState>({
@@ -725,6 +748,7 @@ export default function ChimeraApp() {
         installMode: "standard",
         officialLoginAvailable: false,
       };
+      codexProcessRef.current = status;
       setCodexProcess(status);
       setRendererUnlock(null);
       return status;
@@ -733,19 +757,24 @@ export default function ChimeraApp() {
       const status = await invoke<CodexProcessStatus>(
         "get_codex_process_status",
       );
+      codexProcessRef.current = status;
       setCodexProcess(status);
       void refreshRendererUnlock();
       return status;
     } catch {
-      // Unsupported platforms return a structured status. A rejected probe
-      // therefore means a supported installation could not be detected.
-      const status: CodexProcessStatus = {
+      // A rejected probe is usually transient IPC jitter (a dropped tick,
+      // a busy backend), not a real uninstall. Keep whatever status we
+      // last observed and let the next 4s poll (see the `view ===
+      // "providers"` effect below) self-heal; only fall back to the "not
+      // installed" placeholder if we never had a successful read yet.
+      const status: CodexProcessStatus = codexProcessRef.current ?? {
         supported: true,
         installed: false,
         running: false,
         installMode: null,
         officialLoginAvailable: false,
       };
+      codexProcessRef.current = status;
       setCodexProcess(status);
       setRendererUnlock(null);
       return status;
@@ -759,6 +788,20 @@ export default function ChimeraApp() {
       codexProcess?.installed === false
     )
       return;
+    // Codex already running: "open" used to silently force-close (30s grace,
+    // then a hard kill) and relaunch it to pick up the latest config, with
+    // no warning that whatever the user was doing in Codex would be
+    // interrupted. Ask first — the running-or-not state is already the
+    // polled `codexProcess` this button's own disabled/label logic reads,
+    // so this check is free (no extra round trip before asking).
+    if (
+      codexProcess?.running &&
+      !window.confirm(
+        "Codex 正在运行，继续将关闭并重新启动它以应用最新配置，期间的任何未完成操作都会中断。是否继续？",
+      )
+    ) {
+      return;
+    }
     setLaunchingCodex(true);
     try {
       if (!runningInTauri) {
@@ -776,7 +819,13 @@ export default function ChimeraApp() {
       }
       // Runtime policy belongs to the backend: it detects and safely replaces
       // an existing path-pinned Codex instance before launching a new one.
-      const result = await invoke<CodexLaunchResult>("open_codex_runtime");
+      // `confirmRestart: true` unconditionally: the backend only enforces
+      // this when it independently detects Codex is running (the source of
+      // truth, not this component's possibly-stale `codexProcess` read), at
+      // which point the user has already agreed via the confirm above.
+      const result = await invoke<CodexLaunchResult>("open_codex_runtime", {
+        confirmRestart: true,
+      });
       await loadCodexProcess();
       await refreshRendererUnlock();
       setCodexRestartRequired(false);
@@ -951,11 +1000,15 @@ export default function ChimeraApp() {
 
   const testConnection = async (baseUrl: string, providerName = "Codex") => {
     const started = performance.now();
+    const seq = ++testConnectionSeqRef.current;
     setConnection({ kind: "checking", message: "正在测试 API 地址" });
     try {
       const [result] = await vscodeApi.testApiEndpoints([baseUrl], {
         timeoutSecs: 12,
       });
+      // A newer test started while this one was in flight; let that one own
+      // the connection banner and skip this stale response entirely.
+      if (seq !== testConnectionSeqRef.current) return false;
       if (!result || result.latency == null)
         throw new Error(result?.error || "服务未响应");
       setConnection({
@@ -975,6 +1028,7 @@ export default function ChimeraApp() {
       });
       return true;
     } catch (error) {
+      if (seq !== testConnectionSeqRef.current) return false;
       setConnection({ kind: "error", message: String(error) });
       note(
         "连接测试",
@@ -1183,11 +1237,20 @@ export default function ChimeraApp() {
       );
       const auth = setCodexProviderApiKey(draft.auth, draft.apiKey);
       const provider: Provider = {
+        // Carry over every top-level field on the existing provider
+        // (createdAt, sortIndex, icon, iconColor, isPartner, …) so an edit
+        // only ever touches the fields this form actually presents. Without
+        // this spread, the fields below were the only ones sent to the
+        // backend's UPDATE, silently NULL-ing out everything else. Fields
+        // this form edits are overridden explicitly afterwards.
+        ...draft.original,
         id: draft.id,
         name: draft.name.trim(),
         websiteUrl: draft.websiteUrl.trim() || undefined,
         notes: draft.notes.trim() || undefined,
-        category: "custom",
+        // New providers default to "custom"; editing an existing provider
+        // must never change its category out from under it.
+        category: draft.original?.category ?? "custom",
         meta: {
           ...draft.original?.meta,
           apiFormat: resolvedApiFormat,
@@ -2778,8 +2841,7 @@ export function NewRuntimeView({
                         </strong>
                         <small>
                           {item.installable
-                            ? (item.publishedAt ?? "").slice(0, 10) ||
-                              "发布时间未知"
+                            ? formatReleaseDate(item.publishedAt)
                             : "缺少 Windows 安装资产"}
                           {planningTag === item.tag ? " · 正在解析…" : ""}
                         </small>
@@ -3465,6 +3527,9 @@ function ProviderEditor({
 }) {
   const [commonConfigOpen, setCommonConfigOpen] = useState(false);
   const [openReasoningRow, setOpenReasoningRow] = useState<number | null>(null);
+  const [openInstructionsRow, setOpenInstructionsRow] = useState<number | null>(
+    null,
+  );
   const dialogRef = useDialogFocus<HTMLElement>(
     () => setEditor(null),
     !escapeDisabled,
@@ -3501,9 +3566,14 @@ function ProviderEditor({
             <button
               type="button"
               className="secondary compact"
-              onClick={() =>
-                setEditor(providerDraft(null, editor.name || "新线路"))
-              }
+              onClick={() => {
+                // Restoring the template replaces catalogModels wholesale;
+                // collapse any index-addressed panel for the same reason
+                // add/delete do above.
+                setOpenReasoningRow(null);
+                setOpenInstructionsRow(null);
+                setEditor(providerDraft(null, editor.name || "新线路"));
+              }}
             >
               恢复模板
             </button>
@@ -3895,15 +3965,20 @@ function ProviderEditor({
                 <button
                   type="button"
                   className="secondary compact"
-                  onClick={() =>
+                  onClick={() => {
+                    // A row's index shifts whenever the array grows, so any
+                    // panel expanded by index must collapse first or it can
+                    // end up rendered against the wrong row.
+                    setOpenReasoningRow(null);
+                    setOpenInstructionsRow(null);
                     setEditor({
                       ...editor,
                       catalogModels: [
                         ...editor.catalogModels,
                         { model: "", displayName: "", contextWindow: "" },
                       ],
-                    })
-                  }
+                    });
+                  }}
                 >
                   添加模型
                 </button>
@@ -3914,9 +3989,15 @@ function ProviderEditor({
                 <span>上下文</span>
                 <span>思考等级</span>
                 <span aria-hidden="true" />
+                <span aria-hidden="true" />
               </div>
               {editor.catalogModels.map((item, index) => (
-                <div className="mapping-row" key={`${item.model}-${index}`}>
+                // Rows are only ever appended or removed, never reordered
+                // (no drag-and-drop here), so the positional index is a
+                // stable key. Keying on `item.model` instead broke the
+                // "实际请求模型" input: every keystroke changed the key,
+                // which made React remount the row and drop input focus.
+                <div className="mapping-row" key={index}>
                   <input
                     aria-label="模型显示名"
                     value={item.displayName ?? ""}
@@ -3998,16 +4079,37 @@ function ProviderEditor({
                   </button>
                   <button
                     type="button"
+                    className={
+                      "instructions-trigger" +
+                      (item.baseInstructions?.trim() ? " has-value" : "")
+                    }
+                    aria-label="系统提示词"
+                    aria-expanded={openInstructionsRow === index}
+                    title="系统提示词 / Base Instructions"
+                    onClick={() =>
+                      setOpenInstructionsRow(
+                        openInstructionsRow === index ? null : index,
+                      )
+                    }
+                  >
+                    <FileText size={15} />
+                  </button>
+                  <button
+                    type="button"
                     className="icon-button"
                     aria-label="删除模型映射"
-                    onClick={() =>
+                    onClick={() => {
+                      // See the "添加模型" handler above: collapse any
+                      // index-addressed panel before the array shifts.
+                      setOpenReasoningRow(null);
+                      setOpenInstructionsRow(null);
                       setEditor({
                         ...editor,
                         catalogModels: editor.catalogModels.filter(
                           (_, i) => i !== index,
                         ),
-                      })
-                    }
+                      });
+                    }}
                   >
                     <Trash2 size={15} />
                   </button>
@@ -4094,6 +4196,32 @@ function ProviderEditor({
                           </select>
                         </div>
                       )}
+                    </div>
+                  )}
+                  {openInstructionsRow === index && (
+                    <div className="instructions-panel">
+                      <div className="instructions-panel-head">
+                        系统提示词 / Base Instructions（可选）
+                      </div>
+                      <textarea
+                        aria-label="系统提示词"
+                        value={item.baseInstructions ?? ""}
+                        onChange={(event) => {
+                          const catalogModels = [...editor.catalogModels];
+                          const next: CodexCatalogModel = { ...item };
+                          if (event.target.value) {
+                            next.baseInstructions = event.target.value;
+                          } else {
+                            delete next.baseInstructions;
+                          }
+                          catalogModels[index] = next;
+                          setEditor({ ...editor, catalogModels });
+                        }}
+                        placeholder="留空则使用默认模板"
+                      />
+                      <small>
+                        覆盖该模型的身份说明/系统前言；留空则使用默认模板。
+                      </small>
                     </div>
                   )}
                 </div>
@@ -4773,12 +4901,18 @@ export function NewSettingsView() {
   }, []);
   const save = async (patch: Partial<Settings>) => {
     if (!settings) return;
-    const next = { ...settings, ...patch };
     if (!runningInTauri) {
-      setSettings(next);
+      setSettings({ ...settings, ...patch });
       return;
     }
     try {
+      // Re-read the latest persisted settings immediately before merging,
+      // rather than the value captured in state at mount time. The tray
+      // menu and failover monitor can write fields like
+      // currentProviderCodex concurrently; merging onto a stale snapshot
+      // would silently revert whichever of those writes happened first.
+      const current = await settingsApi.get();
+      const next = { ...current, ...patch };
       await settingsApi.save(next);
       setSettings(next);
       toast.success("设置已保存");

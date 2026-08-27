@@ -359,11 +359,22 @@ pub(crate) async fn test_connection(creds: &S3Credentials) -> Result<(), AppErro
 }
 
 /// Upload bytes to an S3 object.
+///
+/// When `if_match` is `Some(etag)`, the request carries a conditional
+/// `If-Match` header so a backend that supports conditional writes (AWS S3
+/// with CRR/versioning-aware conditional PUT, MinIO, and most S3-compatible
+/// services) rejects the write (412) if the object changed since `etag` was
+/// read — a server-enforced backstop for the client-side ETag comparison
+/// callers already do before starting an upload (see
+/// `services::sync_protocol::remote_unchanged_since_last_sync`). Backends
+/// that ignore the header simply overwrite as before; the client-side
+/// check remains the primary defense in that case.
 pub(crate) async fn put_object(
     creds: &S3Credentials,
     key: &str,
     bytes: Vec<u8>,
     content_type: &str,
+    if_match: Option<&str>,
 ) -> Result<(), AppError> {
     let url_str = build_object_url(creds, key);
     let url = Url::parse(&url_str).map_err(|e| {
@@ -378,6 +389,18 @@ pub(crate) async fn put_object(
     let body_hash = sha256_hex(&bytes);
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("content-type", content_type.parse().unwrap());
+    if let Some(etag) = if_match {
+        headers.insert(
+            "if-match",
+            etag.parse().map_err(|_| {
+                AppError::localized(
+                    "s3.if_match.invalid",
+                    "本地记录的 ETag 不是合法的 HTTP 头部值",
+                    "The locally recorded ETag is not a valid HTTP header value",
+                )
+            })?,
+        );
+    }
     sign_request(
         "PUT",
         &url,
@@ -398,6 +421,14 @@ pub(crate) async fn put_object(
 
     if resp.status().is_success() {
         return Ok(());
+    }
+    if if_match.is_some()
+        && matches!(
+            resp.status(),
+            StatusCode::PRECONDITION_FAILED | StatusCode::CONFLICT
+        )
+    {
+        return Err(crate::services::sync_protocol::remote_changed_conflict_error());
     }
     Err(s3_status_error("PUT", resp.status(), &url_str))
 }
@@ -898,7 +929,7 @@ mod integration_tests {
         let data = br#"{"test":true,"ts":12345}"#;
 
         // PUT
-        let r = put_object(&creds, key, data.to_vec(), "application/json").await;
+        let r = put_object(&creds, key, data.to_vec(), "application/json", None).await;
         assert!(r.is_ok(), "PUT failed: {:?}", r.err());
         println!("PASS: put_object {} bytes", data.len());
 

@@ -222,27 +222,46 @@ pub async fn ensure_remote_directories(
 }
 
 /// PUT bytes to a remote WebDAV URL.
+///
+/// When `if_match` is `Some(etag)`, the request carries a conditional
+/// `If-Match` header so a server that supports it rejects the write (412 or
+/// 409) if the resource changed since `etag` was read — a server-enforced
+/// backstop for the client-side ETag comparison callers already do before
+/// starting an upload (see `services::sync_protocol::remote_unchanged_since_last_sync`).
+/// Servers that ignore the header simply overwrite as before; the
+/// client-side check remains the primary defense in that case.
 pub async fn put_bytes(
     url: &str,
     auth: &WebDavAuth,
     bytes: Vec<u8>,
     content_type: &str,
+    if_match: Option<&str>,
 ) -> Result<(), AppError> {
     let client = http_client::get();
-    let resp = apply_auth(
+    let mut builder = apply_auth(
         client
             .put(url)
             .header("Content-Type", content_type)
-            .body(bytes)
             .timeout(Duration::from_secs(TRANSFER_TIMEOUT_SECS)),
         auth,
-    )
-    .send()
-    .await
-    .map_err(|e| webdav_transport_error("webdav.put_failed", "PUT 请求", "PUT request", url, &e))?;
+    );
+    if let Some(etag) = if_match {
+        builder = builder.header("If-Match", etag);
+    }
+    let resp = builder.body(bytes).send().await.map_err(|e| {
+        webdav_transport_error("webdav.put_failed", "PUT 请求", "PUT request", url, &e)
+    })?;
 
     if resp.status().is_success() {
         return Ok(());
+    }
+    if if_match.is_some()
+        && matches!(
+            resp.status(),
+            StatusCode::PRECONDITION_FAILED | StatusCode::CONFLICT
+        )
+    {
+        return Err(crate::services::sync_protocol::remote_changed_conflict_error());
     }
     Err(webdav_status_error("PUT", resp.status(), url))
 }

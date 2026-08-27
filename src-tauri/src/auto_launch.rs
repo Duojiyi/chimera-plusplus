@@ -28,12 +28,26 @@ fn get_auto_launch() -> Result<AutoLaunch, AppError> {
     #[cfg(not(target_os = "macos"))]
     let app_path = exe_path;
 
+    // Windows: the `auto-launch` crate writes the HKCU `Run` value as an
+    // unquoted `"{app_path} {args}"` command line. An install path containing
+    // spaces (e.g. a username with a space in it, which Windows allows and
+    // does not warn about) then parses ambiguously — `CreateProcess` tries
+    // each space-delimited prefix as a candidate executable before falling
+    // back to the full string, which is the classic unquoted-path-service
+    // hazard. Quote the path ourselves before handing it to the builder; the
+    // resulting `"C:\...\Chimera++.exe" ` (empty args leave a harmless
+    // trailing space after the closing quote) parses unambiguously.
+    #[cfg(target_os = "windows")]
+    let app_path_arg = format!("\"{}\"", app_path.to_string_lossy());
+    #[cfg(not(target_os = "windows"))]
+    let app_path_arg = app_path.to_string_lossy().into_owned();
+
     // 使用 AutoLaunchBuilder 消除平台差异
     // macOS: 使用 AppleScript 方式（默认），需要 .app bundle 路径
     // Windows/Linux: 使用注册表/XDG autostart
     let auto_launch = AutoLaunchBuilder::new()
         .set_app_name(app_name)
-        .set_app_path(&app_path.to_string_lossy())
+        .set_app_path(&app_path_arg)
         .build()
         .map_err(|e| AppError::Message(format!("创建 AutoLaunch 失败: {e}")))?;
 

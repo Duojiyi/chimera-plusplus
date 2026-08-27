@@ -275,7 +275,7 @@ CC Switch bietet eine Funktion „Gemeinsames Konfigurations-Snippet", um gemein
 <details>
 <summary><strong>Installation unter macOS</strong></summary>
 
-CC Switch für macOS ist von Apple code-signiert und notarisiert. Sie können es direkt herunterladen und installieren — es sind keine zusätzlichen Schritte erforderlich. Wir empfehlen die Verwendung des `.dmg`-Installationsprogramms.
+Chimera++-Builds für macOS sind derzeit nicht mit einer Apple Developer ID signiert oder notarisiert. Falls Gatekeeper das erste Öffnen blockiert, klicken Sie im Finder mit der rechten Maustaste auf die App und wählen Sie „Öffnen". Wir empfehlen die Verwendung des `.dmg`-Installationsprogramms. Die `.sig`-Datei im Release ist die Tauri-interne Updater-Signatur, keine Apple-Codesignatur.
 
 </details>
 
@@ -351,7 +351,7 @@ Ausführliche Anleitungen zu jeder Funktion finden Sie im **[Benutzerhandbuch](d
 
 ### Windows-Nutzer
 
-Laden Sie das neueste Installationsprogramm `CC-Switch-v{version}-Windows.msi` oder die portable Version `CC-Switch-v{version}-Windows-Portable.zip` von der Seite [Releases](../../releases) herunter.
+Laden Sie das neueste Installationsprogramm `Chimera++-v{version}-Windows.msi` oder die portable Version `Chimera++-v{version}-Windows-Portable.zip` von der Seite [Releases](../../releases) herunter.
 
 ### macOS-Nutzer
 
@@ -369,9 +369,9 @@ brew upgrade --cask cc-switch
 
 **Methode 2: Manueller Download**
 
-Laden Sie `CC-Switch-v{version}-macOS.dmg` (empfohlen) oder `.zip` von der Seite [Releases](../../releases) herunter.
+Laden Sie `Chimera++-v{version}-macOS.dmg` (empfohlen) oder `.zip` von der Seite [Releases](../../releases) herunter.
 
-> **Hinweis**: CC Switch für macOS ist von Apple code-signiert und notarisiert. Sie können es direkt installieren und öffnen.
+> **Hinweis**: Chimera++-Builds für macOS sind derzeit nicht mit einer Apple Developer ID signiert oder notarisiert. Falls Gatekeeper das erste Öffnen blockiert, klicken Sie im Finder mit der rechten Maustaste auf die App und wählen Sie „Öffnen".
 
 ### Arch-Linux-Nutzer
 
@@ -385,9 +385,9 @@ paru -S cc-switch-bin
 
 Laden Sie den neuesten Linux-Build von der Seite [Releases](../../releases) herunter:
 
-- `CC-Switch-v{version}-Linux.deb` (Debian/Ubuntu)
-- `CC-Switch-v{version}-Linux.rpm` (Fedora/RHEL/openSUSE)
-- `CC-Switch-v{version}-Linux.AppImage` (universell)
+- `Chimera++-v{version}-Linux.deb` (Debian/Ubuntu)
+- `Chimera++-v{version}-Linux.rpm` (Fedora/RHEL/openSUSE)
+- `Chimera++-v{version}-Linux.AppImage` (universell)
 
 > **Flatpak**: Nicht in den offiziellen Releases enthalten. Sie können es selbst aus dem `.deb` bauen — eine Anleitung finden Sie unter [`flatpak/README.md`](flatpak/README.md).
 

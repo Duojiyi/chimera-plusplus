@@ -275,7 +275,7 @@ CC Switch には「共有設定スニペット」機能があり、APIキーや�
 <details>
 <summary><strong>macOS のインストールについて</strong></summary>
 
-CC Switch の macOS 版は Apple によるコード署名と公証が完了しています。直接ダウンロードしてインストールできます — 追加の手順は不要です。`.dmg` インストーラの使用を推奨します。
+Chimera++ の macOS ビルドは現在 Apple Developer ID によるコード署名および公証を受けていません。初回起動時に Gatekeeper にブロックされた場合は、Finder でアプリを右クリックして「開く」を選択してください。`.dmg` インストーラの使用を推奨します。Release 内の `.sig` は Tauri アプリ内アップデーターの署名であり、Apple のコード署名ではありません。
 
 </details>
 
@@ -351,7 +351,7 @@ CC_SWITCH_GDK_BACKEND=wayland ./CC-Switch-*.AppImage
 
 ### Windows ユーザー
 
-[Releases](../../releases) ページから最新版の `CC-Switch-v{version}-Windows.msi` インストーラー、またはポータブル版 `CC-Switch-v{version}-Windows-Portable.zip` をダウンロード。
+[Releases](../../releases) ページから最新版の `Chimera++-v{version}-Windows.msi` インストーラー、またはポータブル版 `Chimera++-v{version}-Windows-Portable.zip` をダウンロード。
 
 ### macOS ユーザー
 
@@ -369,7 +369,7 @@ brew upgrade --cask cc-switch
 
 **方法 2: 手動ダウンロード**
 
-[Releases](../../releases) から `CC-Switch-v{version}-macOS.zip` をダウンロードして展開。
+[Releases](../../releases) から `Chimera++-v{version}-macOS.zip` をダウンロードして展開。
 
 > **注意**: 開発者アカウント未登録のため、初回起動時に「開発元を確認できません」と表示される場合があります。一度閉じてから「システム設定」→「プライバシーとセキュリティ」→「このまま開く」をクリックしてください。以降は通常通り起動できます。
 
@@ -385,9 +385,9 @@ paru -S cc-switch-bin
 
 [Releases](../../releases) から最新版の Linux ビルドをダウンロード：
 
-- `CC-Switch-v{version}-Linux.deb`（Debian/Ubuntu）
-- `CC-Switch-v{version}-Linux.rpm`（Fedora/RHEL/openSUSE）
-- `CC-Switch-v{version}-Linux.AppImage`（汎用）
+- `Chimera++-v{version}-Linux.deb`（Debian/Ubuntu）
+- `Chimera++-v{version}-Linux.rpm`（Fedora/RHEL/openSUSE）
+- `Chimera++-v{version}-Linux.AppImage`（汎用）
 
 > **Flatpak**：公式リリースには含まれていません。`.deb` から自分でビルドできます — 手順は [`flatpak/README.md`](flatpak/README.md) を参照してください。
 

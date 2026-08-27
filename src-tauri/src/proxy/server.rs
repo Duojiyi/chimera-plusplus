@@ -19,7 +19,10 @@ use super::{
 };
 use crate::database::Database;
 use axum::{
-    extract::DefaultBodyLimit,
+    extract::{DefaultBodyLimit, Request},
+    http::{header, StatusCode},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::{any, get, post},
     Router,
 };
@@ -400,6 +403,22 @@ impl ProxyServer {
             .route("/gemini/v1/*path", any(handlers::handle_gemini))
             // 提高默认请求体大小限制（避免 413 Payload Too Large）
             .layer(DefaultBodyLimit::max(200 * 1024 * 1024))
+            // No auth token guards these endpoints (Codex/Claude/Gemini CLIs
+            // are the intended callers and none of them support one), so the
+            // only thing standing between an arbitrary local web page and
+            // this port's real, database-backed provider credentials is
+            // this check. `Origin` is a browser-context header: fetch/XHR
+            // from a page always sets it — even on a same-site "simple"
+            // request that never triggers a CORS preflight, a bare
+            // `text/plain` POST included — while every legitimate caller
+            // here (Codex CLI's Rust HTTP client, curl, this app's own
+            // reqwest-based tooling) never does. A `CorsLayer` alone would
+            // NOT close this gap: CORS only stops the browser from *reading*
+            // the response, not the server from *acting on* the request —
+            // and burning the user's quota / injecting a prompt under their
+            // authenticated line doesn't require reading the reply. Reject
+            // at the door instead.
+            .layer(middleware::from_fn(reject_browser_origin_requests))
             .with_state(self.state.clone())
     }
 
@@ -438,6 +457,23 @@ impl ProxyServer {
     }
 }
 
+/// Rejects any request carrying a browser `Origin` header before it reaches
+/// a route handler. See the doc comment on the `.layer(...)` call site in
+/// `build_router` for the full rationale — in short: no endpoint here
+/// requires a credential from the caller, and `Origin` is the one signal
+/// that reliably distinguishes "a web page's fetch/XHR" from every
+/// legitimate caller of this local proxy.
+async fn reject_browser_origin_requests(request: Request, next: Next) -> Response {
+    if request.headers().contains_key(header::ORIGIN) {
+        return (
+            StatusCode::FORBIDDEN,
+            "Cross-origin requests to the local Chimera++ proxy are not allowed.",
+        )
+            .into_response();
+    }
+    next.run(request).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -468,5 +504,39 @@ mod tests {
             .await
             .expect("second stop should reap the same task");
         assert!(server.server_handle.read().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn health_endpoint_rejects_requests_carrying_an_origin_header() {
+        let db = Arc::new(Database::memory().expect("init db"));
+        let server = ProxyServer::new(ProxyConfig::default(), db, None);
+        let mut router = server.build_router();
+
+        let browser_request = http::Request::builder()
+            .method("GET")
+            .uri("/health")
+            .header(http::header::ORIGIN, "https://evil.example")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = <Router as tower::Service<http::Request<axum::body::Body>>>::call(
+            &mut router,
+            browser_request,
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), http::StatusCode::FORBIDDEN);
+
+        let cli_request = http::Request::builder()
+            .method("GET")
+            .uri("/health")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = <Router as tower::Service<http::Request<axum::body::Body>>>::call(
+            &mut router,
+            cli_request,
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), http::StatusCode::OK);
     }
 }

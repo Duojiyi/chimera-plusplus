@@ -22,7 +22,32 @@ use serde_json::{json, Value};
 const ANTHROPIC_THINKING_PLACEHOLDER: &str = "tool call";
 const ANTHROPIC_REDACTED_THINKING_PLACEHOLDER: &str = "[redacted thinking]";
 // Keep hints lowercase; matching lowercases only the input value.
-const REASONING_VENDOR_HINTS: &[&str] = &["moonshot", "kimi", "deepseek", "mimo", "xiaomimimo"];
+//
+// Vendors whose Anthropic-compatible endpoint requires thinking history to
+// be replayed on every assistant turn that contains tool_use — i.e. needs a
+// synthetic placeholder `thinking` block injected when the real one is
+// missing/redacted (`should_normalize_anthropic_tool_thinking_history`
+// below). This is narrower than, and must NOT be conflated with,
+// "does this vendor's model produce reasoning_content we should preserve
+// when translating formats" (`REASONING_CONTENT_PRESERVE_VENDOR_HINTS`) —
+// they used to be the same list, which silently broke Kimi/Moonshot's
+// unrelated reasoning_content preservation the one time this list needed
+// to shrink. Moonshot/Kimi used to be listed here too, requiring the same
+// placeholder replay as DeepSeek; their endpoint no longer needs it — the
+// vendor confirmed thinking-history replay is not required, and forcing a
+// synthetic placeholder block back into tool-call history actively
+// scrambles their model's own reasoning chain instead of satisfying a
+// requirement that no longer exists (upstream cc-switch, same finding).
+const ANTHROPIC_THINKING_REPLAY_VENDOR_HINTS: &[&str] = &["deepseek", "mimo", "xiaomimimo"];
+// Vendors whose reasoning/thinking output should be preserved as
+// `reasoning_content` when translating an Anthropic-shaped request to
+// OpenAI Chat Completions (`should_preserve_reasoning_content_for_openai_chat`
+// below) — a genuinely broader set than the thinking-replay list above:
+// Kimi/Moonshot's own models still think and still produce real reasoning
+// content worth keeping, they just don't need a *fake* placeholder forced
+// into tool-call history.
+const REASONING_CONTENT_PRESERVE_VENDOR_HINTS: &[&str] =
+    &["deepseek", "mimo", "xiaomimimo", "moonshot", "kimi"];
 
 // ChatGPT Codex 后端按 originator+version 组合做模型 cohort 路由：非官方身份会把
 // gpt-5.6-luna 解析到未部署的内部引擎（HTTP 404 Model not found，openai/codex#31967，
@@ -100,11 +125,9 @@ pub fn claude_api_format_needs_transform(api_format: &str) -> bool {
     )
 }
 
-fn is_reasoning_vendor_identifier(value: &str) -> bool {
+fn matches_vendor_hint(value: &str, hints: &[&str]) -> bool {
     let value = value.to_ascii_lowercase();
-    REASONING_VENDOR_HINTS
-        .iter()
-        .any(|hint| value.contains(hint))
+    hints.iter().any(|hint| value.contains(hint))
 }
 
 fn should_normalize_anthropic_tool_thinking_history(
@@ -119,7 +142,7 @@ fn should_normalize_anthropic_tool_thinking_history(
     if body
         .get("model")
         .and_then(|m| m.as_str())
-        .is_some_and(is_reasoning_vendor_identifier)
+        .is_some_and(|model| matches_vendor_hint(model, ANTHROPIC_THINKING_REPLAY_VENDOR_HINTS))
     {
         return true;
     }
@@ -136,7 +159,7 @@ fn should_normalize_anthropic_tool_thinking_history(
     ]
     .into_iter()
     .flatten()
-    .any(is_reasoning_vendor_identifier)
+    .any(|url| matches_vendor_hint(url, ANTHROPIC_THINKING_REPLAY_VENDOR_HINTS))
 }
 
 /// DeepSeek's Anthropic-compatible endpoint requires thinking history to be
@@ -317,7 +340,7 @@ fn should_preserve_reasoning_content_for_openai_chat(provider: &Provider, body: 
     if body
         .get("model")
         .and_then(|m| m.as_str())
-        .is_some_and(is_reasoning_vendor_identifier)
+        .is_some_and(|model| matches_vendor_hint(model, REASONING_CONTENT_PRESERVE_VENDOR_HINTS))
     {
         return true;
     }
@@ -336,7 +359,7 @@ fn should_preserve_reasoning_content_for_openai_chat(provider: &Provider, body: 
     base_urls
         .into_iter()
         .flatten()
-        .any(is_reasoning_vendor_identifier)
+        .any(|url| matches_vendor_hint(url, REASONING_CONTENT_PRESERVE_VENDOR_HINTS))
 }
 
 pub fn transform_claude_request_for_api_format(
@@ -2312,7 +2335,10 @@ mod tests {
     }
 
     #[test]
-    fn test_kimi_anthropic_tool_history_injects_missing_thinking() {
+    fn test_kimi_anthropic_tool_history_leaves_missing_thinking_alone() {
+        // Kimi/Moonshot no longer requires (and is actively hurt by) the
+        // placeholder `thinking` block replay DeepSeek needs — REASONING_VENDOR_HINTS
+        // dropped them; this must NOT inject a placeholder for their endpoint.
         let provider = create_provider(json!({
             "env": {
                 "ANTHROPIC_BASE_URL": "https://api.kimi.com/coding",
@@ -2335,11 +2361,10 @@ mod tests {
             "anthropic",
         );
 
-        assert!(changed);
+        assert!(!changed);
         let content = body["messages"][0]["content"].as_array().unwrap();
-        assert_eq!(content[0]["type"], "thinking");
-        assert_eq!(content[0]["thinking"], ANTHROPIC_THINKING_PLACEHOLDER);
-        assert_eq!(content[1]["type"], "tool_use");
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["type"], "tool_use");
     }
 
     #[test]

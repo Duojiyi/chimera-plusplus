@@ -26,6 +26,7 @@ jobs:
     name: Candidate Windows package
     runs-on: windows-2022
     timeout-minutes: 60
+    environment: release
     steps:
       - name: Checkout requested ref
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -130,6 +131,7 @@ jobs:
     name: Candidate macOS package
     runs-on: macos-15
     timeout-minutes: 75
+    environment: release
     steps:
       - name: Checkout requested ref
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -248,6 +250,7 @@ jobs:
     name: Candidate Linux x86_64 packages
     runs-on: ubuntu-22.04
     timeout-minutes: 75
+    environment: release
     steps:
       - name: Checkout requested ref
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1

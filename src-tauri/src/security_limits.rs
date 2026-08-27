@@ -64,10 +64,17 @@ pub fn read_limited(path: &Path, limit: u64) -> io::Result<Vec<u8>> {
     Ok(output)
 }
 
-/// Open a regular file after rejecting links/reparse points and enforcing a
-/// maximum size. Callers that stream line-by-line should use this helper
-/// instead of opening session/config files directly.
-pub fn open_limited_regular_file(path: &Path, limit: u64) -> io::Result<File> {
+/// Open a regular file after rejecting a symbolic link / reparse point at
+/// the final path component, without enforcing any size limit.
+///
+/// For callers that parse a file incrementally (line-by-line, chunked, ...)
+/// and therefore never hold the whole file in memory at once: the actual
+/// resource to bound in that case is the size of one unit of work (one
+/// line, one chunk), not the size of the file on disk. Gating the open on
+/// total file size in front of a streaming parser only produces a hard
+/// failure with no corresponding safety benefit. Callers that read a file
+/// fully into memory should use [`open_limited_regular_file`] instead.
+pub fn open_regular_file_no_symlink(path: &Path) -> io::Result<File> {
     let metadata = fs::symlink_metadata(path)?;
     if metadata.file_type().is_symlink() || is_reparse_point(&metadata) {
         return Err(io::Error::new(
@@ -81,15 +88,6 @@ pub fn open_limited_regular_file(path: &Path, limit: u64) -> io::Result<File> {
             "expected a regular file",
         ));
     }
-    if metadata.len() > limit {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            ResourceLimitError::TooLarge {
-                size: metadata.len(),
-                limit,
-            },
-        ));
-    }
 
     let file = File::open(path)?;
     let opened_metadata = file.metadata()?;
@@ -99,11 +97,20 @@ pub fn open_limited_regular_file(path: &Path, limit: u64) -> io::Result<File> {
             "expected a regular file",
         ));
     }
-    if opened_metadata.len() > limit {
+    Ok(file)
+}
+
+/// Open a regular file after rejecting links/reparse points and enforcing a
+/// maximum size. Callers that read a file fully into memory should use this
+/// helper instead of opening session/config files directly.
+pub fn open_limited_regular_file(path: &Path, limit: u64) -> io::Result<File> {
+    let file = open_regular_file_no_symlink(path)?;
+    let metadata = file.metadata()?;
+    if metadata.len() > limit {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             ResourceLimitError::TooLarge {
-                size: opened_metadata.len(),
+                size: metadata.len(),
                 limit,
             },
         ));
@@ -252,6 +259,41 @@ mod tests {
         let error = read_limited(&path, 4).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert!(error.to_string().contains("exceeding limit"));
+    }
+
+    #[test]
+    fn unlimited_open_ignores_file_size() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("big.jsonl");
+        let mut file = File::create(&path).unwrap();
+        // Larger than any of the crate's whole-file byte limits, to prove
+        // this helper genuinely does not gate on size.
+        file.write_all(&vec![b'a'; MAX_SESSION_FILE_BYTES as usize + 1024])
+            .unwrap();
+
+        let opened = open_regular_file_no_symlink(&path);
+        assert!(opened.is_ok(), "unexpected error: {opened:?}");
+    }
+
+    #[test]
+    fn unlimited_open_rejects_missing_or_non_regular_paths() {
+        let dir = tempdir().unwrap();
+        let missing = dir.path().join("does-not-exist.jsonl");
+        assert!(open_regular_file_no_symlink(&missing).is_err());
+        assert!(open_regular_file_no_symlink(dir.path()).is_err());
+    }
+
+    #[test]
+    fn open_limited_regular_file_still_enforces_its_limit() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("large.jsonl");
+        fs::write(&path, b"0123456789").unwrap();
+
+        let error = open_limited_regular_file(&path, 4).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("exceeding limit"));
+
+        assert!(open_limited_regular_file(&path, 10).is_ok());
     }
 
     #[test]

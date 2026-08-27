@@ -2714,34 +2714,56 @@ impl ProviderService {
                 // no backfill needed (backfill is for exclusive mode apps like Claude/Codex/Gemini)
                 if !app_type.is_additive_mode() {
                     // Only backfill when switching to a different provider
-                    if let Ok(live_config) = read_live_settings(app_type.clone()) {
-                        if let Some(mut current_provider) = providers.get(&current_id).cloned() {
-                            // 切走前先把 live 里的可共享改动（含用户直接在应用内
-                            // 装插件/加 hook/改偏好）同步进通用配置片段，再做剥离回填。
-                            // 详见 sync_common_config_snippet_from_live 的文档。
-                            Self::sync_common_config_snippet_from_live(
-                                state,
-                                &app_type,
-                                &current_provider,
-                                &live_config,
-                                &mut result,
-                            );
-
-                            current_provider.settings_config =
-                                strip_common_config_from_live_settings(
-                                    state.db.as_ref(),
+                    match read_live_settings(app_type.clone()) {
+                        Ok(live_config) => {
+                            if let Some(mut current_provider) = providers.get(&current_id).cloned()
+                            {
+                                // 切走前先把 live 里的可共享改动（含用户直接在应用内
+                                // 装插件/加 hook/改偏好）同步进通用配置片段，再做剥离回填。
+                                // 详见 sync_common_config_snippet_from_live 的文档。
+                                Self::sync_common_config_snippet_from_live(
+                                    state,
                                     &app_type,
                                     &current_provider,
-                                    live_config,
+                                    &live_config,
+                                    &mut result,
                                 );
-                            if let Err(e) =
-                                state.db.save_provider(app_type.as_str(), &current_provider)
-                            {
-                                log::warn!("Backfill failed: {e}");
-                                result
-                                    .warnings
-                                    .push(format!("backfill_failed:{current_id}"));
+
+                                current_provider.settings_config =
+                                    strip_common_config_from_live_settings(
+                                        state.db.as_ref(),
+                                        &app_type,
+                                        &current_provider,
+                                        live_config,
+                                    );
+                                if let Err(e) =
+                                    state.db.save_provider(app_type.as_str(), &current_provider)
+                                {
+                                    log::warn!("Backfill failed: {e}");
+                                    result
+                                        .warnings
+                                        .push(format!("backfill_failed:{current_id}"));
+                                }
                             }
+                        }
+                        Err(e) => {
+                            // Reading/validating live config.toml can fail for
+                            // reasons that are transient and easy to hit —
+                            // e.g. Codex itself holding the file open on
+                            // Windows at the exact moment of a switch — not
+                            // just "the file is genuinely corrupt". Silently
+                            // skipping here used to mean the switch would go
+                            // on to overwrite Live anyway, discarding
+                            // whatever the user had just hand-edited into it
+                            // for the outgoing provider, with no record of
+                            // that having happened.
+                            log::warn!(
+                                "Backfill skipped: failed to read live {} config before switching away from '{current_id}': {e}",
+                                app_type.as_str()
+                            );
+                            result
+                                .warnings
+                                .push(format!("backfill_skipped:{current_id}"));
                         }
                     }
                 }
@@ -2757,6 +2779,26 @@ impl ProviderService {
             let previous_local = crate::settings::get_current_provider(&app_type);
             let previous_db = state.db.get_current_provider(app_type.as_str())?;
             let live_snapshot = LiveSnapshot::capture(&app_type)?;
+
+            // We never touch `[profiles.*]` tables — they're the user's own —
+            // but Codex's `profile` mechanism lets an active one override the
+            // exact top-level routing keys this switch is about to write
+            // (model_provider/model/model_catalog_json/...). Detect that
+            // specific conflict up front: otherwise the switch reports
+            // success while Codex keeps routing through the profile.
+            if matches!(app_type, AppType::Codex) {
+                if let Ok(current_config_text) = crate::codex_config::read_codex_config_text() {
+                    if let Some(profile_name) =
+                        crate::codex_config::detect_active_profile_routing_override(
+                            &current_config_text,
+                        )
+                    {
+                        result
+                            .warnings
+                            .push(format!("active_profile_overrides_routing:{profile_name}"));
+                    }
+                }
+            }
 
             if let Err(error) =
                 write_live_with_common_config(state.db.as_ref(), &app_type, provider)

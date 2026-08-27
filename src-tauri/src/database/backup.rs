@@ -65,6 +65,21 @@ fn import_authorizer(context: rusqlite::hooks::AuthContext<'_>) -> rusqlite::hoo
     }
 }
 
+/// Quote a SQLite identifier (table or column name) for safe interpolation
+/// into SQL text, doubling any embedded `"` per the SQL standard so the
+/// identifier cannot terminate the quoted form early and splice arbitrary
+/// SQL into the surrounding statement.
+///
+/// Every table/column name reaching this today comes from our own schema
+/// (`sqlite_master`, `PRAGMA table_info`) or fixed constants, never
+/// directly from external input — but `dump_sql`'s output is meant to be a
+/// faithful, always-valid round trip of whatever schema is on disk, so an
+/// identifier that happens to contain `"` must still produce syntactically
+/// correct SQL instead of a corrupt export.
+fn quote_ident(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
 /// Tables whose data rows are skipped when exporting for WebDAV sync.
 const SYNC_SKIP_TABLES: &[&str] = &[
     "proxy_request_logs",
@@ -149,9 +164,6 @@ impl Database {
         let sql_content = sql_raw.trim_start_matches('\u{feff}');
         Self::validate_cc_switch_sql_export(sql_content)?;
 
-        // 导入前备份现有数据库
-        let backup_path = self.backup_database_file()?;
-
         let local_snapshot = if preserve_tables.is_empty() {
             None
         } else {
@@ -184,6 +196,12 @@ impl Database {
         if let Some(local_snapshot) = local_snapshot.as_ref() {
             Self::restore_tables(local_snapshot, &temp_conn, preserve_tables)?;
         }
+
+        // 只有暂存库通过全部校验之后，才对现有主库做安全备份并提交导入——
+        // 与 restore_from_backup 的顺序一致。备份挪到这里（而不是函数开头）
+        // 是因为它会占用 cleanup_db_backups 的保留配额：早前在校验之前就
+        // 备份，会让多次失败的导入尝试把真正有价值的旧备份顶掉。
+        let backup_path = self.backup_database_file()?;
 
         // 使用 Backup 将临时库原子写回主库
         {
@@ -249,7 +267,7 @@ impl Database {
             }
 
             target_conn
-                .execute(&format!("DELETE FROM \"{table}\""), [])
+                .execute(&format!("DELETE FROM {}", quote_ident(table)), [])
                 .map_err(|e| AppError::Database(format!("清空表 {table} 失败: {e}")))?;
 
             let placeholders = (1..=columns.len())
@@ -258,13 +276,16 @@ impl Database {
                 .join(", ");
             let cols = columns
                 .iter()
-                .map(|column| format!("\"{column}\""))
+                .map(|column| quote_ident(column))
                 .collect::<Vec<_>>()
                 .join(", ");
-            let insert_sql = format!("INSERT INTO \"{table}\" ({cols}) VALUES ({placeholders})");
+            let insert_sql = format!(
+                "INSERT INTO {} ({cols}) VALUES ({placeholders})",
+                quote_ident(table)
+            );
 
             let mut stmt = source_conn
-                .prepare(&format!("SELECT * FROM \"{table}\""))
+                .prepare(&format!("SELECT * FROM {}", quote_ident(table)))
                 .map_err(|e| AppError::Database(format!("读取表 {table} 失败: {e}")))?;
             let mut rows = stmt
                 .query([])
@@ -497,7 +518,7 @@ impl Database {
             }
 
             let mut stmt = conn
-                .prepare(&format!("SELECT * FROM \"{table}\""))
+                .prepare(&format!("SELECT * FROM {}", quote_ident(&table)))
                 .map_err(|e| AppError::Database(e.to_string()))?;
             let mut rows = stmt
                 .query([])
@@ -514,11 +535,12 @@ impl Database {
 
                 let cols = columns
                     .iter()
-                    .map(|c| format!("\"{c}\""))
+                    .map(|c| quote_ident(c))
                     .collect::<Vec<_>>()
                     .join(", ");
                 output.push_str(&format!(
-                    "INSERT INTO \"{table}\" ({cols}) VALUES ({});\n",
+                    "INSERT INTO {} ({cols}) VALUES ({});\n",
+                    quote_ident(&table),
                     values.join(", ")
                 ));
             }
@@ -531,7 +553,7 @@ impl Database {
     /// 获取表的列名列表
     fn get_table_columns(conn: &Connection, table: &str) -> Result<Vec<String>, AppError> {
         let mut stmt = conn
-            .prepare(&format!("PRAGMA table_info(\"{table}\")"))
+            .prepare(&format!("PRAGMA table_info({})", quote_ident(table)))
             .map_err(|e| AppError::Database(e.to_string()))?;
         let iter = stmt
             .query_map([], |row| row.get::<_, String>(1))
@@ -549,7 +571,17 @@ impl Database {
         match value {
             ValueRef::Null => Ok("NULL".to_string()),
             ValueRef::Integer(i) => Ok(i.to_string()),
-            ValueRef::Real(f) => Ok(f.to_string()),
+            // `inf`/`-inf`/`NaN` are valid f64 bit patterns SQLite happily
+            // stores, but `f.to_string()` renders them as the literal words
+            // "inf"/"NaN", which are not valid SQL numeric literals and
+            // would make the exported dump fail to re-import. SQLite itself
+            // has no non-finite REAL representation, so NULL is the closest
+            // faithful downgrade.
+            ValueRef::Real(f) => Ok(if f.is_finite() {
+                f.to_string()
+            } else {
+                "NULL".to_string()
+            }),
             ValueRef::Text(t) => {
                 let text = std::str::from_utf8(t)
                     .map_err(|e| AppError::Database(format!("文本字段不是有效的 UTF-8: {e}")))?;
@@ -850,6 +882,17 @@ mod tests {
     }
 
     #[test]
+    #[serial]
+    // A successful import reaches `backup_database_file`, which resolves its
+    // destination through the same process-global app-config-dir path
+    // `CC_SWITCH_TEST_HOME`-based tests redirect. Without `#[serial]` this
+    // ran concurrently with e.g. `failed_import_does_not_consume_a_backup_slot`
+    // and could write a real backup file into that other test's temp
+    // directory mid-run, purely from both tests racing the same global env
+    // var — not a bug in either test's own logic, just an unguarded shared
+    // resource. Confirmed by reproducing the interleaving with
+    // `--test-threads=1` (never fails) vs the default parallel runner
+    // (flaky) before adding this.
     fn import_still_accepts_a_genuine_export() -> Result<(), AppError> {
         // 白名单收得紧，必须有一条回归防线证明它没误伤自家导出格式——
         // 这条测试红了就说明 dump_sql 写出了白名单没覆盖的语句。
@@ -878,6 +921,9 @@ mod tests {
     }
 
     #[test]
+    #[serial]
+    // Same reason as `import_still_accepts_a_genuine_export` above: a
+    // successful sync import also reaches `backup_database_file`.
     fn sync_import_preserves_local_only_tables() -> Result<(), AppError> {
         let remote_db = Database::memory()?;
         {
@@ -1037,6 +1083,117 @@ mod tests {
             Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
             None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn quote_ident_escapes_embedded_double_quotes() {
+        assert_eq!(super::quote_ident("providers"), "\"providers\"");
+        assert_eq!(super::quote_ident("weird\"table"), "\"weird\"\"table\"");
+        assert_eq!(super::quote_ident("a\"\"b"), "\"a\"\"\"\"b\"");
+    }
+
+    #[test]
+    fn format_sql_value_downgrades_non_finite_reals_to_null() -> Result<(), AppError> {
+        use rusqlite::types::ValueRef;
+
+        assert_eq!(
+            Database::format_sql_value(ValueRef::Real(f64::INFINITY))?,
+            "NULL",
+            "+inf must not be emitted as the bare word `inf`, which is not valid SQL"
+        );
+        assert_eq!(
+            Database::format_sql_value(ValueRef::Real(f64::NEG_INFINITY))?,
+            "NULL"
+        );
+        assert_eq!(
+            Database::format_sql_value(ValueRef::Real(f64::NAN))?,
+            "NULL",
+            "NaN must not be emitted as the bare word `NaN`, which is not valid SQL"
+        );
+        assert_eq!(Database::format_sql_value(ValueRef::Real(1.5))?, "1.5");
+        assert_eq!(Database::format_sql_value(ValueRef::Real(0.0))?, "0");
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn failed_import_does_not_consume_a_backup_slot() -> Result<(), AppError> {
+        let old_test_home = std::env::var_os("CC_SWITCH_TEST_HOME");
+        let test_home = std::env::temp_dir().join("cc-switch-import-failure-backup-slot-test");
+        let _ = std::fs::remove_dir_all(&test_home);
+        std::fs::create_dir_all(&test_home).expect("create test home");
+        std::env::set_var("CC_SWITCH_TEST_HOME", &test_home);
+
+        let app_dir = crate::config::get_app_config_dir();
+        std::fs::create_dir_all(&app_dir).expect("create app config dir");
+        // `backup_database_file` only gates on this path existing before it
+        // decides whether there is anything worth backing up; the actual
+        // snapshot it copies always comes from `self.conn`, so a
+        // placeholder is enough to make that gate pass.
+        std::fs::write(
+            app_dir.join(crate::product_policy::PRODUCT_DATABASE_FILE),
+            b"placeholder",
+        )
+        .expect("seed placeholder db file");
+
+        let db = Database::memory()?;
+
+        // `CC_SWITCH_TEST_HOME` (and the app-config-dir override it feeds)
+        // is process-global state that other `#[serial]`-guarded tests in
+        // this same file also redirect to their own directories — `#[serial]`
+        // only rules out them running *concurrently* with this one, not
+        // stray filesystem state a differently-scoped test left behind
+        // sharing part of the same resolved path. Compare against a
+        // baseline captured right here rather than asserting an absolute
+        // count, so this test only ever fails on what *it* actually caused.
+        let backups_before = Database::list_backups()?.len();
+
+        // Correct header, but no provider/MCP rows: passes the authorizer
+        // and the batch execute, then fails `validate_basic_state` — a
+        // *late* failure. Before this fix, the safety backup ran before any
+        // validation, so even this kind of doomed-from-the-start import
+        // still burned a slot in `cleanup_db_backups`'s retention window.
+        let malformed = format!(
+            "{}\nBEGIN TRANSACTION;\nCOMMIT;\n",
+            super::CC_SWITCH_SQL_EXPORT_HEADER
+        );
+        let result = db.import_sql_string(&malformed);
+        assert!(result.is_err(), "an empty import must fail validation");
+
+        let backups_after_failure = Database::list_backups()?;
+        assert_eq!(
+            backups_after_failure.len(),
+            backups_before,
+            "a failed import must not create a safety backup: {backups_after_failure:?}"
+        );
+
+        // A genuine import afterwards must still create exactly one more
+        // backup than before, proving the relocation didn't just quietly
+        // disable backups.
+        {
+            let conn = crate::database::lock_conn!(db.conn);
+            conn.execute(
+                "INSERT INTO providers (id, app_type, name, settings_config, meta)
+                 VALUES ('p1', 'claude', 'Provider One', '{}', '{}')",
+                [],
+            )?;
+        }
+        let exported = db.export_sql_string()?;
+        db.import_sql_string(&exported)?;
+        let backups_after_success = Database::list_backups()?;
+        assert_eq!(
+            backups_after_success.len(),
+            backups_before + 1,
+            "a successful import must create exactly one additional safety backup"
+        );
+
+        match old_test_home {
+            Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
+            None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&test_home);
 
         Ok(())
     }

@@ -36,6 +36,19 @@ const OFFICIAL_UNIFY_RESTORE_BACKUP_NAME: &str = "codex-official-history-unify-r
 /// SQLite 变量上限保守值，IN 列表按此分块。
 const STATE_DB_ID_CHUNK: usize = 500;
 
+/// 一个 Codex 会话文件的 mtime 距当前时间小于此阈值时，视为"近期可能仍被
+/// Codex 进程持有写入"，改写前置检查会跳过它。
+///
+/// 原因：`rewrite_codex_session_file_lines` 用 mtime+长度做改写前后的一致性
+/// 检查，但那只能把竞态窗口缩小到毫秒级——Unix 上 `atomic_write` 用 rename
+/// 替换文件后，任何已经打开该文件、仍在追加写入的 Codex 进程持有的是旧
+/// inode；它此后写入的内容既不会出现在新文件里，也不在我们改写前拍的备份
+/// 里，永久丢失且无声无息。用 mtime 判断"近期是否活跃"无法做到 100% 精确
+/// （純读取无写入的场景也会被误判跳过），但这是在不引入跨进程文件锁的前提
+/// 下能低成本覆盖绝大多数真实场景的方案：错过的文件留到下一轮迁移扫描
+/// （启动 / 切换线路 / 定时）重试即可，代价仅仅是这一轮没有改写。
+const ACTIVE_SESSION_SKIP_THRESHOLD_SECS: u64 = 5 * 60;
+
 /// 串行化官方历史的迁移与还原：开启迁移（启动重试 + 设置保存后台任务）和
 /// 关闭还原可能在毫秒级先后被触发，对同一批 jsonl / state DB 双向改写。
 static CODEX_OFFICIAL_HISTORY_OP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -1288,11 +1301,38 @@ fn rewrite_codex_session_file_lines(
         return Ok(false);
     }
 
+    if session_file_recently_active(modified_before) {
+        log::info!(
+            "跳过改写疑似活跃的 Codex 会话文件（{}秒内有过修改，可能仍被进程持有写入，留给下一轮迁移扫描重试）: {}",
+            ACTIVE_SESSION_SKIP_THRESHOLD_SECS,
+            path.display()
+        );
+        return Ok(false);
+    }
+
     ensure_codex_session_file_unchanged(path, modified_before, len_before)?;
     backup_codex_jsonl_file(path, codex_dir, backup_root)?;
     ensure_codex_session_file_unchanged(path, modified_before, len_before)?;
     atomic_write(path, rewritten.as_bytes())?;
     Ok(true)
+}
+
+/// Whether `modified_before` is recent enough that a Codex process might
+/// still have this session file open and be actively appending to it. See
+/// [`ACTIVE_SESSION_SKIP_THRESHOLD_SECS`].
+fn session_file_recently_active(modified_before: Option<SystemTime>) -> bool {
+    let Some(modified_before) = modified_before else {
+        // Platform/filesystem does not report mtime: no signal either way;
+        // fall back to the pre-existing mtime+length race check instead of
+        // blocking every rewrite unconditionally.
+        return false;
+    };
+    match SystemTime::now().duration_since(modified_before) {
+        Ok(elapsed) => elapsed < Duration::from_secs(ACTIVE_SESSION_SKIP_THRESHOLD_SECS),
+        // mtime is in the future relative to our clock (e.g. clock skew):
+        // treat as active rather than risk the rename-while-open race.
+        Err(_) => true,
+    }
 }
 
 fn ensure_codex_session_file_unchanged(
@@ -1551,6 +1591,27 @@ mod tests {
         values.iter().map(|value| value.to_string()).collect()
     }
 
+    /// Write a session-file fixture and backdate its mtime well past
+    /// `ACTIVE_SESSION_SKIP_THRESHOLD_SECS`.
+    ///
+    /// A freshly `fs::write`-n file always looks "just modified", which
+    /// would make `rewrite_codex_session_file_lines`'s active-session guard
+    /// (added alongside this helper) skip it — exactly the behavior that
+    /// guard exists to provide, but not what these fixture-then-rewrite
+    /// tests are checking. Use this instead of a bare `fs::write` for any
+    /// fixture a test expects to actually be rewritten.
+    fn write_session_fixture(path: &Path, content: &str) {
+        fs::write(path, content).expect("write session fixture");
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .expect("reopen session fixture to backdate mtime");
+        let backdated =
+            SystemTime::now() - Duration::from_secs(ACTIVE_SESSION_SKIP_THRESHOLD_SECS + 60);
+        file.set_times(std::fs::FileTimes::new().set_modified(backdated))
+            .expect("backdate session fixture mtime");
+    }
+
     #[test]
     fn detects_custom_routed_codex_config_for_unify_gate() {
         // 注入产物（官方 + 统一开关）
@@ -1698,7 +1759,7 @@ base_url = "https://proxy.example/v1"
         let session_dir = codex_dir.join("sessions/2026/05/28");
         fs::create_dir_all(&session_dir).expect("create session dir");
         let session_path = session_dir.join("local-sim.jsonl");
-        fs::write(
+        write_session_fixture(
             &session_path,
             concat!(
                 "{\"type\":\"session_meta\",\"payload\":{\"id\":\"s1\",\"model_provider\":\"rightcode\"}}\n",
@@ -1708,8 +1769,7 @@ base_url = "https://proxy.example/v1"
                 "{\"type\":\"session_meta\",\"payload\":{\"id\":\"s5\",\"model_provider\":\"openai\"}}\n",
                 "{\"type\":\"session_meta\",\"payload\":{\"id\":\"s6\",\"model_provider\":\"custom\"}}\n",
             ),
-        )
-        .expect("write session");
+        );
 
         let migrated_jsonl =
             migrate_codex_jsonl_files(&codex_dir, &source_provider_ids, &backup_root)
@@ -1959,20 +2019,18 @@ base_url = "https://proxy.example/v1"
 
         // 两个不同的第三方桶各一个会话文件，外加一个官方桶的会话。
         let relay_a_path = session_dir.join("relay-a.jsonl");
-        fs::write(
+        write_session_fixture(
             &relay_a_path,
             concat!(
                 "{\"type\":\"session_meta\",\"payload\":{\"id\":\"s1\",\"model_provider\":\"relay-a\"}}\n",
                 "{\"type\":\"response_item\",\"payload\":{\"text\":\"relay-a\"}}\n",
             ),
-        )
-        .expect("write relay-a session");
+        );
         let relay_b_path = session_dir.join("relay-b.jsonl");
-        fs::write(
+        write_session_fixture(
             &relay_b_path,
             "{\"type\":\"session_meta\",\"payload\":{\"id\":\"s2\",\"model_provider\":\"relay-b\"}}\n",
-        )
-        .expect("write relay-b session");
+        );
         let official_path = session_dir.join("official.jsonl");
         fs::write(
             &official_path,
@@ -2045,7 +2103,7 @@ base_url = "https://proxy.example/v1"
         let session_dir = codex_dir.join("sessions/2026/06/12");
         fs::create_dir_all(&session_dir).expect("create session dir");
         let session_path = session_dir.join("official-sim.jsonl");
-        fs::write(
+        write_session_fixture(
             &session_path,
             concat!(
                 "{\"type\":\"session_meta\",\"payload\":{\"id\":\"s1\",\"model_provider\":\"openai\"}}\n",
@@ -2053,8 +2111,7 @@ base_url = "https://proxy.example/v1"
                 "{\"type\":\"session_meta\",\"payload\":{\"id\":\"s3\",\"model_provider\":\"my-private-relay\"}}\n",
                 "{\"type\":\"response_item\",\"payload\":{\"text\":\"openai\"}}\n",
             ),
-        )
-        .expect("write session");
+        );
 
         let migrated_jsonl =
             migrate_codex_jsonl_files(&codex_dir, &source_provider_ids, &backup_root)
@@ -2152,11 +2209,10 @@ base_url = "https://proxy.example/v1"
         let session_dir = codex_dir.join("sessions/2026/06/01");
         fs::create_dir_all(&session_dir).expect("create session dir");
         let official_path = session_dir.join("official.jsonl");
-        fs::write(
+        write_session_fixture(
             &official_path,
             "{\"type\":\"session_meta\",\"payload\":{\"id\":\"s1\",\"model_provider\":\"custom\"}}\n",
-        )
-        .expect("write official session");
+        );
         let on_period_dir = codex_dir.join("sessions/2026/06/12");
         fs::create_dir_all(&on_period_dir).expect("create on-period dir");
         let on_period_path = on_period_dir.join("on-period.jsonl");
@@ -2368,14 +2424,13 @@ base_url = "https://proxy.example/v1"
         let session_dir = codex_dir.join("sessions/2026/05/20");
         fs::create_dir_all(&session_dir).expect("create session dir");
         let path = session_dir.join("rollout-test.jsonl");
-        fs::write(
+        write_session_fixture(
             &path,
             concat!(
                 "{\"type\":\"session_meta\",\"payload\":{\"id\":\"s1\",\"model_provider\":\"rightcode\"}}\n",
                 "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":\"hi\"}}\n"
             ),
-        )
-        .expect("write session");
+        );
 
         let changed = rewrite_codex_session_file_for_provider_bucket(
             &path,
@@ -3041,5 +3096,69 @@ model_provider = "aihubmix"
 
         let ids = collect_source_model_provider_ids(&db).expect("collect ids");
         assert!(!ids.contains("my-local-relay"));
+    }
+
+    // ── 活跃会话文件跳过改写 ──
+
+    #[test]
+    fn session_file_recently_active_flags_fresh_mtime_and_clears_after_threshold() {
+        let now = SystemTime::now();
+        assert!(
+            session_file_recently_active(Some(now)),
+            "a file modified right now must be treated as possibly active"
+        );
+        assert!(
+            !session_file_recently_active(Some(
+                now - Duration::from_secs(ACTIVE_SESSION_SKIP_THRESHOLD_SECS + 1)
+            )),
+            "a file modified well before the threshold must be safe to rewrite"
+        );
+        assert!(
+            !session_file_recently_active(None),
+            "missing mtime is no signal either way and must not block rewriting"
+        );
+        assert!(
+            session_file_recently_active(Some(now + Duration::from_secs(30))),
+            "an mtime in the future (clock skew) must be treated conservatively as active"
+        );
+    }
+
+    #[test]
+    fn rewrite_skips_recently_active_session_file() {
+        let dir = tempdir().expect("tempdir");
+        let codex_dir = dir.path().join(".codex");
+        let backup_root = dir.path().join("active-skip-backup");
+        let session_dir = codex_dir.join("sessions/2026/07/06");
+        fs::create_dir_all(&session_dir).expect("create session dir");
+
+        let path = session_dir.join("active.jsonl");
+        let original =
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"s1\",\"model_provider\":\"relay-a\"}}\n";
+        // Freshly written (mtime = now, well inside the active-skip
+        // threshold): must NOT be rewritten even though it clearly needs
+        // one, because a Codex process could still have it open.
+        fs::write(&path, original).expect("write session");
+
+        let rewrote = rewrite_codex_session_file_for_provider_bucket(
+            &path,
+            &codex_dir,
+            &HashSet::from(["relay-a".to_string()]),
+            &backup_root,
+        )
+        .expect("an active-file skip must not surface as an error");
+
+        assert!(
+            !rewrote,
+            "a freshly-written (presumed active) session file must be skipped, not rewritten"
+        );
+        assert_eq!(
+            fs::read_to_string(&path).expect("read session"),
+            original,
+            "file content must stay untouched while the writer is presumed active"
+        );
+        assert!(
+            !backup_root.exists(),
+            "no backup should be created when the rewrite is skipped for being active"
+        );
     }
 }

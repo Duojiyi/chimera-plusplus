@@ -16,7 +16,6 @@ use codex_theme_engine::native::NativeThemePaths;
 
 const SKINS_BASE: &str = "https://skins.agentsmirror.com";
 const CATALOG_URL: &str = "https://skins.agentsmirror.com/index.json";
-const THEME_CDP_PORT: u16 = 9345;
 const MAX_PACK_BYTES: u64 = 50 * 1024 * 1024;
 /// 皮肤目录抓取超时（秒）。
 const SKIN_CATALOG_TIMEOUT_SECS: u64 = 20;
@@ -130,6 +129,17 @@ fn portable_root() -> Result<PathBuf, String> {
 
 fn operation_lock() -> PathBuf {
     runtime_root().join("operation.lock")
+}
+
+// A fixed, source-code-visible debug port here would let any other local
+// process attach via CDP and control the Codex renderer for as long as the
+// skin-preview relaunch keeps it open — see the identical rationale on
+// `codex_cdp::codex_renderer_debug_port`. Picked once per Chimera++ process
+// so the launch call and the injection client that follows it agree.
+static THEME_CDP_PORT: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
+
+fn theme_cdp_port() -> u16 {
+    *THEME_CDP_PORT.get_or_init(|| crate::codex_cdp::pick_ephemeral_loopback_port().unwrap_or(9345))
 }
 
 fn native_paths() -> NativeThemePaths {
@@ -322,7 +332,7 @@ async fn inject_skin(root: PathBuf, skin_id: &str) -> Result<(), String> {
     let payload =
         codex_theme_engine::payload::build_payload(&theme).map_err(|error| error.to_string())?;
     let targets =
-        codex_theme_engine::cdp::connect_codex_targets(THEME_CDP_PORT, Duration::from_secs(45))
+        codex_theme_engine::cdp::connect_codex_targets(theme_cdp_port(), Duration::from_secs(45))
             .await
             .map_err(|error| error.to_string())?;
     let mut applied = 0usize;
@@ -372,7 +382,7 @@ pub async fn apply_skin_package(skin_id: String, confirm: bool) -> Result<(), St
             &installed,
             codex_win_engine::LaunchOptions {
                 disable_codex_self_updates: true,
-                remote_debugging_port: Some(THEME_CDP_PORT),
+                remote_debugging_port: Some(theme_cdp_port()),
             },
         )
         .map_err(|_| "Could not restart Codex for skin injection.".to_string())
@@ -405,8 +415,18 @@ pub async fn try_skin_package(skin_id: String, confirm: bool) -> Result<(), Stri
     }
     let root = themes_root();
     let portable_root = portable_root()?;
+    let lock_path = operation_lock();
     tauri::async_runtime::spawn_blocking(move || {
-        close_and_launch(&portable_root, Some(THEME_CDP_PORT))
+        // Must take the same cross-process lock as apply/restore/install: this
+        // closes and relaunches Codex, which can otherwise race an in-flight
+        // runtime update/install that is mid rename-swap on the same install
+        // root (the update would see its freshly-launched process holding the
+        // directory open and fail, or trigger a spurious auto-rollback).
+        let lock = OperationLock::new(lock_path);
+        let _guard = lock
+            .try_acquire("try_skin_package")
+            .map_err(|_| "Another Chimera++ operation is already running.".to_string())?;
+        close_and_launch(&portable_root, Some(theme_cdp_port()))
     })
     .await
     .map_err(|_| "The skin preview was interrupted.".to_string())??;

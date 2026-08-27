@@ -140,8 +140,28 @@ async fn update_provider_with_automatic_routing_mode(
     let _profile_guard = state.profile_apply_lock.lock().await;
     let auto_manage_routing = matches!(app_type, AppType::Codex | AppType::GrokBuild);
     if !auto_manage_routing {
-        return ProviderService::update(&state, app_type, original_id.as_deref(), provider)
-            .map_err(|e| e.to_string());
+        // ProviderService::update is synchronous but may bridge into async
+        // proxy backup refreshes when Live is currently taken over (same
+        // reason the Codex/GrokBuild path below runs on spawn_blocking).
+        // This branch used to call it directly on the async command's own
+        // task: with enough concurrent Claude/Gemini saves to fill the Tokio
+        // runtime's worker pool — one per-app switch lock's owner is enough
+        // on a single-worker runtime — every worker ends up parked inside
+        // this bridge waiting on a lock that only a worker can make progress
+        // on, and the whole backend (proxy included) stops responding.
+        //
+        // Cloned rather than moved: `_profile_guard` above still holds a
+        // live borrow into `state.profile_apply_lock` at this point (it is
+        // only dropped when this function returns), so `state` itself
+        // cannot be moved out from under it.
+        let update_state = state.clone();
+        return tauri::async_runtime::spawn_blocking(move || {
+            ProviderService::update(&update_state, app_type, original_id.as_deref(), provider)
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| format!("供应商更新任务执行失败: {e}"))
+        .and_then(|result| result);
     }
 
     let proxy_service = state.proxy_service.clone();
@@ -161,8 +181,25 @@ async fn update_provider_with_automatic_routing_mode(
     // explicit "save and apply" flow instead continues below with the same
     // snapshots and compensation used for a current-provider edit.
     if !is_current && !activate_when_inactive {
-        return ProviderService::update(&state, app_type, Some(&original_id), provider)
-            .map_err(|e| e.to_string());
+        // Same worker-starvation hazard as the `!auto_manage_routing` branch
+        // above: this is a normal (not "save and apply") edit of a Codex/
+        // GrokBuild provider that isn't currently active, and still calls
+        // the same potentially-async-bridging `ProviderService::update`.
+        let update_state = state.clone();
+        let update_app_type = app_type.clone();
+        let update_original_id = original_id.clone();
+        return tauri::async_runtime::spawn_blocking(move || {
+            ProviderService::update(
+                &update_state,
+                update_app_type,
+                Some(&update_original_id),
+                provider,
+            )
+            .map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| format!("供应商更新任务执行失败: {e}"))
+        .and_then(|result| result);
     }
 
     let previous_local = crate::settings::get_current_provider(&app_type);

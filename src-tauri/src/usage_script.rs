@@ -1,9 +1,35 @@
 use rquickjs::{Context, Function, Runtime};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 use url::{Host, Url};
 
 use crate::error::AppError;
+
+/// Cap on JS heap usage for a usage script's `Runtime`. These scripts come
+/// from user-imported deep links (`usageScript`) and can run unattended on
+/// an `usageAutoInterval` timer — nothing upstream of this module bounds
+/// what the script itself allocates.
+const USAGE_SCRIPT_MEMORY_LIMIT_BYTES: usize = 64 * 1024 * 1024;
+
+/// Wall-clock budget for one `ctx.eval` call. `execute_usage_script`'s
+/// `timeout_secs` only bounds the HTTP request the script issues
+/// (`send_http_request`) — JS evaluation itself had no bound at all, so a
+/// script containing e.g. `while (true) {}` (or an accidental infinite loop
+/// in otherwise-legitimate extractor logic) permanently parks whichever
+/// tokio worker/blocking thread runs it.
+const USAGE_SCRIPT_EVAL_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Applies the memory and wall-clock bounds above to a freshly-created
+/// `Runtime`, before any untrusted script code is evaluated on it. QuickJS
+/// enforces the memory limit itself (allocations past it fail); the
+/// interrupt handler is polled periodically by the engine during execution
+/// and aborts evaluation once the deadline captured at call time has passed.
+fn configure_usage_script_runtime_limits(runtime: &Runtime) {
+    runtime.set_memory_limit(USAGE_SCRIPT_MEMORY_LIMIT_BYTES);
+    let deadline = Instant::now() + USAGE_SCRIPT_EVAL_TIMEOUT;
+    runtime.set_interrupt_handler(Some(Box::new(move || Instant::now() >= deadline)));
+}
 
 /// 执行用量查询脚本
 pub async fn execute_usage_script(
@@ -38,6 +64,7 @@ pub async fn execute_usage_script(
                 format!("Failed to create JS runtime: {e}"),
             )
         })?;
+        configure_usage_script_runtime_limits(&runtime);
         let context = Context::full(&runtime).map_err(|e| {
             AppError::localized(
                 "usage_script.context_create_failed",
@@ -119,6 +146,7 @@ pub async fn execute_usage_script(
                 format!("Failed to create JS runtime: {e}"),
             )
         })?;
+        configure_usage_script_runtime_limits(&runtime);
         let context = Context::full(&runtime).map_err(|e| {
             AppError::localized(
                 "usage_script.context_create_failed",

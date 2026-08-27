@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::io::{Read, Write};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -10,9 +11,38 @@ use url::Url;
 
 // 9229 was the original CDP port, but a stale kernel-held socket from an older
 // crash could pin it after the owning process exited, making a fresh Codex
-// launch unable to bind it. 9330 is the current default; the constant is the
-// single source of truth for both the launch argument and the injection client.
-pub const CODEX_RENDERER_DEBUG_PORT: u16 = 9330;
+// launch unable to bind it. 9330 was then adopted as a fixed default — but a
+// fixed, source-code-visible port lets any other local process (or a web page
+// via a non-browser client) attach via CDP `Runtime.evaluate` and fully
+// control the Codex renderer — read session tokens, issue requests as the
+// user — for as long as Codex keeps running. `codex_renderer_debug_port`
+// below picks a free port at runtime instead, once per Chimera++ process, so
+// the port is no longer public knowledge; both the launch argument and the
+// injection/probe clients must go through this single accessor to stay in
+// agreement for a given run.
+static RENDERER_DEBUG_PORT: OnceLock<u16> = OnceLock::new();
+
+/// Ask the OS for a currently-free loopback TCP port: bind to port 0, read
+/// back the OS-assigned port, then release the socket. There is an inherent,
+/// unavoidable TOCTOU gap between releasing this probe socket and Codex
+/// actually binding the same port a moment later during launch; in practice
+/// the window is milliseconds of process-launch time and requires a local
+/// attacker to already be actively racing this exact port — a materially
+/// smaller exposure than a permanently fixed, world-known port.
+pub(crate) fn pick_ephemeral_loopback_port() -> std::io::Result<u16> {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+    listener.local_addr().map(|addr| addr.port())
+}
+
+/// The CDP debug port Chimera++ uses for this run's Codex renderer injection
+/// and probing. Stable for the lifetime of the Chimera++ process (so launch,
+/// injection, and later probes agree), but not a compile-time constant — see
+/// the module-level comment above `RENDERER_DEBUG_PORT`. Falls back to the
+/// historical 9330 only if the OS refuses to hand out an ephemeral port at
+/// all (never observed in practice; keeps this infallible for callers).
+pub fn codex_renderer_debug_port() -> u16 {
+    *RENDERER_DEBUG_PORT.get_or_init(|| pick_ephemeral_loopback_port().unwrap_or(9330))
+}
 
 const TARGET_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 const TARGET_POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -734,9 +764,13 @@ mod tests {
         build_model_unlock_config, build_model_unlock_script, model_catalog_ready_after_reload,
         parse_model_unlock_status, parse_targets_http_response, pick_codex_page_target,
         validate_cdp_websocket_url, CodexRendererModelUnlockConfig, CodexRendererUnlockProbe,
-        CodexRendererUnlockRuntimeStatus, CODEX_RENDERER_DEBUG_PORT,
+        CodexRendererUnlockRuntimeStatus,
     };
     use serde_json::json;
+
+    // Arbitrary fixed port for fixture determinism. Production code no
+    // longer has a compile-time port constant — see `codex_renderer_debug_port`.
+    const CODEX_RENDERER_DEBUG_PORT: u16 = 9330;
 
     #[test]
     fn payload_deduplicates_models_and_keeps_configured_default() {

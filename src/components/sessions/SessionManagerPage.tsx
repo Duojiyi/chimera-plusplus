@@ -456,11 +456,18 @@ export function SessionManagerPage({ appId }: { appId: string }) {
 
     if (targets.length === 1) {
       const [target] = targets;
-      await deleteSessionMutation.mutateAsync({
-        providerId: target.providerId,
-        sessionId: target.sessionId,
-        sourcePath: target.sourcePath!,
-      });
+      try {
+        await deleteSessionMutation.mutateAsync({
+          providerId: target.providerId,
+          sessionId: target.sessionId,
+          sourcePath: target.sourcePath!,
+        });
+      } catch {
+        // The mutation's onError already toasts the failure; this only
+        // stops the rejection from escaping as an unhandled promise
+        // rejection. Leave the target selected since it was not deleted.
+        return;
+      }
       setSelectedSessionKeys((current) => {
         const next = new Set(current);
         next.delete(getSessionKey(target));
