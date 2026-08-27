@@ -2711,8 +2711,14 @@ impl ProviderService {
         if let Some(current_id) = current_id {
             if current_id != id {
                 // Additive mode apps - all providers coexist in the same file,
-                // no backfill needed (backfill is for exclusive mode apps like Claude/Codex/Gemini)
-                if !app_type.is_additive_mode() {
+                // no backfill needed (backfill is for exclusive mode apps like Claude/Codex/Gemini).
+                // Claude Desktop is exclusive-mode but has NO generic live read
+                // by design (`read_live_settings` unconditionally errors for it;
+                // its 3P config is imported through a dedicated flow), so a
+                // backfill skip there is permanent designed behavior — attempting
+                // it just to warn about the designed error would misreport every
+                // single Claude Desktop switch as "your live edits may be lost".
+                if !app_type.is_additive_mode() && !matches!(app_type, AppType::ClaudeDesktop) {
                     // Only backfill when switching to a different provider
                     match read_live_settings(app_type.clone()) {
                         Ok(live_config) => {
