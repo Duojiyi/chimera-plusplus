@@ -10,6 +10,28 @@ numbers belong to a separate upstream line.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.5] - 2026-08-28
+
+### Fixed
+
+- **Codex no longer stays silent through long multi-tool tasks.** The `NativeResponses` model-catalog profile shipped a 117-character placeholder as `base_instructions`, stripping the harness sections that tell the model to narrate progress — large models would run dozens of consecutive tool calls with zero streaming output and dump one giant answer at the end. The profile now carries the full tool-agnostic harness text (autonomy, intermediary updates, final-answer guidance), and the catalog backfill uses the same neutral text so older Codex builds that still require the field never reject the whole catalog.
+- **Portable install can no longer destroy a non-Codex directory.** The engine's install swap treats any existing directory at the configured portable root as "a previous install to replace" (close processes, rename, later delete) with no identity check. An identity guard now runs before every install path — including Standard/MSIX mode, whose engine-internal portable fallback (e.g. when sideloading is policy-blocked) previously bypassed it — and refuses to proceed when the root holds non-Codex content.
+- **Crash-recovery backups survive backup housekeeping.** Stale-backup sweeping now prunes `Codex.rollback-*` and `Codex.replaced-*` as separate pools; pooling them by mtime could delete the only restorable rollback backup right before a reinstall. Rollback also recovers when the install root is missing entirely, install journaling covers online installs, and failed installs no longer leak the staged multi-hundred-MB package.
+- **"Open Codex" asks before interrupting a running instance.** Opening Codex while it is already running used to silently force-close and relaunch it. The backend now requires explicit confirmation (checked against its own live process probe, not the UI's polled state) before restarting.
+- **Provider-switch warnings tell the right story.** An active Codex `[profiles.*]` table that overrides the routing keys being written is now detected and reported as its own warning; backfill failures and skips are surfaced instead of silently discarded; other warning kinds no longer masquerade as "your manual edits may be lost".
+- **Local proxy rejects browser-originated requests.** Requests carrying a browser `Origin` header (including `Origin: null`) are refused, closing the CSRF surface of the unauthenticated localhost listener without breaking CLI clients.
+- **Usage scripts are sandboxed.** User-imported usage scripts now run under a 64 MB heap cap and a 10-second evaluation deadline, so an allocation bomb or infinite loop can no longer park a worker thread forever.
+- **Tool-output images survive the Chat bridge.** Images inside `function_call_output` arrays are converted properly instead of being stringified into million-token base64 text; DeepSeek cache hits (`prompt_cache_hit_tokens`) are now counted; Kimi/Moonshot reasoning replay no longer regresses Anthropic thinking handling.
+- **Deleting a Codex session cleans up completely.** Session deletion now also removes the matching `session_index.jsonl` entry and state-DB thread row, so the Codex desktop sidebar no longer shows ghost threads ("no rollout found").
+- **Settings writes are serialized.** All settings mutations (including rollback paths, startup migrations, and file reloads) go through one read-merge-write lock, closing races where a tray provider switch landing mid-save could be silently reverted; a portable root that later became invalid no longer blocks unrelated settings writes.
+- **Large session files behave consistently.** Session listing and usage parsing stream with per-line bounds instead of rejecting files over 32 MB; history migration's head scan no longer skips oversized rollouts; deferred-because-active session files are reported distinctly (with a retry hint) instead of as "nothing to restore".
+- **Windows fixes.** MSI per-user registry path no longer corrupted by a Handlebars escape; auto-launch registry value quotes the executable path; MSIX payload names with OPC percent-escapes (`%40oai` → `@oai`) are decoded after portable installs so the bundled Computer Use plugin resolves, with traversal-safe rejection of hostile names; the CDP debug port is per-process ephemeral instead of a fixed listener.
+
+### Changed
+
+- **Release pipeline hardening.** Test workflows no longer receive the updater signing key; candidate and release publishing jobs are gated behind the `release` environment; releases publish as non-latest and flip to latest only after updater metadata verification; release evidence records dependency revisions extracted from `Cargo.lock` instead of hardcoded values.
+- Generated Codex provider configs no longer emit the removed `disable_response_storage` key, which current Codex rejects under `--strict-config`.
+
 ## [2.6.4] - 2026-08-25
 
 ### Added
