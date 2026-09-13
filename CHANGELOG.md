@@ -10,6 +10,13 @@ numbers belong to a separate upstream line.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.1] - 2026-09-13
+
+### Fixed
+
+- **Provider saving no longer serializes the React click event.** Saving and applying a Codex provider no longer fails with `Converting circular structure to JSON`; the editor and its regression test now call the save handler without passing the browser event.
+- **Traditional Chinese settings labels are complete.** Added the missing tool installation, upgrade, diagnosis, conflict, and version-status translations.
+
 ## [2.7.0] - 2026-09-12
 
 ### Added

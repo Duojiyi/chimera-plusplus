@@ -89,6 +89,13 @@ describe("Codex auto protocol detection in provider forms", () => {
     expect(appSource).toContain("describeCodexDetectionFailure");
     expect(appSource).toContain("也可以直接指定协议保存：");
   });
+
+  it("ChimeraApp does not pass the React click event into provider saving", () => {
+    expect(appSource).toContain("onSave={() => void saveProvider()}");
+    expect(appSource).toContain("onClick={() => void onSave()}");
+    expect(appSource).not.toContain("onSave={saveProvider}");
+    expect(appSource).not.toContain("onClick={onSave}");
+  });
 });
 
 describe("Codex per-model upstream routes (v2.5.0)", () => {

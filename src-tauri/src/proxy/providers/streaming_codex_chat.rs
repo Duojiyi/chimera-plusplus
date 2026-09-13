@@ -1002,7 +1002,7 @@ mod tests {
                 serde_json::to_string(content).unwrap()
             )
         };
-        let chunks = vec![
+        let chunks = [
             chunk("<think>\nFirst, "),
             chunk("look at the repo layout. "),
             chunk("Then decide which files matter."),

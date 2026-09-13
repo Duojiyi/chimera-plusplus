@@ -1981,7 +1981,11 @@ export default function ChimeraApp() {
                   "draft",
                 )
               }
-              onSave={saveProvider}
+              // Keep React's click event out of saveProvider's optional
+              // protocol-override argument. Passing saveProvider directly
+              // makes the MouseEvent become apiFormat and breaks IPC JSON
+              // serialization through its circular DOM/React references.
+              onSave={() => void saveProvider()}
               onDelete={() => {
                 if (editor.original) setPendingProviderDelete(editor.original);
               }}
@@ -4215,7 +4219,7 @@ function ProviderEditor({
           )}
           <button
             className="primary"
-            onClick={onSave}
+            onClick={() => void onSave()}
             disabled={savingProvider || fetchingModels}
           >
             {savingProvider ? (
