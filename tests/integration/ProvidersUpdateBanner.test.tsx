@@ -1,7 +1,9 @@
 import { fireEvent, render, screen } from "@testing-library/react";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
 import { NewProvidersView } from "@/ChimeraApp";
 import type { Provider } from "@/types";
+import { createTestQueryClient } from "../utils/testQueryClient";
 
 const dismissUpdateMock = vi.fn();
 const installUpdateMock = vi.fn().mockResolvedValue(true);
@@ -45,6 +47,14 @@ function makeProps(
   };
 }
 
+function renderView(overrides: Partial<Parameters<typeof NewProvidersView>[0]> = {}) {
+  return render(
+    <QueryClientProvider client={createTestQueryClient()}>
+      <NewProvidersView {...makeProps(overrides)} />
+    </QueryClientProvider>,
+  );
+}
+
 describe("providers update banner", () => {
   it("shows the verified update banner with a direct install action", () => {
     useUpdateMock.mockReturnValue({
@@ -57,18 +67,14 @@ describe("providers update banner", () => {
       downloadProgress: null,
     });
 
-    render(<NewProvidersView {...makeProps()} />);
+    renderView();
 
     const banner = screen.getByRole("status");
-    expect(banner).toHaveTextContent("Chimera++ 2.1.4 \u53ef\u7528");
-    expect(banner).toHaveTextContent(
-      "\u5df2\u901a\u8fc7\u7b7e\u540d\u9a8c\u8bc1\uff0c\u66f4\u65b0\u540e\u5c06\u81ea\u52a8\u91cd\u542f\u3002",
-    );
+    expect(banner).toHaveTextContent("Chimera++ 2.1.4 可用");
+    expect(banner).toHaveTextContent("发现新版本，下载并验证后安装。");
+    expect(screen.getByRole("button", { name: /稍后/ })).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /\u7a0d\u540e/ }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: /\u4e0b\u8f7d\u5e76\u5b89\u88c5/ }),
+      screen.getByRole("button", { name: /下载并安装/ }),
     ).toBeInTheDocument();
   });
 
@@ -80,7 +86,7 @@ describe("providers update banner", () => {
       dismissUpdate: dismissUpdateMock,
     });
 
-    render(<NewProvidersView {...makeProps()} />);
+    renderView();
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
@@ -92,7 +98,7 @@ describe("providers update banner", () => {
       dismissUpdate: dismissUpdateMock,
     });
 
-    render(<NewProvidersView {...makeProps()} />);
+    renderView();
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
@@ -104,7 +110,7 @@ describe("providers update banner", () => {
       dismissUpdate: dismissUpdateMock,
     });
 
-    render(<NewProvidersView {...makeProps()} />);
+    renderView();
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
@@ -116,8 +122,8 @@ describe("providers update banner", () => {
       dismissUpdate: dismissUpdateMock,
     });
 
-    render(<NewProvidersView {...makeProps()} />);
-    fireEvent.click(screen.getByRole("button", { name: /\u7a0d\u540e/ }));
+    renderView();
+    fireEvent.click(screen.getByRole("button", { name: /稍后/ }));
     expect(dismissUpdateMock).toHaveBeenCalledOnce();
   });
 
@@ -132,10 +138,8 @@ describe("providers update banner", () => {
       downloadProgress: null,
     });
 
-    render(<NewProvidersView {...makeProps()} />);
-    fireEvent.click(
-      screen.getByRole("button", { name: /\u4e0b\u8f7d\u5e76\u5b89\u88c5/ }),
-    );
+    renderView();
+    fireEvent.click(screen.getByRole("button", { name: /下载并安装/ }));
     expect(dismissUpdateMock).not.toHaveBeenCalled();
     expect(installUpdateMock).toHaveBeenCalledOnce();
   });
@@ -152,12 +156,12 @@ describe("providers update banner", () => {
       downloadProgress: null,
     });
 
-    render(<NewProvidersView {...makeProps()} />);
+    renderView();
     expect(screen.getByRole("status")).toHaveTextContent(
-      "\u5b89\u88c5\u5305\u5df2\u5728\u540e\u53f0\u4e0b\u8f7d\u5b8c\u6bd5",
+      "安装包已下载并通过验证",
     );
     expect(
-      screen.getByRole("button", { name: /\u5b89\u88c5\u5e76\u91cd\u542f/ }),
+      screen.getByRole("button", { name: /安装并重启/ }),
     ).toBeInTheDocument();
   });
 
@@ -172,7 +176,7 @@ describe("providers update banner", () => {
       downloadProgress: { downloaded: 60, total: 100 },
     });
 
-    render(<NewProvidersView {...makeProps()} />);
+    renderView();
 
     expect(screen.getByRole("status")).toHaveTextContent("正在下载 60%");
     expect(screen.getByRole("button", { name: /正在更新…/ })).toBeDisabled();
@@ -187,13 +191,28 @@ describe("providers update banner", () => {
       stagedVersion: "2.1.3",
     });
 
-    render(<NewProvidersView {...makeProps()} />);
+    renderView();
     const banner = screen.getByRole("status");
-    expect(banner).not.toHaveTextContent(
-      "\u5b89\u88c5\u5305\u5df2\u5728\u540e\u53f0\u4e0b\u8f7d\u5b8c\u6bd5",
-    );
-    expect(banner).toHaveTextContent(
-      "\u5df2\u901a\u8fc7\u7b7e\u540d\u9a8c\u8bc1",
-    );
+    expect(banner).not.toHaveTextContent("安装包已下载并通过验证");
+    expect(banner).toHaveTextContent("发现新版本，下载并验证后安装。");
+  });
+
+  it("handles download/install error gracefully when user clicks install", async () => {
+    const failingInstall = vi
+      .fn()
+      .mockRejectedValue(new Error("Network timeout"));
+    useUpdateMock.mockReturnValue({
+      hasUpdate: true,
+      isDismissed: false,
+      updateInfo: { availableVersion: "2.1.4", currentVersion: "2.1.3" },
+      dismissUpdate: dismissUpdateMock,
+      installUpdate: failingInstall,
+      isInstalling: false,
+      downloadProgress: null,
+    });
+
+    renderView();
+    fireEvent.click(screen.getByRole("button", { name: /下载并安装/ }));
+    expect(failingInstall).toHaveBeenCalledOnce();
   });
 });

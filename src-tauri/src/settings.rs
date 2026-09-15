@@ -633,6 +633,9 @@ pub struct AppSettings {
     /// Whether to show the failover toggle independently on the main page
     #[serde(default)]
     pub enable_failover_toggle: bool,
+    /// 是否在首页显示当前线路余额/额度（默认关闭，需用户手动开启）
+    #[serde(default)]
+    pub show_provider_balance: bool,
     /// Whether to show the project profile switcher on the main page header
     #[serde(default = "default_show_profile_switcher")]
     pub show_profile_switcher: bool,
@@ -802,6 +805,7 @@ impl Default for AppSettings {
             usage_confirmed: None,
             usage_dashboard_refresh_interval_ms: None,
             enable_failover_toggle: false,
+            show_provider_balance: false,
             show_profile_switcher: true,
             preserve_codex_official_auth_on_switch: true,
             unify_codex_session_history: true,

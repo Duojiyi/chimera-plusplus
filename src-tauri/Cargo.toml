@@ -1,12 +1,12 @@
 [package]
 name = "chimera-plus-plus"
-version = "2.7.1"
+version = "2.7.2"
 description = "Clean Codex provider switcher and desktop runtime manager"
 authors = ["Duojiyi", "CC Switch contributors"]
 license = "MIT"
 repository = "https://github.com/Duojiyi/chimera-plusplus"
 edition = "2021"
-rust-version = "1.85.0"
+rust-version = "1.95"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

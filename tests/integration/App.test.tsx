@@ -5,12 +5,23 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
 import App from "@/App";
+import { createTestQueryClient } from "../utils/testQueryClient";
+
+type RenderResult = ReturnType<typeof render>;
+function renderApp(): RenderResult {
+  return render(
+    <QueryClientProvider client={createTestQueryClient()}>
+      <App />
+    </QueryClientProvider>,
+  );
+}
 
 describe("Chimera++ application shell", () => {
   it("exposes only the Codex product navigation", () => {
-    render(<App />);
+    renderApp();
 
     expect(screen.getByRole("heading", { name: "供应商" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "供应商" })).toBeInTheDocument();
@@ -24,7 +35,7 @@ describe("Chimera++ application shell", () => {
   });
 
   it("switches between the runtime, token, appearance, and settings surfaces", async () => {
-    render(<App />);
+    renderApp();
 
     fireEvent.click(screen.getByRole("button", { name: "更新" }));
     expect(
@@ -60,7 +71,7 @@ describe("Chimera++ application shell", () => {
   }, 15_000);
 
   it("exposes direct line switching and the complete line management flow", async () => {
-    render(<App />);
+    renderApp();
 
     expect(await screen.findByText("线路切换")).toBeInTheDocument();
     expect(

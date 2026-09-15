@@ -388,6 +388,8 @@ export interface Settings {
   proxyConfirmed?: boolean;
   // User has confirmed the usage query first-run notice
   usageConfirmed?: boolean;
+  // 是否显示供应商余额/额度
+  showProviderBalance?: boolean;
   usageDashboardRefreshIntervalMs?: number;
   // Whether to show the failover toggle independently on the main page
   enableFailoverToggle?: boolean;

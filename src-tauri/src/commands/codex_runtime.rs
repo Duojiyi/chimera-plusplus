@@ -573,9 +573,10 @@ fn launch_executable_with_codex_home(
             executable.display()
         )
     })?;
-    // The process is intentionally owned by Codex after launch. We verify its
-    // liveness separately, so waiting here would block the Tauri command.
-    std::mem::forget(child);
+    // The process is intentionally owned by Codex after launch. In standard library,
+    // dropping `Child` closes the OS process handle without terminating the spawned process,
+    // preventing handle leakage while letting Codex run independently.
+    drop(child);
     Ok(())
 }
 
@@ -2532,5 +2533,33 @@ mod tests {
         assert!(replaced_new.exists(), "newest replaced-* must survive");
         assert!(!rollback_old.exists(), "older rollback-* should be pruned");
         assert!(!replaced_old.exists(), "older replaced-* should be pruned");
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn child_drop_does_not_terminate_process() {
+        use std::process::Command;
+
+        let child = Command::new("powershell.exe")
+            .args(["-NoProfile", "-Command", "Start-Sleep -Seconds 3"])
+            .spawn()
+            .expect("spawn test child");
+
+        let pid = child.id();
+        drop(child);
+
+        let check = Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}")])
+            .output()
+            .expect("check tasklist");
+        let output = String::from_utf8_lossy(&check.stdout);
+        assert!(
+            output.contains(&pid.to_string()),
+            "Process should still exist after dropping child handle"
+        );
+
+        let _ = Command::new("taskkill")
+            .args(["/F", "/PID", &format!("{pid}")])
+            .output();
     }
 }

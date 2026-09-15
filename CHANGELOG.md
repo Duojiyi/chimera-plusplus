@@ -10,6 +10,18 @@ numbers belong to a separate upstream line.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.2] - 2026-09-15
+
+### Added
+
+- **Provider balance display can be enabled from the settings view.** A new `显示供应商余额` switch (disabled by default) toggles a read-only balance bar in the provider/line view. Relay lines report the account balance point total (with a manual refresh button), while non-relay lines show a neutral `非中转线路不支持余额查询` note instead of an error.
+- **Codex renderer unlock state is regression-tested.** Added coverage for the renderer unlock probe handling in the provider view.
+
+### Fixed
+
+- **Provider view no longer crashes when rendered outside the query provider tree.** Integration tests that mount the provider view directly now wrap it in a `QueryClientProvider`, matching the app's real wiring, so `No QueryClient set` failures are gone.
+- **Rust formatting and clippy are clean under the enforced CI gates.**
+
 ## [2.7.1] - 2026-09-13
 
 ### Fixed

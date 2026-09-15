@@ -5,6 +5,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::process::Command;
+use std::sync::{Mutex as StdMutex, OnceLock};
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -105,6 +106,10 @@ impl RemoteLayout {
 pub(crate) fn build_local_snapshot(
     db: &crate::database::Database,
 ) -> Result<LocalSnapshot, AppError> {
+    // Readers and restorers share the same local snapshot boundary.
+    let _lock = snapshot_apply_mutex()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     // Export database to SQL string
     let sql_string = db.export_sql_string_for_sync()?;
     let db_sql = sql_string.into_bytes();
@@ -373,11 +378,21 @@ pub(crate) fn verify_artifact(
 
 // ─── Snapshot application ────────────────────────────────────
 
+static SNAPSHOT_APPLY_MUTEX: OnceLock<StdMutex<()>> = OnceLock::new();
+
+pub(crate) fn snapshot_apply_mutex() -> &'static StdMutex<()> {
+    SNAPSHOT_APPLY_MUTEX.get_or_init(|| StdMutex::new(()))
+}
+
 pub(crate) fn apply_snapshot(
     db: &crate::database::Database,
     db_sql: &[u8],
     skills_zip: &[u8],
 ) -> Result<(), AppError> {
+    let _lock = snapshot_apply_mutex()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
     let sql_str = std::str::from_utf8(db_sql).map_err(|e| {
         localized(
             "sync.sql_not_utf8",
@@ -387,11 +402,22 @@ pub(crate) fn apply_snapshot(
     })?;
     let skills_backup = backup_current_skills()?;
 
-    // Replace skills first, then import database; roll back skills on DB failure.
-    restore_skills_zip(skills_zip)?;
+    // Replace skills first, then import database; roll back skills on failure.
+    if let Err(skills_err) = restore_skills_zip(skills_zip) {
+        if let Err(rollback_err) = restore_skills_from_backup(skills_backup) {
+            return Err(localized(
+                "sync.skills_restore_and_rollback_failed",
+                format!("恢复 Skills 失败: {skills_err}; 同时回滚 Skills 备份失败: {rollback_err}"),
+                format!(
+                    "Failed to restore skills: {skills_err}; skills backup rollback also failed: {rollback_err}"
+                ),
+            ));
+        }
+        return Err(skills_err);
+    }
 
     if let Err(db_err) = db.import_sql_string_for_sync(sql_str) {
-        if let Err(rollback_err) = restore_skills_from_backup(&skills_backup) {
+        if let Err(rollback_err) = restore_skills_from_backup(skills_backup) {
             return Err(localized(
                 "sync.db_import_and_rollback_failed",
                 format!("导入数据库失败: {db_err}; 同时回滚 Skills 失败: {rollback_err}"),
@@ -759,5 +785,38 @@ mod tests {
             size: data.len() as u64,
         };
         assert!(verify_artifact(data, "test.bin", &meta).is_ok());
+    }
+
+    #[test]
+    fn snapshot_apply_mutex_serializes_concurrent_callers() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use std::thread;
+
+        let active_count = Arc::new(AtomicUsize::new(0));
+        let max_concurrency = Arc::new(AtomicUsize::new(0));
+        let mut handles = Vec::new();
+
+        for _ in 0..8 {
+            let active = Arc::clone(&active_count);
+            let max_conc = Arc::clone(&max_concurrency);
+            handles.push(thread::spawn(move || {
+                let _lock = snapshot_apply_mutex().lock().unwrap();
+                let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                max_conc.fetch_max(current, Ordering::SeqCst);
+                thread::sleep(std::time::Duration::from_millis(15));
+                active.fetch_sub(1, Ordering::SeqCst);
+            }));
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        assert_eq!(
+            max_concurrency.load(Ordering::SeqCst),
+            1,
+            "Snapshot apply lock must strictly serialize all concurrent callers"
+        );
     }
 }

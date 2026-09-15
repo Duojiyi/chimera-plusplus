@@ -292,6 +292,7 @@ pub fn probe_codex_renderer_unlock(debug_port: u16) -> CodexRendererUnlockProbe 
             "expression": "globalThis.__CHIMERA_CODEX_MODEL_UNLOCK_STATUS__ ?? null",
             "returnByValue": true,
         }),
+        IO_TIMEOUT,
     )
     .map(|evaluated| parse_model_unlock_status(&evaluated));
     let _ = socket.close(None);
@@ -572,13 +573,14 @@ fn inject_script(websocket_url: &str, debug_port: u16, script: &str) -> Result<(
     let (mut socket, _) = client(websocket_url, stream)
         .map_err(|error| format!("Codex renderer WebSocket 握手失败：{error}"))?;
 
-    send_cdp_command(&mut socket, 1, "Page.enable", json!({}))?;
-    send_cdp_command(&mut socket, 2, "Runtime.enable", json!({}))?;
+    send_cdp_command(&mut socket, 1, "Page.enable", json!({}), IO_TIMEOUT)?;
+    send_cdp_command(&mut socket, 2, "Runtime.enable", json!({}), IO_TIMEOUT)?;
     send_cdp_command(
         &mut socket,
         3,
         "Page.addScriptToEvaluateOnNewDocument",
         json!({ "source": script }),
+        IO_TIMEOUT,
     )?;
     let evaluated = send_cdp_command(
         &mut socket,
@@ -589,6 +591,7 @@ fn inject_script(websocket_url: &str, debug_port: u16, script: &str) -> Result<(
             "awaitPromise": true,
             "returnByValue": true,
         }),
+        IO_TIMEOUT,
     )?;
     let initial_status = parse_model_unlock_status(&evaluated)?
         .ok_or_else(|| "Codex renderer 未确认模型注入脚本已安装".to_string())?;
@@ -607,6 +610,7 @@ fn inject_script(websocket_url: &str, debug_port: u16, script: &str) -> Result<(
         5,
         "Page.reload",
         json!({ "ignoreCache": true }),
+        IO_TIMEOUT,
     )?;
 
     let deadline = Instant::now() + MODEL_UNLOCK_VERIFY_TIMEOUT;
@@ -615,7 +619,12 @@ fn inject_script(websocket_url: &str, debug_port: u16, script: &str) -> Result<(
     let mut last_error = None;
     while Instant::now() < deadline {
         std::thread::sleep(MODEL_UNLOCK_VERIFY_POLL_INTERVAL);
-        match evaluate_model_unlock_status(&mut socket, command_id) {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let step_timeout = remaining.min(IO_TIMEOUT);
+        match evaluate_model_unlock_status(&mut socket, command_id, step_timeout) {
             Ok(Some(status)) => {
                 let is_reloaded_document = status.installed
                     && !status.document_id.is_empty()
@@ -672,6 +681,7 @@ fn model_catalog_ready_after_reload(
 fn evaluate_model_unlock_status(
     socket: &mut WebSocket<TcpStream>,
     id: u64,
+    timeout: Duration,
 ) -> Result<Option<CodexRendererUnlockRuntimeStatus>, String> {
     let evaluated = send_cdp_command(
         socket,
@@ -681,6 +691,7 @@ fn evaluate_model_unlock_status(
             "expression": "globalThis.__CHIMERA_CODEX_MODEL_UNLOCK_STATUS__ ?? null",
             "returnByValue": true,
         }),
+        timeout,
     )?;
     parse_model_unlock_status(&evaluated)
 }
@@ -709,18 +720,33 @@ fn send_cdp_command(
     id: u64,
     method: &str,
     params: Value,
+    timeout: Duration,
 ) -> Result<Value, String> {
+    let deadline = Instant::now() + timeout;
     let payload = serde_json::to_string(&json!({
         "id": id,
         "method": method,
         "params": params,
     }))
     .map_err(|error| format!("无法序列化 CDP 命令 {method}：{error}"))?;
+
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Err(format!("发送 CDP 命令 {method} 超时"));
+    }
+    let _ = socket.get_ref().set_write_timeout(Some(remaining));
+
     socket
         .send(Message::Text(payload.into()))
         .map_err(|error| format!("发送 CDP 命令 {method} 失败：{error}"))?;
 
     loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(format!("等待 CDP 命令 {method} 响应超时"));
+        }
+        let _ = socket.get_ref().set_read_timeout(Some(remaining));
+
         let message = socket
             .read()
             .map_err(|error| format!("等待 CDP 命令 {method} 响应失败：{error}"))?;
@@ -747,9 +773,16 @@ fn send_cdp_command(
                 }
                 return Ok(value.get("result").cloned().unwrap_or(Value::Null));
             }
-            Message::Ping(bytes) => socket
-                .send(Message::Pong(bytes))
-                .map_err(|error| format!("回复 Codex renderer 心跳失败：{error}"))?,
+            Message::Ping(bytes) => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(format!("等待 CDP 命令 {method} 响应超时"));
+                }
+                let _ = socket.get_ref().set_write_timeout(Some(remaining));
+                socket
+                    .send(Message::Pong(bytes))
+                    .map_err(|error| format!("回复 Codex renderer 心跳失败：{error}"))?;
+            }
             Message::Close(frame) => {
                 return Err(format!("Codex renderer 提前关闭 WebSocket：{frame:?}"));
             }
@@ -767,6 +800,9 @@ mod tests {
         CodexRendererUnlockRuntimeStatus,
     };
     use serde_json::json;
+    use std::net::TcpStream;
+    use std::time::{Duration, Instant};
+    use tungstenite::Message;
 
     // Arbitrary fixed port for fixture determinism. Production code no
     // longer has a compile-time port constant — see `codex_renderer_debug_port`.
@@ -942,5 +978,62 @@ mod tests {
         assert!(!probe.injected);
         assert_eq!(probe.model_count, 0);
         assert!(probe.error.is_some());
+    }
+
+    #[test]
+    fn send_cdp_command_enforces_overall_deadline_despite_spurious_events() {
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let local_addr = listener.local_addr().expect("local addr");
+
+        let server_thread = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept test conn");
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+            let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+            let mut server_socket = match tungstenite::accept(stream) {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+
+            let server_deadline = Instant::now() + Duration::from_secs(2);
+            let _ = server_socket.read();
+
+            while Instant::now() < server_deadline {
+                let unmatched = json!({ "id": 999, "result": { "ignored": true } });
+                if server_socket
+                    .send(Message::Text(unmatched.to_string().into()))
+                    .is_err()
+                {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+        });
+
+        let client_stream = TcpStream::connect(local_addr).expect("connect client");
+        let (mut client_socket, _) =
+            tungstenite::client::client(format!("ws://{local_addr}/"), client_stream)
+                .expect("client handshake");
+
+        let budget = Duration::from_millis(150);
+        let start = Instant::now();
+        let result = super::send_cdp_command(
+            &mut client_socket,
+            1,
+            "Runtime.evaluate",
+            json!({ "expression": "1" }),
+            budget,
+        );
+        let elapsed = start.elapsed();
+
+        drop(client_socket);
+        server_thread.join().expect("server thread");
+        assert!(result.is_err());
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "Command exceeded budget plus scheduling tolerance: {elapsed:?}"
+        );
     }
 }

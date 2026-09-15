@@ -27,7 +27,7 @@ import {
   providerNeedsRouting,
 } from "@/utils/providerCapabilities";
 import { useProviderHealth } from "@/lib/query/failover";
-import { useUsageQuery } from "@/lib/query/queries";
+import { useSettingsQuery, useUsageQuery } from "@/lib/query/queries";
 import { resolveProviderIcon } from "@/utils/providerIcon";
 
 interface DragHandleProps {
@@ -74,7 +74,7 @@ function isOfficialProvider(provider: Provider, appId: AppId): boolean {
     return true;
   }
 
-  const config = provider.settingsConfig as Record<string, any>;
+  const config = provider.settingsConfig as ProviderSettingsShape;
   if (appId === "claude") {
     const baseUrl = config?.env?.ANTHROPIC_BASE_URL;
     return !baseUrl || (typeof baseUrl === "string" && baseUrl.trim() === "");
@@ -103,6 +103,12 @@ function isOfficialProvider(provider: Provider, appId: AppId): boolean {
   return false;
 }
 
+type ProviderSettingsShape = {
+  env?: Record<string, unknown>;
+  auth?: Record<string, unknown>;
+  config?: unknown;
+};
+
 const extractApiUrl = (provider: Provider, fallbackText: string) => {
   if (provider.notes?.trim()) {
     return provider.notes.trim();
@@ -116,13 +122,12 @@ const extractApiUrl = (provider: Provider, fallbackText: string) => {
 
   if (config && typeof config === "object") {
     const envBase =
-      (config as Record<string, any>)?.env?.ANTHROPIC_BASE_URL ||
-      (config as Record<string, any>)?.env?.GOOGLE_GEMINI_BASE_URL;
+      config.env?.ANTHROPIC_BASE_URL || config.env?.GOOGLE_GEMINI_BASE_URL;
     if (typeof envBase === "string" && envBase.trim()) {
       return envBase;
     }
 
-    const baseUrl = (config as Record<string, any>)?.config;
+    const baseUrl = config.config;
 
     if (typeof baseUrl === "string" && baseUrl.includes("base_url")) {
       const extractedBaseUrl = extractCodexBaseUrl(baseUrl);
@@ -194,6 +199,8 @@ export function ProviderCard({
   }, [provider.notes, displayUrl, fallbackUrlText]);
 
   const usageEnabled = provider.meta?.usage_script?.enabled ?? false;
+  const { data: appSettings } = useSettingsQuery();
+  const balanceDisplayEnabled = appSettings?.showProviderBalance ?? false;
   const isOfficial = isOfficialProvider(provider, appId);
   const supportsOfficialSubscription =
     isOfficial && ["claude", "codex", "gemini"].includes(appId);
@@ -242,7 +249,11 @@ export function ProviderCard({
     : 0;
 
   const { data: usage } = useUsageQuery(provider.id, appId, {
-    enabled: usageEnabled && !isOfficial && !isOfficialSubscriptionUsage,
+    enabled:
+      balanceDisplayEnabled &&
+      usageEnabled &&
+      !isOfficial &&
+      !isOfficialSubscriptionUsage,
     autoQueryInterval,
   });
 
@@ -518,7 +529,7 @@ export function ProviderCard({
                   provider={provider}
                   providerId={provider.id}
                   appId={appId}
-                  usageEnabled={usageEnabled}
+                  usageEnabled={balanceDisplayEnabled && usageEnabled}
                   isCurrent={isCurrent}
                   isInConfig={isInConfig}
                   inline={true}
@@ -604,7 +615,7 @@ export function ProviderCard({
             provider={provider}
             providerId={provider.id}
             appId={appId}
-            usageEnabled={usageEnabled}
+            usageEnabled={balanceDisplayEnabled && usageEnabled}
             isCurrent={isCurrent}
             isInConfig={isInConfig}
             inline={false}

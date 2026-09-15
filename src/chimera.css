@@ -951,7 +951,7 @@
   margin: 5px 0 0;
   color: var(--ch-muted);
   font:
-    11px/1.55 ui-monospace,
+    11px / 1.55 ui-monospace,
     monospace;
   overflow-wrap: anywhere;
 }
@@ -1758,6 +1758,10 @@ body.is-mac
 }
 .route-meta code {
   color: var(--ink);
+}
+.route-meta-balance code {
+  color: var(--ch-accent, #2563eb);
+  font-weight: 600;
 }
 .route-meta .ok {
   color: var(--success);
@@ -3634,7 +3638,7 @@ body.is-mac
   background: #fff;
   color: var(--ink);
   font:
-    11px/1.55 "Cascadia Mono",
+    11px / 1.55 "Cascadia Mono",
     Consolas,
     monospace;
 }
@@ -3862,6 +3866,52 @@ body.is-mac
   font-size: 10px;
   line-height: 1.25;
   white-space: nowrap;
+}
+.route-balance-bar {
+  margin: 0 0 8px;
+  padding: 7px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #ffe0d6;
+  border-radius: 10px;
+  background: #fff6f2;
+}
+.route-balance-bar-label {
+  color: #6a7680;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.route-balance-bar code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ch-accent, #2563eb);
+  font-size: 13px;
+  font-weight: 700;
+}
+.route-balance-bar code.is-muted {
+  color: #4b5563;
+  font-weight: 600;
+}
+.route-balance-refresh {
+  flex: 0 0 auto;
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #8a95a0;
+  cursor: pointer;
+}
+.route-balance-refresh:hover {
+  color: var(--ch-accent, #2563eb);
+  background: rgba(37, 99, 235, 0.1);
 }
 .route-codex-unlock-hint {
   position: absolute;

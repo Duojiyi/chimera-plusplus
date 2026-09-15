@@ -283,9 +283,10 @@ fn redact_known_secrets(text: &str, known_secrets: &[String]) -> String {
 }
 
 /// 无 scheme 的裸 authority 形态(如 `user:pass@host/path`)剥掉 userinfo：
-/// 仅当 `@` 出现在第一个 `/` 之前时才视为凭据。
+/// 仅当 `@` 出现在第一个 `/`、`?` 或 `#` 之前时才视为凭据。
 fn strip_bare_userinfo(input: &str) -> &str {
-    let authority_end = input.find('/').unwrap_or(input.len());
+    // authority 在第一个 `/`、`?` 或 `#` 处结束；三者任一早于 `@` 出现即非凭据。
+    let authority_end = input.find(['/', '?', '#']).unwrap_or(input.len());
     match input[..authority_end].rfind('@') {
         Some(at) => &input[at + 1..],
         None => input,
@@ -2549,7 +2550,7 @@ mod tests {
     use super::{
         classify_exit_request, enabled_proxy_apps_on_startup, redact_url_for_log,
         redact_url_for_log_with_secrets, redact_url_origin_for_log, runtime_log_level_allows,
-        ExitRequestAction,
+        strip_bare_userinfo, ExitRequestAction,
     };
     use crate::database::Database;
 
@@ -2574,11 +2575,29 @@ mod tests {
         );
         // 无法解析为绝对 URL 时：丢 query，其余原样保留。
         assert_eq!(redact_url_for_log("not-a-url?token=secret"), "not-a-url");
+        // 裸 userinfo 后跟 query/fragment（无 `/`）时，`@` 前、`?`/`#` 前的 userinfo 仍应被剥掉。
+        assert_eq!(
+            redact_url_for_log("user:secret@gw.example.com?key=1"),
+            "gw.example.com"
+        );
         // 不再对 path 段做“看起来像密钥”的形状猜测，正常路径完整保留。
         assert_eq!(
             redact_url_for_log("https://host.example/v1/models/gemini-2.5-pro"),
             "https://host.example/v1/models/gemini-2.5-pro"
         );
+    }
+
+    #[test]
+    fn strip_bare_userinfo_treats_slash_query_and_fragment_as_authority_end() {
+        // 直接调用时，`?` 和 `#` 也应视为 authority 结束；`@` 在其之前的 userinfo 仍被剥除。
+        assert_eq!(strip_bare_userinfo("user:pass@host/path"), "host/path");
+        assert_eq!(strip_bare_userinfo("user:pass@host?x=1"), "host?x=1");
+        assert_eq!(strip_bare_userinfo("user:pass@host#frag"), "host#frag");
+        // `?`/`#` 早于 `@` 出现时，`@` 属于 path/query 内容而非 userinfo，应原样保留。
+        assert_eq!(strip_bare_userinfo("host/path?user@x"), "host/path?user@x");
+        assert_eq!(strip_bare_userinfo("host#user@x"), "host#user@x");
+        // 无 `@` 时原样返回。
+        assert_eq!(strip_bare_userinfo("host/path"), "host/path");
     }
 
     #[test]

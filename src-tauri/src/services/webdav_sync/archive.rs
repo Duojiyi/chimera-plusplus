@@ -18,7 +18,7 @@ use crate::services::sync_protocol::{
 const MAX_EXTRACT_ENTRIES: usize = 10_000;
 
 pub(crate) struct SkillsBackup {
-    _tmp: TempDir,
+    tmp: TempDir,
     backup_dir: PathBuf,
     ssot_path: PathBuf,
     existed: bool,
@@ -151,8 +151,26 @@ pub(crate) fn restore_skills_zip(raw: &[u8]) -> Result<(), AppError> {
 
     if let Err(e) = copy_dir_recursive(&extracted, &ssot) {
         if bak.exists() {
-            let _ = fs::remove_dir_all(&ssot);
-            let _ = fs::rename(&bak, &ssot);
+            let mut rollback_errs = Vec::new();
+            if let Err(rm_err) = fs::remove_dir_all(&ssot) {
+                rollback_errs.push(format!("清理失败的目标目录失败: {rm_err}"));
+            }
+            if let Err(rename_err) = fs::rename(&bak, &ssot) {
+                rollback_errs.push(format!("恢复备份目录失败: {rename_err}"));
+            }
+            if !rollback_errs.is_empty() {
+                return Err(localized(
+                    "webdav.sync.skills_copy_and_rollback_failed",
+                    format!(
+                        "复制 Skills 目录失败: {e}; 且回滚过程出现错误: {}",
+                        rollback_errs.join("; ")
+                    ),
+                    format!(
+                        "Failed to copy skills directory: {e}; and rollback encountered errors: {}",
+                        rollback_errs.join("; ")
+                    ),
+                ));
+            }
         }
         return Err(e);
     }
@@ -185,14 +203,34 @@ pub(crate) fn backup_current_skills() -> Result<SkillsBackup, AppError> {
     }
 
     Ok(SkillsBackup {
-        _tmp: tmp,
+        tmp,
         backup_dir,
         ssot_path: ssot,
         existed,
     })
 }
 
-pub(crate) fn restore_skills_from_backup(backup: &SkillsBackup) -> Result<(), AppError> {
+pub(crate) fn restore_skills_from_backup(backup: SkillsBackup) -> Result<(), AppError> {
+    match restore_skills_backup_contents(&backup) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let retained = backup.tmp.keep();
+            Err(localized(
+                "sync.skills_rollback_backup_retained",
+                format!(
+                    "回滚 Skills 失败: {error}; 恢复备份保留于 {}",
+                    retained.display()
+                ),
+                format!(
+                    "Skills rollback failed: {error}; recovery backup retained at {}",
+                    retained.display()
+                ),
+            ))
+        }
+    }
+}
+
+fn restore_skills_backup_contents(backup: &SkillsBackup) -> Result<(), AppError> {
     if backup.ssot_path.exists() {
         fs::remove_dir_all(&backup.ssot_path).map_err(|e| AppError::io(&backup.ssot_path, e))?;
     }
@@ -373,6 +411,31 @@ mod tests {
     use std::io::Cursor;
     use std::path::Path;
     use tempfile::tempdir;
+
+    #[test]
+    fn rollback_failure_retains_recovery_backup() {
+        let target = tempdir().unwrap();
+        let blocked_parent = target.path().join("blocked");
+        std::fs::write(&blocked_parent, "not a directory").unwrap();
+        let tmp = tempdir().unwrap();
+        let retained = tmp.path().to_path_buf();
+        let backup_dir = retained.join("skills-backup");
+        std::fs::create_dir(&backup_dir).unwrap();
+        std::fs::write(backup_dir.join("original.txt"), "original").unwrap();
+        let error = super::restore_skills_from_backup(super::SkillsBackup {
+            tmp,
+            backup_dir: backup_dir.clone(),
+            ssot_path: blocked_parent.join("skills"),
+            existed: true,
+        })
+        .expect_err("blocked destination must fail");
+        assert!(error.to_string().contains(&retained.display().to_string()));
+        assert_eq!(
+            std::fs::read_to_string(backup_dir.join("original.txt")).unwrap(),
+            "original"
+        );
+        std::fs::remove_dir_all(retained).unwrap();
+    }
 
     #[test]
     fn mark_visited_dir_tracks_canonical_duplicates() {

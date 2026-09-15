@@ -21,7 +21,7 @@ import {
   ChevronRight,
   CircleCheck,
   CircleAlert,
-  Command,
+  type Command,
   Download,
   Eye,
   EyeOff,
@@ -67,6 +67,7 @@ import {
 import { getChimeraHubTemplate } from "@/config/codexTemplates";
 import {
   extractCodexBaseUrl,
+  extractCodexExperimentalBearerToken,
   extractCodexModelName,
   isCodexGoalModeEnabled,
   isCodexRemoteCompactionEnabled,
@@ -76,6 +77,8 @@ import {
   setCodexRemoteCompaction,
   setCodexWireApi,
 } from "@/utils/providerConfigUtils";
+import { subscriptionApi } from "@/lib/api/subscription";
+import { useQuery } from "@tanstack/react-query";
 import { generateUUID } from "@/utils/uuid";
 import { useDialogFocus } from "@/hooks/useDialogFocus";
 import {
@@ -97,6 +100,7 @@ import {
   type OperationRecord,
 } from "./chimeraUtils";
 import { Empty } from "@/components/Empty";
+import { useSettingsQuery } from "@/lib/query/queries";
 import routeGateIcon from "@/assets/icons/chimera-dragon-mark.png";
 import RouteGlobe from "@/components/RouteGlobe";
 import "./chimera.css";
@@ -144,14 +148,14 @@ type RuntimeStatus = {
   canRollback: boolean;
   canUninstall: boolean;
 };
-type CodexProcessStatus = {
+export type CodexProcessStatus = {
   supported: boolean;
   installed: boolean;
   running: boolean;
   installMode?: string | null;
   officialLoginAvailable: boolean;
 };
-type CodexRendererUnlockProbe = {
+export type CodexRendererUnlockProbe = {
   attachable: boolean;
   injected: boolean;
   modelCount: number;
@@ -425,6 +429,7 @@ export default function ChimeraApp() {
   const [codexRestartRequired, setCodexRestartRequired] = useState(false);
   const [rendererUnlock, setRendererUnlock] =
     useState<CodexRendererUnlockProbe | null>(null);
+  const rendererUnlockSeqRef = useRef(0);
   const [release, setRelease] = useState<ReleaseStatus | null>(null);
   const [editor, setEditor] = useState<ReturnType<typeof providerDraft> | null>(
     null,
@@ -719,7 +724,8 @@ export default function ChimeraApp() {
   };
 
   const refreshRendererUnlock = useCallback(async () => {
-    if (!runningInTauri) {
+    const seq = ++rendererUnlockSeqRef.current;
+    if (!runningInTauri || !codexProcessRef.current?.running) {
       setRendererUnlock(null);
       return;
     }
@@ -727,9 +733,9 @@ export default function ChimeraApp() {
       const probe = await invoke<CodexRendererUnlockProbe>(
         "probe_codex_renderer_unlock",
       );
-      setRendererUnlock(probe);
+      if (seq === rendererUnlockSeqRef.current) setRendererUnlock(probe);
     } catch {
-      setRendererUnlock(null);
+      if (seq === rendererUnlockSeqRef.current) setRendererUnlock(null);
     }
   }, []);
 
@@ -777,6 +783,7 @@ export default function ChimeraApp() {
       if (seq !== codexProcessSeqRef.current) return status;
       codexProcessRef.current = status;
       setCodexProcess(status);
+      ++rendererUnlockSeqRef.current;
       setRendererUnlock(null);
       return status;
     }
@@ -2347,11 +2354,11 @@ export function NewRuntimeView({
             <CircleCheck size={28} />
             <code>{version}</code>
             <small>
-              {!runtimeSupported
-                ? "macOS 可正常切换官方账户与中转线路"
-                : runtime?.installed
+              {runtimeSupported
+                ? runtime?.installed
                   ? `${runtimeText(runtime.installMode)} · ${runtimeChannelText(release?.source)}`
-                  : "未检测到安装"}
+                  : "未检测到安装"
+                : "macOS 可正常切换官方账户与中转线路"}
             </small>
           </div>
         </div>
@@ -2361,11 +2368,11 @@ export function NewRuntimeView({
             <span>
               安装位置
               <b>
-                {!runtimeSupported
-                  ? "不适用"
-                  : runtime?.installed
+                {runtimeSupported
+                  ? runtime?.installed
                     ? "已识别"
-                    : "未检测到"}
+                    : "未检测到"
+                  : "不适用"}
               </b>
             </span>
           </div>
@@ -2921,6 +2928,8 @@ export function NewProvidersView({
     managerOpen,
     managerTriggerRef,
   );
+  const { data: appSettings } = useSettingsQuery();
+  const showProviderBalance = appSettings?.showProviderBalance ?? false;
   // Naming a line requires parsing its config.toml, and disambiguating the
   // generic Chimera names requires parsing every other line's too. Computed
   // per render that is quadratic in the number of lines and re-runs on every
@@ -2957,9 +2966,7 @@ export function NewProvidersView({
         name = "官方账户";
       } else if (!generic) {
         name = provider.name || "未命名线路";
-      } else if (!chimera) {
-        name = "默认线路";
-      } else {
+      } else if (chimera) {
         const index = chimeraIds.indexOf(provider.id);
         name =
           index <= 0
@@ -2967,6 +2974,8 @@ export function NewProvidersView({
             : index === 1
               ? "备用线路"
               : `线路 ${index + 1}`;
+      } else {
+        name = "默认线路";
       }
       labels.set(provider.id, {
         name,
@@ -2985,12 +2994,85 @@ export function NewProvidersView({
     }
     return labels;
   }, [providers]);
-  if (loading) return <Empty label="正在读取线路…" />;
-  if (!providers.length) return <Onboarding onAdd={onAdd} />;
   const current =
     providers.find((provider) => provider.id === currentId) ?? providers[0];
+  const currentConfig = current?.settingsConfig?.config ?? "";
+  const currentAuth = (current?.settingsConfig?.auth ?? {}) as Record<
+    string,
+    unknown
+  >;
   const currentIsOfficial =
-    current.id === "codex-official" || current.category === "official";
+    current != null &&
+    (current.id === "codex-official" || current.category === "official");
+  // ── 首页余额显示（仅非官方线路 + 开关开启时查询）──
+  // hooks 必须在任何 early return 之前调用；enabled 控制是否真正下发请求
+  const balanceBaseUrl = extractCodexBaseUrl(String(currentConfig));
+  // 与 ProviderCard 一致的权威取 key 逻辑：中继站 key 存于
+  // settingsConfig.auth.OPENAI_API_KEY（而非 env.CODEX_API_KEY），
+  // fallback 到实验性 bearer token（在 config TOML 中）。
+  const rawApiKey = currentAuth?.OPENAI_API_KEY as string | undefined;
+  const rawBearerToken = extractCodexExperimentalBearerToken(
+    String(currentConfig),
+  );
+  const balanceApiKey =
+    typeof rawApiKey === "string" && rawApiKey.trim() !== ""
+      ? rawApiKey
+      : typeof rawBearerToken === "string" && rawBearerToken.trim() !== ""
+        ? rawBearerToken
+        : "";
+  const balanceEnabled =
+    showProviderBalance &&
+    !currentIsOfficial &&
+    !!balanceBaseUrl &&
+    !!balanceApiKey;
+  const balanceQuery = useQuery({
+    queryKey: ["provider-balance", current?.id ?? "none"],
+    queryFn: () =>
+      subscriptionApi.getBalance(
+        balanceBaseUrl as string,
+        balanceApiKey as string,
+      ),
+    enabled: balanceEnabled,
+    refetchInterval: balanceEnabled ? 60 * 1000 : false,
+    staleTime: 5 * 60 * 1000,
+    gcTime: 10 * 60 * 1000,
+    retry: 1,
+    retryDelay: 1500,
+  });
+  const balanceData = balanceQuery.data?.data?.[0];
+  const balanceExtra = balanceData?.extra ?? "";
+  const balanceUnlimited = balanceExtra.includes("unlimited_quota=true");
+  const hasAccountBalance = balanceExtra.includes("account_balance_points=");
+  const balanceErrorText =
+    balanceQuery.data && !balanceQuery.data.success
+      ? balanceQuery.data.error
+      : balanceQuery.error
+        ? String(balanceQuery.error)
+        : undefined;
+  const balanceIsUnsupported =
+    !!balanceErrorText &&
+    (balanceErrorText.includes("Unknown balance provider") ||
+      balanceErrorText.includes("API key is empty"));
+  const balanceLabel = balanceQuery.isLoading
+    ? "余额查询中…"
+    : balanceIsUnsupported
+      ? "非中转线路不支持余额查询"
+      : balanceErrorText
+        ? `查询失败：${balanceErrorText}`
+        : balanceData
+          ? hasAccountBalance
+            ? `${Number(balanceData.remaining ?? 0).toLocaleString("en-US", {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2,
+              })}${balanceData.unit ?? ""}`
+            : balanceUnlimited
+              ? "不限量"
+              : `${
+                  balanceData.remaining ?? balanceData.total ?? 0
+                }${balanceData.unit ?? ""}`
+          : "暂无余额数据";
+  if (loading) return <Empty label="正在读取线路…" />;
+  if (!providers.length) return <Onboarding onAdd={onAdd} />;
   const officialLoginRequired =
     currentIsOfficial && codexProcess?.officialLoginAvailable === false;
   const model =
@@ -3051,20 +3133,20 @@ export function NewProvidersView({
   const codexStatusLabel =
     codexProcess === null
       ? "正在检测 Codex"
-      : !codexProcess.supported
-        ? "macOS 暂不支持快速启动"
-        : !codexProcess.installed
-          ? "未检测到 Codex"
-          : officialLoginRequired
+      : codexProcess.supported
+        ? codexProcess.installed
+          ? officialLoginRequired
             ? "官方账户需要登录"
             : codexProcess.running
               ? rendererUnlockPending
-                ? "Codex 运行中 · 模型列表未解锁"
+                ? "Codex 运行中 · 解锁状态未确认"
                 : rendererUnlock?.attachable === true &&
                     rendererUnlock.injected === false
-                  ? "Codex 运行中 · 模型列表待刷新"
+                  ? "Codex 运行中 · 调试连接可用，模型解锁未确认"
                   : "Codex 正在运行"
-              : "Codex 已就绪";
+              : "Codex 已就绪"
+          : "未检测到 Codex"
+        : "macOS 暂不支持快速启动";
   const codexButtonLabel = launchingCodex
     ? "正在启动…"
     : codexProcess === null
@@ -3080,10 +3162,9 @@ export function NewProvidersView({
             : officialLoginRequired
               ? "启动并登录"
               : codexProcess?.running
-                ? rendererUnlockPending || !rendererUnlock
-                  ? "重启解锁"
-                  : "打开 Codex"
+                ? "打开 Codex"
                 : "启动 Codex";
+
   return (
     <section className="route-gate-view route-gate-reference">
       {hasUpdate && !isDismissed && updateInfo && (
@@ -3103,8 +3184,8 @@ export function NewProvidersView({
                     )}%，完成后将自动安装并重启。`
                   : "正在准备更新，完成后将自动安装并重启。"
                 : stagedVersion === updateInfo.availableVersion
-                  ? "安装包已在后台下载完毕，点击即可安装并重启。"
-                  : "已通过签名验证，更新后将自动重启。"}
+                  ? "安装包已下载并通过验证，点击即可安装并重启。"
+                  : "发现新版本，下载并验证后安装。"}
             </small>
           </div>
           <div className="route-update-banner-actions">
@@ -3149,15 +3230,14 @@ export function NewProvidersView({
             </div>
             {rendererUnlockPending && (
               <p className="route-codex-unlock-hint">
-                当前 Codex 为手动启动，模型列表未解锁。点击「重启解锁」通过
-                Chimera++ 重新启动，即可在桌面端模型选择器显示全部自定义模型。
+                暂时无法确认模型列表解锁状态，正在重新检测。
               </p>
             )}
             {codexProcess?.running === true &&
               rendererUnlock?.attachable === true &&
               rendererUnlock.injected === false && (
                 <p className="route-codex-unlock-hint">
-                  模型解锁已附加，正在等待 Codex 刷新模型列表…
+                  调试连接可用，模型解锁未确认/未安装。
                 </p>
               )}
             <button
@@ -3194,6 +3274,31 @@ export function NewProvidersView({
               管理线路 <span aria-hidden="true">→</span>
             </button>
           </header>
+          {showProviderBalance && !currentIsOfficial && (
+            <div className="route-balance-bar">
+              <span className="route-balance-bar-label">余额</span>
+              <code
+                className={
+                  balanceIsUnsupported || balanceErrorText ? "is-muted" : ""
+                }
+              >
+                {balanceLabel}
+              </code>
+              <button
+                type="button"
+                className="route-balance-refresh"
+                aria-label="刷新余额"
+                title="刷新余额"
+                onClick={() => void balanceQuery.refetch()}
+              >
+                {balanceQuery.isFetching ? (
+                  <LoaderCircle className="spin" size={14} />
+                ) : (
+                  <RefreshCw size={14} />
+                )}
+              </button>
+            </div>
+          )}
           <div className="route-line-rail">
             <div className="route-line-scroll-shell">
               <button
@@ -4351,6 +4456,7 @@ export function NewSettingsView() {
   };
   const updateChecks = settings?.checkCodexUpdatesOnStart ?? true;
   const providerChecks = settings?.checkProviderStatusOnStart ?? true;
+  const showProviderBalance = settings?.showProviderBalance ?? false;
   const minimizeToTray = settings?.minimizeToTrayOnClose ?? false;
   const openDataFolder = async () => {
     if (!runningInTauri) return;
@@ -4406,11 +4512,11 @@ export function NewSettingsView() {
             ? "已是最新版本"
             : `Chimera++ ${appVersion}`;
   const appUpdateDescription = installingAppUpdate
-    ? appUpdatePercent !== null
-      ? appUpdatePercent >= 100
+    ? appUpdatePercent === null
+      ? "正在准备更新，完成后应用将自动重启"
+      : appUpdatePercent >= 100
         ? "正在安装更新，完成后应用将自动重启"
         : `正在下载更新 ${appUpdatePercent}%`
-      : "正在准备更新，完成后应用将自动重启"
     : isChecking
       ? "正在连接稳定版更新源"
       : hasUpdate
@@ -4422,7 +4528,7 @@ export function NewSettingsView() {
               ? "更新包已下载并通过验证，安装后应用将自动重启"
               : isStaging
                 ? "正在后台下载更新包，点击后将下载完成并安装"
-                : "新版本已通过签名验证，点击即可下载并安装"
+                : "发现新版本，下载并验证后安装"
         : updateError
           ? updateError
           : lastCheckedLabel
@@ -4465,6 +4571,26 @@ export function NewSettingsView() {
         <button
           className="settings-reference-row"
           role="switch"
+          aria-checked={showProviderBalance}
+          onClick={() =>
+            void save({ showProviderBalance: !showProviderBalance })
+          }
+        >
+          <span>
+            <b>显示供应商余额</b>
+            <small>
+              在供应商卡片显示余额或额度（需供应商配置用量查询脚本）
+            </small>
+          </span>
+          <i
+            className={`settings-switch ${showProviderBalance ? "is-on" : ""}`}
+          >
+            <u />
+          </i>
+        </button>
+        <button
+          className="settings-reference-row"
+          role="switch"
           aria-checked={minimizeToTray}
           onClick={() => void save({ minimizeToTrayOnClose: !minimizeToTray })}
         >
@@ -4484,7 +4610,7 @@ export function NewSettingsView() {
           <div className="settings-segment">
             <button
               className={
-                settings?.codexUpdateSource !== "mirror" ? "is-active" : ""
+                settings?.codexUpdateSource === "mirror" ? "" : "is-active"
               }
               aria-pressed={settings?.codexUpdateSource !== "mirror"}
               onClick={() => void save({ codexUpdateSource: "auto" })}
@@ -4581,11 +4707,11 @@ export function NewSettingsView() {
           {installingAppUpdate && (
             <div className="settings-app-update-progress">
               <span>
-                {appUpdatePercent !== null
-                  ? appUpdatePercent >= 100
+                {appUpdatePercent === null
+                  ? "正在准备下载"
+                  : appUpdatePercent >= 100
                     ? "正在安装"
-                    : `${appUpdatePercent}%`
-                  : "正在准备下载"}
+                    : `${appUpdatePercent}%`}
               </span>
               <i
                 role="progressbar"
@@ -4599,9 +4725,9 @@ export function NewSettingsView() {
                     appUpdatePercent === null ? "is-indeterminate" : undefined
                   }
                   style={
-                    appUpdatePercent !== null
-                      ? { width: `${appUpdatePercent}%` }
-                      : undefined
+                    appUpdatePercent === null
+                      ? undefined
+                      : { width: `${appUpdatePercent}%` }
                   }
                 />
               </i>
@@ -4619,6 +4745,7 @@ export function NewSettingsView() {
               codexInstallMode: "standard",
               checkCodexUpdatesOnStart: true,
               checkProviderStatusOnStart: true,
+              showProviderBalance: false,
               minimizeToTrayOnClose: false,
             })
           }
