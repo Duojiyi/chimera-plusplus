@@ -47,7 +47,9 @@ function makeProps(
   };
 }
 
-function renderView(overrides: Partial<Parameters<typeof NewProvidersView>[0]> = {}) {
+function renderView(
+  overrides: Partial<Parameters<typeof NewProvidersView>[0]> = {},
+) {
   return render(
     <QueryClientProvider client={createTestQueryClient()}>
       <NewProvidersView {...makeProps(overrides)} />

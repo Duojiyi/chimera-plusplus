@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NewSettingsView } from "@/ChimeraApp";
+import { NewSettingsView } from "@/views/NewSettingsView";
 
 const { checkUpdateMock, installUpdateMock, toastInfoMock, useUpdateMock } =
   vi.hoisted(() => ({
