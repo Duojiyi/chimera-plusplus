@@ -117,6 +117,7 @@ impl Database {
     /// Export SQL for sync (WebDAV), skipping local-only tables' data
     pub fn export_sql_string_for_sync(&self) -> Result<String, AppError> {
         let snapshot = self.snapshot_to_memory()?;
+        Self::redact_official_provider_auth(&snapshot)?;
         Self::dump_sql(&snapshot, SYNC_SKIP_TABLES)
     }
 
@@ -192,6 +193,9 @@ impl Database {
         // 补齐缺失表/索引并进行基础校验
         Self::create_tables_on_conn(&temp_conn)?;
         Self::apply_schema_migrations_on_conn(&temp_conn)?;
+        if !preserve_tables.is_empty() {
+            Self::redact_official_provider_auth(&temp_conn)?;
+        }
         Self::validate_basic_state(&temp_conn)?;
         if let Some(local_snapshot) = local_snapshot.as_ref() {
             Self::restore_tables(local_snapshot, &temp_conn, preserve_tables)?;
@@ -550,6 +554,29 @@ impl Database {
         Ok(output)
     }
 
+    /// Remove live OAuth state from official providers in sync snapshots.
+    ///
+    /// Provider backfill intentionally keeps local runtime state so switching
+    /// between official accounts preserves each account's refreshed token.
+    /// The sync snapshot is the security boundary: that state must not leave
+    /// the device through the shared `providers` table.
+    fn redact_official_provider_auth(conn: &Connection) -> Result<(), AppError> {
+        let changed = conn.execute(
+            "UPDATE providers
+             SET settings_config = json_set(settings_config, '$.auth', json('{}'))
+             WHERE category = 'official'
+               AND json_valid(settings_config)
+               AND json_extract(settings_config, '$.auth') IS NOT NULL",
+            [],
+        )?;
+
+        if changed > 0 {
+            log::debug!("Redacted auth from {changed} official providers for sync");
+        }
+
+        Ok(())
+    }
+
     /// 获取表的列名列表
     fn get_table_columns(conn: &Connection, table: &str) -> Result<Vec<String>, AppError> {
         let mut stmt = conn
@@ -878,6 +905,88 @@ mod tests {
 
             let _ = std::fs::remove_file(&target);
         }
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn sync_snapshots_redact_official_provider_auth() -> Result<(), AppError> {
+        let old_test_home = std::env::var_os("CC_SWITCH_TEST_HOME");
+        let test_home = std::env::temp_dir().join("cc-switch-sync-official-auth-redaction-test");
+        let _ = std::fs::remove_dir_all(&test_home);
+        std::fs::create_dir_all(&test_home).expect("create sync redaction test home");
+        std::env::set_var("CC_SWITCH_TEST_HOME", &test_home);
+
+        let db = Database::memory()?;
+        {
+            let conn = crate::database::lock_conn!(db.conn);
+            conn.execute(
+                "INSERT INTO providers (id, app_type, name, settings_config, category, meta)
+                 VALUES ('official', 'codex', 'Official',
+                         '{\"auth\":{\"tokens\":{\"access_token\":\"official-live-token\"}},\"config\":\"\"}',
+                         'official', '{}')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO providers (id, app_type, name, settings_config, meta)
+                 VALUES ('custom', 'claude', 'Custom',
+                         '{\"env\":{\"ANTHROPIC_API_KEY\":\"custom-key\"}}', '{}')",
+                [],
+            )?;
+        }
+
+        let sync_export = db.export_sql_string_for_sync()?;
+        assert!(
+            !sync_export.contains("official-live-token"),
+            "sync export must not carry official live OAuth tokens"
+        );
+        assert!(
+            sync_export.contains("custom-key"),
+            "non-official providers still sync their settings"
+        );
+
+        let token_count = {
+            let conn = crate::database::lock_conn!(db.conn);
+            conn.query_row(
+                "SELECT COUNT(*) FROM providers
+                 WHERE id = 'official' AND json_extract(settings_config, '$.auth.tokens.access_token') = 'official-live-token'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )?
+        };
+        assert_eq!(
+            token_count, 1,
+            "redaction must only apply to the sync snapshot"
+        );
+
+        let imported = Database::memory()?;
+        imported.import_sql_string_for_sync(&sync_export)?;
+
+        // Older remote snapshots may still contain the previous leak. The
+        // sync import boundary must clean them instead of restoring tokens.
+        let full_export = db.export_sql_string()?;
+        assert!(full_export.contains("official-live-token"));
+        let legacy_import = Database::memory()?;
+        legacy_import.import_sql_string_for_sync(&full_export)?;
+
+        let leaked_rows: i64 = {
+            let conn = crate::database::lock_conn!(legacy_import.conn);
+            conn.query_row(
+                "SELECT COUNT(*) FROM providers
+                 WHERE category = 'official'
+                   AND json_extract(settings_config, '$.auth.tokens.access_token') IS NOT NULL",
+                [],
+                |row| row.get::<_, i64>(0),
+            )?
+        };
+        assert_eq!(leaked_rows, 0, "sync import must redact official auth");
+
+        match old_test_home {
+            Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
+            None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&test_home);
+
         Ok(())
     }
 
