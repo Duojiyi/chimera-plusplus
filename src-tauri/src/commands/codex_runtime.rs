@@ -1419,13 +1419,85 @@ pub async fn check_codex_runtime_update(
     .map_err(|_| "检查 Codex 更新时任务中断".to_string())?
 }
 
-/// Run installation and launch diagnostics only after a user action.
+/// Run installation diagnostics without killing a running Codex install.
+///
+/// The shared runtime helper activates MSIX and closes the probe instance. For
+/// the standard install mode we use the keep-running variant here so the user's
+/// live Codex session survives a diagnostic run.
+fn diagnose_windows_codex_non_destructive(
+    portable_root: &Path,
+) -> Vec<chimera_runtime::manager::ManagerDiagnostic> {
+    use chimera_runtime::manager::ManagerDiagnostic;
+
+    let Some(installed) = detect_windows_codex(portable_root) else {
+        return vec![ManagerDiagnostic {
+            name: "installation".to_string(),
+            result: "fail".to_string(),
+        }];
+    };
+    let executable = codex_win_engine::installed_app_exe(Path::new(&installed.path));
+    let mut diagnostics = vec![ManagerDiagnostic {
+        name: "executable".to_string(),
+        result: if executable.is_some() { "pass" } else { "fail" }.to_string(),
+    }];
+    if installed.install_mode != "standard" {
+        diagnostics.extend(diagnose_windows_codex(portable_root).into_iter().skip(1));
+        return diagnostics;
+    }
+
+    let health = codex_win_engine::verify_msix_health_with_options(true);
+    diagnostics.extend([
+        ManagerDiagnostic {
+            name: "package integrity".to_string(),
+            result: if health.package_registered && health.status_ok {
+                "pass"
+            } else {
+                "fail"
+            }
+            .to_string(),
+        },
+        ManagerDiagnostic {
+            name: "package registration".to_string(),
+            result: if health.package_registered {
+                "pass"
+            } else {
+                "fail"
+            }
+            .to_string(),
+        },
+        ManagerDiagnostic {
+            name: "dependencies".to_string(),
+            result: if health.missing_dependencies.is_empty() {
+                "pass"
+            } else {
+                "fail"
+            }
+            .to_string(),
+        },
+        ManagerDiagnostic {
+            name: "launch".to_string(),
+            result: if health.healthy {
+                "pass"
+            } else if health.verified {
+                "fail"
+            } else {
+                "warn"
+            }
+            .to_string(),
+        },
+    ]);
+    diagnostics
+}
+
+/// Run installation diagnostics only after a user action, under a shared
+/// operation lock, and without terminating a running Codex instance.
 #[tauri::command]
 pub async fn diagnose_codex_runtime() -> Result<Vec<CodexRuntimeDiagnostic>, String> {
     require_windows()?;
     let portable_root = portable_root()?;
     tauri::async_runtime::spawn_blocking(move || {
-        Ok(diagnose_windows_codex(&portable_root)
+        let _guard = acquire_operation_lock("codex_runtime_diagnose")?;
+        Ok(diagnose_windows_codex_non_destructive(&portable_root)
             .into_iter()
             .map(|entry| CodexRuntimeDiagnostic {
                 name: entry.name,

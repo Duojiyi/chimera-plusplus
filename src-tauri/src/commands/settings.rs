@@ -49,6 +49,17 @@ fn merge_settings_for_save(
         }
         _ => {}
     }
+    // 当前供应商由后端切换、故障转移和托盘操作共同维护。前端设置页
+    // 可能持有旧快照，不能让整份保存载荷把这些权威字段回写成旧值。
+    incoming.current_provider_claude = existing.current_provider_claude.clone();
+    incoming.current_provider_claude_desktop = existing.current_provider_claude_desktop.clone();
+    incoming.current_provider_codex = existing.current_provider_codex.clone();
+    incoming.current_provider_gemini = existing.current_provider_gemini.clone();
+    incoming.current_provider_grokbuild = existing.current_provider_grokbuild.clone();
+    incoming.current_provider_opencode = existing.current_provider_opencode.clone();
+    incoming.current_provider_openclaw = existing.current_provider_openclaw.clone();
+    incoming.current_provider_hermes = existing.current_provider_hermes.clone();
+
     // local_migrations 是纯后端状态（迁移完成标记），前端没有合法的修改场景，
     // 无条件取现有值。若按 incoming 透传：后端清掉 marker（如关闭统一会话
     // 开关）后、前端 query 缓存刷新前的一次全量保存会把旧 marker 重放回来，
@@ -326,6 +337,11 @@ pub async fn install_update_and_restart(
     app: AppHandle,
     staged: tauri::State<'_, StagedUpdateState>,
 ) -> Result<bool, String> {
+    // 便携版（绿色版）没有 updater 安装器，直接安装会把正在运行的可执行
+    // 文件替换掉。这里在后端兜底拒绝，前端再负责把用户引导到发布页。
+    if super::misc::is_portable_mode().await? {
+        return Err("便携版无法自动更新，请到 GitHub 发布页下载新版".to_string());
+    }
     if !crate::product_policy::app_update_channel_configured() {
         return Err("Chimera++ update source is not configured".to_string());
     }

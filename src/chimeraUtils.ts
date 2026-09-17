@@ -342,17 +342,17 @@ export function previousCatalogAsFetched(
     .map((id) => ({ id, ownedBy: null }));
 }
 
-/** `approval_policy` values Codex 0.153+ accepts. `untrusted` was removed and
+/** Simple `approval_policy` values Codex 0.153+ accepts. Granular is a data
+ * carrying variant and must use the table form; `untrusted` was removed and
  * makes Codex reject the whole config file. */
 export const CODEX_APPROVAL_POLICIES = [
   "on-request",
   "on-failure",
   "never",
-  "granular",
 ] as const;
 
 const APPROVAL_POLICY_LINE =
-  /^\s*approval_policy\s*=\s*(?:"([^"]*)"|'([^']*)')\s*(?:#.*)?$/;
+  /^\s*approval_policy\s*=\s*(?:(?:"([^"]*)"|'([^']*)')|\{\s*granular\s*\}|\{\s*granular\s*=)/;
 
 /** Every `approval_policy` value assigned anywhere in a TOML snippet. */
 export function extractCodexApprovalPolicies(
@@ -362,7 +362,12 @@ export function extractCodexApprovalPolicies(
   const values: string[] = [];
   for (const line of text.split(/\r?\n/)) {
     const match = line.match(APPROVAL_POLICY_LINE);
-    if (match) values.push((match[1] ?? match[2] ?? "").trim());
+    if (!match) continue;
+    if (match[1] !== undefined || match[2] !== undefined) {
+      values.push((match[1] ?? match[2]).trim());
+    } else if (!/\{\s*granular\s*=/.test(match[0])) {
+      values.push("invalid-table");
+    }
   }
   return values;
 }
@@ -377,7 +382,7 @@ export function codexApprovalPolicyWarning(
   if (!unsupported.length) return null;
   const first = unsupported[0];
   if (first === "untrusted") {
-    return 'approval_policy = "untrusted" 已被 Codex 停用，会导致整份配置无法加载；请改为 on-request 或 granular。';
+    return 'approval_policy = "untrusted" 已被 Codex 停用，会导致整份配置无法加载；请改为 on-request，或使用表形态 granular = { ... }。';
   }
   return `approval_policy = "${first}" 不是 Codex 认识的值，可选：${CODEX_APPROVAL_POLICIES.join("、")}。`;
 }

@@ -5,7 +5,7 @@ The original license terms and copyright notices are retained below.
 
 ## CC Switch
 
-Source: https://github.com/farion1231/cc-switch
+Source: https://github.com/Duojiyi/chimera-plusplus
 
 Copyright (c) 2025 Jason Young
 

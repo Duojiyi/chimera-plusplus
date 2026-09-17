@@ -57,7 +57,7 @@ pub fn import_mcp_from_deeplink(
         .ok_or_else(|| AppError::InvalidInput("Missing 'apps' parameter for MCP".to_string()))?;
 
     // Parse apps into McpApps struct
-    let target_apps = parse_mcp_apps(apps_str)?;
+    let _target_apps = parse_mcp_apps(apps_str)?;
 
     // Extract config
     let config_b64 = request
@@ -125,7 +125,9 @@ pub fn import_mcp_from_deeplink(
                 id: existing.id.clone(),
                 name: existing.name.clone(),
                 server: existing.server.clone(),
-                apps: merge_mcp_apps(&existing.apps, &target_apps),
+                // Never widen an existing server app projection from an
+                // untrusted deep link. The user must opt in from MCP settings.
+                apps: existing.apps.clone(),
                 description: existing.description.clone(),
                 homepage: existing.homepage.clone(),
                 docs: existing.docs.clone(),
@@ -137,7 +139,9 @@ pub fn import_mcp_from_deeplink(
                 id: id.clone(),
                 name: id.clone(),
                 server: server_spec.clone(),
-                apps: target_apps.clone(),
+                // MCP stdio definitions execute host commands. Import as inert
+                // configuration; explicit user enablement controls projection.
+                apps: McpApps::default(),
                 description: None,
                 homepage: None,
                 docs: None,
@@ -210,39 +214,5 @@ pub(crate) fn parse_mcp_apps(apps_str: &str) -> Result<McpApps, AppError> {
     Ok(apps)
 }
 
-fn merge_mcp_apps(existing: &McpApps, target: &McpApps) -> McpApps {
-    let mut merged = existing.clone();
-    for app in target.enabled_apps() {
-        merged.set_enabled_for(&app, true);
-    }
-    merged
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn enabled_apps_merge_covers_every_supported_mcp_client() {
-        let existing = McpApps {
-            claude: true,
-            ..McpApps::default()
-        };
-        let target = McpApps {
-            codex: true,
-            gemini: true,
-            grokbuild: true,
-            opencode: true,
-            hermes: true,
-            ..McpApps::default()
-        };
-        let merged = merge_mcp_apps(&existing, &target);
-
-        assert!(merged.claude);
-        assert!(merged.codex);
-        assert!(merged.gemini);
-        assert!(merged.grokbuild);
-        assert!(merged.opencode);
-        assert!(merged.hermes);
-    }
-}
+mod tests {}

@@ -257,6 +257,15 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     if (!isTauri()) return false;
     if (isInstallingRef.current) return false;
 
+    // 便携版没有可用的 updater 安装器，跳到发布页手动下载，避免直接安装
+    // 把运行中的绿色版文件替换掉。
+    if (await settingsApi.isPortable()) {
+      await settingsApi.openExternal(
+        "https://github.com/Duojiyi/chimera-plusplus/releases",
+      );
+      return false;
+    }
+
     isInstallingRef.current = true;
     setIsInstalling(true);
     setDownloadProgress(null);

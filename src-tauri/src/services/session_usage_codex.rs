@@ -206,10 +206,21 @@ pub(crate) fn clear_codex_replay_caches() {
 }
 
 fn is_rollout_filename(file_name: &str) -> bool {
-    if !file_name.starts_with("rollout-") || !file_name.ends_with(".jsonl") {
+    if !file_name.starts_with("rollout-") {
         return false;
     }
-    let stem = file_name.trim_end_matches(".jsonl");
+    // Codex may archive older rollouts as `.jsonl.zst`; both forms are the
+    // same JSONL payload to usage aggregation.
+    let stem = file_name.strip_suffix(".jsonl.zst").unwrap_or_else(|| {
+        if file_name.ends_with(".jsonl") {
+            file_name.trim_end_matches(".jsonl")
+        } else {
+            file_name
+        }
+    });
+    if stem == file_name {
+        return false;
+    }
     stem.get(stem.len().saturating_sub(36)..)
         .is_some_and(|candidate| uuid::Uuid::parse_str(candidate).is_ok())
 }
@@ -605,7 +616,7 @@ fn collect_codex_session_files(codex_dir: &Path) -> Vec<PathBuf> {
     let archived_dir = codex_dir.join("archived_sessions");
     if archived_dir.is_dir() {
         if let Ok(found) =
-            collect_files_with_extensions(&archived_dir, &["jsonl"], MAX_SESSION_SCAN_DEPTH)
+            collect_files_with_extensions(&archived_dir, &["jsonl", "zst"], MAX_SESSION_SCAN_DEPTH)
         {
             files.extend(found);
         }
@@ -631,10 +642,17 @@ fn build_rollout_index(files: &[PathBuf]) -> RolloutIndex {
 /// 递归扫描目录下的 .jsonl 文件（限制最大深度）
 fn collect_jsonl_recursive(dir: &Path, files: &mut Vec<PathBuf>, depth: usize, max_depth: usize) {
     if let Ok(found) =
-        collect_files_with_extensions(dir, &["jsonl"], max_depth.saturating_sub(depth))
+        collect_files_with_extensions(dir, &["jsonl", "zst"], max_depth.saturating_sub(depth))
     {
         files.extend(found);
     }
+}
+
+/// Bound compressed rollout input before decompression. This is intentionally
+/// larger than the plaintext line cap: compression ratios vary, but it still
+/// stops malformed decompression bombs.
+fn codex_compressed_rollout_limit() -> u64 {
+    256 * 1024 * 1024
 }
 
 fn parse_codex_file(
@@ -643,7 +661,24 @@ fn parse_codex_file(
 ) -> Result<ParsedCodexFile, AppError> {
     let file = open_regular_file_no_symlink(file_path)
         .map_err(|e| AppError::Config(format!("无法打开文件: {e}")))?;
-    let mut reader = BufReader::new(file);
+    // Older rollouts may be zstd-compressed. Decode once here so the line
+    // parser and its hard per-line cap operate on the same plaintext for both
+    // `.jsonl` and `.jsonl.zst` files.
+    let mut reader: Box<dyn std::io::BufRead> =
+        if file_path.to_string_lossy().ends_with(".jsonl.zst") {
+            let mut compressed = Vec::new();
+            {
+                use std::io::Read;
+                file.take(codex_compressed_rollout_limit())
+                    .read_to_end(&mut compressed)
+                    .map_err(|e| AppError::Config(format!("读取压缩 Codex 会话失败: {e}")))?;
+            }
+            let plain = zstd::stream::decode_all(std::io::Cursor::new(&compressed))
+                .map_err(|e| AppError::Config(format!("无法解压 Codex 会话文件: {e}")))?;
+            Box::new(BufReader::new(std::io::Cursor::new(plain)))
+        } else {
+            Box::new(BufReader::new(file))
+        };
     let mut root_meta_seen = false;
     let mut root_timestamp = None;
     let mut parent = ParentResolution::None;

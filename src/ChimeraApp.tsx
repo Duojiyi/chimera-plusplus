@@ -2145,6 +2145,19 @@ export function NewRuntimeView({
   const [inspectingOffline, setInspectingOffline] = useState(false);
   const [installingOffline, setInstallingOffline] = useState(false);
 
+  const maintenanceDialogRef = useDialogFocus<HTMLElement>(
+    () => setMaintenanceOpen(false),
+    maintenanceOpen,
+  );
+  const historyDialogRef = useDialogFocus<HTMLElement>(
+    () => setHistoryOpen(false),
+    historyOpen,
+  );
+  const offlineDialogRef = useDialogFocus<HTMLElement>(
+    () => setOfflineInspection(null),
+    Boolean(offlineInspection),
+  );
+
   const loadRecovery = useCallback(async () => {
     if (!runningInTauri) return;
     try {
@@ -2495,6 +2508,7 @@ export function NewRuntimeView({
           }}
         >
           <section
+            ref={maintenanceDialogRef}
             className="runtime-maintenance-drawer"
             aria-label="安装与维护"
           >
@@ -2654,6 +2668,7 @@ export function NewRuntimeView({
           }}
         >
           <section
+            ref={historyDialogRef}
             className="history-dialog"
             role="dialog"
             aria-modal="true"
@@ -2771,6 +2786,7 @@ export function NewRuntimeView({
       {offlineInspection && (
         <div className="modal-backdrop">
           <section
+            ref={offlineDialogRef}
             className="confirm-dialog"
             role="alertdialog"
             aria-modal="true"

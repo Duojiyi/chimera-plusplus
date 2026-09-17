@@ -260,7 +260,38 @@ pub fn load_messages(path: &Path) -> Result<Vec<SessionMessage>, String> {
     Ok(messages)
 }
 
+/// Remove Codex-owned index/state records after a rollout file is already gone.
+pub fn delete_session_records(root: &Path, session_id: &str) -> Result<bool, String> {
+    if let Some(config_dir) = root.parent() {
+        let config_text =
+            std::fs::read_to_string(config_dir.join("config.toml")).unwrap_or_default();
+        if let Err(error) = remove_session_from_session_index(
+            &config_dir.join(CODEX_SESSION_INDEX_FILENAME),
+            session_id,
+        ) {
+            log::warn!(
+                "Failed to remove Codex session '{session_id}' from {CODEX_SESSION_INDEX_FILENAME}: {error}"
+            );
+        }
+        for db_path in codex_state_db_paths(config_dir, &config_text) {
+            if let Err(error) = remove_thread_from_state_db(&db_path, session_id) {
+                log::warn!(
+                    "Failed to remove Codex thread '{session_id}' from {}: {error}",
+                    db_path.display()
+                );
+            }
+        }
+    }
+    Ok(true)
+}
+
 pub fn delete_session(root: &Path, path: &Path, session_id: &str) -> Result<bool, String> {
+    // A stale index entry can outlive its rollout. Those zombie entries must
+    // remain deletable; skipping metadata validation is safe only because the
+    // caller already validated the path and the ID is the record key.
+    if !path.exists() {
+        return delete_session_records(root, session_id);
+    }
     let meta = parse_session(path)
         .ok_or_else(|| format!("Failed to parse Codex session metadata: {}", path.display()))?;
 
@@ -624,7 +655,10 @@ fn collect_jsonl_files_at_depth(root: &Path, files: &mut Vec<PathBuf>, depth: us
         if metadata.is_dir() {
             collect_jsonl_files_at_depth(&path, files, depth + 1);
         } else if metadata.is_file()
-            && path.extension().and_then(|ext| ext.to_str()) == Some("jsonl")
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(".jsonl") || name.ends_with(".jsonl.zst"))
         {
             // No whole-file size gate here: `parse_session_with_titles` only
             // ever reads a bounded head/tail slice of the file (see

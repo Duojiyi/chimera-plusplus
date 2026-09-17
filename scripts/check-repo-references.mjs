@@ -11,7 +11,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const legacyRepository = "Duojiyi/chimera-codex";
+const legacyRepositories = ["Duojiyi/chimera-codex", "farion1231/cc-switch"];
 const historicalPathPrefixes = ["CHANGELOG.md", "docs/"];
 
 const tracked = spawnSync("git", ["ls-files", "-z"], {
@@ -33,14 +33,14 @@ for (const relativePath of tracked.stdout.split("\0").filter(Boolean)) {
 
   const lines = content.toString("utf8").split(/\r?\n/);
   for (let index = 0; index < lines.length; index += 1) {
-    if (lines[index].includes(legacyRepository)) {
+    if (legacyRepositories.some((repository) => lines[index].includes(repository))) {
       findings.push(`${relativePath}:${index + 1}`);
     }
   }
 }
 
 if (findings.length > 0) {
-  console.error(`Stale references to the renamed repository (${legacyRepository}) found:`);
+  console.error(`Stale references to retired repositories found:`);
   for (const location of findings) console.error(`- ${location}`);
   process.exit(1);
 }

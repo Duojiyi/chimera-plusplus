@@ -8,7 +8,7 @@
   --p-canvas: oklch(0.974 0.004 256); /* #f7f8fa  app background      */
   --p-bg: oklch(0.95 0.007 250); /* #eef1f3  outer window bg     */
   --p-line: oklch(0.912 0.006 256); /* #e3e5e9  dividers            */
-  --p-orange: oklch(0.652 0.205 30); /* #ff5a36  accent / CTA        */
+  --p-orange: oklch(0.52 0.17 30); /* #ff5a36  accent / CTA        */
   --p-orange-soft: oklch(0.968 0.02 30); /* #fff0eb  accent tinted bg    */
   --p-orange-200: oklch(0.88 0.05 30); /* #ffd0c5  warm accent border  */
   --p-green: oklch(0.585 0.126 162); /* #1b9a6b  success             */
@@ -3963,7 +3963,7 @@ body.is-mac
   color: #f8fafb;
 }
 .route-codex-launch > button:focus-visible {
-  outline: 2px solid rgba(255, 90, 61, 0.72);
+  outline: 2px solid rgba(190, 55, 30, 0.9);
   outline-offset: 2px;
 }
 @keyframes globe-status-pulse {
@@ -4094,7 +4094,7 @@ body.is-mac
   color: var(--ch-accent);
 }
 .route-line-scroll-arrow:focus-visible {
-  outline: 2px solid rgba(255, 133, 110, 0.85);
+  outline: 2px solid rgba(170, 62, 40, 0.95);
   outline-offset: 2px;
 }
 .route-line-scroll-arrow:disabled {
@@ -4219,7 +4219,7 @@ body.is-mac
 .route-line-add:focus-visible,
 .route-line-manager button:focus-visible,
 .route-line-search:focus-within {
-  outline: 2px solid rgba(255, 90, 61, 0.72);
+  outline: 2px solid rgba(190, 55, 30, 0.9);
   outline-offset: 2px;
 }
 .route-line-manager-backdrop {

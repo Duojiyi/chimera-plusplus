@@ -1,4 +1,3 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -16,29 +15,9 @@ const AUTO_SYNC_DEBOUNCE_MS: u64 = 1000;
 pub(crate) const MAX_AUTO_SYNC_WAIT_MS: u64 = 10_000;
 
 static DB_CHANGE_TX: OnceLock<Sender<String>> = OnceLock::new();
-static AUTO_SYNC_SUPPRESS_DEPTH: AtomicUsize = AtomicUsize::new(0);
-
-pub(crate) struct AutoSyncSuppressionGuard;
-
-impl AutoSyncSuppressionGuard {
-    pub fn new() -> Self {
-        AUTO_SYNC_SUPPRESS_DEPTH.fetch_add(1, Ordering::SeqCst);
-        Self
-    }
-}
-
-impl Drop for AutoSyncSuppressionGuard {
-    fn drop(&mut self) {
-        let _ =
-            AUTO_SYNC_SUPPRESS_DEPTH.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
-                Some(value.saturating_sub(1))
-            });
-    }
-}
-
-pub(crate) fn is_auto_sync_suppressed() -> bool {
-    AUTO_SYNC_SUPPRESS_DEPTH.load(Ordering::SeqCst) > 0
-}
+pub(crate) use crate::services::auto_sync_suppression::{
+    is_auto_sync_suppressed, AutoSyncSuppressionGuard,
+};
 
 pub fn should_trigger_for_table(table: &str) -> bool {
     let normalized = table.trim().to_ascii_lowercase();

@@ -5,6 +5,7 @@
 use super::hyper_client::ProxyResponse;
 use super::{
     body_filter::filter_private_params_with_whitelist,
+    circuit_breaker::CircuitBreaker,
     content_encoding::{decompress_body, get_content_encoding},
     error::*,
     failover_switch::FailoverSwitchManager,
@@ -79,6 +80,36 @@ pub struct ForwardResult {
 
 /// Successful upstream exchange as returned by [`Forwarder::forward`] to the
 /// retry loop, before provider bookkeeping wraps it into a [`ForwardResult`].
+/// Releases a HalfOpen probe permit if the forwarding future is cancelled.
+///
+/// Bookkeeping paths intentionally release the permit themselves after the
+/// upstream future resolves; the guard is disarmed immediately after `.await`
+/// returns so those paths remain single-release.
+pub(crate) struct HalfOpenPermitGuard {
+    breaker: Arc<CircuitBreaker>,
+    armed: bool,
+}
+
+impl HalfOpenPermitGuard {
+    fn new(breaker: Arc<CircuitBreaker>, used_half_open_permit: bool) -> Option<Self> {
+        used_half_open_permit.then(|| Self {
+            breaker,
+            armed: true,
+        })
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for HalfOpenPermitGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.breaker.release_half_open_permit();
+        }
+    }
+}
 pub(crate) struct Forwarded {
     pub response: ProxyResponse,
     pub claude_api_format: Option<String>,
@@ -492,20 +523,34 @@ impl RequestForwarder {
                 status.current_provider_id = Some(provider.id.clone());
             }
 
-            // 转发请求（每个 Provider 只尝试一次，重试由客户端控制）
-            match self
-                .forward(
-                    app_type,
-                    &method,
-                    provider,
-                    endpoint,
-                    &provider_body,
-                    &headers,
-                    &extensions,
-                    adapter.as_ref(),
-                )
-                .await
-            {
+            // 转发请求（每个 Provider 只尝试一次，重试由客户端控制）。
+            // 若该 future 在 await 点被取消（客户端断连），guard 会在 Drop 中
+            // 归还 HalfOpen 探测名额；正常返回后先解除 guard，再走既有记账。
+            let forward_result = {
+                let mut permit_guard = HalfOpenPermitGuard::new(
+                    self.router
+                        .get_or_create_circuit_breaker(&format!("{app_type_str}:{}", provider.id))
+                        .await,
+                    used_half_open_permit,
+                );
+                let result = self
+                    .forward(
+                        app_type,
+                        &method,
+                        provider,
+                        endpoint,
+                        &provider_body,
+                        &headers,
+                        &extensions,
+                        adapter.as_ref(),
+                    )
+                    .await;
+                if let Some(permit_guard) = permit_guard.as_mut() {
+                    permit_guard.disarm();
+                }
+                result
+            };
+            match forward_result {
                 Ok(Forwarded {
                     response,
                     claude_api_format,
@@ -3154,7 +3199,10 @@ fn inspect_responses_start_event(block: &str) -> Option<Result<(), ProxyError>> 
     if data_lines.is_empty() {
         return None;
     }
-    let value: Value = match serde_json::from_str(&data_lines.join("\n")) {
+    let value: Value = match serde_json::from_str(&data_lines.join(
+        "
+",
+    )) {
         Ok(value) => value,
         Err(_) => return None,
     };
@@ -3809,7 +3857,12 @@ mod tests {
 
     #[test]
     fn summarize_text_for_log_collapses_whitespace_and_truncates() {
-        let summary = summarize_text_for_log("line1\n\n line2   line3", 12);
+        let summary = summarize_text_for_log(
+            "line1
+
+ line2   line3",
+            12,
+        );
 
         assert_eq!(summary, "line1 line2...");
     }
@@ -3950,7 +4003,12 @@ mod tests {
                 ("X-Test".to_string(), "ok".to_string()),
                 ("Authorization".to_string(), "Bearer bad".to_string()),
                 ("Content-Type".to_string(), "text/plain".to_string()),
-                ("X-Bad".to_string(), "bad\nvalue".to_string()),
+                (
+                    "X-Bad".to_string(),
+                    "bad
+value"
+                        .to_string(),
+                ),
             ]),
             body: None,
         };
@@ -4477,13 +4535,15 @@ mod tests {
     #[test]
     fn responses_stream_start_semantic_failure_is_retryable() {
         let created = concat!(
-            "event: response.created\n",
+            "event: response.created
+",
             "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}"
         );
         assert!(inspect_responses_start_event(created).is_none());
 
         let failed = concat!(
-            "event: response.failed\n",
+            "event: response.failed
+",
             "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"type\":\"server_error\",\"message\":\"boom\"}}}"
         );
         assert!(matches!(
@@ -4492,7 +4552,8 @@ mod tests {
         ));
 
         let delta = concat!(
-            "event: response.output_text.delta\n",
+            "event: response.output_text.delta
+",
             "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}"
         );
         assert!(matches!(inspect_responses_start_event(delta), Some(Ok(()))));

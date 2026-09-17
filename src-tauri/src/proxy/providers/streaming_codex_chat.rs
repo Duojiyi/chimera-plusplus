@@ -368,7 +368,7 @@ impl ChatToResponsesState {
 
         if !self.text.added {
             let output_index = self.next_output_index();
-            let item_id = format!("{}_msg", self.response_id);
+            let item_id = format!("msg_{}", self.response_id);
             self.text.output_index = Some(output_index);
             self.text.item_id = item_id.clone();
             self.text.added = true;
@@ -834,7 +834,14 @@ pub fn create_responses_sse_stream_from_chat_with_context<E: std::error::Error +
                             Err(_) => continue,
                         };
 
-                        if event_name.as_deref() == Some("error") || chunk.get("error").is_some() {
+                        let error_value = chunk.get("error");
+                        let has_error = error_value.is_some_and(|value| match value {
+                            Value::Null => false,
+                            Value::Object(object) => !object.is_empty(),
+                            Value::String(message) => !message.trim().is_empty(),
+                            _ => true,
+                        });
+                        if event_name.as_deref() == Some("error") || has_error {
                             let (message, error_type) = extract_chat_sse_error(&chunk);
                             yield Ok(state.failed_event(message, error_type));
                             stream_failed = true;

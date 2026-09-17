@@ -995,6 +995,15 @@ command = "legacy-cmd"
         crate::settings::reload_settings().expect("reload settings");
 
         let db = Arc::new(Database::memory().expect("init db"));
+        // Avoid hard-coding a port that can be occupied on the test host.
+        let mut global = db
+            .get_global_proxy_config()
+            .await
+            .expect("get global proxy config");
+        global.listen_port = 0;
+        db.update_global_proxy_config(global)
+            .await
+            .expect("use ephemeral proxy port");
         let state = AppState::new(db.clone());
 
         let original = Provider::with_id(
@@ -1249,6 +1258,15 @@ requires_openai_auth = true
         crate::settings::reload_settings().expect("reload settings");
 
         let db = Arc::new(Database::memory().expect("init db"));
+        // Avoid hard-coding a port that can be occupied on the test host.
+        let mut global = db
+            .get_global_proxy_config()
+            .await
+            .expect("get global proxy config");
+        global.listen_port = 0;
+        db.update_global_proxy_config(global)
+            .await
+            .expect("use ephemeral proxy port");
         let state = AppState::new(db.clone());
 
         let mut original = Provider::with_id(
@@ -1298,11 +1316,12 @@ requires_openai_auth = true
                 .expect("update app proxy config");
         }
 
-        state
+        let proxy_info = state
             .proxy_service
             .start()
             .await
             .expect("start proxy service");
+        let gateway_url = format!("http://127.0.0.1:{}/claude-desktop", proxy_info.port);
 
         let mut updated = Provider::with_id(
             "p1".into(),
@@ -1346,7 +1365,7 @@ requires_openai_auth = true
         let profile: Value = read_json_file(&profile_path).expect("read desktop profile");
         assert_eq!(
             profile["inferenceGatewayBaseUrl"],
-            json!("http://127.0.0.1:15721/claude-desktop"),
+            json!(gateway_url),
             "desktop profile should stay pointed at the local gateway during takeover"
         );
         assert_eq!(profile["inferenceGatewayAuthScheme"], json!("bearer"));

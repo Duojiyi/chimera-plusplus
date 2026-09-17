@@ -10,6 +10,28 @@ numbers belong to a separate upstream line.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.3] - 2026-09-17
+
+### Added
+
+- Added an Ubuntu backend validation gate to required release CI.
+- Added bounded `.jsonl.zst` Codex rollout reading for session history and usage statistics.
+- Added shared process-wide suppression for WebDAV and S3 background sync.
+
+### Changed
+
+- Hardened official Codex configuration handling and preserved user settings while removing only routing metadata.
+- Preserved backend-owned provider fields during settings saves and assigned proxied apps ephemeral local ports.
+- Updated repository references, support metadata, and release documentation to the Chimera++ project location.
+
+### Fixed
+
+- Prevented empty or null Codex stream error placeholders from terminating successful responses.
+- Released circuit-breaker half-open permits when cancelled requests are dropped.
+- Corrected granular approval-policy validation and matching UI guidance.
+- Made diagnostics non-destructive for running Codex instances and serialized diagnosis operations.
+- Fixed tray provider switching lock re-entry, zombie session cleanup, and synthesized message ID prefixes.
+- Rejected unsafe non-loopback proxy binding and improved affected dialog focus and contrast behavior.
 ## [2.7.2] - 2026-09-15
 
 ### Added

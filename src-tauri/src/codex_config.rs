@@ -256,11 +256,21 @@ pub fn delete_codex_provider_config(
     Ok(())
 }
 
-/// `approval_policy` values current Codex (0.153+) still loads. `untrusted` was
-/// removed upstream; a config.toml that sets it — at the root or inside any
-/// `[profiles.*]` table — is rejected as a whole, so Codex starts with no
-/// provider, no model and no MCP servers instead of the line the user picked.
-const CODEX_APPROVAL_POLICIES: &[&str] = &["on-request", "on-failure", "never", "granular"];
+/// `approval_policy` string values current Codex (0.153+) still loads. A bare
+/// `"granular"` is not accepted: `AskForApproval::Granular` is a data-carrying
+/// variant and must use the table form. Invalid root/profile values are stripped
+/// because Codex rejects the whole config otherwise.
+const CODEX_APPROVAL_POLICIES: &[&str] = &["on-request", "on-failure", "never"];
+
+/// Codex 0.153+ accepts either a simple approval policy or a data-carrying
+/// Granular table (`approval_policy = { granular = { ... } }`).
+fn is_accepted_codex_approval_policy(item: &toml_edit::Item) -> bool {
+    if let Some(value) = item.as_str() {
+        return CODEX_APPROVAL_POLICIES.contains(&value.trim());
+    }
+    item.as_table_like()
+        .is_some_and(|table| table.contains_key("granular"))
+}
 
 /// Remove `approval_policy` assignments Codex no longer accepts, in place, so
 /// every other byte of the user's config.toml survives. Returns the text
@@ -274,10 +284,7 @@ pub fn strip_rejected_codex_settings(config_text: &str) -> Result<String, AppErr
         .map_err(|e| AppError::Config(format!("Codex 配置无法解析: {e}")))?;
     let mut removed = Vec::new();
 
-    let is_rejected = |item: &toml_edit::Item| {
-        item.as_str()
-            .is_some_and(|value| !CODEX_APPROVAL_POLICIES.contains(&value.trim()))
-    };
+    let is_rejected = |item: &toml_edit::Item| !is_accepted_codex_approval_policy(item);
 
     if doc.get("approval_policy").is_some_and(is_rejected) {
         removed.push("approval_policy".to_string());
@@ -2667,6 +2674,34 @@ pub fn codex_config_has_owned_official_proxy_route(
         })
 }
 
+/// Build a safe official Codex config baseline from the current live text.
+///
+/// The built-in official seed intentionally stores an empty config. When the
+/// user switches to it, that empty seed must not erase their sandbox, feature,
+/// profile, TUI, or notification settings. Only provider-routing and generated
+/// catalog fields are removed; unrelated user settings survive.
+pub fn prepare_codex_official_live_config_baseline(config_text: &str) -> Result<String, AppError> {
+    if config_text.trim().is_empty() {
+        return Ok(String::new());
+    }
+
+    let mut doc = config_text
+        .parse::<DocumentMut>()
+        .map_err(|e| AppError::Message(format!("Invalid Codex config.toml: {e}")))?;
+
+    for key in [
+        "model_provider",
+        "model_providers",
+        "model",
+        "model_catalog_json",
+        "model_reasoning_effort",
+        "experimental_bearer_token",
+    ] {
+        doc.as_table_mut().remove(key);
+    }
+    Ok(doc.to_string())
+}
+
 /// Remove only the official takeover route owned by CC Switch. This is a
 /// last-resort crash cleanup when no live backup or provider SSOT is usable.
 pub fn remove_codex_official_proxy_route(config_text: &str) -> Result<String, AppError> {
@@ -2899,6 +2934,20 @@ pub fn write_codex_live_for_provider(
     auth: &Value,
     config_text: Option<&str>,
 ) -> Result<(), AppError> {
+    // The official seed stores an empty config as a login placeholder. Falling
+    // back to the stripped live text preserves user-owned settings instead of
+    // erasing them on switch.
+    let official_baseline = if category == Some("official") {
+        match config_text {
+            Some(text) if !text.trim().is_empty() => Some(text.to_string()),
+            _ => Some(prepare_codex_official_live_config_baseline(
+                &read_codex_config_text()?,
+            )?),
+        }
+    } else {
+        None
+    };
+    let config_text = official_baseline.as_deref().or(config_text);
     let unified_official_config =
         if category == Some("official") && crate::settings::unify_codex_session_history() {
             Some(inject_codex_unified_session_bucket(
@@ -4770,21 +4819,16 @@ wire_api = "responses"
     }
 
     #[test]
-    fn native_profile_catalog_carries_code_mode_only_tool_mode() {
-        // Codex 0.147+ (desktop 2026.8+) emits ChatGPT-backend-private
-        // `{"type":"namespace",…}` tool declarations when the model catalog does
-        // not pin `tool_mode`. Strict third-party Responses gateways reject those
-        // with `RESPONSES_FEATURE_NOT_SUPPORTED` (verified against a real relay:
-        // `type:"namespace"` → hard 400, and the model picker surfaces it as
-        // "不支持 Responses 能力：tool.namespace"). Pinning `code_mode_only`
-        // makes Codex send flat `function`/`custom` tools only — the same signal
-        // the official gpt-5.6 catalog carries. The native template must ship
-        // the field so every generated NativeResponses entry inherits it.
+    fn native_profile_catalog_uses_direct_tool_mode() {
+        // Codex 0.154 gives catalog `tool_mode` precedence over `[features]`,
+        // and `code_mode_only` cannot fall back to Direct when Node is missing.
+        // The original namespace-suppression concern is already covered by
+        // `supports_search_tool: false`, so native entries use `direct`.
         let template = load_codex_native_responses_template();
         assert_eq!(
             template.get("tool_mode").and_then(Value::as_str),
-            Some("code_mode_only"),
-            "native template must declare code_mode_only to suppress namespace tools"
+            Some("direct"),
+            "native template must declare direct tool mode on Codex 0.154"
         );
 
         let specs = vec![CodexCatalogModelSpec {
@@ -4807,8 +4851,8 @@ wire_api = "responses"
             catalog["models"][0]
                 .get("tool_mode")
                 .and_then(Value::as_str),
-            Some("code_mode_only"),
-            "NativeResponses catalog entries must inherit tool_mode from the template"
+            Some("direct"),
+            "NativeResponses catalog entries must inherit direct tool mode"
         );
     }
 
@@ -5079,6 +5123,9 @@ model = "gpt-6-astra"
 [profiles.loose]
 approval_policy = "granular"
 
+[profiles.table]
+approval_policy = { granular = { hints = [] } }
+
 [model_providers.custom]
 name = "custom"
 base_url = "https://relay.example/v1"
@@ -5102,10 +5149,16 @@ base_url = "https://relay.example/v1"
             parsed["profiles"]["strict"]["model"].as_str(),
             Some("gpt-6-astra")
         );
+        assert!(
+            parsed["profiles"]["loose"].get("approval_policy").is_none(),
+            "bare granular is a data-carrying variant and must be rejected"
+        );
         assert_eq!(
-            parsed["profiles"]["loose"]["approval_policy"].as_str(),
-            Some("granular"),
-            "the new granular variant is accepted"
+            parsed["profiles"]["table"]["approval_policy"]["granular"]["hints"]
+                .as_array()
+                .map(Vec::len),
+            Some(0),
+            "table-form granular is accepted"
         );
         assert_eq!(
             parsed["model_providers"]["custom"]["base_url"].as_str(),

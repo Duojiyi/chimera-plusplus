@@ -1,3 +1,4 @@
+pub mod auto_sync_suppression;
 pub mod balance;
 pub mod codex_install_journal;
 pub mod codex_oauth_models;

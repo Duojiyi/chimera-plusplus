@@ -104,7 +104,7 @@
 
 | 上游 | 当前基线 | 2026-08-22 最新 | 结论 |
 | --- | --- | --- | --- |
-| [CC Switch](https://github.com/farion1231/cc-switch) | `v3.19.2` / `a98829b` | `v3.20.0` / `HEAD 5ca9459d` | 不整体合并。Pi 管理、数据库迁移、OAuth 多账号、代理/搜索等是产品级大面改动；其 1M context 入口在本项目已有等价实现。环境探测超时/进程组隔离属于可借鉴的后续加固项，需按 Tauri 架构单独适配。 |
+| [CC Switch](https://github.com/Duojiyi/chimera-plusplus) | `v3.19.2` / `a98829b` | `v3.20.0` / `HEAD 5ca9459d` | 不整体合并。Pi 管理、数据库迁移、OAuth 多账号、代理/搜索等是产品级大面改动；其 1M context 入口在本项目已有等价实现。环境探测超时/进程组隔离属于可借鉴的后续加固项，需按 Tauri 架构单独适配。 |
 | [CodexPlusPlus](https://github.com/BigPizzaV3/CodexPlusPlus) | `v1.2.48` | `v1.2.50` / `HEAD 29b4819` | 不合并注入、CDP、远程控制和其管理器产品面。其 `stepwise` 多协议、Responses/VLM 回归测试与 provider 边界加固可作为本项目协议识别/代理测试的参考；本周期已完成独立的协议探测加固，不直接 cherry-pick。 |
 | [Codex App Manager](https://github.com/Wangnov/Codex-App-Manager) | `v0.5.2` / `d29fda32` | `v0.5.2` / `HEAD cc115b4` | Rust 引擎没有功能漂移；新增主要是依赖与锁文件更新。暂不升级。若未来升级，必须同时更新 `src-tauri` 和 `chimera-runtime/chimera-platform` 的 engine rev，避免 workspace 产生双份依赖。 |
 

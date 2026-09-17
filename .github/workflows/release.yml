@@ -77,6 +77,7 @@ jobs:
             "Windows Frontend Validation"
             "Backend Validation (windows-2022)"
             "Backend Validation (macos-15)"
+            "Backend Validation (ubuntu-22.04)"
           )
           for required_job in "${required_jobs[@]}"; do
             if ! jq -e --arg name "$required_job" \

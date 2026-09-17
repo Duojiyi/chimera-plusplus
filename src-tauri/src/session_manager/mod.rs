@@ -186,6 +186,13 @@ fn delete_session_with_roots(
                 };
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // canonicalize_within_root performs component-by-component
+                // symlink checks before it canonicalizes the target. NotFound
+                // therefore means "validated descendant, missing leaf", which
+                // is the zombie-session case.
+                if provider_id == "codex" {
+                    return codex::delete_session_records(&validated_root, session_id);
+                }
                 return Err(format!(
                     "session source not found: {}",
                     source_path.display()
@@ -320,15 +327,15 @@ mod tests {
     }
 
     #[test]
-    fn rejects_missing_source_path() {
+    fn codex_missing_source_cleans_records() {
         let root = tempdir().expect("tempdir");
         let missing = root.path().join("missing.jsonl");
 
-        let err =
+        let deleted =
             delete_session_with_roots("codex", "session-1", &missing, &[root.path().to_path_buf()])
-                .expect_err("expected missing source path to fail");
+                .expect("validated missing rollout is a deletable zombie session");
 
-        assert!(err.contains("session source not found"));
+        assert!(deleted);
     }
 
     #[test]

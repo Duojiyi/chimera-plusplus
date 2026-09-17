@@ -76,8 +76,10 @@ export function useDialogFocus<T extends HTMLElement>(
       document.removeEventListener("keydown", onKeyDown);
       const index = dialogStack.lastIndexOf(token);
       if (index !== -1) dialogStack.splice(index, 1);
-      const returnTarget = returnFocusRef?.current ?? previousFocus;
-      if (returnTarget?.isConnected) returnTarget.focus();
+      if (enabled) {
+        const returnTarget = returnFocusRef?.current ?? previousFocus;
+        if (returnTarget?.isConnected) returnTarget.focus();
+      }
     };
   }, [enabled, returnFocusRef]);
   return dialogRef;

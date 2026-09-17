@@ -875,6 +875,14 @@ fn restore_live_settings_for_provider_backfill(
         );
     }
 
+    // The `providers` table syncs through WebDAV/S3. OAuth access and refresh
+    // tokens are live-only state; never backfill them into the official seed.
+    if provider.category.as_deref() == Some("official") {
+        if let Some(obj) = settings.as_object_mut() {
+            obj.insert("auth".to_string(), serde_json::json!({}));
+        }
+    }
+
     // 统一会话开关注入的共享 `custom` 路由只属于 live 配置；切换回填时
     // 必须剥掉，否则官方供应商的存储配置被污染，关闭开关后无法还原。
     if provider.category.as_deref() == Some("official") {

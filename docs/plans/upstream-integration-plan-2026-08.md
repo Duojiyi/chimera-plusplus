@@ -17,7 +17,7 @@
 | 上游项目 | 本次参考版本 | 发布时间 | 与 Chimera++ 的关系 |
 | --- | --- | --- | --- |
 | [CodexPlusPlus](https://github.com/BigPizzaV3/CodexPlusPlus) | `v1.2.47` | 2026-08-11 | Codex 桌面端增强、注入脚本、Relay/模型路由、主题运行时 |
-| [CC Switch](https://github.com/farion1231/cc-switch) | `v3.19.2` | 2026-08-06 | Chimera++ 的主要配置管理、代理、用量和多应用能力上游 |
+| [CC Switch](https://github.com/Duojiyi/chimera-plusplus) | `v3.19.2` | 2026-08-06 | Chimera++ 的主要配置管理、代理、用量和多应用能力上游 |
 | [Codex App Manager](https://github.com/Wangnov/Codex-App-Manager) | `v0.5.2` | 2026-08-11 | Chimera++ 的 Codex 桌面运行时与 Windows/macOS 安装能力上游 |
 | [Chimera++](https://github.com/Duojiyi/chimera-codex) | `v2.4.6` | 2026-08-11 | 本项目当前远程发布基线 |
 
@@ -283,8 +283,8 @@ Chimera++ 已经承担 Codex Runtime install/update/repair/rollback，但当前�
 
 - [CodexPlusPlus v1.2.47 Release](https://github.com/BigPizzaV3/CodexPlusPlus/releases/tag/v1.2.47)
 - [CodexPlusPlus v1.2.46 Release](https://github.com/BigPizzaV3/CodexPlusPlus/releases/tag/v1.2.46)
-- [CC Switch v3.19.2 Release](https://github.com/farion1231/cc-switch/releases/tag/v3.19.2)
-- [CC Switch v3.19.2 English Release Notes](https://github.com/farion1231/cc-switch/blob/v3.19.2/docs/release-notes/v3.19.2-en.md)
+- [CC Switch v3.19.2 Release](https://github.com/Duojiyi/chimera-plusplus/releases/tag/v3.19.2)
+- [CC Switch v3.19.2 English Release Notes](https://github.com/Duojiyi/chimera-plusplus/blob/v3.19.2/docs/release-notes/v3.19.2-en.md)
 - [Codex App Manager v0.5.2 Release](https://github.com/Wangnov/Codex-App-Manager/releases/tag/v0.5.2)
 - [Chimera++ v2.4.6 Release](https://github.com/Duojiyi/chimera-codex/releases/tag/v2.4.6)
 - [Chimera++ CHANGELOG](../../CHANGELOG.md)

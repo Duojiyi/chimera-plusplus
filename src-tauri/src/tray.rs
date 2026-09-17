@@ -865,9 +865,16 @@ fn update_tray_usage_labels(app: &tauri::AppHandle) {
     let Some(app_state) = app.try_state::<AppState>() else {
         return;
     };
-    let handles = match TRAY_SECTION_SUBMENUS.lock() {
-        Ok(g) => g,
-        Err(poisoned) => poisoned.into_inner(),
+    // Clone only the lightweight submenu handles, then release the global
+    // tray-menu lock before doing database or IPC work. `create_tray_menu`
+    // takes the same lock, so holding it through the loop can deadlock when a
+    // refresh is triggered from a state update.
+    let handles = {
+        let guards = match TRAY_SECTION_SUBMENUS.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        guards.clone()
     };
 
     for section in TRAY_SECTIONS.iter() {

@@ -25,7 +25,7 @@
 二者均 `import { exit } from "@tauri-apps/plugin-process"`（`package.json` 依赖 `@tauri-apps/plugin-process ^2.3.1`）。
 未授权时该 IPC 被 Tauri 静默拒绝，`void`/`await` 吞掉 rejection → **恢复屏退出按钮实际无效**。
 
-**对齐上游**：`farion1231/cc-switch` commit `4549d290`（`fix(capabilities): grant process:allow-exit so exit buttons can quit the app`）。
+**对齐上游**：`Duojiyi/chimera-plusplus` commit `4549d290`（`fix(capabilities): grant process:allow-exit so exit buttons can quit the app`）。
 
 **变更**：`default.json` 权限列表追加一行 `"process:allow-exit"`。
 
@@ -55,7 +55,7 @@
 
 ## 四、P2 —— TeamoRouter 域名迁移（`.com` → `.cn`）
 
-**对齐上游**：`farion1231/cc-switch` commit `9a596158`
+**对齐上游**：`Duojiyi/chimera-plusplus` commit `9a596158`
 （`chore(presets): move TeamoRouter to teamorouter.cn, keep .com as fallback`）。
 
 **适配差异（与上游不同，有意为之）**：上游把 `apiKeyUrl` 改成数组；本仓库各 preset 的

@@ -119,6 +119,15 @@ impl ProxyServer {
             format!("{}:{}", self.config.listen_address, self.config.listen_port)
                 .parse()
                 .map_err(|e| ProxyError::BindFailed(format!("无效的地址: {e}")))?;
+        // The proxy has no caller-auth token and forwards provider credentials.
+        // Non-loopback binds would expose it to the LAN, so reject them until an
+        // explicit bearer-token feature is added.
+        if !addr.ip().is_loopback() {
+            return Err(ProxyError::BindFailed(
+                "非 loopback 代理监听已被拒绝：本代理没有调用方鉴权，仅允许 127.0.0.1/localhost"
+                    .to_string(),
+            ));
+        }
 
         // 创建关闭通道
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
