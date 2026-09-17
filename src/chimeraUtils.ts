@@ -10,6 +10,7 @@ import type {
 } from "@/lib/api/model-fetch";
 import {
   extractCodexBaseUrl,
+  extractCodexExperimentalBearerToken,
   extractCodexModelName,
 } from "@/utils/providerConfigUtils";
 
@@ -62,6 +63,49 @@ function liveConfigText(live: unknown): string {
   return typeof config === "string" ? config : "";
 }
 
+function liveAuthObject(live: unknown): Record<string, unknown> {
+  if (!live || typeof live !== "object") return {};
+  const auth = (live as Record<string, unknown>).auth;
+  return auth && typeof auth === "object"
+    ? (auth as Record<string, unknown>)
+    : {};
+}
+
+function authCredential(auth: Record<string, unknown>): string {
+  for (const field of [
+    "OPENAI_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "api_key",
+  ] as const) {
+    const value = auth[field];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "";
+}
+
+function storedCredential(settings: unknown): string {
+  if (!settings || typeof settings !== "object") return "";
+  const record = settings as Record<string, unknown>;
+  const configToken = extractCodexExperimentalBearerToken(
+    typeof record.config === "string" ? record.config : "",
+  );
+  if (configToken) return configToken;
+  const auth =
+    record.auth && typeof record.auth === "object"
+      ? (record.auth as Record<string, unknown>)
+      : {};
+  return authCredential(auth);
+}
+
+function liveCredential(settings: unknown): string {
+  const config = liveConfigText(settings);
+  return (
+    extractCodexExperimentalBearerToken(config) ||
+    authCredential(liveAuthObject(settings))
+  );
+}
+
 export function resolveCurrentProvider(
   providers: Provider[],
   storedId: string,
@@ -95,13 +139,14 @@ export function resolveCurrentProvider(
     return { provider: stored, source: "stored" };
   }
 
+  const liveKey = liveCredential(live);
   const exact = providers.find((provider) => {
     const candidate = String(provider.settingsConfig?.config ?? "");
     const endpoint = normalizeEndpoint(extractCodexBaseUrl(candidate));
     const model = extractCodexModelName(candidate) ?? "";
-    return (
-      endpoint === liveEndpoint && (!liveModel || !model || model === liveModel)
-    );
+    if (endpoint !== liveEndpoint) return false;
+    if (liveModel && model && liveModel !== model) return false;
+    return !liveKey || storedCredential(provider.settingsConfig) === liveKey;
   });
   if (exact) return { provider: exact, source: "live" };
 

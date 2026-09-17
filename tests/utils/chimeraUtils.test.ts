@@ -53,6 +53,54 @@ describe("resolveCurrentProvider", () => {
     expect(result).toEqual({ provider: null, source: "none" });
   });
 
+  it("uses the live credential when two lines share an endpoint and model", () => {
+    const config = (token: string) =>
+      [
+        'model = "gpt-5.6"',
+        'model_provider = "custom"',
+        "[model_providers.custom]",
+        'base_url = "https://relay.example/v1"',
+        `experimental_bearer_token = "${token}"`,
+        "",
+      ].join("\n");
+    const providers = [
+      {
+        id: "line-1",
+        name: "Line 1",
+        settingsConfig: {
+          auth: { OPENAI_API_KEY: "sk-line-1" },
+          config: config("sk-line-1"),
+        },
+      } as Provider,
+      {
+        id: "line-2",
+        name: "Line 2",
+        settingsConfig: {
+          auth: { OPENAI_API_KEY: "sk-line-2" },
+          config: config("sk-line-2"),
+        },
+      } as Provider,
+    ];
+
+    const switched = resolveCurrentProvider(
+      providers,
+      "line-2",
+      { config: config("sk-line-2") },
+      true,
+    );
+    expect(switched.provider?.id).toBe("line-2");
+    expect(switched.source).toBe("live");
+
+    const stillFirst = resolveCurrentProvider(
+      providers,
+      "line-2",
+      { config: config("sk-line-1") },
+      true,
+    );
+    expect(stillFirst.provider?.id).toBe("line-1");
+    expect(stillFirst.source).toBe("live");
+  });
+
   it("returns stored when liveReadSucceeded is false and storedId matches", () => {
     const result = resolveCurrentProvider(
       [official, relay],
