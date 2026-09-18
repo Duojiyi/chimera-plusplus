@@ -235,7 +235,7 @@ mod tests {
             command
         };
         #[cfg(not(target_os = "windows"))]
-        let mut command = {
+        let command = {
             let mut command = Command::new("sh");
             command.args(["-c", "sleep 5"]);
             command

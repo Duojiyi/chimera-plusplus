@@ -905,11 +905,20 @@ mod tests {
         let target = Database::memory()?;
         {
             let conn = crate::database::lock_conn!(source.conn);
-            conn.execute_batch("UPDATE proxy_config SET enabled = 1 WHERE app_type = 'codex'")
-                .unwrap();
+            conn.execute_batch(
+                "INSERT INTO providers (id, app_type, name, settings_config, meta)
+                 VALUES ('source-provider', 'codex', 'Source', '{}', '{}');
+                 UPDATE proxy_config SET enabled = 1 WHERE app_type = 'codex'",
+            )?;
         }
+        let before = target.export_sql_string()?;
         let sql = source.export_sql_string()?;
-        assert!(target.import_sql_string(&sql).is_err());
+        let error = target.import_sql_string(&sql).unwrap_err();
+        assert!(
+            error.to_string().contains("数据库包含代理运行/接管状态"),
+            "{error}"
+        );
+        assert_eq!(target.export_sql_string()?, before);
         target.validate_stopped_proxy_state()?;
         Ok(())
     }
@@ -922,7 +931,9 @@ mod tests {
             {
                 let conn = crate::database::lock_conn!(remote.conn);
                 conn.execute_batch(&format!(
-                    "UPDATE proxy_config SET {flag} = 1 WHERE app_type = 'codex'"
+                    "INSERT INTO providers (id, app_type, name, settings_config, meta)
+                     VALUES ('remote-provider', 'codex', 'Remote', '{{}}', '{{}}');
+                     UPDATE proxy_config SET {flag} = 1 WHERE app_type = 'codex'"
                 ))?;
             }
             {
