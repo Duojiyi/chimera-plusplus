@@ -911,14 +911,25 @@ mod tests {
                  UPDATE proxy_config SET enabled = 1 WHERE app_type = 'codex'",
             )?;
         }
-        let before = target.export_sql_string()?;
+        let before = target
+            .export_sql_string()?
+            .lines()
+            .filter(|line| !line.starts_with("-- 生成时间:"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let sql = source.export_sql_string()?;
         let error = target.import_sql_string(&sql).unwrap_err();
         assert!(
             error.to_string().contains("数据库包含代理运行/接管状态"),
             "{error}"
         );
-        assert_eq!(target.export_sql_string()?, before);
+        let after = target
+            .export_sql_string()?
+            .lines()
+            .filter(|line| !line.starts_with("-- 生成时间:"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(after, before);
         target.validate_stopped_proxy_state()?;
         Ok(())
     }
