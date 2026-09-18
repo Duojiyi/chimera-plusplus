@@ -2022,9 +2022,10 @@ body.is-mac
   font-size: 11px;
   font-weight: 700;
 }
+/* Let the path shrink without squeezing the two status columns. */
 .runtime-info-strip {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: minmax(0, 1fr) 140px 150px;
   max-width: 700px;
   margin: 0 auto;
   border: 1px solid var(--line);
@@ -2035,24 +2036,38 @@ body.is-mac
 .runtime-info-strip > div {
   display: flex;
   align-items: center;
+  min-width: 0;
   gap: 9px;
-  padding: 15px;
+  padding: 16px 18px;
 }
 .runtime-info-strip > div + div {
   border-left: 1px solid #eef1f3;
 }
 .runtime-info-strip svg {
+  flex-shrink: 0;
   color: var(--ch-muted);
 }
 .runtime-info-strip span {
   display: grid;
+  min-width: 0;
   gap: 4px;
   color: var(--ch-muted);
-  font-size: 10px;
+  font-size: 12px;
+  line-height: 1.5;
 }
 .runtime-info-strip b {
   color: var(--ink);
-  font-size: 12px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.runtime-info-strip > div:first-child b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
+}
+.runtime-info-strip > div:not(:first-child) span {
+  white-space: nowrap;
 }
 .runtime-reference-actions {
   display: flex;

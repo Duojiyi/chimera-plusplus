@@ -86,3 +86,28 @@ describe("chimera.css — Bug 2 update banner styles", () => {
     expect(block).not.toContain("var(--accent");
   });
 });
+
+describe("chimera.css — runtime information layout", () => {
+  it("reserves readable status columns while allowing the path to shrink", () => {
+    expect(extractBlock(".runtime-info-strip")).toContain(
+      "grid-template-columns: minmax(0, 1fr) 140px 150px",
+    );
+  });
+
+  it("ellipsizes long paths without expanding the information strip", () => {
+    expect(extractBlock(".runtime-info-strip > div")).toContain("min-width: 0");
+    expect(extractBlock(".runtime-info-strip span")).toContain("min-width: 0");
+    const path = extractBlock(".runtime-info-strip > div:first-child b");
+    expect(path).toContain("text-overflow: ellipsis");
+    expect(path).toContain("overflow: hidden");
+    expect(path).toContain("white-space: nowrap");
+    expect(path).toContain("user-select: text");
+  });
+
+  it("keeps short status text and icons intact", () => {
+    expect(
+      extractBlock(".runtime-info-strip > div:not(:first-child) span"),
+    ).toContain("white-space: nowrap");
+    expect(extractBlock(".runtime-info-strip svg")).toContain("flex-shrink: 0");
+  });
+});

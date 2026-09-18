@@ -2506,7 +2506,13 @@ export function NewRuntimeView({
             <FolderOpen size={16} />
             <span>
               安装位置
-              <b>
+              <b
+                title={
+                  runtimeSupported && runtime?.installed
+                    ? runtime.installPath || undefined
+                    : undefined
+                }
+              >
                 {runtimeSupported
                   ? runtime?.installed
                     ? runtime.installPath || "路径未识别"
