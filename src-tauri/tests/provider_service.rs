@@ -1489,6 +1489,13 @@ fn sync_current_provider_for_app_keeps_live_takeover_and_updates_restore_backup(
         )
         .expect("set common config snippet");
 
+    let mut listener = futures::executor::block_on(state.db.get_proxy_config())
+        .expect("get proxy listener config");
+    listener.listen_address = "127.0.0.1".into();
+    listener.listen_port = 5000;
+    futures::executor::block_on(state.db.update_proxy_config(listener))
+        .expect("set proxy listener config");
+
     let taken_over_live = json!({
         "env": {
             "ANTHROPIC_BASE_URL": "http://127.0.0.1:5000",
@@ -1517,9 +1524,11 @@ fn sync_current_provider_for_app_keeps_live_takeover_and_updates_restore_backup(
 
     let live_after: serde_json::Value =
         read_json_file(&settings_path).expect("read live settings after sync");
+    let mut expected_live = taken_over_live.clone();
+    expected_live["includeCoAuthoredBy"] = json!(false);
     assert_eq!(
-        live_after, taken_over_live,
-        "sync should not overwrite live config while takeover is active"
+        live_after, expected_live,
+        "sync should apply common config while preserving proxy ownership and credentials"
     );
 
     let backup = futures::executor::block_on(state.db.get_live_backup("claude"))
