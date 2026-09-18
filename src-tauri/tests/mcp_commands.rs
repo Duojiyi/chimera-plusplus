@@ -1324,36 +1324,39 @@ fn deleting_mcp_removes_client_entry_without_removing_unmanaged_servers() {
 #[test]
 fn failed_mcp_removal_restores_database_record() {
     let _guard = test_mutex().lock().unwrap();
-    reset_test_fs();
-    let home = ensure_test_home();
-    let dir = home.join(".codex");
-    fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("config.toml");
-    fs::write(&path, "").unwrap();
-    let state = create_test_state().unwrap();
-    McpService::upsert_server(
-        &state,
-        McpServer {
-            id: "managed".into(),
-            name: "Managed".into(),
-            server: json!({ "command": "echo" }),
-            apps: McpApps {
-                codex: true,
-                ..Default::default()
+    for grokbuild in [false, true] {
+        reset_test_fs();
+        let home = ensure_test_home();
+        let dir = home.join(if grokbuild { ".grok" } else { ".codex" });
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        fs::write(&path, "").unwrap();
+        let state = create_test_state().unwrap();
+        McpService::upsert_server(
+            &state,
+            McpServer {
+                id: "managed".into(),
+                name: "Managed".into(),
+                server: json!({ "command": "echo" }),
+                apps: McpApps {
+                    codex: !grokbuild,
+                    grokbuild,
+                    ..Default::default()
+                },
+                description: None,
+                homepage: None,
+                docs: None,
+                tags: vec![],
             },
-            description: None,
-            homepage: None,
-            docs: None,
-            tags: vec![],
-        },
-    )
-    .unwrap();
-    fs::write(&path, "[invalid TOML").unwrap();
-    assert!(McpService::delete_server(&state, "managed").is_err());
-    assert!(state
-        .db
-        .get_all_mcp_servers()
-        .unwrap()
-        .contains_key("managed"));
-    assert_eq!(fs::read_to_string(&path).unwrap(), "[invalid TOML");
+        )
+        .unwrap();
+        fs::write(&path, "[invalid TOML").unwrap();
+        assert!(McpService::delete_server(&state, "managed").is_err());
+        assert!(state
+            .db
+            .get_all_mcp_servers()
+            .unwrap()
+            .contains_key("managed"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "[invalid TOML");
+    }
 }
