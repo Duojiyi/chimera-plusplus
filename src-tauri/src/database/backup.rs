@@ -943,14 +943,25 @@ mod tests {
                      VALUES ('local-provider', 'codex', 'Keep Local', '{}', '{}')",
                 )?;
             }
-            let before = local.export_sql_string()?;
+            let before = local
+                .export_sql_string()?
+                .lines()
+                .filter(|line| !line.starts_with("-- 生成时间:"))
+                .collect::<Vec<_>>()
+                .join("\n");
             let sql = remote.export_sql_string_for_sync()?;
             let error = local.import_sql_string_for_sync(&sql).unwrap_err();
             assert!(
                 error.to_string().contains("数据库包含代理运行/接管状态"),
                 "{flag}: {error}"
             );
-            assert_eq!(local.export_sql_string()?, before, "{flag}");
+            let after = local
+                .export_sql_string()?
+                .lines()
+                .filter(|line| !line.starts_with("-- 生成时间:"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert_eq!(after, before, "{flag}");
             local.validate_stopped_proxy_state()?;
         }
         Ok(())
