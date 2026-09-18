@@ -273,9 +273,9 @@ fn legacy_deletion_paths(root: &Path, session_id: &str) -> Result<Vec<PathBuf>, 
         let named_target = path.file_stem().and_then(|v| v.to_str()) == Some(session_id);
         let meta = parse_jsonl_session(&path);
         if !named_target
-            && !meta
+            && meta
                 .as_ref()
-                .is_some_and(|meta| meta.session_id == session_id)
+                .is_none_or(|meta| meta.session_id != session_id)
         {
             // Match discovery: unreadable/unparseable unrelated files are not candidates.
             continue;

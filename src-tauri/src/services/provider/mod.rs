@@ -2641,7 +2641,10 @@ impl ProviderService {
     /// 同时检查本地 settings 和数据库的当前供应商，防止删除任一端正在使用的供应商。
     /// 对于累加模式应用（OpenCode, OpenClaw），可以随时删除任意供应商，同时从 live 配置中移除。
     pub fn delete(state: &AppState, app_type: AppType, id: &str) -> Result<(), AppError> {
-        let _guards = futures::executor::block_on(Self::lock_deletion(state, &[app_type.clone()]));
+        let _guards = futures::executor::block_on(Self::lock_deletion(
+            state,
+            std::slice::from_ref(&app_type),
+        ));
         Self::delete_with_locks_held(state, app_type, id)
     }
 
