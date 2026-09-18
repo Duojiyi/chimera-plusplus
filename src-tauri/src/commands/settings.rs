@@ -74,6 +74,53 @@ pub async fn get_settings() -> Result<crate::settings::AppSettings, String> {
     Ok(crate::settings::get_settings_for_frontend())
 }
 
+/// Only UI preferences are patchable; routing and secrets remain backend-owned.
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PreferencesPatch {
+    codex_update_source: Option<String>,
+    codex_install_mode: Option<String>,
+    check_codex_updates_on_start: Option<bool>,
+    check_provider_status_on_start: Option<bool>,
+    show_provider_balance: Option<bool>,
+    minimize_to_tray_on_close: Option<bool>,
+    lightweight_on_close: Option<bool>,
+}
+
+impl PreferencesPatch {
+    fn apply(self, settings: &mut crate::settings::AppSettings) {
+        if let Some(value) = self.codex_update_source {
+            settings.codex_update_source = value;
+        }
+        if let Some(value) = self.codex_install_mode {
+            settings.codex_install_mode = value;
+        }
+        if let Some(value) = self.check_codex_updates_on_start {
+            settings.check_codex_updates_on_start = value;
+        }
+        if let Some(value) = self.check_provider_status_on_start {
+            settings.check_provider_status_on_start = value;
+        }
+        if let Some(value) = self.show_provider_balance {
+            settings.show_provider_balance = value;
+        }
+        if let Some(value) = self.lightweight_on_close {
+            settings.lightweight_on_close = value;
+        }
+        if let Some(value) = self.minimize_to_tray_on_close {
+            settings.minimize_to_tray_on_close = value;
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn patch_preferences(
+    patch: PreferencesPatch,
+) -> Result<crate::settings::AppSettings, String> {
+    crate::settings::mutate_settings(|current| patch.apply(current)).map_err(|e| e.to_string())?;
+    Ok(crate::settings::get_settings_for_frontend())
+}
+
 /// 保存设置
 #[tauri::command]
 pub async fn save_settings(
@@ -485,11 +532,10 @@ pub async fn set_app_config_dir_override(
 /// 设置开机自启
 #[tauri::command]
 pub async fn set_auto_launch(enabled: bool) -> Result<bool, String> {
-    if enabled {
-        crate::auto_launch::enable_auto_launch().map_err(|e| format!("启用开机自启失败: {e}"))?;
-    } else {
-        crate::auto_launch::disable_auto_launch().map_err(|e| format!("禁用开机自启失败: {e}"))?;
-    }
+    tauri::async_runtime::spawn_blocking(move || crate::auto_launch::set_preference(enabled))
+        .await
+        .map_err(|e| format!("自启动任务失败: {e}"))?
+        .map_err(|e| e.to_string())?;
     Ok(true)
 }
 
@@ -501,6 +547,31 @@ mod tests {
         CodexThirdPartyHistoryProviderBucketMigration, LocalMigrations, S3SyncSettings,
         WebDavSyncSettings,
     };
+
+    #[test]
+    fn preference_patches_preserve_other_fields_and_reject_authoritative_keys() {
+        let mut current = AppSettings::default();
+        current.current_provider_codex = Some("active".into());
+        let first: super::PreferencesPatch = serde_json::from_value(serde_json::json!({
+            "checkCodexUpdatesOnStart": false
+        }))
+        .unwrap();
+        let second: super::PreferencesPatch = serde_json::from_value(serde_json::json!({
+            "showProviderBalance": true
+        }))
+        .unwrap();
+        first.apply(&mut current);
+        second.apply(&mut current);
+        assert!(!current.check_codex_updates_on_start);
+        assert!(current.show_provider_balance);
+        assert_eq!(current.current_provider_codex.as_deref(), Some("active"));
+        assert!(
+            serde_json::from_value::<super::PreferencesPatch>(serde_json::json!({
+                "currentProviderCodex": "stale"
+            }))
+            .is_err()
+        );
+    }
 
     fn staged(version: &str, bytes: &[u8]) -> StagedUpdate {
         StagedUpdate {

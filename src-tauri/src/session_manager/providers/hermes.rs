@@ -233,6 +233,7 @@ pub fn load_messages_sqlite(source: &str) -> Result<Vec<SessionMessage>, String>
 pub fn delete_session_sqlite(session_id: &str, source: &str) -> Result<bool, String> {
     let (db_path, ref_session_id) = parse_sqlite_source(source)
         .ok_or_else(|| format!("Invalid SQLite source reference: {source}"))?;
+    super::utils::deletion_path(db_path.parent().ok_or("Missing database parent")?, &db_path)?;
     let db_path = db_path
         .canonicalize()
         .map_err(|e| format!("Failed to canonicalize Hermes database path: {e}"))?;
@@ -249,24 +250,98 @@ pub fn delete_session_sqlite(session_id: &str, source: &str) -> Result<bool, Str
         return Err("SQLite path does not match expected Hermes database".to_string());
     }
 
-    let conn =
-        Connection::open(&db_path).map_err(|e| format!("Failed to open Hermes database: {e}"))?;
+    delete_session_copies(&db_path, &get_hermes_sessions_dir(), session_id)
+}
+
+fn legacy_deletion_paths(root: &Path, session_id: &str) -> Result<Vec<PathBuf>, String> {
+    let mut paths = Vec::new();
+    // Hermes discovery only reads the immediate sessions directory.
+    super::utils::deletion_path(root.parent().ok_or("Missing Hermes root parent")?, root)?;
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(paths),
+        Err(e) => return Err(e.to_string()),
+    };
+    for entry in entries {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        if !matches!(
+            path.extension().and_then(|v| v.to_str()),
+            Some("json" | "jsonl")
+        ) {
+            continue;
+        }
+        let named_target = path.file_stem().and_then(|v| v.to_str()) == Some(session_id);
+        let meta = parse_jsonl_session(&path);
+        if !named_target
+            && !meta
+                .as_ref()
+                .is_some_and(|meta| meta.session_id == session_id)
+        {
+            // Match discovery: unreadable/unparseable unrelated files are not candidates.
+            continue;
+        }
+        super::utils::deletion_path(root, &path)?;
+        let meta =
+            meta.ok_or_else(|| format!("Cannot identify Hermes copy: {}", path.display()))?;
+        if meta.session_id != session_id {
+            return Err(format!(
+                "Hermes session ownership mismatch: {}",
+                path.display()
+            ));
+        }
+        // Discovery tolerates partial lines, but deleting an identified copy must not.
+        let data = crate::security_limits::read_to_string_limited(&path, MAX_SESSION_FILE_BYTES)
+            .map_err(|e| format!("Cannot validate Hermes copy {}: {e}", path.display()))?;
+        for line in data.lines().filter(|line| !line.trim().is_empty()) {
+            let value: Value = serde_json::from_str(line)
+                .map_err(|e| format!("Cannot validate Hermes copy {}: {e}", path.display()))?;
+            if matches!(
+                value.get("type").and_then(Value::as_str),
+                Some("session" | "init")
+            ) {
+                if let Some(id) = value
+                    .get("id")
+                    .or_else(|| value.get("sessionId"))
+                    .and_then(Value::as_str)
+                {
+                    if id != session_id {
+                        return Err(format!(
+                            "Hermes session ownership mismatch: {}",
+                            path.display()
+                        ));
+                    }
+                }
+            }
+        }
+        paths.push(path);
+    }
+    Ok(paths)
+}
+
+fn delete_session_copies(db_path: &Path, root: &Path, session_id: &str) -> Result<bool, String> {
+    super::utils::deletion_path(db_path.parent().ok_or("Missing database parent")?, db_path)?;
+    let paths = legacy_deletion_paths(root, session_id)?;
+    let conn = Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
+        .map_err(|e| format!("Failed to open Hermes database: {e}"))?;
 
     let tx = conn
         .unchecked_transaction()
         .map_err(|e| format!("Failed to begin transaction: {e}"))?;
 
     // Delete messages first (child records)
-    let _ = tx.execute("DELETE FROM messages WHERE session_id = ?1", [session_id]);
+    tx.execute("DELETE FROM messages WHERE session_id = ?1", [session_id])
+        .map_err(|e| format!("Failed to delete Hermes messages: {e}"))?;
 
     let deleted = tx
         .execute("DELETE FROM sessions WHERE id = ?1", [session_id])
         .map_err(|e| format!("Failed to delete Hermes session: {e}"))?;
 
-    tx.commit()
-        .map_err(|e| format!("Failed to commit session deletion: {e}"))?;
+    let files_deleted = super::utils::delete_paths(root, &paths)?;
 
-    Ok(deleted > 0)
+    tx.commit()
+        .map_err(|e| format!("Session deletion incomplete: database commit failed (file copies may already be removed): {e}"))?;
+
+    Ok(deleted > 0 || files_deleted)
 }
 
 fn parse_sqlite_source(source: &str) -> Option<(PathBuf, String)> {
@@ -489,14 +564,21 @@ pub fn load_messages(path: &Path) -> Result<Vec<SessionMessage>, String> {
 }
 
 /// Delete a Hermes JSONL session file.
-pub fn delete_session(_root: &Path, path: &Path, _session_id: &str) -> Result<bool, String> {
-    std::fs::remove_file(path).map_err(|e| {
-        format!(
-            "Failed to delete Hermes session file {}: {e}",
-            path.display()
-        )
-    })?;
-    Ok(true)
+pub fn delete_session(root: &Path, path: &Path, session_id: &str) -> Result<bool, String> {
+    super::utils::deletion_path(root, path)?;
+    let meta = parse_jsonl_session(path).ok_or("Cannot identify Hermes session")?;
+    if meta.session_id != session_id {
+        return Err("Hermes session ID mismatch".into());
+    }
+    let db = root
+        .parent()
+        .ok_or("Missing Hermes root parent")?
+        .join("state.db");
+    if db.try_exists().map_err(|e| e.to_string())? {
+        return delete_session_copies(&db, root, session_id);
+    }
+    let paths = legacy_deletion_paths(root, session_id)?;
+    super::utils::delete_paths(root, &paths)
 }
 
 #[cfg(test)]
@@ -604,5 +686,123 @@ mod tests {
 
         delete_session(dir.path(), &path, "session").expect("should delete");
         assert!(!path.exists());
+    }
+
+    fn dual_source_fixture(base: &Path) -> (PathBuf, PathBuf, PathBuf) {
+        let db = base.join("state.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch("CREATE TABLE sessions (id TEXT PRIMARY KEY); CREATE TABLE messages (session_id TEXT); INSERT INTO sessions VALUES ('s1'); INSERT INTO messages VALUES ('s1');").unwrap();
+        let root = base.join("sessions");
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("different-filename.jsonl");
+        for file in [&path, &root.join("another.json")] {
+            std::fs::write(file, "{\"type\":\"session\",\"id\":\"s1\"}\n").unwrap();
+        }
+        (db, root, path)
+    }
+
+    #[test]
+    fn both_entry_paths_delete_database_and_all_legacy_copies() {
+        for from_file in [false, true] {
+            let temp = tempdir().unwrap();
+            let (db, root, path) = dual_source_fixture(temp.path());
+            let result = if from_file {
+                delete_session(&root, &path, "s1")
+            } else {
+                delete_session_copies(&db, &root, "s1")
+            };
+            assert!(result.unwrap());
+            assert!(!path.exists());
+            assert!(!root.join("another.json").exists());
+            let conn = Connection::open(db).unwrap();
+            for table in ["sessions", "messages"] {
+                assert_eq!(
+                    conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r
+                        .get::<_, i64>(0))
+                        .unwrap(),
+                    0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn child_delete_failure_is_not_swallowed() {
+        let temp = tempdir().unwrap();
+        let (db, root, path) = dual_source_fixture(temp.path());
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch("CREATE TRIGGER deny_delete BEFORE DELETE ON messages BEGIN SELECT RAISE(ABORT, 'denied'); END;").unwrap();
+        assert!(delete_session_copies(&db, &root, "s1").is_err());
+        assert!(path.exists());
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn mismatched_file_id_does_not_delete_any_copy() {
+        let temp = tempdir().unwrap();
+        let (_, root, path) = dual_source_fixture(temp.path());
+        assert!(delete_session(&root, &path, "other").is_err());
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn unrelated_invalid_files_do_not_block_legacy_or_sqlite_deletion() {
+        for pure_sqlite in [false, true] {
+            let temp = tempdir().unwrap();
+            let (db, root, _) = dual_source_fixture(temp.path());
+            let corrupt = root.join("unrelated.jsonl");
+            let unreadable = root.join("unreadable.jsonl");
+            std::fs::write(&corrupt, "{\"type\":").unwrap();
+            std::fs::write(&unreadable, [0xff]).unwrap();
+            let conn = Connection::open(&db).unwrap();
+            conn.execute("INSERT INTO sessions VALUES ('sqlite_only')", [])
+                .unwrap();
+            let id = if pure_sqlite { "sqlite_only" } else { "s1" };
+            assert!(delete_session_copies(&db, &root, id).unwrap());
+            assert!(corrupt.exists());
+            assert!(unreadable.exists());
+            assert_eq!(
+                conn.query_row("SELECT COUNT(*) FROM sessions WHERE id = ?1", [id], |r| r
+                    .get::<_, i64>(
+                    0
+                ))
+                .unwrap(),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn identified_invalid_hermes_copy_aborts_all_deletion() {
+        for (filename, data) in [
+            ("s1.jsonl", "{\"type\":"),
+            ("s1.jsonl", "{\"type\":\"session\",\"id\":\"other\"}\n"),
+            (
+                "alias.jsonl",
+                "{\"type\":\"session\",\"id\":\"s1\"}\n{\"type\":",
+            ),
+            (
+                "alias.jsonl",
+                "{\"type\":\"session\",\"id\":\"s1\"}\n{\"type\":\"init\",\"id\":\"other\"}\n",
+            ),
+        ] {
+            let temp = tempdir().unwrap();
+            let (db, root, healthy) = dual_source_fixture(temp.path());
+            let path = root.join(filename);
+            std::fs::write(&path, data).unwrap();
+            assert!(delete_session_copies(&db, &root, "s1").is_err());
+            assert!(healthy.exists());
+            assert!(path.exists());
+            let conn = Connection::open(db).unwrap();
+            assert_eq!(
+                conn.query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                1
+            );
+        }
     }
 }

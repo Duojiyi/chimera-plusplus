@@ -1311,6 +1311,7 @@ pub(crate) fn write_live_snapshot(app_type: &AppType, provider: &Provider) -> Re
 fn sync_all_providers_to_live(state: &AppState, app_type: &AppType) -> Result<(), AppError> {
     let providers = state.db.get_all_providers(app_type.as_str())?;
     let mut synced_count = 0usize;
+    let mut failures = Vec::new();
 
     for provider in providers.values() {
         if provider
@@ -1328,13 +1329,14 @@ fn sync_all_providers_to_live(state: &AppState, app_type: &AppType) -> Result<()
                 app_type,
                 provider.id
             );
+            failures.push(format!("{}: {e}", provider.id));
             continue;
         }
         synced_count += 1;
     }
 
     log::info!("Synced {synced_count} {app_type:?} providers to live config");
-    Ok(())
+    live_sync_outcome(failures)
 }
 
 pub(crate) fn sync_current_provider_for_app_to_live(
@@ -1414,33 +1416,39 @@ fn sync_current_provider_for_app_respecting_takeover(
 ///
 /// For additive mode apps (OpenCode), all providers are synced instead of just the current one.
 pub fn sync_current_to_live(state: &AppState) -> Result<(), AppError> {
-    // Sync providers based on mode
+    let mut failures = Vec::new();
     for app_type in AppType::all() {
-        if app_type.is_additive_mode() {
-            // Additive mode: sync ALL providers
-            sync_all_providers_to_live(state, &app_type)?;
+        let result = if app_type.is_additive_mode() {
+            sync_all_providers_to_live(state, &app_type)
         } else {
-            // Switch mode: sync only current provider. During proxy takeover,
-            // update the restore backup instead of rewriting the taken-over
-            // live file.
-            sync_current_provider_for_app_respecting_takeover(state, &app_type)?;
+            sync_current_provider_for_app_respecting_takeover(state, &app_type)
+        };
+        if let Err(error) = result {
+            failures.push(format!("{app_type:?} provider: {error}"));
         }
     }
-
-    // MCP sync（best-effort 逐应用投影，内部已聚合失败）。错误暂存到
-    // Skill 同步之后再返回：MCP 的失败不该跳过 Skill 同步，但调用方
-    //（配置导入 / 云同步恢复）需要知道结果不完整。
-    let mcp_result = McpService::sync_all_enabled(state);
-
-    // Skill sync
+    // Best effort must still report partial failure after attempting every
+    // projection. Otherwise restore/import callers incorrectly report success.
+    if let Err(error) = McpService::sync_all_enabled(state) {
+        failures.push(format!("MCP: {error}"));
+    }
     for app_type in AppType::all() {
-        if let Err(e) = crate::services::skill::SkillService::sync_to_app(&state.db, &app_type) {
-            log::warn!("同步 Skill 到 {app_type:?} 失败: {e}");
-            // Continue syncing other apps, don't abort
+        if let Err(error) = crate::services::skill::SkillService::sync_to_app(&state.db, &app_type)
+        {
+            failures.push(format!("{app_type:?} Skill: {error}"));
         }
     }
+    live_sync_outcome(failures)
+}
 
-    mcp_result
+fn live_sync_outcome(failures: Vec<String>) -> Result<(), AppError> {
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        let message = format!("部分 Live 配置同步失败: {}", failures.join("; "));
+        log::warn!("{message}");
+        Err(AppError::Message(message))
+    }
 }
 
 /// Read current live settings for an app type
@@ -2115,6 +2123,36 @@ pub fn remove_openclaw_provider_from_live(provider_id: &str) -> Result<(), AppEr
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn additive_sync_does_not_hide_invalid_provider_failures() {
+        let state = AppState::new(std::sync::Arc::new(Database::memory().unwrap()));
+        // Invalid fragments fail before any filesystem access.
+        for id in ["bad-one", "bad-two"] {
+            let provider = Provider::with_id(id.into(), id.into(), Value::Null, None);
+            state.db.save_provider("opencode", &provider).unwrap();
+        }
+        let error = sync_all_providers_to_live(&state, &AppType::OpenCode)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("bad-one"), "{error}");
+        assert!(error.contains("bad-two"), "{error}");
+    }
+
+    #[test]
+    fn live_sync_reports_all_failed_projections() {
+        assert!(live_sync_outcome(Vec::new()).is_ok());
+        let error = live_sync_outcome(vec![
+            "OpenCode provider: write failed".into(),
+            "MCP: write failed".into(),
+            "Codex Skill: write failed".into(),
+        ])
+        .unwrap_err()
+        .to_string();
+        for expected in ["OpenCode provider", "MCP", "Codex Skill"] {
+            assert!(error.contains(expected), "{error}");
+        }
+    }
 
     #[test]
     #[serial_test::serial]

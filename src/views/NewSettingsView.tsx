@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   CircleAlert,
@@ -9,7 +10,7 @@ import {
   RefreshCw,
 } from "lucide-react";
 import type { Settings } from "@/types";
-import { settingsApi } from "@/lib/api/settings";
+import { settingsApi, type PreferencesPatch } from "@/lib/api/settings";
 import { getCurrentVersion } from "@/lib/updater";
 import { useUpdate } from "@/contexts/UpdateContext";
 
@@ -31,7 +32,14 @@ export function NewSettingsView() {
     checkUpdate,
     installUpdate,
   } = useUpdate();
+  const saveQueue = useRef<Promise<void>>(Promise.resolve());
+  const [pendingKeys, setPendingKeys] = useState<Set<string>>(new Set());
   const [settings, setSettings] = useState<Settings | null>(null);
+  const [autoLaunch, setAutoLaunch] = useState<boolean | null>(
+    runningInTauri ? null : true,
+  );
+  const [autoLaunchBusy, setAutoLaunchBusy] = useState(false);
+  const [autoLaunchError, setAutoLaunchError] = useState(false);
   const [appVersion, setAppVersion] = useState("正在读取版本");
 
   useEffect(() => {
@@ -53,31 +61,75 @@ export function NewSettingsView() {
         toast.error("无法读取设置", { description: String(reason) }),
       );
   }, []);
-  const save = async (patch: Partial<Settings>) => {
+  const save = (patch: PreferencesPatch) => {
     if (!settings) return;
     if (!runningInTauri) {
-      setSettings({ ...settings, ...patch });
+      setSettings((current) => (current ? { ...current, ...patch } : current));
       return;
     }
+    const keys = Object.keys(patch);
+    setPendingKeys((current) => new Set([...current, ...keys]));
+    // Serialize UI responses; backend applies only these fields under its lock.
+    saveQueue.current = saveQueue.current.then(async () => {
+      try {
+        setSettings(await settingsApi.patchPreferences(patch));
+        toast.success("设置已保存");
+      } catch (reason) {
+        toast.error("设置保存失败", { description: String(reason) });
+      } finally {
+        setPendingKeys((current) => {
+          const next = new Set(current);
+          keys.forEach((key) => next.delete(key));
+          return next;
+        });
+      }
+    });
+  };
+  const readAutoLaunch = async () => {
+    setAutoLaunchBusy(true);
     try {
-      // Re-read the latest persisted settings immediately before merging,
-      // rather than the value captured in state at mount time. The tray
-      // menu and failover monitor can write fields like
-      // currentProviderCodex concurrently; merging onto a stale snapshot
-      // would silently revert whichever of those writes happened first.
-      const current = await settingsApi.get();
-      const next = { ...current, ...patch };
-      await settingsApi.save(next);
-      setSettings(next);
-      toast.success("设置已保存");
+      setAutoLaunch(await settingsApi.getAutoLaunchStatus());
+      setAutoLaunchError(false);
     } catch (reason) {
-      toast.error("设置保存失败", { description: String(reason) });
+      setAutoLaunchError(true);
+      toast.error("无法读取开机自启动状态", { description: String(reason) });
+    } finally {
+      setAutoLaunchBusy(false);
+    }
+  };
+  useEffect(() => {
+    if (runningInTauri) void readAutoLaunch();
+  }, []);
+  const toggleAutoLaunch = async () => {
+    if (autoLaunch === null || autoLaunchBusy) return;
+    if (!runningInTauri) {
+      setAutoLaunch(!autoLaunch);
+      return;
+    }
+    setAutoLaunchBusy(true);
+    try {
+      await settingsApi.setAutoLaunch(!autoLaunch);
+      setAutoLaunch(!autoLaunch);
+      toast.success("开机自启动设置已保存");
+    } catch (reason) {
+      toast.error("设置开机自启动失败", { description: String(reason) });
+      // Reconcile the actual OS state even if persistence/rollback failed.
+      await readAutoLaunch();
+    } finally {
+      setAutoLaunchBusy(false);
     }
   };
   const updateChecks = settings?.checkCodexUpdatesOnStart ?? true;
   const providerChecks = settings?.checkProviderStatusOnStart ?? true;
   const showProviderBalance = settings?.showProviderBalance ?? false;
-  const minimizeToTray = settings?.minimizeToTrayOnClose ?? false;
+  const closeBehavior = !(settings?.minimizeToTrayOnClose ?? true)
+    ? "exit"
+    : settings?.lightweightOnClose
+      ? "lightweight"
+      : "tray";
+  useLightweightCloseBlocker(
+    pendingKeys.size > 0 || autoLaunchBusy || installingAppUpdate || isStaging,
+  );
   const openDataFolder = async () => {
     if (!runningInTauri) return;
     try {
@@ -162,6 +214,7 @@ export function NewSettingsView() {
           className="settings-reference-row"
           role="switch"
           aria-checked={updateChecks}
+          disabled={!settings || pendingKeys.has("checkCodexUpdatesOnStart")}
           onClick={() => void save({ checkCodexUpdatesOnStart: !updateChecks })}
         >
           <span>
@@ -176,6 +229,7 @@ export function NewSettingsView() {
           className="settings-reference-row"
           role="switch"
           aria-checked={providerChecks}
+          disabled={!settings || pendingKeys.has("checkProviderStatusOnStart")}
           onClick={() =>
             void save({ checkProviderStatusOnStart: !providerChecks })
           }
@@ -192,6 +246,7 @@ export function NewSettingsView() {
           className="settings-reference-row"
           role="switch"
           aria-checked={showProviderBalance}
+          disabled={!settings || pendingKeys.has("showProviderBalance")}
           onClick={() =>
             void save({ showProviderBalance: !showProviderBalance })
           }
@@ -211,17 +266,59 @@ export function NewSettingsView() {
         <button
           className="settings-reference-row"
           role="switch"
-          aria-checked={minimizeToTray}
-          onClick={() => void save({ minimizeToTrayOnClose: !minimizeToTray })}
+          aria-checked={autoLaunch === true}
+          disabled={autoLaunch === null || autoLaunchBusy || autoLaunchError}
+          onClick={() => void toggleAutoLaunch()}
         >
           <span>
-            <b>关闭窗口后最小化到托盘</b>
-            <small>保留快速切换能力</small>
+            <b>开机自启动</b>
+            <small>
+              {autoLaunchError
+                ? "状态读取失败，请重试"
+                : autoLaunch === null
+                  ? "正在读取系统启动项"
+                  : "登录系统后自动启动 Chimera++，新配置默认开启"}
+            </small>
           </span>
-          <i className={`settings-switch ${minimizeToTray ? "is-on" : ""}`}>
+          <i className={`settings-switch ${autoLaunch ? "is-on" : ""}`}>
             <u />
           </i>
         </button>
+        {autoLaunchError && (
+          <button
+            disabled={autoLaunchBusy}
+            onClick={() => void readAutoLaunch()}
+          >
+            重试读取自启动状态
+          </button>
+        )}
+        <div className="settings-reference-row">
+          <span>
+            <b id="close-behavior-label">关闭主窗口时</b>
+            <small>
+              轻量模式释放界面内存；编辑或任务进行中仅隐藏窗口。双击托盘可恢复。
+            </small>
+          </span>
+          <select
+            aria-labelledby="close-behavior-label"
+            value={closeBehavior}
+            disabled={
+              !settings ||
+              pendingKeys.has("minimizeToTrayOnClose") ||
+              pendingKeys.has("lightweightOnClose")
+            }
+            onChange={(event) =>
+              save({
+                minimizeToTrayOnClose: event.target.value !== "exit",
+                lightweightOnClose: event.target.value === "lightweight",
+              })
+            }
+          >
+            <option value="tray">最小化到托盘</option>
+            <option value="lightweight">进入轻量模式</option>
+            <option value="exit">退出软件</option>
+          </select>
+        </div>
         <div className="settings-reference-row settings-segment-row">
           <span>
             <b>Codex 更新源</b>
@@ -233,6 +330,7 @@ export function NewSettingsView() {
                 settings?.codexUpdateSource === "mirror" ? "" : "is-active"
               }
               aria-pressed={settings?.codexUpdateSource !== "mirror"}
+              disabled={!settings || pendingKeys.has("codexUpdateSource")}
               onClick={() => void save({ codexUpdateSource: "auto" })}
             >
               自动选择
@@ -242,6 +340,7 @@ export function NewSettingsView() {
                 settings?.codexUpdateSource === "mirror" ? "is-active" : ""
               }
               aria-pressed={settings?.codexUpdateSource === "mirror"}
+              disabled={!settings || pendingKeys.has("codexUpdateSource")}
               onClick={() => void save({ codexUpdateSource: "mirror" })}
             >
               镜像安装
@@ -359,6 +458,7 @@ export function NewSettingsView() {
         <code>Chimera++ {appVersion}</code>
         <button
           className="secondary"
+          disabled={!settings || pendingKeys.size > 0}
           onClick={() =>
             void save({
               codexUpdateSource: "auto",
@@ -366,7 +466,8 @@ export function NewSettingsView() {
               checkCodexUpdatesOnStart: true,
               checkProviderStatusOnStart: true,
               showProviderBalance: false,
-              minimizeToTrayOnClose: false,
+              minimizeToTrayOnClose: true,
+              lightweightOnClose: false,
             })
           }
         >

@@ -200,6 +200,10 @@ impl Database {
         if let Some(local_snapshot) = local_snapshot.as_ref() {
             Self::restore_tables(local_snapshot, &temp_conn, preserve_tables)?;
         }
+        // Validate the final staged state for both local and cloud imports.
+        // Remote Live backups may have been replaced by local-only tables,
+        // but any remaining proxy_config runtime flags must block the commit.
+        Self::validate_stopped_proxy_state_on_conn(&temp_conn)?;
 
         // 只有暂存库通过全部校验之后，才对现有主库做安全备份并提交导入——
         // 与 restore_from_backup 的顺序一致。备份挪到这里（而不是函数开头）
@@ -663,6 +667,30 @@ impl Database {
         Ok(entries)
     }
 
+    /// Whole-DB replacement cannot safely replay another proxy runtime's
+    /// takeover metadata. Fail closed instead of only updating its Live backup.
+    pub(crate) fn validate_stopped_proxy_state(&self) -> Result<(), AppError> {
+        let conn = lock_conn!(self.conn);
+        Self::validate_stopped_proxy_state_on_conn(&conn)
+    }
+
+    fn validate_stopped_proxy_state_on_conn(conn: &Connection) -> Result<(), AppError> {
+        let has_runtime_state: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM proxy_config WHERE enabled != 0 OR proxy_enabled != 0)
+                 OR EXISTS(SELECT 1 FROM proxy_live_backup)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        if has_runtime_state {
+            return Err(AppError::Config(
+                "数据库包含代理运行/接管状态或 Live 备份，无法安全恢复或同步。请关闭接管并停止代理后创建新备份，再恢复该备份。".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Restore database from a backup file. Returns the safety backup ID.
     pub fn restore_from_backup(&self, filename: &str) -> Result<String, AppError> {
         // Security: validate filename to prevent path traversal and symlink
@@ -722,6 +750,7 @@ impl Database {
             Self::apply_schema_migrations_on_conn(&staging_conn)?;
             Self::ensure_model_pricing_seeded_on_conn(&staging_conn)?;
             Self::validate_basic_state(&staging_conn)?;
+            Self::validate_stopped_proxy_state_on_conn(&staging_conn)?;
         }
 
         // Create a safety snapshot only after the staged database has passed
@@ -869,6 +898,75 @@ mod tests {
     use crate::error::AppError;
     use crate::settings::{update_settings, AppSettings};
     use serial_test::serial;
+
+    #[test]
+    fn local_sql_import_rejects_runtime_flags_without_changing_main_db() -> Result<(), AppError> {
+        let source = Database::memory()?;
+        let target = Database::memory()?;
+        {
+            let conn = crate::database::lock_conn!(source.conn);
+            conn.execute_batch("UPDATE proxy_config SET enabled = 1 WHERE app_type = 'codex'")
+                .unwrap();
+        }
+        let sql = source.export_sql_string()?;
+        assert!(target.import_sql_string(&sql).is_err());
+        target.validate_stopped_proxy_state()?;
+        Ok(())
+    }
+
+    #[test]
+    fn sync_import_rejects_remote_runtime_flags_without_changing_main_db() -> Result<(), AppError> {
+        for flag in ["enabled", "proxy_enabled"] {
+            let remote = Database::memory()?;
+            let local = Database::memory()?;
+            {
+                let conn = crate::database::lock_conn!(remote.conn);
+                conn.execute_batch(&format!(
+                    "UPDATE proxy_config SET {flag} = 1 WHERE app_type = 'codex'"
+                ))?;
+            }
+            {
+                let conn = crate::database::lock_conn!(local.conn);
+                conn.execute_batch(
+                    "INSERT INTO providers (id, app_type, name, settings_config, meta)
+                     VALUES ('local-provider', 'codex', 'Keep Local', '{}', '{}')",
+                )?;
+            }
+            let before = local.export_sql_string()?;
+            let sql = remote.export_sql_string_for_sync()?;
+            let error = local.import_sql_string_for_sync(&sql).unwrap_err();
+            assert!(
+                error.to_string().contains("数据库包含代理运行/接管状态"),
+                "{flag}: {error}"
+            );
+            assert_eq!(local.export_sql_string()?, before, "{flag}");
+            local.validate_stopped_proxy_state()?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn restore_rejects_proxy_runtime_metadata_before_commit() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        db.validate_stopped_proxy_state()?;
+        for sql in [
+            "UPDATE proxy_config SET enabled = 1 WHERE app_type = 'codex'",
+            "UPDATE proxy_config SET proxy_enabled = 1 WHERE app_type = 'codex'",
+            "INSERT INTO proxy_live_backup (app_type, original_config, backed_up_at) VALUES ('codex', '{}', 'now')",
+        ] {
+            {
+                let conn = crate::database::lock_conn!(db.conn);
+                conn.execute_batch(sql).unwrap();
+            }
+            assert!(db.validate_stopped_proxy_state().is_err(), "{sql}");
+            {
+                let conn = crate::database::lock_conn!(db.conn);
+                conn.execute_batch("UPDATE proxy_config SET enabled = 0, proxy_enabled = 0; DELETE FROM proxy_live_backup;").unwrap();
+            }
+            db.validate_stopped_proxy_state()?;
+        }
+        Ok(())
+    }
 
     #[test]
     fn import_rejects_cross_file_statements_and_leaves_no_file_behind() -> Result<(), AppError> {
@@ -1071,7 +1169,16 @@ mod tests {
                 [],
             )?;
         }
-        let remote_sql = remote_db.export_sql_string_for_sync()?;
+        {
+            let conn = crate::database::lock_conn!(remote_db.conn);
+            conn.execute_batch(
+                "INSERT INTO proxy_live_backup (app_type, original_config, backed_up_at)
+                 VALUES ('codex', '{}', 'now')",
+            )?;
+        }
+        // A legacy full snapshot may contain remote Live backups. They are
+        // replaced by local-only tables before the final runtime validation.
+        let remote_sql = remote_db.export_sql_string()?;
 
         let local_db = Database::memory()?;
         {
@@ -1107,6 +1214,7 @@ mod tests {
         }
 
         local_db.import_sql_string_for_sync(&remote_sql)?;
+        local_db.validate_stopped_proxy_state()?;
 
         let remote_provider_exists: i64 = {
             let conn = crate::database::lock_conn!(local_db.conn);

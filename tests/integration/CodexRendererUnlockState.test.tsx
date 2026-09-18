@@ -55,6 +55,8 @@ function renderView(props: {
         restartRequired={false}
         onOpenCodex={vi.fn().mockResolvedValue(undefined)}
         onSwitch={vi.fn().mockResolvedValue(undefined)}
+        onDelete={vi.fn().mockResolvedValue(true)}
+        deletingProviderId={null}
         onEdit={vi.fn()}
         onAdd={vi.fn()}
       />

@@ -41,6 +41,8 @@ function makeProps(
     restartRequired: false,
     onOpenCodex: vi.fn().mockResolvedValue(undefined),
     onSwitch: vi.fn().mockResolvedValue(undefined),
+    onDelete: vi.fn().mockResolvedValue(true),
+    deletingProviderId: null,
     onEdit: vi.fn(),
     onAdd: vi.fn(),
     ...overrides,
@@ -216,5 +218,59 @@ describe("providers update banner", () => {
     renderView();
     fireEvent.click(screen.getByRole("button", { name: /下载并安装/ }));
     expect(failingInstall).toHaveBeenCalledOnce();
+  });
+});
+
+describe("route manager delete actions", () => {
+  it("deletes an inactive line directly without switching or opening the editor", () => {
+    useUpdateMock.mockReturnValue({ hasUpdate: false });
+    const spare = { ...mockProvider, id: "spare", name: "备用测试线路" };
+    const onDelete = vi.fn().mockResolvedValue(true);
+    const onEdit = vi.fn();
+    const onSwitch = vi.fn();
+    renderView({
+      providers: [mockProvider, spare],
+      onDelete,
+      onEdit,
+      onSwitch,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "管理线路" }));
+    fireEvent.click(screen.getByRole("button", { name: "删除备用测试线路" }));
+    expect(onDelete).toHaveBeenCalledWith(spare);
+    expect(onEdit).not.toHaveBeenCalled();
+    expect(onSwitch).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("dialog", { name: "管理线路" }),
+    ).toBeInTheDocument();
+    const activeDelete =
+      screen.getByTitle("当前线路正在使用，请先切换到其他线路");
+    expect(activeDelete).toBeDisabled();
+    fireEvent.click(activeDelete);
+    expect(onDelete).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables delete actions while deleting and never offers deletion for the official account", () => {
+    useUpdateMock.mockReturnValue({ hasUpdate: false });
+    const spare = { ...mockProvider, id: "spare", name: "备用测试线路" };
+    const official = {
+      ...mockProvider,
+      id: "codex-official",
+      name: "官方账户",
+      category: "official" as const,
+    };
+    const onDelete = vi.fn().mockResolvedValue(true);
+    renderView({
+      providers: [mockProvider, spare, official],
+      deletingProviderId: spare.id,
+      onDelete,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "管理线路" }));
+    const button = screen.getByRole("button", { name: "删除备用测试线路" });
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(onDelete).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole("button", { name: "删除官方账户" }),
+    ).not.toBeInTheDocument();
   });
 });

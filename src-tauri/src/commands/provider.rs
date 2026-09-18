@@ -379,15 +379,20 @@ async fn compensate_failed_current_provider_update(
 }
 
 #[tauri::command]
-pub fn delete_provider(
+pub async fn delete_provider(
     state: State<'_, AppState>,
     app: String,
     id: String,
 ) -> Result<bool, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
-    ProviderService::delete(state.inner(), app_type, &id)
-        .map(|_| true)
-        .map_err(|e| e.to_string())
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        ProviderService::delete(&state, app_type, &id)
+            .map(|_| true)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("供应商删除任务执行失败: {e}"))?
 }
 
 #[tauri::command]
@@ -1891,13 +1896,18 @@ pub fn upsert_universal_provider(
 }
 
 #[tauri::command]
-pub fn delete_universal_provider(
+pub async fn delete_universal_provider(
     app: AppHandle,
     state: State<'_, AppState>,
     id: String,
 ) -> Result<bool, String> {
-    let result =
-        ProviderService::delete_universal(state.inner(), &id).map_err(|e| e.to_string())?;
+    let state = state.inner().clone();
+    let provider_id = id.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        ProviderService::delete_universal(&state, &provider_id).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("统一供应商任务执行失败: {e}"))??;
 
     emit_universal_provider_synced(&app, "delete", &id);
 
@@ -1905,13 +1915,18 @@ pub fn delete_universal_provider(
 }
 
 #[tauri::command]
-pub fn sync_universal_provider(
+pub async fn sync_universal_provider(
     app: AppHandle,
     state: State<'_, AppState>,
     id: String,
 ) -> Result<bool, String> {
-    let result =
-        ProviderService::sync_universal_to_apps(state.inner(), &id).map_err(|e| e.to_string())?;
+    let state = state.inner().clone();
+    let provider_id = id.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        ProviderService::sync_universal_to_apps(&state, &provider_id).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("统一供应商任务执行失败: {e}"))??;
 
     emit_universal_provider_synced(&app, "sync", &id);
 

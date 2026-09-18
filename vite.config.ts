@@ -22,6 +22,9 @@ export default defineConfig(({ command }) => ({
         manualChunks(id) {
           if (!id.includes("node_modules")) return undefined;
           if (id.includes("/three/")) return "vendor-three";
+          if (id.includes("/smol-toml/") || id.includes("/jsonc-parser/")) {
+            return "vendor-config";
+          }
           if (
             id.includes("/recharts/") ||
             id.includes("/d3-") ||

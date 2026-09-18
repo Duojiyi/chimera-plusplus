@@ -881,22 +881,17 @@ impl Database {
         let end_ts = end_date.unwrap_or_else(|| Local::now().timestamp());
         let mut start_ts = start_date.unwrap_or_else(|| end_ts - 24 * 60 * 60);
 
-        if start_ts >= end_ts {
+        // Equal endpoints are a valid inclusive one-second query. Preserve the
+        // legacy 24-hour fallback only for reversed ranges.
+        if start_ts > end_ts {
             start_ts = end_ts - 24 * 60 * 60;
         }
 
         let duration = end_ts - start_ts;
         if duration <= 24 * 60 * 60 {
             let bucket_seconds: i64 = 60 * 60;
-            let mut bucket_count: i64 = if duration <= 0 {
-                1
-            } else {
-                (duration + bucket_seconds - 1) / bucket_seconds
-            };
-
-            if bucket_count < 1 {
-                bucket_count = 1;
-            }
+            // Inclusive end timestamps on an hour boundary get their own bucket.
+            let bucket_count = duration / bucket_seconds + 1;
 
             let mut extra_conditions: Vec<String> = Vec::new();
             let mut extra_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
@@ -971,13 +966,7 @@ impl Database {
                 all_params.iter().map(|p| p.as_ref()).collect();
             let rows = stmt.query_map(param_refs.as_slice(), row_mapper)?;
             for row in rows {
-                let (mut bucket_idx, stat) = row?;
-                if bucket_idx < 0 {
-                    continue;
-                }
-                if bucket_idx >= bucket_count {
-                    bucket_idx = bucket_count - 1;
-                }
+                let (bucket_idx, stat) = row?;
                 map.insert(bucket_idx, stat);
             }
 
@@ -3790,6 +3779,256 @@ mod tests {
     }
 
     #[test]
+    fn test_codex_usage_contract_and_inclusive_trend_end() -> Result<(), AppError> {
+        // Exact hours previously lost the final bucket when a row landed at end.
+        // Also cover a partial hour, the hourly/day threshold, and local days.
+        for duration in [3600_i64, 5400, 86400, 172800] {
+            let db = Database::memory()?;
+            let start = local_ts(2024, 3, 1, 0, 0, 0);
+            let end = start + duration;
+            {
+                let conn = lock_conn!(db.conn);
+                for (id, ts, input, semantics) in [
+                    ("legacy", start, 1000, 0),
+                    ("total", end - 1, 1000, INPUT_TOKEN_SEMANTICS_TOTAL),
+                    ("fresh", end, 200, INPUT_TOKEN_SEMANTICS_FRESH),
+                ] {
+                    insert_usage_log(
+                        &conn, id, "codex", "p1", "gpt-5.4", "proxy", ts, input, 50, 600, 100, 200,
+                        "0.01",
+                    )?;
+                    conn.execute(
+                        "UPDATE proxy_request_logs SET input_token_semantics = ?1
+                         WHERE request_id = ?2",
+                        params![semantics, id],
+                    )?;
+                }
+                // App, range, and cross-source dedup filters must agree.
+                for (id, app, source, ts) in [
+                    ("other-app", "claude", "proxy", start),
+                    ("before", "codex", "proxy", start - 1),
+                    ("after", "codex", "proxy", end + 1),
+                    ("session-duplicate", "codex", "codex_session", end - 1),
+                ] {
+                    insert_usage_log(
+                        &conn, id, app, "p1", "gpt-5.4", source, ts, 1000, 50, 600, 100, 200,
+                        "0.01",
+                    )?;
+                }
+            }
+
+            let summary =
+                db.get_usage_summary(Some(start), Some(end), Some("codex"), None, None)?;
+            let trends = db.get_daily_trends(Some(start), Some(end), Some("codex"), None, None)?;
+            let models = db.get_model_stats(Some(start), Some(end), Some("codex"), None, None)?;
+            assert_eq!(summary.total_requests, 3);
+            // Legacy subtracts reads only; explicit total subtracts reads+writes;
+            // explicit fresh is preserved. Cache counters must not be subtracted twice.
+            assert_eq!(summary.total_input_tokens, 400 + 300 + 200);
+            assert_eq!(summary.total_output_tokens, 150);
+            assert_eq!(summary.total_cache_read_tokens, 1800);
+            assert_eq!(summary.total_cache_creation_tokens, 300);
+            assert_eq!(summary.real_total_tokens, 3150);
+            assert_eq!(summary.cache_hit_rate, 0.6);
+            assert_eq!(summary.total_cost, "0.030000");
+            assert_eq!(trends.iter().map(|s| s.request_count).sum::<u64>(), 3);
+            assert_eq!(
+                trends.iter().map(|s| s.total_input_tokens).sum::<u64>(),
+                900
+            );
+            assert_eq!(
+                trends.iter().map(|s| s.total_output_tokens).sum::<u64>(),
+                150
+            );
+            assert_eq!(
+                trends
+                    .iter()
+                    .map(|s| s.total_cache_read_tokens)
+                    .sum::<u64>(),
+                1800
+            );
+            assert_eq!(
+                trends
+                    .iter()
+                    .map(|s| s.total_cache_creation_tokens)
+                    .sum::<u64>(),
+                300
+            );
+            assert_eq!(trends.iter().map(|s| s.total_tokens).sum::<u64>(), 1050);
+            let trend_cost: f64 = trends
+                .iter()
+                .map(|s| s.total_cost.parse::<f64>().unwrap())
+                .sum();
+            assert!((trend_cost - 0.03).abs() < 1e-9);
+            assert_eq!(models.len(), 1);
+            assert_eq!(models[0].request_count, 3);
+            assert_eq!(models[0].total_tokens, 1050);
+            assert_eq!(models[0].total_cost, summary.total_cost);
+            assert_eq!(
+                models[0].total_tokens,
+                summary.total_input_tokens + summary.total_output_tokens
+            );
+            assert_eq!(
+                trends[0].date,
+                local_datetime_from_timestamp(start)?.to_rfc3339()
+            );
+            if duration <= 86400 {
+                assert_eq!(trends.len(), (duration / 3600 + 1) as usize);
+                assert_eq!(
+                    trends.last().unwrap().request_count,
+                    if duration % 3600 == 0 { 1 } else { 2 }
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_daily_trends_inclusive_hour_end_has_its_own_bucket() -> Result<(), AppError> {
+        for duration in [3600_i64, 86400] {
+            let db = Database::memory()?;
+            let start = local_ts(2024, 3, 1, 0, 0, 0);
+            let end = start + duration;
+            {
+                let conn = lock_conn!(db.conn);
+                for (id, timestamp, tokens) in [
+                    ("before-end", end - 1, 10),
+                    ("at-end", end, 1000),
+                    ("after-end", end + 1, 10000),
+                ] {
+                    insert_usage_log(
+                        &conn, id, "codex", "p1", "gpt-5.4", "proxy", timestamp, tokens, 0, 0, 0,
+                        200, "0.00",
+                    )?;
+                }
+            }
+            let trends = db.get_daily_trends(Some(start), Some(end), Some("codex"), None, None)?;
+            let last = (duration / 3600) as usize;
+            assert_eq!(trends.len(), last + 1);
+            assert_eq!(
+                trends[last - 1].date,
+                local_datetime_from_timestamp(end - 3600)?.to_rfc3339()
+            );
+            assert_eq!(trends[last - 1].request_count, 1);
+            assert_eq!(trends[last - 1].total_tokens, 10);
+            assert_eq!(
+                trends[last].date,
+                local_datetime_from_timestamp(end)?.to_rfc3339()
+            );
+            assert_eq!(trends[last].request_count, 1);
+            assert_eq!(trends[last].total_tokens, 1000);
+            assert_eq!(trends.iter().map(|s| s.request_count).sum::<u64>(), 2);
+            assert_eq!(trends.iter().map(|s| s.total_tokens).sum::<u64>(), 1010);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_daily_trends_equal_endpoints_only_include_that_second() -> Result<(), AppError> {
+        let timestamp = local_ts(2024, 3, 1, 0, 0, 0);
+        for include_endpoint in [false, true] {
+            let db = Database::memory()?;
+            {
+                let conn = lock_conn!(db.conn);
+                for (id, offset) in [("before", -1), ("endpoint", 0), ("after", 1)] {
+                    if offset == 0 && !include_endpoint {
+                        continue;
+                    }
+                    insert_usage_log(
+                        &conn,
+                        id,
+                        "codex",
+                        "p1",
+                        "gpt-5.4",
+                        "proxy",
+                        timestamp + offset,
+                        100,
+                        20,
+                        10,
+                        0,
+                        200,
+                        "0.01",
+                    )?;
+                }
+            }
+            let trends =
+                db.get_daily_trends(Some(timestamp), Some(timestamp), Some("codex"), None, None)?;
+            let summary =
+                db.get_usage_summary(Some(timestamp), Some(timestamp), Some("codex"), None, None)?;
+            assert_eq!(trends.len(), 1);
+            assert_eq!(
+                trends[0].date,
+                local_datetime_from_timestamp(timestamp)?.to_rfc3339()
+            );
+            assert_eq!(
+                trends[0].request_count,
+                if include_endpoint { 1 } else { 0 }
+            );
+            assert_eq!(trends[0].request_count, summary.total_requests);
+            assert_eq!(trends[0].total_input_tokens, summary.total_input_tokens);
+            assert_eq!(trends[0].total_output_tokens, summary.total_output_tokens);
+            assert_eq!(
+                trends[0].total_cache_read_tokens,
+                summary.total_cache_read_tokens
+            );
+            assert_eq!(
+                trends[0].total_tokens,
+                if include_endpoint { 110 } else { 0 }
+            );
+            assert_eq!(trends[0].total_cost, summary.total_cost);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_daily_trends_reversed_range_keeps_24_hour_fallback() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let end = local_ts(2024, 3, 1, 0, 0, 0);
+        {
+            let conn = lock_conn!(db.conn);
+            for (id, offset) in [
+                ("before", -86401),
+                ("start", -86400),
+                ("last-hour", -1),
+                ("end", 0),
+                ("after", 1),
+            ] {
+                insert_usage_log(
+                    &conn,
+                    id,
+                    "codex",
+                    "p1",
+                    "gpt-5.4",
+                    "proxy",
+                    end + offset,
+                    100,
+                    20,
+                    10,
+                    0,
+                    200,
+                    "0.01",
+                )?;
+            }
+        }
+        // Compatibility only: an invalid reversed range still queries [end-24h, end].
+        let trends = db.get_daily_trends(Some(end + 1), Some(end), Some("codex"), None, None)?;
+        assert_eq!(trends.len(), 25);
+        assert_eq!(
+            trends[0].date,
+            local_datetime_from_timestamp(end - 86400)?.to_rfc3339()
+        );
+        assert_eq!(trends[0].request_count, 1);
+        assert_eq!(trends[23].request_count, 1);
+        assert_eq!(trends[24].request_count, 1);
+        assert_eq!(
+            trends[24].date,
+            local_datetime_from_timestamp(end)?.to_rfc3339()
+        );
+        assert_eq!(trends.iter().map(|s| s.request_count).sum::<u64>(), 3);
+        Ok(())
+    }
+
+    #[test]
     fn test_get_daily_trends_respects_shorter_than_24_hours() -> Result<(), AppError> {
         let db = Database::memory()?;
 
@@ -3817,7 +4056,7 @@ mod tests {
         }
 
         let stats = db.get_daily_trends(Some(0), Some(15 * 60 * 60), Some("claude"), None, None)?;
-        assert_eq!(stats.len(), 15);
+        assert_eq!(stats.len(), 16);
         assert_eq!(stats[3].request_count, 1);
 
         Ok(())

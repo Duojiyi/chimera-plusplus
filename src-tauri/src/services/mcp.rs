@@ -103,7 +103,13 @@ impl McpService {
 
         state.db.delete_mcp_server(id)?;
 
-        if let Err(primary_error) = Self::sync_apps(state, &affected_apps) {
+        // Once the DB row is gone, projection cannot discover its old ID.
+        // Remove that exact entry first, retaining unrelated client-only servers.
+        let removal = affected_apps
+            .iter()
+            .try_for_each(|app| Self::remove_server_from_app(state, id, app))
+            .and_then(|_| Self::sync_apps(state, &affected_apps));
+        if let Err(primary_error) = removal {
             return Err(Self::rollback_changes(
                 state,
                 &snapshots,

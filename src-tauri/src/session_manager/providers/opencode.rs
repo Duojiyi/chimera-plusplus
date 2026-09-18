@@ -153,7 +153,7 @@ fn scan_sessions_sqlite() -> Vec<SessionMeta> {
             created_at: Some(created),
             last_active_at: Some(updated),
             source_path: Some(format!("sqlite:{db_display}:{session_id}")),
-            resume_command: Some(format!("opencode -s {session_id}")),
+            resume_command: super::utils::resume_command("opencode -s", &session_id),
         });
     }
     sessions
@@ -318,74 +318,122 @@ pub fn load_messages_sqlite(source: &str) -> Result<Vec<SessionMessage>, String>
 }
 
 pub fn delete_session(storage: &Path, path: &Path, session_id: &str) -> Result<bool, String> {
-    if path.file_name().and_then(|name| name.to_str()) != Some(session_id) {
-        return Err(format!(
-            "OpenCode session path does not match session ID: expected {session_id}, found {}",
-            path.display()
-        ));
+    super::utils::validate_id(session_id)?;
+    let expected = storage.join("message").join(session_id);
+    if path != expected {
+        return Err("OpenCode session path does not match session ID".into());
     }
+    super::utils::deletion_path(storage, path)?;
+    let db = storage
+        .parent()
+        .ok_or("Missing OpenCode storage parent")?
+        .join("opencode.db");
+    if db.try_exists().map_err(|e| e.to_string())? {
+        return delete_session_copies(&db, storage, session_id);
+    }
+    let paths = legacy_deletion_paths(storage, session_id)?;
+    super::utils::delete_paths(storage, &paths)
+}
 
-    let mut message_files = Vec::new();
-    collect_json_files(path, &mut message_files);
-
-    let mut message_ids = Vec::new();
-    for message_path in &message_files {
-        let data = match read_to_string_limited(message_path, MAX_SESSION_FILE_BYTES) {
-            Ok(data) => data,
-            Err(_) => continue,
-        };
-        let value: Value = match serde_json::from_str(&data) {
+fn legacy_deletion_paths(storage: &Path, session_id: &str) -> Result<Vec<PathBuf>, String> {
+    super::utils::validate_id(session_id)?;
+    let messages = storage.join("message").join(session_id);
+    let mut paths = Vec::new();
+    for path in super::utils::deletion_files(storage, &messages)? {
+        if path.extension().and_then(|v| v.to_str()) != Some("json") {
+            continue;
+        }
+        let data =
+            read_to_string_limited(&path, MAX_SESSION_FILE_BYTES).map_err(|e| e.to_string())?;
+        let value: Value = serde_json::from_str(&data).map_err(|e| e.to_string())?;
+        let id = value
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or("Missing OpenCode message ID")?;
+        super::utils::validate_id(id)?;
+        if path.parent() != Some(messages.as_path())
+            || path.file_stem().and_then(|v| v.to_str()) != Some(id)
+            || value.get("sessionID").and_then(Value::as_str) != Some(session_id)
+        {
+            return Err(format!(
+                "OpenCode message ownership mismatch: {}",
+                path.display()
+            ));
+        }
+        let parts = storage.join("part").join(id);
+        for part_path in super::utils::deletion_files(storage, &parts)? {
+            let data = read_to_string_limited(&part_path, MAX_SESSION_FILE_BYTES).map_err(|e| {
+                format!("Cannot validate OpenCode part {}: {e}", part_path.display())
+            })?;
+            let part: Value = serde_json::from_str(&data).map_err(|e| {
+                format!("Cannot validate OpenCode part {}: {e}", part_path.display())
+            })?;
+            let part_id = part
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or("Missing OpenCode part ID")?;
+            super::utils::validate_id(part_id)?;
+            if part_path.parent() != Some(parts.as_path())
+                || part_path.extension().and_then(|v| v.to_str()) != Some("json")
+                || part_path.file_stem().and_then(|v| v.to_str()) != Some(part_id)
+                || part.get("messageID").and_then(Value::as_str) != Some(id)
+                || part.get("sessionID").and_then(Value::as_str) != Some(session_id)
+            {
+                return Err(format!(
+                    "OpenCode part ownership mismatch: {}",
+                    part_path.display()
+                ));
+            }
+        }
+        paths.push(parts);
+    }
+    paths.push(
+        storage
+            .join("session_diff")
+            .join(format!("{session_id}.json")),
+    );
+    paths.push(messages);
+    for path in super::utils::deletion_files(storage, &storage.join("session"))? {
+        if path.extension().and_then(|v| v.to_str()) != Some("json") {
+            continue;
+        }
+        let named_target = path.file_stem().and_then(|v| v.to_str()) == Some(session_id);
+        let parsed = read_to_string_limited(&path, MAX_CONFIG_FILE_BYTES)
+            .map_err(|e| e.to_string())
+            .and_then(|data| serde_json::from_str::<Value>(&data).map_err(|e| e.to_string()));
+        let value = match parsed {
             Ok(value) => value,
-            Err(_) => continue,
+            // Discovery also ignores unparseable, unrelated session metadata.
+            Err(_) if !named_target => continue,
+            Err(e) => {
+                return Err(format!(
+                    "Cannot validate OpenCode session copy {}: {e}",
+                    path.display()
+                ))
+            }
         };
-        if let Some(message_id) = value.get("id").and_then(Value::as_str) {
-            message_ids.push(message_id.to_string());
+        let metadata_target = value.get("id").and_then(Value::as_str) == Some(session_id);
+        if named_target || metadata_target {
+            if !named_target || !metadata_target {
+                return Err(format!(
+                    "OpenCode session ownership mismatch: {}",
+                    path.display()
+                ));
+            }
+            paths.push(path);
         }
     }
-
-    for message_id in &message_ids {
-        let part_dir = storage.join("part").join(message_id);
-        remove_dir_all_if_exists(&part_dir).map_err(|e| {
-            format!(
-                "Failed to delete OpenCode part directory {}: {e}",
-                part_dir.display()
-            )
-        })?;
+    for path in &paths {
+        super::utils::deletion_files(storage, path)?;
     }
-
-    let session_diff_path = storage
-        .join("session_diff")
-        .join(format!("{session_id}.json"));
-    remove_file_if_exists(&session_diff_path).map_err(|e| {
-        format!(
-            "Failed to delete OpenCode session diff {}: {e}",
-            session_diff_path.display()
-        )
-    })?;
-
-    remove_dir_all_if_exists(path).map_err(|e| {
-        format!(
-            "Failed to delete OpenCode message directory {}: {e}",
-            path.display()
-        )
-    })?;
-
-    if let Some(session_file) = find_session_file(storage, session_id) {
-        remove_file_if_exists(&session_file).map_err(|e| {
-            format!(
-                "Failed to delete OpenCode session file {}: {e}",
-                session_file.display()
-            )
-        })?;
-    }
-
-    Ok(true)
+    Ok(paths)
 }
 
 /// Delete a session from the OpenCode SQLite database.
 pub fn delete_session_sqlite(session_id: &str, source: &str) -> Result<bool, String> {
     let (db_path, ref_session_id) = parse_sqlite_source(source)
         .ok_or_else(|| format!("Invalid SQLite source reference: {source}"))?;
+    super::utils::deletion_path(db_path.parent().ok_or("Missing database parent")?, &db_path)?;
     let db_path = db_path
         .canonicalize()
         .map_err(|e| format!("Failed to canonicalize SQLite database path: {e}"))?;
@@ -402,8 +450,14 @@ pub fn delete_session_sqlite(session_id: &str, source: &str) -> Result<bool, Str
         return Err("SQLite path does not match expected OpenCode database".to_string());
     }
 
-    let conn =
-        Connection::open(&db_path).map_err(|e| format!("Failed to open OpenCode database: {e}"))?;
+    delete_session_copies(&db_path, &get_opencode_data_dir(), session_id)
+}
+
+fn delete_session_copies(db_path: &Path, storage: &Path, session_id: &str) -> Result<bool, String> {
+    super::utils::deletion_path(db_path.parent().ok_or("Missing database parent")?, db_path)?;
+    let paths = legacy_deletion_paths(storage, session_id)?;
+    let conn = Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
+        .map_err(|e| format!("Failed to open OpenCode database: {e}"))?;
 
     let tx = conn
         .unchecked_transaction()
@@ -418,10 +472,12 @@ pub fn delete_session_sqlite(session_id: &str, source: &str) -> Result<bool, Str
         .execute("DELETE FROM session WHERE id = ?1", [session_id])
         .map_err(|e| format!("Failed to delete OpenCode session: {e}"))?;
 
-    tx.commit()
-        .map_err(|e| format!("Failed to commit session deletion: {e}"))?;
+    let files_deleted = super::utils::delete_paths(storage, &paths)?;
 
-    Ok(deleted > 0)
+    tx.commit()
+        .map_err(|e| format!("Session deletion incomplete: database commit failed (file copies may already be removed): {e}"))?;
+
+    Ok(deleted > 0 || files_deleted)
 }
 
 fn parse_session(storage: &Path, path: &Path) -> Option<SessionMeta> {
@@ -477,7 +533,7 @@ fn parse_session(storage: &Path, path: &Path) -> Option<SessionMeta> {
         created_at,
         last_active_at: updated_at.or(created_at),
         source_path: Some(source_path),
-        resume_command: Some(format!("opencode -s {session_id}")),
+        resume_command: super::utils::resume_command("opencode -s", &session_id),
     })
 }
 
@@ -585,33 +641,6 @@ fn collect_json_files(root: &Path, files: &mut Vec<PathBuf>) {
     }
 }
 
-fn find_session_file(storage: &Path, session_id: &str) -> Option<PathBuf> {
-    let session_root = storage.join("session");
-    let mut files = Vec::new();
-    collect_json_files(&session_root, &mut files);
-    let expected = format!("{session_id}.json");
-
-    files
-        .into_iter()
-        .find(|path| path.file_name().and_then(|name| name.to_str()) == Some(expected.as_str()))
-}
-
-fn remove_file_if_exists(path: &Path) -> std::io::Result<()> {
-    match std::fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(err),
-    }
-}
-
-fn remove_dir_all_if_exists(path: &Path) -> std::io::Result<()> {
-    match std::fs::remove_dir_all(path) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(err),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -695,7 +724,7 @@ mod tests {
         .expect("write message file");
         std::fs::write(
             part_dir.join("prt_1.json"),
-            r#"{"id":"prt_1","messageID":"msg_1"}"#,
+            r#"{"id":"prt_1","messageID":"msg_1","sessionID":"ses_123"}"#,
         )
         .expect("write part file");
         std::fs::write(&session_diff, "[]").expect("write session diff");
@@ -817,7 +846,7 @@ mod tests {
         );
         assert_eq!(
             sessions[1].resume_command.as_deref(),
-            Some("opencode -s ses_1")
+            Some("opencode -s \"ses_1\"")
         );
     }
 
@@ -986,6 +1015,213 @@ mod tests {
             std::env::set_var("XDG_DATA_HOME", value);
         } else {
             std::env::remove_var("XDG_DATA_HOME");
+        }
+    }
+
+    fn dual_source_fixture(base: &Path) -> (PathBuf, PathBuf, PathBuf) {
+        let db = base.join("opencode.db");
+        let conn = Connection::open(&db).unwrap();
+        create_sqlite_schema(&conn);
+        conn.execute(
+            "INSERT INTO session VALUES ('ses_1', 'Session', '/tmp', 1, 2)",
+            [],
+        )
+        .unwrap();
+        let storage = base.join("storage");
+        let messages = storage.join("message/ses_1");
+        std::fs::create_dir_all(&messages).unwrap();
+        std::fs::write(
+            messages.join("msg_1.json"),
+            r#"{"id":"msg_1","sessionID":"ses_1"}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(storage.join("part/msg_1")).unwrap();
+        std::fs::write(
+            storage.join("part/msg_1/prt_1.json"),
+            r#"{"id":"prt_1","messageID":"msg_1","sessionID":"ses_1"}"#,
+        )
+        .unwrap();
+        for project in ["project_a", "project_b"] {
+            let dir = storage.join("session").join(project);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("ses_1.json"), r#"{"id":"ses_1"}"#).unwrap();
+        }
+        (db, storage, messages)
+    }
+
+    #[test]
+    fn both_entry_paths_delete_database_and_all_legacy_copies() {
+        for from_file in [false, true] {
+            let temp = tempdir().unwrap();
+            let (db, storage, messages) = dual_source_fixture(temp.path());
+            let result = if from_file {
+                delete_session(&storage, &messages, "ses_1")
+            } else {
+                delete_session_copies(&db, &storage, "ses_1")
+            };
+            assert!(result.unwrap());
+            assert!(!messages.exists());
+            assert!(!storage.join("part/msg_1").exists());
+            assert!(legacy_deletion_paths(&storage, "ses_1")
+                .unwrap()
+                .iter()
+                .all(|p| !p.exists()));
+            let conn = Connection::open(db).unwrap();
+            assert_eq!(
+                conn.query_row("SELECT COUNT(*) FROM session", [], |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn malicious_message_ids_abort_before_any_deletion() {
+        for id in [
+            "../outside",
+            "..\\outside",
+            "/tmp/outside",
+            "C:\\outside",
+            "msg:stream",
+            "CON",
+        ] {
+            let temp = tempdir().unwrap();
+            let (db, storage, messages) = dual_source_fixture(temp.path());
+            std::fs::write(
+                messages.join("bad.json"),
+                serde_json::json!({"id": id}).to_string(),
+            )
+            .unwrap();
+            assert!(delete_session_copies(&db, &storage, "ses_1").is_err());
+            assert!(messages.join("msg_1.json").exists());
+            assert!(storage.join("part/msg_1").exists());
+            let conn = Connection::open(db).unwrap();
+            assert_eq!(
+                conn.query_row("SELECT COUNT(*) FROM session", [], |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn database_failure_preserves_legacy_copy() {
+        let temp = tempdir().unwrap();
+        let (db, storage, messages) = dual_source_fixture(temp.path());
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch("CREATE TRIGGER deny_delete BEFORE DELETE ON session BEGIN SELECT RAISE(ABORT, 'denied'); END;").unwrap();
+        assert!(delete_session_copies(&db, &storage, "ses_1").is_err());
+        assert!(messages.exists());
+        assert!(storage.join("session/project_a/ses_1.json").exists());
+    }
+
+    #[test]
+    fn foreign_message_references_abort_before_deleting_either_session() {
+        // Even a forged matching filename/sessionID must not grant ownership of B's parts.
+        for (filename, session) in [
+            ("msg_A.json", "ses_1"),
+            ("msg_B.json", "ses_B"),
+            ("msg_B.json", "ses_1"),
+        ] {
+            let temp = tempdir().unwrap();
+            let (db, storage, messages) = dual_source_fixture(temp.path());
+            let foreign = storage.join("part/msg_B/prt_B.json");
+            std::fs::create_dir_all(foreign.parent().unwrap()).unwrap();
+            std::fs::write(
+                &foreign,
+                r#"{"id":"prt_B","messageID":"msg_B","sessionID":"ses_B"}"#,
+            )
+            .unwrap();
+            let foreign_messages = storage.join("message/ses_B");
+            std::fs::create_dir_all(&foreign_messages).unwrap();
+            std::fs::write(
+                foreign_messages.join("msg_B.json"),
+                r#"{"id":"msg_B","sessionID":"ses_B"}"#,
+            )
+            .unwrap();
+            std::fs::write(
+                messages.join(filename),
+                serde_json::json!({"id":"msg_B","sessionID":session}).to_string(),
+            )
+            .unwrap();
+            let error = delete_session_copies(&db, &storage, "ses_1").unwrap_err();
+            assert!(error.contains("ownership mismatch"), "{error}");
+            assert!(foreign.exists());
+            assert!(foreign_messages.join("msg_B.json").exists());
+            assert!(messages.join("msg_1.json").exists());
+            assert!(storage.join("part/msg_1/prt_1.json").exists());
+            let conn = Connection::open(db).unwrap();
+            assert_eq!(
+                conn.query_row("SELECT COUNT(*) FROM session", [], |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn inconsistent_or_missing_part_ownership_is_rejected() {
+        for part in [
+            serde_json::json!({"id":"wrong_filename","messageID":"msg_1","sessionID":"ses_1"}),
+            serde_json::json!({"id":"prt_1","messageID":"msg_B","sessionID":"ses_1"}),
+            serde_json::json!({"id":"prt_1","messageID":"msg_1","sessionID":"ses_B"}),
+            serde_json::json!({"id":"prt_1","messageID":"msg_1"}),
+        ] {
+            let temp = tempdir().unwrap();
+            let (db, storage, messages) = dual_source_fixture(temp.path());
+            let path = storage.join("part/msg_1/prt_1.json");
+            std::fs::write(&path, part.to_string()).unwrap();
+            assert!(delete_session_copies(&db, &storage, "ses_1").is_err());
+            assert!(path.exists());
+            assert!(messages.exists());
+        }
+    }
+
+    #[test]
+    fn unrelated_corrupt_metadata_does_not_block_legacy_or_sqlite_deletion() {
+        for pure_sqlite in [false, true] {
+            let temp = tempdir().unwrap();
+            let (db, storage, _) = dual_source_fixture(temp.path());
+            let corrupt = storage.join("session/project_a/unrelated.json");
+            std::fs::write(&corrupt, "{\"id\":").unwrap();
+            let invalid_utf8 = storage.join("session/project_a/unreadable.json");
+            std::fs::write(&invalid_utf8, [0xff]).unwrap();
+            let conn = Connection::open(&db).unwrap();
+            conn.execute(
+                "INSERT INTO session VALUES ('ses_sqlite', 'Only DB', '/tmp', 1, 2)",
+                [],
+            )
+            .unwrap();
+            let id = if pure_sqlite { "ses_sqlite" } else { "ses_1" };
+            assert!(delete_session_copies(&db, &storage, id).unwrap());
+            assert!(corrupt.exists());
+            assert!(invalid_utf8.exists());
+            assert_eq!(
+                conn.query_row("SELECT COUNT(*) FROM session WHERE id = ?1", [id], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn corrupt_or_conflicting_target_metadata_aborts_all_deletion() {
+        for data in ["{\"id\":", r#"{"id":"ses_B"}"#, "{}"] {
+            let temp = tempdir().unwrap();
+            let (db, storage, messages) = dual_source_fixture(temp.path());
+            let target = storage.join("session/project_b/ses_1.json");
+            std::fs::write(&target, data).unwrap();
+            assert!(delete_session_copies(&db, &storage, "ses_1").is_err());
+            assert!(target.exists());
+            assert!(messages.exists());
+            assert!(storage.join("part/msg_1/prt_1.json").exists());
+            let conn = Connection::open(db).unwrap();
+            assert_eq!(
+                conn.query_row("SELECT COUNT(*) FROM session", [], |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                1
+            );
         }
     }
 }

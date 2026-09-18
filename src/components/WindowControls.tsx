@@ -15,7 +15,11 @@ import { isMac } from "@/lib/platform";
  * 决定，两者必须一致：CSS 按 DOM 顺序从左到右排列，顺序错了会把关闭按钮放到
  * 用户以为是最小化的位置，键盘 Tab 顺序也会与视觉顺序不符。
  */
-export function WindowControls() {
+export function WindowControls({
+  closeDisabled = false,
+}: {
+  closeDisabled?: boolean;
+}) {
   const mac = isMac();
 
   const minimizeButton = (
@@ -35,7 +39,8 @@ export function WindowControls() {
       key="close"
       className="is-close"
       aria-label="关闭 Chimera++"
-      title="关闭"
+      title={closeDisabled ? "请先保存或返回线路页面" : "关闭"}
+      disabled={closeDisabled}
       onClick={() => void getCurrentWindow().close()}
     >
       <X size={mac ? 10 : 16} strokeWidth={mac ? 2.5 : 2} />

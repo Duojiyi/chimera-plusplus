@@ -4,6 +4,17 @@ use tauri::Manager;
 
 static LIGHTWEIGHT_MODE: AtomicBool = AtomicBool::new(false);
 
+pub fn hide_main_window(app: &tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        window.hide().map_err(|e| e.to_string())?;
+        #[cfg(target_os = "windows")]
+        window.set_skip_taskbar(true).map_err(|e| e.to_string())?;
+        #[cfg(target_os = "macos")]
+        crate::tray::apply_tray_policy(app, false);
+    }
+    Ok(())
+}
+
 pub fn enter_lightweight_mode(app: &tauri::AppHandle) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {

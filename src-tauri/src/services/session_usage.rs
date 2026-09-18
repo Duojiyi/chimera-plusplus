@@ -8,6 +8,7 @@
 //! ~/.claude/projects/*/*.jsonl → 增量解析 → 去重 → 费用计算 → proxy_request_logs 表
 //! ```
 
+use super::session_usage_codex::{read_capped_line, MAX_SESSION_LINE_BYTES};
 use crate::config::get_claude_config_dir;
 use crate::database::{lock_conn, Database};
 use crate::error::AppError;
@@ -20,7 +21,7 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::SystemTime;
@@ -264,32 +265,30 @@ fn sync_single_file(db: &Database, file_path: &Path) -> Result<(u32, u32), AppEr
     // 从上次偏移位置开始增量解析
     let file =
         fs::File::open(file_path).map_err(|e| AppError::Config(format!("无法打开文件: {e}")))?;
-    let reader = BufReader::new(file);
+    let mut reader = BufReader::new(file);
 
     let mut line_offset: i64 = 0;
     let mut messages: HashMap<String, ParsedAssistantUsage> = HashMap::new();
     let mut current_session_id: Option<String> = None;
 
-    for line_result in reader.lines() {
+    let mut incomplete_tail = false;
+    while let Some((raw_line, truncated, terminated)) =
+        read_capped_line(&mut reader, MAX_SESSION_LINE_BYTES)
+            .map_err(|e| AppError::Config(format!("读取会话文件失败: {e}")))?
+    {
+        // Do not acknowledge a partially appended JSON/UTF-8 tail. A complete
+        // JSON value is still valid without a trailing newline.
+        let value = serde_json::from_slice::<serde_json::Value>(&raw_line);
+        if !terminated && (truncated || value.is_err()) {
+            incomplete_tail = true;
+            break;
+        }
         line_offset += 1;
-
-        // 跳过已处理的行
-        if line_offset <= last_offset {
+        if line_offset <= last_offset || truncated {
             continue;
         }
-
-        let line = match line_result {
-            Ok(l) => l,
-            Err(_) => continue, // 容忍不完整的最后一行
-        };
-
-        if line.trim().is_empty() {
+        let Ok(value) = value else {
             continue;
-        }
-
-        let value: serde_json::Value = match serde_json::from_str(&line) {
-            Ok(v) => v,
-            Err(_) => continue,
         };
 
         // 提取 session ID (从 system 或首条消息)
@@ -428,7 +427,9 @@ fn sync_single_file(db: &Database, file_path: &Path) -> Result<(u32, u32), AppEr
     drop(conn);
 
     // 更新同步状态
-    update_sync_state(db, &file_path_str, file_modified, line_offset)?;
+    // Force retries even when the writer's mtime has coarse resolution.
+    let acknowledged_modified = if incomplete_tail { 0 } else { file_modified };
+    update_sync_state(db, &file_path_str, acknowledged_modified, line_offset)?;
 
     Ok((imported, skipped))
 }
@@ -637,6 +638,69 @@ pub fn get_data_source_breakdown(db: &Database) -> Result<Vec<DataSourceSummary>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sync_retries_partial_tail_without_reimporting_completed_lines() -> Result<(), AppError> {
+        use std::io::Write;
+
+        let db = Database::memory()?;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("partial.jsonl");
+        let first = r#"{"type":"assistant","sessionId":"session-tail","message":{"id":"msg-first","model":"unknown","usage":{"input_tokens":10,"output_tokens":2}}}"#;
+        let second = r#"{"type":"assistant","sessionId":"session-tail","message":{"id":"msg-tail","model":"unknown","usage":{"input_tokens":20,"output_tokens":3}}}"#;
+        let split = second.len() / 2;
+        fs::write(&file, format!("{first}\n{}", &second[..split])).unwrap();
+        let original_modified = fs::metadata(&file).unwrap().modified().unwrap();
+
+        assert_eq!(sync_single_file(&db, &file)?.0, 1);
+        let path = file.to_string_lossy();
+        assert_eq!(get_sync_state(&db, &path)?, (0, 1));
+        assert_eq!(sync_single_file(&db, &file)?.0, 0);
+        assert_eq!(get_sync_state(&db, &path)?, (0, 1));
+
+        let mut writer = fs::OpenOptions::new().append(true).open(&file).unwrap();
+        writer.write_all(second[split..].as_bytes()).unwrap();
+        writer
+            .set_times(fs::FileTimes::new().set_modified(original_modified))
+            .unwrap();
+        drop(writer);
+        assert_eq!(
+            fs::metadata(&file).unwrap().modified().unwrap(),
+            original_modified
+        );
+        // Completed final JSON, deliberately without a trailing newline.
+        assert_eq!(sync_single_file(&db, &file)?.0, 1);
+        let (modified, offset) = get_sync_state(&db, &path)?;
+        assert!(modified > 0);
+        assert_eq!(offset, 2);
+        assert_eq!(sync_single_file(&db, &file)?.0, 0);
+        let conn = lock_conn!(db.conn);
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM proxy_request_logs", [], |row| {
+            row.get(0)
+        })?;
+        assert_eq!(count, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn sync_retries_partial_utf8_tail_and_skips_terminated_invalid_lines() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("utf8.jsonl");
+        let event = r#"{"type":"assistant","sessionId":"会话","message":{"id":"msg-utf8","model":"unknown","usage":{"input_tokens":1,"output_tokens":1}}}"#;
+        let split = event.find('会').unwrap() + 1;
+        let mut data = b"invalid JSON\n".to_vec();
+        data.extend_from_slice(&event.as_bytes()[..split]);
+        fs::write(&file, &data).unwrap();
+        assert_eq!(sync_single_file(&db, &file)?.0, 0);
+        assert_eq!(get_sync_state(&db, &file.to_string_lossy())?, (0, 1));
+        data.extend_from_slice(&event.as_bytes()[split..]);
+        data.push(b'\n');
+        fs::write(&file, data).unwrap();
+        assert_eq!(sync_single_file(&db, &file)?.0, 1);
+        assert_eq!(get_sync_state(&db, &file.to_string_lossy())?.1, 2);
+        Ok(())
+    }
 
     #[test]
     fn sync_result_notification_is_coalesced_to_one_call() {

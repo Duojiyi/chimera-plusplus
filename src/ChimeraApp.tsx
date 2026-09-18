@@ -1,4 +1,8 @@
 import {
+  useLightweightClose,
+  useLightweightCloseBlocker,
+} from "@/hooks/useLightweightClose";
+import {
   lazy,
   Suspense,
   useCallback,
@@ -79,7 +83,7 @@ import {
 import { subscriptionApi } from "@/lib/api/subscription";
 import { useQuery } from "@tanstack/react-query";
 import { generateUUID } from "@/utils/uuid";
-import { useDialogFocus } from "@/hooks/useDialogFocus";
+import { openDialogCount, useDialogFocus } from "@/hooks/useDialogFocus";
 import {
   activityStorageKey,
   buildCodexModelCatalog,
@@ -103,6 +107,7 @@ import { useSettingsQuery } from "@/lib/query/queries";
 import routeGateIcon from "@/assets/icons/chimera-dragon-mark.png";
 import RouteGlobe from "@/components/RouteGlobe";
 import "./chimera.css";
+import "./components/ProviderEditorPage.css";
 
 const runningInTauri =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -260,10 +265,14 @@ const viewLabels: Record<View, string> = Object.fromEntries(
 ) as Record<View, string>;
 
 const runtimeText = (mode?: string | null) =>
-  mode === "standard" ? "标准安装" : "免安装版";
+  mode === "standard"
+    ? "标准安装"
+    : mode === "portable"
+      ? "免安装版"
+      : "未识别安装方式";
 
 const runtimeChannelText = (source?: string | null) =>
-  source === "mirror" ? "镜像通道" : "稳定通道";
+  source === "mirror" ? "镜像源" : "自动选择";
 
 // UTC slicing (`publishedAt.slice(0, 10)`) shows the wrong calendar day in
 // timezones ahead of UTC (e.g. UTC+8 late-evening releases). Format in the
@@ -336,7 +345,10 @@ function codexApiFormatLabel(format: CodexApiFormat): string {
   return "Anthropic Messages";
 }
 
-function providerDraft(provider?: Provider | null, suggestedName?: string) {
+export function providerDraft(
+  provider?: Provider | null,
+  suggestedName?: string,
+) {
   const template = getChimeraHubTemplate();
   const config = String(provider?.settingsConfig?.config ?? template.config);
   const auth = (provider?.settingsConfig?.auth ?? template.auth) as Record<
@@ -447,6 +459,7 @@ export default function ChimeraApp() {
   const [commonConfigLoading, setCommonConfigLoading] = useState(false);
   const [commonConfigLoaded, setCommonConfigLoaded] = useState(false);
   const [commonConfigDirty, setCommonConfigDirty] = useState(false);
+  const commonConfigBaselineRef = useRef("");
   const [fetchingModels, setFetchingModels] = useState(false);
   const [savingProvider, setSavingProvider] = useState(false);
   const [showKey, setShowKey] = useState(false);
@@ -474,6 +487,10 @@ export default function ChimeraApp() {
   const [diagnostics, setDiagnostics] = useState<Diagnostic[] | null>(null);
   const [downloadProgress, setDownloadProgress] =
     useState<DownloadProgress | null>(null);
+  const [deletingProviderId, setDeletingProviderId] = useState<string | null>(
+    null,
+  );
+  const providerDeleteInFlightRef = useRef(false);
   const [pendingProviderDelete, setPendingProviderDelete] =
     useState<Provider | null>(null);
   const [pendingModelReload, setPendingModelReload] = useState<string | null>(
@@ -524,7 +541,26 @@ export default function ChimeraApp() {
     draftTestSeqRef.current += 1;
   }, [editor?.id]);
 
+  const editorReturnFocusRef = useRef<HTMLElement | null>(null);
+  const contentRef = useRef<HTMLElement>(null);
+  const [editorSaveError, setEditorSaveError] = useState<string | null>(null);
+  useEffect(() => {
+    if (editor || !editorReturnFocusRef.current) return;
+    const target = editorReturnFocusRef.current;
+    editorReturnFocusRef.current = null;
+    (target.isConnected
+      ? target
+      : (contentRef.current?.querySelector<HTMLElement>(
+          '[aria-label="管理线路"]',
+        ) ?? contentRef.current)
+    )?.focus({
+      preventScroll: true,
+    });
+  }, [Boolean(editor)]);
+
   const openEditor = (draft: ReturnType<typeof providerDraft>) => {
+    editorReturnFocusRef.current = document.activeElement as HTMLElement | null;
+    setEditorSaveError(null);
     setModels(null);
     setModelFetchError(null);
     editorBaselineRef.current = editorDraftSignature(draft);
@@ -538,10 +574,10 @@ export default function ChimeraApp() {
     setEditor(null);
   };
 
-  // Escape and backdrop clicks ask first when the draft has unsaved input.
+  // Page return, Cancel and Escape share the unsaved-input guard.
   const requestCloseEditor = () => {
     const draft = editorRef.current;
-    if (!draft) return;
+    if (!draft || providerSaveInFlightRef.current) return;
     if (
       isEditorDraftDirty(draft, editorBaselineRef.current) ||
       commonConfigDirty
@@ -561,10 +597,28 @@ export default function ChimeraApp() {
     updateInfo: titlebarUpdateInfo,
     isChecking: titlebarChecking,
     isInstalling: titlebarInstalling,
+    isStaging: titlebarStaging,
     checkUpdate: titlebarCheckUpdate,
     installUpdate: titlebarInstallUpdate,
     resetDismiss: titlebarResetDismiss,
   } = useUpdate();
+
+  useLightweightClose(
+    Boolean(
+      editor ||
+      commonConfigDirty ||
+      savingProvider ||
+      deletingProviderId ||
+      runtimeOperation ||
+      downloadProgress ||
+      pendingAction ||
+      launchingCodex ||
+      diagnosing ||
+      titlebarInstalling ||
+      titlebarStaging ||
+      loading,
+    ),
+  );
 
   const runTitlebarUpdateCheck = useCallback(async () => {
     if (!runningInTauri) {
@@ -1046,8 +1100,8 @@ export default function ChimeraApp() {
         providerName,
         performance.now() - started,
       );
-      toast.success("连接可用", {
-        description: `响应时间 ${result.latency}ms`,
+      toast.success("API 地址可达", {
+        description: `响应时间 ${result.latency}ms；未验证 Key、模型或推理能力。`,
       });
       return true;
     } catch (error) {
@@ -1109,11 +1163,26 @@ export default function ChimeraApp() {
     }
 
     if (providerSaveInFlightRef.current) return;
+    setEditorSaveError(null);
     providerSaveInFlightRef.current = true;
     setSavingProvider(true);
     setModelPickerOpen(false);
 
     try {
+      if (commonConfigLoaded && commonConfigDirty) {
+        try {
+          await configApi.validateCommonConfigSnippet(
+            "codex",
+            commonConfigSnippet,
+          );
+        } catch (error) {
+          setEditorSaveError(`通用配置无效，线路尚未保存：${String(error)}`);
+          toast.error("通用配置无效，线路尚未保存", {
+            description: String(error),
+          });
+          return;
+        }
+      }
       const endpointIdentity = codexEndpointIdentity(draft);
       const protocolIdentity = codexProtocolIdentity(draft);
       let fetchedForSave =
@@ -1232,9 +1301,9 @@ export default function ChimeraApp() {
         const defaultDetection = detectedFormats[draft.model.trim()];
         if (!defaultDetection) {
           setApiFormatDetectionError(
-            "未能识别默认模型的上游协议。可查看下方原因后重试，或直接按指定协议保存。",
+            "未能确认默认模型的上游协议，不代表模型不可用。请查看各协议的响应详情，或按供应商说明指定协议保存。",
           );
-          toast.error("无法自动识别上游 API 协议", {
+          toast.error("尚未确认上游 API 协议", {
             description:
               failures[draft.model.trim()] ??
               "请查看编辑器中的失败原因，或按 Chat / Responses / Anthropic 保存。",
@@ -1350,6 +1419,7 @@ export default function ChimeraApp() {
           },
         },
       };
+      let providerCommitted = false;
       try {
         if (draft.original) {
           // "保存并应用" must not leave an edited inactive provider behind if
@@ -1363,8 +1433,16 @@ export default function ChimeraApp() {
         } else {
           await providersApi.addAndActivate(provider, "codex", false);
         }
+        providerCommitted = true;
+        setCodexRestartRequired(true);
+        // A later failure must retry an update, not add the same route again.
+        const savedDraft = { ...draft, original: provider };
+        editorRef.current = savedDraft;
+        setEditor(savedDraft);
         if (commonConfigLoaded && commonConfigDirty) {
           await configApi.setCommonConfigSnippet("codex", commonConfigSnippet);
+          commonConfigBaselineRef.current = commonConfigSnippet;
+          setCommonConfigDirty(false);
         }
         // 文件级校验失败才算真错（目录没写对）；运行时交叉验证跑不起来只是
         // 环境限制（如 macOS 图形进程 PATH 里没有 node），不该报成保存失败。
@@ -1382,7 +1460,9 @@ export default function ChimeraApp() {
           );
         } catch (error) {
           await loadProviders();
-          closeEditor();
+          setEditorSaveError(
+            `线路已保存并应用，但模型目录未正确应用。编辑内容已保留，可重试保存。${String(error)}`,
+          );
           note("应用模型目录", "error", String(error), provider.name);
           toast.error("线路已保存，但模型目录未正确应用", {
             description: String(error),
@@ -1414,7 +1494,18 @@ export default function ChimeraApp() {
           });
         }
       } catch (error) {
-        toast.error("保存失败", { description: String(error) });
+        if (providerCommitted) {
+          await loadProviders();
+          setEditorSaveError(
+            `线路已保存并应用，但后续配置未完成。编辑内容已保留，可重试保存。${String(error)}`,
+          );
+          toast.error("线路已保存并应用，但后续配置未完成", {
+            description: `编辑内容已保留，可重试保存。${String(error)}`,
+          });
+        } else {
+          setEditorSaveError(`保存失败，编辑内容已保留：${String(error)}`);
+          toast.error("保存失败", { description: String(error) });
+        }
       }
     } finally {
       providerSaveInFlightRef.current = false;
@@ -1429,18 +1520,47 @@ export default function ChimeraApp() {
       setCommonConfigDirty(false);
       return;
     }
+    let active = true;
     setCommonConfigLoading(true);
     setCommonConfigLoaded(false);
     setCommonConfigDirty(false);
     void configApi
       .getCommonConfigSnippet("codex")
       .then((snippet) => {
+        if (!active) return;
+        commonConfigBaselineRef.current = snippet ?? "";
         setCommonConfigSnippet(snippet ?? "");
         setCommonConfigLoaded(true);
       })
-      .catch(() => setCommonConfigSnippet(""))
-      .finally(() => setCommonConfigLoading(false));
+      .catch(() => {
+        if (active) setCommonConfigSnippet("");
+      })
+      .finally(() => {
+        if (active) setCommonConfigLoading(false);
+      });
+    return () => {
+      active = false;
+    };
   }, [editor?.id]);
+
+  const deleteProvider = async (provider: Provider): Promise<boolean> => {
+    if (providerDeleteInFlightRef.current) return false;
+    providerDeleteInFlightRef.current = true;
+    setDeletingProviderId(provider.id);
+    try {
+      const deleted = await providersApi.delete(provider.id, "codex");
+      if (!deleted) throw new Error("线路未删除，请重试");
+      await loadProviders();
+      toast.success(`线路“${provider.name}”已删除`);
+      return true;
+    } catch (error) {
+      toast.error("删除失败", { description: String(error) });
+      return false;
+    } finally {
+      providerDeleteInFlightRef.current = false;
+      setDeletingProviderId(null);
+    }
+  };
 
   const fetchModels = async () => {
     if (!editor?.baseUrl.trim() || !editor.apiKey.trim()) {
@@ -1509,85 +1629,10 @@ export default function ChimeraApp() {
         return;
       }
 
-      if (latest.apiFormat !== "auto") {
-        toast.success(`已获取 ${result.length} 个模型`);
-        return;
-      }
-
-      // Probe the default model plus the mapping rows only — never the whole
-      // fetched list, which on aggregators always contains models that fail.
-      const probeModels = codexProbeModels(latest.model, latest.catalogModels);
-      const probeModel = probeModels[0];
-      const probeIdentity = codexProtocolIdentity(latest);
-      const probeSeq = ++protocolProbeSeqRef.current;
-      try {
-        const report = await detectCodexApiFormats(
-          latest.baseUrl,
-          latest.apiKey,
-          probeModels,
-          latest.isFullUrl,
-          latest.customUserAgent.trim() || undefined,
-        );
-        const current = editorRef.current;
-        if (
-          probeSeq !== protocolProbeSeqRef.current ||
-          !current ||
-          current.id !== latest.id ||
-          current.apiFormat !== "auto" ||
-          codexProtocolIdentity(current) !== probeIdentity
-        ) {
-          return;
-        }
-        const detectedFormats = report.detected;
-        setApiFormatDetection({
-          identity: probeIdentity,
-          formats: detectedFormats,
-          failures: report.failures,
-        });
-        const detected = detectedFormats[probeModel];
-        if (!detected) {
-          setApiFormatDetectionError(
-            "模型已获取，但未能识别默认模型的上游协议。可查看下方原因后重试，或直接按指定协议保存。",
-          );
-          toast.warning(`已获取 ${result.length} 个模型，但协议识别失败`, {
-            description: report.failures[probeModel],
-          });
-          return;
-        }
-        setApiFormatDetectionError(null);
-        if (detected.anthropicAuthField) {
-          setEditor((currentEditor) =>
-            currentEditor &&
-            currentEditor.id === latest.id &&
-            currentEditor.apiFormat === "auto" &&
-            codexProtocolIdentity(currentEditor) === probeIdentity
-              ? {
-                  ...currentEditor,
-                  anthropicAuthField: detected.anthropicAuthField!,
-                }
-              : currentEditor,
-          );
-        }
-        const failedCount = Object.keys(report.failures).length;
-        toast.success(
-          `已获取 ${result.length} 个模型，并识别 ${Object.keys(detectedFormats).length} 个模型的上游协议`,
-          failedCount
-            ? {
-                description: `${failedCount} 个映射模型未识别，保存时沿用默认协议。`,
-              }
-            : undefined,
-        );
-      } catch (error) {
-        if (probeSeq !== protocolProbeSeqRef.current) return;
-        console.warn("[CODEX_API_FORMAT_AUTO_DETECT_FAILED]", error);
-        setApiFormatDetection(null);
-        setApiFormatDetectionError(
-          "模型已获取，但无法自动识别协议。请重试或手动选择协议。",
-        );
-        toast.warning(`已获取 ${result.length} 个模型，但协议识别失败`, {
-          description: String(error),
-        });
-      }
+      toast.success(`已获取 ${result.length} 个模型`, {
+        description:
+          "模型列表不代表模型可用性；自动模式将在保存时尝试识别协议。",
+      });
     } catch (error) {
       if (fetchSeq !== fetchModelsSeqRef.current) return;
       note("获取模型", "error", String(error), draft.name || "未命名供应商");
@@ -1788,7 +1833,9 @@ export default function ChimeraApp() {
 
   return (
     <div className="chimera-shell">
-      <main className="chimera-main">
+      <main
+        className={`chimera-main${view === "usage" ? " is-usage-view" : ""}${editor ? " is-editing-provider" : ""}`}
+      >
         <header
           className="chimera-titlebar"
           onMouseDown={handleTitlebarMouseDown}
@@ -1802,7 +1849,11 @@ export default function ChimeraApp() {
           </div>
           <div className="route-page-label">
             <span className="status-dot" />
-            {viewLabels[view]}
+            {editor
+              ? "线路配置"
+              : view === "usage"
+                ? "词元 · 本机统计"
+                : viewLabels[view]}
           </div>
           <div className="route-window-tools" data-tauri-no-drag>
             <button
@@ -1825,7 +1876,9 @@ export default function ChimeraApp() {
                       ? `下载并安装 Chimera++ ${titlebarUpdateInfo?.availableVersion ?? "更新"}`
                       : "检查更新"
               }
-              disabled={titlebarChecking || titlebarInstalling}
+              disabled={
+                Boolean(editor) || titlebarChecking || titlebarInstalling
+              }
               onClick={() => void runTitlebarUpdateCheck()}
             >
               {titlebarChecking || titlebarInstalling ? (
@@ -1836,7 +1889,7 @@ export default function ChimeraApp() {
                 <ArrowUp size={16} />
               )}
             </button>
-            <WindowControls />
+            <WindowControls closeDisabled={Boolean(editor)} />
           </div>
         </header>
         {view === "providers" && (
@@ -1849,6 +1902,9 @@ export default function ChimeraApp() {
           </h1>
         )}
         <section
+          ref={contentRef}
+          tabIndex={-1}
+          hidden={Boolean(editor)}
           className={`chimera-content${view === "providers" ? " is-provider-view" : ""}`}
         >
           {view === "providers" && loadError && (
@@ -1890,6 +1946,8 @@ export default function ChimeraApp() {
               onOpenCodex={openCodex}
               onSwitch={switchProvider}
               onEdit={(provider) => openEditor(providerDraft(provider))}
+              onDelete={deleteProvider}
+              deletingProviderId={deletingProviderId}
               onAdd={() =>
                 openEditor(
                   providerDraft(null, providers.length ? "新线路" : "默认线路"),
@@ -1934,7 +1992,11 @@ export default function ChimeraApp() {
             {view === "settings" && <NewSettingsView />}
           </Suspense>
         </section>
-        <nav className="route-bottom-nav" aria-label="主导航">
+        <nav
+          className="route-bottom-nav"
+          aria-label="主导航"
+          hidden={Boolean(editor)}
+        >
           {nav.map(([id, label, Icon]) => (
             <button
               key={id}
@@ -1950,14 +2012,7 @@ export default function ChimeraApp() {
           ))}
         </nav>
         {editor && (
-          <div
-            className="provider-sheet-backdrop"
-            role="presentation"
-            onMouseDown={(event) => {
-              if (savingProvider) return;
-              if (event.target === event.currentTarget) requestCloseEditor();
-            }}
-          >
+          <div className="provider-editor-page">
             <ProviderEditor
               editor={editor}
               setEditor={(value) => {
@@ -1967,6 +2022,11 @@ export default function ChimeraApp() {
               setShowKey={setShowKey}
               fetchingModels={fetchingModels}
               savingProvider={savingProvider}
+              dirty={
+                isEditorDraftDirty(editor, editorBaselineRef.current) ||
+                commonConfigDirty
+              }
+              saveError={editorSaveError}
               modelFetchError={modelFetchError}
               apiFormatDetection={apiFormatDetection}
               apiFormatDetectionError={apiFormatDetectionError}
@@ -1976,7 +2036,7 @@ export default function ChimeraApp() {
               onCommonConfigChange={(value) => {
                 if (savingProvider) return;
                 setCommonConfigSnippet(value);
-                setCommonConfigDirty(true);
+                setCommonConfigDirty(value !== commonConfigBaselineRef.current);
               }}
               onFetchModels={fetchModels}
               connection={draftConnection}
@@ -2028,14 +2088,9 @@ export default function ChimeraApp() {
           provider={pendingProviderDelete}
           onCancel={() => setPendingProviderDelete(null)}
           onConfirm={async () => {
-            try {
-              await providersApi.delete(pendingProviderDelete.id, "codex");
-              await loadProviders();
+            if (await deleteProvider(pendingProviderDelete)) {
               setPendingProviderDelete(null);
               closeEditor();
-              toast.success("线路已删除");
-            } catch (error) {
-              toast.error("删除失败", { description: String(error) });
             }
           }}
         />
@@ -2054,6 +2109,7 @@ export default function ChimeraApp() {
                 { confirm: true },
               );
               setPendingModelReload(null);
+              setCodexRestartRequired(false);
               toast.success("Codex 已重新加载模型列表");
               if (result.modelUnlockError) {
                 toast.warning("模型目录已保存；桌面端模型选择器增强未连接", {
@@ -2096,6 +2152,9 @@ export default function ChimeraApp() {
   );
 }
 
+// Writes survive navigation; remounted views must wait before reading preferences.
+let runtimePreferenceSaveQueue = Promise.resolve();
+
 export function NewRuntimeView({
   runtime,
   release,
@@ -2123,10 +2182,46 @@ export function NewRuntimeView({
   ) => void | Promise<void>;
 }) {
   const [maintenanceOpen, setMaintenanceOpen] = useState(false);
-  const [installMode, setInstallMode] = useState<"standard" | "portable">(
-    "standard",
-  );
-  const [updateSource, setUpdateSource] = useState<"auto" | "mirror">("auto");
+  const [preferences, setPreferences] = useState<Pick<
+    Settings,
+    "codexInstallMode" | "codexUpdateSource" | "checkCodexUpdatesOnStart"
+  > | null>(runningInTauri ? null : {});
+  const [preferencesError, setPreferencesError] = useState(false);
+  const [preferencesRetry, setPreferencesRetry] = useState(0);
+  const [pendingPreferenceKeys, setPendingPreferenceKeys] = useState<
+    Set<string>
+  >(new Set());
+  const preferencesMounted = useRef(false);
+  useEffect(() => {
+    preferencesMounted.current = true;
+    return () => {
+      preferencesMounted.current = false;
+    };
+  }, []);
+  const installMode = preferences?.codexInstallMode ?? "standard";
+  const updateSource = preferences?.codexUpdateSource ?? "auto";
+  const preferencesBusy = !preferences || pendingPreferenceKeys.size > 0;
+
+  useEffect(() => {
+    if (!runningInTauri) return;
+    let cancelled = false;
+    setPreferencesError(false);
+    void runtimePreferenceSaveQueue
+      .then(() => settingsApi.get())
+      .then(
+        (saved) => {
+          if (!cancelled) setPreferences(saved);
+        },
+        (reason) => {
+          if (cancelled) return;
+          setPreferencesError(true);
+          toast.error("读取更新偏好失败", { description: String(reason) });
+        },
+      );
+    return () => {
+      cancelled = true;
+    };
+  }, [preferencesRetry]);
   // v2.5.0 M3：历史版本 / 离线导入 / 安装事务恢复
   const [recovery, setRecovery] = useState<CodexInstallRecoveryEntry[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -2144,6 +2239,13 @@ export function NewRuntimeView({
   >(null);
   const [inspectingOffline, setInspectingOffline] = useState(false);
   const [installingOffline, setInstallingOffline] = useState(false);
+  useLightweightCloseBlocker(
+    preferencesBusy ||
+      installingHistory ||
+      installingOffline ||
+      inspectingOffline ||
+      Boolean(planningTag),
+  );
 
   const maintenanceDialogRef = useDialogFocus<HTMLElement>(
     () => setMaintenanceOpen(false),
@@ -2222,7 +2324,7 @@ export function NewRuntimeView({
   };
 
   const installHistoryRelease = async () => {
-    if (!pendingPlan) return;
+    if (!pendingPlan || preferencesBusy) return;
     setInstallingHistory(true);
     try {
       // 确认对象原样传回：版本、资产、SHA-256 与下载地址全部锁定，
@@ -2305,6 +2407,7 @@ export function NewRuntimeView({
     action: RuntimeAction,
     preferences?: RuntimeUpdatePreferences,
   ) => {
+    if (preferencesBusy) return;
     setMaintenanceOpen(false);
     onAction(action, preferences);
   };
@@ -2312,7 +2415,9 @@ export function NewRuntimeView({
     source: updateSource,
     installMode,
   };
-  const checkSelectedRuntime = () => onCheck(selectedPreferences);
+  const checkSelectedRuntime = () => {
+    if (!preferencesBusy) onCheck(selectedPreferences);
+  };
   const runDiagnostics = () => {
     setMaintenanceOpen(false);
     onDiagnose();
@@ -2328,21 +2433,37 @@ export function NewRuntimeView({
         : operation
           ? "正在准备操作，请稍候"
           : null;
-  useEffect(() => {
-    setInstallMode(
-      runtime?.installMode === "portable" ? "portable" : "standard",
-    );
-    setUpdateSource(release?.source === "mirror" ? "mirror" : "auto");
-  }, [runtime?.installMode, release?.source]);
-  const saveRuntimePreference = async (patch: Partial<Settings>) => {
-    if (!runningInTauri) return;
-    try {
-      const current = await settingsApi.get();
-      await settingsApi.save({ ...current, ...patch });
-      toast.success("更新偏好已保存");
-    } catch (reason) {
-      toast.error("保存更新偏好失败", { description: String(reason) });
+  const saveRuntimePreference = (
+    patch: Partial<Pick<Settings, "codexInstallMode" | "codexUpdateSource">>,
+  ) => {
+    if (!preferences) return;
+    if (!runningInTauri) {
+      setPreferences((current) => current && { ...current, ...patch });
+      return;
     }
+    const keys = Object.keys(patch);
+    setPendingPreferenceKeys((current) => new Set([...current, ...keys]));
+    // Patch only the selected fields; serialize replies so an older save cannot
+    // overwrite a newer selection. Failed saves leave the confirmed values intact.
+    runtimePreferenceSaveQueue = runtimePreferenceSaveQueue.then(async () => {
+      try {
+        const saved = await settingsApi.patchPreferences(patch);
+        if (preferencesMounted.current) {
+          setPreferences(saved);
+          toast.success("更新偏好已保存");
+        }
+      } catch (reason) {
+        toast.error("保存更新偏好失败", { description: String(reason) });
+      } finally {
+        if (preferencesMounted.current) {
+          setPendingPreferenceKeys((current) => {
+            const next = new Set(current);
+            keys.forEach((key) => next.delete(key));
+            return next;
+          });
+        }
+      }
+    });
   };
   const openInstallDirectory = async () => {
     if (!runningInTauri) return;
@@ -2358,7 +2479,11 @@ export function NewRuntimeView({
         <span className="eyebrow">CODEX 更新</span>
         <h1>
           {runtimeSupported
-            ? "本机 Codex 已准备就绪"
+            ? !runtime
+              ? "正在识别本机 Codex"
+              : runtime.installed
+                ? "本机 Codex 已准备就绪"
+                : "尚未安装 Codex"
             : "Codex 更新管理仅支持 Windows"}
         </h1>
         <div className="runtime-ring">
@@ -2368,8 +2493,10 @@ export function NewRuntimeView({
             <small>
               {runtimeSupported
                 ? runtime?.installed
-                  ? `${runtimeText(runtime.installMode)} · ${runtimeChannelText(release?.source)}`
-                  : "未检测到安装"
+                  ? runtimeText(runtime.installMode)
+                  : runtime
+                    ? "未检测到安装"
+                    : "正在识别"
                 : "macOS 可正常切换官方账户与中转线路"}
             </small>
           </div>
@@ -2382,8 +2509,10 @@ export function NewRuntimeView({
               <b>
                 {runtimeSupported
                   ? runtime?.installed
-                    ? "已识别"
-                    : "未检测到"
+                    ? runtime.installPath || "路径未识别"
+                    : runtime
+                      ? "未检测到"
+                      : "正在识别"
                   : "不适用"}
               </b>
             </span>
@@ -2391,17 +2520,45 @@ export function NewRuntimeView({
           <div>
             <Download size={16} />
             <span>
-              更新通道
-              <b>{runtimeChannelText(release?.source)}</b>
+              更新源
+              <b>
+                {preferences
+                  ? runtimeChannelText(updateSource)
+                  : preferencesError
+                    ? "读取失败"
+                    : "读取中"}
+              </b>
             </span>
           </div>
           <div>
             <Activity size={16} />
             <span>
-              自动检查<b>已开启</b>
+              启动时检查
+              <b>
+                {preferences
+                  ? preferences.checkCodexUpdatesOnStart === false
+                    ? "已关闭"
+                    : "已开启"
+                  : preferencesError
+                    ? "读取失败"
+                    : "读取中"}
+              </b>
             </span>
           </div>
         </div>
+        {preferencesError && (
+          <div role="alert">
+            读取更新偏好失败，重试前无法检查或安装更新。
+            <button
+              onClick={() => setPreferencesRetry((current) => current + 1)}
+            >
+              重试读取更新偏好
+            </button>
+          </div>
+        )}
+        {pendingPreferenceKeys.size > 0 && (
+          <p role="status">正在保存更新偏好…</p>
+        )}
         {recovery.length > 0 && (
           <div className="runtime-update-ready" role="alert">
             <CircleAlert size={16} aria-hidden="true" />
@@ -2433,7 +2590,9 @@ export function NewRuntimeView({
                 ? startAction("update", selectedPreferences)
                 : checkSelectedRuntime()
             }
-            disabled={!runtimeSupported || Boolean(operation)}
+            disabled={
+              !runtimeSupported || Boolean(operation) || preferencesBusy
+            }
           >
             {updateAvailable ? <Download size={14} /> : <RefreshCw size={14} />}
             {updateActionLabel}
@@ -2451,7 +2610,9 @@ export function NewRuntimeView({
           <button
             className="secondary"
             onClick={() => setMaintenanceOpen(true)}
-            disabled={!runtimeSupported || Boolean(operation)}
+            disabled={
+              !runtimeSupported || Boolean(operation) || preferencesBusy
+            }
           >
             <Settings2 size={14} />
             安装方式与更新源
@@ -2478,7 +2639,7 @@ export function NewRuntimeView({
               type="button"
               className="runtime-update-recheck"
               onClick={checkSelectedRuntime}
-              disabled={Boolean(operation)}
+              disabled={Boolean(operation) || preferencesBusy}
             >
               重新检查
             </button>
@@ -2528,10 +2689,13 @@ export function NewRuntimeView({
               <b>安装方式</b>
               <button
                 className={`runtime-mode-card ${installMode === "standard" ? "is-active" : ""}`}
-                onClick={() => {
-                  setInstallMode("standard");
-                  void saveRuntimePreference({ codexInstallMode: "standard" });
-                }}
+                disabled={
+                  !preferences || pendingPreferenceKeys.has("codexInstallMode")
+                }
+                aria-pressed={installMode === "standard"}
+                onClick={() =>
+                  saveRuntimePreference({ codexInstallMode: "standard" })
+                }
               >
                 <span>
                   <Download size={18} />
@@ -2544,10 +2708,13 @@ export function NewRuntimeView({
               </button>
               <button
                 className={`runtime-mode-card ${installMode === "portable" ? "is-active" : ""}`}
-                onClick={() => {
-                  setInstallMode("portable");
-                  void saveRuntimePreference({ codexInstallMode: "portable" });
-                }}
+                disabled={
+                  !preferences || pendingPreferenceKeys.has("codexInstallMode")
+                }
+                aria-pressed={installMode === "portable"}
+                onClick={() =>
+                  saveRuntimePreference({ codexInstallMode: "portable" })
+                }
               >
                 <span>
                   <Package size={18} />
@@ -2562,19 +2729,27 @@ export function NewRuntimeView({
               <div className="runtime-source-segment">
                 <button
                   className={updateSource === "auto" ? "is-active" : ""}
-                  onClick={() => {
-                    setUpdateSource("auto");
-                    void saveRuntimePreference({ codexUpdateSource: "auto" });
-                  }}
+                  disabled={
+                    !preferences ||
+                    pendingPreferenceKeys.has("codexUpdateSource")
+                  }
+                  aria-pressed={updateSource === "auto"}
+                  onClick={() =>
+                    saveRuntimePreference({ codexUpdateSource: "auto" })
+                  }
                 >
                   自动选择
                 </button>
                 <button
                   className={updateSource === "mirror" ? "is-active" : ""}
-                  onClick={() => {
-                    setUpdateSource("mirror");
-                    void saveRuntimePreference({ codexUpdateSource: "mirror" });
-                  }}
+                  disabled={
+                    !preferences ||
+                    pendingPreferenceKeys.has("codexUpdateSource")
+                  }
+                  aria-pressed={updateSource === "mirror"}
+                  onClick={() =>
+                    saveRuntimePreference({ codexUpdateSource: "mirror" })
+                  }
                 >
                   镜像安装
                 </button>
@@ -2591,7 +2766,7 @@ export function NewRuntimeView({
                 </button>
                 <button
                   onClick={() => startAction("repair")}
-                  disabled={!runtime?.canRepair}
+                  disabled={!runtime?.canRepair || preferencesBusy}
                 >
                   <Wrench size={16} />
                   <span>
@@ -2602,7 +2777,7 @@ export function NewRuntimeView({
                 </button>
                 <button
                   onClick={() => startAction("rollback")}
-                  disabled={!runtime?.canRollback}
+                  disabled={!runtime?.canRollback || preferencesBusy}
                 >
                   <RefreshCw size={16} />
                   <span>
@@ -2611,7 +2786,10 @@ export function NewRuntimeView({
                   </span>
                   <ChevronDown size={15} />
                 </button>
-                <button onClick={openHistory} disabled={Boolean(operation)}>
+                <button
+                  onClick={openHistory}
+                  disabled={Boolean(operation) || preferencesBusy}
+                >
                   <Activity size={16} />
                   <span>
                     <strong>安装历史版本</strong>
@@ -2621,7 +2799,9 @@ export function NewRuntimeView({
                 </button>
                 <button
                   onClick={() => void pickOfflinePackage()}
-                  disabled={Boolean(operation) || inspectingOffline}
+                  disabled={
+                    Boolean(operation) || preferencesBusy || inspectingOffline
+                  }
                 >
                   <Package size={16} />
                   <span>
@@ -2637,7 +2817,7 @@ export function NewRuntimeView({
                 <button
                   className="danger"
                   onClick={() => startAction("uninstall")}
-                  disabled={!runtime?.canUninstall}
+                  disabled={!runtime?.canUninstall || preferencesBusy}
                 >
                   <Trash2 size={16} />
                   <span>
@@ -2651,7 +2831,7 @@ export function NewRuntimeView({
             <button
               className="primary runtime-maintenance-primary"
               onClick={() => startAction("update", selectedPreferences)}
-              disabled={Boolean(operation)}
+              disabled={Boolean(operation) || preferencesBusy}
             >
               <Download size={15} />
               下载并安装 {selectedInstallLabel}
@@ -2865,6 +3045,8 @@ export function NewProvidersView({
   onOpenCodex,
   onSwitch,
   onEdit,
+  onDelete,
+  deletingProviderId,
   onAdd,
 }: {
   providers: Provider[];
@@ -2879,6 +3061,8 @@ export function NewProvidersView({
   onOpenCodex: () => Promise<void>;
   onSwitch: (id: string) => Promise<void>;
   onEdit: (provider: Provider) => void;
+  onDelete: (provider: Provider) => Promise<boolean>;
+  deletingProviderId: string | null;
   onAdd: () => void;
 }) {
   const {
@@ -3125,7 +3309,7 @@ export function NewProvidersView({
     return 0;
   });
   const activateLine = async (provider: Provider) => {
-    if (provider.id === current.id || switchingId) return;
+    if (provider.id === current.id || switchingId || deletingProviderId) return;
     setSwitchingId(provider.id);
     try {
       await onSwitch(provider.id);
@@ -3408,7 +3592,7 @@ export function NewProvidersView({
               <header>
                 <div>
                   <h2 id="route-line-manager-title">管理线路</h2>
-                  <p>切换、编辑或添加 Codex 线路</p>
+                  <p>切换、编辑、删除或添加 Codex 线路</p>
                 </div>
                 <button
                   type="button"
@@ -3464,17 +3648,46 @@ export function NewProvidersView({
                           由 Codex 管理
                         </span>
                       ) : (
-                        <button
-                          type="button"
-                          className="route-line-edit"
-                          aria-label={`编辑${lineName(provider)}`}
-                          onClick={() => {
-                            setManagerOpen(false);
-                            onEdit(provider);
-                          }}
-                        >
-                          <Pencil size={15} />
-                        </button>
+                        <div className="route-line-actions">
+                          <button
+                            type="button"
+                            className="route-line-edit"
+                            aria-label={`编辑${lineName(provider)}`}
+                            title="编辑线路"
+                            disabled={
+                              Boolean(deletingProviderId) ||
+                              Boolean(switchingId)
+                            }
+                            onClick={() => {
+                              setManagerOpen(false);
+                              onEdit(provider);
+                            }}
+                          >
+                            <Pencil size={15} />
+                          </button>
+                          <button
+                            type="button"
+                            className="route-line-edit route-line-delete"
+                            aria-label={`删除${lineName(provider)}`}
+                            title={
+                              active
+                                ? "当前线路正在使用，请先切换到其他线路"
+                                : "删除线路"
+                            }
+                            disabled={
+                              active ||
+                              Boolean(deletingProviderId) ||
+                              Boolean(switchingId)
+                            }
+                            onClick={() => void onDelete(provider)}
+                          >
+                            {deletingProviderId === provider.id ? (
+                              <LoaderCircle className="spin" size={15} />
+                            ) : (
+                              <Trash2 size={15} />
+                            )}
+                          </button>
+                        </div>
                       )}
                     </article>
                   );
@@ -3512,13 +3725,15 @@ export function NewProvidersView({
   );
 }
 
-function ProviderEditor({
+export function ProviderEditor({
   editor,
   setEditor,
   showKey,
   setShowKey,
   fetchingModels,
   savingProvider,
+  dirty = false,
+  saveError = null,
   modelFetchError,
   apiFormatDetection,
   apiFormatDetectionError,
@@ -3540,6 +3755,8 @@ function ProviderEditor({
   setShowKey: (value: boolean) => void;
   fetchingModels: boolean;
   savingProvider: boolean;
+  dirty?: boolean;
+  saveError?: string | null;
   modelFetchError: string | null;
   apiFormatDetection: CodexApiFormatDetection | null;
   apiFormatDetectionError: string | null;
@@ -3560,10 +3777,84 @@ function ProviderEditor({
   const [openInstructionsRow, setOpenInstructionsRow] = useState<number | null>(
     null,
   );
-  const dialogRef = useDialogFocus<HTMLElement>(
-    onRequestClose,
-    !escapeDisabled,
-  );
+  const pageRef = useRef<HTMLElement>(null);
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const advancedRef = useRef<HTMLDetailsElement>(null);
+  const [validationAttempted, setValidationAttempted] = useState(false);
+  const [restorePending, setRestorePending] = useState(false);
+  useEffect(() => {
+    headingRef.current?.focus({ preventScroll: true });
+  }, []);
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (
+        event.key !== "Escape" ||
+        event.defaultPrevented ||
+        escapeDisabled ||
+        savingProvider ||
+        restorePending ||
+        openDialogCount() > 0
+      )
+        return;
+      event.preventDefault();
+      onRequestClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onRequestClose, escapeDisabled, savingProvider, restorePending]);
+  useEffect(() => {
+    if (apiFormatDetectionError && advancedRef.current)
+      advancedRef.current.open = true;
+    if (saveError?.startsWith("通用配置无效")) {
+      if (advancedRef.current) advancedRef.current.open = true;
+      setCommonConfigOpen(true);
+    }
+  }, [apiFormatDetectionError, saveError]);
+  useEffect(() => {
+    if (
+      commonConfigOpen &&
+      saveError?.startsWith("通用配置无效") &&
+      !savingProvider
+    ) {
+      pageRef.current
+        ?.querySelector<HTMLTextAreaElement>(
+          "[name=provider-common-config-snippet]",
+        )
+        ?.focus();
+    }
+  }, [commonConfigOpen, saveError, savingProvider]);
+  const restoreTemplate = () => {
+    setOpenReasoningRow(null);
+    setOpenInstructionsRow(null);
+    setValidationAttempted(false);
+    setEditor({
+      ...providerDraft(null, editor.name || "新线路"),
+      id: editor.id,
+    });
+    setRestorePending(false);
+  };
+  const submit = () => {
+    setValidationAttempted(true);
+    const missing = [
+      [editor.name, "provider-name"],
+      [editor.baseUrl, "provider-base-url"],
+      [editor.apiKey, "provider-api-key"],
+      [editor.model, "provider-model"],
+    ].find(([value]) => !value.trim());
+    const missingModel = editor.catalogModels.findIndex(
+      (item) => !item.model.trim(),
+    );
+    if (missing || missingModel !== -1) {
+      const selector = missing
+        ? `[name="${missing[1]}"]`
+        : `#mapping-model-${missingModel}`;
+      const input = pageRef.current?.querySelector<HTMLInputElement>(selector);
+      input?.focus();
+      input?.scrollIntoView?.({ block: "center" });
+      return;
+    }
+    void onSave();
+  };
   const patch = (key: string, value: string) =>
     setEditor({ ...editor, [key]: value });
   const detectedDefaultFormat =
@@ -3585,499 +3876,194 @@ function ProviderEditor({
   );
   return (
     <section
-      ref={dialogRef}
+      ref={pageRef}
       className="provider-editor"
-      role="dialog"
-      aria-modal="true"
+      role="region"
       aria-labelledby="provider-editor-title"
       tabIndex={-1}
     >
-      <header>
-        <span className="provider-editor-mark">
-          {(editor.name || "C").slice(0, 1).toUpperCase()}
-        </span>
-        <div>
-          <h2 id="provider-editor-title">
-            {editor.name || (editor.original ? "线路" : "新线路")}
+      <header className="editor-page-header">
+        <button
+          type="button"
+          className="secondary editor-back"
+          onClick={onRequestClose}
+          disabled={savingProvider}
+        >
+          <ChevronLeft size={18} /> 返回线路
+        </button>
+        <div className="editor-heading">
+          <h2 id="provider-editor-title" ref={headingRef} tabIndex={-1}>
+            {editor.original ? "编辑线路" : "新建线路"}
           </h2>
-          <p>保存后会写入 Codex，并成为一条可快速切换的线路。</p>
+          <p>保存后切换为当前线路；运行中的 Codex 可能需要重启。</p>
         </div>
+        <span className="editor-draft-status" role="status">
+          {savingProvider ? "正在保存…" : dirty ? "未保存修改" : ""}
+        </span>
       </header>
-      <div className="editor-form">
-        {!editor.original && (
-          <div className="provider-template" role="status">
-            <div>
-              <b>Chimera 中转站默认模板</b>
-              <small>已填入 Responses 地址和默认模型；只需粘贴 API Key。</small>
-            </div>
-            <button
-              type="button"
-              className="secondary compact"
-              onClick={() => {
-                // Restoring the template replaces catalogModels wholesale;
-                // collapse any index-addressed panel for the same reason
-                // add/delete do above.
-                setOpenReasoningRow(null);
-                setOpenInstructionsRow(null);
-                setEditor(providerDraft(null, editor.name || "新线路"));
-              }}
-            >
-              恢复模板
-            </button>
-          </div>
-        )}
-        <Field
-          label="线路名称"
-          name="provider-name"
-          value={editor.name}
-          onChange={(value) => patch("name", value)}
-          placeholder="例如 默认线路或备用线路"
-        />
-        <Field
-          label="官网链接"
-          name="provider-website"
-          value={editor.websiteUrl}
-          onChange={(value) => patch("websiteUrl", value)}
-          placeholder="https://example.com"
-        />
-        <Field
-          label="API 请求地址"
-          name="provider-base-url"
-          value={editor.baseUrl}
-          onChange={(value) => patch("baseUrl", value)}
-          placeholder="https://api.example.com/v1"
-          hint="Chimera 中转站和自定义线路都可编辑 URL。"
-        />
-        <label>
-          API Key
-          <div className="password-field">
-            <input
-              name="provider-api-key"
-              autoComplete="off"
-              spellCheck={false}
-              type={showKey ? "text" : "password"}
-              value={editor.apiKey}
-              onChange={(event) => patch("apiKey", event.target.value)}
-              placeholder="粘贴 API Key"
-            />
-            <button
-              aria-label={showKey ? "隐藏 API Key" : "显示 API Key"}
-              onClick={() => setShowKey(!showKey)}
-            >
-              {showKey ? <EyeOff size={16} /> : <Eye size={16} />}
-            </button>
-          </div>
-        </label>
-        <label>
-          默认模型
-          <div className="model-input">
-            <input
-              name="provider-model"
-              autoComplete="off"
-              spellCheck={false}
-              value={editor.model}
-              onChange={(event) => patch("model", event.target.value)}
-              placeholder="先获取模型列表，或手动输入"
-            />
-            <button
-              onClick={onFetchModels}
-              disabled={fetchingModels || savingProvider}
-            >
-              {fetchingModels ? (
-                <LoaderCircle className="spin" size={15} />
-              ) : (
-                <Download size={15} />
-              )}{" "}
-              获取模型
-            </button>
-          </div>
-        </label>
-        <details className="advanced-options">
-          <summary>高级选项</summary>
-          <div className="advanced-options-body">
-            <p className="advanced-intro">
-              按需开启 Codex 功能或调整兼容参数。保存后只对这条线路生效。
+      <div className="editor-scroll">
+        <fieldset className="editor-form" disabled={savingProvider}>
+          <legend className="sr-only">线路配置</legend>
+          {saveError && (
+            <p className="editor-feedback" role="alert">
+              {saveError}
             </p>
-            <div className="advanced-group codex-feature-options">
-              <div className="advanced-section-heading">
-                <div>
-                  <b>Codex 功能</b>
-                  <small>每条线路独立保存，未开启的功能不会写入配置。</small>
-                </div>
-              </div>
-              <label className="toggle-field">
-                <span>
-                  <b>目标模式</b>
-                  <small>在 Codex 中开启目标规划能力。</small>
-                </span>
-                <input
-                  name="provider-goal-mode"
-                  type="checkbox"
-                  checked={editor.goalModeEnabled}
-                  onChange={(event) =>
-                    setEditor({
-                      ...editor,
-                      goalModeEnabled: event.target.checked,
-                    })
-                  }
-                />
-              </label>
-              <label className="toggle-field">
-                <span>
-                  <b>
-                    远程上下文压缩
-                    <em className="experimental-tag">实验性</em>
-                  </b>
-                  <small>让兼容线路尝试由上游压缩长对话，默认关闭。</small>
-                </span>
-                <input
-                  name="provider-remote-compaction"
-                  type="checkbox"
-                  checked={editor.remoteCompactionEnabled}
-                  onChange={(event) =>
-                    setEditor({
-                      ...editor,
-                      remoteCompactionEnabled: event.target.checked,
-                    })
-                  }
-                />
-              </label>
-              <label className="toggle-field">
-                <span>
-                  <b>应用通用配置</b>
-                  <small>切换到这条线路时合并共享的 Codex 配置。</small>
-                </span>
-                <input
-                  name="provider-common-config"
-                  type="checkbox"
-                  checked={editor.commonConfigEnabled}
-                  disabled={commonConfigLoading || !commonConfigLoaded}
-                  onChange={(event) =>
-                    setEditor({
-                      ...editor,
-                      commonConfigEnabled: event.target.checked,
-                    })
-                  }
-                />
-              </label>
-              <div className="common-config-actions">
-                <span>
-                  {commonConfigLoading
-                    ? "正在读取通用配置…"
-                    : commonConfigLoaded
-                      ? commonConfigSnippet.trim()
-                        ? "已设置通用配置"
-                        : "尚未设置通用配置"
-                      : "通用配置暂时不可用"}
-                </span>
-                <button
-                  type="button"
-                  className="link-button"
-                  aria-expanded={commonConfigOpen}
-                  disabled={!commonConfigLoaded}
-                  onClick={() => setCommonConfigOpen(!commonConfigOpen)}
-                >
-                  {commonConfigOpen ? "收起编辑器" : "编辑通用配置"}
-                </button>
-              </div>
-              {commonConfigOpen && (
-                <label className="common-config-editor">
-                  通用 config.toml
-                  <textarea
-                    name="provider-common-config-snippet"
-                    spellCheck={false}
-                    value={commonConfigSnippet}
-                    onChange={(event) =>
-                      onCommonConfigChange(event.target.value)
-                    }
-                    placeholder="例如 [features] 下需要在多条线路间共享的配置"
-                  />
-                  <small>
-                    供应商地址、密钥、模型和模型目录不会作为通用配置共享。
-                  </small>
-                  {commonConfigWarning && (
-                    <small className="error-text">{commonConfigWarning}</small>
-                  )}
-                </label>
-              )}
-            </div>
-            <label>
-              上游格式
-              <select
-                name="provider-api-format"
-                value={editor.apiFormat}
-                onChange={(event) =>
-                  patch(
-                    "apiFormat",
-                    event.target.value as CodexApiFormatSelection,
-                  )
-                }
-              >
-                <option value="auto">自动检测（获取模型后识别）</option>
-                <option value="openai_responses">Responses（明确指定）</option>
-                <option value="openai_chat">
-                  Chat Completions（明确指定，需路由接管）
-                </option>
-                <option value="anthropic">
-                  Anthropic Messages（明确指定，需路由接管）
-                </option>
-              </select>
-              <small>
-                自动模式会在获取模型后或保存前主动识别协议，再据此决定是否开启本地路由；不会把首次真实请求当作常规探测。
-              </small>
-              {editor.apiFormat === "auto" && detectedDefaultFormat && (
+          )}
+          {validationAttempted &&
+            (!editor.name.trim() ||
+              !editor.baseUrl.trim() ||
+              !editor.apiKey.trim() ||
+              !editor.model.trim()) && (
+              <p className="editor-feedback" role="alert">
+                请填写线路名称、API 请求地址、API Key 和默认模型。
+              </p>
+            )}
+          {!editor.original && (
+            <div className="provider-template" role="status">
+              <div>
+                <b>Chimera 中转站默认模板</b>
                 <small>
-                  已识别：{codexApiFormatLabel(detectedDefaultFormat.apiFormat)}
-                  {detectedDefaultFormat.apiFormat === "openai_responses"
-                    ? "（可直连；若启用代理专属功能仍会自动开启路由）"
-                    : "（保存后自动开启路由）"}
+                  已填入 Responses 地址和默认模型；只需粘贴 API Key。
                 </small>
-              )}
-              {editor.apiFormat === "auto" && apiFormatDetectionError && (
-                <small className="error-text">{apiFormatDetectionError}</small>
-              )}
-              {editor.apiFormat === "auto" && detectionFailures.length > 0 && (
-                <div className="detection-failures">
-                  <ul>
-                    {detectionFailures.map(({ model, status, excerpt }) => (
-                      <li key={model}>
-                        <code>{model}</code>
-                        <b>{status}</b>
-                        {excerpt && <span title={excerpt}>{excerpt}</span>}
-                      </li>
-                    ))}
-                  </ul>
-                  <div className="detection-failure-actions">
-                    <span>也可以直接指定协议保存：</span>
-                    {(
-                      ["openai_responses", "openai_chat", "anthropic"] as const
-                    ).map((format) => (
-                      <button
-                        key={format}
-                        type="button"
-                        className="secondary"
-                        disabled={savingProvider}
-                        onClick={() => patch("apiFormat", format)}
-                      >
-                        按 {codexApiFormatLabel(format)} 保存
-                      </button>
-                    ))}
-                  </div>
+              </div>
+              <button
+                type="button"
+                className="secondary compact"
+                onClick={() => setRestorePending(true)}
+              >
+                恢复模板
+              </button>
+            </div>
+          )}
+          <section
+            className="editor-basic"
+            aria-labelledby="editor-basic-title"
+          >
+            <h3 id="editor-basic-title">
+              基础连接 <small>* 为必填项</small>
+            </h3>
+            <div className="editor-basic-grid">
+              <Field
+                label="线路名称 *"
+                name="provider-name"
+                value={editor.name}
+                onChange={(value) => patch("name", value)}
+                placeholder="例如 默认线路或备用线路"
+              />
+              <Field
+                label="官网链接（可选）"
+                name="provider-website"
+                value={editor.websiteUrl}
+                onChange={(value) => patch("websiteUrl", value)}
+                placeholder="https://example.com"
+              />
+              <Field
+                label="API 请求地址 *"
+                name="provider-base-url"
+                value={editor.baseUrl}
+                onChange={(value) => patch("baseUrl", value)}
+                placeholder="https://api.example.com/v1"
+                hint="Chimera 中转站和自定义线路都可编辑 URL。"
+              />
+              <label>
+                API Key *
+                <div className="password-field">
+                  <input
+                    name="provider-api-key"
+                    autoComplete="off"
+                    spellCheck={false}
+                    type={showKey ? "text" : "password"}
+                    value={editor.apiKey}
+                    onChange={(event) => patch("apiKey", event.target.value)}
+                    placeholder="粘贴 API Key"
+                  />
+                  <button
+                    aria-label={showKey ? "隐藏 API Key" : "显示 API Key"}
+                    onClick={() => setShowKey(!showKey)}
+                  >
+                    {showKey ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
                 </div>
-              )}
-            </label>
-            <div className="advanced-group">
-              <label className="toggle-field">
-                <span>
-                  <b>完整 API 地址</b>
-                  <small>地址已含完整请求路径时开启，不再自动补全路径。</small>
-                </span>
-                <input
-                  name="provider-full-url"
-                  type="checkbox"
-                  checked={editor.isFullUrl}
-                  onChange={(event) =>
-                    setEditor({ ...editor, isFullUrl: event.target.checked })
-                  }
-                />
               </label>
-              <label>
-                模型列表地址（可选）
-                <input
-                  name="provider-models-url"
-                  type="url"
-                  autoComplete="url"
-                  spellCheck={false}
-                  value={editor.modelsUrl}
-                  onChange={(event) => patch("modelsUrl", event.target.value)}
-                  placeholder="https://api.example.com/v1/models"
-                />
-                <small>上游的模型接口不同于主接口时填写。</small>
-              </label>
-              <label>
-                自定义 User-Agent（可选）
-                <input
-                  name="provider-user-agent"
-                  autoComplete="off"
-                  spellCheck={false}
-                  value={editor.customUserAgent}
-                  onChange={(event) =>
-                    patch("customUserAgent", event.target.value)
-                  }
-                  placeholder="留空使用默认请求标识"
-                />
+              <label className="editor-default-model">
+                默认模型 *
+                <div className="model-input">
+                  <input
+                    name="provider-model"
+                    autoComplete="off"
+                    spellCheck={false}
+                    value={editor.model}
+                    onChange={(event) => patch("model", event.target.value)}
+                    placeholder="先获取模型列表，或手动输入"
+                  />
+                  <button
+                    onClick={onFetchModels}
+                    disabled={fetchingModels || savingProvider}
+                  >
+                    {fetchingModels ? (
+                      <LoaderCircle className="spin" size={15} />
+                    ) : (
+                      <Download size={15} />
+                    )}{" "}
+                    获取模型
+                  </button>
+                </div>
               </label>
             </div>
-            {editor.apiFormat === "anthropic" && (
-              <div className="advanced-group">
-                <label>
-                  Anthropic 认证字段
-                  <select
-                    name="provider-anthropic-auth"
-                    value={editor.anthropicAuthField}
-                    onChange={(event) =>
-                      patch("anthropicAuthField", event.target.value)
-                    }
-                  >
-                    <option value="ANTHROPIC_AUTH_TOKEN">
-                      Authorization: Bearer
-                    </option>
-                    <option value="ANTHROPIC_API_KEY">x-api-key</option>
-                  </select>
-                </label>
-                <label>
-                  最大输出 tokens（可选）
-                  <input
-                    name="provider-max-output-tokens"
-                    type="number"
-                    min="1"
-                    inputMode="numeric"
-                    value={editor.maxOutputTokens}
-                    onChange={(event) =>
-                      patch(
-                        "maxOutputTokens",
-                        event.target.value.replace(/[^\d]/g, ""),
-                      )
-                    }
-                    placeholder="默认 8192"
-                  />
-                </label>
-                <label className="toggle-field">
-                  <span>
-                    <b>模拟 Claude Code 客户端</b>
-                    <small>仅当上游明确要求 Claude Code 请求特征时开启。</small>
-                  </span>
-                  <input
-                    name="provider-impersonate-claude-code"
-                    type="checkbox"
-                    checked={editor.impersonateClaudeCode}
-                    onChange={(event) =>
-                      setEditor({
-                        ...editor,
-                        impersonateClaudeCode: event.target.checked,
-                      })
-                    }
-                  />
-                </label>
+          </section>
+          <div className="advanced-group model-mapping">
+            <div className="advanced-section-heading">
+              <div>
+                <b>模型映射</b>
+                <small>
+                  未添加映射时使用默认模型；添加后需填写实际请求模型。显示名可选，留空使用模型
+                  ID。
+                </small>
               </div>
+              <button
+                type="button"
+                className="secondary compact"
+                onClick={() => {
+                  // A row's index shifts whenever the array grows, so any
+                  // panel expanded by index must collapse first or it can
+                  // end up rendered against the wrong row.
+                  setOpenReasoningRow(null);
+                  setOpenInstructionsRow(null);
+                  setEditor({
+                    ...editor,
+                    catalogModels: [
+                      ...editor.catalogModels,
+                      { model: "", displayName: "", contextWindow: "" },
+                    ],
+                  });
+                }}
+              >
+                添加模型
+              </button>
+            </div>
+            <div className="mapping-head">
+              <span>菜单显示名（可选）</span>
+              <span>实际请求模型</span>
+              <span>上下文 / tokens</span>
+              <span>思考等级</span>
+              <span>操作</span>
+            </div>
+            {!editor.catalogModels.length && (
+              <p className="mapping-empty">
+                尚未添加自定义映射。可直接使用默认模型，或添加一条映射。
+              </p>
             )}
-            {editor.apiFormat === "openai_chat" && (
-              <div className="advanced-group">
-                <label>
-                  提示词缓存路由
-                  <select
-                    name="provider-prompt-cache-routing"
-                    value={editor.promptCacheRouting}
-                    onChange={(event) =>
-                      patch("promptCacheRouting", event.target.value)
-                    }
-                  >
-                    <option value="auto">自动（推荐）</option>
-                    <option value="enabled">开启</option>
-                    <option value="disabled">关闭</option>
-                  </select>
-                  <small>严格网关遇到未知缓存字段时可选择关闭。</small>
-                </label>
-                <label className="toggle-field">
-                  <span>
-                    <b>支持思考模式</b>
-                    <small>将 Codex 思考开关转换为上游 Chat 参数。</small>
-                  </span>
+            {editor.catalogModels.map((item, index) => (
+              // Rows are only ever appended or removed, never reordered
+              // (no drag-and-drop here), so the positional index is a
+              // stable key. Keying on `item.model` instead broke the
+              // "实际请求模型" input: every keystroke changed the key,
+              // which made React remount the row and drop input focus.
+              <div className="mapping-row" key={index}>
+                <label className="mapping-field">
+                  <span>菜单显示名（可选）</span>
                   <input
-                    name="provider-supports-thinking"
-                    type="checkbox"
-                    checked={
-                      editor.codexChatReasoning.supportsThinking === true
-                    }
-                    onChange={(event) =>
-                      setEditor({
-                        ...editor,
-                        codexChatReasoning: {
-                          ...editor.codexChatReasoning,
-                          supportsThinking: event.target.checked,
-                          supportsEffort: event.target.checked
-                            ? editor.codexChatReasoning.supportsEffort
-                            : false,
-                        },
-                      })
-                    }
-                  />
-                </label>
-                <label className="toggle-field">
-                  <span>
-                    <b>支持思考等级</b>
-                    <small>支持 low、high、max 等推理强度时开启。</small>
-                  </span>
-                  <input
-                    name="provider-supports-effort"
-                    type="checkbox"
-                    checked={editor.codexChatReasoning.supportsEffort === true}
-                    onChange={(event) =>
-                      setEditor({
-                        ...editor,
-                        codexChatReasoning: {
-                          ...editor.codexChatReasoning,
-                          supportsThinking: event.target.checked
-                            ? true
-                            : editor.codexChatReasoning.supportsThinking,
-                          supportsEffort: event.target.checked,
-                          effortParam: event.target.checked
-                            ? (editor.codexChatReasoning.effortParam ??
-                              "reasoning_effort")
-                            : "none",
-                        },
-                      })
-                    }
-                  />
-                </label>
-              </div>
-            )}
-            <div className="advanced-group model-mapping">
-              <div className="advanced-section-heading">
-                <div>
-                  <b>模型映射</b>
-                  <small>
-                    菜单显示名与实际请求模型可不同；留空则直接使用默认模型。
-                  </small>
-                </div>
-                <button
-                  type="button"
-                  className="secondary compact"
-                  onClick={() => {
-                    // A row's index shifts whenever the array grows, so any
-                    // panel expanded by index must collapse first or it can
-                    // end up rendered against the wrong row.
-                    setOpenReasoningRow(null);
-                    setOpenInstructionsRow(null);
-                    setEditor({
-                      ...editor,
-                      catalogModels: [
-                        ...editor.catalogModels,
-                        { model: "", displayName: "", contextWindow: "" },
-                      ],
-                    });
-                  }}
-                >
-                  添加模型
-                </button>
-              </div>
-              <div className="mapping-head">
-                <span>菜单显示名</span>
-                <span>实际请求模型</span>
-                <span>上下文</span>
-                <span>思考等级</span>
-                <span aria-hidden="true" />
-                <span aria-hidden="true" />
-              </div>
-              {editor.catalogModels.map((item, index) => (
-                // Rows are only ever appended or removed, never reordered
-                // (no drag-and-drop here), so the positional index is a
-                // stable key. Keying on `item.model` instead broke the
-                // "实际请求模型" input: every keystroke changed the key,
-                // which made React remount the row and drop input focus.
-                <div className="mapping-row" key={index}>
-                  <input
-                    aria-label="模型显示名"
+                    aria-label={`模型 ${index + 1} 显示名`}
                     value={item.displayName ?? ""}
                     onChange={(event) => {
                       const catalogModels = [...editor.catalogModels];
@@ -4089,8 +4075,18 @@ function ProviderEditor({
                     }}
                     placeholder="菜单显示名"
                   />
+                </label>
+                <label className="mapping-field">
+                  <span>实际请求模型</span>
                   <input
-                    aria-label="实际请求模型"
+                    id={`mapping-model-${index}`}
+                    aria-label={`模型 ${index + 1} 实际请求模型`}
+                    aria-invalid={validationAttempted && !item.model.trim()}
+                    aria-describedby={
+                      validationAttempted && !item.model.trim()
+                        ? `mapping-error-${index}`
+                        : undefined
+                    }
                     value={item.model}
                     onChange={(event) => {
                       const catalogModels = [...editor.catalogModels];
@@ -4102,8 +4098,11 @@ function ProviderEditor({
                     }}
                     placeholder="实际请求模型"
                   />
+                </label>
+                <label className="mapping-field">
+                  <span>上下文 / tokens（可选）</span>
                   <input
-                    aria-label="上下文窗口"
+                    aria-label={`模型 ${index + 1} 上下文窗口`}
                     type="number"
                     min="1"
                     inputMode="numeric"
@@ -4118,10 +4117,14 @@ function ProviderEditor({
                     }}
                     placeholder="上下文"
                   />
+                </label>
+                <div className="mapping-field">
+                  <span>思考等级</span>
                   <button
                     type="button"
                     className="reasoning-trigger"
-                    aria-label="思考等级"
+                    aria-label={`模型 ${index + 1} 思考等级`}
+                    aria-controls={`reasoning-panel-${index}`}
                     aria-expanded={openReasoningRow === index}
                     onClick={() =>
                       setOpenReasoningRow(
@@ -4142,7 +4145,7 @@ function ProviderEditor({
                               ? ` · ${item.defaultReasoningLevel}`
                               : ""
                           }`
-                        : "留空"}
+                        : "自动"}
                     </span>
                     <ChevronDown
                       size={14}
@@ -4155,14 +4158,17 @@ function ProviderEditor({
                       }}
                     />
                   </button>
+                </div>
+                <div className="mapping-actions">
                   <button
                     type="button"
                     className={
                       "instructions-trigger" +
                       (item.baseInstructions?.trim() ? " has-value" : "")
                     }
-                    aria-label="系统提示词"
+                    aria-label={`模型 ${index + 1} 系统提示词`}
                     aria-expanded={openInstructionsRow === index}
+                    aria-controls={`instructions-panel-${index}`}
                     title="系统提示词 / Base Instructions"
                     onClick={() =>
                       setOpenInstructionsRow(
@@ -4171,11 +4177,14 @@ function ProviderEditor({
                     }
                   >
                     <FileText size={15} />
+                    <span>
+                      {item.baseInstructions?.trim() ? "已设置" : "指令"}
+                    </span>
                   </button>
                   <button
                     type="button"
                     className="icon-button"
-                    aria-label="删除模型映射"
+                    aria-label={`删除模型 ${index + 1} 映射`}
                     onClick={() => {
                       // See the "添加模型" handler above: collapse any
                       // index-addressed panel before the array shifts.
@@ -4191,168 +4200,624 @@ function ProviderEditor({
                   >
                     <Trash2 size={15} />
                   </button>
-                  {openReasoningRow === index && (
-                    <div className="reasoning-panel">
-                      <div className="reasoning-panel-head">
-                        支持等级（可多选）
-                      </div>
-                      <div className="reasoning-checkboxes">
-                        {CODEX_REASONING_LEVELS.map((level) => {
-                          const checked = (item.reasoningLevels ?? []).includes(
-                            level,
-                          );
-                          return (
-                            <label
-                              key={level}
-                              className="reasoning-level-option"
-                            >
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                onChange={() => {
-                                  const current = new Set(
-                                    item.reasoningLevels ?? [],
-                                  );
-                                  if (current.has(level)) {
-                                    current.delete(level);
-                                  } else {
-                                    current.add(level);
-                                  }
-                                  const nextLevels = (
-                                    CODEX_REASONING_LEVELS as readonly string[]
-                                  ).filter((l) => current.has(l));
-                                  const catalogModels = [
-                                    ...editor.catalogModels,
-                                  ];
-                                  const next: CodexCatalogModel = { ...item };
-                                  if (nextLevels.length > 0) {
-                                    next.reasoningLevels = nextLevels;
-                                    if (
-                                      next.defaultReasoningLevel &&
-                                      !nextLevels.includes(
-                                        next.defaultReasoningLevel,
-                                      )
-                                    ) {
-                                      delete next.defaultReasoningLevel;
-                                    }
-                                  } else {
-                                    delete next.reasoningLevels;
+                </div>
+                {validationAttempted && !item.model.trim() && (
+                  <p
+                    className="mapping-error"
+                    id={`mapping-error-${index}`}
+                    role="alert"
+                  >
+                    请填写实际请求模型，或删除此行。
+                  </p>
+                )}
+                {openReasoningRow === index && (
+                  <div
+                    className="reasoning-panel"
+                    id={`reasoning-panel-${index}`}
+                  >
+                    <div className="reasoning-panel-head">
+                      支持等级（可多选）
+                    </div>
+                    <div className="reasoning-checkboxes">
+                      {CODEX_REASONING_LEVELS.map((level) => {
+                        const checked = (item.reasoningLevels ?? []).includes(
+                          level,
+                        );
+                        return (
+                          <label key={level} className="reasoning-level-option">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => {
+                                const current = new Set(
+                                  item.reasoningLevels ?? [],
+                                );
+                                if (current.has(level)) {
+                                  current.delete(level);
+                                } else {
+                                  current.add(level);
+                                }
+                                const nextLevels = (
+                                  CODEX_REASONING_LEVELS as readonly string[]
+                                ).filter((l) => current.has(l));
+                                const catalogModels = [...editor.catalogModels];
+                                const next: CodexCatalogModel = { ...item };
+                                if (nextLevels.length > 0) {
+                                  next.reasoningLevels = nextLevels;
+                                  if (
+                                    next.defaultReasoningLevel &&
+                                    !nextLevels.includes(
+                                      next.defaultReasoningLevel,
+                                    )
+                                  ) {
                                     delete next.defaultReasoningLevel;
                                   }
-                                  catalogModels[index] = next;
-                                  setEditor({ ...editor, catalogModels });
-                                }}
-                              />
-                              <span>{level}</span>
-                            </label>
-                          );
-                        })}
-                      </div>
-                      {(item.reasoningLevels?.length ?? 0) > 0 && (
-                        <div className="reasoning-panel-default">
-                          <span>默认等级</span>
-                          <select
-                            value={item.defaultReasoningLevel ?? ""}
-                            onChange={(event) => {
-                              const catalogModels = [...editor.catalogModels];
-                              const next: CodexCatalogModel = { ...item };
-                              if (event.target.value) {
-                                next.defaultReasoningLevel = event.target.value;
-                              } else {
-                                delete next.defaultReasoningLevel;
-                              }
-                              catalogModels[index] = next;
-                              setEditor({ ...editor, catalogModels });
-                            }}
-                          >
-                            <option value="">自动</option>
-                            {item.reasoningLevels!.map((level) => (
-                              <option key={level} value={level}>
-                                {level}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      )}
+                                } else {
+                                  delete next.reasoningLevels;
+                                  delete next.defaultReasoningLevel;
+                                }
+                                catalogModels[index] = next;
+                                setEditor({ ...editor, catalogModels });
+                              }}
+                            />
+                            <span>{level}</span>
+                          </label>
+                        );
+                      })}
                     </div>
-                  )}
-                  {openInstructionsRow === index && (
-                    <div className="instructions-panel">
-                      <div className="instructions-panel-head">
-                        系统提示词 / Base Instructions（可选）
+                    {(item.reasoningLevels?.length ?? 0) > 0 && (
+                      <div className="reasoning-panel-default">
+                        <span>默认等级</span>
+                        <select
+                          aria-label={`模型 ${index + 1} 默认思考等级`}
+                          value={item.defaultReasoningLevel ?? ""}
+                          onChange={(event) => {
+                            const catalogModels = [...editor.catalogModels];
+                            const next: CodexCatalogModel = { ...item };
+                            if (event.target.value) {
+                              next.defaultReasoningLevel = event.target.value;
+                            } else {
+                              delete next.defaultReasoningLevel;
+                            }
+                            catalogModels[index] = next;
+                            setEditor({ ...editor, catalogModels });
+                          }}
+                        >
+                          <option value="">自动</option>
+                          {item.reasoningLevels!.map((level) => (
+                            <option key={level} value={level}>
+                              {level}
+                            </option>
+                          ))}
+                        </select>
                       </div>
-                      <textarea
-                        aria-label="系统提示词"
-                        value={item.baseInstructions ?? ""}
-                        onChange={(event) => {
-                          const catalogModels = [...editor.catalogModels];
-                          const next: CodexCatalogModel = { ...item };
-                          if (event.target.value) {
-                            next.baseInstructions = event.target.value;
-                          } else {
-                            delete next.baseInstructions;
-                          }
-                          catalogModels[index] = next;
-                          setEditor({ ...editor, catalogModels });
-                        }}
-                        placeholder="留空则使用默认模板"
-                      />
-                      <small>
-                        覆盖该模型的身份说明/系统前言；留空则使用默认模板。
-                      </small>
+                    )}
+                  </div>
+                )}
+                {openInstructionsRow === index && (
+                  <div
+                    className="instructions-panel"
+                    id={`instructions-panel-${index}`}
+                  >
+                    <div className="instructions-panel-head">
+                      系统提示词 / Base Instructions（可选）
                     </div>
-                  )}
-                </div>
-              ))}
-            </div>
+                    <textarea
+                      aria-label="系统提示词"
+                      value={item.baseInstructions ?? ""}
+                      onChange={(event) => {
+                        const catalogModels = [...editor.catalogModels];
+                        const next: CodexCatalogModel = { ...item };
+                        if (event.target.value) {
+                          next.baseInstructions = event.target.value;
+                        } else {
+                          delete next.baseInstructions;
+                        }
+                        catalogModels[index] = next;
+                        setEditor({ ...editor, catalogModels });
+                      }}
+                      placeholder="留空则使用默认模板"
+                    />
+                    <small>
+                      覆盖该模型的身份说明/系统前言；留空则使用默认模板。
+                    </small>
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
-        </details>
-        {modelFetchError && (
-          <p className="editor-model-error" role="status">
-            <CircleAlert size={15} /> {modelFetchError}
+          <details className="advanced-options" ref={advancedRef}>
+            <summary>
+              高级配置 <span>Codex 功能 · 通用配置 · 协议与兼容性</span>
+            </summary>
+            <div className="advanced-options-body">
+              <p className="advanced-intro">
+                按需调整此线路功能与协议。共享通用配置的修改会影响启用它的线路。
+              </p>
+              <div className="advanced-group codex-feature-options">
+                <div className="advanced-section-heading">
+                  <div>
+                    <b>Codex 功能</b>
+                    <small>每条线路独立保存，未开启的功能不会写入配置。</small>
+                  </div>
+                </div>
+                <label className="toggle-field">
+                  <span>
+                    <b>目标模式</b>
+                    <small>在 Codex 中开启目标规划能力。</small>
+                  </span>
+                  <input
+                    name="provider-goal-mode"
+                    type="checkbox"
+                    checked={editor.goalModeEnabled}
+                    onChange={(event) =>
+                      setEditor({
+                        ...editor,
+                        goalModeEnabled: event.target.checked,
+                      })
+                    }
+                  />
+                </label>
+                <label className="toggle-field">
+                  <span>
+                    <b>
+                      远程上下文压缩
+                      <em className="experimental-tag">实验性</em>
+                    </b>
+                    <small>让兼容线路尝试由上游压缩长对话，默认关闭。</small>
+                  </span>
+                  <input
+                    name="provider-remote-compaction"
+                    type="checkbox"
+                    checked={editor.remoteCompactionEnabled}
+                    onChange={(event) =>
+                      setEditor({
+                        ...editor,
+                        remoteCompactionEnabled: event.target.checked,
+                      })
+                    }
+                  />
+                </label>
+                <label className="toggle-field">
+                  <span>
+                    <b>应用通用配置</b>
+                    <small>切换到这条线路时合并共享的 Codex 配置。</small>
+                  </span>
+                  <input
+                    name="provider-common-config"
+                    type="checkbox"
+                    checked={editor.commonConfigEnabled}
+                    disabled={commonConfigLoading || !commonConfigLoaded}
+                    onChange={(event) =>
+                      setEditor({
+                        ...editor,
+                        commonConfigEnabled: event.target.checked,
+                      })
+                    }
+                  />
+                </label>
+                <div className="common-config-actions">
+                  <span>
+                    {commonConfigLoading
+                      ? "正在读取通用配置…"
+                      : commonConfigLoaded
+                        ? commonConfigSnippet.trim()
+                          ? "已设置通用配置"
+                          : "尚未设置通用配置"
+                        : "通用配置暂时不可用"}
+                  </span>
+                  <button
+                    type="button"
+                    className="link-button"
+                    aria-expanded={commonConfigOpen}
+                    disabled={!commonConfigLoaded}
+                    onClick={() => setCommonConfigOpen(!commonConfigOpen)}
+                  >
+                    {commonConfigOpen ? "收起编辑器" : "编辑通用配置"}
+                  </button>
+                </div>
+                {commonConfigOpen && (
+                  <label className="common-config-editor">
+                    通用 config.toml
+                    <textarea
+                      name="provider-common-config-snippet"
+                      spellCheck={false}
+                      value={commonConfigSnippet}
+                      onChange={(event) =>
+                        onCommonConfigChange(event.target.value)
+                      }
+                      placeholder="例如 [features] 下需要在多条线路间共享的配置"
+                    />
+                    <small>
+                      共享内容影响启用通用配置的线路；供应商地址、密钥、模型和模型目录不会共享。
+                    </small>
+                    {commonConfigWarning && (
+                      <small className="error-text">
+                        {commonConfigWarning}
+                      </small>
+                    )}
+                  </label>
+                )}
+              </div>
+              <label>
+                上游格式
+                <select
+                  name="provider-api-format"
+                  value={editor.apiFormat}
+                  onChange={(event) =>
+                    patch(
+                      "apiFormat",
+                      event.target.value as CodexApiFormatSelection,
+                    )
+                  }
+                >
+                  <option value="auto">自动检测（保存时识别）</option>
+                  <option value="openai_responses">
+                    Responses（明确指定）
+                  </option>
+                  <option value="openai_chat">
+                    Chat Completions（明确指定，需路由接管）
+                  </option>
+                  <option value="anthropic">
+                    Anthropic Messages（明确指定，需路由接管）
+                  </option>
+                </select>
+                <small>
+                  自动模式在保存时尝试识别协议。探测依赖上游参数校验，无法确认不代表模型不可用；若上游忽略非法参数，可能生成内容并计费。已知协议时请明确指定，跳过自动探测。
+                </small>
+                {editor.apiFormat === "auto" && detectedDefaultFormat && (
+                  <small>
+                    已识别：
+                    {codexApiFormatLabel(detectedDefaultFormat.apiFormat)}
+                    {detectedDefaultFormat.apiFormat === "openai_responses"
+                      ? "（可直连；若启用代理专属功能仍会自动开启路由）"
+                      : "（保存后自动开启路由）"}
+                  </small>
+                )}
+                {editor.apiFormat === "auto" && apiFormatDetectionError && (
+                  <small className="error-text">
+                    {apiFormatDetectionError}
+                  </small>
+                )}
+                {editor.apiFormat === "auto" &&
+                  detectionFailures.length > 0 && (
+                    <div className="detection-failures">
+                      <ul>
+                        {detectionFailures.map(({ model, status, excerpt }) => (
+                          <li key={model}>
+                            <code>{model}</code>
+                            <b>{status}</b>
+                            {excerpt && <span title={excerpt}>{excerpt}</span>}
+                          </li>
+                        ))}
+                      </ul>
+                      <div className="detection-failure-actions">
+                        <span>也可以直接指定协议保存：</span>
+                        {(
+                          [
+                            "openai_responses",
+                            "openai_chat",
+                            "anthropic",
+                          ] as const
+                        ).map((format) => (
+                          <button
+                            key={format}
+                            type="button"
+                            className="secondary"
+                            disabled={savingProvider}
+                            onClick={() => patch("apiFormat", format)}
+                          >
+                            按 {codexApiFormatLabel(format)} 保存
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+              </label>
+              <div className="advanced-group">
+                <label className="toggle-field">
+                  <span>
+                    <b>完整 API 地址</b>
+                    <small>
+                      地址已含完整请求路径时开启，不再自动补全路径。
+                    </small>
+                  </span>
+                  <input
+                    name="provider-full-url"
+                    type="checkbox"
+                    checked={editor.isFullUrl}
+                    onChange={(event) =>
+                      setEditor({ ...editor, isFullUrl: event.target.checked })
+                    }
+                  />
+                </label>
+                <label>
+                  模型列表地址（可选）
+                  <input
+                    name="provider-models-url"
+                    type="url"
+                    autoComplete="url"
+                    spellCheck={false}
+                    value={editor.modelsUrl}
+                    onChange={(event) => patch("modelsUrl", event.target.value)}
+                    placeholder="https://api.example.com/v1/models"
+                  />
+                  <small>上游的模型接口不同于主接口时填写。</small>
+                </label>
+                <label>
+                  自定义 User-Agent（可选）
+                  <input
+                    name="provider-user-agent"
+                    autoComplete="off"
+                    spellCheck={false}
+                    value={editor.customUserAgent}
+                    onChange={(event) =>
+                      patch("customUserAgent", event.target.value)
+                    }
+                    placeholder="留空使用默认请求标识"
+                  />
+                </label>
+              </div>
+              {editor.apiFormat === "anthropic" && (
+                <div className="advanced-group">
+                  <label>
+                    Anthropic 认证字段
+                    <select
+                      name="provider-anthropic-auth"
+                      value={editor.anthropicAuthField}
+                      onChange={(event) =>
+                        patch("anthropicAuthField", event.target.value)
+                      }
+                    >
+                      <option value="ANTHROPIC_AUTH_TOKEN">
+                        Authorization: Bearer
+                      </option>
+                      <option value="ANTHROPIC_API_KEY">x-api-key</option>
+                    </select>
+                  </label>
+                  <label>
+                    最大输出 tokens（可选）
+                    <input
+                      name="provider-max-output-tokens"
+                      type="number"
+                      min="1"
+                      inputMode="numeric"
+                      value={editor.maxOutputTokens}
+                      onChange={(event) =>
+                        patch(
+                          "maxOutputTokens",
+                          event.target.value.replace(/[^\d]/g, ""),
+                        )
+                      }
+                      placeholder="默认 8192"
+                    />
+                  </label>
+                  <label className="toggle-field">
+                    <span>
+                      <b>模拟 Claude Code 客户端</b>
+                      <small>
+                        仅当上游明确要求 Claude Code 请求特征时开启。
+                      </small>
+                    </span>
+                    <input
+                      name="provider-impersonate-claude-code"
+                      type="checkbox"
+                      checked={editor.impersonateClaudeCode}
+                      onChange={(event) =>
+                        setEditor({
+                          ...editor,
+                          impersonateClaudeCode: event.target.checked,
+                        })
+                      }
+                    />
+                  </label>
+                </div>
+              )}
+              {editor.apiFormat === "openai_chat" && (
+                <div className="advanced-group">
+                  <label>
+                    提示词缓存路由
+                    <select
+                      name="provider-prompt-cache-routing"
+                      value={editor.promptCacheRouting}
+                      onChange={(event) =>
+                        patch("promptCacheRouting", event.target.value)
+                      }
+                    >
+                      <option value="auto">自动（推荐）</option>
+                      <option value="enabled">开启</option>
+                      <option value="disabled">关闭</option>
+                    </select>
+                    <small>严格网关遇到未知缓存字段时可选择关闭。</small>
+                  </label>
+                  <label className="toggle-field">
+                    <span>
+                      <b>支持思考模式</b>
+                      <small>将 Codex 思考开关转换为上游 Chat 参数。</small>
+                    </span>
+                    <input
+                      name="provider-supports-thinking"
+                      type="checkbox"
+                      checked={
+                        editor.codexChatReasoning.supportsThinking === true
+                      }
+                      onChange={(event) =>
+                        setEditor({
+                          ...editor,
+                          codexChatReasoning: {
+                            ...editor.codexChatReasoning,
+                            supportsThinking: event.target.checked,
+                            supportsEffort: event.target.checked
+                              ? editor.codexChatReasoning.supportsEffort
+                              : false,
+                          },
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="toggle-field">
+                    <span>
+                      <b>支持思考等级</b>
+                      <small>支持 low、high、max 等推理强度时开启。</small>
+                    </span>
+                    <input
+                      name="provider-supports-effort"
+                      type="checkbox"
+                      checked={
+                        editor.codexChatReasoning.supportsEffort === true
+                      }
+                      onChange={(event) =>
+                        setEditor({
+                          ...editor,
+                          codexChatReasoning: {
+                            ...editor.codexChatReasoning,
+                            supportsThinking: event.target.checked
+                              ? true
+                              : editor.codexChatReasoning.supportsThinking,
+                            supportsEffort: event.target.checked,
+                            effortParam: event.target.checked
+                              ? (editor.codexChatReasoning.effortParam ??
+                                "reasoning_effort")
+                              : "none",
+                          },
+                        })
+                      }
+                    />
+                  </label>
+                </div>
+              )}
+            </div>
+          </details>
+          {modelFetchError && (
+            <p className="editor-model-error" role="status">
+              <CircleAlert size={15} /> {modelFetchError}
+            </p>
+          )}
+          <p className="editor-test-scope">
+            地址测试仅验证连通性，不验证 API Key 或模型可用性。
+          </p>
+          {connection.kind === "error" && (
+            <p className="editor-feedback" role="alert">
+              {connection.message}
+            </p>
+          )}
+        </fieldset>
+      </div>
+      <div className="editor-bottom">
+        {editor.apiFormat === "auto" && (
+          <p className="editor-probe-notice" role="note">
+            自动模式保存时会探测协议，可能产生调用费用。
+            <button
+              type="button"
+              className="link-button"
+              disabled={savingProvider}
+              onClick={() => {
+                if (advancedRef.current) advancedRef.current.open = true;
+                pageRef.current
+                  ?.querySelector<HTMLSelectElement>(
+                    "[name=provider-api-format]",
+                  )
+                  ?.focus();
+              }}
+            >
+              指定协议
+            </button>
           </p>
         )}
-      </div>
-      <footer>
-        <button
-          className="secondary"
-          onClick={onTest}
-          disabled={savingProvider || connection.kind === "checking"}
-        >
-          测试连接
-        </button>
-        <small
-          className={`editor-connection is-${connection.kind}`}
-          role="status"
-        >
-          {connection.message}
-        </small>
-        <div>
-          {editor.original && (
+        <footer>
+          <div className="editor-test-actions">
             <button
-              className="danger"
-              onClick={onDelete}
+              className="secondary"
+              onClick={onTest}
+              disabled={savingProvider || connection.kind === "checking"}
+            >
+              测试地址连通性
+            </button>
+            <small
+              className={`editor-connection is-${connection.kind}`}
+              role="status"
+            >
+              {connection.kind === "error"
+                ? "连接失败，详见正文"
+                : connection.message}
+            </small>
+          </div>
+          <div className="editor-save-actions">
+            {editor.original && (
+              <button
+                className="danger"
+                onClick={onDelete}
+                disabled={savingProvider}
+              >
+                <Trash2 size={15} /> 删除线路
+              </button>
+            )}
+            <button
+              type="button"
+              className="secondary"
+              onClick={onRequestClose}
               disabled={savingProvider}
             >
-              <Trash2 size={15} /> 删除
+              取消
             </button>
-          )}
-          <button
-            className="primary"
-            onClick={() => void onSave()}
-            disabled={savingProvider || fetchingModels}
-          >
-            {savingProvider ? (
-              <>
-                <LoaderCircle className="spin" size={15} /> 正在保存…
-              </>
-            ) : (
-              "保存并应用"
-            )}
-          </button>
-        </div>
-      </footer>
+            <button
+              className="primary"
+              onClick={submit}
+              disabled={savingProvider || fetchingModels}
+            >
+              {savingProvider ? (
+                <>
+                  <LoaderCircle className="spin" size={15} /> 正在保存…
+                </>
+              ) : (
+                "保存并应用"
+              )}
+            </button>
+          </div>
+        </footer>
+      </div>
+      {restorePending && (
+        <ConfirmRestoreTemplate
+          onCancel={() => setRestorePending(false)}
+          onConfirm={restoreTemplate}
+        />
+      )}
     </section>
+  );
+}
+
+function ConfirmRestoreTemplate({
+  onCancel,
+  onConfirm,
+}: {
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const ref = useDialogFocus<HTMLElement>(onCancel);
+  return (
+    <div className="modal-backdrop">
+      <section
+        ref={ref}
+        className="confirm-dialog"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="restore-template-title"
+        tabIndex={-1}
+      >
+        <h2 id="restore-template-title">恢复默认模板？</h2>
+        <p>
+          这会重置当前线路的地址、密钥、模型映射和高级设置。线路名称与共享通用配置保持不变。
+        </p>
+        <footer>
+          <button onClick={onCancel} data-autofocus>
+            继续编辑
+          </button>
+          <button className="danger" onClick={onConfirm}>
+            恢复模板
+          </button>
+        </footer>
+      </section>
+    </div>
   );
 }
 
@@ -4482,7 +4947,7 @@ function ConfirmDiscardEditor({
       >
         <CircleAlert size={26} />
         <h2 id="editor-discard-title">放弃未保存的修改？</h2>
-        <p>这条线路还有没保存的改动，关闭后会丢失。</p>
+        <p>离开后，本次未保存的线路设置与通用配置修改将丢失。</p>
         <footer>
           <button onClick={onCancel} data-autofocus>
             继续编辑

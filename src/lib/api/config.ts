@@ -1,5 +1,6 @@
 // 配置相关 API
 import { invoke } from "@tauri-apps/api/core";
+import { backupsApi } from "./settings";
 
 export type AppType = "claude" | "codex" | "gemini" | "omo" | "omo_slim";
 
@@ -39,7 +40,7 @@ export async function getCommonConfigSnippet(
  * 设置通用配置片段（统一接口）
  * @param appType - 应用类型（claude/codex/gemini）
  * @param snippet - 通用配置片段（原始字符串）
- * @throws 如果格式无效（Claude/Gemini 验证 JSON，Codex 暂不验证）
+ * @throws 如果格式无效（Claude/Gemini 验证 JSON，Codex 验证 TOML）
  */
 export async function setCommonConfigSnippet(
   appType: AppType,
@@ -97,4 +98,50 @@ export async function extractCommonConfigSnippet(
   }
 
   return invoke<string>("extract_common_config_snippet", args);
+}
+
+/** Validate without writing provider, common or Live configuration. */
+export async function validateCommonConfigSnippet(
+  appType: AppType,
+  snippet: string,
+): Promise<void> {
+  return invoke("validate_common_config_snippet", { appType, snippet });
+}
+
+/** The database commit succeeded, but Live/runtime still requires attention. */
+export class PartialBackupRestoreError extends Error {
+  readonly dbRestored = true;
+
+  constructor(
+    message: string,
+    readonly backupId: string,
+    readonly warning: string,
+  ) {
+    super(message);
+    this.name = "PartialBackupRestoreError";
+  }
+}
+
+/** Preserve the legacy success ID, but retain partial-restore metadata on failure. */
+export async function restoreDatabaseBackup(filename: string): Promise<string> {
+  try {
+    return await backupsApi.restoreDbBackup(filename);
+  } catch (error) {
+    if (
+      error &&
+      typeof error === "object" &&
+      "dbRestored" in error &&
+      error.dbRestored === true
+    ) {
+      const partial = error as Record<string, unknown>;
+      throw new PartialBackupRestoreError(
+        typeof partial.message === "string"
+          ? partial.message
+          : "数据库已恢复，但 Live/运行态同步未完成。请重新应用当前供应商，不要重复恢复。",
+        typeof partial.backupId === "string" ? partial.backupId : "",
+        typeof partial.warning === "string" ? partial.warning : "",
+      );
+    }
+    throw error;
+  }
 }

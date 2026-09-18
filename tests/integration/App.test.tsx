@@ -104,9 +104,9 @@ describe("Chimera++ application shell", () => {
     expect(
       screen.getByRole("heading", { name: "添加线路" }),
     ).toBeInTheDocument();
-    expect(screen.getByLabelText("线路名称")).toHaveValue("新线路");
+    expect(screen.getByLabelText(/线路名称/)).toHaveValue("新线路");
 
-    fireEvent.click(screen.getByText("高级选项"));
+    fireEvent.click(screen.getByText("高级配置"));
     expect(
       screen.getByRole("checkbox", { name: /目标模式/ }),
     ).not.toBeChecked();

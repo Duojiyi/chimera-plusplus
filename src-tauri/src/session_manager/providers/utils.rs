@@ -191,3 +191,235 @@ mod tests {
         );
     }
 }
+
+/// Only inert, non-option identifiers are accepted across cmd, PowerShell and POSIX shells.
+pub(super) fn resume_command(prefix: &str, id: &str) -> Option<String> {
+    if !id.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)
+        || !id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+    {
+        return None;
+    }
+    Some(format!("{prefix} \"{id}\""))
+}
+
+pub(super) fn is_uuid(id: &str) -> bool {
+    id.len() == 36
+        && id.bytes().enumerate().all(|(i, b)| {
+            if [8, 13, 18, 23].contains(&i) {
+                b == b'-'
+            } else {
+                b.is_ascii_hexdigit()
+            }
+        })
+}
+
+/// Portable single component: reject Windows devices, ADS, prefixes and separators on all hosts.
+pub(super) fn validate_id(id: &str) -> Result<(), String> {
+    let stem = id
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    let device = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ((stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.len() == 4
+            && matches!(stem.as_bytes()[3], b'1'..=b'9'));
+    if id.is_empty()
+        || id == "."
+        || id == ".."
+        || id.ends_with(['.', ' '])
+        || device
+        || !id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_-.".contains(&b))
+    {
+        return Err(format!("Unsafe session/message ID: {id:?}"));
+    }
+    Ok(())
+}
+
+/// Check every existing component, including a missing target's ancestors.
+/// Reparse points (including junctions) are forbidden on Windows.
+pub(super) fn deletion_path(root: &Path, path: &Path) -> Result<bool, String> {
+    let relative = path
+        .strip_prefix(root)
+        .map_err(|_| "Deletion path escapes root")?;
+    if relative.as_os_str().is_empty()
+        || relative
+            .components()
+            .any(|c| !matches!(c, std::path::Component::Normal(_)))
+    {
+        return Err("Deletion target must be a strict descendant".into());
+    }
+    let mut current = root.to_path_buf();
+    let components = std::iter::once(None).chain(relative.components().map(Some));
+    for component in components {
+        if let Some(component) = component {
+            current.push(component.as_os_str());
+        }
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) => {
+                #[cfg(windows)]
+                let reparse = {
+                    use std::os::windows::fs::MetadataExt;
+                    metadata.file_attributes() & 0x400 != 0
+                };
+                #[cfg(not(windows))]
+                let reparse = false;
+                if metadata.file_type().is_symlink() || reparse {
+                    return Err(format!(
+                        "Linked deletion path is forbidden: {}",
+                        current.display()
+                    ));
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(format!("Cannot inspect {}: {e}", current.display())),
+        }
+    }
+    let canonical_root = root.canonicalize().map_err(|e| e.to_string())?;
+    let canonical = path.canonicalize().map_err(|e| e.to_string())?;
+    if canonical == canonical_root || !canonical.starts_with(&canonical_root) {
+        return Err("Deletion path escapes root".into());
+    }
+    Ok(true)
+}
+
+/// Unlike discovery scans, deletion must not silently skip links, I/O errors or depth limits.
+pub(super) fn deletion_files(root: &Path, dir: &Path) -> Result<Vec<std::path::PathBuf>, String> {
+    let mut files = Vec::new();
+    let mut pending = vec![(dir.to_path_buf(), 0)];
+    while let Some((path, depth)) = pending.pop() {
+        if !deletion_path(root, &path)? {
+            continue;
+        }
+        if !path.is_dir() {
+            files.push(path);
+            continue;
+        }
+        if depth > crate::security_limits::MAX_SESSION_SCAN_DEPTH {
+            return Err("Deletion scan depth exceeded".into());
+        }
+        for entry in std::fs::read_dir(&path).map_err(|e| e.to_string())? {
+            pending.push((entry.map_err(|e| e.to_string())?.path(), depth + 1));
+        }
+    }
+    Ok(files)
+}
+
+pub(super) fn delete_paths(root: &Path, paths: &[std::path::PathBuf]) -> Result<bool, String> {
+    // Complete preflight before the first mutation, then recheck immediately before each removal.
+    // These path-based checks do not provide atomic protection against concurrent ancestor renames.
+    for path in paths {
+        deletion_files(root, path)?;
+    }
+    let mut deleted = false;
+    for path in paths {
+        if !deletion_path(root, path)? {
+            continue;
+        }
+        let result = if path.is_dir() {
+            std::fs::remove_dir_all(path)
+        } else {
+            std::fs::remove_file(path)
+        };
+        result.map_err(|e| format!("Session deletion incomplete at {}: {e}", path.display()))?;
+        deleted = true;
+    }
+    Ok(deleted)
+}
+
+#[cfg(test)]
+mod safety_tests {
+    use super::*;
+
+    #[test]
+    fn resume_arguments_are_inert_in_all_supported_shells() {
+        for prefix in [
+            "codex resume",
+            "claude --resume",
+            "gemini --resume",
+            "grok --resume",
+            "opencode -s",
+        ] {
+            assert_eq!(
+                resume_command(prefix, "ses_123-Ab"),
+                Some(format!("{prefix} \"ses_123-Ab\""))
+            );
+            for id in [
+                "", "--help", "a b", "a;id", "$(id)", "a`id`", "a\"b", "a'b", "%PATH%", "!PATH!",
+                "a&b", "a|b", "a\nb", "a\rb", "a\\b", "a/b",
+            ] {
+                assert!(resume_command(prefix, id).is_none(), "{prefix}: {id:?}");
+            }
+        }
+        assert!(is_uuid("019cc369-bd7c-7891-b371-7b20b4fe0b18"));
+        assert!(!is_uuid("019cc369-bd7c-7891-b371-7b20b4fe0b1z"));
+        assert!(!is_uuid("019cc369_bd7c-7891-b371-7b20b4fe0b18"));
+    }
+
+    #[test]
+    fn ids_reject_traversal_and_windows_aliases_on_every_platform() {
+        for id in [
+            "",
+            ".",
+            "..",
+            "../outside",
+            "..\\outside",
+            "/tmp",
+            "C:\\tmp",
+            "C:tmp",
+            "\\\\server\\share",
+            "msg:stream",
+            "CON",
+            "nul.json",
+            "LPT1",
+            "COM9.txt",
+            "msg.",
+            "msg ",
+            "a\0b",
+        ] {
+            assert!(validate_id(id).is_err(), "{id:?}");
+        }
+        assert!(validate_id("msg_123-abc").is_ok());
+    }
+
+    #[test]
+    fn all_targets_are_preflighted_before_removal() {
+        let temp = tempfile::tempdir().unwrap();
+        let keep = temp.path().join("keep");
+        std::fs::write(&keep, "keep").unwrap();
+        assert!(delete_paths(temp.path(), &[keep.clone(), temp.path().to_path_buf()]).is_err());
+        assert!(keep.exists());
+        assert!(deletion_path(temp.path(), &temp.path().join("missing/../outside")).is_err());
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn linked_ancestors_and_nested_links_are_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let link = temp.path().join("link");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(outside.path(), &link).unwrap();
+        #[cfg(windows)]
+        if let Err(e) = std::os::windows::fs::symlink_dir(outside.path(), &link) {
+            if e.raw_os_error() == Some(1314) {
+                return;
+            } // Requires Developer Mode or privilege.
+            panic!("{e}");
+        }
+        assert!(deletion_path(temp.path(), &link.join("missing")).is_err());
+        assert!(deletion_files(temp.path(), &link).is_err());
+        let keep = temp.path().join("keep");
+        std::fs::write(&keep, "keep").unwrap();
+        let directory = temp.path().join("directory");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::rename(&link, directory.join("nested-link")).unwrap();
+        assert!(delete_paths(temp.path(), &[keep.clone(), directory]).is_err());
+        assert!(keep.exists());
+        assert!(outside.path().exists());
+    }
+}

@@ -1,17 +1,92 @@
 use serde_json::{json, Value};
-use std::sync::Arc;
+use tokio::sync::OwnedMutexGuard;
 
-use crate::database::Database;
+use crate::app_config::AppType;
 use crate::error::AppError;
 use crate::services::provider::ProviderService;
-use crate::settings;
 use crate::store::AppState;
 
-pub(crate) fn run_post_import_sync(db: Arc<Database>) -> Result<(), AppError> {
-    let app_state = AppState::new(db);
-    ProviderService::sync_current_to_live(&app_state)?;
-    settings::reload_settings()?;
+// Owned guards can move into post-sync workers, so cancellation never releases
+// lifecycle/profile protection while a detached blocking sync is still writing.
+pub(crate) async fn lock_import_runtime(
+    state: &AppState,
+) -> Result<(OwnedMutexGuard<()>, OwnedMutexGuard<()>), AppError> {
+    let profile_guard = state.profile_apply_lock.clone().lock_owned().await;
+    let lifecycle_guard = state.proxy_service.lock_lifecycle().await;
+    if state.proxy_service.is_running().await {
+        return Err(AppError::Message(
+            "请先停止代理并关闭接管，再恢复、导入或同步配置；数据库尚未修改。".into(),
+        ));
+    }
+    ensure_no_takeover(state)?;
+    Ok((profile_guard, lifecycle_guard))
+}
+
+pub(crate) async fn lock_import_apps(state: &AppState) -> Vec<OwnedMutexGuard<()>> {
+    let mut guards = Vec::new();
+    for app in AppType::all() {
+        guards.push(state.proxy_service.lock_switch_for_app(app.as_str()).await);
+    }
+    guards
+}
+
+// Own the shared guards inside the blocking job: cancelling the command must
+// not unlock a still-running database replacement or Live write. Match the
+// existing profile -> lifecycle -> per-app lock order.
+pub(crate) fn with_stopped_proxy<T>(
+    state: &AppState,
+    operation: impl FnOnce() -> Result<T, AppError>,
+) -> Result<T, AppError> {
+    let _guards = futures::executor::block_on(lock_import_runtime(state))?;
+    operation()
+}
+
+fn ensure_no_takeover(state: &AppState) -> Result<(), AppError> {
+    state.db.validate_stopped_proxy_state()?;
+    for app in AppType::all() {
+        let app_id = app.as_str();
+        if state
+            .proxy_service
+            .detect_takeover_in_live_config_for_app(&app)
+        {
+            return Err(AppError::Message(format!(
+                "{app_id} 仍有代理接管状态。请关闭接管后重新应用当前供应商并同步 Live 配置。"
+            )));
+        }
+    }
     Ok(())
+}
+
+pub(crate) fn replace_database(
+    state: &AppState,
+    replace: impl FnOnce() -> Result<String, AppError>,
+) -> Result<String, AppError> {
+    let _app_guards = futures::executor::block_on(lock_import_apps(state));
+    ensure_no_takeover(state)?;
+    replace()
+    // Drop app guards before the existing sync path, which may acquire them.
+}
+
+pub(crate) fn run_post_import_sync(state: &AppState) -> Result<(), AppError> {
+    // Same post-import path, but never construct an isolated AppState. Reload
+    // settings even when the imported DB contains takeover data we cannot apply.
+    crate::settings::reload_settings()?;
+    ensure_no_takeover(state)?;
+    ProviderService::sync_current_to_live(state)
+}
+
+pub(crate) fn post_import_warning(state: &AppState) -> Option<String> {
+    // A panic in post-sync is still partial success: the DB is already committed.
+    let result =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_post_import_sync(state)))
+            .map_err(|_| {
+                "后置同步任务异常退出，请重新应用当前供应商并同步 Live 配置。".to_string()
+            });
+    let warning = post_sync_warning_from_result(result);
+    if let Some(message) = warning.as_ref() {
+        log::warn!("[Import/Restore] {message}");
+    }
+    warning
 }
 
 fn post_sync_warning<E: std::fmt::Display>(err: E) -> String {

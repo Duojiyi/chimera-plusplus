@@ -81,6 +81,21 @@ describe("WindowControls", () => {
     expect(container.querySelector("button.is-zoom")).toBeNull();
   });
 
+  it("protects editor drafts from titlebar close while allowing minimize", () => {
+    for (const mac of [true, false]) {
+      isMacMock.mockReturnValue(mac);
+      const { unmount } = render(<WindowControls closeDisabled />);
+      const close = screen.getByRole("button", { name: /关闭/ });
+      expect(close).toBeDisabled();
+      close.click();
+      expect(closeMock).not.toHaveBeenCalled();
+      screen.getByRole("button", { name: /最小化/ }).click();
+      expect(minimizeMock).toHaveBeenCalledTimes(1);
+      unmount();
+      vi.clearAllMocks();
+    }
+  });
+
   it("wires both platforms' buttons to the real window actions", () => {
     for (const mac of [true, false]) {
       isMacMock.mockReturnValue(mac);

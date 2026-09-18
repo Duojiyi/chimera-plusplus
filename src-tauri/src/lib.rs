@@ -190,12 +190,14 @@ fn apply_windows_rounded_corners(window: &tauri::WebviewWindow) {
     };
     let scale_factor = window.scale_factor().unwrap_or(1.0);
     let diameter = (32.0 * scale_factor).round().max(1.0) as i32;
+    // GDI excludes the right/bottom bounds. Keep the region aligned with the
+    // actual viewport; adding a pixel shifts the bottom/right corner arcs.
     let region = unsafe {
         CreateRoundRectRgn(
             0,
             0,
-            size.width.saturating_add(1) as i32,
-            size.height.saturating_add(1) as i32,
+            size.width as i32,
+            size.height as i32,
             diameter,
             diameter,
         )
@@ -546,14 +548,14 @@ pub fn run() {
 
                 if settings.minimize_to_tray_on_close {
                     api.prevent_close();
-                    let _ = window.hide();
-                    #[cfg(target_os = "windows")]
-                    {
-                        let _ = window.set_skip_taskbar(true);
-                    }
-                    #[cfg(target_os = "macos")]
-                    {
-                        tray::apply_tray_policy(window.app_handle(), false);
+                    if settings.lightweight_on_close {
+                        // The frontend checks edits and active operations before destruction.
+                        // If it is not ready, leave the window intact rather than lose state.
+                        if let Err(error) = window.emit("request-lightweight-close", ()) {
+                            log::error!("请求轻量关闭失败: {error}");
+                        }
+                    } else if let Err(error) = crate::lightweight::hide_main_window(window.app_handle()) {
+                        log::error!("隐藏主窗口失败: {error}");
                     }
                 } else {
                     api.prevent_close();
@@ -1280,6 +1282,12 @@ pub fn run() {
             });
             log::info!("✓ Deep-link URL handler registered");
 
+            // Development executables must never replace the installed startup entry.
+            #[cfg(not(debug_assertions))]
+            if let Err(error) = crate::auto_launch::sync_saved_preference() {
+                log::error!("同步开机自启动设置失败: {error}");
+            }
+
             // 创建动态托盘菜单
             let menu = tray::create_tray_menu(app.handle(), &app_state)?;
 
@@ -1287,6 +1295,9 @@ pub fn run() {
             let mut tray_builder = TrayIconBuilder::with_id(tray::TRAY_ID)
                 .tooltip(product_policy::PRODUCT_NAME)
                 .on_tray_icon_event(|tray, event| match event {
+                    TrayIconEvent::DoubleClick { button: tauri::tray::MouseButton::Left, .. } => {
+                        tray::handle_tray_menu_event(tray.app_handle(), "show_main");
+                    }
                     // 鼠标悬停/点击到托盘图标时，后台异步刷新用量缓存，
                     // 让用户下一次（或快速打开菜单的那一刻）看到较新的数字。
                     // refresh_all_usage_in_tray 内部有 10 秒防抖。
@@ -1303,7 +1314,7 @@ pub fn run() {
                 .on_menu_event(|app, event| {
                     tray::handle_tray_menu_event(app, &event.id.0);
                 })
-                .show_menu_on_left_click(true);
+                .show_menu_on_left_click(false);
 
             // 使用平台对应的托盘图标（macOS 使用模板图标适配深浅色）
             #[cfg(target_os = "macos")]
@@ -1609,11 +1620,13 @@ pub fn run() {
             commands::set_claude_common_config_snippet,
             commands::get_common_config_snippet,
             commands::set_common_config_snippet,
+            commands::validate_common_config_snippet,
             commands::update_toml_common_config_snippet,
             commands::extract_common_config_snippet,
             commands::read_live_provider_settings,
             commands::get_settings,
             commands::save_settings,
+            commands::patch_preferences,
             commands::get_codex_runtime_status,
             commands::get_codex_process_status,
             commands::probe_codex_renderer_unlock,
@@ -1935,6 +1948,7 @@ pub fn run() {
             commands::search_daily_memory_files,
             commands::open_workspace_directory,
             // lightweight mode (for testing or low-resource environments)
+            commands::hide_main_window,
             commands::enter_lightweight_mode,
             commands::exit_lightweight_mode,
             commands::is_lightweight_mode,

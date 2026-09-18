@@ -92,7 +92,8 @@ describe("Codex auto protocol detection in provider forms", () => {
 
   it("ChimeraApp does not pass the React click event into provider saving", () => {
     expect(appSource).toContain("onSave={() => void saveProvider()}");
-    expect(appSource).toContain("onClick={() => void onSave()}");
+    expect(appSource).toContain("onClick={submit}");
+    expect(appSource).toContain("void onSave();");
     expect(appSource).not.toContain("onSave={saveProvider}");
     expect(appSource).not.toContain("onClick={onSave}");
   });

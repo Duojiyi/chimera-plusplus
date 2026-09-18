@@ -6,12 +6,12 @@ use tauri::State;
 use tauri_plugin_dialog::DialogExt;
 
 use crate::commands::sync_support::{
-    post_sync_warning_from_result, run_post_import_sync, success_payload_with_warning,
+    post_import_warning, replace_database, run_post_import_sync, success_payload_with_warning,
+    with_stopped_proxy,
 };
 use crate::database::backup::BackupEntry;
 use crate::database::Database;
 use crate::error::AppError;
-use crate::services::provider::ProviderService;
 use crate::store::AppState;
 
 // ─── File import/export ──────────────────────────────────────
@@ -43,16 +43,14 @@ pub async fn import_config_from_file(
     #[allow(non_snake_case)] filePath: String,
     state: State<'_, AppState>,
 ) -> Result<Value, String> {
-    let db = state.db.clone();
-    let db_for_sync = db.clone();
+    let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let path_buf = PathBuf::from(&filePath);
-        let backup_id = db.import_sql(&path_buf)?;
-        let warning = post_sync_warning_from_result(Ok(run_post_import_sync(db_for_sync)));
-        if let Some(msg) = warning.as_ref() {
-            log::warn!("[Import] post-import sync warning: {msg}");
-        }
-        Ok::<_, AppError>(success_payload_with_warning(backup_id, warning))
+        with_stopped_proxy(&state, || {
+            let backup_id =
+                replace_database(&state, || state.db.import_sql(&PathBuf::from(filePath)))?;
+            let warning = post_import_warning(&state);
+            Ok(success_payload_with_warning(backup_id, warning))
+        })
     })
     .await
     .map_err(|e| format!("导入配置失败: {e}"))?
@@ -61,18 +59,31 @@ pub async fn import_config_from_file(
 
 #[tauri::command]
 pub async fn sync_current_providers_live(state: State<'_, AppState>) -> Result<Value, String> {
-    let db = state.db.clone();
+    let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let app_state = AppState::new(db);
-        ProviderService::sync_current_to_live(&app_state)?;
-        Ok::<_, AppError>(json!({
-            "success": true,
-            "message": "Live configuration synchronized"
-        }))
+        with_stopped_proxy(&state, || {
+            run_post_import_sync(&state)?;
+            Ok(json!({
+                "success": true,
+                "message": "Live configuration synchronized"
+            }))
+        })
     })
     .await
     .map_err(|e| format!("同步当前供应商失败: {e}"))?
     .map_err(|e: AppError| e.to_string())
+}
+
+fn restore_outcome(backup_id: String, warning: Option<String>) -> Result<String, Value> {
+    match warning {
+        None => Ok(backup_id),
+        Some(warning) => Err(json!({
+            "dbRestored": true,
+            "backupId": backup_id,
+            "warning": warning,
+            "message": format!("数据库已恢复，但 Live/运行态同步未完成（部分成功）。请关闭代理接管后重新应用当前供应商并同步 Live 配置，不要重复恢复。安全备份 ID: {backup_id}。{warning}")
+        })),
+    }
 }
 
 // ─── File dialogs ────────────────────────────────────────────
@@ -152,12 +163,17 @@ pub fn list_db_backups() -> Result<Vec<BackupEntry>, String> {
 pub async fn restore_db_backup(
     state: State<'_, AppState>,
     filename: String,
-) -> Result<String, String> {
-    let db = state.db.clone();
-    tauri::async_runtime::spawn_blocking(move || db.restore_from_backup(&filename))
-        .await
-        .map_err(|e| format!("Restore failed: {e}"))?
-        .map_err(|e: AppError| e.to_string())
+) -> Result<String, Value> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        with_stopped_proxy(&state, || {
+            let backup_id = replace_database(&state, || state.db.restore_from_backup(&filename))?;
+            Ok(restore_outcome(backup_id, post_import_warning(&state)))
+        })
+        .map_err(|e| Value::String(e.to_string()))?
+    })
+    .await
+    .map_err(|e| Value::String(format!("Restore failed: {e}")))?
 }
 
 /// Rename a database backup file
@@ -173,4 +189,24 @@ pub fn rename_db_backup(
 #[tauri::command]
 pub fn delete_db_backup(filename: String) -> Result<(), String> {
     Database::delete_backup(&filename).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod backup_restore_tests {
+    use super::restore_outcome;
+
+    #[test]
+    fn complete_restore_keeps_the_legacy_safety_backup_id() {
+        assert_eq!(restore_outcome("safety".into(), None), Ok("safety".into()));
+        assert_eq!(restore_outcome(String::new(), None), Ok(String::new()));
+    }
+
+    #[test]
+    fn post_sync_failure_is_an_explicit_partial_restore() {
+        let error = restore_outcome("safety".into(), Some("Live write failed".into())).unwrap_err();
+        assert_eq!(error["dbRestored"], true);
+        assert_eq!(error["backupId"], "safety");
+        assert_eq!(error["warning"], "Live write failed");
+        assert!(error["message"].as_str().unwrap().contains("不要重复恢复"));
+    }
 }

@@ -41,7 +41,8 @@ fn invalid_toml_format_error(error: toml_edit::TomlError) -> String {
     }
 }
 
-fn validate_common_config_snippet(app_type: &str, snippet: &str) -> Result<(), String> {
+#[tauri::command]
+pub fn validate_common_config_snippet(app_type: &str, snippet: &str) -> Result<(), String> {
     if snippet.trim().is_empty() {
         return Ok(());
     }

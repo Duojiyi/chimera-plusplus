@@ -1,5 +1,9 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { backupsApi } from "@/lib/api";
+import {
+  PartialBackupRestoreError,
+  restoreDatabaseBackup,
+} from "@/lib/api/config";
 
 export function useBackupManager() {
   const queryClient = useQueryClient();
@@ -19,12 +23,22 @@ export function useBackupManager() {
   });
 
   const restoreMutation = useMutation({
-    mutationFn: (filename: string) => backupsApi.restoreDbBackup(filename),
-    onSuccess: async () => {
-      // Invalidate all queries to refresh data from restored database
-      await queryClient.invalidateQueries();
-      // Refetch backup list
-      await refetch();
+    mutationFn: restoreDatabaseBackup,
+    onSettled: async (_data, error) => {
+      // Partial success still changed the DB. Refresh it, but keep mutateAsync
+      // rejected so BackupListSection cannot display its full-success toast.
+      if (!error || error instanceof PartialBackupRestoreError) {
+        try {
+          await queryClient.invalidateQueries();
+          await refetch();
+        } catch (refreshError) {
+          // Never replace the partial-restore warning with a refresh failure.
+          console.error(
+            "Failed to refresh restored database queries",
+            refreshError,
+          );
+        }
+      }
     },
   });
 

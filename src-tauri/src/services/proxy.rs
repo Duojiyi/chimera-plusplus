@@ -121,6 +121,7 @@ impl ProxyService {
         );
     }
 
+    #[cfg(test)]
     fn apply_claude_takeover_fields_with_policy(
         config: &mut Value,
         proxy_url: &str,
@@ -409,6 +410,41 @@ impl ProxyService {
         let proxy_grok_base_url = format!("{}/grokbuild/v1", proxy_url.trim_end_matches('/'));
         Self::apply_grok_takeover_fields(&mut effective_settings, &proxy_grok_base_url)?;
         self.write_grok_live(&effective_settings)
+    }
+
+    pub async fn sync_gemini_live_from_provider_while_proxy_active(
+        &self,
+        provider: &Provider,
+    ) -> Result<(), String> {
+        let mut effective = build_effective_settings_with_common_config(
+            self.db.as_ref(),
+            &AppType::Gemini,
+            provider,
+        )
+        .map_err(|e| e.to_string())?;
+        let (url, _) = self.build_proxy_urls().await?;
+        if !effective.get("env").is_some_and(Value::is_object) {
+            effective["env"] = json!({});
+        }
+        effective["env"]["GOOGLE_GEMINI_BASE_URL"] = json!(url);
+        effective["env"]["GEMINI_API_KEY"] = json!(PROXY_TOKEN_PLACEHOLDER);
+        self.write_gemini_live(&effective)?;
+        // Gemini common config can also target settings.json. Preserve all
+        // unrelated settings, including client-owned MCP and OAuth fields.
+        if let Some(config) = effective.get("config").and_then(Value::as_object) {
+            let path = crate::gemini_config::get_gemini_settings_path();
+            let mut settings: Value = if path.exists() {
+                read_json_file(&path).map_err(|e| e.to_string())?
+            } else {
+                json!({})
+            };
+            settings
+                .as_object_mut()
+                .ok_or("Gemini settings.json 必须是对象")?
+                .extend(config.clone());
+            write_json_file(&path, &settings).map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
 
     fn get_current_provider_for_app(&self, app_type: &AppType) -> Result<Option<Provider>, String> {
@@ -2016,83 +2052,6 @@ impl ProxyService {
         Ok(())
     }
 
-    /// 接管指定应用的 Live 配置（尽力而为：配置不存在/读取失败则跳过）
-    async fn takeover_live_config_best_effort(&self, app_type: &AppType) -> Result<(), String> {
-        let (proxy_url, proxy_codex_base_url) = self.build_proxy_urls().await?;
-        let proxy_grok_base_url = format!("{}/grokbuild/v1", proxy_url.trim_end_matches('/'));
-
-        match app_type {
-            AppType::Claude => {
-                if let Ok(mut live_config) = self.read_claude_live() {
-                    let claude_provider = self
-                        .get_current_provider_for_app(&AppType::Claude)
-                        .ok()
-                        .flatten();
-                    if let Some(provider) = claude_provider.as_ref() {
-                        let provider = self.claude_provider_with_effective_settings(provider)?;
-                        Self::apply_claude_takeover_fields_for_provider(
-                            &mut live_config,
-                            &proxy_url,
-                            &provider,
-                        );
-                    } else {
-                        Self::apply_claude_takeover_fields_with_policy(
-                            &mut live_config,
-                            &proxy_url,
-                            ClaudeTakeoverAuthPolicy::PreserveExistingOrAuthToken,
-                        );
-                    }
-                    let _ = self.write_claude_live(&live_config);
-                }
-            }
-            AppType::Codex => {
-                if let Ok(mut live_config) = self.read_codex_live() {
-                    let codex_provider = self.require_current_provider_for_app(&AppType::Codex)?;
-                    Self::apply_codex_takeover_fields_for_provider(
-                        &mut live_config,
-                        &proxy_codex_base_url,
-                        &codex_provider,
-                    )?;
-
-                    self.write_codex_takeover_live_for_provider(
-                        &live_config,
-                        Some(&codex_provider),
-                    )?;
-                }
-            }
-            AppType::Gemini => {
-                if let Ok(mut live_config) = self.read_gemini_live() {
-                    if let Some(env) = live_config.get_mut("env").and_then(|v| v.as_object_mut()) {
-                        env.insert("GOOGLE_GEMINI_BASE_URL".to_string(), json!(&proxy_url));
-                        env.insert("GEMINI_API_KEY".to_string(), json!(PROXY_TOKEN_PLACEHOLDER));
-                    } else {
-                        live_config["env"] = json!({
-                            "GOOGLE_GEMINI_BASE_URL": &proxy_url,
-                            "GEMINI_API_KEY": PROXY_TOKEN_PLACEHOLDER
-                        });
-                    }
-
-                    let _ = self.write_gemini_live(&live_config);
-                }
-            }
-            AppType::GrokBuild => {
-                if let Ok(mut live_config) = self.read_grok_live() {
-                    if Self::grok_live_config_supports_takeover(&live_config) {
-                        Self::apply_grok_takeover_fields(&mut live_config, &proxy_grok_base_url)?;
-                        let _ = self.write_grok_live(&live_config);
-                    } else {
-                        log::info!(
-                            "Grok Build Live 处于官方登录态（无自定义模型表），跳过代理接管"
-                        );
-                    }
-                }
-            }
-            _ => {}
-        }
-
-        Ok(())
-    }
-
     async fn restore_live_config_for_app_inner(&self, app_type: &AppType) -> Result<(), String> {
         match app_type {
             AppType::Claude => {
@@ -3592,100 +3551,128 @@ impl ProxyService {
             .map_err(|e| format!("获取代理配置失败: {e}"))
     }
 
-    /// 更新代理配置
+    /// 更新配置时保持 DB、监听服务和接管文件一致；失败则补偿旧状态。
     pub async fn update_config(&self, config: &ProxyConfig) -> Result<(), String> {
         let _lifecycle_guard = self.lock_lifecycle().await;
-        // 记录旧配置用于判定是否需要重启
         let previous = self
             .db
             .get_proxy_config()
             .await
-            .map_err(|e| format!("获取代理配置失败: {e}"))?;
-
-        // 保存到数据库（保持 live_takeover_active 状态不变）
-        let mut new_config = config.clone();
-        new_config.live_takeover_active = previous.live_takeover_active;
-
-        self.db
-            .update_proxy_config(new_config.clone())
-            .await
-            .map_err(|e| format!("保存代理配置失败: {e}"))?;
-
-        // 检查服务器当前状态
+            .map_err(|e| e.to_string())?;
+        let mut next = config.clone();
+        next.live_takeover_active = previous.live_takeover_active;
+        let restart = next.listen_address != previous.listen_address
+            || next.listen_port != previous.listen_port;
+        // Same lock order as takeover/hot-switch: lifecycle -> app -> server.
+        let mut switch_guards = Vec::new();
+        for app in ["claude", "codex", "gemini", "grokbuild"] {
+            switch_guards.push(self.lock_switch_for_app(app).await);
+        }
         let mut server_guard = self.server.write().await;
-        if server_guard.is_none() {
+        if server_guard.is_none() || !restart {
+            self.db
+                .update_proxy_config(next.clone())
+                .await
+                .map_err(|e| e.to_string())?;
+            if let Some(server) = server_guard.as_ref() {
+                server.apply_runtime_config(&next).await;
+            }
             return Ok(());
         }
-
-        // 判断是否需要重启（地址或端口变更）
-        let require_restart = new_config.listen_address != previous.listen_address
-            || new_config.listen_port != previous.listen_port;
-
-        if require_restart {
-            if let Some(server) = server_guard.as_ref() {
-                server
-                    .stop()
-                    .await
-                    .map_err(|e| format!("重启前停止代理服务器失败: {e}"))?;
-                // Stop succeeded, so the old instance can no longer be reported
-                // as running while the replacement is being created.
-                server_guard.take();
+        let mut snapshots = Vec::new();
+        for app in [
+            AppType::Claude,
+            AppType::Codex,
+            AppType::Gemini,
+            AppType::GrokBuild,
+        ] {
+            let enabled = self
+                .db
+                .get_proxy_config_for_app(app.as_str())
+                .await
+                .map_err(|e| format!("读取接管状态失败: {e}"))?
+                .enabled;
+            if enabled || self.detect_takeover_in_live_config_for_app(&app) {
+                snapshots.push((
+                    app.clone(),
+                    LiveSnapshot::capture(&app)
+                        .map_err(|e| e.to_string())?
+                        .ok_or_else(|| format!("无法备份 {} Live 配置", app.as_str()))?,
+                ));
             }
+        }
+        server_guard
+            .as_ref()
+            .unwrap()
+            .stop()
+            .await
+            .map_err(|e| format!("停止旧代理失败，配置未修改: {e}"))?;
+        server_guard.take();
+        drop(server_guard);
 
-            let app_handle = self.app_handle.read().await.clone();
-            let new_server = ProxyServer::new(new_config.clone(), self.db.clone(), app_handle);
-            let info = new_server
+        let attempt: Result<(), String> = async {
+            let server = ProxyServer::new(
+                next.clone(),
+                self.db.clone(),
+                self.app_handle.read().await.clone(),
+            );
+            let info = server
                 .start()
                 .await
-                .map_err(|e| format!("重启代理服务器失败: {e}"))?;
-            if let Err(e) = self
-                .persist_ephemeral_listen_port_if_needed(&new_config, info.port)
+                .map_err(|e| format!("启动新代理失败: {e}"))?;
+            *self.server.write().await = Some(server);
+            if next.listen_port == 0 {
+                next.listen_port = info.port;
+            }
+            self.db
+                .update_proxy_config(next.clone())
                 .await
-            {
-                let _ = new_server.stop().await;
-                return Err(e);
+                .map_err(|e| format!("保存代理配置失败: {e}"))?;
+            for (app, _) in &snapshots {
+                self.takeover_live_config_strict(app).await?;
             }
-
-            *server_guard = Some(new_server);
-            log::info!("代理配置已更新，服务器已自动重启应用最新配置");
-
-            // 如果当前存在任意 app 的 Live 接管，需要同步更新 Live 中的代理地址（否则客户端仍指向旧端口）
-            drop(server_guard);
-            if let Ok(takeover) = self.get_takeover_status().await {
-                let mut updated_any = false;
-
-                if takeover.claude {
-                    self.takeover_live_config_best_effort(&AppType::Claude)
-                        .await?;
-                    updated_any = true;
-                }
-                if takeover.codex {
-                    self.takeover_live_config_best_effort(&AppType::Codex)
-                        .await?;
-                    updated_any = true;
-                }
-                if takeover.gemini {
-                    self.takeover_live_config_best_effort(&AppType::Gemini)
-                        .await?;
-                    updated_any = true;
-                }
-                if takeover.grokbuild {
-                    self.takeover_live_config_best_effort(&AppType::GrokBuild)
-                        .await?;
-                    updated_any = true;
-                }
-
-                if updated_any {
-                    log::info!("已同步更新 Live 配置中的代理地址");
-                }
-            }
-
-            return Ok(());
-        } else if let Some(server) = server_guard.as_ref() {
-            server.apply_runtime_config(&new_config).await;
-            log::info!("代理配置已实时应用，无需重启代理服务器");
+            Ok(())
         }
-
+        .await;
+        if let Err(primary) = attempt {
+            let mut failures = Vec::new();
+            let mut guard = self.server.write().await;
+            if let Some(server) = guard.as_ref() {
+                match server.stop().await {
+                    Ok(()) => {
+                        guard.take();
+                    }
+                    Err(e) => failures.push(format!("停止新代理失败: {e}")),
+                }
+            }
+            if let Err(e) = self.db.update_proxy_config(previous.clone()).await {
+                failures.push(format!("恢复旧代理配置失败: {e}"));
+            }
+            if guard.is_none() {
+                let restored = ProxyServer::new(
+                    previous.clone(),
+                    self.db.clone(),
+                    self.app_handle.read().await.clone(),
+                );
+                match restored.start().await {
+                    Ok(_) => {
+                        *guard = Some(restored);
+                    }
+                    Err(e) => failures.push(format!("恢复旧监听服务失败: {e}")),
+                }
+            }
+            drop(guard);
+            for (_, snapshot) in &snapshots {
+                if let Err(e) = snapshot.restore() {
+                    failures.push(format!("恢复 Live 配置失败: {e}"));
+                }
+            }
+            return Err(if failures.is_empty() {
+                format!("{primary}；已恢复原代理配置和服务")
+            } else {
+                format!("{primary}；回滚未完成：{}", failures.join("; "))
+            });
+        }
         Ok(())
     }
 
@@ -3810,6 +3797,74 @@ mod tests {
         db.update_proxy_config(proxy_config)
             .await
             .expect("set test proxy config to an ephemeral port");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn changing_to_an_occupied_port_restores_running_proxy_and_config() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        let db = Arc::new(Database::memory().expect("db"));
+        use_ephemeral_proxy_port(&db).await;
+        let service = ProxyService::new(db.clone());
+        let previous = service.start().await.expect("start");
+        let old_config = db.get_proxy_config().await.unwrap();
+        let occupied = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut next = old_config.clone();
+        next.listen_address = "127.0.0.1".into();
+        next.listen_port = occupied.local_addr().unwrap().port();
+        let error = service
+            .update_config(&next)
+            .await
+            .expect_err("occupied port");
+        assert!(error.contains("已恢复"), "{error}");
+        assert_eq!(
+            db.get_proxy_config().await.unwrap().listen_port,
+            old_config.listen_port
+        );
+        assert!(service.is_running().await);
+        assert!(tokio::net::TcpStream::connect(("127.0.0.1", previous.port))
+            .await
+            .is_ok());
+        service.stop().await.expect("stop restored server");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn config_persistence_failure_restores_old_listener() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        let db = Arc::new(Database::memory().unwrap());
+        use_ephemeral_proxy_port(&db).await;
+        let service = ProxyService::new(db.clone());
+        let old = service.start().await.unwrap();
+        let previous = db.get_proxy_config().await.unwrap();
+        db.conn
+            .lock()
+            .unwrap()
+            .execute_batch(&format!(
+                "CREATE TRIGGER reject_new_port BEFORE UPDATE OF listen_port ON proxy_config
+             WHEN NEW.listen_port <> {} BEGIN SELECT RAISE(ABORT, 'reject new port'); END;",
+                old.port
+            ))
+            .unwrap();
+        // Reserve a distinct port while the old listener is still running.
+        let reservation = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let mut next = previous.clone();
+        next.listen_port = reservation.local_addr().unwrap().port();
+        drop(reservation);
+        let error = service.update_config(&next).await.unwrap_err();
+        assert!(error.contains("已恢复"), "{error}");
+        assert_eq!(db.get_proxy_config().await.unwrap().listen_port, old.port);
+        assert!(tokio::net::TcpStream::connect(("127.0.0.1", old.port))
+            .await
+            .is_ok());
+        db.conn
+            .lock()
+            .unwrap()
+            .execute_batch("DROP TRIGGER reject_new_port")
+            .unwrap();
+        service.stop().await.unwrap();
     }
 
     #[tokio::test]

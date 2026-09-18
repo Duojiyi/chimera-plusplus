@@ -4,7 +4,8 @@ use serde_json::{json, Value};
 use tauri::State;
 
 use crate::commands::sync_support::{
-    attach_warning, post_sync_warning_from_result, run_post_import_sync,
+    attach_warning, lock_import_apps, lock_import_runtime, post_sync_warning_from_result,
+    run_post_import_sync,
 };
 use crate::error::AppError;
 use crate::services::s3_sync as s3_sync_service;
@@ -122,21 +123,33 @@ pub async fn s3_sync_force_upload(state: State<'_, AppState>) -> Result<Value, S
 
 #[tauri::command]
 pub async fn s3_sync_download(state: State<'_, AppState>) -> Result<Value, String> {
+    let state = state.inner().clone();
     let db = state.db.clone();
-    let db_for_sync = db.clone();
     let mut settings = require_enabled_s3_settings()?;
     let _auto_sync_suppression = crate::services::s3_auto_sync::AutoSyncSuppressionGuard::new();
 
+    // Guard the download itself, not only post-sync: apply_snapshot replaces
+    // the DB synchronously inside download. Network cancellation cannot detach it.
+    let guards = lock_import_runtime(&state)
+        .await
+        .map_err(|e| e.to_string())?;
+    let app_guards = lock_import_apps(&state).await;
     let sync_result = run_with_s3_lock(s3_sync_service::download(&db, &mut settings)).await;
     let mut result = map_sync_result(sync_result, |error| {
         persist_sync_error(&mut settings, error, "manual")
     })?;
 
+    drop(app_guards); // Existing provider sync may acquire per-app locks.
+
     // Post-download sync is best-effort: snapshot restore has already succeeded.
     let warning = post_sync_warning_from_result(
-        tauri::async_runtime::spawn_blocking(move || run_post_import_sync(db_for_sync))
-            .await
-            .map_err(|e| e.to_string()),
+        tauri::async_runtime::spawn_blocking(move || {
+            let _guards = guards;
+            let _suppression = _auto_sync_suppression;
+            run_post_import_sync(&state)
+        })
+        .await
+        .map_err(|e| e.to_string()),
     );
     if let Some(msg) = warning.as_ref() {
         log::warn!("[S3] post-download sync warning: {msg}");

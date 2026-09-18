@@ -54,6 +54,45 @@ fn get_auto_launch() -> Result<AutoLaunch, AppError> {
     Ok(auto_launch)
 }
 
+// Serialize OS registration and persisted preference as one operation.
+static AUTO_LAUNCH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub fn set_preference(enabled: bool) -> Result<(), AppError> {
+    let _guard = AUTO_LAUNCH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let previous = is_auto_launch_enabled()?;
+    apply_registration(enabled)?;
+    if let Err(error) = crate::settings::mutate_settings(|settings| {
+        settings.launch_on_startup = enabled;
+    }) {
+        if let Err(rollback) = apply_registration(previous) {
+            return Err(AppError::Message(format!(
+                "保存自启动设置失败: {error}；恢复系统启动项失败: {rollback}"
+            )));
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn apply_registration(enabled: bool) -> Result<(), AppError> {
+    if enabled {
+        enable_auto_launch()
+    } else {
+        disable_auto_launch()
+    }
+}
+
+#[cfg(not(debug_assertions))]
+pub fn sync_saved_preference() -> Result<(), AppError> {
+    let _guard = AUTO_LAUNCH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let enabled = crate::settings::get_settings().launch_on_startup;
+    // Re-register enabled entries to follow installation path changes.
+    if enabled || is_auto_launch_enabled()? {
+        apply_registration(enabled)?;
+    }
+    Ok(())
+}
+
 /// 启用开机自启
 pub fn enable_auto_launch() -> Result<(), AppError> {
     let auto_launch = get_auto_launch()?;

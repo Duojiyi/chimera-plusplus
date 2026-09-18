@@ -258,6 +258,7 @@ enum ProbeClassification {
     /// A Responses gateway that rejects the Codex tool surface.
     ToolSurfaceRejected,
     Unauthorized,
+    Forbidden,
     RateLimited,
     UpstreamError,
     Timeout,
@@ -286,6 +287,7 @@ impl ProbeClassification {
             Self::CapabilityRejected => "capability_rejected",
             Self::ToolSurfaceRejected => "tool_surface_rejected",
             Self::Unauthorized => "unauthorized",
+            Self::Forbidden => "forbidden",
             Self::RateLimited => "rate_limited",
             Self::UpstreamError => "upstream_error",
             Self::Timeout => "timeout",
@@ -294,14 +296,12 @@ impl ProbeClassification {
         }
     }
 
-    /// How much a failure of this kind tells the user, highest first. Used to
-    /// pick the one probe worth quoting when a model could not be identified:
-    /// two of three routes are expected to be missing on every gateway, so a
-    /// 404 is the least interesting thing to show.
+    /// Rank alternative authentication attempts on the same protocol.
+    /// Cross-protocol diagnostics preserve every route instead of using this rank.
     fn explanatory_rank(self) -> u8 {
         match self {
             Self::CapabilityRejected | Self::ToolSurfaceRejected => 7,
-            Self::Unauthorized => 6,
+            Self::Unauthorized | Self::Forbidden => 6,
             Self::RateLimited => 5,
             Self::Timeout | Self::Network => 4,
             Self::UpstreamError => 3,
@@ -405,45 +405,39 @@ impl ApiProbeOutcome {
 }
 
 /// Why one model could not be identified, formatted for the UI as
-/// `HTTP <status> (<classification>) <excerpt> | <other routes>`.
+/// `<protocol>: HTTP <status> (<classification>) <excerpt> | <other routes>`.
 fn describe_probe_failure(outcomes: &[ApiProbeOutcome]) -> String {
-    let Some(lead) = outcomes
-        .iter()
-        .max_by_key(|outcome| outcome.classification.explanatory_rank())
-    else {
+    if outcomes.is_empty() {
         return "no protocol endpoint could be probed".to_string();
-    };
-    let mut text = lead.status_summary();
-    if !lead.excerpt.is_empty() {
-        text.push(' ');
-        text.push_str(&lead.excerpt);
     }
-    let others = outcomes
+    // Preserve protocol order and every bounded, sanitized excerpt. An expected
+    // 403 on an unused protocol must not hide the relevant route's 502 body.
+    outcomes
         .iter()
-        .filter(|outcome| outcome.probe != lead.probe)
         .map(|outcome| {
-            format!(
+            let mut text = format!(
                 "{}: {}",
                 outcome.probe.api_format(),
                 outcome.status_summary()
-            )
+            );
+            if !outcome.excerpt.is_empty() {
+                text.push(' ');
+                text.push_str(&outcome.excerpt);
+            }
+            text
         })
-        .collect::<Vec<_>>();
-    if !others.is_empty() {
-        text.push_str(" | ");
-        text.push_str(&others.join(", "));
-    }
-    text
+        .collect::<Vec<_>>()
+        .join(" | ")
 }
 
 /// Detect which upstream protocol a custom Codex endpoint exposes.
 ///
 /// A real model name is used so catch-all gateways cannot make every route look
 /// valid by returning the same "model is required" response. The request then
-/// supplies a deliberately invalid token-budget type, forcing request-schema
-/// validation before inference. The probe therefore cannot create a completion
-/// or bill output tokens. Authentication errors and protocol-agnostic model
-/// errors are treated as inconclusive.
+/// supplies a deliberately invalid token-budget type to request schema validation.
+/// Gateways may ignore it and generate billable output; this is not a guaranteed
+/// non-generating probe. Authentication and protocol-agnostic errors cannot
+/// establish protocol support.
 pub async fn detect_codex_api_format(
     base_url: &str,
     api_key: &str,
@@ -917,8 +911,11 @@ fn classify_probe_response(
         }
         status = StatusCode::BAD_REQUEST;
     }
-    if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
+    if status == StatusCode::UNAUTHORIZED {
         return ProbeClassification::Unauthorized;
+    }
+    if status == StatusCode::FORBIDDEN {
+        return ProbeClassification::Forbidden;
     }
     if status == StatusCode::TOO_MANY_REQUESTS {
         return ProbeClassification::RateLimited;
@@ -2618,7 +2615,7 @@ mod tests {
     }
 
     #[test]
-    fn probe_failure_description_quotes_the_most_explanatory_route() {
+    fn probe_failure_description_preserves_every_route_and_excerpt() {
         let outcomes = [
             ApiProbeOutcome {
                 probe: CodexApiProbe::Responses,
@@ -2644,7 +2641,9 @@ mod tests {
         ];
         let text = describe_probe_failure(&outcomes);
         assert!(
-            text.starts_with("HTTP 400 (capability_rejected) 当前模型不支持 Responses API"),
+            text.contains(
+                "openai_chat: HTTP 400 (capability_rejected) 当前模型不支持 Responses API"
+            ),
             "{text}"
         );
         assert!(
@@ -2665,8 +2664,45 @@ mod tests {
         }];
         assert_eq!(
             describe_probe_failure(&network),
-            "timeout operation timed out"
+            "openai_responses: timeout operation timed out"
         );
+    }
+
+    #[test]
+    fn forbidden_and_gateway_errors_do_not_confirm_a_protocol() {
+        for probe in CodexApiProbe::ALL {
+            assert_eq!(
+                classify_probe_response(
+                    probe,
+                    StatusCode::FORBIDDEN,
+                    "This group does not allow /v1/messages dispatch"
+                ),
+                ProbeClassification::Forbidden
+            );
+            assert_eq!(
+                classify_probe_response(probe, StatusCode::BAD_GATEWAY, "upstream unavailable"),
+                ProbeClassification::UpstreamError
+            );
+        }
+        let outcomes = [
+            ApiProbeOutcome {
+                probe: CodexApiProbe::Responses,
+                classification: ProbeClassification::UpstreamError,
+                status: Some(StatusCode::BAD_GATEWAY),
+                anthropic_auth_field: None,
+                excerpt: "upstream unavailable".into(),
+            },
+            ApiProbeOutcome {
+                probe: CodexApiProbe::AnthropicMessages,
+                classification: ProbeClassification::Forbidden,
+                status: Some(StatusCode::FORBIDDEN),
+                anthropic_auth_field: None,
+                excerpt: "group disallows messages".into(),
+            },
+        ];
+        assert_eq!(describe_probe_failure(&outcomes),
+            "openai_responses: HTTP 502 (upstream_error) upstream unavailable | anthropic: HTTP 403 (forbidden) group disallows messages");
+        assert!(select_codex_api_probe_outcome(&outcomes, "gpt-6-astra").is_none());
     }
 
     #[test]

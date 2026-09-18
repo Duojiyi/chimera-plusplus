@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  describeCodexDetectionFailure,
   catalogInputModalities,
   catalogRowSupportsImage,
   findCodexCatalogModelsWithoutProtocol,
@@ -385,6 +386,29 @@ describe("sanitizeCodexModelRoutesForSave", () => {
         isFullUrl: true,
         enabled: false,
       },
+    });
+  });
+});
+
+describe("protocol detection diagnostics", () => {
+  it("preserves all protocol error details without treating the first as the cause", () => {
+    const reason =
+      "openai_responses: HTTP 502 (upstream_error) upstream unavailable | anthropic: HTTP 403 (forbidden) group disallows messages";
+    expect(describeCodexDetectionFailure(reason)).toEqual({
+      status: "尚未确认协议",
+      excerpt: reason,
+    });
+  });
+  it("still accepts legacy errors and missing diagnostics", () => {
+    expect(
+      describeCodexDetectionFailure("HTTP 401 (unauthorized) bad key"),
+    ).toEqual({
+      status: "HTTP 401 (unauthorized)",
+      excerpt: "bad key",
+    });
+    expect(describeCodexDetectionFailure(undefined)).toEqual({
+      status: "未返回原因",
+      excerpt: "",
     });
   });
 });

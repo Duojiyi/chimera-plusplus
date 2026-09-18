@@ -656,8 +656,16 @@ export function WebdavSyncSection({
     closeDialog();
     setActionState("downloading");
     try {
-      await settingsApi.webdavSyncDownload();
-      toast.success(t("settings.webdavSync.downloadSuccess"));
+      const result = await settingsApi.webdavSyncDownload();
+      if (result.warning) {
+        toast.warning(t("settings.importPartialSuccess"), {
+          description: result.warning,
+          duration: 10000,
+          closeButton: true,
+        });
+      } else {
+        toast.success(t("settings.webdavSync.downloadSuccess"));
+      }
       await queryClient.invalidateQueries();
     } catch (error) {
       toast.error(
@@ -888,8 +896,16 @@ export function WebdavSyncSection({
     closeS3Dialog();
     setS3ActionState("downloading");
     try {
-      await settingsApi.s3SyncDownload();
-      toast.success(t("settings.s3Sync.downloadSuccess"));
+      const result = await settingsApi.s3SyncDownload();
+      if (result.warning) {
+        toast.warning(t("settings.importPartialSuccess"), {
+          description: result.warning,
+          duration: 10000,
+          closeButton: true,
+        });
+      } else {
+        toast.success(t("settings.s3Sync.downloadSuccess"));
+      }
       await queryClient.invalidateQueries();
     } catch (error) {
       toast.error(

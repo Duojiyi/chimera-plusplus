@@ -204,10 +204,9 @@ pub fn collect_files_with_extensions(
     while let Some((dir, depth)) = pending.pop() {
         for entry in read_dir_without_links(&dir)? {
             let path = entry.path();
-            let metadata = match fs::symlink_metadata(&path) {
-                Ok(metadata) => metadata,
-                Err(_) => continue,
-            };
+            // Discovery must not silently turn inaccessible entries into a
+            // successful incomplete scan (notably before a usage rebuild).
+            let metadata = fs::symlink_metadata(&path)?;
             if metadata.file_type().is_symlink() || is_reparse_point(&metadata) {
                 continue;
             }

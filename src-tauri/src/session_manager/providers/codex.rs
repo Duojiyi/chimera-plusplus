@@ -529,7 +529,9 @@ fn parse_session_with_titles(
         created_at,
         last_active_at,
         source_path: Some(path.to_string_lossy().to_string()),
-        resume_command: Some(format!("codex resume {session_id}")),
+        resume_command: super::utils::is_uuid(&session_id)
+            .then(|| super::utils::resume_command("codex resume", &session_id))
+            .flatten(),
     })
 }
 
@@ -1210,5 +1212,21 @@ mod tests {
 
         assert_eq!(msgs[3].role, "assistant");
         assert_eq!(msgs[3].content, "Done.");
+    }
+
+    #[test]
+    fn unsafe_metadata_id_stays_readable_and_deletable_without_resume() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("sessions");
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("rollout.jsonl");
+        let id = "bad;echo injected";
+        write_codex_session(&path, id, "Still readable");
+        let meta = parse_session(&path).unwrap();
+        assert_eq!(meta.session_id, id);
+        assert!(meta.resume_command.is_none());
+        assert!(!load_messages(&path).unwrap().is_empty());
+        assert!(delete_session(&root, &path, id).unwrap());
+        assert!(!path.exists());
     }
 }

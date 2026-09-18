@@ -10,6 +10,28 @@ numbers belong to a separate upstream line.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.5] - 2026-09-18
+
+### Added
+
+- Added a startup settings switch, defaulting to enabled for new configurations while preserving existing choices.
+- Added tray double-click window recovery and configurable close behavior: keep in tray, lightweight mode, or exit.
+- Preserved the frontend during protected edits and active operations when lightweight close is selected.
+- Added inline provider deletion and a full-page provider editor with unsaved-change protection.
+
+### Changed
+
+- Redesigned usage statistics with clearer typography, consumption visualization, and model rankings.
+- Aligned window corners and page navigation styling across the application.
+
+### Fixed
+
+- Hardened session paths, resume command arguments, metadata ownership, and dual-source deletion.
+- Serialized provider switching/deletion and persisted runtime preferences without stale state overwrites.
+- Retried incomplete usage-log tails without dropping or double-counting token usage.
+- Unified backup/import/cloud restore locking and validation, and surfaced partial synchronization failures.
+- Addressed frontend/backend contract, configuration, proxy, and model-discovery issues found during independent review.
+
 ## [2.7.4] - 2026-09-17
 
 ### Fixed

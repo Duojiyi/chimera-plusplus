@@ -308,12 +308,13 @@ pub async fn sync_codex_session_usage(
     .map_err(|error| AppError::Message(format!("Codex 会话用量同步任务失败: {error}")))?
 }
 
-/// Codex reset 成功后，无论重导是否导入新行或返回错误，都必须通知前端刷新。
-/// 调用方应只在 reset 成功后调用，避免把未发生的数据变更误报为重建完成。
+/// 仅在 Codex 原子替换提交成功后通知前端刷新。
 fn finish_codex_rebuild(
     result: Result<crate::services::session_usage::SessionSyncResult, AppError>,
 ) -> Result<crate::services::session_usage::SessionSyncResult, AppError> {
-    crate::usage_events::notify_log_recorded();
+    if result.is_ok() {
+        crate::usage_events::notify_log_recorded();
+    }
     result
 }
 
@@ -325,8 +326,8 @@ pub struct CodexUsageRebuildResult {
     pub sync: crate::services::session_usage::SessionSyncResult,
 }
 
-/// 备份数据库后，仅重建 Codex session 用量。锁覆盖 backup → reset → import
-/// 整个序列，避免后台同步在清理和重导之间插入数据。
+/// 备份数据库后，在独立数据库重建，再原子替换 Codex session 用量。锁覆盖整个流程。
+/// 避免后台同步在准备和提交之间写入同一批会话。
 #[tauri::command]
 pub async fn rebuild_codex_usage(
     state: State<'_, AppState>,
@@ -339,9 +340,8 @@ pub async fn rebuild_codex_usage(
         let backup_path = db
             .backup_database_file()?
             .map(|path| path.to_string_lossy().into_owned());
-        db.reset_codex_usage()?;
-        let result = crate::services::session_usage_codex::sync_codex_usage(&db);
-        let sync = finish_codex_rebuild(result)?;
+        let result = crate::services::session_usage_codex::rebuild_codex_usage(&db)?;
+        let sync = finish_codex_rebuild(Ok(result))?;
         Ok(CodexUsageRebuildResult { backup_path, sync })
     })
     .await
@@ -373,20 +373,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn codex_rebuild_notifies_when_reimport_is_empty() {
+    fn codex_rebuild_notifies_after_successful_commit() {
         crate::usage_events::take_test_notify_count();
 
-        let result = finish_codex_rebuild(Ok(
-            crate::services::session_usage::SessionSyncResult::default(),
-        ))
-        .expect("空重导应成功");
+        let result = finish_codex_rebuild(Ok(crate::services::session_usage::SessionSyncResult {
+            imported: 1,
+            ..Default::default()
+        }))
+        .expect("原子替换应成功");
 
-        assert_eq!(result.imported, 0);
+        assert_eq!(result.imported, 1);
         assert_eq!(crate::usage_events::take_test_notify_count(), 1);
     }
 
     #[test]
-    fn codex_rebuild_notifies_when_reimport_fails_after_reset() {
+    fn codex_rebuild_does_not_notify_when_staging_fails() {
         crate::usage_events::take_test_notify_count();
 
         let result = finish_codex_rebuild(Err(AppError::Message(
@@ -394,6 +395,6 @@ mod tests {
         )));
 
         assert!(result.is_err());
-        assert_eq!(crate::usage_events::take_test_notify_count(), 1);
+        assert_eq!(crate::usage_events::take_test_notify_count(), 0);
     }
 }

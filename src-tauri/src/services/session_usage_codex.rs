@@ -45,20 +45,21 @@ const CODEX_THREAD_REQUEST_ID_PREFIX: &str = "codex_session:thread-v1";
 /// no newline for megabytes. Lines beyond this are skipped (not fatal) so a
 /// single malformed line cannot take an otherwise-healthy session file out
 /// of sync forever.
-const MAX_SESSION_LINE_BYTES: usize = 16 * 1024 * 1024;
+pub(super) const MAX_SESSION_LINE_BYTES: usize = 16 * 1024 * 1024;
 
 /// Read one line from a buffered reader, bounded to `max_len` bytes.
 ///
 /// Returns `Ok(None)` once there is nothing left to read. Otherwise returns
-/// `Ok(Some((bytes, truncated)))`: `bytes` holds the line's content (without
+/// `Ok(Some((bytes, truncated, terminated)))`: `bytes` holds the line's content (without
 /// its terminator) when `truncated` is `false`; when `truncated` is `true`
 /// the line exceeded `max_len` and everything up to (and including) the
 /// next `\n` was drained without being buffered, so `bytes` is empty and
 /// the reader is already positioned at the start of the next line.
-fn read_capped_line(
+/// `terminated` distinguishes a newline from a possibly still-being-written EOF tail.
+pub(super) fn read_capped_line(
     reader: &mut impl BufRead,
     max_len: usize,
-) -> io::Result<Option<(Vec<u8>, bool)>> {
+) -> io::Result<Option<(Vec<u8>, bool, bool)>> {
     let mut out = Vec::new();
     let mut truncated = false;
     let mut saw_any_bytes = false;
@@ -88,7 +89,7 @@ fn read_capped_line(
             if !truncated && out.last() == Some(&b'\r') {
                 out.pop();
             }
-            return Ok(Some((out, truncated)));
+            return Ok(Some((out, truncated, true)));
         }
 
         if !truncated && out.len().saturating_add(buf.len()) <= max_len {
@@ -104,7 +105,7 @@ fn read_capped_line(
     if !saw_any_bytes {
         return Ok(None);
     }
-    Ok(Some((out, truncated)))
+    Ok(Some((out, truncated, false)))
 }
 
 /// 累计 token 用量（跟踪 total_token_usage 字段）
@@ -170,6 +171,7 @@ struct ParsedCodexFile {
     token_events: Vec<ParsedTokenEvent>,
     line_offset: i64,
     has_billable_tokens: bool,
+    incomplete_tail: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -320,32 +322,6 @@ pub(crate) fn reset_codex_usage_on_conn(
         }
     }
     Ok(())
-}
-
-impl Database {
-    pub(crate) fn reset_codex_usage(&self) -> Result<(), AppError> {
-        let codex_dir = get_codex_config_dir();
-        let conn = lock_conn!(self.conn);
-        conn.execute("SAVEPOINT reset_codex_usage", [])
-            .map_err(|error| AppError::Database(format!("开启 Codex 重建事务失败: {error}")))?;
-        let result = reset_codex_usage_on_conn(&conn, &codex_dir);
-        match result {
-            Ok(()) => {
-                conn.execute("RELEASE reset_codex_usage", [])
-                    .map_err(|error| {
-                        AppError::Database(format!("提交 Codex 重建事务失败: {error}"))
-                    })?;
-                drop(conn);
-                clear_codex_replay_caches();
-                Ok(())
-            }
-            Err(error) => {
-                conn.execute("ROLLBACK TO reset_codex_usage", []).ok();
-                conn.execute("RELEASE reset_codex_usage", []).ok();
-                Err(error)
-            }
-        }
-    }
 }
 
 fn non_empty_string(value: Option<&serde_json::Value>) -> Option<String> {
@@ -557,8 +533,16 @@ struct CodexFileSyncResult {
 /// 同步 Codex 使用数据（从 JSONL 会话日志）
 pub fn sync_codex_usage(db: &Database) -> Result<SessionSyncResult, AppError> {
     let codex_dir = get_codex_config_dir();
-    let files = collect_codex_session_files(&codex_dir);
-    let rollout_index = build_rollout_index(&files);
+    let files = collect_codex_session_files(&codex_dir)?;
+    sync_codex_files(db, &files, false)
+}
+
+fn sync_codex_files(
+    db: &Database,
+    files: &[PathBuf],
+    strict: bool,
+) -> Result<SessionSyncResult, AppError> {
+    let rollout_index = build_rollout_index(files);
 
     let mut result = SessionSyncResult {
         imported: 0,
@@ -569,8 +553,8 @@ pub fn sync_codex_usage(db: &Database) -> Result<SessionSyncResult, AppError> {
         errors: vec![],
     };
 
-    for file_path in &files {
-        match sync_single_codex_file(db, file_path, &rollout_index) {
+    for file_path in files {
+        match sync_single_codex_file(db, file_path, &rollout_index, strict) {
             Ok(file_result) => {
                 result.imported = result.imported.saturating_add(file_result.imported);
                 result.skipped = result.skipped.saturating_add(file_result.skipped);
@@ -602,28 +586,142 @@ pub fn sync_codex_usage(db: &Database) -> Result<SessionSyncResult, AppError> {
     Ok(result)
 }
 
-/// 收集所有 Codex 会话 JSONL 文件
-fn collect_codex_session_files(codex_dir: &Path) -> Vec<PathBuf> {
-    let mut files = Vec::new();
+/// Prepare independently, then replace only Codex-owned rows in one transaction.
+/// The caller holds session_sync_mutex; unrelated live proxy records are preserved.
+pub(crate) fn rebuild_codex_usage(db: &Database) -> Result<SessionSyncResult, AppError> {
+    rebuild_codex_usage_from_dir(db, &get_codex_config_dir())
+}
 
-    // 1. 扫描 sessions/YYYY/MM/DD/*.jsonl（日期分区目录）
-    let sessions_dir = codex_dir.join("sessions");
-    if sessions_dir.is_dir() {
-        collect_jsonl_recursive(&sessions_dir, &mut files, 0, MAX_SESSION_SCAN_DEPTH);
+fn rebuild_codex_usage_from_dir(
+    db: &Database,
+    codex_dir: &Path,
+) -> Result<SessionSyncResult, AppError> {
+    let files = collect_codex_session_files(codex_dir)?;
+    if files.is_empty() {
+        return Err(AppError::Config(
+            "未找到可重建的 Codex 会话文件，原统计未修改".into(),
+        ));
     }
-
-    // 2. 扫描 archived_sessions/*.jsonl（扁平归档目录）
-    let archived_dir = codex_dir.join("archived_sessions");
-    if archived_dir.is_dir() {
-        if let Ok(found) =
-            collect_files_with_extensions(&archived_dir, &["jsonl", "zst"], MAX_SESSION_SCAN_DEPTH)
-        {
-            files.extend(found);
+    let source_state = || -> Result<Vec<(u64, i64)>, AppError> {
+        files
+            .iter()
+            .map(|file| {
+                let meta = fs::metadata(file)
+                    .map_err(|e| AppError::Config(format!("读取会话来源失败: {e}")))?;
+                Ok((meta.len(), metadata_modified_nanos(&meta)))
+            })
+            .collect()
+    };
+    let before = source_state()?;
+    let mut staging =
+        rusqlite::Connection::open_in_memory().map_err(|e| AppError::Database(e.to_string()))?;
+    {
+        let conn = lock_conn!(db.conn);
+        let backup = rusqlite::backup::Backup::new(&conn, &mut staging)
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        backup
+            .run_to_completion(128, std::time::Duration::from_millis(1), None)
+            .map_err(|e| AppError::Database(e.to_string()))?;
+    }
+    reset_codex_usage_on_conn(&staging, codex_dir)?;
+    let staging = Database {
+        conn: Mutex::new(staging),
+    };
+    clear_codex_replay_caches();
+    let result = sync_codex_files(&staging, &files, true);
+    clear_codex_replay_caches();
+    let result = result?;
+    if !result.errors.is_empty() || result.deferred_files > 0 {
+        return Err(AppError::Message(format!(
+            "会话导入不完整，原统计未修改：{} 个错误，{} 个待处理文件。{}",
+            result.errors.len(),
+            result.deferred_files,
+            result.errors.join("; ")
+        )));
+    }
+    if result.imported == 0 {
+        return Err(AppError::Message("未导入可用会话记录，原统计未修改".into()));
+    }
+    if files != collect_codex_session_files(codex_dir)? || before != source_state()? {
+        return Err(AppError::Message(
+            "会话文件在重建期间发生变化，请稍后重试；原统计未修改".into(),
+        ));
+    }
+    let source = lock_conn!(staging.conn);
+    let mut conn = lock_conn!(db.conn);
+    let tx = conn
+        .transaction()
+        .map_err(|e| AppError::Database(e.to_string()))?;
+    reset_codex_usage_on_conn(&tx, codex_dir)?;
+    for (table, filter) in [
+        ("proxy_request_logs", "data_source = 'codex_session'"),
+        ("session_log_sync", "1 = 1"),
+    ] {
+        let mut stmt = source
+            .prepare(&format!("SELECT * FROM {table} WHERE {filter}"))
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let columns = stmt.column_count();
+        let path_column = if table == "session_log_sync" {
+            Some(
+                stmt.column_index("file_path")
+                    .map_err(|e| AppError::Database(e.to_string()))?,
+            )
+        } else {
+            None
+        };
+        let rows = stmt
+            .query_map([], |row| {
+                (0..columns)
+                    .map(|i| row.get::<_, rusqlite::types::Value>(i))
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let placeholders = vec!["?"; columns].join(",");
+        for row in rows {
+            let values = row.map_err(|e| AppError::Database(e.to_string()))?;
+            if let Some(index) = path_column {
+                let rusqlite::types::Value::Text(path) = &values[index] else {
+                    continue;
+                };
+                if !is_codex_cursor_path(path, codex_dir) {
+                    continue;
+                }
+            }
+            tx.execute(
+                &format!("INSERT INTO {table} VALUES ({placeholders})"),
+                rusqlite::params_from_iter(values),
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
         }
     }
+    tx.commit().map_err(|e| AppError::Database(e.to_string()))?;
+    Ok(result)
+}
 
+/// 收集所有 Codex 会话 JSONL 文件
+fn collect_codex_session_files(codex_dir: &Path) -> Result<Vec<PathBuf>, AppError> {
+    let mut files = Vec::new();
+    for name in ["sessions", "archived_sessions"] {
+        let dir = codex_dir.join(name);
+        match fs::symlink_metadata(&dir) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(AppError::Config(format!(
+                    "无法读取 {}: {error}",
+                    dir.display()
+                )))
+            }
+            Ok(_) => {}
+        }
+        files.extend(
+            collect_files_with_extensions(&dir, &["jsonl", "zst"], MAX_SESSION_SCAN_DEPTH)
+                .map_err(|error| {
+                    AppError::Config(format!("无法扫描 {}: {error}", dir.display()))
+                })?,
+        );
+    }
     files.sort();
-    files
+    Ok(files)
 }
 
 fn build_rollout_index(files: &[PathBuf]) -> RolloutIndex {
@@ -639,15 +737,6 @@ fn build_rollout_index(files: &[PathBuf]) -> RolloutIndex {
     index
 }
 
-/// 递归扫描目录下的 .jsonl 文件（限制最大深度）
-fn collect_jsonl_recursive(dir: &Path, files: &mut Vec<PathBuf>, depth: usize, max_depth: usize) {
-    if let Ok(found) =
-        collect_files_with_extensions(dir, &["jsonl", "zst"], max_depth.saturating_sub(depth))
-    {
-        files.extend(found);
-    }
-}
-
 /// Bound compressed rollout input before decompression. This is intentionally
 /// larger than the plaintext line cap: compression ratios vary, but it still
 /// stops malformed decompression bombs.
@@ -658,6 +747,7 @@ fn codex_compressed_rollout_limit() -> u64 {
 fn parse_codex_file(
     file_path: &Path,
     root_thread_id: Option<String>,
+    strict: bool,
 ) -> Result<ParsedCodexFile, AppError> {
     let file = open_regular_file_no_symlink(file_path)
         .map_err(|e| AppError::Config(format!("无法打开文件: {e}")))?;
@@ -688,12 +778,27 @@ fn parse_codex_file(
     let mut token_events = Vec::new();
     let mut line_offset = 0i64;
     let mut has_billable_tokens = false;
+    let mut incomplete_tail = false;
 
-    while let Some((raw_line, truncated)) = read_capped_line(&mut reader, MAX_SESSION_LINE_BYTES)
-        .map_err(|e| AppError::Config(format!("读取文件失败: {e}")))?
+    while let Some((raw_line, truncated, terminated)) =
+        read_capped_line(&mut reader, MAX_SESSION_LINE_BYTES)
+            .map_err(|e| AppError::Config(format!("读取文件失败: {e}")))?
     {
+        // A writer may still be appending this JSONL tail. Never acknowledge
+        // an incomplete line; a complete JSON value without a newline is valid.
+        if !terminated
+            && (truncated || serde_json::from_slice::<serde_json::Value>(&raw_line).is_err())
+        {
+            incomplete_tail = true;
+            break;
+        }
         line_offset += 1;
         if truncated {
+            if strict {
+                return Err(AppError::Config(format!(
+                    "第 {line_offset} 行超过大小限制，重建已取消"
+                )));
+            }
             log::warn!(
                 "[CODEX-SYNC] 跳过超长行（>{MAX_SESSION_LINE_BYTES} 字节，可能是畸形数据）: {} 第 {line_offset} 行",
                 file_path.display()
@@ -701,12 +806,25 @@ fn parse_codex_file(
             continue;
         }
         let Ok(line) = String::from_utf8(raw_line) else {
+            if strict {
+                return Err(AppError::Config(format!(
+                    "第 {line_offset} 行不是有效 UTF-8"
+                )));
+            }
             continue;
         };
         if line.trim().is_empty() {
             continue;
         }
 
+        let validated: Option<serde_json::Value> = if strict {
+            Some(
+                serde_json::from_str(&line)
+                    .map_err(|e| AppError::Config(format!("第 {line_offset} 行 JSON 无效: {e}")))?,
+            )
+        } else {
+            None
+        };
         let is_event_msg = line.contains("\"event_msg\"");
         let is_turn_context = line.contains("\"turn_context\"");
         let is_session_meta = line.contains("\"session_meta\"");
@@ -717,9 +835,13 @@ fn parse_codex_file(
             continue;
         }
 
-        let value: serde_json::Value = match serde_json::from_str(&line) {
-            Ok(value) => value,
-            Err(_) => continue,
+        let value: serde_json::Value = if let Some(value) = validated {
+            value
+        } else {
+            match serde_json::from_str(&line) {
+                Ok(value) => value,
+                Err(_) => continue,
+            }
         };
         let Some(event_type) = value.get("type").and_then(serde_json::Value::as_str) else {
             continue;
@@ -863,6 +985,7 @@ fn parse_codex_file(
         token_events,
         line_offset,
         has_billable_tokens,
+        incomplete_tail,
     })
 }
 
@@ -885,9 +1008,18 @@ fn parent_signatures_before(
 
     // 必须扫描完整父文件并逐行应用 cutoff，不能在首个未来时间戳处 break：
     // rollout 写入顺序不承诺时间戳严格单调。
-    while let Some((raw_line, truncated)) = read_capped_line(&mut reader, MAX_SESSION_LINE_BYTES)
-        .map_err(|error| format!("读取父 rollout {} 失败: {error}", parent_path.display()))?
+    while let Some((raw_line, truncated, terminated)) =
+        read_capped_line(&mut reader, MAX_SESSION_LINE_BYTES)
+            .map_err(|error| format!("读取父 rollout {} 失败: {error}", parent_path.display()))?
     {
+        if !terminated
+            && (truncated || serde_json::from_slice::<serde_json::Value>(&raw_line).is_err())
+        {
+            return Err(format!(
+                "父 rollout {} 的尾行尚未写完",
+                parent_path.display()
+            ));
+        }
         if truncated {
             log::warn!(
                 "[CODEX-SYNC] 跳过父 rollout 超长行（>{MAX_SESSION_LINE_BYTES} 字节）: {}",
@@ -1029,6 +1161,7 @@ fn sync_single_codex_file(
     db: &Database,
     file_path: &Path,
     rollout_index: &RolloutIndex,
+    strict: bool,
 ) -> Result<CodexFileSyncResult, AppError> {
     let file_path_str = file_path.to_string_lossy().to_string();
 
@@ -1073,10 +1206,24 @@ fn sync_single_codex_file(
         }
     }
 
-    let parsed = parse_codex_file(file_path, thread_id_from_filename(file_path))?;
+    let parsed = parse_codex_file(file_path, thread_id_from_filename(file_path), strict)?;
+    // Retry unfinished tails even if the writer's timestamp has coarse resolution.
+    let acknowledged_modified = if parsed.incomplete_tail {
+        0
+    } else {
+        file_modified
+    };
     if !parsed.has_billable_tokens {
-        update_sync_state(db, &file_path_str, file_modified, parsed.line_offset)?;
-        return Ok(CodexFileSyncResult::default());
+        update_sync_state(
+            db,
+            &file_path_str,
+            acknowledged_modified,
+            parsed.line_offset,
+        )?;
+        return Ok(CodexFileSyncResult {
+            deferred: parsed.incomplete_tail,
+            ..Default::default()
+        });
     }
     let Some(root_thread_id) = parsed.root_thread_id.as_deref() else {
         return Ok(mark_deferred(
@@ -1157,7 +1304,10 @@ fn sync_single_codex_file(
         caches.pending.remove(file_path);
     }
 
-    let mut result = CodexFileSyncResult::default();
+    let mut result = CodexFileSyncResult {
+        deferred: parsed.incomplete_tail,
+        ..Default::default()
+    };
     // 整个文件共用一次锁 + 单事务批量提交（v2.5.0 G7）：旧实现每个 token
     // 事件独立取 Mutex 并隐式提交，大历史库导入时明显拖慢并阻塞 UI 查询。
     let conn = lock_conn!(db.conn);
@@ -1190,17 +1340,19 @@ fn sync_single_codex_file(
         ) {
             Ok(true) => result.imported = result.imported.saturating_add(1),
             Ok(false) => result.skipped = result.skipped.saturating_add(1),
-            Err(e) => {
-                log::warn!("[CODEX-SYNC] 插入失败 ({request_id}): {e}");
-                result.skipped = result.skipped.saturating_add(1);
-            }
+            Err(e) => return Err(e),
         }
     }
     tx.commit()
         .map_err(|e| AppError::Database(format!("提交导入事务失败: {e}")))?;
     drop(conn);
 
-    update_sync_state(db, &file_path_str, file_modified, parsed.line_offset)?;
+    update_sync_state(
+        db,
+        &file_path_str,
+        acknowledged_modified,
+        parsed.line_offset,
+    )?;
     Ok(result)
 }
 
@@ -1427,7 +1579,105 @@ mod tests {
             .iter()
             .map(|path| path.to_path_buf())
             .collect::<Vec<_>>();
-        sync_single_codex_file(db, file, &build_rollout_index(&files))
+        sync_single_codex_file(db, file, &build_rollout_index(&files), false)
+    }
+
+    #[test]
+    fn incomplete_tail_is_retried_when_completed() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let temp = tempdir().unwrap();
+        let file = rollout_path(temp.path(), PARENT_ID);
+        let header = format!("{}\n{}\n", session_meta(PARENT_ID), turn_context());
+        let event = token_count(1000, 300, 50).to_string();
+        fs::write(&file, format!("{header}{}", &event[..event.len() / 2])).unwrap();
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 0);
+        assert_eq!(get_codex_sync_state(&db, &file)?.1, 2);
+        fs::write(&file, format!("{header}{event}\n")).unwrap();
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn rebuild_failure_preserves_existing_usage() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let temp = tempdir().unwrap();
+        let old = rollout_path(temp.path(), PARENT_ID);
+        write_jsonl(
+            &old,
+            &[
+                session_meta(PARENT_ID),
+                turn_context(),
+                token_count(1000, 300, 50),
+            ],
+        );
+        assert_eq!(sync_test_file(&db, &old, &[&old])?.imported, 1);
+        assert!(rebuild_codex_usage_from_dir(&db, temp.path()).is_err());
+        // A non-directory sessions path must propagate the discovery error.
+        fs::write(temp.path().join("sessions"), "not a directory").unwrap();
+        assert!(rebuild_codex_usage_from_dir(&db, temp.path()).is_err());
+        let count: i64 = lock_conn!(db.conn)
+            .query_row(
+                "SELECT COUNT(*) FROM proxy_request_logs WHERE data_source = 'codex_session'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        assert_eq!(count, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn rebuild_import_error_does_not_replace_rows() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let temp = tempdir().unwrap();
+        let sessions = temp.path().join("sessions");
+        fs::create_dir(&sessions).unwrap();
+        let file = rollout_path(&sessions, PARENT_ID);
+        write_jsonl(
+            &file,
+            &[
+                session_meta(PARENT_ID),
+                turn_context(),
+                token_count(1000, 300, 50),
+            ],
+        );
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+        fs::write(sessions.join("broken.jsonl.zst"), "invalid zstd").unwrap();
+        assert!(rebuild_codex_usage_from_dir(&db, temp.path()).is_err());
+        let count: i64 = lock_conn!(db.conn)
+            .query_row(
+                "SELECT COUNT(*) FROM proxy_request_logs WHERE data_source = 'codex_session'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        assert_eq!(count, 1);
+        fs::remove_file(sessions.join("broken.jsonl.zst")).unwrap();
+        let valid = fs::read_to_string(&file).unwrap();
+        fs::write(&file, format!("{valid}not JSON\n")).unwrap();
+        assert!(rebuild_codex_usage_from_dir(&db, temp.path()).is_err());
+        fs::write(&file, format!("{valid}{{\"type\":")).unwrap();
+        assert!(rebuild_codex_usage_from_dir(&db, temp.path()).is_err());
+        let conn = lock_conn!(db.conn);
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM proxy_request_logs", [], |row| {
+            row.get(0)
+        })?;
+        assert_eq!(count, 1);
+        conn.execute_batch("INSERT INTO proxy_request_logs (
+            request_id, provider_id, app_type, model, input_tokens, output_tokens,
+            cache_read_tokens, latency_ms, status_code, created_at, data_source
+        ) VALUES ('unrelated', '_gemini_session', 'gemini', 'gemini', 1, 1, 0, 0, 200, 1, 'gemini_session');")?;
+        drop(conn);
+        fs::write(&file, valid).unwrap();
+        assert_eq!(rebuild_codex_usage_from_dir(&db, temp.path())?.imported, 1);
+        let unrelated: i64 = lock_conn!(db.conn).query_row(
+            "SELECT COUNT(*) FROM proxy_request_logs WHERE request_id = 'unrelated'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(unrelated, 1);
+        Ok(())
     }
 
     #[test]
@@ -1535,7 +1785,7 @@ mod tests {
 
     #[test]
     fn test_collect_codex_session_files_nonexistent() {
-        let files = collect_codex_session_files(Path::new("/nonexistent/path"));
+        let files = collect_codex_session_files(Path::new("/nonexistent/path")).unwrap();
         assert!(files.is_empty());
     }
 
@@ -2208,11 +2458,11 @@ mod tests {
         let data = b"short\nthis-line-is-too-long-for-the-cap\nok\n";
         let mut cursor = std::io::Cursor::new(&data[..]);
 
-        let (line1, truncated1) = read_capped_line(&mut cursor, 5).unwrap().unwrap();
+        let (line1, truncated1, _) = read_capped_line(&mut cursor, 5).unwrap().unwrap();
         assert_eq!(String::from_utf8(line1).unwrap(), "short");
         assert!(!truncated1);
 
-        let (line2, truncated2) = read_capped_line(&mut cursor, 5).unwrap().unwrap();
+        let (line2, truncated2, _) = read_capped_line(&mut cursor, 5).unwrap().unwrap();
         assert!(
             truncated2,
             "a line longer than the cap must be reported as truncated"
@@ -2222,7 +2472,7 @@ mod tests {
             "truncated line content must be discarded, not buffered"
         );
 
-        let (line3, truncated3) = read_capped_line(&mut cursor, 5).unwrap().unwrap();
+        let (line3, truncated3, _) = read_capped_line(&mut cursor, 5).unwrap().unwrap();
         assert_eq!(String::from_utf8(line3).unwrap(), "ok");
         assert!(
             !truncated3,
@@ -2243,11 +2493,11 @@ mod tests {
         let data = b"ok\nthis-line-is-too-long-for-the-cap\nfine\n";
         let mut reader = BufReader::with_capacity(4, std::io::Cursor::new(&data[..]));
 
-        let (line1, truncated1) = read_capped_line(&mut reader, 5).unwrap().unwrap();
+        let (line1, truncated1, _) = read_capped_line(&mut reader, 5).unwrap().unwrap();
         assert_eq!(String::from_utf8(line1).unwrap(), "ok");
         assert!(!truncated1);
 
-        let (line2, truncated2) = read_capped_line(&mut reader, 5).unwrap().unwrap();
+        let (line2, truncated2, _) = read_capped_line(&mut reader, 5).unwrap().unwrap();
         assert!(
             truncated2,
             "a line longer than the cap must be reported as truncated even when detected several chunks in"
@@ -2257,7 +2507,7 @@ mod tests {
             "bytes buffered from chunks before truncation was detected must not leak into the truncated result"
         );
 
-        let (line3, truncated3) = read_capped_line(&mut reader, 5).unwrap().unwrap();
+        let (line3, truncated3, _) = read_capped_line(&mut reader, 5).unwrap().unwrap();
         assert_eq!(String::from_utf8(line3).unwrap(), "fine");
         assert!(!truncated3);
 
@@ -2269,11 +2519,11 @@ mod tests {
         let data = b"first\nsecond-no-newline";
         let mut cursor = std::io::Cursor::new(&data[..]);
 
-        let (line1, truncated1) = read_capped_line(&mut cursor, 64).unwrap().unwrap();
+        let (line1, truncated1, _) = read_capped_line(&mut cursor, 64).unwrap().unwrap();
         assert_eq!(String::from_utf8(line1).unwrap(), "first");
         assert!(!truncated1);
 
-        let (line2, truncated2) = read_capped_line(&mut cursor, 64).unwrap().unwrap();
+        let (line2, truncated2, _) = read_capped_line(&mut cursor, 64).unwrap().unwrap();
         assert_eq!(String::from_utf8(line2).unwrap(), "second-no-newline");
         assert!(!truncated2);
 

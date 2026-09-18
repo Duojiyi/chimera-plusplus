@@ -277,10 +277,34 @@ impl Database {
         Ok(())
     }
 
+    /// Raw removal for additive-mode records and lock-held compensation, which
+    /// may intentionally remove a staged current row before restoring its snapshot.
+    /// User-facing exclusive-mode deletion must use delete_non_current_provider.
     pub fn delete_provider(&self, app_type: &str, id: &str) -> Result<(), AppError> {
         let conn = lock_conn!(self.conn);
         conn.execute(
             "DELETE FROM providers WHERE id = ?1 AND app_type = ?2",
+            params![id, app_type],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Check and remove under one connection lock. The service also holds the
+    /// app lock to protect device-local current IDs and Live configuration.
+    pub fn delete_non_current_provider(&self, app_type: &str, id: &str) -> Result<(), AppError> {
+        let conn = lock_conn!(self.conn);
+        let is_current: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM providers WHERE id = ?1 AND app_type = ?2 AND is_current = 1)",
+            params![id, app_type], |row| row.get(0),
+        ).map_err(|e| AppError::Database(e.to_string()))?;
+        if is_current {
+            return Err(AppError::Message(
+                "无法删除当前正在使用的供应商".to_string(),
+            ));
+        }
+        conn.execute(
+            "DELETE FROM providers WHERE id = ?1 AND app_type = ?2 AND is_current = 0",
             params![id, app_type],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
@@ -299,11 +323,17 @@ impl Database {
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
 
-        tx.execute(
-            "UPDATE providers SET is_current = 1 WHERE id = ?1 AND app_type = ?2",
-            params![id, app_type],
-        )
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        let updated = tx
+            .execute(
+                "UPDATE providers SET is_current = 1 WHERE id = ?1 AND app_type = ?2",
+                params![id, app_type],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        if updated != 1 {
+            // Dropping the transaction restores the previous current row.
+            return Err(AppError::Message(format!("供应商 {id} 不存在")));
+        }
 
         tx.commit().map_err(|e| AppError::Database(e.to_string()))?;
         Ok(())
@@ -833,6 +863,32 @@ mod ensure_official_seed_tests {
     };
     use crate::provider::{Provider, ProviderMeta};
     use serde_json::json;
+
+    #[test]
+    fn guarded_delete_and_missing_switch_preserve_current() {
+        let db = Database::memory().unwrap();
+        for id in ["a", "b"] {
+            db.save_provider(
+                "codex",
+                &Provider::with_id(id.into(), id.into(), json!({}), None),
+            )
+            .unwrap();
+        }
+        db.set_current_provider("codex", "a").unwrap();
+        assert!(db.delete_non_current_provider("codex", "a").is_err());
+        db.delete_non_current_provider("codex", "b").unwrap();
+        assert!(db.set_current_provider("codex", "b").is_err());
+        assert_eq!(
+            db.get_current_provider("codex").unwrap().as_deref(),
+            Some("a")
+        );
+        assert!(db.get_provider_by_id("a", "codex").unwrap().is_some());
+        assert!(db.get_provider_by_id("b", "codex").unwrap().is_none());
+        db.delete_non_current_provider("codex", "b").unwrap();
+        // Compensation deliberately retains raw current-row removal semantics.
+        db.delete_provider("codex", "a").unwrap();
+        assert!(db.get_provider_by_id("a", "codex").unwrap().is_none());
+    }
 
     fn auto_detect_provider() -> Provider {
         Provider::with_id(

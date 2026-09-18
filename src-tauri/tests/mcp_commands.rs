@@ -1281,3 +1281,79 @@ fn sync_all_enabled_removes_known_disabled_but_preserves_unknown_live_entries() 
         "live entries unknown to DB should be preserved"
     );
 }
+
+#[test]
+fn deleting_mcp_removes_client_entry_without_removing_unmanaged_servers() {
+    let _guard = test_mutex().lock().unwrap();
+    reset_test_fs();
+    let home = ensure_test_home();
+    let dir = home.join(".codex");
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.toml");
+    fs::write(&path, "[mcp_servers.unmanaged]\ncommand = \"echo\"\n").unwrap();
+    let state = create_test_state().unwrap();
+    let server = McpServer {
+        id: "managed".into(),
+        name: "Managed".into(),
+        server: json!({ "command": "echo" }),
+        apps: McpApps {
+            codex: true,
+            ..Default::default()
+        },
+        description: None,
+        homepage: None,
+        docs: None,
+        tags: vec![],
+    };
+    McpService::upsert_server(&state, server).unwrap();
+    assert!(fs::read_to_string(&path)
+        .unwrap()
+        .contains("mcp_servers.managed"));
+    assert!(McpService::delete_server(&state, "managed").unwrap());
+    let live = fs::read_to_string(&path).unwrap();
+    assert!(!live.contains("mcp_servers.managed"));
+    assert!(live.contains("mcp_servers.unmanaged"));
+    assert!(!state
+        .db
+        .get_all_mcp_servers()
+        .unwrap()
+        .contains_key("managed"));
+    assert!(!McpService::delete_server(&state, "managed").unwrap());
+}
+
+#[test]
+fn failed_mcp_removal_restores_database_record() {
+    let _guard = test_mutex().lock().unwrap();
+    reset_test_fs();
+    let home = ensure_test_home();
+    let dir = home.join(".codex");
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.toml");
+    fs::write(&path, "").unwrap();
+    let state = create_test_state().unwrap();
+    McpService::upsert_server(
+        &state,
+        McpServer {
+            id: "managed".into(),
+            name: "Managed".into(),
+            server: json!({ "command": "echo" }),
+            apps: McpApps {
+                codex: true,
+                ..Default::default()
+            },
+            description: None,
+            homepage: None,
+            docs: None,
+            tags: vec![],
+        },
+    )
+    .unwrap();
+    fs::write(&path, "[invalid TOML").unwrap();
+    assert!(McpService::delete_server(&state, "managed").is_err());
+    assert!(state
+        .db
+        .get_all_mcp_servers()
+        .unwrap()
+        .contains_key("managed"));
+    assert_eq!(fs::read_to_string(&path).unwrap(), "[invalid TOML");
+}

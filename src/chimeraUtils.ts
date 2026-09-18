@@ -324,6 +324,9 @@ export function describeCodexDetectionFailure(
 ): CodexDetectionFailureDescription {
   const text = (reason ?? "").trim();
   if (!text) return { status: "未返回原因", excerpt: "" };
+  if (/^(openai_responses|openai_chat|anthropic):/.test(text)) {
+    return { status: "尚未确认协议", excerpt: text };
+  }
   const match = text.match(DETECTION_FAILURE_PATTERN);
   if (!match) return { status: text, excerpt: "" };
   return { status: match[1].trim(), excerpt: match[2].trim() };

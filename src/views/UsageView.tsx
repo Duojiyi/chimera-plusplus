@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import "./UsageView.css";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -15,15 +16,40 @@ import {
   RefreshCw,
   RotateCcw,
   ShieldCheck,
+  MoreHorizontal,
+  ArrowRight,
 } from "lucide-react";
 import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from "@/components/ui/dropdown-menu";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
+import {
+  formatUsageTokens,
+  totalDailyTokens,
+  usageBucketLabel,
+  usageRangeLabels,
+  usageTrendTicks,
+  usageWindow,
+  type UsageRange,
+} from "@/utils/usageMetrics";
 import { usageApi } from "@/lib/api/usage";
 import type {
   CodexUsageRebuildResult,
   DailyStats,
   ModelStats,
   UsageSummary,
+  SessionSyncResult,
 } from "@/types/usage";
 
 const runningInTauri =
@@ -55,6 +81,11 @@ export function topModelsByTokens(
 }
 
 export function UsageView() {
+  const gradientId = useId().replace(/:/g, "");
+  const [allModelsOpen, setAllModelsOpen] = useState(false);
+  const [loadedRange, setLoadedRange] = useState<UsageRange>("30d");
+  const [hourly, setHourly] = useState(false);
+  const sessionSync = useRef<Promise<SessionSyncResult> | null>(null);
   const [summary, setSummary] = useState<UsageSummary | null>(null);
   const [trends, setTrends] = useState<DailyStats[]>([]);
   const [models, setModels] = useState<ModelStats[]>([]);
@@ -90,32 +121,26 @@ export function UsageView() {
       if (syncSessions) setSyncing(true);
       else setRangeLoading(true);
       setError("");
-      if (syncSessions) {
+      if (syncSessions || sessionSync.current) {
         try {
-          const result = await usageApi.syncCodexSessionUsage();
+          if (!sessionSync.current)
+            sessionSync.current = usageApi.syncCodexSessionUsage();
+          const result = await sessionSync.current;
+          if (requestId !== usageRequestId.current) return;
+          sessionSync.current = null;
           setSyncNote(
             result.errors.length
               ? `已读取 ${result.filesScanned} 个文件，${result.errors.length} 项未能导入`
               : `已同步 ${result.filesScanned} 个本机会话文件`,
           );
         } catch (reason) {
+          if (requestId !== usageRequestId.current) return;
+          sessionSync.current = null;
           setSyncNote("本机会话同步失败，正在显示已有记录");
           setError(String(reason));
         }
       }
-      const now = new Date();
-      const end = Math.floor(now.getTime() / 1000);
-      const days = selectedRange === "7d" ? 7 : 30;
-      const start =
-        selectedRange === "today"
-          ? Math.floor(
-              new Date(
-                now.getFullYear(),
-                now.getMonth(),
-                now.getDate(),
-              ).getTime() / 1000,
-            )
-          : end - days * 24 * 60 * 60;
+      const { start, end } = usageWindow(selectedRange);
       try {
         const [nextSummary, nextTrends, nextModels] = await Promise.all([
           usageApi.getUsageSummary(start, end, "codex"),
@@ -123,6 +148,9 @@ export function UsageView() {
           usageApi.getModelStats(start, end, "codex"),
         ]);
         if (requestId !== usageRequestId.current) return;
+        setLoadedRange(selectedRange);
+        // Match the backend duration threshold, including 25-hour DST days.
+        setHourly(end - start <= 86400);
         setSummary(nextSummary);
         setTrends(nextTrends);
         // Keep every model: the top-N slice happens at render time, and the
@@ -175,8 +203,12 @@ export function UsageView() {
     const shouldSyncSessions = !initialUsageLoadStarted.current;
     initialUsageLoadStarted.current = true;
     void loadUsage(range, shouldSyncSessions);
+    return () => {
+      usageRequestId.current += 1;
+    };
   }, [loadUsage, range]);
 
+  const busy = syncing || rangeLoading || rebuilding;
   const total = summary?.realTotalTokens ?? 0;
   const input = summary?.totalInputTokens ?? 0;
   const output = summary?.totalOutputTokens ?? 0;
@@ -185,56 +217,69 @@ export function UsageView() {
     (summary?.totalCacheReadTokens ?? 0);
   const chartTrends = trends.map((item) => ({
     ...item,
-    totalTokens:
-      item.totalInputTokens +
-      item.totalOutputTokens +
-      item.totalCacheCreationTokens +
-      item.totalCacheReadTokens,
+    totalTokens: totalDailyTokens(item),
   }));
-  // Denominator spans *every* model, not just the rendered ones, so a bar reads
-  // "this model's share of all token use". Summing only the top 3 would force
-  // them to 100% and overstate each one.
-  const modelTotal = Math.max(
-    models.reduce((sum, item) => sum + item.totalTokens, 0),
-    1,
-  );
+  const modelTotal = models.reduce((sum, item) => sum + item.totalTokens, 0);
   const topModels = topModelsByTokens(models);
-  const displayTotal = total;
-  const peak = Math.max(...chartTrends.map((item) => item.totalTokens), 0);
-  const spectrum = ["#36c5d9", "#53d7c2", "#ffb84d", "#ff7e57", "#e85d9e"];
+  const peak = chartTrends.reduce<(typeof chartTrends)[number] | null>(
+    (best, item) =>
+      !best || item.totalTokens > best.totalTokens ? item : best,
+    null,
+  );
+  const hasRecords = summary !== null && summary.totalRequests > 0;
+  const exact = (value: number) => `${value.toLocaleString("zh-CN")} 词元`;
+  const modelUnit = modelTotal >= 10000 ? ("万" as const) : undefined;
+  const renderModel = (item: ModelStats) => {
+    const ratio = modelTotal > 0 ? (item.totalTokens / modelTotal) * 100 : 0;
+    return (
+      <div className="usage-spectrum-model" key={item.model}>
+        <div className="usage-model-name" title={item.model}>
+          {item.model}
+        </div>
+        <div className="usage-model-value">
+          <strong title={exact(item.totalTokens)}>
+            {formatUsageTokens(item.totalTokens, modelUnit)}
+          </strong>
+          <span>
+            {ratio.toLocaleString("zh-CN", { maximumFractionDigits: 1 })}%
+          </span>
+        </div>
+        <div className="usage-model-track" aria-hidden="true">
+          <div style={{ width: `${ratio}%` }} />
+        </div>
+      </div>
+    );
+  };
   const rebuildBackupName = rebuildResult?.backupPath
     ? rebuildResult.backupPath.split(/[\\/]/).pop()
     : null;
   return (
-    <section className="usage-surface usage-spectrum">
+    <section className="usage-surface usage-spectrum" aria-label="词元统计">
       <div className="usage-heading">
         <div>
-          <span className="eyebrow">本机统计</span>
           <h1>词元消耗</h1>
           <p>
-            {syncing
-              ? "正在同步本机会话记录…"
-              : `${syncNote}，所有数据仅保存在这台电脑。`}
+            {rebuilding
+              ? "正在备份并重建…"
+              : syncing
+                ? "正在同步本机会话记录…"
+                : `${syncNote}，所有数据仅保存在这台电脑。`}
           </p>
         </div>
         <div className="usage-toolbar">
           <button
-            className="usage-rebuild"
-            onClick={() => setRebuildDialogOpen(true)}
-            disabled={!runningInTauri || syncing || rebuilding}
-          >
-            <RotateCcw size={13} className={rebuilding ? "spin" : ""} />
-            {rebuilding ? "重建中" : "重建用量"}
-          </button>
-          <button
             className="usage-refresh"
             onClick={() => void loadUsage(range, true)}
-            disabled={!runningInTauri || syncing || rebuilding}
+            disabled={!runningInTauri || busy}
             aria-label="同步词元记录"
+            title="同步词元记录"
           >
-            <RefreshCw size={14} className={syncing ? "spin" : ""} />
+            <RefreshCw
+              size={18}
+              className={syncing || rebuilding ? "spin" : ""}
+            />
           </button>
-          <div className="range-segment">
+          <div className="range-segment" role="group" aria-label="统计时间范围">
             {(
               [
                 ["today", "今日"],
@@ -253,6 +298,26 @@ export function UsageView() {
               </button>
             ))}
           </div>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                className="usage-more"
+                disabled={rebuilding}
+                aria-label="更多统计操作"
+                title="更多统计操作"
+              >
+                <MoreHorizontal size={20} />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem
+                onSelect={() => setRebuildDialogOpen(true)}
+                disabled={!runningInTauri || busy}
+              >
+                <RotateCcw size={16} /> 重建用量
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </div>
       {rebuildResult && (
@@ -290,103 +355,167 @@ export function UsageView() {
         </div>
       )}
       {error && (
-        <div className="inline-error">
-          <CircleAlert size={15} /> 词元统计暂时不可用：{error}
+        <div className="usage-load-error" role="alert">
+          <CircleAlert size={18} />
+          <span>
+            无法更新统计。
+            {summary
+              ? `保留上次成功结果（${usageRangeLabels[loadedRange]}）。`
+              : "尚无可显示的统计。"}
+            <small>{error}</small>
+          </span>
+          <button onClick={() => void loadUsage(range, true)} disabled={busy}>
+            重试
+          </button>
         </div>
       )}
-      <article className="usage-spectrum-panel">
-        <section className="usage-spectrum-summary">
-          <span>
-            {range === "today"
-              ? "今日累计"
-              : range === "7d"
-                ? "7 天累计"
-                : "30 天累计"}
-            {rangeLoading ? " · 正在更新" : ""}
-          </span>
-          <strong>{displayTotal.toLocaleString("zh-CN")}</strong>
-          <small>词元</small>
-          <dl>
-            <div>
-              <dt>输入词元</dt>
-              <dd className="is-input">{input.toLocaleString("zh-CN")}</dd>
+      <div className="sr-only" role="status">
+        {busy ? "正在更新统计" : "统计加载完成"}
+      </div>
+      <article className="usage-spectrum-panel" aria-busy={busy}>
+        <section className="usage-spectrum-summary" aria-label="词元总量与构成">
+          {[
+            [
+              "累计词元",
+              total,
+              `${usageRangeLabels[summary ? loadedRange : range]} · 含缓存`,
+            ],
+            [
+              "非缓存输入",
+              input,
+              total
+                ? `${((input / total) * 100).toFixed(1)}% · 占总量`
+                : "0% · 占总量",
+            ],
+            [
+              "输出词元",
+              output,
+              total
+                ? `${((output / total) * 100).toFixed(1)}% · 占总量`
+                : "0% · 占总量",
+            ],
+            [
+              "缓存词元",
+              cache,
+              total
+                ? `${((cache / total) * 100).toFixed(1)}% · 占总量`
+                : "0% · 占总量",
+            ],
+          ].map(([label, value, description]) => (
+            <div className="usage-metric" key={label}>
+              <span>{label}</span>
+              <strong title={summary ? exact(Number(value)) : undefined}>
+                {summary ? formatUsageTokens(Number(value)) : "—"}
+              </strong>
+              <small>{summary || !error ? description : "尚未加载"}</small>
             </div>
-            <div>
-              <dt>输出词元</dt>
-              <dd className="is-output">{output.toLocaleString("zh-CN")}</dd>
-            </div>
-            <div>
-              <dt>缓存词元</dt>
-              <dd className="is-success">{cache.toLocaleString("zh-CN")}</dd>
-            </div>
-          </dl>
+          ))}
         </section>
-        <section className="usage-spectrum-trend">
+        <section
+          className="usage-spectrum-trend"
+          aria-label={hourly ? "每小时词元消耗光谱" : "每日词元消耗光谱"}
+        >
           <header>
-            <b>每日消耗光谱</b>
+            <h2>{hourly ? "每小时" : "每日"}消耗光谱</h2>
             <span>
-              峰值 {peak.toLocaleString("zh-CN")} ·{" "}
-              {summary?.totalRequests ?? 0} 次请求 ·{" "}
-              {summary
-                ? `${Math.round(summary.successRate * 10) / 10}% 成功`
-                : "--"}
+              {peak && hasRecords
+                ? `${usageBucketLabel(peak.date, hourly)} 峰值 ${formatUsageTokens(peak.totalTokens)}`
+                : "峰值 —"}
             </span>
           </header>
-          <div className="usage-spectrum-chart" aria-label="每日词元消耗光谱">
-            {trends.length ? (
+          <div className="usage-spectrum-chart">
+            {hasRecords && chartTrends.length ? (
               <ResponsiveContainer
                 width="100%"
                 height="100%"
-                initialDimension={{ width: 760, height: 190 }}
+                initialDimension={{ width: 1012, height: 174 }}
               >
                 <BarChart
                   data={chartTrends}
-                  margin={{ top: 12, right: 16, bottom: 0, left: 0 }}
+                  margin={{ top: 8, right: 0, bottom: 0, left: 0 }}
+                  accessibilityLayer
                 >
-                  <CartesianGrid vertical={false} stroke="#e8edf0" />
+                  <defs>
+                    <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="#a7a6ff" />
+                      <stop offset="100%" stopColor="#525da2" />
+                    </linearGradient>
+                    <linearGradient
+                      id={`${gradientId}-peak`}
+                      x1="0"
+                      y1="0"
+                      x2="0"
+                      y2="1"
+                    >
+                      <stop offset="0%" stopColor="#d4c2ff" />
+                      <stop offset="100%" stopColor="#6e61b1" />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid vertical={false} stroke="#b9c9ed22" />
                   <XAxis
                     dataKey="date"
                     axisLine={false}
                     tickLine={false}
-                    minTickGap={24}
-                    tick={{ fill: "#69737d", fontSize: 9 }}
-                    tickFormatter={(value: string) => value.slice(5, 10)}
+                    minTickGap={36}
+                    ticks={usageTrendTicks(chartTrends)}
+                    interval={
+                      chartTrends.length > 7 ? "preserveStartEnd" : undefined
+                    }
+                    tick={{ fill: "#bac7de", fontSize: 13 }}
+                    tickFormatter={(date) => usageBucketLabel(date, hourly)}
                   />
-                  <YAxis hide domain={[0, "dataMax"]} />
+                  <YAxis
+                    width={58}
+                    axisLine={false}
+                    tickLine={false}
+                    tickCount={3}
+                    tick={{ fill: "#bac7de", fontSize: 13 }}
+                    tickFormatter={(value) => formatUsageTokens(Number(value))}
+                  />
                   <Tooltip
-                    cursor={{ fill: "#eef5f6" }}
-                    contentStyle={{
-                      border: "1px solid #dfe6e9",
-                      borderRadius: 8,
-                      background: "#ffffff",
-                      color: "#20272d",
-                      fontSize: 11,
-                      boxShadow: "0 4px 8px rgba(31, 43, 51, 0.1)",
+                    cursor={{ fill: "#ffffff0a" }}
+                    content={({ active, payload }) => {
+                      const day = payload?.[0]?.payload as
+                        (typeof chartTrends)[number] | undefined;
+                      return active && day ? (
+                        <div className="usage-chart-tooltip" role="status">
+                          <strong>
+                            {day.date
+                              .replace("T", " ")
+                              .slice(0, hourly ? 16 : 10)}
+                          </strong>
+                          <b>总计 {exact(day.totalTokens)}</b>
+                          <span>非缓存输入 {exact(day.totalInputTokens)}</span>
+                          <span>输出 {exact(day.totalOutputTokens)}</span>
+                          <span>
+                            缓存{" "}
+                            {exact(
+                              day.totalCacheCreationTokens +
+                                day.totalCacheReadTokens,
+                            )}
+                          </span>
+                          <span>
+                            {day.requestCount.toLocaleString("zh-CN")} 次请求
+                          </span>
+                        </div>
+                      ) : null;
                     }}
-                    labelStyle={{ color: "#69737d", marginBottom: 4 }}
-                    formatter={(value) => [
-                      Number(value).toLocaleString("zh-CN"),
-                      "词元",
-                    ]}
                   />
                   <Bar
                     dataKey="totalTokens"
-                    radius={[4, 4, 1, 1]}
-                    maxBarSize={18}
+                    name="总词元"
+                    radius={[3, 3, 0, 0]}
+                    maxBarSize={28}
+                    isAnimationActive={false}
                   >
-                    {chartTrends.map((item, index) => (
+                    {chartTrends.map((day) => (
                       <Cell
-                        key={item.date}
-                        fill={
-                          spectrum[
-                            Math.min(
-                              spectrum.length - 1,
-                              Math.floor(
-                                (index / Math.max(1, trends.length - 1)) *
-                                  spectrum.length,
-                              ),
-                            )
-                          ]
+                        key={day.date}
+                        fill={`url(#${day === peak ? `${gradientId}-peak` : gradientId})`}
+                        style={
+                          day === peak
+                            ? { filter: "drop-shadow(0 0 6px #aa8aff66)" }
+                            : undefined
                         }
                       />
                     ))}
@@ -394,39 +523,75 @@ export function UsageView() {
                 </BarChart>
               </ResponsiveContainer>
             ) : (
-              <div className="chart-empty">暂无趋势数据</div>
+              <div className="chart-empty" role="status">
+                <strong>
+                  {busy
+                    ? "正在读取统计…"
+                    : error && !summary
+                      ? "统计暂时不可用"
+                      : "当前时间范围暂无记录"}
+                </strong>
+                <span>
+                  {!runningInTauri
+                    ? "请在桌面应用中同步本机会话"
+                    : busy
+                      ? "加载后将展示真实消耗"
+                      : "可切换时间范围或同步词元记录"}
+                </span>
+              </div>
+            )}
+          </div>
+          <footer>
+            <span>{hourly ? "每小时" : "每日"}总量 · 含缓存</span>
+            <span>
+              {summary
+                ? `${summary.totalRequests.toLocaleString("zh-CN")} 次请求 · ${summary.totalRequests ? `${summary.successRate.toFixed(1)}% 成功` : "成功率 —"}`
+                : "请求数 — · 成功率 —"}
+            </span>
+          </footer>
+        </section>
+        <section className="usage-model-section" aria-label="模型词元分布">
+          <header>
+            <h2>模型排行</h2>
+            <div>
+              <span>按非缓存输入 + 输出</span>
+              <button
+                onClick={() => setAllModelsOpen(true)}
+                disabled={!models.length}
+              >
+                查看全部 <ArrowRight size={15} />
+              </button>
+            </div>
+          </header>
+          <div className="usage-spectrum-models">
+            {topModels.length ? (
+              topModels.map(renderModel)
+            ) : (
+              <p className="usage-model-empty">
+                {busy
+                  ? "正在读取模型统计…"
+                  : error && !summary
+                    ? "模型统计暂时不可用"
+                    : "暂无模型统计"}
+              </p>
             )}
           </div>
         </section>
-        <section className="usage-spectrum-models" aria-label="模型词元分布">
-          {topModels.length ? (
-            topModels.map((item, index) => {
-              const ratio = Math.round((item.totalTokens / modelTotal) * 100);
-              const color = spectrum[(index * 2) % spectrum.length];
-              return (
-                <div className="usage-spectrum-model" key={item.model}>
-                  <header>
-                    <code title={item.model}>{item.model}</code>
-                    <strong style={{ color }}>{ratio}%</strong>
-                  </header>
-                  <span>{item.totalTokens.toLocaleString("zh-CN")} 词元</span>
-                  <i>
-                    <u
-                      style={{
-                        width: `${Math.max(3, ratio)}%`,
-                        background: color,
-                        boxShadow: `0 0 8px ${color}80`,
-                      }}
-                    />
-                  </i>
-                </div>
-              );
-            })
-          ) : (
-            <p className="muted-copy">暂无模型统计。</p>
-          )}
-        </section>
       </article>
+      <Dialog open={allModelsOpen} onOpenChange={setAllModelsOpen}>
+        <DialogContent className="usage-all-models">
+          <DialogHeader>
+            <DialogTitle>全部模型排行</DialogTitle>
+            <DialogDescription>
+              按非缓存输入 +
+              输出排序，占比以当前范围内全部模型为分母，不含缓存。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="usage-all-models-list">
+            {topModelsByTokens(models, models.length).map(renderModel)}
+          </div>
+        </DialogContent>
+      </Dialog>
       <ConfirmDialog
         isOpen={rebuildDialogOpen}
         title="重建 Codex 用量？"

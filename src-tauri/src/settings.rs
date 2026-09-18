@@ -605,6 +605,9 @@ pub struct AppSettings {
     pub show_in_tray: bool,
     #[serde(default = "default_minimize_to_tray_on_close")]
     pub minimize_to_tray_on_close: bool,
+    /// Release the frontend on close when tray mode is enabled.
+    #[serde(default)]
+    pub lightweight_on_close: bool,
     #[serde(default)]
     pub use_app_window_controls: bool,
     /// 是否启用 Claude 插件联动
@@ -613,8 +616,8 @@ pub struct AppSettings {
     /// 是否跳过 Claude Code 初次安装确认
     #[serde(default)]
     pub skip_claude_onboarding: bool,
-    /// 是否开机自启
-    #[serde(default)]
+    /// 是否开机自启（新配置默认开启，保留已有选择）
+    #[serde(default = "default_true")]
     pub launch_on_startup: bool,
     /// 静默启动（程序启动时不显示主窗口，仅托盘运行）
     #[serde(default)]
@@ -795,10 +798,11 @@ impl Default for AppSettings {
         Self {
             show_in_tray: true,
             minimize_to_tray_on_close: true,
+            lightweight_on_close: false,
             use_app_window_controls: false,
             enable_claude_plugin_integration: false,
             skip_claude_onboarding: false,
-            launch_on_startup: false,
+            launch_on_startup: true,
             silent_startup: false,
             enable_local_proxy: false,
             proxy_confirmed: None,
@@ -1456,6 +1460,25 @@ pub fn update_s3_sync_status(status: WebDavSyncStatus) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_defaults_enabled_but_preserves_explicit_false() {
+        assert!(AppSettings::default().launch_on_startup);
+        let mut value = serde_json::to_value(AppSettings::default()).unwrap();
+        value.as_object_mut().unwrap().remove("launchOnStartup");
+        assert!(
+            serde_json::from_value::<AppSettings>(value.clone())
+                .unwrap()
+                .launch_on_startup
+        );
+        value["launchOnStartup"] = serde_json::json!(false);
+        assert!(
+            !serde_json::from_value::<AppSettings>(value)
+                .unwrap()
+                .launch_on_startup
+        );
+    }
+
     use crate::app_config::AppType;
 
     #[test]

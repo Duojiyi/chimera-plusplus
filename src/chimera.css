@@ -45,7 +45,7 @@
   --r-sm: 4px;
   --r-md: 8px;
   --r-lg: 12px;
-  --r-xl: 16px;
+  --r-xl: var(--window-radius, 16px);
   --r-full: 9999px;
 
   /* === Typography tokens === */
@@ -1131,9 +1131,10 @@ select:focus-visible {
   font-size: 12px;
 }
 .chimera-main {
+  --shell-nav-row-height: 150px;
   position: relative;
   display: grid;
-  grid-template-rows: 70px minmax(0, 1fr) 150px;
+  grid-template-rows: 70px minmax(0, 1fr) var(--shell-nav-row-height);
   padding: 0;
   min-height: 100vh;
   overflow: hidden;
@@ -2271,6 +2272,24 @@ body.is-mac
 }
 .settings-reference-row button {
   border: 0;
+}
+.settings-reference-row select {
+  flex-shrink: 0;
+  margin-left: 16px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--ch-surface, #fff);
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+}
+.settings-reference-row select:focus-visible {
+  outline: 2px solid var(--ch-accent, #087f73);
+  outline-offset: 2px;
+}
+.settings-reference-row select:disabled {
+  opacity: 0.55;
 }
 .settings-switch {
   width: 42px;
@@ -4351,6 +4370,22 @@ body.is-mac
 .route-line-manager-main > svg {
   color: var(--success);
 }
+.route-line-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.route-line-delete {
+  color: #b83224;
+  background: #fff0ed;
+}
+.route-line-delete:hover:not(:disabled) {
+  background: #ffe0d9;
+}
+.route-line-actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 .route-line-official-note {
   align-self: center;
   justify-self: end;
@@ -4373,24 +4408,6 @@ body.is-mac
   justify-self: stretch;
 }
 
-/* Approved light-spectrum usage surface. */
-.usage-spectrum {
-  width: min(1000px, calc(100% - 8px));
-  max-width: 1000px;
-}
-.usage-spectrum .usage-heading {
-  margin-bottom: 14px;
-}
-.usage-spectrum .usage-heading .eyebrow {
-  color: #ff5a36;
-}
-.usage-spectrum .usage-heading h1 {
-  margin-top: 5px;
-  font-size: 27px;
-}
-.usage-spectrum .usage-heading p {
-  max-width: 620px;
-}
 .usage-rebuild-result {
   display: flex;
   align-items: flex-start;
@@ -4445,181 +4462,7 @@ body.is-mac
   text-decoration: underline;
   text-underline-offset: 2px;
 }
-.usage-spectrum-panel {
-  position: relative;
-  min-width: 0;
-  height: 425px;
-  display: grid;
-  grid-template-columns: 280px minmax(0, 1fr);
-  grid-template-rows: 280px 145px;
-  overflow: hidden;
-  border-radius: 12px;
-  background: #fff;
-  color: #17181c;
-  box-shadow: 0 4px 8px rgba(29, 42, 51, 0.1);
-}
-.usage-spectrum-panel:before {
-  content: "";
-  position: absolute;
-  z-index: 2;
-  inset: 0 0 auto;
-  height: 2px;
-  background: linear-gradient(
-    90deg,
-    #36c5d9,
-    #ffb84d 38%,
-    #ff5a36 68%,
-    #e85d9e
-  );
-  box-shadow: 0 0 8px rgba(255, 109, 90, 0.35);
-}
-.usage-spectrum-summary {
-  min-width: 0;
-  padding: 25px 23px;
-  border-right: 1px solid #edf0f2;
-  background: #fbfcfd;
-}
-.usage-spectrum-summary > span,
-.usage-spectrum-summary > small {
-  display: block;
-  color: #69737d;
-  font-size: 11px;
-}
-.usage-spectrum-summary > strong {
-  display: block;
-  margin-top: 12px;
-  overflow: hidden;
-  color: var(--ink);
-  font-family: var(--font-mono);
-  font-size: 30px;
-  line-height: 1.15;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.usage-spectrum-summary > small {
-  margin-top: 5px;
-  color: #e65f48;
-}
-.usage-spectrum-summary dl {
-  display: grid;
-  gap: 12px;
-  margin: 27px 0 0;
-  padding-top: 14px;
-  border-top: 1px solid #e8edef;
-}
-.usage-spectrum-summary dl div {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-.usage-spectrum-summary dt {
-  color: #69737d;
-  font-size: 10px;
-}
-.usage-spectrum-summary dd {
-  margin: 0;
-  font:
-    700 10px "Geist Mono",
-    monospace;
-}
-.usage-spectrum-summary dd.is-input {
-  color: #168c9e;
-}
-.usage-spectrum-summary dd.is-output {
-  color: #b76b0d;
-}
-.usage-spectrum-summary dd.is-success {
-  color: #167a57;
-}
-.usage-spectrum-trend {
-  min-width: 0;
-  padding: 20px 22px 11px;
-}
-.usage-spectrum-trend > header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-.usage-spectrum-trend > header b {
-  font-size: 13px;
-}
-.usage-spectrum-trend > header span {
-  overflow: hidden;
-  color: #168c9e;
-  font:
-    600 9px "Geist Mono",
-    monospace;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.usage-spectrum-chart {
-  width: 100%;
-  height: 224px;
-  margin-top: 9px;
-}
-.usage-spectrum-chart .recharts-surface,
-.usage-spectrum-chart .recharts-wrapper {
-  overflow: visible;
-}
-.usage-spectrum-models {
-  grid-column: 1 / -1;
-  min-width: 0;
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-  padding: 17px 16px 18px;
-  border-top: 1px solid #edf0f2;
-  background: #fafbfc;
-}
-.usage-spectrum-model {
-  min-width: 0;
-  padding: 13px 15px;
-  border: 1px solid #e3e8eb;
-  border-radius: 8px;
-  background: #fff;
-}
-.usage-spectrum-model header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-.usage-spectrum-model code {
-  overflow: hidden;
-  color: #20272d;
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.usage-spectrum-model strong {
-  font:
-    700 10px "Geist Mono",
-    monospace;
-}
-.usage-spectrum-model > span {
-  display: block;
-  margin-top: 7px;
-  color: #69737d;
-  font-size: 9px;
-}
-.usage-spectrum-model i {
-  display: block;
-  height: 3px;
-  margin-top: 11px;
-  overflow: hidden;
-  border-radius: 2px;
-  background: #edf1f3;
-}
-.usage-spectrum-model u {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  text-decoration: none;
-}
 
-/* Catalog art keeps its native 8:5 canvas; the workspace never fabricates bars. */
 .skin-market-reference .skin-preview-image.has-catalog-image {
   position: relative;
   display: grid;
@@ -4647,7 +4490,7 @@ body.is-mac
 
 @media (max-height: 760px) {
   .chimera-main {
-    grid-template-rows: 70px minmax(0, 1fr) 126px;
+    --shell-nav-row-height: 126px;
   }
 
   .runtime-reference-view > h1 {
@@ -4672,37 +4515,6 @@ body.is-mac
 
   .runtime-reference-progress {
     margin-bottom: 0;
-  }
-
-  .usage-spectrum .usage-heading {
-    margin-bottom: 10px;
-  }
-
-  .usage-spectrum-panel {
-    height: 360px;
-    grid-template-rows: 235px 125px;
-  }
-
-  .usage-spectrum-summary {
-    padding-top: 20px;
-    padding-bottom: 18px;
-  }
-
-  .usage-spectrum-summary dl {
-    margin-top: 20px;
-  }
-
-  .usage-spectrum-trend {
-    padding-top: 16px;
-  }
-
-  .usage-spectrum-chart {
-    height: 180px;
-  }
-
-  .usage-spectrum-models {
-    padding-top: 12px;
-    padding-bottom: 12px;
   }
 
   .route-gate-reference {

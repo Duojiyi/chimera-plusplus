@@ -1,3 +1,4 @@
+import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Download, ShieldCheck } from "lucide-react";
@@ -51,6 +52,7 @@ export default function AppearanceView({
     "featured" | "installed" | "dark" | "light"
   >("featured");
   const [busy, setBusy] = useState<string | null>(null);
+  useLightweightCloseBlocker(Boolean(busy));
   const [error, setError] = useState("");
   const load = async () => {
     if (!runningInTauri) {

@@ -30,9 +30,27 @@ export interface CodexUnifyHistoryRestoreResult {
 
 export interface WebDavSyncResult {
   status: string;
+  warning?: string;
 }
 
+export type PreferencesPatch = Partial<
+  Pick<
+    Settings,
+    | "codexUpdateSource"
+    | "codexInstallMode"
+    | "checkCodexUpdatesOnStart"
+    | "checkProviderStatusOnStart"
+    | "showProviderBalance"
+    | "minimizeToTrayOnClose"
+    | "lightweightOnClose"
+  >
+>;
+
 export const settingsApi = {
+  async patchPreferences(patch: PreferencesPatch): Promise<Settings> {
+    return invoke("patch_preferences", { patch });
+  },
+
   async get(): Promise<Settings> {
     return await invoke("get_settings");
   },

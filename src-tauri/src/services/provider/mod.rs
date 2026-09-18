@@ -251,6 +251,184 @@ mod tests {
         result
     }
 
+    #[tokio::test]
+    async fn deletion_locks_follow_profile_lifecycle_app_order() {
+        let state = AppState::new(Arc::new(Database::memory().unwrap()));
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            let profile = state.profile_apply_lock.lock().await;
+            let apps = [AppType::Codex];
+            let mut deletion = Box::pin(ProviderService::lock_deletion(&state, &apps));
+            assert!(futures::poll!(&mut deletion).is_pending());
+            // A deletion waiting for profile must not own lifecycle or app.
+            let lifecycle = state.proxy_service.lock_lifecycle().await;
+            let app = state.proxy_service.lock_switch_for_app("codex").await;
+            drop(profile);
+            assert!(futures::poll!(&mut deletion).is_pending());
+            assert!(state.profile_apply_lock.try_lock().is_err());
+            drop(app);
+            // Waiting for lifecycle must not acquire the app lock first.
+            let app = state.proxy_service.lock_switch_for_app("codex").await;
+            drop(lifecycle);
+            assert!(futures::poll!(&mut deletion).is_pending());
+            drop(app);
+            let guards = deletion.await;
+            assert!(state.profile_apply_lock.try_lock().is_err());
+            let mut lifecycle = Box::pin(state.proxy_service.lock_lifecycle());
+            let mut app = Box::pin(state.proxy_service.lock_switch_for_app("codex"));
+            assert!(futures::poll!(&mut lifecycle).is_pending());
+            assert!(futures::poll!(&mut app).is_pending());
+            drop(guards);
+            drop(lifecycle.await);
+            drop(app.await);
+        })
+        .await
+        .expect("deletion lock ordering must not deadlock");
+    }
+
+    #[test]
+    #[serial]
+    fn queued_switch_rechecks_target_after_deletion() {
+        with_test_home(|state, _| {
+            crate::settings::reload_settings().unwrap();
+            let provider = Provider::with_id(
+                "delete-race".into(),
+                "Race".into(),
+                json!({"env": {"ANTHROPIC_AUTH_TOKEN": "test"}}),
+                None,
+            );
+            // Cover the ordinary path and the early Desktop return path.
+            for app in [AppType::Claude, AppType::ClaudeDesktop] {
+                state.db.save_provider(app.as_str(), &provider).unwrap();
+                let guards = futures::executor::block_on(ProviderService::lock_deletion(
+                    state,
+                    &[app.clone()],
+                ));
+                let switch_state = state.clone();
+                let switch_app = app.clone();
+                let (started_tx, started_rx) = std::sync::mpsc::channel();
+                let (done_tx, done_rx) = std::sync::mpsc::channel();
+                let worker = std::thread::spawn(move || {
+                    started_tx.send(()).unwrap();
+                    let result = ProviderService::switch(&switch_state, switch_app, "delete-race");
+                    done_tx.send(result.map_err(|e| e.to_string())).unwrap();
+                });
+                started_rx
+                    .recv_timeout(std::time::Duration::from_secs(2))
+                    .unwrap();
+                let before_unlock = done_rx.recv_timeout(std::time::Duration::from_millis(100));
+                ProviderService::delete_with_locks_held(state, app.clone(), "delete-race").unwrap();
+                drop(guards);
+                let result = before_unlock.unwrap_or_else(|_| {
+                    done_rx
+                        .recv_timeout(std::time::Duration::from_secs(5))
+                        .expect("switch must not deadlock")
+                });
+                worker.join().unwrap();
+                assert!(result.unwrap_err().contains("不存在"));
+                assert!(state
+                    .db
+                    .get_provider_by_id("delete-race", app.as_str())
+                    .unwrap()
+                    .is_none());
+                assert!(state
+                    .db
+                    .get_current_provider(app.as_str())
+                    .unwrap()
+                    .is_none());
+                assert_ne!(
+                    crate::settings::get_current_provider(&app).as_deref(),
+                    Some("delete-race")
+                );
+            }
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn deletion_rechecks_current_after_waiting_for_switch() {
+        with_test_home(|state, _| {
+            crate::settings::reload_settings().unwrap();
+            let provider = Provider::with_id("delete-race".into(), "Race".into(), json!({}), None);
+            state.db.save_provider("codex", &provider).unwrap();
+            let app = futures::executor::block_on(state.proxy_service.lock_switch_for_app("codex"));
+            let delete_state = state.clone();
+            let (started_tx, started_rx) = std::sync::mpsc::channel();
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                started_tx.send(()).unwrap();
+                done_tx
+                    .send(
+                        ProviderService::delete(&delete_state, AppType::Codex, "delete-race")
+                            .map_err(|e| e.to_string()),
+                    )
+                    .unwrap();
+            });
+            started_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap();
+            let before_unlock = done_rx.recv_timeout(std::time::Duration::from_millis(100));
+            // Model the final current-ID commit of the switch that owns app.
+            state
+                .db
+                .set_current_provider("codex", "delete-race")
+                .unwrap();
+            drop(app);
+            let result = before_unlock.unwrap_or_else(|_| {
+                done_rx
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .expect("delete must not deadlock")
+            });
+            worker.join().unwrap();
+            assert!(result.unwrap_err().contains("无法删除"));
+            assert!(state
+                .db
+                .get_provider_by_id("delete-race", "codex")
+                .unwrap()
+                .is_some());
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn universal_deletion_and_disabled_sync_preserve_current_children() {
+        with_test_home(|state, _| {
+            crate::settings::reload_settings().unwrap();
+            let mut universal = UniversalProvider::new(
+                "race".into(),
+                "Race".into(),
+                "openai".into(),
+                "https://example.invalid".into(),
+                "test".into(),
+            );
+            universal.apps.codex = false;
+            state.db.save_universal_provider(&universal).unwrap();
+            let child = Provider::with_id(
+                "universal-codex-race".into(),
+                "Child".into(),
+                json!({}),
+                None,
+            );
+            state.db.save_provider("codex", &child).unwrap();
+            // Device-local current must be protected even if DB current differs.
+            crate::settings::set_current_provider(&AppType::Codex, Some(&child.id)).unwrap();
+            assert!(ProviderService::delete_universal(state, "race").is_err());
+            assert!(ProviderService::sync_universal_to_apps(state, "race").is_err());
+            assert!(state.db.get_universal_provider("race").unwrap().is_some());
+            assert!(state
+                .db
+                .get_provider_by_id(&child.id, "codex")
+                .unwrap()
+                .is_some());
+            crate::settings::set_current_provider(&AppType::Codex, None).unwrap();
+            ProviderService::delete_universal(state, "race").unwrap();
+            assert!(state
+                .db
+                .get_provider_by_id(&child.id, "codex")
+                .unwrap()
+                .is_none());
+        });
+    }
+
     fn codex_settings(base_url: &str, api_key: &str) -> Value {
         json!({
             "auth": {
@@ -1152,6 +1330,7 @@ requires_openai_auth = true
         );
         original.meta = Some(ProviderMeta {
             api_format: Some("openai_responses".into()),
+            common_config_enabled: Some(true),
             ..Default::default()
         });
         db.save_provider("codex", &original).expect("save provider");
@@ -1200,6 +1379,23 @@ requires_openai_auth = true
                 .detect_takeover_in_live_config_for_app(&AppType::Codex),
             "seeded Codex live config should be recognized as takeover-owned"
         );
+
+        db.set_config_snippet("codex", Some("approval_policy = \"never\"".into()))
+            .expect("save common snippet");
+        ProviderService::sync_current_provider_for_app(&state, AppType::Codex)
+            .expect("sync common snippet during takeover");
+        let live_after_common =
+            fs::read_to_string(crate::codex_config::get_codex_config_path()).unwrap();
+        assert!(live_after_common.contains("approval_policy = \"never\""));
+        assert!(state
+            .proxy_service
+            .detect_takeover_in_live_config_for_app(&AppType::Codex));
+        let backup = db.get_live_backup("codex").await.unwrap().unwrap();
+        let restored: Value = serde_json::from_str(&backup.original_config).unwrap();
+        assert!(restored["config"]
+            .as_str()
+            .unwrap()
+            .contains("approval_policy = \"never\""));
 
         let mut updated = original.clone();
         updated.settings_config["config"] = json!(
@@ -2445,6 +2641,41 @@ impl ProviderService {
     /// 同时检查本地 settings 和数据库的当前供应商，防止删除任一端正在使用的供应商。
     /// 对于累加模式应用（OpenCode, OpenClaw），可以随时删除任意供应商，同时从 live 配置中移除。
     pub fn delete(state: &AppState, app_type: AppType, id: &str) -> Result<(), AppError> {
+        let _guards = futures::executor::block_on(Self::lock_deletion(state, &[app_type.clone()]));
+        Self::delete_with_locks_held(state, app_type, id)
+    }
+
+    // Lock order shared with profile application and automatic routing. Never
+    // call this from a lock-held path or an async runtime worker: use a blocking
+    // task at IPC boundaries. Universal operations pass apps in lexical order.
+    async fn lock_deletion(
+        state: &AppState,
+        apps: &[AppType],
+    ) -> Vec<tokio::sync::OwnedMutexGuard<()>> {
+        let mut guards = vec![state.profile_apply_lock.clone().lock_owned().await];
+        guards.push(state.proxy_service.lock_lifecycle().await);
+        for app in apps {
+            guards.push(state.proxy_service.lock_switch_for_app(app.as_str()).await);
+        }
+        guards
+    }
+
+    fn ensure_not_current(state: &AppState, app_type: &AppType, id: &str) -> Result<(), AppError> {
+        let local_current = crate::settings::get_current_provider(app_type);
+        let db_current = state.db.get_current_provider(app_type.as_str())?;
+        if local_current.as_deref() == Some(id) || db_current.as_deref() == Some(id) {
+            return Err(AppError::Message(
+                "无法删除当前正在使用的供应商".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn delete_with_locks_held(
+        state: &AppState,
+        app_type: AppType,
+        id: &str,
+    ) -> Result<(), AppError> {
         // Additive mode apps - no current provider concept
         if app_type.is_additive_mode() {
             // Single DB read shared across all additive-mode sub-paths below.
@@ -2493,17 +2724,8 @@ impl ProviderService {
             return Ok(());
         }
 
-        // For other apps: Check both local settings and database
-        let local_current = crate::settings::get_current_provider(&app_type);
-        let db_current = state.db.get_current_provider(app_type.as_str())?;
-
-        if local_current.as_deref() == Some(id) || db_current.as_deref() == Some(id) {
-            return Err(AppError::Message(
-                "无法删除当前正在使用的供应商".to_string(),
-            ));
-        }
-
-        state.db.delete_provider(app_type.as_str(), id)
+        Self::ensure_not_current(state, &app_type, id)?;
+        state.db.delete_non_current_provider(app_type.as_str(), id)
     }
 
     /// Remove provider from live config only (for additive mode apps like OpenCode, OpenClaw)
@@ -2600,6 +2822,17 @@ impl ProviderService {
         id: &str,
         acquire_app_lock: bool,
     ) -> Result<SwitchResult, AppError> {
+        // Acquire before reading the target, including Desktop/additive paths.
+        // Otherwise a queued switch can resurrect a provider deleted while it waited.
+        // Lock-held routing callers already own profile -> lifecycle -> app.
+        let _switch_guard = if acquire_app_lock {
+            Some(futures::executor::block_on(
+                state.proxy_service.lock_switch_for_app(app_type.as_str()),
+            ))
+        } else {
+            None
+        };
+
         // Check if provider exists
         let providers = state.db.get_all_providers(app_type.as_str())?;
         let _provider = providers
@@ -2621,22 +2854,6 @@ impl ProviderService {
         if matches!(app_type, AppType::ClaudeDesktop) {
             return Self::switch_normal(state, app_type, id, &providers);
         }
-
-        // Provider switches and takeover toggles both mutate live config and the
-        // restore backup. Serialize them per app, then decide from the locked
-        // current state so a just-started takeover cannot be overwritten by a
-        // normal live write.
-        let _switch_guard = if acquire_app_lock
-            && matches!(
-                app_type,
-                AppType::Claude | AppType::Codex | AppType::Gemini | AppType::GrokBuild
-            ) {
-            Some(futures::executor::block_on(
-                state.proxy_service.lock_switch_for_app(app_type.as_str()),
-            ))
-        } else {
-            None
-        };
 
         // Backup or live placeholders mean the live file is owned by proxy
         // takeover, even if the proxy server is temporarily stopped or is in the
@@ -2971,6 +3188,8 @@ impl ProviderService {
             return sync_current_provider_for_app_to_live(state, &app_type);
         }
 
+        let _switch_guard =
+            futures::executor::block_on(state.proxy_service.lock_switch_for_app(app_type.as_str()));
         let current_id =
             match crate::settings::get_effective_current_provider(&state.db, &app_type)? {
                 Some(id) => id,
@@ -2984,8 +3203,7 @@ impl ProviderService {
 
         let has_live_backup =
             futures::executor::block_on(state.db.get_live_backup(app_type.as_str()))
-                .ok()
-                .flatten()
+                .map_err(|e| AppError::Message(e.to_string()))?
                 .is_some();
 
         let live_taken_over = state
@@ -3003,9 +3221,41 @@ impl ProviderService {
             futures::executor::block_on(
                 state
                     .proxy_service
-                    .update_live_backup_from_provider(app_type.as_str(), provider),
+                    .update_live_backup_from_provider_inner(app_type.as_str(), provider),
             )
             .map_err(|e| AppError::Message(format!("更新 Live 备份失败: {e}")))?;
+            if live_taken_over {
+                futures::executor::block_on(async {
+                    match app_type {
+                        AppType::Claude => {
+                            state
+                                .proxy_service
+                                .sync_claude_live_from_provider_while_proxy_active(provider)
+                                .await
+                        }
+                        AppType::Codex => {
+                            state
+                                .proxy_service
+                                .sync_codex_live_from_provider_while_proxy_active(provider)
+                                .await
+                        }
+                        AppType::GrokBuild => {
+                            state
+                                .proxy_service
+                                .sync_grok_live_from_provider_while_proxy_active(provider)
+                                .await
+                        }
+                        AppType::Gemini => {
+                            state
+                                .proxy_service
+                                .sync_gemini_live_from_provider_while_proxy_active(provider)
+                                .await
+                        }
+                        _ => Ok(()),
+                    }
+                })
+                .map_err(|e| AppError::Message(format!("同步接管配置失败: {e}")))?;
+            }
             return Ok(());
         }
 
@@ -4101,37 +4351,43 @@ impl ProviderService {
 
     /// 删除统一供应商
     pub fn delete_universal(state: &AppState, id: &str) -> Result<bool, AppError> {
-        // 获取统一供应商（用于删除生成的子供应商）
-        let provider = state.db.get_universal_provider(id)?;
-
-        // 删除统一供应商
-        state.db.delete_universal_provider(id)?;
-
-        // 删除生成的子供应商
-        if let Some(p) = provider {
-            if p.apps.claude {
-                let claude_id = format!("universal-claude-{id}");
-                let _ = state.db.delete_provider("claude", &claude_id);
-            }
-            if p.apps.codex {
-                let codex_id = format!("universal-codex-{id}");
-                let _ = state.db.delete_provider("codex", &codex_id);
-            }
-            if p.apps.gemini {
-                let gemini_id = format!("universal-gemini-{id}");
-                let _ = state.db.delete_provider("gemini", &gemini_id);
-            }
+        let apps = [AppType::Claude, AppType::Codex, AppType::Gemini];
+        let _guards = futures::executor::block_on(Self::lock_deletion(state, &apps));
+        // Check every child before deleting anything, including disabled children
+        // left behind by an earlier sync. Do not silently remove an active child.
+        for app in &apps {
+            Self::ensure_not_current(state, app, &format!("universal-{}-{id}", app.as_str()))?;
         }
+        for app in &apps {
+            Self::delete_with_locks_held(
+                state,
+                app.clone(),
+                &format!("universal-{}-{id}", app.as_str()),
+            )?;
+        }
+        state.db.delete_universal_provider(id)?;
 
         Ok(true)
     }
 
     /// 同步统一供应商到各应用
     pub fn sync_universal_to_apps(state: &AppState, id: &str) -> Result<bool, AppError> {
+        let apps = [AppType::Claude, AppType::Codex, AppType::Gemini];
+        let _guards = futures::executor::block_on(Self::lock_deletion(state, &apps));
         let provider = state
             .db
             .get_universal_provider(id)?
             .ok_or_else(|| AppError::Message(format!("统一供应商 {id} 不存在")))?;
+
+        for (app, enabled) in [
+            (AppType::Claude, provider.apps.claude),
+            (AppType::Codex, provider.apps.codex),
+            (AppType::Gemini, provider.apps.gemini),
+        ] {
+            if !enabled {
+                Self::ensure_not_current(state, &app, &format!("universal-{}-{id}", app.as_str()))?;
+            }
+        }
 
         // 同步到 Claude
         if let Some(mut claude_provider) = provider.to_claude_provider() {
@@ -4145,7 +4401,7 @@ impl ProviderService {
         } else {
             // 如果禁用了 Claude，删除对应的子供应商
             let claude_id = format!("universal-claude-{id}");
-            let _ = state.db.delete_provider("claude", &claude_id);
+            Self::delete_with_locks_held(state, AppType::Claude, &claude_id)?;
         }
 
         // 同步到 Codex
@@ -4159,7 +4415,7 @@ impl ProviderService {
             state.db.save_provider("codex", &codex_provider)?;
         } else {
             let codex_id = format!("universal-codex-{id}");
-            let _ = state.db.delete_provider("codex", &codex_id);
+            Self::delete_with_locks_held(state, AppType::Codex, &codex_id)?;
         }
 
         // 同步到 Gemini
@@ -4173,7 +4429,7 @@ impl ProviderService {
             state.db.save_provider("gemini", &gemini_provider)?;
         } else {
             let gemini_id = format!("universal-gemini-{id}");
-            let _ = state.db.delete_provider("gemini", &gemini_id);
+            Self::delete_with_locks_held(state, AppType::Gemini, &gemini_id)?;
         }
 
         Ok(true)
