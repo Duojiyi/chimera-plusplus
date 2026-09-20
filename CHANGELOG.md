@@ -33,7 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Compatibility Notes
 
-- A usage-cache rebuild refuses ambiguous overlaps with old pruned proxy rollups that no longer retain sufficient request identity. Existing statistics remain unchanged; exact reconstruction may require a pre-prune database backup.
+- Database restore and cloud sync reject custom triggers, views and virtual tables. Local-only usage tables are restored with their local schema and indexes, never with remote conflict policies.
+- Legacy proxy session IDs did not record whether they came from a client or a generated routing UUID. Imports, totals and archival now reject ambiguous cross-source overlaps instead of guessing or silently double counting; existing identities and usage records are preserved for reconciliation. A usage-cache rebuild also refuses overlaps with old pruned rollups that lack request identity; exact reconstruction may require a pre-prune database backup.
 - Cloud sync continues to read previous fixed-path snapshots. New snapshots use manifest v3 inside the existing v2 directory; upgrade every syncing client before publishing with this version. Old clients must not overwrite the shared remote after an upgrade.
 - WebDAV servers without strong ETags or correct conditional-write support cannot guarantee conflict detection. Independent snapshot generations prevent a losing upload from corrupting another published snapshot; abandoned generations are retained, not automatically deleted.
 - Dependency audits report known vulnerabilities, not proof of zero risk. Remaining upstream maintenance and soundness advisories are described in [SECURITY.md](SECURITY.md).

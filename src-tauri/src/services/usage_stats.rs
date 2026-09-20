@@ -304,7 +304,7 @@ fn compatible_usage_identity_sql(proxy: &str, session: &str) -> String {
     let p = canonical_session(proxy);
     let s = canonical_session(session);
     format!(
-        "({p} IS NULL OR {s} IS NULL OR {p} = {s})
+        "(COALESCE({proxy}.session_id_trusted, 0) <> 1 OR {p} IS NULL OR {s} IS NULL OR {p} = {s})
          AND NOT ({session}.app_type IN ('claude', 'claude-desktop')
              AND substr({proxy}.request_id, 1, 8) = 'session:'
              AND substr({session}.request_id, 1, 8) = 'session:'
@@ -314,13 +314,26 @@ fn compatible_usage_identity_sql(proxy: &str, session: &str) -> String {
 
 /// One predicate for import, display and archival. Archived proxy receipts keep
 /// this decision valid after the 30-day detail retention period has elapsed.
-fn matching_proxy_usage_sql(session: &str) -> String {
+fn matching_proxy_usage_sql(session: &str, ambiguous: bool) -> String {
     let identity = compatible_usage_identity_sql("p", session);
+    // A legacy UUID is neither evidence of a different session nor proof of
+    // the same one. Only a shared request ID can resolve that ambiguity.
+    let untrusted = format!(
+        "COALESCE(p.session_id_trusted, 0) <> 1
+         AND NULLIF(p.session_id, '') IS NOT NULL
+         AND p.request_id <> {session}.request_id"
+    );
+    let provenance = if ambiguous {
+        untrusted
+    } else {
+        format!("NOT ({untrusted})")
+    };
     let predicate = format!(
         "COALESCE(p.data_source, 'proxy') = 'proxy'
          AND p.app_type = {session}.app_type
          AND p.status_code >= 200 AND p.status_code < 300
          AND {identity}
+         AND ({provenance})
          AND p.input_tokens = {session}.input_tokens
          AND p.output_tokens = {session}.output_tokens
          AND p.cache_read_tokens = {session}.cache_read_tokens
@@ -340,17 +353,45 @@ fn matching_proxy_usage_sql(session: &str) -> String {
     )
 }
 
-pub(crate) fn effective_usage_log_filter(log_alias: &str) -> String {
+fn ambiguous_proxy_identity_error(request_id: &str) -> AppError {
+    AppError::Message(format!(
+        "历史代理 session_id 来源不明，与会话请求 {request_id} 的用量指纹冲突，无法安全判定是否重复；已拒绝合并或汇总，历史身份及用量记录未删除。请核实原始代理/会话记录后重试，不能仅凭旧 UUID 推断归属。"
+    ))
+}
+
+pub(crate) fn effective_usage_log_filter(
+    conn: &Connection,
+    log_alias: &str,
+) -> Result<String, AppError> {
+    // Also guard rows already imported by an older release, including receipts
+    // whose details have been pruned. Reporting a partial total or pruning either
+    // side would hide the ambiguity instead of repairing it.
+    let ambiguous_proxy = matching_proxy_usage_sql("s", true);
+    let local_source =
+        "s.data_source IN ('session_log', 'codex_session', 'gemini_session', 'opencode_session')";
+    let ambiguous_request: Option<String> = conn.query_row(
+        &format!(
+            "SELECT s.request_id FROM proxy_request_logs s WHERE {local_source} AND {ambiguous_proxy}
+             UNION ALL
+             SELECT s.request_id FROM usage_rollup_dedup s WHERE {local_source} AND {ambiguous_proxy}
+             LIMIT 1"
+        ),
+        [],
+        |row| row.get(0),
+    ).optional().map_err(|e| AppError::Database(format!("校验历史代理身份来源失败: {e}")))?;
+    if let Some(request_id) = ambiguous_request {
+        return Err(ambiguous_proxy_identity_error(&request_id));
+    }
     let data_source = data_source_expr(log_alias);
-    let matching_proxy = matching_proxy_usage_sql(log_alias);
-    format!(
+    let matching_proxy = matching_proxy_usage_sql(log_alias, false);
+    Ok(format!(
         "NOT EXISTS (SELECT 1 FROM usage_rollup_dedup archived
                      WHERE archived.request_id = {log_alias}.request_id)
          AND NOT (
              {data_source} IN ('session_log', 'codex_session', 'gemini_session', 'opencode_session')
              AND {matching_proxy}
          )"
-    )
+    ))
 }
 
 /// Cross-source token fingerprint, constrained by known source identity.
@@ -417,30 +458,36 @@ pub(crate) fn has_matching_proxy_usage_log(
     request_id: &str,
     key: &DedupKey,
 ) -> Result<bool, AppError> {
-    let matching_proxy = matching_proxy_usage_sql("s");
+    let matching_proxy = matching_proxy_usage_sql("s", false);
+    let ambiguous_proxy = matching_proxy_usage_sql("s", true);
     let sql = format!(
-        "SELECT {matching_proxy} FROM (
+        "SELECT {matching_proxy}, {ambiguous_proxy} FROM (
             SELECT ?1 AS app_type, ?2 AS model, ?3 AS input_tokens, ?4 AS output_tokens,
                    ?5 AS cache_read_tokens, ?6 AS cache_creation_tokens, ?7 AS created_at,
                    ?8 AS request_id, ?9 AS session_id
         ) s"
     );
-    conn.query_row(
-        &sql,
-        params![
-            key.app_type,
-            key.model,
-            key.input_tokens,
-            key.output_tokens,
-            key.cache_read_tokens,
-            key.cache_creation_tokens,
-            key.created_at,
-            request_id,
-            key.session_id,
-        ],
-        |row| row.get::<_, bool>(0),
-    )
-    .map_err(|e| AppError::Database(format!("查询重复代理用量日志失败: {e}")))
+    let (matched, ambiguous): (bool, bool) = conn
+        .query_row(
+            &sql,
+            params![
+                key.app_type,
+                key.model,
+                key.input_tokens,
+                key.output_tokens,
+                key.cache_read_tokens,
+                key.cache_creation_tokens,
+                key.created_at,
+                request_id,
+                key.session_id,
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|e| AppError::Database(format!("查询重复代理用量日志失败: {e}")))?;
+    if ambiguous {
+        return Err(ambiguous_proxy_identity_error(request_id));
+    }
+    Ok(matched)
 }
 
 pub(crate) fn has_suspected_codex_session_duplicate(
@@ -582,7 +629,7 @@ impl Database {
         let conn = lock_conn!(self.conn);
 
         // Build detail WHERE clause
-        let mut conditions = vec![effective_usage_log_filter("l")];
+        let mut conditions = vec![effective_usage_log_filter(&conn, "l")?];
         let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
 
         if let Some(start) = start_date {
@@ -741,7 +788,7 @@ impl Database {
     ) -> Result<Vec<UsageSummaryByApp>, AppError> {
         let conn = lock_conn!(self.conn);
 
-        let mut detail_conditions = vec![effective_usage_log_filter("l")];
+        let mut detail_conditions = vec![effective_usage_log_filter(&conn, "l")?];
         let mut detail_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
         if let Some(start) = start_date {
             detail_conditions.push("l.created_at >= ?".to_string());
@@ -945,7 +992,7 @@ impl Database {
                 String::new()
             };
 
-            let effective_filter = effective_usage_log_filter("l");
+            let effective_filter = effective_usage_log_filter(&conn, "l")?;
             let fresh_input = fresh_input_sql("l");
             let sql = format!(
                 "SELECT
@@ -1052,7 +1099,7 @@ impl Database {
             String::new()
         };
 
-        let effective_filter = effective_usage_log_filter("l");
+        let effective_filter = effective_usage_log_filter(&conn, "l")?;
         let fresh_input = fresh_input_sql("l");
         let detail_sql = format!(
             "SELECT
@@ -1234,7 +1281,7 @@ impl Database {
     ) -> Result<Vec<ProviderStats>, AppError> {
         let conn = lock_conn!(self.conn);
 
-        let mut detail_conditions = vec![effective_usage_log_filter("l")];
+        let mut detail_conditions = vec![effective_usage_log_filter(&conn, "l")?];
         let mut detail_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
         if let Some(start) = start_date {
             detail_conditions.push("l.created_at >= ?".to_string());
@@ -1378,7 +1425,7 @@ impl Database {
     ) -> Result<Vec<ModelStats>, AppError> {
         let conn = lock_conn!(self.conn);
 
-        let mut detail_conditions = vec![effective_usage_log_filter("l")];
+        let mut detail_conditions = vec![effective_usage_log_filter(&conn, "l")?];
         let mut detail_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
         if let Some(start) = start_date {
             detail_conditions.push("l.created_at >= ?".to_string());
@@ -1523,7 +1570,7 @@ impl Database {
     ) -> Result<PaginatedLogs, AppError> {
         let conn = lock_conn!(self.conn);
 
-        let mut conditions = vec![effective_usage_log_filter("l")];
+        let mut conditions = vec![effective_usage_log_filter(&conn, "l")?];
         let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
 
         if let Some(ref app_type) = filters.app_type {
@@ -2392,7 +2439,8 @@ mod tests {
                 status_code INTEGER NOT NULL,
                 created_at INTEGER NOT NULL,
                 data_source TEXT,
-                session_id TEXT
+                session_id TEXT,
+                session_id_trusted INTEGER NOT NULL DEFAULT 0
             )",
             [],
         )?;
@@ -2411,7 +2459,7 @@ mod tests {
             [],
         )?;
 
-        let filter = effective_usage_log_filter("l");
+        let filter = effective_usage_log_filter(&conn, "l")?;
         let sql = format!("SELECT COUNT(*) FROM proxy_request_logs l WHERE {filter}");
         let count: i64 = conn.query_row(&sql, [], |row| row.get(0))?;
         assert_eq!(count, 1);
@@ -2443,6 +2491,122 @@ mod tests {
         };
         assert!(has_matching_proxy_usage_log(&conn, "local-event", &key)?);
 
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_proxy_identity_collision_is_explicit_before_and_after_archival(
+    ) -> Result<(), AppError> {
+        for app in ["codex", "claude", "claude-desktop", "gemini", "opencode"] {
+            for archived in [false, true] {
+                let db = Database::memory()?;
+                let timestamp = chrono::Utc::now().timestamp() - 40 * 86400;
+                {
+                    let conn = lock_conn!(db.conn);
+                    insert_usage_log(
+                        &conn,
+                        "legacy-proxy",
+                        app,
+                        "provider",
+                        "model",
+                        "proxy",
+                        timestamp,
+                        10,
+                        2,
+                        1,
+                        0,
+                        200,
+                        "0",
+                    )?;
+                    conn.execute(
+                        "UPDATE proxy_request_logs SET session_id = 'legacy-generated-uuid'",
+                        [],
+                    )?;
+                }
+                if archived {
+                    assert_eq!(db.rollup_and_prune(30)?, 1);
+                }
+                let conn = lock_conn!(db.conn);
+                let key = DedupKey {
+                    app_type: app,
+                    model: "model",
+                    session_id: Some("real-cli-session"),
+                    input_tokens: 10,
+                    output_tokens: 2,
+                    cache_read_tokens: 1,
+                    cache_creation_tokens: 0,
+                    created_at: timestamp,
+                };
+                for _ in 0..2 {
+                    let error = should_skip_session_insert(&conn, "local-event", &key).unwrap_err();
+                    assert!(error.to_string().contains("session_id 来源不明"));
+                }
+                // A shared request identity remains decisive even for old rows.
+                assert!(should_skip_session_insert(&conn, "legacy-proxy", &key)?);
+                // No collision: an independent direct event must not be discarded.
+                let independent = DedupKey {
+                    output_tokens: 3,
+                    ..key
+                };
+                assert!(!should_skip_session_insert(
+                    &conn,
+                    "independent-event",
+                    &independent
+                )?);
+                let table = if archived {
+                    "usage_rollup_dedup"
+                } else {
+                    "proxy_request_logs"
+                };
+                let (session, trusted, count): (String, i64, i64) = conn.query_row(
+                    &format!("SELECT session_id, session_id_trusted, COUNT(*) FROM {table}"),
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?;
+                assert_eq!(
+                    (session.as_str(), trusted, count),
+                    ("legacy-generated-uuid", 0, 1)
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_claude_request_identity_remains_exclusive() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let conn = lock_conn!(db.conn);
+        insert_usage_log(
+            &conn,
+            "session:msg-a",
+            "claude",
+            "provider",
+            "model",
+            "proxy",
+            1000,
+            10,
+            2,
+            1,
+            0,
+            200,
+            "0",
+        )?;
+        conn.execute(
+            "UPDATE proxy_request_logs SET session_id = 'legacy-generated-uuid'",
+            [],
+        )?;
+        let key = DedupKey {
+            app_type: "claude",
+            model: "model",
+            session_id: Some("real-cli-session"),
+            input_tokens: 10,
+            output_tokens: 2,
+            cache_read_tokens: 1,
+            cache_creation_tokens: 0,
+            created_at: 1000,
+        };
+        assert!(!should_skip_session_insert(&conn, "session:msg-b", &key)?);
+        assert!(should_skip_session_insert(&conn, "session:msg-a", &key)?);
         Ok(())
     }
 
@@ -2504,7 +2668,7 @@ mod tests {
                 &conn, proxy_id, app, "provider", "model", "proxy", 1000, 10, 2, 1, 0, 200, "0",
             )?;
             conn.execute(
-                "UPDATE proxy_request_logs SET session_id = ?1 WHERE request_id = ?2",
+                "UPDATE proxy_request_logs SET session_id = ?1, session_id_trusted = 1 WHERE request_id = ?2",
                 params![proxy_session, proxy_id],
             )?;
             let key = DedupKey {
@@ -2535,7 +2699,7 @@ mod tests {
                 "UPDATE proxy_request_logs SET session_id = ?1 WHERE request_id = ?2",
                 params![local_session, local_id],
             )?;
-            let filter = effective_usage_log_filter("l");
+            let filter = effective_usage_log_filter(&conn, "l")?;
             let visible: bool = conn.query_row(
                 &format!("SELECT {filter} FROM proxy_request_logs l WHERE request_id = ?1"),
                 [local_id],

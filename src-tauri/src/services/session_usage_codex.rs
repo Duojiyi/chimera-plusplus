@@ -700,7 +700,7 @@ fn rebuild_codex_usage_from_dir(
     }
     // Proxy traffic/archival can advance while the in-memory replay runs.
     // Recheck against live receipts inside the replacement transaction.
-    let effective_filter = effective_usage_log_filter("proxy_request_logs");
+    let effective_filter = effective_usage_log_filter(&tx, "proxy_request_logs")?;
     let newly_skipped = tx.execute(
         &format!("DELETE FROM proxy_request_logs WHERE data_source = 'codex_session' AND NOT ({effective_filter})"),
         [],
@@ -1797,6 +1797,77 @@ mod tests {
     }
 
     #[test]
+    fn rebuild_rejects_legacy_proxy_identity_without_replacing_usage_or_cursor(
+    ) -> Result<(), AppError> {
+        for archived in [false, true] {
+            let db = Database::memory()?;
+            let timestamp = "2020-01-01T12:00:00Z";
+            let ts = DateTime::parse_from_rfc3339(timestamp).unwrap().timestamp();
+            {
+                let conn = lock_conn!(db.conn);
+                // Actual pre-provenance table shape, then startup's additive upgrade.
+                conn.execute_batch(
+                    "ALTER TABLE proxy_request_logs DROP COLUMN session_id_trusted;
+                     ALTER TABLE usage_rollup_dedup DROP COLUMN session_id_trusted;",
+                )?;
+                conn.execute(
+                    "INSERT INTO proxy_request_logs (request_id, provider_id, app_type, model,
+                     input_tokens, output_tokens, cache_read_tokens, latency_ms, status_code, created_at, session_id)
+                     VALUES ('legacy-proxy', 'provider', 'codex', 'gpt-5.6-sol', 1000, 50, 300, 1, 200, ?1, 'codex_generated-uuid')",
+                    [ts],
+                )?;
+                Database::create_tables_on_conn(&conn)?;
+            }
+            if archived {
+                assert_eq!(db.rollup_and_prune(30)?, 1);
+            }
+            let temp = tempdir().unwrap();
+            let sessions = temp.path().join("sessions");
+            fs::create_dir(&sessions).unwrap();
+            let file = rollout_path(&sessions, PARENT_ID);
+            let write_usage = |input| {
+                write_jsonl(
+                    &file,
+                    &[
+                        session_meta_at(PARENT_ID, None, None, timestamp),
+                        turn_context_at(timestamp),
+                        token_count_at(input, 300, 50, timestamp),
+                    ],
+                )
+            };
+            write_usage(2000);
+            assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+            let cursor = get_codex_sync_state(&db, &file)?;
+            let before = db.get_usage_summary(None, None, Some("codex"), None, None)?;
+            write_usage(1000);
+            for _ in 0..2 {
+                let error = rebuild_codex_usage_from_dir(&db, temp.path()).unwrap_err();
+                assert!(error.to_string().contains("session_id 来源不明"));
+                assert_eq!(get_codex_sync_state(&db, &file)?, cursor);
+                let after = db.get_usage_summary(None, None, Some("codex"), None, None)?;
+                assert_eq!(after.total_requests, before.total_requests);
+                assert_eq!(after.real_total_tokens, before.real_total_tokens);
+            }
+            let conn = lock_conn!(db.conn);
+            assert_eq!(conn.query_row(
+                "SELECT input_tokens FROM proxy_request_logs WHERE data_source = 'codex_session'",
+                [], |row| row.get::<_, i64>(0),
+            )?, 2000);
+            let table = if archived {
+                "usage_rollup_dedup"
+            } else {
+                "proxy_request_logs"
+            };
+            let provenance: (String, i64) = conn.query_row(
+                &format!("SELECT session_id, session_id_trusted FROM {table} WHERE request_id = 'legacy-proxy'"),
+                [], |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(provenance, ("codex_generated-uuid".to_string(), 0));
+        }
+        Ok(())
+    }
+
+    #[test]
     fn rebuild_after_proxy_pruning_is_idempotent_and_keeps_direct_sessions() -> Result<(), AppError>
     {
         let db = Database::memory()?;
@@ -1821,8 +1892,8 @@ mod tests {
             let conn = lock_conn!(db.conn);
             conn.execute(
                 "INSERT INTO proxy_request_logs (request_id, provider_id, app_type, model,
-                 input_tokens, output_tokens, cache_read_tokens, latency_ms, status_code, created_at, session_id)
-                 VALUES ('archived-proxy', 'provider', 'codex', 'gpt-5.6-sol', 1000, 50, 300, 1, 200, ?1, ?2)",
+                 input_tokens, output_tokens, cache_read_tokens, latency_ms, status_code, created_at, session_id, session_id_trusted)
+                 VALUES ('archived-proxy', 'provider', 'codex', 'gpt-5.6-sol', 1000, 50, 300, 1, 200, ?1, ?2, 1)",
                 rusqlite::params![ts, format!("codex_{PARENT_ID}")],
             )?;
         }

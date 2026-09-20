@@ -255,20 +255,30 @@ impl Database {
         target_conn: &Connection,
         tables: &[&str],
     ) -> Result<(), AppError> {
+        Self::validate_backup_schema(source_conn)?;
         for table in tables {
-            if !Self::table_exists(source_conn, table)? || !Self::table_exists(target_conn, table)?
-            {
-                continue;
+            if !Self::table_exists(source_conn, table)? {
+                return Err(AppError::Database(format!("缺少本机保留表: {table}")));
+            }
+
+            // Keep the local schema as well as its rows. Remote UNIQUE conflict
+            // policies or foreign-key actions must not silently discard/change
+            // local-only data while it is restored.
+            let mut schema = source_conn.prepare(
+                "SELECT sql FROM sqlite_schema WHERE tbl_name = ?1
+                 AND type IN ('table', 'index') AND sql IS NOT NULL
+                 ORDER BY CASE type WHEN 'table' THEN 0 ELSE 1 END",
+            )?;
+            let definitions = schema.query_map([table], |row| row.get::<_, String>(0))?;
+            target_conn.execute_batch(&format!("DROP TABLE IF EXISTS {}", quote_ident(table)))?;
+            for definition in definitions {
+                target_conn.execute_batch(&definition?)?;
             }
 
             let columns = Self::get_table_columns(source_conn, table)?;
             if columns.is_empty() {
                 continue;
             }
-
-            target_conn
-                .execute(&format!("DELETE FROM {}", quote_ident(table)), [])
-                .map_err(|e| AppError::Database(format!("清空表 {table} 失败: {e}")))?;
 
             let placeholders = (1..=columns.len())
                 .map(|idx| format!("?{idx}"))
@@ -1109,6 +1119,43 @@ mod tests {
 
             let _ = std::fs::remove_file(&target);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn local_table_restore_does_not_trust_remote_conflict_policies() -> Result<(), AppError> {
+        let source = Database::memory()?;
+        let target = Database::memory()?;
+        let source_conn = crate::database::lock_conn!(source.conn);
+        let target_conn = crate::database::lock_conn!(target.conn);
+        source_conn.execute_batch(
+            "INSERT INTO session_log_sync VALUES ('/a.jsonl', 1000, 7, 1001);
+             INSERT INTO session_log_sync VALUES ('/b.jsonl', 1000, 7, 1001);
+             CREATE INDEX local_cursor_mtime ON session_log_sync(last_modified);",
+        )?;
+        target_conn.execute_batch(
+            "DROP TABLE session_log_sync;
+             CREATE TABLE session_log_sync (
+                file_path TEXT PRIMARY KEY, last_modified INTEGER NOT NULL,
+                last_line_offset INTEGER UNIQUE ON CONFLICT IGNORE,
+                last_synced_at INTEGER NOT NULL
+             );",
+        )?;
+        Database::restore_tables(&source_conn, &target_conn, &["session_log_sync"])?;
+        let count: i64 = target_conn.query_row(
+            "SELECT COUNT(*) FROM session_log_sync WHERE last_line_offset = 7",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            count, 2,
+            "remote constraints must not silently skip a local row"
+        );
+        let index_exists: bool = target_conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'index' AND name = 'local_cursor_mtime')",
+            [], |row| row.get(0),
+        )?;
+        assert!(index_exists, "preserve local indexes too");
         Ok(())
     }
 

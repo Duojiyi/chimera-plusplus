@@ -78,6 +78,8 @@ pub struct RequestLog {
     pub first_token_ms: Option<u64>,
     pub status_code: u16,
     pub error_message: Option<String>,
+    /// Only client-provided identity, never the generated routing UUID.
+    /// The DAO records this provenance for future cross-source deduplication.
     pub session_id: Option<String>,
     /// 供应商类型 (claude, claude_auth, codex, gemini, gemini_cli, openrouter)
     pub provider_type: Option<String>,
@@ -173,8 +175,8 @@ impl<'a> UsageLogger<'a> {
                 input_token_semantics,
                 input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd, total_cost_usd,
                 latency_ms, first_token_ms, status_code, error_message, session_id,
-                provider_type, is_streaming, cost_multiplier, created_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)"
+                provider_type, is_streaming, cost_multiplier, created_at, session_id_trusted
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, 1)"
         );
         let affected_rows = conn
             .execute(
@@ -531,6 +533,47 @@ mod tests {
             is_streaming: true,
             cost_multiplier: "1".to_string(),
         }
+    }
+
+    #[test]
+    fn new_proxy_logs_persist_identity_provenance_through_archival() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let logger = UsageLogger::new(&db);
+        for (id, session, streaming) in [
+            ("client-stream", Some("codex_client-session"), true),
+            ("client-buffered", Some("codex_client-session"), false),
+            ("anonymous", None, false),
+        ] {
+            let mut log = request_log(id, 10);
+            log.session_id = session.map(str::to_owned);
+            log.is_streaming = streaming;
+            logger.log_request(&log)?;
+        }
+        {
+            let conn = crate::database::lock_conn!(db.conn);
+            assert_eq!(
+                conn.query_row(
+                    "SELECT COUNT(*) FROM proxy_request_logs WHERE session_id_trusted = 1",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )?,
+                3
+            );
+            conn.execute("UPDATE proxy_request_logs SET created_at = 1000", [])?;
+        }
+        assert_eq!(db.rollup_and_prune(30)?, 3);
+        let conn = crate::database::lock_conn!(db.conn);
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM usage_rollup_dedup WHERE session_id_trusted = 1
+             AND ((request_id = 'anonymous' AND session_id IS NULL)
+                  OR (request_id <> 'anonymous' AND session_id = 'codex_client-session'))",
+                [],
+                |row| row.get::<_, i64>(0),
+            )?,
+            3
+        );
+        Ok(())
     }
 
     #[test]

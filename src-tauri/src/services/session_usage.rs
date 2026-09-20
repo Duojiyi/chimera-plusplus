@@ -607,7 +607,7 @@ fn find_model_pricing_for_session(
 pub fn get_data_source_breakdown(db: &Database) -> Result<Vec<DataSourceSummary>, AppError> {
     let conn = lock_conn!(db.conn);
 
-    let effective_filter = effective_usage_log_filter("l");
+    let effective_filter = effective_usage_log_filter(&conn, "l")?;
     let sql = format!(
         "SELECT COALESCE(l.data_source, 'proxy') as ds, COUNT(*) as cnt,
                 COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as cost
