@@ -814,6 +814,7 @@ mod tests {
                         migrated_jsonl_files: 2,
                         migrated_state_rows: 3,
                         scanned_history_files: true,
+                        deferred_files_checked: true,
                     },
                 ),
                 codex_provider_template_v1: Some(CodexProviderTemplateMigration {
@@ -826,6 +827,7 @@ mod tests {
                     migrated_jsonl_files: 5,
                     migrated_state_rows: 7,
                     codex_config_dir: None,
+                    deferred_files_checked: true,
                 }),
             }),
             ..AppSettings::default()
@@ -879,6 +881,7 @@ mod tests {
                     migrated_jsonl_files: 1,
                     migrated_state_rows: 2,
                     codex_config_dir: None,
+                    deferred_files_checked: true,
                 }),
             }),
             ..AppSettings::default()
@@ -912,6 +915,7 @@ mod tests {
                     migrated_jsonl_files: 1,
                     migrated_state_rows: 2,
                     codex_config_dir: None,
+                    deferred_files_checked: true,
                 }),
                 ..LocalMigrations::default()
             }),

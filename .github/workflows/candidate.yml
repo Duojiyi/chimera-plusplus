@@ -11,7 +11,6 @@ on:
       candidate_version:
         description: "Expected semantic version (without v)"
         required: true
-        default: "2.4.6"
         type: string
 
 permissions:
@@ -64,11 +63,12 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Verify candidate gates
-        shell: pwsh
+        shell: bash
         env:
           EXPECTED_VERSION: ${{ inputs.candidate_version }}
         run: |
-          node scripts/verify-release-version.mjs --expect "$env:EXPECTED_VERSION"
+          set -euo pipefail
+          node scripts/verify-release-version.mjs --expect "$EXPECTED_VERSION"
           pnpm format:check
           pnpm typecheck
           pnpm test:unit
@@ -94,6 +94,7 @@ jobs:
           SOURCE_COMMIT: ${{ steps.source.outputs.commit }}
         run: |
           $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           New-Item -ItemType Directory -Force -Path candidate-assets | Out-Null
           $msi = Get-ChildItem src-tauri/target/release/bundle/msi/*.msi | Select-Object -First 1
           if ($null -eq $msi) { throw 'Windows MSI was not produced' }

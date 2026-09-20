@@ -1,3 +1,5 @@
+> **Upstream reference**: This manual preserves CC Switch documentation, not the current Chimera++ product guide. See the [Chimera++ README](../../../README.md) for current usage and the [contribution guide](../../../CONTRIBUTING.md) for development and validation.
+
 # CC Switch User Manual
 
 > All-in-One Assistant for Claude Code / Claude Desktop / Codex / Gemini CLI / OpenCode / OpenClaw / Hermes

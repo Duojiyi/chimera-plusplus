@@ -87,6 +87,7 @@ const SYNC_SKIP_TABLES: &[&str] = &[
     "provider_health",
     "proxy_live_backup",
     "usage_daily_rollups",
+    "usage_rollup_dedup",
 ];
 
 /// Tables whose local data is preserved (restored from local snapshot) during WebDAV import.
@@ -96,6 +97,7 @@ const SYNC_PRESERVE_TABLES: &[&str] = &[
     "stream_check_logs",
     "proxy_live_backup",
     "usage_daily_rollups",
+    "usage_rollup_dedup",
 ];
 
 /// A database backup entry for the UI
@@ -899,6 +901,50 @@ mod tests {
     use crate::settings::{update_settings, AppSettings};
     use serial_test::serial;
 
+    fn seed_archived_usage(db: &Database, request_id: &str) -> Result<(), AppError> {
+        let conn = crate::database::lock_conn!(db.conn);
+        conn.execute(
+            "INSERT INTO usage_daily_rollups (
+                date, app_type, provider_id, model, request_count, success_count,
+                input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                total_cost_usd, avg_latency_ms
+            ) VALUES ('2026-03-01', 'claude', ?1, 'claude-3', 1, 1, 100, 50, 0, 0, '0.01', 120)",
+            [request_id],
+        )?;
+        conn.execute(
+            "INSERT INTO usage_rollup_dedup (
+                request_id, date, app_type, provider_id, model, request_model, pricing_model,
+                session_id, input_tokens, output_tokens, cache_read_tokens,
+                cache_creation_tokens, status_code, created_at, data_source
+            ) VALUES (?1, '2026-03-01', 'claude', ?1, 'claude-3', '', '', ?1,
+                100, 50, 0, 0, 200, 1000, 'proxy')",
+            [request_id],
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn sync_export_omits_archived_usage_but_full_backup_keeps_it() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        seed_archived_usage(&db, "private-archive-session")?;
+        for (sql, expected) in [
+            (db.export_sql_string_for_sync()?, 0_i64),
+            (db.export_sql_string()?, 1_i64),
+        ] {
+            let snapshot = rusqlite::Connection::open_in_memory()?;
+            snapshot.execute_batch(&sql)?;
+            for table in ["usage_daily_rollups", "usage_rollup_dedup"] {
+                let count: i64 =
+                    snapshot.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                        row.get(0)
+                    })?;
+                assert_eq!(count, expected, "{table}");
+            }
+            assert_eq!(sql.contains("private-archive-session"), expected == 1);
+        }
+        Ok(())
+    }
+
     #[test]
     fn local_sql_import_rejects_runtime_flags_without_changing_main_db() -> Result<(), AppError> {
         let source = Database::memory()?;
@@ -1194,6 +1240,7 @@ mod tests {
         std::env::set_var("CC_SWITCH_TEST_HOME", &test_home);
 
         let remote_db = Database::memory()?;
+        seed_archived_usage(&remote_db, "remote-archive")?;
         {
             let conn = crate::database::lock_conn!(remote_db.conn);
             conn.execute(
@@ -1230,14 +1277,6 @@ mod tests {
                 [],
             )?;
             conn.execute(
-                "INSERT INTO usage_daily_rollups (
-                    date, app_type, provider_id, model, request_count, success_count,
-                    input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-                    total_cost_usd, avg_latency_ms
-                ) VALUES ('2026-03-01', 'claude', 'local-provider', 'claude-3', 7, 7, 700, 350, 0, 0, '0.07', 120)",
-                [],
-            )?;
-            conn.execute(
                 "INSERT INTO stream_check_logs (
                     provider_id, provider_name, app_type, status, success, message,
                     response_time_ms, http_status, model_used, retry_count, tested_at
@@ -1246,8 +1285,41 @@ mod tests {
             )?;
         }
 
-        local_db.import_sql_string_for_sync(&remote_sql)?;
-        local_db.validate_stopped_proxy_state()?;
+        seed_archived_usage(&local_db, "local-archive")?;
+        // Both legacy full snapshots and sync snapshots must leave local receipts
+        // paired with their aggregates, even when imported repeatedly.
+        let sync_sql = remote_db.export_sql_string_for_sync()?;
+        {
+            let conn = crate::database::lock_conn!(remote_db.conn);
+            conn.execute_batch("DROP TABLE usage_rollup_dedup")?;
+        }
+        let legacy_sql = remote_db.export_sql_string()?;
+        for sql in [&remote_sql, &remote_sql, &sync_sql, &legacy_sql] {
+            local_db.import_sql_string_for_sync(sql)?;
+            local_db.validate_stopped_proxy_state()?;
+            let conn = crate::database::lock_conn!(local_db.conn);
+            let (request_id, session_id): (String, String) = conn.query_row(
+                "SELECT request_id, session_id FROM usage_rollup_dedup",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(request_id, "local-archive");
+            assert_eq!(session_id, "local-archive");
+            let aggregate: (String, i64, i64) = conn.query_row(
+                "SELECT provider_id, request_count, input_tokens FROM usage_daily_rollups",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(aggregate, ("local-archive".to_string(), 1, 100));
+            let receipts: i64 =
+                conn.query_row("SELECT COUNT(*) FROM usage_rollup_dedup", [], |row| {
+                    row.get(0)
+                })?;
+            assert_eq!(
+                receipts, 1,
+                "remote receipts must not replace local receipts"
+            );
+        }
 
         let remote_provider_exists: i64 = {
             let conn = crate::database::lock_conn!(local_db.conn);
@@ -1284,6 +1356,21 @@ mod tests {
             stream_logs, 1,
             "local stream check logs should be preserved"
         );
+
+        // An empty device must not acquire another device's dedup identities
+        // from an older full-snapshot sync payload either.
+        let empty_db = Database::memory()?;
+        empty_db.import_sql_string_for_sync(&remote_sql)?;
+        {
+            let conn = crate::database::lock_conn!(empty_db.conn);
+            for table in ["usage_daily_rollups", "usage_rollup_dedup"] {
+                let count: i64 =
+                    conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                        row.get(0)
+                    })?;
+                assert_eq!(count, 0, "remote {table} must not populate an empty device");
+            }
+        }
 
         match old_test_home {
             Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),

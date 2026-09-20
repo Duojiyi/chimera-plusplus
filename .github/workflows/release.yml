@@ -182,6 +182,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           corepack enable
           corepack prepare pnpm@10.12.3 --activate
           node --version
@@ -206,6 +207,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           $llvmRoot = 'C:\Program Files\LLVM'
           if (-not (Test-Path $llvmRoot)) {
             throw "LLVM not found at $llvmRoot"
@@ -228,11 +230,13 @@ jobs:
         if: runner.os != 'Windows' || matrix.arch != 'arm64'
         run: pnpm exec tsc --noEmit
 
-      - name: Verify Codex account and relay switching
+      - name: Verify Codex relay switching
         if: runner.os != 'Windows' || matrix.arch != 'arm64'
-        run: |
-          cargo test --manifest-path src-tauri/Cargo.toml --test provider_service provider_service_switch_codex
-          cargo test --manifest-path src-tauri/Cargo.toml --test provider_commands codex_startup_import
+        run: cargo test --manifest-path src-tauri/Cargo.toml --test provider_service provider_service_switch_codex
+
+      - name: Verify Codex account startup import
+        if: runner.os != 'Windows' || matrix.arch != 'arm64'
+        run: cargo test --manifest-path src-tauri/Cargo.toml --test provider_commands codex_startup_import
 
       - name: Prepare Tauri signing key
         shell: bash
@@ -272,6 +276,7 @@ jobs:
           WINDOWS_RELEASE_ARCH: ${{ matrix.arch || 'x86_64' }}
         run: |
           $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           if ($env:WINDOWS_RELEASE_ARCH -eq 'arm64') {
             pnpm tauri build --target aarch64-pc-windows-msvc --bundles msi
           } else {
@@ -370,6 +375,7 @@ jobs:
           WINDOWS_RELEASE_ARCH: ${{ matrix.arch || 'x86_64' }}
         run: |
           $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           New-Item -ItemType Directory -Force -Path release-assets | Out-Null
           $VERSION = $env:GITHUB_REF_NAME  # e.g., v3.5.0
           $isArm64 = $env:WINDOWS_RELEASE_ARCH -eq 'arm64'
@@ -551,6 +557,7 @@ jobs:
           WINDOWS_RELEASE_ARCH: ${{ matrix.arch || 'x86_64' }}
         run: |
           $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           $platform = if ($env:WINDOWS_RELEASE_ARCH -eq 'arm64') { 'windows-arm64' } else { 'windows-x86_64' }
           $mirrorPath = Join-Path (Get-Location) "release-assets/codex-mirror-provenance-$platform.json"
           if (-not (Test-Path -LiteralPath $mirrorPath)) {
@@ -925,6 +932,10 @@ jobs:
 
   assemble-latest-json:
     name: Assemble latest.json
+    # Serialize promotion across tags, then compare versions while holding it.
+    concurrency:
+      group: chimera-latest-release
+      cancel-in-progress: false
     runs-on: ubuntu-22.04
     needs: publish-release
     environment: release
@@ -1082,20 +1093,7 @@ jobs:
           set -euxo pipefail
           gh release upload "$GITHUB_REF_NAME" latest.json --clobber --repo "$GITHUB_REPOSITORY"
 
-      - name: Mark release as latest
-        # Only now — after every asset plus a verified latest.json is
-        # confirmed present on the release — do we point `releases/latest`
-        # (and therefore the updater endpoint) at this release. Until this
-        # step runs, existing installs keep resolving the previous, fully
-        # intact release as latest.
+      - name: Promote latest without version rollback
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          release_id=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" --jq .id)
-          if [[ -z "$release_id" || "$release_id" == "null" ]]; then
-            echo "Could not resolve release id for tag $GITHUB_REF_NAME" >&2
-            exit 1
-          fi
-          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" -f make_latest=true >/dev/null
-          echo "Marked $GITHUB_REF_NAME as the latest release."
+        run: node scripts/promote-latest-release.mjs

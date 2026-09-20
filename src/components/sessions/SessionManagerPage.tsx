@@ -23,11 +23,7 @@ import {
   ChevronRight,
   ChevronsDownUp,
 } from "lucide-react";
-import {
-  useDeleteSessionMutation,
-  useSessionMessagesQuery,
-  useSessionsQuery,
-} from "@/lib/query";
+import { useSessionMessagesQuery, useSessionsQuery } from "@/lib/query";
 import { sessionsApi } from "@/lib/api";
 import type { SessionMeta } from "@/types";
 import { Button } from "@/components/ui/button";
@@ -206,6 +202,10 @@ export function SessionManagerPage({ appId }: { appId: string }) {
     () => new Set(),
   );
   const [isBatchDeleting, setIsBatchDeleting] = useState(false);
+  const [deleteRetryTargets, setDeleteRetryTargets] = useState<SessionMeta[]>(
+    [],
+  );
+  const deleteInFlightRef = useRef(false);
   const [selectionMode, setSelectionMode] = useState(false);
   const [isReclaiming, setIsReclaiming] = useState(false);
   const [reclaimConfirmOpen, setReclaimConfirmOpen] = useState(false);
@@ -323,13 +323,17 @@ export function SessionManagerPage({ appId }: { appId: string }) {
           defaultValue: "列表",
         });
 
-  const { data: messages = [], isLoading: isLoadingMessages } =
-    useSessionMessagesQuery(
-      selectedSession?.providerId,
-      selectedSession?.sourcePath,
-    );
-  const deleteSessionMutation = useDeleteSessionMutation();
-  const isDeleting = deleteSessionMutation.isPending || isBatchDeleting;
+  const {
+    data: messages = [],
+    isLoading: isLoadingMessages,
+    isError: isMessagesError,
+    isFetching: isFetchingMessages,
+    refetch: refetchMessages,
+  } = useSessionMessagesQuery(
+    selectedSession?.providerId,
+    selectedSession?.sourcePath,
+  );
+  const isDeleting = isBatchDeleting;
 
   const virtualizer = useVirtualizer({
     count: messages.length,
@@ -443,41 +447,17 @@ export function SessionManagerPage({ appId }: { appId: string }) {
   };
 
   const handleDeleteConfirm = async () => {
-    if (!deleteTargets || deleteTargets.length === 0 || isDeleting) {
-      return;
-    }
+    if (!deleteTargets?.length || deleteInFlightRef.current) return;
 
     const targets = deleteTargets.filter((session) => session.sourcePath);
     setDeleteTargets(null);
+    if (!targets.length) return;
 
-    if (targets.length === 0) {
-      return;
-    }
-
-    if (targets.length === 1) {
-      const [target] = targets;
-      try {
-        await deleteSessionMutation.mutateAsync({
-          providerId: target.providerId,
-          sessionId: target.sessionId,
-          sourcePath: target.sourcePath!,
-        });
-      } catch {
-        // The mutation's onError already toasts the failure; this only
-        // stops the rejection from escaping as an unhandled promise
-        // rejection. Leave the target selected since it was not deleted.
-        return;
-      }
-      setSelectedSessionKeys((current) => {
-        const next = new Set(current);
-        next.delete(getSessionKey(target));
-        return next;
-      });
-      return;
-    }
-
+    deleteInFlightRef.current = true;
     setIsBatchDeleting(true);
     try {
+      // Use the structured contract for single deletes too: the legacy boolean
+      // cannot distinguish deleted content from unfinished index cleanup.
       const results = await sessionsApi.deleteMany(
         targets.map((session) => ({
           providerId: session.providerId,
@@ -485,64 +465,89 @@ export function SessionManagerPage({ appId }: { appId: string }) {
           sourcePath: session.sourcePath!,
         })),
       );
+      const outcomes = new Map(
+        results.map((result) => [getSessionKey(result), result]),
+      );
+      const failedTargets = targets.filter(
+        (target) => !outcomes.get(getSessionKey(target))?.success,
+      );
+      const targetKeys = new Set(targets.map(getSessionKey));
+      // Retain identities independently of the scanned list: a deleted source
+      // can disappear while its index cleanup still needs an explicit retry.
+      setDeleteRetryTargets((current) => [
+        ...current.filter((target) => !targetKeys.has(getSessionKey(target))),
+        ...failedTargets,
+      ]);
 
-      const deletedKeys = results
-        .filter((result) => result.success)
-        .map(
-          (result) =>
-            `${result.providerId}:${result.sessionId}:${result.sourcePath ?? ""}`,
-        );
-
-      const failedErrors = results
-        .filter((result) => !result.success)
-        .map((result) => result.error || t("common.unknown"));
-
-      if (deletedKeys.length > 0) {
-        const deletedKeySet = new Set(deletedKeys);
+      const contentDeleted = results.filter(
+        (result) => result.success || result.sourceDeleted === true,
+      );
+      const deletedKeys = new Set(contentDeleted.map(getSessionKey));
+      if (deletedKeys.size > 0) {
         queryClient.setQueryData<SessionMeta[]>(["sessions"], (current) =>
           (current ?? []).filter(
-            (session) => !deletedKeySet.has(getSessionKey(session)),
+            (session) => !deletedKeys.has(getSessionKey(session)),
           ),
         );
-      }
-
-      results
-        .filter((result) => result.success)
-        .forEach((result) => {
+        contentDeleted.forEach((result) => {
           queryClient.removeQueries({
             queryKey: ["sessionMessages", result.providerId, result.sourcePath],
           });
         });
-
-      setSelectedSessionKeys((current) => {
-        const next = new Set(current);
-        deletedKeys.forEach((key) => next.delete(key));
-        return next;
-      });
-
+        setSelectedSessionKeys(
+          (current) =>
+            new Set([...current].filter((key) => !deletedKeys.has(key))),
+        );
+      }
       await queryClient.invalidateQueries({ queryKey: ["sessions"] });
 
-      if (deletedKeys.length > 0) {
+      const completed = results.filter((result) => result.success).length;
+      const cleanupPending = results.filter(
+        (result) => !result.success && result.cleanupPending === true,
+      );
+      if (completed > 0) {
         toast.success(
           t("sessionManager.batchDeleteSuccess", {
             defaultValue: "已删除 {{count}} 个会话",
-            count: deletedKeys.length,
+            count: completed,
           }),
         );
       }
-
-      if (failedErrors.length > 0) {
+      if (cleanupPending.length > 0) {
+        toast.warning(
+          t("sessionManager.deleteCleanupPending", {
+            defaultValue:
+              "{{count}} 个会话内容已删除，但索引清理未完成，请重试完成清理。",
+            count: cleanupPending.length,
+          }),
+        );
+      }
+      const cleanupKeys = new Set(cleanupPending.map(getSessionKey));
+      const failures = failedTargets.filter(
+        (target) => !cleanupKeys.has(getSessionKey(target)),
+      );
+      if (failures.length > 0) {
         toast.error(
           t("sessionManager.batchDeleteFailed", {
             defaultValue: "{{failed}} 个会话删除失败",
-            failed: failedErrors.length,
+            failed: failures.length,
           }),
           {
-            description: failedErrors[0],
+            description:
+              outcomes.get(getSessionKey(failures[0]))?.error ||
+              t("common.unknown"),
           },
         );
       }
     } catch (error) {
+      setDeleteRetryTargets((current) => [
+        ...new Map(
+          [...current, ...targets].map((target) => [
+            getSessionKey(target),
+            target,
+          ]),
+        ).values(),
+      ]);
       toast.error(
         extractErrorMessage(error) ||
           t("sessionManager.batchDeleteRequestFailed", {
@@ -550,6 +555,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
           }),
       );
     } finally {
+      deleteInFlightRef.current = false;
       setIsBatchDeleting(false);
     }
   };
@@ -584,7 +590,10 @@ export function SessionManagerPage({ appId }: { appId: string }) {
         );
         return;
       }
-      if (result.skippedReason) {
+      if (
+        result.skippedReason &&
+        result.skippedReason !== "deferred_active_session_files"
+      ) {
         // 未知的跳过原因：reason 是内部标识（如 live_not_custom），不直接展示给
         // 用户；给一句通用说明，具体值留在日志里。
         toast.info(
@@ -597,6 +606,28 @@ export function SessionManagerPage({ appId }: { appId: string }) {
 
       await queryClient.invalidateQueries({ queryKey: ["sessions"] });
       await refetch();
+
+      if (
+        result.deferredJsonlFiles > 0 ||
+        result.skippedReason === "deferred_active_session_files"
+      ) {
+        toast.warning(
+          t("sessionManager.reclaimDeferred", {
+            defaultValue:
+              "已恢复 {{files}} 个会话文件，仍有 {{deferred}} 个活跃会话文件延期处理。",
+            files: result.reclaimedJsonlFiles,
+            deferred: result.deferredJsonlFiles,
+          }),
+          {
+            description: t("sessionManager.reclaimDeferredDetail", {
+              defaultValue:
+                "已更新 {{rows}} 条索引记录。请停止这些会话的写入后，再次点击恢复；活动文件不会被覆盖。",
+              rows: result.reclaimedStateRows,
+            }),
+          },
+        );
+        return;
+      }
 
       toast.success(
         t("sessionManager.reclaimSuccess", {
@@ -874,6 +905,29 @@ export function SessionManagerPage({ appId }: { appId: string }) {
         onWheel={(e) => e.stopPropagation()}
       >
         <div className="flex-1 overflow-hidden flex flex-col gap-4">
+          {deleteRetryTargets.length > 0 && (
+            <div
+              role="alert"
+              className="flex items-center justify-between gap-3 rounded-md border border-yellow-500/40 p-3 text-sm"
+            >
+              <span>
+                {t("sessionManager.deleteRetryPending", {
+                  defaultValue:
+                    "{{count}} 个会话尚未完整删除；内容已删除的项目仍需完成索引清理。",
+                  count: deleteRetryTargets.length,
+                })}
+              </span>
+              <Button
+                variant="outline"
+                disabled={isDeleting}
+                onClick={() => setDeleteTargets(deleteRetryTargets)}
+              >
+                {t("sessionManager.retryDelete", {
+                  defaultValue: "重试未完成的删除",
+                })}
+              </Button>
+            </div>
+          )}
           {/* 主内容区域 - 左右分栏 */}
           <div className="flex-1 overflow-hidden grid gap-4 md:grid-cols-[320px_1fr]">
             {/* 左侧会话列表 */}
@@ -1745,6 +1799,28 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                           {isLoadingMessages ? (
                             <div className="flex items-center justify-center py-12">
                               <RefreshCw className="size-5 animate-spin text-muted-foreground" />
+                            </div>
+                          ) : isMessagesError ? (
+                            <div
+                              role="alert"
+                              className="flex flex-col items-center justify-center gap-3 py-12 text-center"
+                            >
+                              <p className="text-sm text-destructive">
+                                {t("sessionManager.messagesLoadError", {
+                                  defaultValue:
+                                    "无法读取会话消息，请检查文件是否可读后重试。",
+                                })}
+                              </p>
+                              <Button
+                                variant="outline"
+                                disabled={isFetchingMessages}
+                                onClick={() => void refetchMessages()}
+                              >
+                                <RefreshCw
+                                  className={`size-4 mr-2${isFetchingMessages ? " animate-spin" : ""}`}
+                                />
+                                {t("common.retry", { defaultValue: "重试" })}
+                              </Button>
                             </div>
                           ) : messages.length === 0 ? (
                             <div className="flex flex-col items-center justify-center py-12 text-center">

@@ -294,50 +294,72 @@ fn push_provider_model_filters(
     }
 }
 
-pub(crate) fn effective_usage_log_filter(log_alias: &str) -> String {
-    let data_source = data_source_expr(log_alias);
-    let proxy_data_source = data_source_expr("proxy_dedup");
+/// Compare only identities that share a namespace. Codex proxy session IDs have
+/// a routing prefix; its local event IDs are NOT upstream response IDs. Claude
+/// message IDs, on the other hand, are shared by the proxy and session reader.
+fn compatible_usage_identity_sql(proxy: &str, session: &str) -> String {
+    let canonical_session = |alias: &str| {
+        format!("NULLIF(CASE WHEN {alias}.app_type = 'codex' AND substr({alias}.session_id, 1, 6) = 'codex_' THEN substr({alias}.session_id, 7) ELSE {alias}.session_id END, '')")
+    };
+    let p = canonical_session(proxy);
+    let s = canonical_session(session);
     format!(
-        "NOT (
-            {data_source} IN ('session_log', 'codex_session', 'gemini_session', 'opencode_session')
-            AND EXISTS (
-                SELECT 1
-                FROM proxy_request_logs proxy_dedup
-                WHERE {proxy_data_source} = 'proxy'
-                  AND proxy_dedup.app_type = {log_alias}.app_type
-                  AND proxy_dedup.status_code >= 200
-                  AND proxy_dedup.status_code < 300
-                  AND proxy_dedup.input_tokens = {log_alias}.input_tokens
-                  AND proxy_dedup.output_tokens = {log_alias}.output_tokens
-                  AND proxy_dedup.cache_read_tokens = {log_alias}.cache_read_tokens
-                  AND (
-                      proxy_dedup.cache_creation_tokens = {log_alias}.cache_creation_tokens
-                      OR (
-                          {log_alias}.cache_creation_tokens = 0
-                          AND {data_source} IN ('codex_session', 'gemini_session', 'opencode_session')
-                      )
-                  )
-                  AND proxy_dedup.created_at BETWEEN
-                      {log_alias}.created_at - {SESSION_PROXY_DEDUP_WINDOW_SECONDS}
-                      AND {log_alias}.created_at + {SESSION_PROXY_DEDUP_WINDOW_SECONDS}
-                  AND (
-                      LOWER(proxy_dedup.model) = LOWER({log_alias}.model)
-                      OR LOWER(proxy_dedup.model) = 'unknown'
-                      OR LOWER({log_alias}.model) = 'unknown'
-                  )
-            )
-        )"
+        "({p} IS NULL OR {s} IS NULL OR {p} = {s})
+         AND NOT ({session}.app_type IN ('claude', 'claude-desktop')
+             AND substr({proxy}.request_id, 1, 8) = 'session:'
+             AND substr({session}.request_id, 1, 8) = 'session:'
+             AND {proxy}.request_id <> {session}.request_id)"
     )
 }
 
-/// 跨源去重指纹键。
-///
-/// `cache_creation_tokens`：Codex/Gemini session 日志不暴露该字段，调用方传 0
-/// 表示"未知"，匹配器会放行 proxy 侧任意 cache_creation_tokens 值。
+/// One predicate for import, display and archival. Archived proxy receipts keep
+/// this decision valid after the 30-day detail retention period has elapsed.
+fn matching_proxy_usage_sql(session: &str) -> String {
+    let identity = compatible_usage_identity_sql("p", session);
+    let predicate = format!(
+        "COALESCE(p.data_source, 'proxy') = 'proxy'
+         AND p.app_type = {session}.app_type
+         AND p.status_code >= 200 AND p.status_code < 300
+         AND {identity}
+         AND p.input_tokens = {session}.input_tokens
+         AND p.output_tokens = {session}.output_tokens
+         AND p.cache_read_tokens = {session}.cache_read_tokens
+         AND (p.cache_creation_tokens = {session}.cache_creation_tokens
+              OR ({session}.cache_creation_tokens = 0
+                  AND {session}.app_type IN ('codex', 'gemini', 'opencode')))
+         AND p.created_at BETWEEN
+             {session}.created_at - {SESSION_PROXY_DEDUP_WINDOW_SECONDS}
+             AND {session}.created_at + {SESSION_PROXY_DEDUP_WINDOW_SECONDS}
+         AND (LOWER(p.model) = LOWER({session}.model)
+              OR LOWER(p.model) = 'unknown' OR LOWER({session}.model) = 'unknown')"
+    );
+    format!(
+        "EXISTS (SELECT 1 FROM proxy_request_logs p WHERE {predicate}
+                 UNION ALL
+                 SELECT 1 FROM usage_rollup_dedup p WHERE {predicate})"
+    )
+}
+
+pub(crate) fn effective_usage_log_filter(log_alias: &str) -> String {
+    let data_source = data_source_expr(log_alias);
+    let matching_proxy = matching_proxy_usage_sql(log_alias);
+    format!(
+        "NOT EXISTS (SELECT 1 FROM usage_rollup_dedup archived
+                     WHERE archived.request_id = {log_alias}.request_id)
+         AND NOT (
+             {data_source} IN ('session_log', 'codex_session', 'gemini_session', 'opencode_session')
+             AND {matching_proxy}
+         )"
+    )
+}
+
+/// Cross-source token fingerprint, constrained by known source identity.
+/// Codex/Gemini/OpenCode do not expose cache creation tokens; 0 means unknown.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DedupKey<'a> {
     pub app_type: &'a str,
     pub model: &'a str,
+    pub session_id: Option<&'a str>,
     pub input_tokens: u32,
     pub output_tokens: u32,
     pub cache_read_tokens: u32,
@@ -345,71 +367,76 @@ pub(crate) struct DedupKey<'a> {
     pub created_at: i64,
 }
 
-/// session 日志写入前的统一去重判定。
-///
-/// 命中以下任一条件即跳过插入：① `request_id` 已存在；② 时间窗口内存在
-/// 与 `key` 匹配的 proxy 日志（指纹去重）。
 pub(crate) fn should_skip_session_insert(
     conn: &Connection,
     request_id: &str,
     key: &DedupKey,
 ) -> Result<bool, AppError> {
-    if proxy_request_id_exists(conn, request_id)? {
+    let exists = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM proxy_request_logs WHERE request_id = ?1
+                       UNION ALL
+                       SELECT 1 FROM usage_rollup_dedup WHERE request_id = ?1)",
+            [request_id],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|e| AppError::Database(format!("查询 request_id 失败: {e}")))?;
+    if exists || has_matching_proxy_usage_log(conn, request_id, key)? {
         return Ok(true);
     }
-    has_matching_proxy_usage_log(conn, key)
-}
-
-fn proxy_request_id_exists(conn: &Connection, request_id: &str) -> Result<bool, AppError> {
-    conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM proxy_request_logs WHERE request_id = ?1)",
-        params![request_id],
+    // Older releases discarded the identities behind their rollups. Guessing
+    // from daily totals would either double count or discard independent direct
+    // traffic. Fail visibly and keep the original rows/cursor instead.
+    let ambiguous = conn.query_row(
+        "SELECT EXISTS (
+            SELECT 1 FROM usage_daily_rollups r
+            WHERE r.app_type = ?1
+              AND r.date BETWEEN date(?2 - ?3, 'unixepoch', 'localtime')
+                             AND date(?2 + ?3, 'unixepoch', 'localtime')
+              AND (LOWER(r.model) = LOWER(?4) OR LOWER(r.model) = 'unknown' OR LOWER(?4) = 'unknown')
+              AND r.request_count > (
+                  SELECT COUNT(*) FROM usage_rollup_dedup d
+                  WHERE d.date = r.date AND d.app_type = r.app_type
+                    AND d.provider_id = r.provider_id AND d.model = r.model
+                    AND d.request_model = r.request_model AND d.pricing_model = r.pricing_model
+              )
+        )",
+        params![key.app_type, key.created_at, SESSION_PROXY_DEDUP_WINDOW_SECONDS, key.model],
         |row| row.get::<_, bool>(0),
-    )
-    .map_err(|e| AppError::Database(format!("查询 request_id 失败: {e}")))
+    ).map_err(|e| AppError::Database(format!("校验历史用量归档覆盖失败: {e}")))?;
+    if ambiguous {
+        return Err(AppError::Message(
+            "历史用量汇总缺少请求身份，无法安全合并此会话；原统计已保留。请从包含代理明细的备份恢复后重试，不能仅凭 token 指纹推断历史归属。".into(),
+        ));
+    }
+    Ok(false)
 }
 
 pub(crate) fn has_matching_proxy_usage_log(
     conn: &Connection,
+    request_id: &str,
     key: &DedupKey,
 ) -> Result<bool, AppError> {
-    let allow_missing_cache_creation =
-        matches!(key.app_type, "codex" | "gemini" | "opencode") && key.cache_creation_tokens == 0;
-
-    let l_data_source = data_source_expr("l");
+    let matching_proxy = matching_proxy_usage_sql("s");
     let sql = format!(
-        "SELECT EXISTS (
-            SELECT 1
-            FROM proxy_request_logs l
-            WHERE {l_data_source} = 'proxy'
-              AND l.app_type = ?1
-              AND l.status_code >= 200
-              AND l.status_code < 300
-              AND l.input_tokens = ?3
-              AND l.output_tokens = ?4
-              AND l.cache_read_tokens = ?5
-              AND (l.cache_creation_tokens = ?6 OR ?9 = 1)
-              AND l.created_at BETWEEN ?7 - ?8 AND ?7 + ?8
-              AND (
-                  LOWER(l.model) = LOWER(?2)
-                  OR LOWER(l.model) = 'unknown'
-                  OR LOWER(?2) = 'unknown'
-              )
-        )"
+        "SELECT {matching_proxy} FROM (
+            SELECT ?1 AS app_type, ?2 AS model, ?3 AS input_tokens, ?4 AS output_tokens,
+                   ?5 AS cache_read_tokens, ?6 AS cache_creation_tokens, ?7 AS created_at,
+                   ?8 AS request_id, ?9 AS session_id
+        ) s"
     );
-
     conn.query_row(
         &sql,
         params![
             key.app_type,
             key.model,
-            key.input_tokens as i64,
-            key.output_tokens as i64,
-            key.cache_read_tokens as i64,
-            key.cache_creation_tokens as i64,
+            key.input_tokens,
+            key.output_tokens,
+            key.cache_read_tokens,
+            key.cache_creation_tokens,
             key.created_at,
-            SESSION_PROXY_DEDUP_WINDOW_SECONDS,
-            allow_missing_cache_creation as i64,
+            request_id,
+            key.session_id,
         ],
         |row| row.get::<_, bool>(0),
     )
@@ -2352,6 +2379,7 @@ mod tests {
     }
 
     fn create_legacy_nullable_logs_table(conn: &Connection) -> Result<(), AppError> {
+        Database::create_usage_rollup_dedup_table(conn)?;
         conn.execute(
             "CREATE TABLE proxy_request_logs (
                 request_id TEXT PRIMARY KEY,
@@ -2363,7 +2391,8 @@ mod tests {
                 cache_creation_tokens INTEGER NOT NULL,
                 status_code INTEGER NOT NULL,
                 created_at INTEGER NOT NULL,
-                data_source TEXT
+                data_source TEXT,
+                session_id TEXT
             )",
             [],
         )?;
@@ -2403,6 +2432,7 @@ mod tests {
         )?;
 
         let key = DedupKey {
+            session_id: None,
             app_type: "codex",
             model: "gpt-5.5",
             input_tokens: 10,
@@ -2411,8 +2441,108 @@ mod tests {
             cache_creation_tokens: 0,
             created_at: 1000,
         };
-        assert!(has_matching_proxy_usage_log(&conn, &key)?);
+        assert!(has_matching_proxy_usage_log(&conn, "local-event", &key)?);
 
+        Ok(())
+    }
+
+    #[test]
+    fn dedup_rejects_conflicting_known_identities_on_read_and_write() -> Result<(), AppError> {
+        for (app, proxy_id, proxy_session, local_id, local_session, expected) in [
+            (
+                "codex",
+                "upstream-response",
+                Some("codex_thread-a"),
+                "codex_session:thread-v1:thread-b:1",
+                Some("thread-b"),
+                false,
+            ),
+            (
+                "codex",
+                "upstream-response",
+                Some("codex_thread-a"),
+                "codex_session:thread-v1:thread-a:1",
+                Some("thread-a"),
+                true,
+            ),
+            (
+                "claude",
+                "session:msg-a",
+                Some("thread-a"),
+                "session:msg-b",
+                Some("thread-a"),
+                false,
+            ),
+            (
+                "claude",
+                "session:msg-a",
+                None,
+                "session:msg-b",
+                None,
+                false,
+            ),
+            (
+                "gemini",
+                "upstream-response",
+                Some("thread-a"),
+                "gemini_session:thread-b:message",
+                Some("thread-b"),
+                false,
+            ),
+            (
+                "opencode",
+                "upstream-response",
+                Some("thread-a"),
+                "opencode_session:thread-b:message",
+                Some("thread-b"),
+                false,
+            ),
+        ] {
+            let db = Database::memory()?;
+            let conn = lock_conn!(db.conn);
+            insert_usage_log(
+                &conn, proxy_id, app, "provider", "model", "proxy", 1000, 10, 2, 1, 0, 200, "0",
+            )?;
+            conn.execute(
+                "UPDATE proxy_request_logs SET session_id = ?1 WHERE request_id = ?2",
+                params![proxy_session, proxy_id],
+            )?;
+            let key = DedupKey {
+                app_type: app,
+                model: "model",
+                session_id: local_session,
+                input_tokens: 10,
+                output_tokens: 2,
+                cache_read_tokens: 1,
+                cache_creation_tokens: 0,
+                created_at: 1000,
+            };
+            assert_eq!(
+                should_skip_session_insert(&conn, local_id, &key)?,
+                expected,
+                "import {app}: {local_id}"
+            );
+            let source = match app {
+                "claude" => "session_log",
+                "gemini" => "gemini_session",
+                "opencode" => "opencode_session",
+                _ => "codex_session",
+            };
+            insert_usage_log(
+                &conn, local_id, app, "_session", "model", source, 1000, 10, 2, 1, 0, 200, "0",
+            )?;
+            conn.execute(
+                "UPDATE proxy_request_logs SET session_id = ?1 WHERE request_id = ?2",
+                params![local_session, local_id],
+            )?;
+            let filter = effective_usage_log_filter("l");
+            let visible: bool = conn.query_row(
+                &format!("SELECT {filter} FROM proxy_request_logs l WHERE request_id = ?1"),
+                [local_id],
+                |row| row.get(0),
+            )?;
+            assert_eq!(visible, !expected, "display {app}: {local_id}");
+        }
         Ok(())
     }
 

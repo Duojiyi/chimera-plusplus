@@ -1,3 +1,7 @@
+> **Upstream reference / 上游参考 / 上流の参考資料**: This manual preserves CC Switch documentation and does not describe the current Chimera++ product scope. For current usage and development instructions, see the [Chimera++ README](../../README.md) and [contribution guide](../../CONTRIBUTING.md).
+>
+> 本手册保留上游 CC Switch 内容，其中的多工具管理、安装和开发说明不代表 Chimera++ 当前行为。当前说明以以上链接为准。
+
 # CC Switch User Manual / 用户手册 / ユーザーマニュアル
 
 > Claude Code / Claude Desktop / Codex / Gemini CLI / OpenCode / OpenClaw / Hermes

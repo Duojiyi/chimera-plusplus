@@ -56,6 +56,37 @@ fn compute_local_midnight_cutoff(
 }
 
 impl Database {
+    /// Additive storage only: no existing aggregate is rewritten or inferred.
+    /// These compact receipts outlive detail retention, not the aggregates they
+    /// describe. Keep model dimensions so legacy coverage can be checked exactly.
+    pub(crate) fn create_usage_rollup_dedup_table(
+        conn: &rusqlite::Connection,
+    ) -> Result<(), AppError> {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS usage_rollup_dedup (
+                request_id TEXT PRIMARY KEY,
+                date TEXT NOT NULL,
+                app_type TEXT NOT NULL,
+                provider_id TEXT NOT NULL,
+                model TEXT NOT NULL,
+                request_model TEXT NOT NULL,
+                pricing_model TEXT NOT NULL,
+                session_id TEXT,
+                input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                cache_read_tokens INTEGER NOT NULL,
+                cache_creation_tokens INTEGER NOT NULL,
+                status_code INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                data_source TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_rollup_dedup_match
+                ON usage_rollup_dedup(app_type, created_at);
+            CREATE INDEX IF NOT EXISTS idx_rollup_dedup_coverage
+                ON usage_rollup_dedup(date, app_type, provider_id, model, request_model, pricing_model);"
+        ).map_err(|e| AppError::Database(format!("创建归档去重凭据失败: {e}")))
+    }
+
     /// Aggregate proxy_request_logs older than `retain_days` into usage_daily_rollups,
     /// then delete the aggregated detail rows.
     /// Returns the number of deleted detail rows.
@@ -170,6 +201,25 @@ impl Database {
         conn.execute(&aggregation_sql, [cutoff])
             .map_err(|e| AppError::Database(format!("Rollup aggregation failed: {e}")))?;
 
+        // Same savepoint as aggregation/pruning: never commit an aggregate
+        // without the identities needed to recognize it on a later rebuild.
+        conn.execute(
+            &format!(
+                "INSERT OR IGNORE INTO usage_rollup_dedup (
+                    request_id, date, app_type, provider_id, model, request_model, pricing_model,
+                    session_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                    status_code, created_at, data_source
+                ) SELECT l.request_id, date(l.created_at, 'unixepoch', 'localtime'),
+                         l.app_type, l.provider_id, l.model,
+                         COALESCE(l.request_model, ''), COALESCE(l.pricing_model, ''),
+                         l.session_id, l.input_tokens, l.output_tokens, l.cache_read_tokens,
+                         l.cache_creation_tokens, l.status_code, l.created_at,
+                         COALESCE(l.data_source, 'proxy')
+                  FROM proxy_request_logs l WHERE l.created_at < ?1 AND {effective_filter}"
+            ),
+            [cutoff],
+        ).map_err(|e| AppError::Database(format!("保存归档去重凭据失败: {e}")))?;
+
         // INSERT uses the effective-log filter to exclude duplicate session rows.
         // DELETE intentionally prunes all old details so those duplicates are discarded.
         let deleted = conn
@@ -226,6 +276,93 @@ mod tests {
         // (2026-04-16 - 7d) = 2026-04-09; cutoff = 2026-04-10 00:00 local.
         let expected = local_dt(2026, 4, 10, 0, 0, 0);
         assert_eq!(cutoff_dt, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn archive_receipts_survive_reintroduced_details_and_cover_live_duplicates(
+    ) -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let old = chrono::Utc::now().timestamp() - 40 * 86400;
+        {
+            let conn = crate::database::lock_conn!(db.conn);
+            conn.execute(
+                "INSERT INTO proxy_request_logs (request_id, provider_id, app_type, model,
+                 input_tokens, output_tokens, latency_ms, status_code, created_at, session_id)
+                 VALUES ('proxy-replayed', 'p1', 'codex', 'model', 10, 2, 1, 200, ?1, 'codex_thread')",
+                [old],
+            )?;
+        }
+        assert_eq!(db.rollup_and_prune(30)?, 1);
+        {
+            let conn = crate::database::lock_conn!(db.conn);
+            // A source is rediscovered after its detail row has been pruned.
+            // Even bypassing the import guard cannot make it count twice.
+            conn.execute(
+                "INSERT INTO proxy_request_logs (request_id, provider_id, app_type, model,
+                 input_tokens, output_tokens, latency_ms, status_code, created_at, session_id)
+                 VALUES ('proxy-replayed', 'p1', 'codex', 'model', 10, 2, 1, 200, ?1, 'codex_thread')",
+                [old],
+            )?;
+            conn.execute(
+                "INSERT INTO proxy_request_logs (request_id, provider_id, app_type, model,
+                 input_tokens, output_tokens, latency_ms, status_code, created_at, session_id, data_source)
+                 VALUES ('session-late', '_codex_session', 'codex', 'model', 10, 2, 1, 200, ?1, 'thread', 'codex_session')",
+                [old + 1],
+            )?;
+        }
+        assert_eq!(
+            db.get_usage_summary(None, None, Some("codex"), None, None)?
+                .total_requests,
+            1
+        );
+        assert_eq!(db.rollup_and_prune(30)?, 2);
+        assert_eq!(
+            db.get_usage_summary(None, None, Some("codex"), None, None)?
+                .total_requests,
+            1
+        );
+        let conn = crate::database::lock_conn!(db.conn);
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM usage_rollup_dedup", [], |row| row
+                .get::<_, i64>(0))?,
+            1
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn receipt_write_failure_rolls_back_aggregation_and_pruning() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let old = chrono::Utc::now().timestamp() - 40 * 86400;
+        {
+            let conn = crate::database::lock_conn!(db.conn);
+            conn.execute(
+                "INSERT INTO proxy_request_logs (request_id, provider_id, app_type, model, latency_ms, status_code, created_at)
+                 VALUES ('keep-on-error', 'p1', 'codex', 'model', 0, 200, ?1)", [old],
+            )?;
+            conn.execute_batch(
+                "CREATE TRIGGER reject_receipt BEFORE INSERT ON usage_rollup_dedup
+                 BEGIN SELECT RAISE(ABORT, 'injected receipt failure'); END;",
+            )?;
+        }
+        assert!(db.rollup_and_prune(30).is_err());
+        let conn = crate::database::lock_conn!(db.conn);
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM proxy_request_logs", [], |row| row
+                .get::<_, i64>(0))?,
+            1
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM usage_daily_rollups", [], |row| row
+                .get::<_, i64>(0))?,
+            0
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM usage_rollup_dedup", [], |row| row
+                .get::<_, i64>(0))?,
+            0
+        );
         Ok(())
     }
 

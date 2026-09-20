@@ -296,6 +296,8 @@ impl Database {
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
 
+        Self::create_usage_rollup_dedup_table(conn)?;
+
         // 18. Session Log Sync 表 (会话日志同步状态)
         conn.execute(
             "CREATE TABLE IF NOT EXISTS session_log_sync (

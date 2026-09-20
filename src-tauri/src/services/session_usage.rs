@@ -412,13 +412,12 @@ fn sync_single_file(db: &Database, file_path: &Path) -> Result<(u32, u32), AppEr
             msg.message_id
         );
 
-        match insert_session_log_entry(&tx, &request_id, msg) {
-            Ok(true) => imported += 1,
-            Ok(false) => skipped += 1,
-            Err(e) => {
-                log::warn!("[SESSION-SYNC] 插入失败 ({}): {e}", msg.message_id);
-                skipped += 1;
-            }
+        // Keep the cursor and roll back this batch on ambiguous historical
+        // usage or a database error, so the outer caller can report and retry.
+        if insert_session_log_entry(&tx, &request_id, msg)? {
+            imported += 1;
+        } else {
+            skipped += 1;
         }
     }
 
@@ -509,6 +508,7 @@ fn insert_session_log_entry(
         });
 
     let dedup_key = DedupKey {
+        session_id: msg.session_id.as_deref(),
         app_type: "claude",
         model: &msg.model,
         input_tokens: msg.input_tokens,
@@ -638,6 +638,42 @@ pub fn get_data_source_breakdown(db: &Database) -> Result<Vec<DataSourceSummary>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ambiguous_archive_keeps_claude_file_retryable() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("legacy.jsonl");
+        fs::write(&file, concat!(
+            r#"{"type":"assistant","sessionId":"direct","timestamp":"2020-01-01T12:00:00Z","message":{"id":"msg-direct","model":"unknown","usage":{"input_tokens":10,"output_tokens":2}}}"#,
+            "\n"
+        )).unwrap();
+        lock_conn!(db.conn).execute(
+            "INSERT INTO usage_daily_rollups (date, app_type, provider_id, model, request_count)
+             VALUES (date(1577880000, 'unixepoch', 'localtime'), 'claude', 'proxy', 'unknown', 1)",
+            [],
+        )?;
+        for _ in 0..2 {
+            let error = sync_single_file(&db, &file).unwrap_err();
+            assert!(error.to_string().contains("历史用量汇总缺少请求身份"));
+            assert_eq!(get_sync_state(&db, &file.to_string_lossy())?, (0, 0));
+            let conn = lock_conn!(db.conn);
+            assert_eq!(
+                conn.query_row("SELECT COUNT(*) FROM proxy_request_logs", [], |r| r
+                    .get::<_, i64>(0))?,
+                0
+            );
+            assert_eq!(
+                conn.query_row(
+                    "SELECT SUM(request_count) FROM usage_daily_rollups",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )?,
+                1
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn sync_retries_partial_tail_without_reimporting_completed_lines() -> Result<(), AppError> {

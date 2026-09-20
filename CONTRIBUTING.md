@@ -1,8 +1,8 @@
-# Contributing to CC Switch
+# Contributing to Chimera++
 
 > [中文版本](#贡献指南)
 
-Thank you for your interest in contributing to CC Switch! Please read our [Code of Conduct](./CODE_OF_CONDUCT.md) before participating.
+Thank you for your interest in contributing to Chimera++! Please read our [Code of Conduct](./CODE_OF_CONDUCT.md) before participating.
 
 ## How to Contribute
 
@@ -20,51 +20,59 @@ There are many ways to contribute:
 
 ### Prerequisites
 
-- Node.js 20+ and pnpm 10+ (CI pins Node 20 and pnpm 10.12.3)
-- Rust 1.85+ and Cargo
-- [Tauri 2.0 prerequisites](https://v2.tauri.app/start/prerequisites/)
+- Node.js 20.19.x (20.19.0 in [.node-version](.node-version)); Node.js 22.12 or newer also satisfies the current Vite requirement
+- pnpm 10+ (CI uses Node 20 and pnpm 10.12.3)
+- Rust 1.95 and Cargo, pinned by [rust-toolchain.toml](rust-toolchain.toml) and required by [Cargo.toml](src-tauri/Cargo.toml)
+- [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your operating system; complete Codex runtime maintenance requires Windows
+
+Follow [AGENTS.md](AGENTS.md). Coding agents must not run commands that compile Rust without an explicit user request, or delete existing Rust artifacts or caches without permission.
 
 ### Quick Start
 
 ```bash
-# Install dependencies
 pnpm install
-
-# Start development server with hot reload
-pnpm dev
+pnpm dev:renderer
 ```
+
+The renderer preview does not provide Tauri native commands. Validate configuration writes, tray behavior and runtime maintenance in the desktop app when Rust compilation is explicitly requested.
 
 ### Useful Commands
 
-| Command | Description |
-|---------|-------------|
-| `pnpm dev` | Start dev server (hot reload) |
-| `pnpm build` | Production build |
-| `pnpm typecheck` | TypeScript type checking |
-| `pnpm test:unit` | Run unit tests |
-| `pnpm format` | Format code (Prettier) |
-| `pnpm format:check` | Check code formatting |
+| Command                     | Description                                                 |
+| --------------------------- | ----------------------------------------------------------- |
+| `pnpm dev:renderer`         | Browser renderer preview; no Rust compilation               |
+| `pnpm build:renderer:check` | Renderer build and bundle-budget check; no Rust compilation |
+| `pnpm typecheck`            | TypeScript type checking                                    |
+| `pnpm test:unit`            | Frontend unit and integration tests                         |
+| `pnpm format`               | Format frontend code with Prettier                          |
+| `pnpm format:check`         | Check frontend code formatting                              |
+| `pnpm dev`                  | Desktop development with hot reload; compiles Rust          |
+| `pnpm build`                | Desktop production build; compiles Rust                     |
 
-For Rust backend:
+Rust format checking does not compile code:
 
 ```bash
-cd src-tauri
-cargo fmt        # Format Rust code
-cargo clippy     # Run linter
-cargo test       # Run tests
+cargo fmt --check --manifest-path src-tauri/Cargo.toml
 ```
 
 ## Code Style
 
 - **Frontend**: Prettier for formatting, strict TypeScript (`pnpm typecheck`). There is no ESLint setup in this repository.
 - **Backend**: `cargo fmt` for formatting, `cargo clippy` for linting
-- **Tauri 2.0**: Command names must use camelCase
+- **Tauri IPC**: Keep Rust command names in `snake_case` and JavaScript argument keys in `camelCase`, matching the existing `invoke` wrappers.
 
-Run all checks before submitting. CI denies Clippy warnings, so pass `-D warnings` locally too:
+Run checks appropriate to the change and state which checks were not run. The default frontend checks do not compile Rust:
 
 ```bash
 pnpm typecheck && pnpm format:check && pnpm test:unit
-cd src-tauri && cargo fmt --check && cargo clippy -- -D warnings && cargo test
+pnpm build:renderer:check
+```
+
+CI runs Rust validation. For coding agents, the following local checks require an explicit user request because they compile Rust. CI denies Clippy warnings:
+
+```bash
+cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
+cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
 ## Pull Request Guidelines
@@ -78,8 +86,10 @@ cd src-tauri && cargo fmt --check && cargo clippy -- -D warnings && cargo test
 
 - [ ] `pnpm typecheck` passes
 - [ ] `pnpm format:check` passes
-- [ ] `cargo clippy` passes (if Rust code changed)
-- [ ] Updated i18n files if user-facing text changed
+- [ ] Relevant frontend tests pass
+- [ ] Rust format check passes if Rust code changed; CI or explicitly requested local Clippy/tests are reported separately
+- [ ] Unrun checks and untested platforms are documented
+- [ ] Localized text changes update i18n files; Chinese-only shell changes follow the exception below
 
 ### Commit Convention
 
@@ -134,9 +144,9 @@ convention the file you are editing already uses.
 
 # 贡献指南
 
-> [English Version](#contributing-to-cc-switch)
+> [English Version](#contributing-to-chimera)
 
-感谢你对 CC Switch 的贡献兴趣！参与之前请阅读我们的[行为准则](./CODE_OF_CONDUCT.md)。
+感谢你对 Chimera++ 的贡献兴趣！参与之前请阅读我们的[行为准则](./CODE_OF_CONDUCT.md)。
 
 ## 如何贡献
 
@@ -154,51 +164,59 @@ convention the file you are editing already uses.
 
 ### 前提条件
 
-- Node.js 20+ 和 pnpm 10+（CI 固定使用 Node 20 与 pnpm 10.12.3）
-- Rust 1.85+ 和 Cargo
-- [Tauri 2.0 开发环境](https://v2.tauri.app/start/prerequisites/)
+- Node.js 20.19.x（[.node-version](.node-version) 指定 20.19.0）；Node.js 22.12 或更新版本也满足当前 Vite 要求
+- pnpm 10+（CI 使用 Node 20 与 pnpm 10.12.3）
+- Rust 1.95 和 Cargo，由 [rust-toolchain.toml](rust-toolchain.toml) 固定，[Cargo.toml](src-tauri/Cargo.toml) 要求的最低版本同为 1.95
+- 对应操作系统的 [Tauri 2 开发依赖](https://v2.tauri.app/start/prerequisites/)；完整 Codex 运行时维护功能需要 Windows
+
+遵循 [AGENTS.md](AGENTS.md)：编码代理只有在用户明确要求时，才能运行会编译 Rust 的命令；未经许可不得删除已有 Rust 构建产物或缓存。
 
 ### 快速开始
 
 ```bash
-# 安装依赖
 pnpm install
-
-# 启动开发服务器（热重载）
-pnpm dev
+pnpm dev:renderer
 ```
+
+浏览器预览不提供 Tauri 原生命令。配置写入、托盘行为和运行时维护需要在明确要求 Rust 编译后，通过桌面应用验证。
 
 ### 常用命令
 
-| 命令 | 说明 |
-|------|------|
-| `pnpm dev` | 启动开发服务器（热重载） |
-| `pnpm build` | 构建生产版本 |
-| `pnpm typecheck` | TypeScript 类型检查 |
-| `pnpm test:unit` | 运行单元测试 |
-| `pnpm format` | 格式化代码（Prettier） |
-| `pnpm format:check` | 检查代码格式 |
+| 命令                        | 说明                                  |
+| --------------------------- | ------------------------------------- |
+| `pnpm dev:renderer`         | 浏览器预览前端，不编译 Rust           |
+| `pnpm build:renderer:check` | 前端生产构建与包体积检查，不编译 Rust |
+| `pnpm typecheck`            | TypeScript 类型检查                   |
+| `pnpm test:unit`            | 前端单元与集成测试                    |
+| `pnpm format`               | 使用 Prettier 格式化前端代码          |
+| `pnpm format:check`         | 检查前端代码格式                      |
+| `pnpm dev`                  | 桌面应用热重载开发，会编译 Rust       |
+| `pnpm build`                | 桌面应用生产构建，会编译 Rust         |
 
-Rust 后端命令：
+Rust 格式检查不编译代码：
 
 ```bash
-cd src-tauri
-cargo fmt        # 格式化 Rust 代码
-cargo clippy     # 运行 Clippy 检查
-cargo test       # 运行测试
+cargo fmt --check --manifest-path src-tauri/Cargo.toml
 ```
 
 ## 代码规范
 
 - **前端**：使用 Prettier 格式化、严格 TypeScript（`pnpm typecheck`）。本仓库没有配置 ESLint。
 - **后端**：使用 `cargo fmt` 格式化、`cargo clippy` 检查
-- **Tauri 2.0**：命令名必须使用 camelCase
+- **Tauri IPC**：Rust 命令名使用 `snake_case`，JavaScript 参数键使用 `camelCase`，与现有 `invoke` 封装保持一致。
 
-提交前运行所有检查。CI 会把 Clippy 警告视为错误，本地也应加上 `-D warnings`：
+按改动范围运行检查，并注明未执行的项目。默认前端检查不编译 Rust：
 
 ```bash
 pnpm typecheck && pnpm format:check && pnpm test:unit
-cd src-tauri && cargo fmt --check && cargo clippy -- -D warnings && cargo test
+pnpm build:renderer:check
+```
+
+Rust 验证由 CI 执行。编码代理在本地运行以下检查前，必须得到用户的明确要求，因为这些命令会编译 Rust。CI 会把 Clippy 警告视为错误：
+
+```bash
+cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
+cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
 ## Pull Request 指南
@@ -212,8 +230,10 @@ cd src-tauri && cargo fmt --check && cargo clippy -- -D warnings && cargo test
 
 - [ ] `pnpm typecheck` 通过
 - [ ] `pnpm format:check` 通过
-- [ ] `cargo clippy` 通过（如修改了 Rust 代码）
-- [ ] 如修改了用户可见文本，已更新国际化文件
+- [ ] 相关前端测试通过
+- [ ] 如修改了 Rust 代码，格式检查通过；另行注明 CI 或用户明确要求的本地 Clippy、测试结果
+- [ ] 已说明未执行的检查和未验证的平台
+- [ ] 已国际化的文本同步更新语言文件；纯中文外壳遵循下文的例外约定
 
 ### 提交信息规范
 

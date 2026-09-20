@@ -51,8 +51,36 @@ pub struct DeleteSessionOutcome {
     pub session_id: String,
     pub source_path: String,
     pub success: bool,
+    /// The rollout/content is gone even when index cleanup needs a retry.
+    pub source_deleted: bool,
+    pub cleanup_pending: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+/// Internal result separates irreversible content deletion from retryable cleanup.
+#[derive(Debug)]
+pub(super) struct SessionDeleteResult {
+    pub source_deleted: bool,
+    pub cleanup_pending: bool,
+    pub error: Option<String>,
+}
+
+impl SessionDeleteResult {
+    fn complete(deleted: bool) -> Self {
+        Self {
+            source_deleted: deleted,
+            cleanup_pending: false,
+            error: None,
+        }
+    }
+
+    fn into_legacy_result(self) -> Result<bool, String> {
+        if let Some(error) = self.error {
+            return Err(error);
+        }
+        Ok(self.source_deleted && !self.cleanup_pending)
+    }
 }
 
 pub fn scan_sessions() -> Vec<SessionMeta> {
@@ -120,12 +148,22 @@ pub fn delete_session(
     session_id: &str,
     source_path: &str,
 ) -> Result<bool, String> {
+    delete_session_result(provider_id, session_id, source_path)?.into_legacy_result()
+}
+
+fn delete_session_result(
+    provider_id: &str,
+    session_id: &str,
+    source_path: &str,
+) -> Result<SessionDeleteResult, String> {
     // SQLite sessions bypass the file-based deletion path
     if provider_id == "opencode" && source_path.starts_with("sqlite:") {
-        return opencode::delete_session_sqlite(session_id, source_path);
+        return opencode::delete_session_sqlite(session_id, source_path)
+            .map(SessionDeleteResult::complete);
     }
     if provider_id == "hermes" && source_path.starts_with("sqlite:") {
-        return hermes::delete_session_sqlite(session_id, source_path);
+        return hermes::delete_session_sqlite(session_id, source_path)
+            .map(SessionDeleteResult::complete);
     }
 
     let roots = provider_roots(provider_id)?;
@@ -134,7 +172,7 @@ pub fn delete_session(
 
 pub fn delete_sessions(requests: &[DeleteSessionRequest]) -> Vec<DeleteSessionOutcome> {
     collect_delete_session_outcomes(requests, |request| {
-        delete_session(
+        delete_session_result(
             &request.provider_id,
             &request.session_id,
             &request.source_path,
@@ -147,7 +185,7 @@ fn delete_session_with_roots(
     session_id: &str,
     source_path: &Path,
     roots: &[PathBuf],
-) -> Result<bool, String> {
+) -> Result<SessionDeleteResult, String> {
     let mut saw_existing_root = false;
     for root in roots {
         if !root.exists() {
@@ -166,30 +204,46 @@ fn delete_session_with_roots(
                     }
                     "claude" => {
                         claude::delete_session(&validated_root, &validated_source, session_id)
+                            .map(SessionDeleteResult::complete)
                     }
                     "opencode" => {
                         opencode::delete_session(&validated_root, &validated_source, session_id)
+                            .map(SessionDeleteResult::complete)
                     }
                     "openclaw" => {
                         openclaw::delete_session(&validated_root, &validated_source, session_id)
+                            .map(SessionDeleteResult::complete)
                     }
                     "gemini" => {
                         gemini::delete_session(&validated_root, &validated_source, session_id)
+                            .map(SessionDeleteResult::complete)
                     }
                     "grokbuild" => {
                         grokbuild::delete_session(&validated_root, &validated_source, session_id)
+                            .map(SessionDeleteResult::complete)
                     }
                     "hermes" => {
                         hermes::delete_session(&validated_root, &validated_source, session_id)
+                            .map(SessionDeleteResult::complete)
                     }
                     _ => Err(format!("Unsupported provider: {provider_id}")),
                 };
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                // canonicalize_within_root performs component-by-component
-                // symlink checks before it canonicalizes the target. NotFound
-                // therefore means "validated descendant, missing leaf", which
-                // is the zombie-session case.
+                // A missing path has no canonical target. Validate its lexical
+                // containment too: canonicalize_within_root can return NotFound
+                // for an unrelated missing path before checking the root.
+                let Ok(relative) = source_path.strip_prefix(root) else {
+                    continue;
+                };
+                if relative.components().any(|component| {
+                    !matches!(
+                        component,
+                        std::path::Component::Normal(_) | std::path::Component::CurDir
+                    )
+                }) {
+                    continue;
+                }
                 if provider_id == "codex" {
                     return codex::delete_session_records(&validated_root, session_id);
                 }
@@ -244,32 +298,32 @@ fn collect_delete_session_outcomes<F>(
     mut deleter: F,
 ) -> Vec<DeleteSessionOutcome>
 where
-    F: FnMut(&DeleteSessionRequest) -> Result<bool, String>,
+    F: FnMut(&DeleteSessionRequest) -> Result<SessionDeleteResult, String>,
 {
     requests
         .iter()
-        .map(|request| match deleter(request) {
-            Ok(true) => DeleteSessionOutcome {
+        .map(|request| {
+            let result = match deleter(request) {
+                Ok(result) => result,
+                Err(error) => SessionDeleteResult {
+                    source_deleted: false,
+                    cleanup_pending: false,
+                    error: Some(error),
+                },
+            };
+            let success =
+                result.source_deleted && !result.cleanup_pending && result.error.is_none();
+            DeleteSessionOutcome {
                 provider_id: request.provider_id.clone(),
                 session_id: request.session_id.clone(),
                 source_path: request.source_path.clone(),
-                success: true,
-                error: None,
-            },
-            Ok(false) => DeleteSessionOutcome {
-                provider_id: request.provider_id.clone(),
-                session_id: request.session_id.clone(),
-                source_path: request.source_path.clone(),
-                success: false,
-                error: Some("Session was not deleted".to_string()),
-            },
-            Err(error) => DeleteSessionOutcome {
-                provider_id: request.provider_id.clone(),
-                session_id: request.session_id.clone(),
-                source_path: request.source_path.clone(),
-                success: false,
-                error: Some(error),
-            },
+                success,
+                source_deleted: result.source_deleted,
+                cleanup_pending: result.cleanup_pending,
+                error: result
+                    .error
+                    .or_else(|| (!success).then(|| "Session was not deleted".to_string())),
+            }
         })
         .collect()
 }
@@ -292,23 +346,28 @@ mod tests {
 
     #[test]
     fn accepts_source_path_under_any_allowed_provider_root() {
-        let active_root = tempdir().expect("active root");
-        let archived_root = tempdir().expect("archived root");
-        let source = archived_root.path().join("session.jsonl");
+        let temp = tempdir().expect("config root");
+        let active_root = temp.path().join("sessions");
+        let archived_root = temp.path().join("archived_sessions");
+        std::fs::create_dir(&active_root).unwrap();
+        std::fs::create_dir(&archived_root).unwrap();
+        std::fs::write(
+            temp.path().join("config.toml"),
+            format!("sqlite_home = '{}'\n", temp.path().display()),
+        )
+        .unwrap();
+        let source = archived_root.join("session.jsonl");
         write_codex_session(&source, "archived-session");
 
         let deleted = delete_session_with_roots(
             "codex",
             "archived-session",
             &source,
-            &[
-                active_root.path().to_path_buf(),
-                archived_root.path().to_path_buf(),
-            ],
+            &[active_root, archived_root],
         )
         .expect("delete archived session");
 
-        assert!(deleted);
+        assert!(deleted.source_deleted && !deleted.cleanup_pending);
         assert!(!source.exists());
     }
 
@@ -328,14 +387,20 @@ mod tests {
 
     #[test]
     fn codex_missing_source_cleans_records() {
-        let root = tempdir().expect("tempdir");
-        let missing = root.path().join("missing.jsonl");
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path().join("sessions");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(
+            temp.path().join("config.toml"),
+            format!("sqlite_home = '{}'\n", temp.path().display()),
+        )
+        .unwrap();
+        let missing = root.join("missing.jsonl");
 
-        let deleted =
-            delete_session_with_roots("codex", "session-1", &missing, &[root.path().to_path_buf()])
-                .expect("validated missing rollout is a deletable zombie session");
+        let deleted = delete_session_with_roots("codex", "session-1", &missing, &[root])
+            .expect("validated missing rollout is a deletable zombie session");
 
-        assert!(deleted);
+        assert!(deleted.source_deleted && !deleted.cleanup_pending);
     }
 
     #[test]
@@ -360,9 +425,9 @@ mod tests {
 
         let outcomes = collect_delete_session_outcomes(&requests, |request| {
             match request.session_id.as_str() {
-                "s1" => Ok(true),
+                "s1" => Ok(SessionDeleteResult::complete(true)),
                 "s2" => Err("boom".to_string()),
-                _ => Ok(false),
+                _ => Ok(SessionDeleteResult::complete(false)),
             }
         });
 
@@ -375,6 +440,88 @@ mod tests {
         assert_eq!(
             outcomes[2].error.as_deref(),
             Some("Session was not deleted")
+        );
+    }
+
+    #[test]
+    fn partial_cleanup_keeps_identity_and_distinguishes_deleted_content_on_the_wire() {
+        let requests = [DeleteSessionRequest {
+            provider_id: "codex".into(),
+            session_id: "s1".into(),
+            source_path: "/sessions/missing.jsonl".into(),
+        }];
+        let outcomes = collect_delete_session_outcomes(&requests, |_| {
+            Ok(SessionDeleteResult {
+                source_deleted: true,
+                cleanup_pending: true,
+                error: Some("Content deleted; retry index cleanup".into()),
+            })
+        });
+        let outcome = &outcomes[0];
+        assert!(!outcome.success);
+        assert!(outcome.source_deleted && outcome.cleanup_pending);
+        assert_eq!(outcome.source_path, requests[0].source_path);
+        let json = serde_json::to_value(outcome).unwrap();
+        assert_eq!(json["sourceDeleted"], true);
+        assert_eq!(json["cleanupPending"], true);
+        assert!(SessionDeleteResult {
+            source_deleted: true,
+            cleanup_pending: true,
+            error: Some("retry cleanup".into())
+        }
+        .into_legacy_result()
+        .is_err());
+    }
+
+    #[test]
+    fn missing_source_outside_root_or_with_parent_traversal_cannot_clean_records() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("sessions");
+        std::fs::create_dir(&root).unwrap();
+        let index = temp.path().join("session_index.jsonl");
+        let content = "{\"id\":\"s1\"}\n";
+        std::fs::write(&index, content).unwrap();
+        for path in [
+            temp.path().join("missing.jsonl"),
+            root.join("../missing.jsonl"),
+        ] {
+            assert!(
+                delete_session_with_roots("codex", "s1", &path, std::slice::from_ref(&root))
+                    .is_err()
+            );
+            assert_eq!(std::fs::read_to_string(&index).unwrap(), content);
+        }
+    }
+
+    #[test]
+    fn missing_source_retry_selects_its_own_root_before_cleaning_records() {
+        let temp = tempdir().unwrap();
+        let roots: Vec<_> = ["first", "second"]
+            .iter()
+            .map(|name| temp.path().join(name).join("sessions"))
+            .collect();
+        for root in &roots {
+            std::fs::create_dir_all(root).unwrap();
+            let config_dir = root.parent().unwrap();
+            std::fs::write(
+                config_dir.join("config.toml"),
+                format!("sqlite_home = '{}'\n", config_dir.display()),
+            )
+            .unwrap();
+            std::fs::write(config_dir.join("session_index.jsonl"), "{\"id\":\"s1\"}\n").unwrap();
+        }
+        let missing = roots[1].join("2026/missing.jsonl");
+        let result = delete_session_with_roots("codex", "s1", &missing, &roots).unwrap();
+        assert!(result.source_deleted && !result.cleanup_pending);
+        assert!(
+            std::fs::read_to_string(roots[0].parent().unwrap().join("session_index.jsonl"))
+                .unwrap()
+                .contains("s1")
+        );
+        assert!(
+            std::fs::read_to_string(roots[1].parent().unwrap().join("session_index.jsonl"))
+                .unwrap()
+                .is_empty()
         );
     }
 }

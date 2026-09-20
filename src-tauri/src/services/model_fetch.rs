@@ -80,8 +80,10 @@ pub async fn fetch_models(
         return Err("API Key is required to fetch models".to_string());
     }
 
-    let candidates = build_models_url_candidates(base_url, is_full_url, models_url_override)?;
-    let client = crate::proxy::http_client::get();
+    let candidates = build_models_url_candidates(base_url, is_full_url, models_url_override)
+        .map_err(|error| sanitize_probe_error(&error, api_key))?;
+    let client = crate::proxy::http_client::get_for_auth_probe()
+        .map_err(|error| sanitize_probe_error(&error, api_key))?;
     let mut last_err: Option<String> = None;
     let log_secrets = vec![api_key.to_string()];
 
@@ -102,7 +104,10 @@ pub async fn fetch_models(
         let response = match request.send().await {
             Ok(r) => r,
             Err(e) => {
-                return Err(format!("Request failed: {e}"));
+                return Err(sanitize_probe_error(
+                    &format!("Request failed: {e}"),
+                    api_key,
+                ));
             }
         };
 
@@ -114,9 +119,11 @@ pub async fn fetch_models(
                 MAX_MODEL_DISCOVERY_RESPONSE_BYTES,
                 "model discovery response",
             )
-            .await?;
-            let resp: ModelsResponse = serde_json::from_slice(&body)
-                .map_err(|e| format!("Failed to parse response: {e}"))?;
+            .await
+            .map_err(|error| sanitize_probe_error(&error, api_key))?;
+            let resp: ModelsResponse = serde_json::from_slice(&body).map_err(|error| {
+                sanitize_probe_error(&format!("Failed to parse response: {error}"), api_key)
+            })?;
 
             let mut models: Vec<FetchedModel> = resp
                 .data
@@ -132,24 +139,23 @@ pub async fn fetch_models(
             return Ok(models);
         }
 
-        if status == StatusCode::NOT_FOUND || status == StatusCode::METHOD_NOT_ALLOWED {
-            let body = read_response_text_limited(
-                response,
-                MAX_PROTOCOL_PROBE_RESPONSE_BYTES,
-                "model discovery error response",
-            )
-            .await?;
-            last_err = Some(format!("HTTP {status}: {}", truncate_body(body)));
-            continue;
-        }
-
         let body = read_response_text_limited(
             response,
             MAX_PROTOCOL_PROBE_RESPONSE_BYTES,
             "model discovery error response",
         )
-        .await?;
-        return Err(format!("HTTP {status}: {}", truncate_body(body)));
+        .await
+        .map_err(|error| sanitize_probe_error(&error, api_key))?;
+        // Redact before truncating, including 404/405 fallback diagnostics.
+        let error = format!(
+            "HTTP {status}: {}",
+            truncate_body(sanitize_probe_error(&body, api_key))
+        );
+        if status == StatusCode::NOT_FOUND || status == StatusCode::METHOD_NOT_ALLOWED {
+            last_err = Some(error);
+            continue;
+        }
+        return Err(error);
     }
 
     Err(format!(
@@ -217,7 +223,8 @@ fn append_response_chunk(
     Ok(())
 }
 
-/// A protocol selected by the non-billable Codex API capability probe.
+/// A protocol selected by the Codex API capability probe. An upstream that
+/// ignores the deliberately invalid token budget can still generate billable output.
 ///
 /// The frontend intentionally stores the resolved format rather than an opaque
 /// `auto` value, so the same provider behaves predictably on later switches.
@@ -476,7 +483,7 @@ async fn probe_model_protocol(
     user_agent: Option<HeaderValue>,
 ) -> Result<DetectedCodexApiFormat, String> {
     let candidates = build_api_format_probe_urls(base_url, is_full_url)?;
-    let client = crate::proxy::http_client::get();
+    let client = crate::proxy::http_client::get_for_auth_probe()?;
     let probes = candidates.into_iter().map(|(probe, url)| {
         probe_codex_api_format_endpoint(
             &client,
@@ -850,7 +857,7 @@ async fn send_codex_api_format_probe_once(
                 attempt: ProbeAttempt {
                     classification: ProbeClassification::Inconclusive,
                     status: Some(status),
-                    excerpt: probe_excerpt(&error),
+                    excerpt: probe_excerpt(&sanitize_probe_error(&error, api_key)),
                 },
                 retry_after,
             };
@@ -1091,7 +1098,7 @@ fn upstream_error_message(body: &str) -> String {
 /// or reqwest echoes the request.
 fn sanitize_probe_error(text: &str, api_key: &str) -> String {
     let key = api_key.trim();
-    if key.len() >= 8 && text.contains(key) {
+    if !key.is_empty() && text.contains(key) {
         text.replace(key, "[redacted]")
     } else {
         text.to_string()
@@ -1587,6 +1594,130 @@ fn ends_with_version_segment(url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn serve_test_router(router: axum::Router) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        (url, server)
+    }
+
+    #[tokio::test]
+    async fn authenticated_discovery_does_not_follow_cross_origin_redirects() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        const KEY: &str = "audit-probe-fake-key";
+        for status in [
+            StatusCode::TEMPORARY_REDIRECT,
+            StatusCode::PERMANENT_REDIRECT,
+        ] {
+            let redirected_requests = Arc::new(AtomicUsize::new(0));
+            let received = redirected_requests.clone();
+            let (destination, destination_server) =
+                serve_test_router(axum::Router::new().fallback(move || {
+                    let received = received.clone();
+                    async move {
+                        received.fetch_add(1, Ordering::SeqCst);
+                        (StatusCode::BAD_REQUEST, "max_tokens must be an integer")
+                    }
+                }))
+                .await;
+            let key_requests = Arc::new(AtomicUsize::new(0));
+            let received = key_requests.clone();
+            let (origin, origin_server) = serve_test_router(axum::Router::new().fallback(
+                move |headers: axum::http::HeaderMap| {
+                    let received = received.clone();
+                    let destination = destination.clone();
+                    async move {
+                        if headers
+                            .get("x-api-key")
+                            .and_then(|value| value.to_str().ok())
+                            == Some(KEY)
+                        {
+                            received.fetch_add(1, Ordering::SeqCst);
+                        }
+                        (
+                            status,
+                            [(axum::http::header::LOCATION, destination)],
+                            "redirect",
+                        )
+                    }
+                },
+            ))
+            .await;
+
+            let result = detect_codex_api_format(
+                &format!("{origin}/v1/messages"),
+                KEY,
+                true,
+                Some("claude-test"),
+                None,
+            )
+            .await;
+            let models_result = fetch_models(&origin, KEY, false, None, None).await;
+            origin_server.abort();
+            destination_server.abort();
+
+            assert!(
+                result.is_err(),
+                "redirects must not establish protocol support"
+            );
+            assert!(models_result
+                .unwrap_err()
+                .contains(&format!("HTTP {status}")));
+            assert_eq!(key_requests.load(Ordering::SeqCst), 1);
+            assert_eq!(redirected_requests.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn model_discovery_redacts_all_upstream_error_branches_before_truncation() {
+        const KEY: &str = "audit-model-discovery-fake-key";
+        for status in [
+            StatusCode::UNAUTHORIZED,
+            StatusCode::FORBIDDEN,
+            StatusCode::NOT_FOUND,
+            StatusCode::METHOD_NOT_ALLOWED,
+            StatusCode::INTERNAL_SERVER_ERROR,
+        ] {
+            // The echoed key crosses the truncation boundary.
+            let body = format!("{}{KEY}", "x".repeat(ERROR_BODY_MAX_CHARS - 16));
+            let (url, server) = serve_test_router(axum::Router::new().fallback(move || {
+                let body = body.clone();
+                async move { (status, body) }
+            }))
+            .await;
+            // Compatibility paths exercise multiple 404/405 candidates.
+            let result = fetch_models(&format!("{url}/api/coding"), KEY, false, None, None).await;
+            server.abort();
+            let error = result.unwrap_err();
+            assert!(error.contains(&format!("HTTP {status}")));
+            assert!(error.contains("[redacted]"));
+            assert!(!error.contains("audit-model"), "{error}");
+            assert_eq!(
+                error.starts_with("All candidates failed:"),
+                status == StatusCode::NOT_FOUND || status == StatusCode::METHOD_NOT_ALLOWED
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn model_discovery_redacts_schema_errors_from_success_responses() {
+        const KEY: &str = "audit-model-discovery-fake-key";
+        let body = serde_json::json!({ "data": KEY }).to_string();
+        let (url, server) = serve_test_router(axum::Router::new().fallback(move || {
+            let body = body.clone();
+            async move { body }
+        }))
+        .await;
+        let result = fetch_models(&url, KEY, false, None, None).await;
+        server.abort();
+        let error = result.unwrap_err();
+        assert!(error.contains("Failed to parse response:"));
+        assert!(error.contains("[redacted]"));
+        assert!(!error.contains(KEY));
+    }
 
     #[test]
     fn test_candidates_plain_root() {
@@ -2717,11 +2848,12 @@ mod tests {
             sanitize_probe_error("Bearer sk-live-1234567890 rejected", "sk-live-1234567890"),
             "Bearer [redacted] rejected"
         );
-        // Short keys are not replaced: they would match inside ordinary words.
+        // Even short configured credentials must not be echoed to the UI.
         assert_eq!(
             sanitize_probe_error("key abc rejected", "abc"),
-            "key abc rejected"
+            "key [redacted] rejected"
         );
+        assert_eq!(sanitize_probe_error("missing key", ""), "missing key");
     }
 
     #[test]

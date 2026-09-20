@@ -6,7 +6,7 @@ product
 
 ## Platform
 
-web
+Desktop application built with Tauri 2. Windows is the primary platform; macOS and Linux releases have more limited Codex runtime maintenance capabilities.
 
 ## Users
 
@@ -34,7 +34,7 @@ Quietly capable, exact, and reassuring. Chimera++ should feel like a refined des
 
 ## Navigation and Product Scope
 
-Provider configuration is Codex-only: no other tool gets a connection, model, or runtime screen, and the dormant multi-tool backend stays internal. The one deliberate exception is 会话, which reads session logs written by whatever CLIs are installed locally — its provider filter therefore names Claude Code, Gemini CLI, Grok Build, and OpenCode alongside Codex. That surface is read-only history, not provider management, and it is the only place a non-Codex tool name reaches the customer interface.
+Provider configuration is Codex-only: no other tool gets a connection, model, or runtime screen, and the dormant multi-tool backend stays internal. The one deliberate exception is 会话, which reads session logs written by whatever CLIs are installed locally — its provider filter therefore names Claude Code, Gemini CLI, Grok Build, and OpenCode alongside Codex. That surface manages local session history, including confirmed single and batch deletion, not provider configuration, and it is the only regular navigation surface for non-Codex tools. Explicit deep-link requests retain the inherited confirmation-only import flow for compatibility; they do not add multi-tool management screens.
 
 The shipped navigation is a six-item bottom bar, not a sidebar:
 
@@ -42,7 +42,7 @@ The shipped navigation is a six-item bottom bar, not a sidebar:
 2. **更新**: Codex runtime install discovery, stable or portable distribution choice, update source, version comparison, repair, rollback, and uninstall with explicit confirmation.
 3. **词元**: request counts, token consumption, per-model distribution, and history.
 4. **外观**: browse, preview, install, apply, and restore Codex client skins.
-5. **会话**: browse local session logs across installed CLIs with search and a provider filter; copy a resume command or the project directory, and on macOS resume directly in a terminal.
+5. **会话**: browse local session logs across installed CLIs with search and a provider filter; copy a resume command or the project directory, resume directly in a terminal on macOS, and delete single or selected sessions after confirmation.
 6. **设置**: application update behavior, startup behavior, application data directory, and non-destructive preferences.
 
 The 控制台 and 工具箱 destinations named in earlier drafts of this document were never shipped under those names; connection test, health scan, backup, and config transfer live inside the screens above rather than in a separate tools page.

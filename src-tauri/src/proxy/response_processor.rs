@@ -492,7 +492,7 @@ pub(crate) fn create_usage_collector(
     let start_time = ctx.start_time;
     let stream_parser = parser_config.stream_parser;
     let model_extractor = parser_config.model_extractor;
-    let session_id = ctx.session_id.clone();
+    let session_id = ctx.usage_session_id();
 
     Some(SseUsageCollector::new(
         start_time,
@@ -521,7 +521,7 @@ pub(crate) fn create_usage_collector(
                         first_token_ms,
                         true, // is_streaming
                         status_code,
-                        Some(session_id),
+                        session_id,
                     )
                     .await;
                 });
@@ -547,7 +547,7 @@ pub(crate) fn create_usage_collector(
                         first_token_ms,
                         true, // is_streaming
                         status_code,
-                        Some(session_id),
+                        session_id,
                     )
                     .await;
                 });
@@ -585,7 +585,7 @@ fn spawn_log_usage(
         .clone()
         .unwrap_or_else(|| ctx.request_model.clone());
     let latency_ms = ctx.latency_ms();
-    let session_id = ctx.session_id.clone();
+    let session_id = ctx.usage_session_id();
 
     tokio::spawn(async move {
         log_usage_internal(
@@ -600,7 +600,7 @@ fn spawn_log_usage(
             None,
             is_streaming,
             status_code,
-            Some(session_id),
+            session_id,
         )
         .await;
     });
@@ -910,7 +910,7 @@ fn format_headers(headers: &HeaderMap) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::database::Database;
     use crate::error::AppError;
@@ -1051,7 +1051,7 @@ mod tests {
         );
     }
 
-    fn build_state(db: Arc<Database>) -> ProxyState {
+    pub(crate) fn build_state(db: Arc<Database>) -> ProxyState {
         ProxyState {
             db: db.clone(),
             config: Arc::new(RwLock::new(ProxyConfig::default())),
@@ -1064,6 +1064,179 @@ mod tests {
             app_handle: None,
             failover_manager: Arc::new(FailoverSwitchManager::new(db)),
             codex_wire_api_auto: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    // Shared in-memory upstream responses exercise the actual passthrough and
+    // transformed-response callers, not just the final logger API.
+    pub(crate) fn usage_response(protocol: &str, streaming: bool) -> ProxyResponse {
+        let body = match protocol {
+            "claude" => serde_json::json!({
+                "id": "msg_usage", "type": "message", "role": "assistant", "model": "req-model",
+                "content": [{"type": "text", "text": "ok"}], "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 2}
+            }),
+            "responses" => serde_json::json!({
+                "id": "resp_usage", "object": "response", "status": "completed", "model": "req-model",
+                "output": [], "usage": {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12}
+            }),
+            "chat" => serde_json::json!({
+                "id": "chatcmpl_usage", "object": "chat.completion", "created": 1, "model": "req-model",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}
+            }),
+            "gemini" => serde_json::json!({
+                "responseId": "gemini_usage", "modelVersion": "req-model",
+                "candidates": [{"content": {"parts": [{"text": "ok"}]}, "finishReason": "STOP"}],
+                "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 2, "totalTokenCount": 12}
+            }),
+            _ => panic!("unknown test protocol: {protocol}"),
+        };
+        let encoded = if streaming {
+            let events = match protocol {
+                "claude" => vec![
+                    serde_json::json!({"type": "message_start", "message": body}),
+                    serde_json::json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 2}}),
+                    serde_json::json!({"type": "message_stop"}),
+                ],
+                "responses" => {
+                    vec![serde_json::json!({"type": "response.completed", "response": body})]
+                }
+                "chat" => vec![serde_json::json!({
+                    "id": "chatcmpl_usage", "object": "chat.completion.chunk", "created": 1, "model": "req-model",
+                    "choices": [{"index": 0, "delta": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+                    "usage": body["usage"]
+                })],
+                _ => vec![body],
+            };
+            let mut sse = String::new();
+            for event in events {
+                if let Some(kind) = event["type"].as_str() {
+                    sse.push_str(&format!("event: {kind}\n"));
+                }
+                sse.push_str(&format!("data: {event}\n\n"));
+            }
+            sse.push_str("data: [DONE]\n\n");
+            sse
+        } else {
+            body.to_string()
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "content-type",
+            if streaming {
+                "text/event-stream"
+            } else {
+                "application/json"
+            }
+            .parse()
+            .unwrap(),
+        );
+        ProxyResponse::buffered(axum::http::StatusCode::OK, headers, Bytes::from(encoded))
+    }
+
+    pub(crate) async fn assert_usage_log(
+        db: &Database,
+        ctx: &RequestContext,
+        streaming: bool,
+        status: u16,
+        has_usage: bool,
+    ) {
+        // Streaming collectors and non-streaming handlers both spawn the write.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let count: i64 = {
+                    let conn = db.conn.lock().unwrap();
+                    conn.query_row("SELECT COUNT(*) FROM proxy_request_logs", [], |r| r.get(0))
+                        .unwrap()
+                };
+                if count > 0 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("usage caller must persist a log");
+        let conn = db.conn.lock().unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM proxy_request_logs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+        let (session, app, is_streaming, status_code, tokens): (
+            Option<String>,
+            String,
+            bool,
+            u16,
+            i64,
+        ) = conn
+            .query_row(
+                "SELECT session_id, app_type, is_streaming, status_code,
+                input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens
+             FROM proxy_request_logs",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        let expected = ctx.session_client_provided.then(|| ctx.session_id.clone());
+        assert_eq!(
+            session, expected,
+            "synthetic routing IDs must not become usage identities"
+        );
+        assert_eq!(app, ctx.app_type_str);
+        assert_eq!(is_streaming, streaming);
+        assert_eq!(status_code, status);
+        assert_eq!(tokens > 0, has_usage, "the actual usage parser must run");
+    }
+
+    #[tokio::test]
+    async fn passthrough_usage_persists_only_client_session_identities() {
+        use crate::proxy::handler_config::{
+            CLAUDE_PARSER_CONFIG, CODEX_PARSER_CONFIG, GEMINI_PARSER_CONFIG, OPENAI_PARSER_CONFIG,
+        };
+        use crate::proxy::handler_context::tests::usage_context;
+        for (app, protocol, parser) in [
+            ("claude", "claude", &CLAUDE_PARSER_CONFIG),
+            ("claude-desktop", "claude", &CLAUDE_PARSER_CONFIG),
+            ("codex", "responses", &CODEX_PARSER_CONFIG),
+            ("grokbuild", "responses", &CODEX_PARSER_CONFIG),
+            ("codex", "chat", &OPENAI_PARSER_CONFIG),
+            ("gemini", "gemini", &GEMINI_PARSER_CONFIG),
+        ] {
+            for provided in [false, true] {
+                for streaming in [false, true] {
+                    let db = Arc::new(Database::memory().unwrap());
+                    let state = build_state(db.clone());
+                    let ctx = usage_context(&db, app, provided).await;
+                    let upstream = usage_response(protocol, streaming);
+                    let response = if streaming {
+                        handle_streaming(upstream, &ctx, &state, parser, None).await
+                    } else {
+                        handle_non_streaming(upstream, &ctx, &state, parser, None)
+                            .await
+                            .unwrap()
+                    };
+                    axum::body::to_bytes(response.into_body(), 64 * 1024)
+                        .await
+                        .unwrap();
+                    assert_usage_log(&db, &ctx, streaming, 200, true).await;
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_usage_collector_persists_only_client_session_identities() {
+        use crate::proxy::handler_config::CODEX_PARSER_CONFIG;
+        use crate::proxy::handler_context::tests::usage_context;
+        for provided in [false, true] {
+            let db = Arc::new(Database::memory().unwrap());
+            let state = build_state(db.clone());
+            let ctx = usage_context(&db, "codex", provided).await;
+            let collector =
+                create_usage_collector(&ctx, &state, 200, &CODEX_PARSER_CONFIG).unwrap();
+            collector.finish().await;
+            assert_usage_log(&db, &ctx, true, 200, false).await;
         }
     }
 

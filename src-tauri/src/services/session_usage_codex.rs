@@ -25,26 +25,22 @@ use crate::services::session_usage::{
     get_sync_state, metadata_modified_nanos, update_sync_state, SessionSyncResult,
 };
 use crate::services::usage_stats::{
-    find_model_pricing, has_suspected_codex_session_duplicate, should_skip_session_insert, DedupKey,
+    effective_usage_log_filter, find_model_pricing, has_suspected_codex_session_duplicate,
+    should_skip_session_insert, DedupKey,
 };
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use std::collections::HashMap;
 use std::fs;
-use std::io::{self, BufRead, BufReader};
+use std::io::{self, BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
 const CODEX_THREAD_REQUEST_ID_PREFIX: &str = "codex_session:thread-v1";
 
-/// Maximum size of a single JSONL line accepted while streaming a Codex
-/// rollout file. Rollout files are parsed line-by-line (see
-/// [`read_capped_line`]) so their *total* size is unbounded by design; the
-/// only thing that can still blow up memory is one pathological line with
-/// no newline for megabytes. Lines beyond this are skipped (not fatal) so a
-/// single malformed line cannot take an otherwise-healthy session file out
-/// of sync forever.
+/// Maximum buffered plaintext line. Compressed files additionally have a hard
+/// total decoded-byte budget, including skipped/oversized lines.
 pub(super) const MAX_SESSION_LINE_BYTES: usize = 16 * 1024 * 1024;
 
 /// Read one line from a buffered reader, bounded to `max_len` bytes.
@@ -165,6 +161,7 @@ enum ParentResolution {
 #[derive(Debug)]
 struct ParsedCodexFile {
     root_thread_id: Option<String>,
+    source_session_id: Option<String>,
     root_meta_seen: bool,
     root_timestamp: Option<DateTime<Utc>>,
     parent: ParentResolution,
@@ -282,6 +279,13 @@ pub(crate) fn reset_codex_usage_on_conn(
             [],
         )
         .map_err(|error| AppError::Database(format!("清理 Codex 会话明细失败: {error}")))?;
+    }
+    if sqlite_table_exists(conn, "usage_rollup_dedup")? {
+        conn.execute(
+            "DELETE FROM usage_rollup_dedup WHERE data_source = 'codex_session'",
+            [],
+        )
+        .map_err(|error| AppError::Database(format!("清理 Codex 归档凭据失败: {error}")))?;
     }
     if sqlite_table_exists(conn, "usage_daily_rollups")?
         && sqlite_column_exists(conn, "usage_daily_rollups", "provider_id")?
@@ -630,7 +634,7 @@ fn rebuild_codex_usage_from_dir(
     clear_codex_replay_caches();
     let result = sync_codex_files(&staging, &files, true);
     clear_codex_replay_caches();
-    let result = result?;
+    let mut result = result?;
     if !result.errors.is_empty() || result.deferred_files > 0 {
         return Err(AppError::Message(format!(
             "会话导入不完整，原统计未修改：{} 个错误，{} 个待处理文件。{}",
@@ -639,7 +643,7 @@ fn rebuild_codex_usage_from_dir(
             result.errors.join("; ")
         )));
     }
-    if result.imported == 0 {
+    if result.imported == 0 && result.skipped == 0 {
         return Err(AppError::Message("未导入可用会话记录，原统计未修改".into()));
     }
     if files != collect_codex_session_files(codex_dir)? || before != source_state()? {
@@ -694,6 +698,16 @@ fn rebuild_codex_usage_from_dir(
             .map_err(|e| AppError::Database(e.to_string()))?;
         }
     }
+    // Proxy traffic/archival can advance while the in-memory replay runs.
+    // Recheck against live receipts inside the replacement transaction.
+    let effective_filter = effective_usage_log_filter("proxy_request_logs");
+    let newly_skipped = tx.execute(
+        &format!("DELETE FROM proxy_request_logs WHERE data_source = 'codex_session' AND NOT ({effective_filter})"),
+        [],
+    ).map_err(|e| AppError::Database(format!("校验重建用量去重失败: {e}")))?;
+    let newly_skipped = u32::try_from(newly_skipped).unwrap_or(u32::MAX);
+    result.imported = result.imported.saturating_sub(newly_skipped);
+    result.skipped = result.skipped.saturating_add(newly_skipped);
     tx.commit().map_err(|e| AppError::Database(e.to_string()))?;
     Ok(result)
 }
@@ -737,11 +751,46 @@ fn build_rollout_index(files: &[PathBuf]) -> RolloutIndex {
     index
 }
 
-/// Bound compressed rollout input before decompression. This is intentionally
-/// larger than the plaintext line cap: compression ratios vary, but it still
-/// stops malformed decompression bombs.
-fn codex_compressed_rollout_limit() -> u64 {
-    256 * 1024 * 1024
+const MAX_CODEX_COMPRESSED_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_CODEX_DECOMPRESSED_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Unlike Read::take, exhausting a budget is an error, not a successful EOF.
+/// Probe at most one extra byte so an exact-size stream can still finish.
+struct RolloutByteLimit<R> {
+    inner: R,
+    remaining: u64,
+}
+
+impl<R: Read> Read for RolloutByteLimit<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let len = (buf.len() as u64).min(self.remaining.saturating_add(1)) as usize;
+        let count = self.inner.read(&mut buf[..len])?;
+        if count as u64 > self.remaining {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Codex 压缩输入或解压输出超过大小限制",
+            ));
+        }
+        self.remaining -= count as u64;
+        Ok(count)
+    }
+}
+
+fn bounded_zstd_reader<R: Read>(
+    reader: R,
+    compressed_limit: u64,
+    decompressed_limit: u64,
+) -> io::Result<impl BufRead> {
+    let mut decoder = zstd::stream::read::Decoder::new(RolloutByteLimit {
+        inner: reader,
+        remaining: compressed_limit,
+    })?;
+    // Bound the decoder's internal history too, before it reads frame headers.
+    decoder.window_log_max(26)?; // 64 MiB, independent of the output buffer.
+    Ok(BufReader::new(RolloutByteLimit {
+        inner: decoder,
+        remaining: decompressed_limit,
+    }))
 }
 
 fn parse_codex_file(
@@ -751,24 +800,29 @@ fn parse_codex_file(
 ) -> Result<ParsedCodexFile, AppError> {
     let file = open_regular_file_no_symlink(file_path)
         .map_err(|e| AppError::Config(format!("无法打开文件: {e}")))?;
-    // Older rollouts may be zstd-compressed. Decode once here so the line
-    // parser and its hard per-line cap operate on the same plaintext for both
-    // `.jsonl` and `.jsonl.zst` files.
-    let mut reader: Box<dyn std::io::BufRead> =
-        if file_path.to_string_lossy().ends_with(".jsonl.zst") {
-            let mut compressed = Vec::new();
-            {
-                use std::io::Read;
-                file.take(codex_compressed_rollout_limit())
-                    .read_to_end(&mut compressed)
-                    .map_err(|e| AppError::Config(format!("读取压缩 Codex 会话失败: {e}")))?;
-            }
-            let plain = zstd::stream::decode_all(std::io::Cursor::new(&compressed))
-                .map_err(|e| AppError::Config(format!("无法解压 Codex 会话文件: {e}")))?;
-            Box::new(BufReader::new(std::io::Cursor::new(plain)))
-        } else {
-            Box::new(BufReader::new(file))
-        };
+    // Stream plaintext directly into the existing capped line parser. Both
+    // budgets fail closed; no partial file is imported or acknowledged.
+    let mut reader: Box<dyn BufRead> = if file_path.to_string_lossy().ends_with(".jsonl.zst") {
+        if file
+            .metadata()
+            .map_err(|e| AppError::Config(e.to_string()))?
+            .len()
+            > MAX_CODEX_COMPRESSED_BYTES
+        {
+            return Err(AppError::Config("压缩 Codex 会话超过输入大小限制".into()));
+        }
+        Box::new(
+            bounded_zstd_reader(
+                file,
+                MAX_CODEX_COMPRESSED_BYTES,
+                MAX_CODEX_DECOMPRESSED_BYTES,
+            )
+            .map_err(|e| AppError::Config(format!("无法解压 Codex 会话文件: {e}")))?,
+        )
+    } else {
+        Box::new(BufReader::new(file))
+    };
+    let mut source_session_id = root_thread_id.clone();
     let mut root_meta_seen = false;
     let mut root_timestamp = None;
     let mut parent = ParentResolution::None;
@@ -860,14 +914,18 @@ fn parse_codex_file(
                         .or_else(|| payload.get("thread_id"))
                         .or_else(|| payload.get("threadId")),
                 );
+                if let Some(meta_id) = meta_thread_id.as_ref() {
+                    source_session_id = Some(meta_id.clone());
+                }
                 // Codex's revert/resume writes a fresh rollout whose file name
                 // carries a new UUID while `session_meta.id` keeps the thread's
                 // original id. Those files were deferred as "inconsistent" and,
                 // since neither id ever changes, deferred forever — every token
                 // the resumed thread spent from then on went unrecorded. The
                 // file's own UUID stays the accounting key (its events are new,
-                // so nothing is double counted against the original rollout);
-                // the meta id is only informative.
+                // so nothing is double counted against the original rollout).
+                // The metadata ID, not the file UUID, is the shared proxy/session
+                // identity used for cross-source matching on resumed rollouts.
                 if let (Some(filename_id), Some(meta_id)) = (&root_thread_id, meta_thread_id) {
                     if filename_id != &meta_id {
                         log::debug!(
@@ -979,6 +1037,7 @@ fn parse_codex_file(
 
     Ok(ParsedCodexFile {
         root_thread_id,
+        source_session_id,
         root_meta_seen,
         root_timestamp,
         parent,
@@ -1334,7 +1393,7 @@ fn sync_single_codex_file(
             &request_id,
             &event.delta,
             &event.model,
-            Some(root_thread_id),
+            parsed.source_session_id.as_deref(),
             event.timestamp.as_deref(),
             &mut result.suspected_duplicates,
         ) {
@@ -1383,6 +1442,7 @@ fn insert_codex_session_entry(
         });
 
     let dedup_key = DedupKey {
+        session_id,
         app_type: "codex",
         model,
         input_tokens: delta.input,
@@ -1681,6 +1741,133 @@ mod tests {
     }
 
     #[test]
+    fn compressed_reader_enforces_input_output_and_line_budgets() {
+        let plain = b"{}\n".repeat(4096);
+        let compressed = zstd::stream::encode_all(plain.as_slice(), 3).unwrap();
+        assert!(compressed.len() < 1024);
+        let mut reader = bounded_zstd_reader(compressed.as_slice(), 1024, 1024).unwrap();
+        let mut accepted = 0;
+        loop {
+            match read_capped_line(&mut reader, 16) {
+                Ok(Some((line, false, true))) => accepted += line.len() + 1,
+                Err(error) => {
+                    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+                    break;
+                }
+                other => panic!("expected a hard decoded-byte error, got {other:?}"),
+            }
+        }
+        assert!(
+            accepted <= 1024,
+            "do not drain the rest of an expansion bomb"
+        );
+
+        let mut exact = bounded_zstd_reader(
+            compressed.as_slice(),
+            compressed.len() as u64,
+            plain.len() as u64,
+        )
+        .unwrap();
+        let mut output = Vec::new();
+        exact.read_to_end(&mut output).unwrap();
+        assert_eq!(output, plain);
+        let mut short = bounded_zstd_reader(
+            compressed.as_slice(),
+            compressed.len() as u64 - 1,
+            plain.len() as u64,
+        )
+        .unwrap();
+        assert!(short.read_to_end(&mut Vec::new()).is_err());
+
+        // A huge single line must also obey the total budget while it is being
+        // drained by read_capped_line, not only after a newline is found.
+        let long_line = zstd::stream::encode_all(&vec![b'x'; 4096][..], 3).unwrap();
+        let mut reader = bounded_zstd_reader(long_line.as_slice(), 1024, 1024).unwrap();
+        assert!(read_capped_line(&mut reader, 16).is_err());
+        let mut reader = bounded_zstd_reader(long_line.as_slice(), 1024, 4096).unwrap();
+        assert_eq!(
+            read_capped_line(&mut reader, 16).unwrap(),
+            Some((Vec::new(), true, false))
+        );
+
+        // Concatenated zstd frames share the same output budget.
+        let doubled = [compressed.as_slice(), compressed.as_slice()].concat();
+        let mut reader = bounded_zstd_reader(doubled.as_slice(), 2048, plain.len() as u64).unwrap();
+        assert!(reader.read_to_end(&mut Vec::new()).is_err());
+    }
+
+    #[test]
+    fn rebuild_after_proxy_pruning_is_idempotent_and_keeps_direct_sessions() -> Result<(), AppError>
+    {
+        let db = Database::memory()?;
+        let temp = tempdir().unwrap();
+        let sessions = temp.path().join("sessions");
+        fs::create_dir(&sessions).unwrap();
+        let timestamp = "2020-01-01T12:00:00Z";
+        let ts = DateTime::parse_from_rfc3339(timestamp).unwrap().timestamp();
+        for thread in [PARENT_ID, CHILD_A_ID] {
+            let mut usage = token_count(1000, 300, 50);
+            usage["timestamp"] = timestamp.into();
+            write_jsonl(
+                &rollout_path(&sessions, thread),
+                &[
+                    session_meta_at(thread, None, None, timestamp),
+                    turn_context_at(timestamp),
+                    usage,
+                ],
+            );
+        }
+        {
+            let conn = lock_conn!(db.conn);
+            conn.execute(
+                "INSERT INTO proxy_request_logs (request_id, provider_id, app_type, model,
+                 input_tokens, output_tokens, cache_read_tokens, latency_ms, status_code, created_at, session_id)
+                 VALUES ('archived-proxy', 'provider', 'codex', 'gpt-5.6-sol', 1000, 50, 300, 1, 200, ?1, ?2)",
+                rusqlite::params![ts, format!("codex_{PARENT_ID}")],
+            )?;
+        }
+        assert_eq!(db.rollup_and_prune(30)?, 1);
+        // An all-proxy replay is a successful no-op, even with no imported rows.
+        let direct_file = rollout_path(&sessions, CHILD_A_ID);
+        let direct_content = fs::read(&direct_file).unwrap();
+        fs::remove_file(&direct_file).unwrap();
+        let all_proxy = rebuild_codex_usage_from_dir(&db, temp.path())?;
+        assert_eq!((all_proxy.imported, all_proxy.skipped), (0, 1));
+        fs::write(&direct_file, direct_content).unwrap();
+        for _ in 0..3 {
+            let result = rebuild_codex_usage_from_dir(&db, temp.path())?;
+            assert_eq!(
+                result.imported, 1,
+                "only the independent direct session is new"
+            );
+            assert_eq!(result.skipped, 1);
+            let summary = db.get_usage_summary(None, None, Some("codex"), None, None)?;
+            assert_eq!(summary.total_requests, 2);
+            assert_eq!(summary.real_total_tokens, 2100);
+            assert_eq!(summary.total_cache_read_tokens, 600);
+            assert_eq!(db.rollup_and_prune(30)?, 1);
+            assert_eq!(
+                db.get_usage_summary(None, None, Some("codex"), None, None)?
+                    .total_requests,
+                2
+            );
+        }
+        // Old releases have aggregates but no identity receipts. Never guess
+        // which direct session belongs to them or destroy that history.
+        lock_conn!(db.conn).execute(
+            "DELETE FROM usage_rollup_dedup WHERE data_source = 'proxy'",
+            [],
+        )?;
+        assert!(rebuild_codex_usage_from_dir(&db, temp.path()).is_err());
+        assert_eq!(
+            db.get_usage_summary(None, None, Some("codex"), None, None)?
+                .total_requests,
+            2
+        );
+        Ok(())
+    }
+
+    #[test]
     fn test_delta_first_event() {
         let prev = None;
         let current = CumulativeTokens {
@@ -1949,6 +2136,15 @@ mod tests {
             |row| row.get(0),
         )?;
         assert_eq!(count, 2, "one row per rollout, no double counting");
+        let resumed_session: String = conn.query_row(
+            "SELECT session_id FROM proxy_request_logs WHERE request_id = ?1",
+            [format!("{CODEX_THREAD_REQUEST_ID_PREFIX}:{CHILD_A_ID}:1")],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            resumed_session, PARENT_ID,
+            "proxy matching uses metadata, not the file UUID"
+        );
         Ok(())
     }
 

@@ -3,7 +3,6 @@
 //! Implements manifest-based synchronization on top of the HTTP transport
 //! primitives in [`super::webdav`]. Artifact set: `db.sql` + `skills.zip`.
 
-use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::OnceLock;
 
@@ -12,18 +11,18 @@ use serde_json::Value;
 
 use crate::error::AppError;
 use crate::services::webdav::{
-    auth_from_credentials, build_remote_url, ensure_remote_directories, get_bytes, head_etag,
-    path_segments, put_bytes, test_connection, WebDavAuth,
+    auth_from_credentials, build_remote_url, ensure_remote_directories, get_bytes, path_segments,
+    put_bytes, test_connection, WebDavAuth,
 };
 use crate::settings::{update_webdav_sync_status, WebDavSyncSettings, WebDavSyncStatus};
 
 use super::sync_protocol::{
-    apply_snapshot, build_local_snapshot, effective_db_compat_version, localized,
-    persist_sync_success_best_effort, remote_changed_conflict_error,
-    remote_unchanged_since_last_sync, sha256_hex, torn_snapshot_error,
-    validate_artifact_size_limit, validate_manifest_compat, verify_artifact, ArtifactMeta,
-    RemoteLayout, SyncManifest, UploadOptions, DB_COMPAT_VERSION, MAX_MANIFEST_BYTES,
-    MAX_SYNC_ARTIFACT_BYTES, PROTOCOL_VERSION, REMOTE_DB_SQL, REMOTE_MANIFEST, REMOTE_SKILLS_ZIP,
+    apply_snapshot, artifact_relative_path, build_local_snapshot, effective_db_compat_version,
+    localized, manifest_write_condition, persist_sync_success_best_effort, sha256_hex,
+    torn_snapshot_error, validate_artifact_size_limit, validate_manifest_compat, verify_artifact,
+    LocalSnapshot, RemoteLayout, SyncManifest, UploadOptions, WriteCondition, DB_COMPAT_VERSION,
+    MAX_MANIFEST_BYTES, MAX_SYNC_ARTIFACT_BYTES, PROTOCOL_VERSION, REMOTE_DB_SQL, REMOTE_MANIFEST,
+    REMOTE_SKILLS_ZIP,
 };
 
 pub(crate) mod archive;
@@ -69,7 +68,7 @@ pub async fn upload(
     upload_with_options(db, settings, UploadOptions::default()).await
 }
 
-/// Upload local snapshot; `options.force` overwrites the remote unconditionally.
+/// Upload a new generation; force may replace a known manifest without CAS.
 pub async fn upload_with_options(
     db: &crate::database::Database,
     settings: &mut WebDavSyncSettings,
@@ -82,75 +81,68 @@ pub async fn upload_with_options(
 
     let manifest_url = remote_file_url(settings, RemoteLayout::Current, REMOTE_MANIFEST)?;
 
-    // Optimistic concurrency: compare the remote manifest's current ETag to
-    // what we recorded at the end of our last successful sync. A mismatch
-    // means another device uploaded since then — abort instead of silently
-    // overwriting it. See `remote_unchanged_since_last_sync` for exactly
-    // what counts as "unchanged".
-    let remote_etag_before = head_etag(&manifest_url, &auth).await?;
-    let local_known_etag = settings.status.last_remote_etag.clone();
-    if options.force {
-        log::warn!(
-            "[WebDAV] force upload requested: overwriting the remote snapshot regardless of its version (remote etag {remote_etag_before:?}, last known {local_known_etag:?})"
-        );
-    } else if !remote_unchanged_since_last_sync(&remote_etag_before, &local_known_etag) {
-        return Err(remote_changed_conflict_error());
-    }
-
+    let remote = get_bytes(&manifest_url, &auth, MAX_MANIFEST_BYTES).await?;
+    let condition = manifest_write_condition(
+        remote.as_ref(),
+        settings.status.last_remote_etag.as_deref(),
+        settings.status.last_remote_manifest_hash.as_deref(),
+        options,
+    )?;
     let snapshot = build_local_snapshot(db)?;
+    let manifest_hash = snapshot.manifest_hash.clone();
+    let etag = publish_snapshot(settings, &auth, snapshot, &condition).await?;
 
-    // Upload order: artifacts first, manifest last (best-effort consistency)
-    let db_url = remote_file_url(settings, RemoteLayout::Current, REMOTE_DB_SQL)?;
-    put_bytes(&db_url, &auth, snapshot.db_sql, "application/sql", None).await?;
+    let _persisted =
+        persist_sync_success_best_effort(settings, manifest_hash, etag, persist_sync_success);
+    Ok(serde_json::json!({ "status": "uploaded" }))
+}
 
-    let skills_url = remote_file_url(settings, RemoteLayout::Current, REMOTE_SKILLS_ZIP)?;
+/// Stage a fresh generation, then change only the manifest pointer. Failure or
+/// lost CAS leaves unpublished objects, never damaged published artifacts.
+/// ponytail: remote GC is deliberately deferred; deleting old objects needs a
+/// retention protocol that also protects concurrent downloads and publications.
+pub(super) async fn publish_snapshot(
+    settings: &WebDavSyncSettings,
+    auth: &WebDavAuth,
+    snapshot: LocalSnapshot,
+    condition: &WriteCondition,
+) -> Result<Option<String>, AppError> {
+    let (db_path, skills_path) = snapshot.artifact_paths()?;
+    let mut dirs = remote_dir_segments(settings, RemoteLayout::Current);
+    dirs.extend(db_path.split('/').take(2).map(str::to_string));
+    ensure_remote_directories(&settings.base_url, &dirs, auth).await?;
+
+    let db_url = remote_file_url(settings, RemoteLayout::Current, &db_path)?;
+    put_bytes(
+        &db_url,
+        auth,
+        snapshot.db_sql,
+        "application/sql",
+        &WriteCondition::IfNoneMatch,
+    )
+    .await?;
+    let skills_url = remote_file_url(settings, RemoteLayout::Current, &skills_path)?;
     put_bytes(
         &skills_url,
-        &auth,
+        auth,
         snapshot.skills_zip,
         "application/zip",
-        None,
+        &WriteCondition::IfNoneMatch,
     )
     .await?;
 
-    // Conditional write on the manifest itself: if the server enforces
-    // If-Match and the resource changed in the window between the HEAD
-    // check above and this PUT, the write is rejected server-side instead
-    // of silently overwriting (see `put_bytes`). `local_known_etag` is the
-    // same value the HEAD check above just confirmed still matches; when
-    // it's `None` (first sync, or a server that never returns ETags) no
-    // conditional header is sent and the PUT is unconditional, same as
-    // before this fix.
-    let manifest_if_match = if options.force {
-        None
-    } else {
-        local_known_etag.as_deref()
-    };
+    // A WebDAV server ignoring conditions is last-writer-wins, not CAS. Assuming
+    // atomic individual PUTs, even that server only exposes complete generations.
+    // Do not retry failed conditional PUTs unconditionally.
+    let manifest_url = remote_file_url(settings, RemoteLayout::Current, REMOTE_MANIFEST)?;
     put_bytes(
         &manifest_url,
-        &auth,
+        auth,
         snapshot.manifest_bytes,
         "application/json",
-        manifest_if_match,
+        condition,
     )
-    .await?;
-
-    // Fetch etag (best-effort, don't fail the upload)
-    let etag = match head_etag(&manifest_url, &auth).await {
-        Ok(e) => e,
-        Err(e) => {
-            log::debug!("[WebDAV] Failed to fetch ETag after upload: {e}");
-            None
-        }
-    };
-
-    let _persisted = persist_sync_success_best_effort(
-        settings,
-        snapshot.manifest_hash,
-        etag,
-        persist_sync_success,
-    );
-    Ok(serde_json::json!({ "status": "uploaded" }))
+    .await
 }
 
 /// Download remote snapshot and apply to local database + skills.
@@ -178,7 +170,7 @@ pub async fn download(
         &auth,
         snapshot.layout,
         REMOTE_DB_SQL,
-        &snapshot.manifest.artifacts,
+        &snapshot.manifest,
     )
     .await?;
     let skills_zip = download_and_verify(
@@ -186,7 +178,7 @@ pub async fn download(
         &auth,
         snapshot.layout,
         REMOTE_SKILLS_ZIP,
-        &snapshot.manifest.artifacts,
+        &snapshot.manifest,
     )
     .await?;
 
@@ -289,14 +281,15 @@ async fn fetch_remote_snapshot(
 }
 // ─── Download & verify ───────────────────────────────────────
 
-async fn download_and_verify(
+pub(super) async fn download_and_verify(
     settings: &WebDavSyncSettings,
     auth: &WebDavAuth,
     layout: RemoteLayout,
     artifact_name: &str,
-    artifacts: &BTreeMap<String, ArtifactMeta>,
+    manifest: &SyncManifest,
 ) -> Result<Vec<u8>, AppError> {
-    let meta = artifacts.get(artifact_name).ok_or_else(|| {
+    let relative_path = artifact_relative_path(manifest, artifact_name)?;
+    let meta = manifest.artifacts.get(artifact_name).ok_or_else(|| {
         localized(
             "webdav.sync.manifest_missing_artifact",
             format!("manifest 中缺少 artifact: {artifact_name}"),
@@ -305,7 +298,7 @@ async fn download_and_verify(
     })?;
     validate_artifact_size_limit(artifact_name, meta.size)?;
 
-    let url = remote_file_url(settings, layout, artifact_name)?;
+    let url = remote_file_url(settings, layout, &relative_path)?;
     let (bytes, _) = get_bytes(&url, auth, MAX_SYNC_ARTIFACT_BYTES as usize)
         .await?
         .ok_or_else(|| {

@@ -393,7 +393,12 @@ fn handle_deeplink_url(
                 request.name
             );
 
-            if let Err(e) = app.emit("deeplink-import", &request) {
+            if let Err(error) = commands::queue_deeplink(app, url_str, request) {
+                log::error!("Failed to queue deep link: {error}");
+                let _ = app.emit("deeplink-error", serde_json::json!({ "error": error }));
+                return true;
+            }
+            if let Err(e) = app.emit("deeplink-import", ()) {
                 log::error!("✗ Failed to emit deeplink-import event: {e}");
             } else {
                 log::info!("✓ Emitted deeplink-import event to frontend");
@@ -475,7 +480,7 @@ pub fn run() {
     // 设置 panic hook，在应用崩溃时记录日志到 Chimera++ 配置目录。
     panic_hook::setup_panic_hook();
 
-    let mut builder = tauri::Builder::default();
+    let mut builder = tauri::Builder::default().manage(commands::PendingDeepLinks::default());
 
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     {
@@ -497,7 +502,6 @@ pub fn run() {
             for arg in &args {
                 if handle_deeplink_url(app, arg, false, "single_instance args") {
                     found_deeplink = true;
-                    break;
                 }
             }
 
@@ -1274,13 +1278,18 @@ pub fn run() {
                         let url_str = url.as_str();
                         log::debug!("  URL[{i}]: {}", url_for_log(url_str));
 
-                        if handle_deeplink_url(&app_handle, url_str, true, "on_open_url") {
-                            break; // Process only the first supported deep link.
-                        }
+                        handle_deeplink_url(&app_handle, url_str, true, "on_open_url");
                     }
                 }
             });
             log::info!("✓ Deep-link URL handler registered");
+            // The plugin retains launch URLs that arrived before on_open_url.
+            // Subscribe first, then read; queue deduplication covers the overlap.
+            if let Ok(Some(urls)) = app.deep_link().get_current() {
+                for url in urls {
+                    handle_deeplink_url(app.handle(), url.as_str(), false, "initial URL");
+                }
+            }
 
             // Development executables must never replace the installed startup entry.
             #[cfg(not(debug_assertions))]
@@ -1757,6 +1766,8 @@ pub fn run() {
             commands::delete_db_backup,
             commands::sync_current_providers_live,
             // Deep link import
+            commands::get_pending_deeplink,
+            commands::dismiss_pending_deeplink,
             commands::parse_deeplink,
             commands::merge_deeplink_config,
             commands::import_from_deeplink,
@@ -2039,56 +2050,20 @@ pub fn run() {
                 }
                 // 处理通过自定义 URL 协议触发的打开事件。
                 RunEvent::Opened { urls } => {
-                    if let Some(url) = urls.first() {
+                    for url in urls {
                         let url_str = url.to_string();
-                        log::info!(
-                            "RunEvent::Opened with URL: {}",
-                            url_for_log(&url_str)
-                        );
+                        log::info!("RunEvent::Opened with URL: {}", url_for_log(&url_str));
 
                         if crate::product_policy::accepts_deep_link(&url_str) {
                             if crate::lightweight::is_lightweight_mode() {
-                                if let Err(e) = crate::lightweight::exit_lightweight_mode(app_handle)
+                                if let Err(e) =
+                                    crate::lightweight::exit_lightweight_mode(app_handle)
                                 {
                                     log::error!("退出轻量模式重建窗口失败: {e}");
                                 }
                             }
 
-                            // 解析并广播深链接事件，复用与 single_instance 相同的逻辑
-                            match crate::deeplink::parse_deeplink_url(&url_str) {
-                                Ok(request) => {
-                                    log::info!(
-                                        "Successfully parsed deep link from RunEvent::Opened: resource={}, app={:?}",
-                                        request.resource,
-                                        request.app
-                                    );
-
-                                    if let Err(e) =
-                                        app_handle.emit("deeplink-import", &request)
-                                    {
-                                        log::error!(
-                                            "Failed to emit deep link event from RunEvent::Opened: {e}"
-                                        );
-                                    }
-                                }
-                                Err(e) => {
-                                    log::error!(
-                                        "Failed to parse deep link URL from RunEvent::Opened: {e}"
-                                    );
-
-                                    if let Err(emit_err) = app_handle.emit(
-                                        "deeplink-error",
-                                        serde_json::json!({
-                                            "url": url_str,
-                                            "error": e.to_string()
-                                        }),
-                                    ) {
-                                        log::error!(
-                                            "Failed to emit deep link error event from RunEvent::Opened: {emit_err}"
-                                        );
-                                    }
-                                }
-                            }
+                            handle_deeplink_url(app_handle, &url_str, false, "RunEvent::Opened");
 
                             // 确保主窗口可见
                             if let Some(window) = app_handle.get_webview_window("main") {

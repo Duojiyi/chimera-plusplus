@@ -193,20 +193,19 @@ fn sync_single_gemini_file(db: &Database, file_path: &Path) -> Result<(u32, u32)
         let session_id_str = session_id.as_deref().unwrap_or("unknown");
         let request_id = format!("gemini_session:{session_id_str}:{message_id}");
 
-        match insert_gemini_session_entry(
+        // Surface ambiguity/database failures without acknowledging the file.
+        // Previously inserted request IDs make the retry idempotent.
+        if insert_gemini_session_entry(
             db,
             &request_id,
             &tokens,
             model,
             session_id.as_deref(),
             timestamp,
-        ) {
-            Ok(true) => imported += 1,
-            Ok(false) => skipped += 1,
-            Err(e) => {
-                log::warn!("[GEMINI-SYNC] 插入失败 ({}): {e}", request_id);
-                skipped += 1;
-            }
+        )? {
+            imported += 1;
+        } else {
+            skipped += 1;
         }
     }
 
@@ -254,6 +253,7 @@ fn insert_gemini_session_entry(
     let output_tokens = tokens.output + tokens.thoughts;
 
     let dedup_key = DedupKey {
+        session_id,
         app_type: "gemini",
         model,
         input_tokens: tokens.input,
@@ -364,6 +364,39 @@ fn find_gemini_pricing(conn: &rusqlite::Connection, model_id: &str) -> Option<Mo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ambiguous_archive_keeps_gemini_file_retryable() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("legacy.json");
+        fs::write(&file, r#"{"sessionId":"direct","messages":[{"type":"gemini","id":"message","model":"unknown","timestamp":"2020-01-01T12:00:00Z","tokens":{"input":10,"output":2}}]}"#).unwrap();
+        lock_conn!(db.conn).execute(
+            "INSERT INTO usage_daily_rollups (date, app_type, provider_id, model, request_count)
+             VALUES (date(1577880000, 'unixepoch', 'localtime'), 'gemini', 'proxy', 'unknown', 1)",
+            [],
+        )?;
+        for _ in 0..2 {
+            let error = sync_single_gemini_file(&db, &file).unwrap_err();
+            assert!(error.to_string().contains("历史用量汇总缺少请求身份"));
+            assert_eq!(get_sync_state(&db, &file.to_string_lossy())?, (0, 0));
+            let conn = lock_conn!(db.conn);
+            assert_eq!(
+                conn.query_row("SELECT COUNT(*) FROM proxy_request_logs", [], |r| r
+                    .get::<_, i64>(0))?,
+                0
+            );
+            assert_eq!(
+                conn.query_row(
+                    "SELECT SUM(request_count) FROM usage_daily_rollups",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )?,
+                1
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn test_collect_gemini_session_files_nonexistent() {

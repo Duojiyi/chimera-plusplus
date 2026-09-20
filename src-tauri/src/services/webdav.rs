@@ -6,6 +6,7 @@
 use reqwest::{Method, RequestBuilder, StatusCode, Url};
 use std::time::Duration;
 
+use super::sync_protocol::WriteCondition;
 use crate::error::AppError;
 use crate::proxy::http_client;
 use futures::StreamExt;
@@ -221,22 +222,15 @@ pub async fn ensure_remote_directories(
     Ok(())
 }
 
-/// PUT bytes to a remote WebDAV URL.
-///
-/// When `if_match` is `Some(etag)`, the request carries a conditional
-/// `If-Match` header so a server that supports it rejects the write (412 or
-/// 409) if the resource changed since `etag` was read — a server-enforced
-/// backstop for the client-side ETag comparison callers already do before
-/// starting an upload (see `services::sync_protocol::remote_unchanged_since_last_sync`).
-/// Servers that ignore the header simply overwrite as before; the
-/// client-side check remains the primary defense in that case.
-pub async fn put_bytes(
+/// PUT a complete object, optionally create-only or compare-and-swap.
+/// Return the validator of this write, never a later HEAD of another writer's data.
+pub(crate) async fn put_bytes(
     url: &str,
     auth: &WebDavAuth,
     bytes: Vec<u8>,
     content_type: &str,
-    if_match: Option<&str>,
-) -> Result<(), AppError> {
+    condition: &WriteCondition,
+) -> Result<Option<String>, AppError> {
     let client = http_client::get();
     let mut builder = apply_auth(
         client
@@ -245,17 +239,25 @@ pub async fn put_bytes(
             .timeout(Duration::from_secs(TRANSFER_TIMEOUT_SECS)),
         auth,
     );
-    if let Some(etag) = if_match {
-        builder = builder.header("If-Match", etag);
+    if let Some((name, value)) = condition.header() {
+        builder = builder.header(name, value);
     }
     let resp = builder.body(bytes).send().await.map_err(|e| {
         webdav_transport_error("webdav.put_failed", "PUT 请求", "PUT request", url, &e)
     })?;
 
-    if resp.status().is_success() {
-        return Ok(());
+    // 202 means accepted, not stored: do not publish a pointer to pending data.
+    if matches!(
+        resp.status(),
+        StatusCode::OK | StatusCode::CREATED | StatusCode::NO_CONTENT
+    ) {
+        return Ok(resp
+            .headers()
+            .get("etag")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string));
     }
-    if if_match.is_some()
+    if condition.header().is_some()
         && matches!(
             resp.status(),
             StatusCode::PRECONDITION_FAILED | StatusCode::CONFLICT
@@ -314,34 +316,6 @@ pub async fn get_bytes(
         bytes.extend_from_slice(&chunk);
     }
     Ok(Some((bytes, etag)))
-}
-
-/// HEAD request to retrieve the ETag. Returns `None` on 404.
-pub async fn head_etag(url: &str, auth: &WebDavAuth) -> Result<Option<String>, AppError> {
-    let client = http_client::get();
-    let resp = apply_auth(
-        client
-            .head(url)
-            .timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS)),
-        auth,
-    )
-    .send()
-    .await
-    .map_err(|e| {
-        webdav_transport_error("webdav.head_failed", "HEAD 请求", "HEAD request", url, &e)
-    })?;
-
-    if resp.status() == StatusCode::NOT_FOUND {
-        return Ok(None);
-    }
-    if !resp.status().is_success() {
-        return Err(webdav_status_error("HEAD", resp.status(), url));
-    }
-    Ok(resp
-        .headers()
-        .get("etag")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string()))
 }
 
 // ─── Internal helpers ────────────────────────────────────────
