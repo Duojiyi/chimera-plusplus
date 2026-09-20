@@ -72,8 +72,10 @@ describe("backup restore safety wiring", () => {
       "self.backup_database_file()?",
       "Backup::new(&staged_conn, &mut main_conn)",
     ]);
-    expect(database).toContain("enabled != 0 OR proxy_enabled != 0");
-    expect(database).toContain("OR EXISTS(SELECT 1 FROM proxy_live_backup)");
+    expect(database).toContain(
+      "FROM main.proxy_config WHERE enabled != 0 OR proxy_enabled != 0",
+    );
+    expect(database).toContain("OR EXISTS(SELECT 1 FROM main.proxy_live_backup)");
   });
 
   it("validates final local and cloud SQL state after preservation and before commit", () => {
