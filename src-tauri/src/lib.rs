@@ -1503,10 +1503,7 @@ pub fn run() {
                     const SESSION_SYNC_INTERVAL_SECS: u64 = 60;
 
                     async fn run_session_sync(db: std::sync::Arc<crate::database::Database>, backfill: bool) {
-                        let _guard = crate::services::session_usage::session_sync_mutex()
-                            .lock()
-                            .await;
-                        let task = tauri::async_runtime::spawn_blocking(move || {
+                        let task = crate::services::session_usage::run_session_sync_blocking(move || {
                             if backfill {
                                 if let Err(error) = db.backfill_missing_usage_costs() {
                                     log::warn!("Usage cost startup backfill failed: {error}");

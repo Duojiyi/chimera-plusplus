@@ -183,7 +183,7 @@ pub async fn download(
     .await?;
 
     // Apply snapshot
-    apply_snapshot(db, &db_sql, &skills_zip)?;
+    apply_snapshot(db, &db_sql, &skills_zip).await?;
 
     let manifest_hash = sha256_hex(&snapshot.manifest_bytes);
     let _persisted = persist_sync_success_best_effort(

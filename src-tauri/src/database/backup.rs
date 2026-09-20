@@ -20,7 +20,8 @@ const CC_SWITCH_SQL_EXPORT_HEADER: &str = "-- CC Switch SQLite 导出";
 const IMPORT_ALLOWED_PRAGMAS: &[&str] = &["foreign_keys", "user_version"];
 
 /// External SQL must stay inside the staging database and must not install
-/// executable schema objects. Triggers and views would survive SQLite Backup
+/// temporary or executable schema objects. Temporary tables can shadow main
+/// tables during validation; triggers and views would survive SQLite Backup
 /// and run later during local-data restoration or OAuth redaction, after this
 /// authorizer has been removed. The application schema needs neither.
 /// SQLite's parsed actions also cover ATTACH/VACUUM and virtual-table modules;
@@ -31,7 +32,9 @@ fn import_authorizer(context: rusqlite::hooks::AuthContext<'_>) -> rusqlite::hoo
     let unsafe_action = match context.action {
         AuthAction::Attach { .. } | AuthAction::Detach { .. } => true,
         AuthAction::CreateVtable { .. } | AuthAction::DropVtable { .. } => true,
-        AuthAction::CreateTrigger { .. }
+        AuthAction::CreateTempTable { .. }
+        | AuthAction::CreateTempIndex { .. }
+        | AuthAction::CreateTrigger { .. }
         | AuthAction::CreateTempTrigger { .. }
         | AuthAction::CreateView { .. }
         | AuthAction::CreateTempView { .. } => true,
@@ -560,20 +563,20 @@ impl Database {
         Ok(output)
     }
 
-    /// Application backups contain tables and indexes only. Check binary backups
+    /// Application backups contain main tables and indexes only. Check binary backups
     /// and existing local databases as well as newly parsed SQL, before executing
     /// any write that could invoke an imported schema object.
     fn validate_backup_schema(conn: &Connection) -> Result<(), AppError> {
-        let has_executable_schema: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type IN ('trigger', 'view'))
-             OR EXISTS(SELECT 1 FROM sqlite_temp_schema WHERE type IN ('trigger', 'view'))
-             OR EXISTS(SELECT 1 FROM pragma_table_list WHERE type IN ('virtual', 'shadow'))",
+        let has_unsupported_schema: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM main.sqlite_schema WHERE type IN ('trigger', 'view'))
+             OR EXISTS(SELECT 1 FROM temp.sqlite_schema)
+             OR EXISTS(SELECT 1 FROM pragma_table_list() WHERE type IN ('virtual', 'shadow'))",
             [],
             |row| row.get(0),
         )?;
-        if has_executable_schema {
+        if has_unsupported_schema {
             return Err(AppError::InvalidInput(
-                "数据库包含不受支持的触发器、视图或虚拟表，无法安全导入或同步".into(),
+                "数据库包含不受支持的临时对象、触发器、视图或虚拟表，无法安全导入或同步".into(),
             ));
         }
         Ok(())
@@ -588,15 +591,47 @@ impl Database {
     fn redact_official_provider_auth(conn: &Connection) -> Result<(), AppError> {
         // Also protect devices that imported an unsafe snapshot with an older release.
         Self::validate_backup_schema(conn)?;
-        let changed = conn.execute(
-            "UPDATE providers
-             SET settings_config = json_set(settings_config, '$.auth', json('{}'))
-             WHERE category = 'official'
-               AND json_valid(settings_config)
-               AND json_extract(settings_config, '$.auth') IS NOT NULL",
-            [],
-        )?;
-
+        let providers = {
+            let mut stmt = conn.prepare(
+                "SELECT id, app_type, settings_config FROM main.providers WHERE category = 'official'",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        let mut changed = 0;
+        for (id, app_type, raw) in providers {
+            // Parse and reserialize even unchanged objects: SQLite json_set only
+            // replaces the first duplicate auth key and could export later tokens.
+            let mut settings: serde_json::Value = serde_json::from_str(&raw).map_err(|_| {
+                AppError::InvalidInput("官方供应商配置不是有效 JSON，无法安全脱敏同步".into())
+            })?;
+            let object = settings.as_object_mut().ok_or_else(|| {
+                AppError::InvalidInput("官方供应商配置不是 JSON 对象，无法安全脱敏同步".into())
+            })?;
+            if object.contains_key("auth") {
+                object.insert("auth".into(), serde_json::json!({}));
+            }
+            let sanitized = serde_json::to_string(&settings)
+                .map_err(|source| AppError::JsonSerialize { source })?;
+            // Override imported IGNORE/REPLACE policies: a conflict must abort
+            // export, never leave a token behind or discard another provider.
+            let affected = conn.execute(
+                "UPDATE OR ABORT main.providers SET settings_config = ?1 WHERE id = ?2 AND app_type = ?3",
+                rusqlite::params![sanitized, id, app_type],
+            )?;
+            if affected != 1 {
+                return Err(AppError::InvalidInput(
+                    "官方供应商记录不唯一，无法安全脱敏同步".into(),
+                ));
+            }
+            changed += affected;
+        }
         if changed > 0 {
             log::debug!("Redacted auth from {changed} official providers for sync");
         }
@@ -700,8 +735,8 @@ impl Database {
     fn validate_stopped_proxy_state_on_conn(conn: &Connection) -> Result<(), AppError> {
         let has_runtime_state: bool = conn
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM proxy_config WHERE enabled != 0 OR proxy_enabled != 0)
-                 OR EXISTS(SELECT 1 FROM proxy_live_backup)",
+                "SELECT EXISTS(SELECT 1 FROM main.proxy_config WHERE enabled != 0 OR proxy_enabled != 0)
+                 OR EXISTS(SELECT 1 FROM main.proxy_live_backup)",
                 [],
                 |row| row.get(0),
             )
@@ -1201,7 +1236,7 @@ mod tests {
     }
 
     #[test]
-    fn imports_reject_executable_schema_without_changing_local_data() -> Result<(), AppError> {
+    fn imports_reject_unsupported_schema_without_changing_local_data() -> Result<(), AppError> {
         let remote = Database::memory()?;
         {
             let conn = crate::database::lock_conn!(remote.conn);
@@ -1221,6 +1256,9 @@ mod tests {
              BEGIN DELETE FROM usage_rollup_dedup; END;",
             "CREATE VIEW credential_view AS SELECT settings_config FROM providers;",
             "CREATE TEMP VIEW credential_view AS SELECT settings_config FROM providers;",
+            "UPDATE main.proxy_config SET enabled=1 WHERE app_type='codex';
+             CREATE TEMP TABLE proxy_config AS SELECT * FROM main.proxy_config;
+             UPDATE temp.proxy_config SET enabled=0, proxy_enabled=0;",
         ];
         for object in objects {
             for preserve_local in [false, true] {
@@ -1247,6 +1285,95 @@ mod tests {
                 )?;
                 assert_eq!(imported, 0);
             }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn temporary_tables_cannot_shadow_backup_validation() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let conn = crate::database::lock_conn!(db.conn);
+        conn.execute_batch(
+            "UPDATE main.proxy_config SET enabled=1 WHERE app_type='codex';
+             CREATE TEMP TABLE proxy_config AS SELECT * FROM main.proxy_config;
+             UPDATE temp.proxy_config SET enabled=0, proxy_enabled=0;",
+        )?;
+        assert!(Database::validate_backup_schema(&conn).is_err());
+        assert!(Database::validate_stopped_proxy_state_on_conn(&conn).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn sync_redaction_rejects_silent_conflicts_without_exporting_tokens() -> Result<(), AppError> {
+        for policy in ["IGNORE", "REPLACE"] {
+            let db = Database::memory()?;
+            {
+                let conn = crate::database::lock_conn!(db.conn);
+                let schema: String = conn.query_row(
+                    "SELECT sql FROM main.sqlite_schema WHERE type='table' AND name='providers'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                conn.execute_batch("DROP TABLE providers")?;
+                conn.execute_batch(&schema.replace(
+                    "settings_config TEXT NOT NULL",
+                    &format!("settings_config TEXT NOT NULL UNIQUE ON CONFLICT {policy}"),
+                ))?;
+                for (id, secret) in [("a", "secret-a"), ("b", "secret-b")] {
+                    conn.execute(
+                        "INSERT INTO providers (id, app_type, name, settings_config, category)
+                         VALUES (?1, 'codex', ?1, ?2, 'official')",
+                        rusqlite::params![id, format!(r#"{{"auth":{{"token":"{secret}"}}}}"#)],
+                    )?;
+                }
+            }
+            assert!(db.export_sql_string_for_sync().is_err());
+            let snapshot = db.snapshot_to_memory()?;
+            assert!(Database::redact_official_provider_auth(&snapshot).is_err());
+            let preserved: i64 = {
+                let conn = crate::database::lock_conn!(db.conn);
+                conn.query_row(
+                    "SELECT COUNT(*) FROM providers WHERE settings_config LIKE '%secret-%'",
+                    [],
+                    |row| row.get(0),
+                )?
+            };
+            assert_eq!(preserved, 2, "a failed export must not change local auth");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sync_redaction_canonicalizes_duplicate_auth_and_rejects_invalid_json() -> Result<(), AppError>
+    {
+        for raw in [
+            r#"{"auth":{},"auth":{"token":"secret-middle"},"auth":{}}"#,
+            r#"{"auth":{},"auth":{"token":"secret-last"}}"#,
+            r#"{"auth":{"token":"secret-first"},"auth":{}}"#,
+        ] {
+            let db = Database::memory()?;
+            {
+                let conn = crate::database::lock_conn!(db.conn);
+                conn.execute(
+                    "INSERT INTO providers (id, app_type, name, settings_config, category)
+                     VALUES ('official', 'codex', 'Official', ?1, 'official')",
+                    [raw],
+                )?;
+            }
+            let exported = db.export_sql_string_for_sync()?;
+            assert!(!exported.contains("secret-"));
+        }
+        for raw in [r#"{"auth":{"token":"secret-invalid"}"#, "null", "[]"] {
+            let db = Database::memory()?;
+            {
+                let conn = crate::database::lock_conn!(db.conn);
+                conn.execute(
+                    "INSERT INTO providers (id, app_type, name, settings_config, category)
+                     VALUES ('official', 'codex', 'Official', ?1, 'official')",
+                    [raw],
+                )?;
+            }
+            assert!(db.export_sql_string_for_sync().is_err());
         }
         Ok(())
     }

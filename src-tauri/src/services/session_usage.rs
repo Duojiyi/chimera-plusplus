@@ -51,9 +51,27 @@ impl SessionSyncResult {
     }
 }
 
+/// Serializes complete session imports (usage commit through cursor update) with
+/// database replacement (local snapshot through final commit). Acquire before DB
+/// or snapshot locks; session importers must not acquire runtime/per-app locks.
 pub fn session_sync_mutex() -> &'static tokio::sync::Mutex<()> {
     static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+/// Keep the guard in the actual worker: cancelling its async caller only detaches
+/// spawn_blocking, so an outer guard would unlock an import still writing cursors.
+/// The operation must not reacquire session_sync_mutex.
+pub(crate) async fn run_session_sync_blocking<T: Send + 'static>(
+    operation: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, String> {
+    let guard = session_sync_mutex().lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = guard;
+        operation()
+    })
+    .await
+    .map_err(|error| error.to_string())
 }
 
 fn merge_sync_step(
@@ -751,6 +769,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn session_sync_mutex_serializes_callers() {
         let first = session_sync_mutex().lock().await;
         assert!(session_sync_mutex().try_lock().is_err());

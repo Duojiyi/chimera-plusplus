@@ -519,11 +519,16 @@ pub(crate) fn snapshot_apply_mutex() -> &'static StdMutex<()> {
     SNAPSHOT_APPLY_MUTEX.get_or_init(|| StdMutex::new(()))
 }
 
-pub(crate) fn apply_snapshot(
+pub(crate) async fn apply_snapshot(
     db: &crate::database::Database,
     db_sql: &[u8],
     skills_zip: &[u8],
 ) -> Result<(), AppError> {
+    // Acquire before snapshot/DB locks. Importers commit usage and cursors in
+    // separate steps; the local-only snapshot must not split those writes.
+    let _session_guard = super::session_usage::session_sync_mutex().lock().await;
+    // No await or detached worker below: cancellation cannot release either
+    // guard while the synchronous skills/DB replacement is still running.
     let _lock = snapshot_apply_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());

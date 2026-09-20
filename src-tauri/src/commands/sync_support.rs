@@ -63,8 +63,13 @@ pub(crate) fn replace_database(
 ) -> Result<String, AppError> {
     let _app_guards = futures::executor::block_on(lock_import_apps(state));
     ensure_no_takeover(state)?;
+    // Already inside the real blocking job. Hold from before the callback's
+    // snapshot until replacement completes, even if the command is cancelled.
+    // Lock order: profile -> lifecycle -> apps -> session -> database.
+    let _session_guard =
+        futures::executor::block_on(crate::services::session_usage::session_sync_mutex().lock());
     replace()
-    // Drop app guards before the existing sync path, which may acquire them.
+    // Drop app/session guards before post-import sync, which may acquire app locks.
 }
 
 pub(crate) fn run_post_import_sync(state: &AppState) -> Result<(), AppError> {
@@ -127,6 +132,10 @@ pub(crate) fn success_payload_with_warning(backup_id: String, warning: Option<St
         warning,
     )
 }
+
+#[cfg(test)]
+#[path = "sync_support_session_tests.rs"]
+mod session_tests;
 
 #[cfg(test)]
 mod tests {

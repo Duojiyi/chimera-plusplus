@@ -279,10 +279,7 @@ pub async fn sync_session_usage(
     state: State<'_, AppState>,
 ) -> Result<crate::services::session_usage::SessionSyncResult, AppError> {
     let db = state.db.clone();
-    let _guard = crate::services::session_usage::session_sync_mutex()
-        .lock()
-        .await;
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::services::session_usage::run_session_sync_blocking(move || {
         crate::services::session_usage::sync_all_unlocked(&db)
     })
     .await
@@ -296,10 +293,7 @@ pub async fn sync_codex_session_usage(
     state: State<'_, AppState>,
 ) -> Result<crate::services::session_usage::SessionSyncResult, AppError> {
     let db = state.db.clone();
-    let _guard = crate::services::session_usage::session_sync_mutex()
-        .lock()
-        .await;
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::services::session_usage::run_session_sync_blocking(move || {
         let result = crate::services::session_usage_codex::sync_codex_usage(&db)?;
         crate::services::session_usage::notify_sync_result(&result);
         Ok(result)
@@ -333,10 +327,7 @@ pub async fn rebuild_codex_usage(
     state: State<'_, AppState>,
 ) -> Result<CodexUsageRebuildResult, AppError> {
     let db = state.db.clone();
-    let _guard = crate::services::session_usage::session_sync_mutex()
-        .lock()
-        .await;
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::services::session_usage::run_session_sync_blocking(move || {
         let backup_path = db
             .backup_database_file()?
             .map(|path| path.to_string_lossy().into_owned());

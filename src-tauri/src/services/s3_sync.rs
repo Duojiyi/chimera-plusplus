@@ -158,7 +158,7 @@ pub async fn download(
     let skills_zip = download_and_verify(settings, &creds, REMOTE_SKILLS_ZIP, &manifest).await?;
 
     // Apply snapshot
-    apply_snapshot(db, &db_sql, &skills_zip)?;
+    apply_snapshot(db, &db_sql, &skills_zip).await?;
 
     let manifest_hash = sha256_hex(&manifest_bytes);
     let _persisted =
