@@ -128,7 +128,9 @@ function mount(strict = false, child = <ChimeraApp />) {
 async function editAlpha() {
   fireEvent.click(await screen.findByRole("button", { name: "管理线路" }));
   fireEvent.click(screen.getByRole("button", { name: "编辑Alpha" }));
-  await screen.findByRole("heading", { name: "编辑线路" });
+  expect(
+    await screen.findByRole("heading", { name: "编辑线路", level: 2 }),
+  ).toBeVisible();
 }
 const fetchButton = () => screen.getByRole("button", { name: "获取模型" });
 

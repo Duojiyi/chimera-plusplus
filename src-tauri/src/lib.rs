@@ -979,7 +979,14 @@ pub fn run() {
                         &db_for_codex_history_migration,
                     ) {
                         Ok(outcome) => {
-                            if let Some(reason) = outcome.skipped_reason {
+                            if outcome.deferred_jsonl_files > 0 {
+                                log::info!(
+                                    "Codex history migration pending: jsonl_files={}, state_rows={}, active_files={}; retry on next startup",
+                                    outcome.migrated_jsonl_files,
+                                    outcome.migrated_state_rows,
+                                    outcome.deferred_jsonl_files
+                                );
+                            } else if let Some(reason) = outcome.skipped_reason {
                                 log::debug!("○ Codex history provider bucket migration skipped: {reason}");
                             } else {
                                 log::info!(

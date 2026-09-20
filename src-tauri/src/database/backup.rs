@@ -19,36 +19,22 @@ const CC_SWITCH_SQL_EXPORT_HEADER: &str = "-- CC Switch SQLite 导出";
 /// 能把临时文件重定向到任意目录，`writable_schema` 能绕过 schema 完整性检查。
 const IMPORT_ALLOWED_PRAGMAS: &[&str] = &["foreign_keys", "user_version"];
 
-/// 执行外部 SQL 期间的 authorizer：拒绝一切能**离开临时数据库文件**的动作。
-///
-/// 头部校验（`validate_cc_switch_sql_export`）只比较一个注释前缀，任何人都能在
-/// 合法前缀后面接着写别的语句。`ATTACH DATABASE '/path/x.db'` 的副作用发生在
-/// `validate_basic_state` 之前，导入即使最终失败，文件也已经被创建；而 `settings`
-/// 表不在 `SYNC_SKIP_TABLES` / `SYNC_PRESERVE_TABLES` 之列，WebDAV/S3 同步会走
-/// 同一条 `import_sql_string_inner`，所以这条路径的输入不可信。
-///
-/// 为什么是 authorizer 而不是「扫描 ATTACH 关键字」：字符串扫描会被 `/*x*/ATTACH`、
-/// 大小写、换行绕过，还漏掉 `VACUUM INTO`。authorizer 在 prepare 阶段按**解析结果**
-/// 回调，绕不过语法层。
-///
-/// 为什么是「拒绝越界动作」而不是「只放行 dump_sql 的语句」：这段 SQL 跑在
-/// `NamedTempFile` 建的一次性库上，而那个库的全部内容本来就由这份 SQL 决定。
-/// 因此 `DELETE` / `DROP` / `UPDATE` 给不了攻击者任何新东西——**唯一有意义的边界
-/// 是那个临时文件本身**。按 dump_sql 的产物做严格白名单只会带来误伤风险（用户
-/// 库里出现一种没预料到的对象就恢复不了备份），却不多挡任何攻击。
-///
-/// 越界动作是实测出来的，不是推断的：
-/// - `ATTACH DATABASE 'x'`、`VACUUM INTO 'x'`、裸 `VACUUM` **三者都**报
-///   `AuthAction::Attach`，所以拒 `Attach` 一条即可覆盖
-/// - 文件后端的虚拟表模块（`csvfile`、`zipfile` 等）能读写任意路径 → 拒 vtable
-/// - `Unknown` 是 rusqlite 对未识别动作码的兜底 → 未知即拒，将来 SQLite 新增的
-///   跨文件语句会默认落进这里，不依赖有人记得回来补名单
+/// External SQL must stay inside the staging database and must not install
+/// executable schema objects. Triggers and views would survive SQLite Backup
+/// and run later during local-data restoration or OAuth redaction, after this
+/// authorizer has been removed. The application schema needs neither.
+/// SQLite's parsed actions also cover ATTACH/VACUUM and virtual-table modules;
+/// string matching SQL keywords is not a security boundary.
 fn import_authorizer(context: rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization {
     use rusqlite::hooks::{AuthAction, Authorization};
 
-    let escapes_temp_db = match context.action {
+    let unsafe_action = match context.action {
         AuthAction::Attach { .. } | AuthAction::Detach { .. } => true,
         AuthAction::CreateVtable { .. } | AuthAction::DropVtable { .. } => true,
+        AuthAction::CreateTrigger { .. }
+        | AuthAction::CreateTempTrigger { .. }
+        | AuthAction::CreateView { .. }
+        | AuthAction::CreateTempView { .. } => true,
         AuthAction::Unknown { .. } => true,
         AuthAction::Pragma { pragma_name, .. } => !IMPORT_ALLOWED_PRAGMAS
             .iter()
@@ -56,7 +42,7 @@ fn import_authorizer(context: rusqlite::hooks::AuthContext<'_>) -> rusqlite::hoo
         _ => false,
     };
 
-    if escapes_temp_db {
+    if unsafe_action {
         // SQLite 只会回一句 "not authorized"，不记日志就无从知道是哪条语句被拦。
         log::warn!("SQL 导入拒绝了越界语句: {:?}", context.action);
         Authorization::Deny
@@ -88,6 +74,7 @@ const SYNC_SKIP_TABLES: &[&str] = &[
     "proxy_live_backup",
     "usage_daily_rollups",
     "usage_rollup_dedup",
+    "session_log_sync",
 ];
 
 /// Tables whose local data is preserved (restored from local snapshot) during WebDAV import.
@@ -98,6 +85,7 @@ const SYNC_PRESERVE_TABLES: &[&str] = &[
     "proxy_live_backup",
     "usage_daily_rollups",
     "usage_rollup_dedup",
+    "session_log_sync",
 ];
 
 /// A database backup entry for the UI
@@ -192,6 +180,8 @@ impl Database {
         );
         batch_result.map_err(|e| AppError::Database(format!("执行 SQL 导入失败: {e}")))?;
 
+        // Reject executable schema before any trusted migration or local-data write.
+        Self::validate_backup_schema(&temp_conn)?;
         // 补齐缺失表/索引并进行基础校验
         Self::create_tables_on_conn(&temp_conn)?;
         Self::apply_schema_migrations_on_conn(&temp_conn)?;
@@ -560,6 +550,25 @@ impl Database {
         Ok(output)
     }
 
+    /// Application backups contain tables and indexes only. Check binary backups
+    /// and existing local databases as well as newly parsed SQL, before executing
+    /// any write that could invoke an imported schema object.
+    fn validate_backup_schema(conn: &Connection) -> Result<(), AppError> {
+        let has_executable_schema: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type IN ('trigger', 'view'))
+             OR EXISTS(SELECT 1 FROM sqlite_temp_schema WHERE type IN ('trigger', 'view'))
+             OR EXISTS(SELECT 1 FROM pragma_table_list WHERE type IN ('virtual', 'shadow'))",
+            [],
+            |row| row.get(0),
+        )?;
+        if has_executable_schema {
+            return Err(AppError::InvalidInput(
+                "数据库包含不受支持的触发器、视图或虚拟表，无法安全导入或同步".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Remove live OAuth state from official providers in sync snapshots.
     ///
     /// Provider backfill intentionally keeps local runtime state so switching
@@ -567,6 +576,8 @@ impl Database {
     /// The sync snapshot is the security boundary: that state must not leave
     /// the device through the shared `providers` table.
     fn redact_official_provider_auth(conn: &Connection) -> Result<(), AppError> {
+        // Also protect devices that imported an unsafe snapshot with an older release.
+        Self::validate_backup_schema(conn)?;
         let changed = conn.execute(
             "UPDATE providers
              SET settings_config = json_set(settings_config, '$.auth', json('{}'))
@@ -748,6 +759,7 @@ impl Database {
                 .map_err(|e| AppError::Database(format!("复制数据库备份失败: {e}")))?;
             drop(backup);
 
+            Self::validate_backup_schema(&staging_conn)?;
             Self::create_tables_on_conn(&staging_conn)?;
             Self::apply_schema_migrations_on_conn(&staging_conn)?;
             Self::ensure_model_pricing_seeded_on_conn(&staging_conn)?;
@@ -923,17 +935,32 @@ mod tests {
         Ok(())
     }
 
+    fn seed_session_cursor(db: &Database, offset: i64) -> Result<(), AppError> {
+        let conn = crate::database::lock_conn!(db.conn);
+        conn.execute(
+            "INSERT INTO session_log_sync (file_path, last_modified, last_line_offset, last_synced_at)
+             VALUES ('/shared/session.jsonl', 1000, ?1, 1001)",
+            [offset],
+        )?;
+        Ok(())
+    }
+
     #[test]
     fn sync_export_omits_archived_usage_but_full_backup_keeps_it() -> Result<(), AppError> {
         let db = Database::memory()?;
         seed_archived_usage(&db, "private-archive-session")?;
+        seed_session_cursor(&db, 99)?;
         for (sql, expected) in [
             (db.export_sql_string_for_sync()?, 0_i64),
             (db.export_sql_string()?, 1_i64),
         ] {
             let snapshot = rusqlite::Connection::open_in_memory()?;
             snapshot.execute_batch(&sql)?;
-            for table in ["usage_daily_rollups", "usage_rollup_dedup"] {
+            for table in [
+                "usage_daily_rollups",
+                "usage_rollup_dedup",
+                "session_log_sync",
+            ] {
                 let count: i64 =
                     snapshot.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
                         row.get(0)
@@ -1082,6 +1109,121 @@ mod tests {
 
             let _ = std::fs::remove_file(&target);
         }
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn binary_restore_rejects_triggers_before_migration_or_commit() -> Result<(), AppError> {
+        let home = tempfile::tempdir().unwrap();
+        let old_home = std::env::var_os("CC_SWITCH_TEST_HOME");
+        std::env::set_var("CC_SWITCH_TEST_HOME", home.path());
+        let result = (|| -> Result<(), AppError> {
+            let dir = crate::config::get_app_config_dir().join("backups");
+            std::fs::create_dir_all(&dir).unwrap();
+            let source = rusqlite::Connection::open(dir.join("unsafe.db"))?;
+            Database::create_tables_on_conn(&source)?;
+            source.execute_batch(
+                "CREATE TRIGGER lose_local_usage AFTER INSERT ON usage_rollup_dedup
+                 BEGIN DELETE FROM usage_rollup_dedup; END;",
+            )?;
+            drop(source);
+            let db = Database::memory()?;
+            seed_archived_usage(&db, "local-sentinel")?;
+            let error = db.restore_from_backup("unsafe.db").unwrap_err();
+            assert!(error.to_string().contains("触发器"));
+            let conn = crate::database::lock_conn!(db.conn);
+            let receipts: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM usage_rollup_dedup WHERE request_id = 'local-sentinel'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(receipts, 1);
+            assert_eq!(
+                Database::list_backups()?.len(),
+                1,
+                "failure must not consume a backup slot"
+            );
+            Ok(())
+        })();
+        match old_home {
+            Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
+            None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+        }
+        result
+    }
+
+    #[test]
+    fn imports_reject_executable_schema_without_changing_local_data() -> Result<(), AppError> {
+        let remote = Database::memory()?;
+        {
+            let conn = crate::database::lock_conn!(remote.conn);
+            conn.execute_batch(
+                "INSERT INTO providers (id, app_type, name, settings_config, meta)
+                 VALUES ('remote', 'codex', 'Remote', '{}', '{}');",
+            )?;
+        }
+        let sql = remote.export_sql_string()?;
+        let objects = [
+            "CREATE TABLE leaked_auth (value TEXT);
+             CREATE TRIGGER steal_auth BEFORE UPDATE OF settings_config ON providers
+             BEGIN INSERT INTO leaked_auth VALUES (OLD.settings_config); END;",
+            "CREATE TRIGGER lose_local_usage AFTER INSERT ON usage_rollup_dedup
+             BEGIN DELETE FROM usage_rollup_dedup; END;",
+            "CREATE TEMP TRIGGER lose_local_usage AFTER INSERT ON main.usage_rollup_dedup
+             BEGIN DELETE FROM usage_rollup_dedup; END;",
+            "CREATE VIEW credential_view AS SELECT settings_config FROM providers;",
+            "CREATE TEMP VIEW credential_view AS SELECT settings_config FROM providers;",
+        ];
+        for object in objects {
+            for preserve_local in [false, true] {
+                let db = Database::memory()?;
+                seed_archived_usage(&db, "local-sentinel")?;
+                let malicious = format!("{sql}\n{object}");
+                let result = if preserve_local {
+                    db.import_sql_string_for_sync(&malicious)
+                } else {
+                    db.import_sql_string(&malicious)
+                };
+                assert!(result.unwrap_err().to_string().contains("not authorized"));
+                let conn = crate::database::lock_conn!(db.conn);
+                let receipts: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM usage_rollup_dedup WHERE request_id = 'local-sentinel'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(receipts, 1);
+                let imported: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM providers WHERE id = 'remote'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(imported, 0);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sync_export_rejects_preexisting_triggers_before_oauth_redaction() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        {
+            let conn = crate::database::lock_conn!(db.conn);
+            conn.execute_batch(
+                r#"INSERT INTO providers (id, app_type, name, settings_config, category, meta)
+                   VALUES ('official', 'codex', 'Official',
+                           '{"auth":{"tokens":{"access_token":"audit-secret"}}}', 'official', '{}');
+                   CREATE TABLE leaked_auth (value TEXT);
+                   CREATE TRIGGER steal_auth BEFORE UPDATE OF settings_config ON providers
+                   BEGIN INSERT INTO leaked_auth VALUES (OLD.settings_config); END;"#,
+            )?;
+        }
+        assert!(db.export_sql_string_for_sync().is_err());
+        let snapshot = db.snapshot_to_memory()?;
+        assert!(Database::redact_official_provider_auth(&snapshot).is_err());
+        let leaked: i64 =
+            snapshot.query_row("SELECT COUNT(*) FROM leaked_auth", [], |row| row.get(0))?;
+        assert_eq!(leaked, 0, "redaction must not execute the imported trigger");
         Ok(())
     }
 
@@ -1241,6 +1383,7 @@ mod tests {
 
         let remote_db = Database::memory()?;
         seed_archived_usage(&remote_db, "remote-archive")?;
+        seed_session_cursor(&remote_db, 99)?;
         {
             let conn = crate::database::lock_conn!(remote_db.conn);
             conn.execute(
@@ -1286,6 +1429,7 @@ mod tests {
         }
 
         seed_archived_usage(&local_db, "local-archive")?;
+        seed_session_cursor(&local_db, 7)?;
         // Both legacy full snapshots and sync snapshots must leave local receipts
         // paired with their aggregates, even when imported repeatedly.
         let sync_sql = remote_db.export_sql_string_for_sync()?;
@@ -1305,6 +1449,14 @@ mod tests {
             )?;
             assert_eq!(request_id, "local-archive");
             assert_eq!(session_id, "local-archive");
+            let offset: i64 = conn.query_row(
+                "SELECT last_line_offset FROM session_log_sync WHERE file_path = '/shared/session.jsonl'",
+                [], |row| row.get(0),
+            )?;
+            assert_eq!(
+                offset, 7,
+                "a remote cursor must not replace the same local file cursor"
+            );
             let aggregate: (String, i64, i64) = conn.query_row(
                 "SELECT provider_id, request_count, input_tokens FROM usage_daily_rollups",
                 [],
@@ -1363,7 +1515,11 @@ mod tests {
         empty_db.import_sql_string_for_sync(&remote_sql)?;
         {
             let conn = crate::database::lock_conn!(empty_db.conn);
-            for table in ["usage_daily_rollups", "usage_rollup_dedup"] {
+            for table in [
+                "usage_daily_rollups",
+                "usage_rollup_dedup",
+                "session_log_sync",
+            ] {
                 let count: i64 =
                     conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
                         row.get(0)

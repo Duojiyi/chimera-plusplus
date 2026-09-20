@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Reject executable schema objects in external SQL and database restores, and validate existing snapshots before OAuth redaction.
 - Disable redirects for authenticated model discovery and protocol probes, and redact configured API credentials from all upstream error paths before displaying or persisting diagnostics.
 - Bound compressed Codex session input, decoded output, decoder windows and line sizes to reject oversized or corrupt history without unbounded allocation.
 - Update vulnerable frontend and Rust dependencies. CI now audits development dependencies and treats Rust vulnerability findings as release blockers.
@@ -22,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Reset stale model-discovery work when provider inputs or dialogs change; consume tray provider-switch events and refresh the backend-authoritative provider state.
 - Restore confirmed deep-link imports in the default interface, including links received before the frontend listener is ready, and refresh providers after import.
+- Keep session import cursors local alongside their usage records when synchronizing configuration between devices.
 - Preserve explicitly distinct session/request identities when deduplicating usage; prevent archived proxy rollups from being counted again during a usage-cache rebuild.
 - Read compressed session details consistently, show loading failures with a retry action, and report retryable index-cleanup failures after session deletion.
 - Keep active official-history migrations pending until their deferred files can be migrated safely.
