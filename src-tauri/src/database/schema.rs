@@ -207,7 +207,8 @@ impl Database {
             duration_ms INTEGER, status_code INTEGER NOT NULL, error_message TEXT, session_id TEXT,
             provider_type TEXT, is_streaming INTEGER NOT NULL DEFAULT 0,
             cost_multiplier TEXT NOT NULL DEFAULT '1.0', created_at INTEGER NOT NULL,
-            data_source TEXT NOT NULL DEFAULT 'proxy'
+            data_source TEXT NOT NULL DEFAULT 'proxy',
+            session_id_trusted INTEGER NOT NULL DEFAULT 0
         )", []).map_err(|e| AppError::Database(e.to_string()))?;
 
         conn.execute("CREATE INDEX IF NOT EXISTS idx_request_logs_provider ON proxy_request_logs(provider_id, app_type)", [])
@@ -295,6 +296,18 @@ impl Database {
             [],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
+
+        Self::create_usage_rollup_dedup_table(conn)?;
+        // Older proxies persisted generated UUIDs as well as client IDs. Keep
+        // those values, but never infer their provenance from their shape.
+        for table in ["proxy_request_logs", "usage_rollup_dedup"] {
+            Self::add_column_if_missing(
+                conn,
+                table,
+                "session_id_trusted",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+        }
 
         // 18. Session Log Sync 表 (会话日志同步状态)
         conn.execute(
@@ -2923,6 +2936,47 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opening_legacy_usage_tables_preserves_ids_without_trusting_them() -> Result<(), AppError> {
+        let conn = Connection::open_in_memory()?;
+        Database::create_tables_on_conn(&conn)?;
+        // Reproduce the pre-provenance schema, including archived receipts.
+        conn.execute_batch(
+            "ALTER TABLE proxy_request_logs DROP COLUMN session_id_trusted;
+             ALTER TABLE usage_rollup_dedup DROP COLUMN session_id_trusted;
+             INSERT INTO proxy_request_logs
+                 (request_id, provider_id, app_type, model, session_id, latency_ms, status_code, created_at)
+                 VALUES ('legacy-request', 'provider', 'codex', 'model', 'legacy-generated-uuid', 1, 200, 1000);
+             INSERT INTO usage_rollup_dedup
+                 (request_id, date, app_type, provider_id, model, request_model, pricing_model,
+                  session_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                  status_code, created_at, data_source)
+                 VALUES ('legacy-archived', '1970-01-01', 'codex', 'provider', 'model', '', '',
+                         'legacy-archived-uuid', 10, 2, 0, 0, 200, 1000, 'proxy');"
+        )?;
+        Database::set_user_version(&conn, SCHEMA_VERSION)?;
+        for _ in 0..2 {
+            Database::create_tables_on_conn(&conn)?;
+            assert_eq!(Database::get_user_version(&conn)?, SCHEMA_VERSION);
+            for (table, expected_id) in [
+                ("proxy_request_logs", "legacy-generated-uuid"),
+                ("usage_rollup_dedup", "legacy-archived-uuid"),
+            ] {
+                let (session_id, trusted): (String, i64) = conn.query_row(
+                    &format!("SELECT session_id, session_id_trusted FROM {table}"),
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                assert_eq!(session_id, expected_id);
+                assert_eq!(
+                    trusted, 0,
+                    "opening {table} must not upgrade unknown provenance"
+                );
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn migrate_v12_to_v13_adds_input_token_semantics_columns() -> Result<(), AppError> {

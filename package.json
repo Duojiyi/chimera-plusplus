@@ -1,6 +1,6 @@
 {
   "name": "chimera-plus-plus",
-  "version": "2.7.6",
+  "version": "2.7.7",
   "description": "Clean Codex provider switcher and desktop runtime manager",
   "type": "module",
   "scripts": {
@@ -40,7 +40,7 @@
     "tailwindcss": "^3.4.19",
     "typescript": "^5.9.3",
     "vite": "^7.3.6",
-    "vitest": "^2.0.5"
+    "vitest": "^4.1.11"
   },
   "dependencies": {
     "@codemirror/lang-javascript": "^6.2.5",

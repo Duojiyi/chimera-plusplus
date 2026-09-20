@@ -196,6 +196,17 @@ pub fn get() -> Client {
         })
 }
 
+/// 为携带认证信息的模型发现及协议探测构建专用客户端。
+///
+/// 复用全局代理、连接和超时配置，但不跟随任何重定向：reqwest 的跨源
+/// 认证头保护不包括 x-api-key。构建失败直接返回错误，不能退回宽松客户端。
+pub fn get_for_auth_probe() -> Result<Client, String> {
+    build_client_with_redirect_policy(
+        get_current_proxy_url().as_deref(),
+        reqwest::redirect::Policy::none(),
+    )
+}
+
 /// 获取当前代理 URL
 ///
 /// 返回当前配置的代理 URL，None 表示直连。
@@ -214,7 +225,15 @@ pub fn is_proxy_enabled() -> bool {
 
 /// 构建 HTTP 客户端
 fn build_client(proxy_url: Option<&str>) -> Result<Client, String> {
+    build_client_with_redirect_policy(proxy_url, reqwest::redirect::Policy::default())
+}
+
+fn build_client_with_redirect_policy(
+    proxy_url: Option<&str>,
+    redirect_policy: reqwest::redirect::Policy,
+) -> Result<Client, String> {
     let mut builder = Client::builder()
+        .redirect(redirect_policy)
         .timeout(Duration::from_secs(600))
         .connect_timeout(Duration::from_secs(30))
         .pool_max_idle_per_host(10)
@@ -364,6 +383,57 @@ mod tests {
             mask_url("https://user:pass@proxy.example.com"),
             "https://proxy.example.com"
         );
+    }
+
+    #[tokio::test]
+    async fn auth_probe_policy_preserves_proxy_and_leaves_normal_redirects_unchanged() {
+        use axum::response::IntoResponse;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let destination_hits = Arc::new(AtomicUsize::new(0));
+        let hits = destination_hits.clone();
+        let router = axum::Router::new().fallback(move |uri: axum::http::Uri| {
+            let hits = hits.clone();
+            async move {
+                if uri.path() == "/start" {
+                    axum::response::Redirect::temporary("http://redirect.invalid/target")
+                        .into_response()
+                } else {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    "target".into_response()
+                }
+            }
+        });
+        // Act as an explicit HTTP proxy. The .invalid hosts must never resolve:
+        // a successful response proves the selected client retained the proxy.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+        let probe =
+            build_client_with_redirect_policy(Some(&proxy_url), reqwest::redirect::Policy::none())
+                .unwrap()
+                .get("http://probe.invalid/start")
+                .timeout(Duration::from_secs(3))
+                .send()
+                .await;
+        let hits_after_probe = destination_hits.load(Ordering::SeqCst);
+        let ordinary = build_client(Some(&proxy_url))
+            .unwrap()
+            .get("http://probe.invalid/start")
+            .timeout(Duration::from_secs(3))
+            .send()
+            .await;
+        server.abort();
+
+        assert_eq!(
+            probe.unwrap().status(),
+            reqwest::StatusCode::TEMPORARY_REDIRECT
+        );
+        assert_eq!(hits_after_probe, 0);
+        assert_eq!(ordinary.unwrap().status(), reqwest::StatusCode::OK);
+        assert_eq!(destination_hits.load(Ordering::SeqCst), 1);
     }
 
     #[test]

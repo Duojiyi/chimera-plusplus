@@ -24,7 +24,10 @@ pub(crate) use super::webdav_sync::archive::{
 /// Wire-format identifier stored in remote manifests.
 /// Retains historic "webdav" naming for backward compatibility with existing remotes.
 pub(crate) const PROTOCOL_FORMAT: &str = "cc-switch-webdav-sync";
+// Keep the established v2 directory: readers discover old and new manifests there.
 pub(crate) const PROTOCOL_VERSION: u32 = 2;
+// v3 requires an immutable generation. v2 readers must fail closed, not read stale fixed files.
+pub(crate) const MANIFEST_VERSION: u32 = 3;
 pub(crate) const DB_COMPAT_VERSION: u32 = 6;
 pub(crate) const LEGACY_DB_COMPAT_VERSION: u32 = 5;
 pub(crate) const REMOTE_DB_SQL: &str = "db.sql";
@@ -71,6 +74,8 @@ pub(crate) struct SyncManifest {
     pub created_at: String,
     pub artifacts: BTreeMap<String, ArtifactMeta>,
     pub snapshot_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,10 +85,28 @@ pub(crate) struct ArtifactMeta {
 }
 
 pub(crate) struct LocalSnapshot {
+    pub manifest: SyncManifest,
     pub db_sql: Vec<u8>,
     pub skills_zip: Vec<u8>,
     pub manifest_bytes: Vec<u8>,
     pub manifest_hash: String,
+}
+
+impl LocalSnapshot {
+    pub(crate) fn artifact_paths(&self) -> Result<(String, String), AppError> {
+        if self.manifest.version != MANIFEST_VERSION {
+            return Err(localized(
+                "sync.mutable_snapshot_upload_rejected",
+                "不能发布旧的可变快照布局",
+                "Cannot publish the legacy mutable snapshot layout.",
+            ));
+        }
+        validate_manifest_compat(&self.manifest, RemoteLayout::Current)?;
+        Ok((
+            artifact_relative_path(&self.manifest, REMOTE_DB_SQL)?,
+            artifact_relative_path(&self.manifest, REMOTE_SKILLS_ZIP)?,
+        ))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,6 +150,23 @@ pub(crate) fn build_local_snapshot(
     zip_skills_ssot(&skills_zip_path)?;
     let skills_zip = fs::read(&skills_zip_path).map_err(|e| AppError::io(&skills_zip_path, e))?;
 
+    snapshot_from_artifacts(
+        db_sql,
+        skills_zip,
+        detect_system_device_name().unwrap_or_else(|| "Unknown Device".to_string()),
+    )
+}
+
+fn snapshot_from_artifacts(
+    db_sql: Vec<u8>,
+    skills_zip: Vec<u8>,
+    device_name: String,
+) -> Result<LocalSnapshot, AppError> {
+    validate_artifact_size_limit(REMOTE_DB_SQL, db_sql.len() as u64)?;
+    validate_artifact_size_limit(REMOTE_SKILLS_ZIP, skills_zip.len() as u64)?;
+    // Never reuse a generation, even for identical content: a failed PUT on a
+    // server without conditional writes must not truncate a published artifact.
+    let generation = uuid::Uuid::new_v4().simple().to_string();
     // Build artifact map and compute hashes
     let mut artifacts = BTreeMap::new();
     artifacts.insert(
@@ -147,18 +187,20 @@ pub(crate) fn build_local_snapshot(
     let snapshot_id = compute_snapshot_id(&artifacts);
     let manifest = SyncManifest {
         format: PROTOCOL_FORMAT.to_string(),
-        version: PROTOCOL_VERSION,
+        version: MANIFEST_VERSION,
         db_compat_version: Some(DB_COMPAT_VERSION),
-        device_name: detect_system_device_name().unwrap_or_else(|| "Unknown Device".to_string()),
+        device_name,
         created_at: Utc::now().to_rfc3339(),
         artifacts,
         snapshot_id,
+        generation: Some(generation),
     };
     let manifest_bytes =
         serde_json::to_vec_pretty(&manifest).map_err(|e| AppError::JsonSerialize { source: e })?;
     let manifest_hash = sha256_hex(&manifest_bytes);
 
     Ok(LocalSnapshot {
+        manifest,
         db_sql,
         skills_zip,
         manifest_bytes,
@@ -202,18 +244,44 @@ pub(crate) fn validate_manifest_compat(
             ),
         ));
     }
-    if manifest.version != PROTOCOL_VERSION {
+    if !matches!(manifest.version, PROTOCOL_VERSION | MANIFEST_VERSION) {
         return Err(localized(
             "sync.manifest_version_incompatible",
             format!(
-                "远端 manifest 协议版本不兼容: v{} (本地 v{PROTOCOL_VERSION})",
+                "远端 manifest 协议版本不兼容: v{} (本地支持 v{PROTOCOL_VERSION}/v{MANIFEST_VERSION})",
                 manifest.version
             ),
             format!(
-                "Remote manifest protocol version is incompatible: v{} (local v{PROTOCOL_VERSION})",
+                "Remote manifest protocol version is incompatible: v{} (local supports v{PROTOCOL_VERSION}/v{MANIFEST_VERSION})",
                 manifest.version
             ),
         ));
+    }
+    // Validate the only remotely supplied path component before any artifact request.
+    artifact_relative_path(manifest, REMOTE_DB_SQL)?;
+    artifact_relative_path(manifest, REMOTE_SKILLS_ZIP)?;
+    if manifest.version == MANIFEST_VERSION {
+        if manifest.artifacts.len() != 2
+            || ![REMOTE_DB_SQL, REMOTE_SKILLS_ZIP].iter().all(|name| {
+                manifest.artifacts.get(*name).is_some_and(|meta| {
+                    meta.sha256.len() == 64
+                        && meta
+                            .sha256
+                            .bytes()
+                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                })
+            })
+            || compute_snapshot_id(&manifest.artifacts) != manifest.snapshot_id
+        {
+            return Err(localized(
+                "sync.manifest_artifacts_invalid",
+                "远端 manifest 的快照摘要或文件集合无效",
+                "Remote manifest has an invalid snapshot digest or artifact set.",
+            ));
+        }
+        for (name, meta) in &manifest.artifacts {
+            validate_artifact_size_limit(name, meta.size)?;
+        }
     }
     let Some(db_compat_version) = effective_db_compat_version(manifest, layout) else {
         return Err(localized(
@@ -259,28 +327,100 @@ pub(crate) fn validate_manifest_compat(
 /// specific condition uniformly regardless of which backend is in use.
 pub(crate) const REMOTE_CHANGED_ERROR_KEY: &str = "sync.remote_changed";
 
-/// Whether it is safe to upload given the remote manifest's current ETag
-/// and the ETag recorded at the end of our last successful sync to this
-/// remote.
-///
-/// Equal is safe — including both sides being `None`, which covers a
-/// first-ever sync against an empty remote (nothing to lose) as well as a
-/// server that never returns ETags at all (no signal, degrade to
-/// unconditional writes rather than block every upload). Any other
-/// combination — including a `None` local value against a remote that
-/// already has data, which means *this* device never downloaded what is
-/// currently there — means the remote was written by someone else since we
-/// last synced, and the caller must not blindly overwrite it.
-pub(crate) fn remote_unchanged_since_last_sync(
-    remote_etag: &Option<String>,
-    local_known_etag: &Option<String>,
-) -> bool {
-    remote_etag == local_known_etag
+/// Only these two basenames and a lowercase UUID generation may reach a transport.
+/// No remote absolute URLs, separators, percent escapes, queries or dot segments.
+pub(crate) fn artifact_relative_path(
+    manifest: &SyncManifest,
+    artifact_name: &str,
+) -> Result<String, AppError> {
+    if matches!(artifact_name, REMOTE_DB_SQL | REMOTE_SKILLS_ZIP) {
+        match (manifest.version, manifest.generation.as_deref()) {
+            (PROTOCOL_VERSION, None) => return Ok(artifact_name.to_string()),
+            (MANIFEST_VERSION, Some(generation))
+                if generation.len() == 32
+                    && generation
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) =>
+            {
+                return Ok(format!("snapshots/{generation}/{artifact_name}"));
+            }
+            _ => {}
+        }
+    }
+    Err(localized(
+        "sync.manifest_artifact_path_invalid",
+        "远端 manifest 的快照路径或协议版本无效",
+        "Remote manifest has an invalid snapshot path or protocol version.",
+    ))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum WriteCondition {
+    Unconditional,
+    IfMatch(String),
+    IfNoneMatch,
+}
+
+impl WriteCondition {
+    pub(crate) fn header(&self) -> Option<(&'static str, &str)> {
+        match self {
+            Self::Unconditional => None,
+            Self::IfMatch(etag) => Some(("if-match", etag)),
+            Self::IfNoneMatch => Some(("if-none-match", "*")),
+        }
+    }
+}
+
+/// GET, not HEAD: distinguish a missing manifest from one without a validator,
+/// and reject unknown protocols even during force upload. A saved body hash also
+/// detects changes on WebDAV servers that omit ETags.
+pub(crate) fn manifest_write_condition(
+    remote: Option<&(Vec<u8>, Option<String>)>,
+    known_etag: Option<&str>,
+    known_hash: Option<&str>,
+    options: UploadOptions,
+) -> Result<WriteCondition, AppError> {
+    let Some((bytes, etag)) = remote else {
+        return Ok(WriteCondition::IfNoneMatch);
+    };
+    let manifest: SyncManifest =
+        serde_json::from_slice(bytes).map_err(|source| AppError::Json {
+            path: REMOTE_MANIFEST.to_string(),
+            source,
+        })?;
+    validate_manifest_compat(&manifest, RemoteLayout::Current)?;
+    if options.force {
+        log::warn!("[Sync] Force upload replaces the manifest pointer, not existing artifacts");
+        return Ok(WriteCondition::Unconditional);
+    }
+    let unchanged = match known_hash {
+        Some(hash) => sha256_hex(bytes) == hash,
+        None => known_etag.is_some() && etag.as_deref() == known_etag,
+    };
+    if !unchanged {
+        return Err(remote_changed_conflict_error());
+    }
+    match etag.as_deref().filter(|etag| {
+        etag.len() >= 2
+            && etag.starts_with('"')
+            && etag.ends_with('"')
+            && etag.as_bytes()[1..etag.len() - 1]
+                .iter()
+                .all(|&b| b == 0x21 || (0x23..=0x7e).contains(&b) || b >= 0x80)
+    }) {
+        Some(etag) => Ok(WriteCondition::IfMatch(etag.to_string())),
+        None => {
+            // WebDAV without a strong ETag has no cross-device CAS. Last writer
+            // wins, but each pointer still references its own complete generation.
+            log::warn!("[Sync] No strong ETag: manifest publication cannot prevent concurrent lost updates");
+            Ok(WriteCondition::Unconditional)
+        }
+    }
 }
 
 /// Error returned when an upload is aborted (or a conditional write is
 /// rejected by the server) because the remote manifest changed since our
-/// last successful sync. See [`remote_unchanged_since_last_sync`].
+/// last successful sync. See [`manifest_write_condition`].
 pub(crate) fn remote_changed_conflict_error() -> AppError {
     localized(
         REMOTE_CHANGED_ERROR_KEY,
@@ -292,13 +432,8 @@ pub(crate) fn remote_changed_conflict_error() -> AppError {
 /// How an upload treats the remote snapshot's version check.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct UploadOptions {
-    /// Skip the optimistic-concurrency check and write the manifest without a
-    /// conditional header. This is the escape hatch for a torn remote: the
-    /// three files are uploaded one by one, so a device whose manifest write
-    /// lost the race leaves its artifacts under the other device's manifest,
-    /// after which neither device can upload (remote changed) nor download
-    /// (verification fails). One device re-uploading everything unconditionally
-    /// is the only way out.
+    /// Replace the manifest pointer despite a known remote change. Artifacts are
+    /// always new, create-only objects; force never overwrites an old generation.
     pub force: bool,
 }
 
@@ -384,11 +519,16 @@ pub(crate) fn snapshot_apply_mutex() -> &'static StdMutex<()> {
     SNAPSHOT_APPLY_MUTEX.get_or_init(|| StdMutex::new(()))
 }
 
-pub(crate) fn apply_snapshot(
+pub(crate) async fn apply_snapshot(
     db: &crate::database::Database,
     db_sql: &[u8],
     skills_zip: &[u8],
 ) -> Result<(), AppError> {
+    // Acquire before snapshot/DB locks. Importers commit usage and cursors in
+    // separate steps; the local-only snapshot must not split those writes.
+    let _session_guard = super::session_usage::session_sync_mutex().lock().await;
+    // No await or detached worker below: cancellation cannot release either
+    // guard while the synchronous skills/DB replacement is still running.
     let _lock = snapshot_apply_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -586,6 +726,7 @@ mod tests {
             created_at: "2026-02-12T00:00:00Z".to_string(),
             artifacts,
             snapshot_id: "snap-1".to_string(),
+            generation: None,
         }
     }
 
@@ -605,7 +746,7 @@ mod tests {
     fn validate_manifest_compat_rejects_wrong_version() {
         let manifest = manifest_with(
             PROTOCOL_FORMAT,
-            PROTOCOL_VERSION + 1,
+            MANIFEST_VERSION + 1,
             Some(DB_COMPAT_VERSION),
         );
         assert!(validate_manifest_compat(&manifest, RemoteLayout::Current).is_err());
@@ -730,25 +871,6 @@ mod tests {
     }
 
     #[test]
-    fn remote_unchanged_since_last_sync_treats_equal_etags_as_safe() {
-        let a = Some("etag-1".to_string());
-        assert!(remote_unchanged_since_last_sync(&a, &a));
-        assert!(remote_unchanged_since_last_sync(&None, &None));
-    }
-
-    #[test]
-    fn remote_unchanged_since_last_sync_flags_any_mismatch() {
-        let etag_a = Some("etag-1".to_string());
-        let etag_b = Some("etag-2".to_string());
-        assert!(!remote_unchanged_since_last_sync(&etag_b, &etag_a));
-        // Remote already has data (someone else's) but we never downloaded
-        // it: must not be treated as "first sync, safe to overwrite".
-        assert!(!remote_unchanged_since_last_sync(&etag_a, &None));
-        // Remote lost its ETag/disappeared since we last recorded one.
-        assert!(!remote_unchanged_since_last_sync(&None, &etag_a));
-    }
-
-    #[test]
     fn remote_changed_conflict_error_uses_the_shared_key() {
         let err = remote_changed_conflict_error();
         match err {
@@ -820,3 +942,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "sync_protocol_tests.rs"]
+mod publication_tests;

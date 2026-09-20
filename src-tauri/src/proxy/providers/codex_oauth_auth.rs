@@ -20,7 +20,6 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
@@ -230,6 +229,8 @@ pub struct CodexOAuthManager {
     /// 进行中的 Device Code 流程：device_auth_id -> {user_code, expires_at_ms}
     /// 过期条目会在 start_device_flow 时被清理，防止放弃的登录流程导致无界增长
     pending_device_codes: Arc<RwLock<HashMap<String, PendingDeviceCode>>>,
+    /// Serialize the complete snapshot-to-disk transaction across all accounts.
+    persistence_lock: Mutex<()>,
     storage_path: PathBuf,
 }
 
@@ -243,6 +244,7 @@ impl CodexOAuthManager {
             access_tokens: Arc::new(RwLock::new(HashMap::new())),
             refresh_locks: Arc::new(RwLock::new(HashMap::new())),
             pending_device_codes: Arc::new(RwLock::new(HashMap::new())),
+            persistence_lock: Mutex::new(()),
             storage_path,
         };
 
@@ -635,6 +637,7 @@ impl CodexOAuthManager {
 
     pub async fn clear_auth(&self) -> Result<(), CodexOAuthError> {
         log::info!("[CodexOAuth] 清除所有认证");
+        let _guard = self.persistence_lock.lock().await;
 
         {
             let mut accounts = self.accounts.write().await;
@@ -657,8 +660,10 @@ impl CodexOAuthManager {
             pending.clear();
         }
 
-        if self.storage_path.exists() {
-            std::fs::remove_file(&self.storage_path)?;
+        match fs::remove_file(&self.storage_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
         }
 
         Ok(())
@@ -781,58 +786,24 @@ impl CodexOAuthManager {
     }
 
     fn write_store_atomic(&self, content: &str) -> Result<(), CodexOAuthError> {
-        if let Some(parent) = self.storage_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        let parent = self
-            .storage_path
-            .parent()
-            .ok_or_else(|| CodexOAuthError::IoError("无效的存储路径".to_string()))?;
-        let file_name = self
-            .storage_path
-            .file_name()
-            .ok_or_else(|| CodexOAuthError::IoError("无效的存储文件名".to_string()))?
-            .to_string_lossy()
-            .to_string();
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let tmp_path = parent.join(format!("{file_name}.tmp.{ts}"));
-
+        // The shared atomic writer preserves existing Unix permissions. Restrict
+        // legacy stores before replacement so the new token is never world-readable.
         #[cfg(unix)]
         {
-            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+            use std::os::unix::fs::PermissionsExt;
 
-            let mut file = fs::OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .mode(0o600)
-                .open(&tmp_path)?;
-            file.write_all(content.as_bytes())?;
-            file.flush()?;
-
-            fs::rename(&tmp_path, &self.storage_path)?;
-            fs::set_permissions(&self.storage_path, fs::Permissions::from_mode(0o600))?;
-        }
-
-        #[cfg(windows)]
-        {
-            let mut file = fs::OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(&tmp_path)?;
-            file.write_all(content.as_bytes())?;
-            file.flush()?;
-
-            if self.storage_path.exists() {
-                let _ = fs::remove_file(&self.storage_path);
+            match fs::symlink_metadata(&self.storage_path) {
+                Ok(metadata) if metadata.is_file() => {
+                    fs::set_permissions(&self.storage_path, fs::Permissions::from_mode(0o600))?;
+                }
+                Ok(_) => {} // atomic_write rejects symlinks without following them.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
             }
-            fs::rename(&tmp_path, &self.storage_path)?;
         }
 
-        Ok(())
+        crate::config::atomic_write(&self.storage_path, content.as_bytes())
+            .map_err(|error| CodexOAuthError::IoError(error.to_string()))
     }
 
     fn load_from_disk_sync(&self) -> Result<(), CodexOAuthError> {
@@ -861,8 +832,17 @@ impl CodexOAuthManager {
     }
 
     async fn save_to_disk(&self) -> Result<(), CodexOAuthError> {
+        // Lock before reading: locking only the write would let an older snapshot
+        // overwrite a refresh token persisted by another account.
+        let _guard = self.persistence_lock.lock().await;
         let accounts = self.accounts.read().await.clone();
-        let default = self.resolve_default_account_id().await;
+        let default = self
+            .default_account_id
+            .read()
+            .await
+            .clone()
+            .filter(|id| accounts.contains_key(id))
+            .or_else(|| Self::fallback_default_account_id(&accounts));
 
         let store = CodexOAuthStore {
             version: 1,
@@ -1095,6 +1075,146 @@ mod tests {
         let accounts = manager2.list_accounts().await;
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0].id, "acc-123");
+    }
+
+    #[tokio::test]
+    async fn saves_serialize_snapshot_reads_and_preserve_both_rotated_tokens() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = CodexOAuthManager::new(temp.path().to_path_buf());
+        for id in ["account-a", "account-b"] {
+            manager
+                .add_account_internal(id.into(), "old-refresh".into(), None)
+                .await
+                .unwrap();
+        }
+        manager
+            .accounts
+            .write()
+            .await
+            .get_mut("account-a")
+            .unwrap()
+            .refresh_token = "rotated-a".into();
+
+        // Pause the first save after it has read { A: new, B: old }.
+        let default_guard = manager.default_account_id.write().await;
+        let first_save = manager.save_to_disk();
+        tokio::pin!(first_save);
+        assert!(futures::poll!(first_save.as_mut()).is_pending());
+        assert!(manager.persistence_lock.try_lock().is_err());
+
+        manager
+            .accounts
+            .write()
+            .await
+            .get_mut("account-b")
+            .unwrap()
+            .refresh_token = "rotated-b".into();
+        let second_save = manager.save_to_disk();
+        tokio::pin!(second_save);
+        assert!(futures::poll!(second_save.as_mut()).is_pending());
+        drop(default_guard);
+
+        // Even when the default lock is free, the newer save cannot overtake
+        // the old snapshot. It must take its own snapshot after the first write.
+        assert!(futures::poll!(second_save.as_mut()).is_pending());
+        first_save.await.unwrap();
+        second_save.await.unwrap();
+
+        let reloaded = CodexOAuthManager::new(temp.path().to_path_buf());
+        let accounts = reloaded.accounts.read().await;
+        assert_eq!(accounts["account-a"].refresh_token, "rotated-a");
+        assert_eq!(accounts["account-b"].refresh_token, "rotated-b");
+    }
+
+    #[tokio::test]
+    async fn clear_auth_waits_for_in_flight_persistence() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = CodexOAuthManager::new(temp.path().to_path_buf());
+        manager
+            .add_account_internal("account-a".into(), "refresh".into(), None)
+            .await
+            .unwrap();
+
+        let default_guard = manager.default_account_id.write().await;
+        let save = manager.save_to_disk();
+        tokio::pin!(save);
+        assert!(futures::poll!(save.as_mut()).is_pending());
+        let clear = manager.clear_auth();
+        tokio::pin!(clear);
+        assert!(futures::poll!(clear.as_mut()).is_pending());
+        assert_eq!(manager.accounts.read().await.len(), 1);
+
+        drop(default_guard);
+        save.await.unwrap();
+        clear.await.unwrap();
+        assert!(!manager.storage_path.exists());
+        assert!(!manager.is_authenticated().await);
+        assert!(
+            !CodexOAuthManager::new(temp.path().to_path_buf())
+                .is_authenticated()
+                .await
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn failed_atomic_replacement_preserves_existing_store_and_cleans_temp_files() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+
+        let temp = tempfile::tempdir().unwrap();
+        let manager = CodexOAuthManager::new(temp.path().to_path_buf());
+        manager.write_store_atomic("old snapshot").unwrap();
+        // Deny delete sharing so Windows rejects replacement of the destination.
+        let held_file = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&manager.storage_path)
+            .unwrap();
+        assert!(manager.write_store_atomic("new snapshot").is_err());
+        assert_eq!(
+            fs::read_to_string(&manager.storage_path).unwrap(),
+            "old snapshot"
+        );
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
+
+        drop(held_file);
+        manager.write_store_atomic("new snapshot").unwrap();
+        assert_eq!(
+            fs::read_to_string(&manager.storage_path).unwrap(),
+            "new snapshot"
+        );
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_store_keeps_tokens_private_and_rejects_symlinks() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let temp = tempfile::tempdir().unwrap();
+        let manager = CodexOAuthManager::new(temp.path().to_path_buf());
+        manager.write_store_atomic("old snapshot").unwrap();
+        fs::set_permissions(&manager.storage_path, fs::Permissions::from_mode(0o644)).unwrap();
+        manager.write_store_atomic("new snapshot").unwrap();
+        assert_eq!(
+            fs::metadata(&manager.storage_path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+
+        let unrelated = temp.path().join("unrelated.json");
+        fs::write(&unrelated, "must remain unchanged").unwrap();
+        fs::remove_file(&manager.storage_path).unwrap();
+        symlink(&unrelated, &manager.storage_path).unwrap();
+        assert!(manager.write_store_atomic("secret snapshot").is_err());
+        assert_eq!(
+            fs::read_to_string(unrelated).unwrap(),
+            "must remain unchanged"
+        );
     }
 
     #[tokio::test]

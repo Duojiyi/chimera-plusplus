@@ -1,3 +1,5 @@
+> **上流プロジェクトの参考資料**：以下は CC Switch から継承した説明であり、現在の Chimera++ の画面、インストール方法、開発要件とは異なる場合があります。現行の製品説明は [Chimera++ README](README.md)、開発と検証の手順は [貢献ガイド](CONTRIBUTING.md) を参照してください。
+
 <div align="center">
 
 # CC Switch

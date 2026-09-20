@@ -17,6 +17,7 @@ import { setSessionFixtures } from "../msw/state";
 const toastSuccessMock = vi.fn();
 const toastErrorMock = vi.fn();
 const toastInfoMock = vi.fn();
+const toastWarningMock = vi.fn();
 const GROUP_EXPANSION_STORAGE_KEY =
   "cc-switch.sessionManager.groupExpansionState";
 
@@ -25,6 +26,7 @@ vi.mock("sonner", () => ({
     success: (...args: unknown[]) => toastSuccessMock(...args),
     error: (...args: unknown[]) => toastErrorMock(...args),
     info: (...args: unknown[]) => toastInfoMock(...args),
+    warning: (...args: unknown[]) => toastWarningMock(...args),
   },
 }));
 
@@ -155,6 +157,8 @@ describe("SessionManagerPage", () => {
   beforeEach(() => {
     toastSuccessMock.mockReset();
     toastErrorMock.mockReset();
+    toastWarningMock.mockReset();
+    toastInfoMock.mockReset();
     Element.prototype.scrollIntoView = vi.fn();
     window.localStorage.removeItem("cc-switch.sessionManager.listViewMode");
     window.localStorage.removeItem(GROUP_EXPANSION_STORAGE_KEY);
@@ -223,6 +227,34 @@ describe("SessionManagerPage", () => {
     setSessionFixtures(sessions, messages);
   });
 
+  it("shows a message query error instead of an empty session and retries successfully", async () => {
+    const getMessages = vi
+      .spyOn(sessionsApi, "getMessages")
+      .mockRejectedValueOnce(new Error("invalid compressed session"));
+    const { client } = renderPage();
+    try {
+      const alert = await screen.findByRole("alert");
+      expect(alert).toHaveTextContent("无法读取会话消息");
+      expect(
+        screen.queryByText("sessionManager.emptySession"),
+      ).not.toBeInTheDocument();
+      fireEvent.click(within(alert).getByRole("button", { name: "重试" }));
+      await waitFor(() =>
+        expect(screen.queryByRole("alert")).not.toBeInTheDocument(),
+      );
+      expect(getMessages).toHaveBeenCalledTimes(2);
+      expect(
+        client.getQueryData([
+          "sessionMessages",
+          "codex",
+          "/mock/codex/session-1.jsonl",
+        ]),
+      ).toEqual([{ role: "user", content: "alpha", ts: 20 }]);
+    } finally {
+      getMessages.mockRestore();
+    }
+  });
+
   it("deletes the selected session and selects the next visible session", async () => {
     renderPage();
 
@@ -279,6 +311,7 @@ describe("SessionManagerPage", () => {
     vi.spyOn(sessionsApi, "reclaimCodexHistory").mockResolvedValueOnce({
       reclaimedJsonlFiles: 0,
       reclaimedStateRows: 0,
+      deferredJsonlFiles: 0,
       sourceProviderIds: [],
       skippedReason: "live_not_custom",
     });
@@ -303,6 +336,52 @@ describe("SessionManagerPage", () => {
     await waitFor(() => expect(toastErrorMock).toHaveBeenCalled());
     expect(toastSuccessMock).not.toHaveBeenCalled();
   });
+
+  it.each([0, 1])(
+    "shows deferred reclaim counts without claiming full success (%s restored)",
+    async (restored) => {
+      const reclaim = vi
+        .spyOn(sessionsApi, "reclaimCodexHistory")
+        .mockResolvedValueOnce({
+          reclaimedJsonlFiles: restored,
+          reclaimedStateRows: restored * 2,
+          deferredJsonlFiles: 2,
+          sourceProviderIds: ["old-provider"],
+          skippedReason:
+            restored === 0 ? "deferred_active_session_files" : undefined,
+        });
+      renderPage();
+      try {
+        await screen.findByRole("heading", { name: "Alpha Session" });
+        fireEvent.click(
+          screen.getByRole("button", { name: /一键恢复所有历史会话/i }),
+        );
+        fireEvent.click(
+          within(screen.getByTestId("confirm-dialog")).getByRole("button", {
+            name: /开始恢复/i,
+          }),
+        );
+        await waitFor(() =>
+          expect(toastWarningMock).toHaveBeenCalledWith(
+            "已恢复 " +
+              restored +
+              " 个会话文件，仍有 2 个活跃会话文件延期处理。",
+            {
+              description:
+                expect.stringContaining("停止这些会话的写入后，再次点击恢复"),
+            },
+          ),
+        );
+        expect(toastSuccessMock).not.toHaveBeenCalled();
+        expect(toastInfoMock).not.toHaveBeenCalled();
+        expect(
+          screen.getByRole("button", { name: /一键恢复所有历史会话/i }),
+        ).toBeEnabled();
+      } finally {
+        reclaim.mockRestore();
+      }
+    },
+  );
 
   it("removes a deleted session from filtered search results", async () => {
     renderPage();
@@ -342,6 +421,154 @@ describe("SessionManagerPage", () => {
     ).not.toBeInTheDocument();
     expect(toastErrorMock).not.toHaveBeenCalled();
     expect(toastSuccessMock).toHaveBeenCalled();
+  });
+
+  it("keeps a single partial deletion retryable after its source disappears from the list", async () => {
+    const session: SessionMeta = {
+      providerId: "codex",
+      sessionId: "partial",
+      title: "Partial Session",
+      sourcePath: "/mock/codex/partial.jsonl",
+    };
+    setSessionFixtures([session], {});
+    const deleteMany = vi
+      .spyOn(sessionsApi, "deleteMany")
+      .mockImplementationOnce(async (items) => {
+        setSessionFixtures([], {});
+        return items.map((item) => ({
+          ...item,
+          success: false,
+          sourceDeleted: true,
+          cleanupPending: true,
+          error: "index locked",
+        }));
+      })
+      .mockImplementationOnce(async (items) =>
+        items.map((item) => ({
+          ...item,
+          success: true,
+          sourceDeleted: true,
+          cleanupPending: false,
+        })),
+      );
+    const { client } = renderPage();
+    try {
+      await screen.findByRole("heading", { name: "Partial Session" });
+      fireEvent.click(screen.getByRole("button", { name: /删除会话/i }));
+      fireEvent.click(
+        within(screen.getByTestId("confirm-dialog")).getByRole("button", {
+          name: /删除会话/i,
+        }),
+      );
+      const retry = await screen.findByRole("button", {
+        name: "重试未完成的删除",
+      });
+      await waitFor(() => expect(retry).toBeEnabled());
+      expect(toastSuccessMock).not.toHaveBeenCalled();
+      expect(toastWarningMock).toHaveBeenCalledWith(
+        expect.stringContaining("索引清理未完成"),
+      );
+      expect(client.getQueryData(["sessions"])).toEqual([]);
+      expect(
+        client.getQueryData([
+          "sessionMessages",
+          session.providerId,
+          session.sourcePath,
+        ]),
+      ).toBeUndefined();
+      expect(
+        screen.queryByText("sessionManager.emptySession"),
+      ).not.toBeInTheDocument();
+      fireEvent.click(retry);
+      fireEvent.click(
+        within(screen.getByTestId("confirm-dialog")).getByRole("button", {
+          name: /删除会话/i,
+        }),
+      );
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("button", { name: "重试未完成的删除" }),
+        ).not.toBeInTheDocument(),
+      );
+      expect(deleteMany).toHaveBeenCalledTimes(2);
+      expect(deleteMany.mock.calls[1][0]).toEqual(deleteMany.mock.calls[0][0]);
+      expect(toastSuccessMock).toHaveBeenCalledTimes(1);
+    } finally {
+      deleteMany.mockRestore();
+    }
+  });
+
+  it("counts only complete deletions as success and retries only partial/failed items", async () => {
+    const sessions: SessionMeta[] = ["complete", "partial", "failed"].map(
+      (id) => ({
+        providerId: "codex",
+        sessionId: id,
+        title: id,
+        sourcePath: "/mock/codex/" + id + ".jsonl",
+      }),
+    );
+    setSessionFixtures(sessions, {});
+    const deleteMany = vi
+      .spyOn(sessionsApi, "deleteMany")
+      .mockImplementationOnce(async (items) => {
+        setSessionFixtures([sessions[2]], {});
+        return items.map((item) => ({
+          ...item,
+          success: item.sessionId === "complete",
+          sourceDeleted: item.sessionId !== "failed",
+          cleanupPending: item.sessionId === "partial",
+          error:
+            item.sessionId === "complete" ? undefined : "delete incomplete",
+        }));
+      })
+      .mockImplementationOnce(async (items) => {
+        setSessionFixtures([], {});
+        return items.map((item) => ({
+          ...item,
+          success: true,
+          sourceDeleted: true,
+          cleanupPending: false,
+        }));
+      });
+    renderPage();
+    try {
+      await screen.findByRole("heading", { name: "complete" });
+      fireEvent.click(screen.getByRole("button", { name: /批量管理/i }));
+      fireEvent.click(screen.getByRole("button", { name: /全选当前/i }));
+      fireEvent.click(screen.getByRole("button", { name: /批量删除/i }));
+      fireEvent.click(
+        within(screen.getByTestId("confirm-dialog")).getByRole("button", {
+          name: /删除所选会话/i,
+        }),
+      );
+      const retry = await screen.findByRole("button", {
+        name: "重试未完成的删除",
+      });
+      await waitFor(() => expect(retry).toBeEnabled());
+      expect(toastSuccessMock).toHaveBeenCalledWith("已删除 1 个会话");
+      expect(toastWarningMock).toHaveBeenCalledTimes(1);
+      expect(toastErrorMock).toHaveBeenCalledWith(
+        "1 个会话删除失败",
+        expect.anything(),
+      );
+      fireEvent.click(retry);
+      fireEvent.click(
+        within(screen.getByTestId("confirm-dialog")).getByRole("button", {
+          name: /删除所选会话/i,
+        }),
+      );
+      await waitFor(() => expect(deleteMany).toHaveBeenCalledTimes(2));
+      expect(
+        deleteMany.mock.calls[1][0].map((item) => item.sessionId).sort(),
+      ).toEqual(["failed", "partial"]);
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("button", { name: "重试未完成的删除" }),
+        ).not.toBeInTheDocument(),
+      );
+    } finally {
+      deleteMany.mockRestore();
+    }
   });
 
   it("restores batch delete controls when deleteMany rejects", async () => {

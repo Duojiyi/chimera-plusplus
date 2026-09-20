@@ -96,6 +96,7 @@ pub async fn delete_sessions(
 pub struct CodexHistoryReclaimResult {
     pub reclaimed_jsonl_files: usize,
     pub reclaimed_state_rows: usize,
+    pub deferred_jsonl_files: usize,
     pub source_provider_ids: Vec<String>,
     /// 被跳过的原因，前端据此区分「无需恢复」与「恢复了 0 项」。
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -130,6 +131,7 @@ pub async fn reclaim_codex_history_sessions() -> Result<CodexHistoryReclaimResul
     Ok(CodexHistoryReclaimResult {
         reclaimed_jsonl_files: outcome.reclaimed_jsonl_files,
         reclaimed_state_rows: outcome.reclaimed_state_rows,
+        deferred_jsonl_files: outcome.deferred_jsonl_files,
         source_provider_ids: outcome.source_provider_ids,
         skipped_reason: outcome.skipped_reason,
     })

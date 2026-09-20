@@ -8,6 +8,7 @@ use reqwest::StatusCode;
 use std::time::Duration;
 use url::Url;
 
+use super::sync_protocol::WriteCondition;
 use crate::error::AppError;
 use crate::proxy::http_client;
 use futures::StreamExt;
@@ -358,24 +359,15 @@ pub(crate) async fn test_connection(creds: &S3Credentials) -> Result<(), AppErro
     Err(s3_status_error("HEAD bucket", resp.status(), &url_str))
 }
 
-/// Upload bytes to an S3 object.
-///
-/// When `if_match` is `Some(etag)`, the request carries a conditional
-/// `If-Match` header so a backend that supports conditional writes (AWS S3
-/// with CRR/versioning-aware conditional PUT, MinIO, and most S3-compatible
-/// services) rejects the write (412) if the object changed since `etag` was
-/// read — a server-enforced backstop for the client-side ETag comparison
-/// callers already do before starting an upload (see
-/// `services::sync_protocol::remote_unchanged_since_last_sync`). Backends
-/// that ignore the header simply overwrite as before; the client-side
-/// check remains the primary defense in that case.
+/// Upload a complete object with a signed create-only or CAS precondition.
+/// The returned ETag belongs to this PUT, not a subsequent competing publication.
 pub(crate) async fn put_object(
     creds: &S3Credentials,
     key: &str,
     bytes: Vec<u8>,
     content_type: &str,
-    if_match: Option<&str>,
-) -> Result<(), AppError> {
+    condition: &WriteCondition,
+) -> Result<Option<String>, AppError> {
     let url_str = build_object_url(creds, key);
     let url = Url::parse(&url_str).map_err(|e| {
         AppError::localized(
@@ -389,10 +381,10 @@ pub(crate) async fn put_object(
     let body_hash = sha256_hex(&bytes);
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("content-type", content_type.parse().unwrap());
-    if let Some(etag) = if_match {
+    if let Some((name, value)) = condition.header() {
         headers.insert(
-            "if-match",
-            etag.parse().map_err(|_| {
+            name,
+            value.parse().map_err(|_| {
                 AppError::localized(
                     "s3.if_match.invalid",
                     "本地记录的 ETag 不是合法的 HTTP 头部值",
@@ -419,10 +411,17 @@ pub(crate) async fn put_object(
         .await
         .map_err(|e| s3_transport_error("s3.put_failed", "PUT 请求", "PUT request", &e))?;
 
-    if resp.status().is_success() {
-        return Ok(());
+    if matches!(
+        resp.status(),
+        StatusCode::OK | StatusCode::CREATED | StatusCode::NO_CONTENT
+    ) {
+        return Ok(resp
+            .headers()
+            .get("etag")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string));
     }
-    if if_match.is_some()
+    if condition.header().is_some()
         && matches!(
             resp.status(),
             StatusCode::PRECONDITION_FAILED | StatusCode::CONFLICT
@@ -502,7 +501,8 @@ pub(crate) async fn get_object(
     Ok(Some((bytes, etag)))
 }
 
-/// Retrieve the ETag of an S3 object via HEAD. Returns `None` on 404.
+/// Test-only transport probe; sync persistence uses the ETag of its own PUT.
+#[cfg(test)]
 pub(crate) async fn head_object(
     creds: &S3Credentials,
     key: &str,
@@ -929,7 +929,14 @@ mod integration_tests {
         let data = br#"{"test":true,"ts":12345}"#;
 
         // PUT
-        let r = put_object(&creds, key, data.to_vec(), "application/json", None).await;
+        let r = put_object(
+            &creds,
+            key,
+            data.to_vec(),
+            "application/json",
+            &WriteCondition::Unconditional,
+        )
+        .await;
         assert!(r.is_ok(), "PUT failed: {:?}", r.err());
         println!("PASS: put_object {} bytes", data.len());
 

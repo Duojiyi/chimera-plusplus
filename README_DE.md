@@ -1,3 +1,5 @@
+> **Referenzdokumentation des Upstream-Projekts**: Der folgende Inhalt wurde von CC Switch übernommen und beschreibt nicht verbindlich die aktuelle Oberfläche, Installation oder Entwicklungsumgebung von Chimera++. Aktuelle Informationen stehen in der [Chimera++ README](README.md) und im [Leitfaden für Beiträge](CONTRIBUTING.md).
+
 <div align="center">
 
 # CC Switch

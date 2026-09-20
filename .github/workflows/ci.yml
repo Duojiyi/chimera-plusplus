@@ -43,6 +43,9 @@ jobs:
       - name: Verify version consistency
         run: node scripts/verify-release-version.mjs
 
+      - name: Test release safety guards
+        run: node --test scripts/promote-latest-release.test.mjs scripts/release-workflow-guards.test.mjs
+
       - name: Check frontend formatting
         run: pnpm format:check
 
@@ -53,24 +56,21 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path test-results | Out-Null
-          pnpm test:unit -- --reporter=default --reporter=junit --outputFile=test-results/vitest.junit.xml
+          pnpm test:unit --reporter=default --reporter=junit --outputFile=test-results/vitest.junit.xml
 
       - name: Build renderer and enforce bundle budgets
         run: pnpm build:renderer:check
 
-      # Advisory only for now: surfaces known vulnerabilities in production
-      # dependencies without blocking merges until the signal proves stable.
-      - name: Audit production npm dependencies (advisory)
-        continue-on-error: true
-        run: pnpm audit --prod --audit-level=high
+      - name: Audit all npm dependencies
+        run: pnpm audit --audit-level=low
 
       - name: Upload frontend test report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: frontend-test-results-${{ github.sha }}
-          path: test-results/
-          if-no-files-found: warn
+          path: test-results/vitest.junit.xml
+          if-no-files-found: error
 
   backend:
     name: Backend Validation (${{ matrix.os }})
@@ -120,14 +120,13 @@ jobs:
       - name: Run Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
-      # Advisory only for now (Linux runner is enough: the lockfile is shared).
+      # The shared lockfile is audited once; vulnerabilities block the release.
       - name: Install cargo-audit
         if: runner.os == 'Linux'
         uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff
         with:
           tool: cargo-audit
 
-      - name: Audit Rust dependencies (advisory)
+      - name: Audit Rust dependencies
         if: runner.os == 'Linux'
-        continue-on-error: true
         run: cargo audit --file src-tauri/Cargo.lock

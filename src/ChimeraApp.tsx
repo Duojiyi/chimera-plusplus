@@ -7,6 +7,7 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -418,7 +419,9 @@ function detectionFromProvider(
   return { identity: codexProtocolIdentity(draft), formats, failures: {} };
 }
 
-export default function ChimeraApp() {
+export default function ChimeraApp({
+  providerRefreshVersion = 0,
+}: { providerRefreshVersion?: number } = {}) {
   const [view, setView] = useState<View>("providers");
   const [providers, setProviders] = useState<Provider[]>([]);
   const [currentId, setCurrentId] = useState("");
@@ -474,6 +477,7 @@ export default function ChimeraApp() {
   const startupProviderCheckRef = useRef(false);
   const startupRuntimeCheckRef = useRef(false);
   const fetchModelsSeqRef = useRef(0);
+  const providerLoadSeqRef = useRef(0);
   const protocolProbeSeqRef = useRef(0);
   const runtimeCheckSeqRef = useRef(0);
   const testConnectionSeqRef = useRef(0);
@@ -514,16 +518,21 @@ export default function ChimeraApp() {
   const activeEndpointIdentity = editor ? codexEndpointIdentity(editor) : null;
   const activeProtocolIdentity = editor ? codexProtocolIdentity(editor) : null;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     editorRef.current = editor;
   }, [editor]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     fetchModelsSeqRef.current += 1;
+    // IPC cannot abort its network request, but it no longer owns the editor.
+    setFetchingModels(false);
     setModels(null);
     setModelFetchIdentity(null);
     setModelFetchError(null);
     setModelPickerOpen(false);
+    return () => {
+      fetchModelsSeqRef.current += 1;
+    };
   }, [activeEndpointIdentity, editor?.id]);
 
   useEffect(() => {
@@ -695,7 +704,8 @@ export default function ChimeraApp() {
     [],
   );
 
-  const loadProviders = async () => {
+  const loadProviders = useCallback(async () => {
+    const seq = ++providerLoadSeqRef.current;
     if (!runningInTauri) {
       const template = getChimeraHubTemplate();
       const previewProvider: Provider = {
@@ -716,6 +726,7 @@ export default function ChimeraApp() {
         providersApi.getAll("codex"),
         providersApi.getCurrent("codex"),
       ]);
+      if (seq !== providerLoadSeqRef.current) return;
       const sorted = Object.values(all).sort(
         (a, b) => (a.sortIndex ?? 0) - (b.sortIndex ?? 0),
       );
@@ -727,6 +738,7 @@ export default function ChimeraApp() {
       } catch {
         // The stored selection remains useful when Codex has not created its config yet.
       }
+      if (seq !== providerLoadSeqRef.current) return;
       const resolution = resolveCurrentProvider(
         sorted,
         stored,
@@ -738,12 +750,50 @@ export default function ChimeraApp() {
       setCurrentSource(resolution.source);
       setLoadError(null);
     } catch (error) {
+      if (seq !== providerLoadSeqRef.current) return;
       setLoadError(String(error));
       toast.error("无法读取 Codex 供应商", { description: String(error) });
     } finally {
-      setLoading(false);
+      if (seq === providerLoadSeqRef.current) setLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    let dispose: (() => void) | undefined;
+    if (runningInTauri) {
+      void providersApi
+        .onSwitched((event) => {
+          if (active && event.appType === "codex") void loadProviders();
+        })
+        .then((unlisten) => {
+          if (!active) {
+            unlisten();
+            return;
+          }
+          dispose = unlisten;
+          // Subscribe before reading: a tray/profile switch during startup must
+          // not fall into the gap between the initial snapshot and the listener.
+          void loadProviders();
+        })
+        .catch(() => {
+          if (!active) return;
+          toast.error("无法订阅线路切换，请重新加载应用");
+          void loadProviders();
+        });
+    } else {
+      void loadProviders();
+    }
+    return () => {
+      active = false;
+      providerLoadSeqRef.current += 1;
+      dispose?.();
+    };
+  }, [loadProviders]);
+
+  useEffect(() => {
+    if (providerRefreshVersion > 0) void loadProviders();
+  }, [providerRefreshVersion, loadProviders]);
 
   const retryLoadProviders = async () => {
     setLoading(true);
@@ -923,7 +973,6 @@ export default function ChimeraApp() {
   useEffect(() => {
     if (!runningInTauri) {
       setSkinEnabled(true);
-      void loadProviders();
       void loadRuntime();
       void loadCodexProcess();
       return;
@@ -941,7 +990,6 @@ export default function ChimeraApp() {
         // Activity history is optional; never fall back to a global profile.
         activityKeyRef.current = null;
       });
-    void loadProviders();
     void loadRuntime();
     void loadCodexProcess();
     void invoke<ProductCapabilities>("get_product_capabilities")
@@ -1213,6 +1261,7 @@ export default function ChimeraApp() {
           setModelFetchIdentity(endpointIdentity);
           setModelFetchError(null);
         } catch {
+          if (seq !== fetchModelsSeqRef.current) return;
           automaticFetchFailed = true;
           fetchedForSave = [];
         } finally {

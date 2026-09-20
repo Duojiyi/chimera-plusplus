@@ -10,6 +10,47 @@ numbers belong to a separate upstream line.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.7] - 2026-09-21
+
+### Security
+
+- Reject temporary and executable schema objects in external SQL and database restores. Canonicalize official-provider JSON before OAuth redaction and reject conflicting constraints or malformed configuration instead of exporting residual tokens.
+- Disable redirects for authenticated model discovery and protocol probes, and redact configured API credentials from all upstream error paths before displaying or persisting diagnostics.
+- Bound compressed Codex session input, decoded output, decoder windows and line sizes to reject oversized or corrupt history without unbounded allocation.
+- Update vulnerable frontend and Rust dependencies. CI now audits development dependencies and treats Rust vulnerability findings as release blockers.
+
+### Fixed
+
+- Reset stale model-discovery work when provider inputs or dialogs change; consume tray provider-switch events and refresh the backend-authoritative provider state.
+- Restore confirmed deep-link imports in the default interface, including links received before the frontend listener is ready, and refresh providers after import.
+- Keep session import cursors local alongside their usage records when synchronizing configuration between devices. Serialize database replacement with complete session imports, and retain the import lock until the actual worker finishes even when its caller is cancelled.
+- Preserve explicitly distinct session/request identities when deduplicating usage; prevent archived proxy rollups from being counted again during a usage-cache rebuild.
+- Read compressed session details consistently, show loading failures with a retry action, and report retryable index-cleanup failures after session deletion.
+- Keep active official-history migrations pending until their deferred files can be migrated safely.
+- Serialize OAuth credential snapshot writes across accounts and use the shared atomic file replacement helper on Windows.
+- Publish cloud-sync artifacts under immutable generation paths before replacing the manifest, with conditional publication when supported by the server.
+- Fail Windows release gates immediately on native command errors, require the frontend JUnit report, and prevent an older stable version from replacing a newer latest release.
+
+### Compatibility Notes
+
+- Database restore and cloud sync reject temporary objects, custom triggers, views and virtual tables. Local-only usage tables are restored with their local schema and indexes, never with remote conflict policies.
+- Legacy proxy session IDs did not record whether they came from a client or a generated routing UUID. Imports, totals and archival now reject ambiguous cross-source overlaps instead of guessing or silently double counting; existing identities and usage records are preserved for reconciliation. A usage-cache rebuild also refuses overlaps with old pruned rollups that lack request identity; exact reconstruction may require a pre-prune database backup.
+- Devices affected by an older cursor-only sync may need a usage-cache rebuild or a consistent database backup; existing local cursors are not reset automatically, and ambiguous legacy identity still requires reconciliation.
+- Cloud sync continues to read previous fixed-path snapshots. New snapshots use manifest v3 inside the existing v2 directory; upgrade every syncing client before publishing with this version. Old clients must not overwrite the shared remote after an upgrade.
+- WebDAV servers without strong ETags or correct conditional-write support cannot guarantee conflict detection. Independent snapshot generations prevent a losing upload from corrupting another published snapshot; abandoned generations are retained, not automatically deleted.
+- Dependency audits report known vulnerabilities, not proof of zero risk. Remaining upstream maintenance and soundness advisories are described in [SECURITY.md](SECURITY.md).
+
+## [2.7.6] - 2026-09-18
+
+### Changed
+
+- Improved Codex runtime information typography and spacing while keeping the two status columns readable.
+- Truncated long installation paths without expanding the information strip; the full path remains selectable and is available on hover.
+
+### Fixed
+
+- Return an error when Codex or Grok Build live TOML is invalid during MCP deletion, allowing the service to restore the database record instead of reporting a successful deletion.
+
 ## [2.7.5] - 2026-09-18
 
 ### Added

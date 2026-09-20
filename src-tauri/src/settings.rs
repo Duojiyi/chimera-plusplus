@@ -568,6 +568,9 @@ pub struct CodexThirdPartyHistoryProviderBucketMigration {
     pub migrated_state_rows: usize,
     #[serde(default)]
     pub scanned_history_files: bool,
+    /// Legacy completion markers could have skipped active history files.
+    #[serde(default)]
+    pub deferred_files_checked: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -591,6 +594,15 @@ pub struct CodexOfficialHistoryUnifyMigration {
     /// 切换 codex_config_dir 后旧标记不会挡住新目录的迁移。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex_config_dir: Option<String>,
+    /// Legacy completion markers may have hidden Deferred files. Revalidate once.
+    #[serde(default)]
+    pub deferred_files_checked: bool,
+}
+
+impl CodexOfficialHistoryUnifyMigration {
+    fn covers_directory(&self, codex_dir: &str) -> bool {
+        self.deferred_files_checked && self.codex_config_dir.as_deref() == Some(codex_dir)
+    }
 }
 
 /// 应用设置结构
@@ -1093,7 +1105,7 @@ pub fn is_codex_third_party_history_provider_bucket_migrated() -> bool {
                 .codex_third_party_history_provider_bucket_v1
                 .as_ref()
         })
-        .is_some_and(|m| m.scanned_history_files)
+        .is_some_and(|m| m.scanned_history_files && m.deferred_files_checked)
 }
 
 pub fn mark_codex_third_party_history_provider_bucket_migrated(
@@ -1133,7 +1145,7 @@ pub fn is_codex_official_history_unify_migrated_for_dir(codex_dir: &str) -> bool
         .local_migrations
         .as_ref()
         .and_then(|migrations| migrations.codex_official_history_unify_v1.as_ref())
-        .is_some_and(|migration| migration.codex_config_dir.as_deref() == Some(codex_dir))
+        .is_some_and(|migration| migration.covers_directory(codex_dir))
 }
 
 /// 条件写入迁移完成标记：仅当此刻开关仍开启且迁移意愿仍在时才写。
@@ -1510,5 +1522,28 @@ mod tests {
         .expect("visible apps");
 
         assert!(!visible.is_visible(&AppType::ClaudeDesktop));
+    }
+
+    #[test]
+    fn legacy_official_history_marker_requires_deferred_revalidation() {
+        let mut marker: CodexOfficialHistoryUnifyMigration = serde_json::from_value(serde_json::json!({
+            "completedAt": "2026-06-12T00:00:00Z", "targetProviderId": "custom", "codexConfigDir": "/codex"
+        })).unwrap();
+        assert!(!marker.covers_directory("/codex"));
+        marker.deferred_files_checked = true;
+        assert!(marker.covers_directory("/codex"));
+        assert!(!marker.covers_directory("/another-codex"));
+        let restored: CodexOfficialHistoryUnifyMigration =
+            serde_json::from_value(serde_json::to_value(marker).unwrap()).unwrap();
+        assert!(restored.covers_directory("/codex"));
+    }
+
+    #[test]
+    fn legacy_third_party_history_marker_requires_deferred_revalidation() {
+        let marker: CodexThirdPartyHistoryProviderBucketMigration = serde_json::from_value(serde_json::json!({
+            "completedAt": "2026-06-12T00:00:00Z", "targetProviderId": "custom", "scannedHistoryFiles": true
+        })).unwrap();
+        assert!(marker.scanned_history_files);
+        assert!(!marker.deferred_files_checked);
     }
 }

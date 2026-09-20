@@ -10,12 +10,13 @@ use serde_json::Value;
 
 use crate::codex_config::{get_codex_config_dir, read_codex_config_text};
 use crate::codex_state_db::codex_state_db_paths;
-use crate::session_manager::{SessionMessage, SessionMeta};
+use crate::session_manager::{SessionDeleteResult, SessionMessage, SessionMeta};
 
 use super::utils::{
-    extract_text, parse_timestamp_to_ms, path_basename, read_head_tail_lines, truncate_summary,
-    TITLE_MAX_CHARS,
+    extract_text, parse_timestamp_to_ms, path_basename, truncate_summary, TITLE_MAX_CHARS,
 };
+
+use super::codex_io::{open_lines, read_head_tail_lines};
 
 const PROVIDER_ID: &str = "codex";
 const CODEX_SESSION_INDEX_FILENAME: &str = "session_index.jsonl";
@@ -187,23 +188,17 @@ fn load_thread_titles_from_db(db_path: &Path) -> HashMap<String, String> {
 }
 
 pub fn load_messages(path: &Path) -> Result<Vec<SessionMessage>, String> {
-    // Deliberate asymmetry with session *listing* (which reads bounded
-    // head/tail lines and therefore has no whole-file gate): loading
-    // materializes every message into one Vec that crosses IPC to the
-    // renderer, so its output scales with file size no matter how the read
-    // is done. The gate keeps a pathological multi-hundred-MB rollout from
-    // freezing the UI; such a session stays visible in the list and fails
-    // here with an explicit size error. Lifting this properly means paging
-    // the message view, not removing the bound.
-    let content = crate::security_limits::read_to_string_limited(
-        path,
-        crate::security_limits::MAX_SESSION_FILE_BYTES,
-    )
-    .map_err(|e| format!("Failed to read session file: {e}"))?;
+    // IPC still materializes messages, so bound decoded bytes as well as
+    // compressed input and each line. Never read a zstd frame as UTF-8.
+    let mut lines = open_lines(path, crate::security_limits::MAX_SESSION_FILE_BYTES)
+        .map_err(|error| format!("Failed to read session file {}: {error}", path.display()))?;
     let mut messages = Vec::new();
 
-    for line in content.lines() {
-        let value: Value = match serde_json::from_str(line) {
+    while let Some(line) = lines
+        .next_line()
+        .map_err(|error| format!("Failed to read session file {}: {error}", path.display()))?
+    {
+        let value: Value = match serde_json::from_str(&line) {
             Ok(parsed) => parsed,
             Err(_) => continue,
         };
@@ -260,95 +255,98 @@ pub fn load_messages(path: &Path) -> Result<Vec<SessionMessage>, String> {
     Ok(messages)
 }
 
-/// Remove Codex-owned index/state records after a rollout file is already gone.
-pub fn delete_session_records(root: &Path, session_id: &str) -> Result<bool, String> {
-    if let Some(config_dir) = root.parent() {
-        let config_text =
-            std::fs::read_to_string(config_dir.join("config.toml")).unwrap_or_default();
-        if let Err(error) = remove_session_from_session_index(
-            &config_dir.join(CODEX_SESSION_INDEX_FILENAME),
-            session_id,
-        ) {
-            log::warn!(
-                "Failed to remove Codex session '{session_id}' from {CODEX_SESSION_INDEX_FILENAME}: {error}"
-            );
-        }
-        for db_path in codex_state_db_paths(config_dir, &config_text) {
-            if let Err(error) = remove_thread_from_state_db(&db_path, session_id) {
-                log::warn!(
-                    "Failed to remove Codex thread '{session_id}' from {}: {error}",
-                    db_path.display()
-                );
+/// Finish as much cleanup as possible. The caller keeps the original request
+/// when cleanup_pending is true and can retry even though the rollout is gone.
+pub(crate) fn delete_session_records(
+    root: &Path,
+    session_id: &str,
+) -> Result<SessionDeleteResult, String> {
+    let config_dir = root
+        .parent()
+        .ok_or("Codex session root has no config directory")?;
+    let mut errors = Vec::new();
+    let config_path = config_dir.join("config.toml");
+    let config_text = match crate::security_limits::read_to_string_limited(
+        &config_path,
+        crate::security_limits::MAX_CONFIG_FILE_BYTES,
+    ) {
+        Ok(text) => match text.parse::<toml_edit::DocumentMut>() {
+            Ok(_) => Some(text),
+            Err(error) => {
+                errors.push(format!("{}: {error}", config_path.display()));
+                None
             }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(String::new()),
+        Err(error) => {
+            errors.push(format!("{}: {error}", config_path.display()));
+            None
+        }
+    };
+    if let Err(error) = remove_session_from_session_index(
+        &config_dir.join(CODEX_SESSION_INDEX_FILENAME),
+        session_id,
+    ) {
+        errors.push(format!("{CODEX_SESSION_INDEX_FILENAME}: {error}"));
+    }
+    // Do not short-circuit on an index/DB error: the other stores may be writable.
+    let db_paths = match config_text {
+        Some(text) => codex_state_db_paths(config_dir, &text),
+        // With an unreadable config the external SQLite override is unknown.
+        // Clean the known local store; report the unresolved location for retry.
+        None => vec![config_dir.join(crate::codex_state_db::CODEX_STATE_DB_FILENAME)],
+    };
+    for db_path in db_paths {
+        if let Err(error) = remove_thread_from_state_db(&db_path, session_id) {
+            errors.push(format!("{}: {error}", db_path.display()));
         }
     }
-    Ok(true)
+    let error = (!errors.is_empty()).then(|| format!(
+        "Session content has been deleted, but Codex index cleanup is incomplete. Retry this deletion to finish cleanup: {}",
+        errors.join("; ")
+    ));
+    if let Some(error) = &error {
+        log::warn!("{error}");
+    }
+    Ok(SessionDeleteResult {
+        source_deleted: true,
+        cleanup_pending: error.is_some(),
+        error,
+    })
 }
 
-pub fn delete_session(root: &Path, path: &Path, session_id: &str) -> Result<bool, String> {
-    // A stale index entry can outlive its rollout. Those zombie entries must
-    // remain deletable; skipping metadata validation is safe only because the
-    // caller already validated the path and the ID is the record key.
-    if !path.exists() {
+pub(crate) fn delete_session(
+    root: &Path,
+    path: &Path,
+    session_id: &str,
+) -> Result<SessionDeleteResult, String> {
+    // Missing rollouts are valid retries, but only after the manager validates
+    // containment and rejects linked ancestors (including missing-leaf paths).
+    if !path
+        .try_exists()
+        .map_err(|error| format!("Failed to inspect session file: {error}"))?
+    {
         return delete_session_records(root, session_id);
     }
     let meta = parse_session(path)
         .ok_or_else(|| format!("Failed to parse Codex session metadata: {}", path.display()))?;
-
     if meta.session_id != session_id {
         return Err(format!(
             "Codex session ID mismatch: expected {session_id}, found {}",
             meta.session_id
         ));
     }
-
-    std::fs::remove_file(path).map_err(|e| {
-        format!(
-            "Failed to delete Codex session file {}: {e}",
-            path.display()
-        )
-    })?;
-
-    // Best-effort: also drop Codex's own indexes of this thread. Without
-    // this, deleting only the rollout file left the thread still listed in
-    // Codex's own sidebar (it reads session_index.jsonl / the `threads`
-    // table, not this directory scan) — clicking it then fails with "no
-    // rollout found for thread id" (same class of bug as upstream
-    // CodexPlusPlus's session-delete-consistency fixes, #1870 and related).
-    // Never turned into a hard failure here: the rollout file is already
-    // gone, which is the state every caller of this function keys off of, so
-    // a failure tidying up Codex's own indexes is logged and swallowed
-    // rather than reported as an overall delete failure.
-    //
-    // `root` is one of `session_roots()`'s entries (`<config_dir>/sessions`
-    // or `<config_dir>/archived_sessions`) — a direct child of the Codex
-    // config dir where session_index.jsonl / state_5.sqlite actually live.
-    // Deriving it from `root` (rather than the global `get_codex_config_dir`)
-    // keeps this function's side effects scoped to what the caller actually
-    // passed in, so tests that pass a temp root never touch the real
-    // machine's Codex state.
-    if let Some(config_dir) = root.parent() {
-        let config_text =
-            std::fs::read_to_string(config_dir.join("config.toml")).unwrap_or_default();
-        if let Err(error) = remove_session_from_session_index(
-            &config_dir.join(CODEX_SESSION_INDEX_FILENAME),
-            session_id,
-        ) {
-            log::warn!(
-                "Failed to remove Codex session '{session_id}' from {CODEX_SESSION_INDEX_FILENAME}: {error}"
-            );
-        }
-        for db_path in codex_state_db_paths(config_dir, &config_text) {
-            if let Err(error) = remove_thread_from_state_db(&db_path, session_id) {
-                log::warn!(
-                    "Failed to remove Codex thread '{session_id}' from {}: {error}",
-                    db_path.display()
-                );
-            }
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "Failed to delete Codex session file {}: {error}",
+                path.display()
+            ))
         }
     }
-
-    Ok(true)
+    delete_session_records(root, session_id)
 }
 
 /// Rewrites `session_index.jsonl` without the line whose `id` matches
@@ -357,14 +355,14 @@ pub fn delete_session(root: &Path, path: &Path, session_id: &str) -> Result<bool
 /// formatting is ever disturbed. A no-op when the file doesn't exist or has
 /// no matching line: deleting a session Codex never indexed is not an error.
 fn remove_session_from_session_index(index_path: &Path, session_id: &str) -> Result<(), String> {
-    if !index_path.exists() {
-        return Ok(());
-    }
-    let content = crate::security_limits::read_to_string_limited(
+    let content = match crate::security_limits::read_to_string_limited(
         index_path,
         crate::security_limits::MAX_CONFIG_FILE_BYTES,
-    )
-    .map_err(|error| error.to_string())?;
+    ) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.to_string()),
+    };
 
     let mut changed = false;
     let mut kept_lines: Vec<&str> = Vec::new();
@@ -393,15 +391,21 @@ fn remove_session_from_session_index(index_path: &Path, session_id: &str) -> Res
 /// Best-effort `DELETE FROM threads WHERE id = ?` against one resolved
 /// `state_5.sqlite`. Codex keeps this DB open — and often write-locked —
 /// while running, so this tolerates a brief wait the same way the read path
-/// above does, and simply reports failure to the caller (which logs and
-/// moves on) rather than blocking session deletion on Codex's own lock.
+/// above does. Failures are returned as retryable partial cleanup results.
 fn remove_thread_from_state_db(db_path: &Path, session_id: &str) -> Result<(), String> {
-    if !db_path.exists() {
+    if !db_path.try_exists().map_err(|error| error.to_string())? {
         return Ok(());
     }
-    let conn = Connection::open(db_path).map_err(|error| error.to_string())?;
+    // Never create a new state DB while cleaning a disappeared one.
+    let conn = Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
+        .map_err(|error| error.to_string())?;
     conn.busy_timeout(Duration::from_secs(2))
         .map_err(|error| error.to_string())?;
+    if !crate::database::Database::table_exists(&conn, "threads")
+        .map_err(|error| error.to_string())?
+    {
+        return Ok(());
+    }
     conn.execute("DELETE FROM threads WHERE id = ?1", [session_id])
         .map_err(|error| error.to_string())?;
     Ok(())
@@ -415,7 +419,16 @@ fn parse_session_with_titles(
     path: &Path,
     thread_titles: &HashMap<String, String>,
 ) -> Option<SessionMeta> {
-    let (head, tail) = read_head_tail_lines(path, 10, 30).ok()?;
+    let (head, tail) = match read_head_tail_lines(path, 10, 30) {
+        Ok(lines) => lines,
+        Err(error) => {
+            log::warn!(
+                "Failed to read Codex session metadata {}: {error}",
+                path.display()
+            );
+            return None;
+        }
+    };
 
     let mut session_id: Option<String> = None;
     let mut project_dir: Option<String> = None;
@@ -718,9 +731,15 @@ mod tests {
     #[test]
     fn delete_session_removes_jsonl_file() {
         let temp = tempdir().expect("tempdir");
-        let path = temp
-            .path()
-            .join("rollout-2026-03-06T21-50-12-019cc369-bd7c-7891-b371-7b20b4fe0b18.jsonl");
+        let root = temp.path().join("sessions");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(
+            temp.path().join("config.toml"),
+            format!("sqlite_home = '{}'\n", temp.path().display()),
+        )
+        .unwrap();
+        let path =
+            root.join("rollout-2026-03-06T21-50-12-019cc369-bd7c-7891-b371-7b20b4fe0b18.jsonl");
         std::fs::write(
             &path,
             concat!(
@@ -730,7 +749,7 @@ mod tests {
         )
         .expect("write session");
 
-        delete_session(temp.path(), &path, "019cc369-bd7c-7891-b371-7b20b4fe0b18")
+        delete_session(&root, &path, "019cc369-bd7c-7891-b371-7b20b4fe0b18")
             .expect("delete session");
 
         assert!(!path.exists());
@@ -742,6 +761,11 @@ mod tests {
         let config_dir = temp.path();
         let sessions_root = config_dir.join("sessions");
         std::fs::create_dir_all(&sessions_root).expect("create sessions dir");
+        std::fs::write(
+            config_dir.join("config.toml"),
+            format!("sqlite_home = '{}'\n", config_dir.display()),
+        )
+        .unwrap();
 
         let session_id = "019cc369-bd7c-7891-b371-7b20b4fe0b18";
         let other_id = "029cc369-bd7c-7891-b371-7b20b4fe0b19";
@@ -1220,13 +1244,163 @@ mod tests {
         let root = temp.path().join("sessions");
         std::fs::create_dir(&root).unwrap();
         let path = root.join("rollout.jsonl");
+        std::fs::write(
+            temp.path().join("config.toml"),
+            format!("sqlite_home = '{}'\n", temp.path().display()),
+        )
+        .unwrap();
         let id = "bad;echo injected";
         write_codex_session(&path, id, "Still readable");
         let meta = parse_session(&path).unwrap();
         assert_eq!(meta.session_id, id);
         assert!(meta.resume_command.is_none());
         assert!(!load_messages(&path).unwrap().is_empty());
-        assert!(delete_session(&root, &path, id).unwrap());
+        assert!(delete_session(&root, &path, id).unwrap().source_deleted);
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn compressed_sessions_load_metadata_messages_and_filename_uuid() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("sessions");
+        std::fs::create_dir_all(&root).unwrap();
+        let id = "019cc369-bd7c-7891-b371-7b20b4fe0b18";
+        let plain = root.join("fixture.jsonl");
+        write_codex_session(&plain, id, "压缩会话");
+        let content = std::fs::read(&plain).unwrap();
+        std::fs::remove_file(&plain).unwrap();
+        let path = root.join(format!("rollout-{id}.jsonl.zst"));
+        std::fs::write(&path, zstd::stream::encode_all(&content[..], 1).unwrap()).unwrap();
+        let sessions = scan_sessions_in_roots_with_titles(&[root], &HashMap::new());
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].session_id, id);
+        assert_eq!(sessions[0].title.as_deref(), Some("压缩会话"));
+        assert_eq!(load_messages(&path).unwrap()[0].content, "压缩会话");
+
+        // Older rollouts may have no session_meta; filename UUID is still valid
+        // only after the compressed stream was successfully read and validated.
+        let message_only = content.split(|byte| *byte == b'\n').nth(1).unwrap();
+        std::fs::write(&path, zstd::stream::encode_all(message_only, 1).unwrap()).unwrap();
+        assert_eq!(parse_session(&path).unwrap().session_id, id);
+        assert_eq!(load_messages(&path).unwrap().len(), 1);
+        std::fs::write(&path, b"invalid zstd").unwrap();
+        assert!(parse_session(&path).is_none());
+        assert!(load_messages(&path)
+            .unwrap_err()
+            .contains("Failed to read session file"));
+    }
+
+    #[test]
+    fn delete_reports_locked_database_as_partial_and_missing_rollout_retry_finishes() {
+        let temp = tempdir().unwrap();
+        let config_dir = temp.path();
+        let root = config_dir.join("sessions");
+        std::fs::create_dir(&root).unwrap();
+        let sqlite_home = config_dir.join("sqlite-home");
+        std::fs::create_dir(&sqlite_home).unwrap();
+        std::fs::write(
+            config_dir.join("config.toml"),
+            format!("sqlite_home = '{}'\n", sqlite_home.display()),
+        )
+        .unwrap();
+        let other_db = Connection::open(sqlite_home.join(CODEX_STATE_DB_FILENAME)).unwrap();
+        other_db.execute_batch("CREATE TABLE threads (id TEXT PRIMARY KEY); INSERT INTO threads VALUES ('locked-session');").unwrap();
+        let id = "locked-session";
+        let path = root.join("rollout.jsonl");
+        write_codex_session(&path, id, "hello");
+        let index = config_dir.join(CODEX_SESSION_INDEX_FILENAME);
+        std::fs::write(
+            &index,
+            format!("{{\"id\":\"{id}\",\"thread_name\":\"delete\"}}\n"),
+        )
+        .unwrap();
+        let conn = Connection::open(config_dir.join(CODEX_STATE_DB_FILENAME)).unwrap();
+        conn.execute_batch("CREATE TABLE threads (id TEXT PRIMARY KEY); INSERT INTO threads VALUES ('locked-session'); BEGIN IMMEDIATE;").unwrap();
+        let partial = delete_session(&root, &path, id).unwrap();
+        assert!(partial.source_deleted);
+        assert!(partial.cleanup_pending);
+        assert!(partial
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("content has been deleted"));
+        assert!(!path.exists());
+        assert!(!std::fs::read_to_string(&index).unwrap().contains(id));
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM threads", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            other_db
+                .query_row("SELECT COUNT(*) FROM threads", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0,
+            "one locked DB must not prevent cleaning another"
+        );
+        conn.execute_batch("ROLLBACK").unwrap();
+        let retried = delete_session(&root, &path, id).unwrap();
+        assert!(retried.source_deleted && !retried.cleanup_pending);
+        assert!(retried.error.is_none());
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM threads", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn delete_attempts_database_cleanup_even_when_index_is_unreadable() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("sessions");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(
+            temp.path().join("config.toml"),
+            format!("sqlite_home = '{}'\n", temp.path().display()),
+        )
+        .unwrap();
+        let index = temp.path().join(CODEX_SESSION_INDEX_FILENAME);
+        std::fs::create_dir(&index).unwrap();
+        let conn = Connection::open(temp.path().join(CODEX_STATE_DB_FILENAME)).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE threads (id TEXT PRIMARY KEY); INSERT INTO threads VALUES ('s1');",
+        )
+        .unwrap();
+        let missing = root.join("missing.jsonl");
+        let partial = delete_session(&root, &missing, "s1").unwrap();
+        assert!(partial.source_deleted && partial.cleanup_pending);
+        assert!(partial
+            .error
+            .unwrap()
+            .contains(CODEX_SESSION_INDEX_FILENAME));
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM threads", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        std::fs::remove_dir(&index).unwrap();
+        assert!(
+            !delete_session(&root, &missing, "s1")
+                .unwrap()
+                .cleanup_pending
+        );
+    }
+
+    #[test]
+    fn invalid_config_still_cleans_default_stores_but_reports_unknown_sqlite_location() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("sessions");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(temp.path().join("config.toml"), "sqlite_home = [").unwrap();
+        let index = temp.path().join(CODEX_SESSION_INDEX_FILENAME);
+        std::fs::write(&index, "{\"id\":\"s1\"}\n").unwrap();
+        let result = delete_session_records(&root, "s1").unwrap();
+        assert!(result.source_deleted && result.cleanup_pending);
+        assert!(result.error.unwrap().contains("config.toml"));
+        assert!(std::fs::read_to_string(index).unwrap().is_empty());
     }
 }

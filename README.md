@@ -8,7 +8,7 @@ Codex 线路切换与桌面运行时管理工具
 
 [![Latest Release](https://img.shields.io/github/v/release/Duojiyi/chimera-plusplus?label=release)](https://github.com/Duojiyi/chimera-plusplus/releases/latest)
 [![CI](https://github.com/Duojiyi/chimera-plusplus/actions/workflows/ci.yml/badge.svg)](https://github.com/Duojiyi/chimera-plusplus/actions/workflows/ci.yml)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-555)](#平台支持)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-555)](#平台支持)
 [![Built with Tauri](https://img.shields.io/badge/Tauri-2-24C8DB)](https://tauri.app/)
 
 [下载最新版](https://github.com/Duojiyi/chimera-plusplus/releases/latest) · [提交问题](https://github.com/Duojiyi/chimera-plusplus/issues) · [开发说明](#本地开发)
@@ -26,7 +26,7 @@ Chimera++ 用于管理 Codex 的供应商配置、模型和本机运行时。它
 - **模型目录**：同步可用模型并更新 Codex 桌面端模型列表。
 - **词元统计**：查看请求、词元消耗、模型分布和历史记录。
 - **外观管理**：预览、安装、应用和恢复 Codex 客户端皮肤。
-- **会话管理**：浏览本机 CLI 写下的会话记录，按对话内容、目录或 ID 搜索，按来源筛选，查看会话详情，复制恢复命令和项目目录。在终端中直接恢复目前仅 macOS 可用；Windows 上为复制恢复命令。
+- **会话管理**：浏览本机 CLI 写下的会话记录，按对话内容、目录或 ID 搜索，按来源筛选，查看会话详情，复制恢复命令和项目目录，并在确认后删除单个或批量会话。在终端中直接恢复目前仅 macOS 可用；Windows 上为复制恢复命令。
 - **应用更新**：启动后自动检查，运行期间每 15 分钟检查一次；发现新版本会在后台预下载安装包，点击“立即更新”时直接安装。标题栏按钮和“设置”页都可手动检查。
 
 ## 平台支持
@@ -88,7 +88,7 @@ macOS 构建目前没有 Apple Developer ID 签名和公证。如果 Gatekeeper 
 Chimera++ 的应用数据默认保存在：
 
 - Windows：`%USERPROFILE%\.chimera-plus-plus\`
-- macOS：`~/.chimera-plus-plus/`
+- macOS / Linux：`~/.chimera-plus-plus/`
 
 Codex 的实时配置仍位于 `~/.codex/`。Chimera++ 对关键配置采用临时文件加原子替换，并在运行时维护操作之间使用跨进程锁。建议在导入、恢复或卸载前保留自己的配置备份。
 
@@ -116,25 +116,38 @@ Chimera++ 只会把包含有效 `tokens.access_token` 的 ChatGPT 认证视为�
 
 ### 环境
 
-- Node.js 20+
-- pnpm 10+
-- Rust 1.85+
-- Windows 或 macOS；完整运行时功能需要 Windows
+- Node.js 20.19.x（[.node-version](.node-version) 指定 20.19.0）；也可使用 Node.js 22.12 或更新版本，符合当前 Vite 的要求
+- pnpm 10+（CI 使用 10.12.3）
+- Rust 1.95 和 Cargo（[rust-toolchain.toml](rust-toolchain.toml) 固定工具链，[Cargo.toml](src-tauri/Cargo.toml) 的最低版本同为 1.95）
+- Windows、macOS 或 Linux，并安装对应的 [Tauri 2 开发依赖](https://v2.tauri.app/start/prerequisites/)；完整 Codex 运行时维护功能需要 Windows
 
-### 常用命令
+### 纯前端开发与检查
+
+以下命令不编译 Rust。浏览器预览不提供 Tauri 原生命令，配置写入、托盘和运行时维护需要桌面环境验证。
 
 ```bash
 pnpm install
+pnpm dev:renderer
 pnpm typecheck
 pnpm test:unit
-pnpm build:renderer
-pnpm tauri dev
+pnpm build:renderer:check
 ```
 
-Rust 检查：
+### Rust 格式检查
+
+仅检查格式，不产生 Rust 编译产物：
 
 ```bash
 cargo fmt --check --manifest-path src-tauri/Cargo.toml
+```
+
+### 桌面开发与 Rust 验证
+
+遵循 [AGENTS.md](AGENTS.md)：编码代理只有在用户明确要求时，才能运行会编译 Rust 的命令；未经许可不得删除已有 Rust 构建产物或缓存。下面的桌面命令及 Clippy、Rust 测试都会触发编译，不属于默认轻量检查。
+
+```bash
+pnpm dev
+pnpm build
 cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
@@ -151,9 +164,13 @@ src-tauri/tests/      Rust 集成测试
 
 ## 贡献
 
-提交 PR 前请至少运行 TypeScript 类型检查、相关前端测试、Rust 格式检查和相关 Rust 测试。涉及认证、配置写入、进程终止或更新流程的改动应包含回归测试，并说明 Windows/macOS 的行为差异。
+提交 PR 前请按改动范围运行 TypeScript 类型检查、相关前端测试和 Rust 格式检查。Rust 编译、Clippy 和测试由 CI 或经用户明确授权的本地检查完成；未执行的验证必须注明。涉及认证、配置写入、进程终止或更新流程的改动应包含回归测试，并说明平台差异。完整流程见 [贡献指南](CONTRIBUTING.md)。
 
 Bug 报告和功能建议请使用 [GitHub Issues](https://github.com/Duojiyi/chimera-plusplus/issues)。不要在 Issue、PR 或日志中公开 API 密钥和 OAuth 令牌。
+
+## 文档范围
+
+本文件和 [PRODUCT.md](PRODUCT.md) 描述当前 Chimera++ 产品范围。`README_ZH.md`、`README_JA.md`、`README_DE.md` 与 `docs/user-manual/` 保留上游 CC Switch 参考内容，其中的多工具管理界面、安装及开发说明不代表 Chimera++ 当前行为。历史审计与发布记录按记录时点保留，不作为当前环境要求。
 
 ## 许可与来源
 

@@ -1,3 +1,5 @@
+> **上游参考文档**：下文保留 CC Switch 的历史功能说明，不代表 Chimera++ 当前界面、安装或开发要求。当前产品说明请见 [Chimera++ README](README.md)，开发与验证流程请见 [贡献指南](CONTRIBUTING.md)。
+
 <div align="center">
 
 # CC Switch

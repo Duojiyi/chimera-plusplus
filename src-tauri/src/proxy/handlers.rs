@@ -294,7 +294,7 @@ struct ClaudeUsageLog {
     outbound_model: String,
     app_type: &'static str,
     provider_id: String,
-    session_id: String,
+    session_id: Option<String>,
     usage: TokenUsage,
     latency_ms: u64,
     status_code: u16,
@@ -327,7 +327,7 @@ fn prepare_claude_usage_log(
             .unwrap_or_else(|| ctx.request_model.clone()),
         app_type: ctx.app_type_str,
         provider_id: ctx.provider.id.clone(),
-        session_id: ctx.session_id.clone(),
+        session_id: ctx.usage_session_id(),
         usage,
         latency_ms: ctx.latency_ms(),
         status_code,
@@ -348,7 +348,7 @@ async fn write_claude_usage_log(state: &ProxyState, log: ClaudeUsageLog) {
         None,
         log.is_streaming,
         log.status_code,
-        Some(log.session_id),
+        log.session_id,
     )
     .await;
 }
@@ -440,7 +440,7 @@ async fn handle_claude_transform(
                 .unwrap_or_else(|| ctx.request_model.clone());
             let status_code = status.as_u16();
             let start_time = ctx.start_time;
-            let session_id = ctx.session_id.clone();
+            let session_id = ctx.usage_session_id();
             // 用 ctx 的 app_type：Claude Desktop 网关也走此转换路径，硬编码
             // "claude" 会把 claude-desktop 的行错记到 claude 名下
             let app_type_str = ctx.app_type_str;
@@ -475,7 +475,7 @@ async fn handle_claude_transform(
                                 first_token_ms,
                                 true,
                                 status_code,
-                                Some(session_id),
+                                session_id,
                             )
                             .await;
                         });
@@ -1762,7 +1762,7 @@ async fn handle_codex_responses_namespace_restore(
                 tokio::spawn({
                     let state = state.clone();
                     let provider_id = ctx.provider.id.clone();
-                    let session_id = ctx.session_id.clone();
+                    let session_id = ctx.usage_session_id();
                     let latency_ms = ctx.latency_ms();
                     async move {
                         log_usage(
@@ -1777,7 +1777,7 @@ async fn handle_codex_responses_namespace_restore(
                             None,
                             false,
                             status.as_u16(),
-                            Some(session_id),
+                            session_id,
                         )
                         .await;
                     }
@@ -1850,7 +1850,7 @@ async fn handle_codex_chat_to_responses_transform(
                 .unwrap_or_else(|| ctx.request_model.clone());
             let app_type_str = ctx.app_type_str;
             let start_time = ctx.start_time;
-            let session_id = ctx.session_id.clone();
+            let session_id = ctx.usage_session_id();
 
             Some(SseUsageCollector::new(
                 start_time,
@@ -1893,7 +1893,7 @@ async fn handle_codex_chat_to_responses_transform(
                             first_token_ms,
                             true,
                             status.as_u16(),
-                            Some(session_id),
+                            session_id,
                         )
                         .await;
                     });
@@ -1999,7 +1999,7 @@ async fn handle_codex_chat_to_responses_transform(
         tokio::spawn({
             let state = state.clone();
             let provider_id = ctx.provider.id.clone();
-            let session_id = ctx.session_id.clone();
+            let session_id = ctx.usage_session_id();
             let latency_ms = ctx.latency_ms();
             async move {
                 log_usage(
@@ -2014,7 +2014,7 @@ async fn handle_codex_chat_to_responses_transform(
                     None,
                     false,
                     status.as_u16(),
-                    Some(session_id),
+                    session_id,
                 )
                 .await;
             }
@@ -2170,7 +2170,7 @@ async fn handle_codex_anthropic_to_responses_transform(
         tokio::spawn({
             let state = state.clone();
             let provider_id = ctx.provider.id.clone();
-            let session_id = ctx.session_id.clone();
+            let session_id = ctx.usage_session_id();
             let latency_ms = ctx.latency_ms();
             async move {
                 log_usage(
@@ -2185,7 +2185,7 @@ async fn handle_codex_anthropic_to_responses_transform(
                     None,
                     false,
                     status.as_u16(),
-                    Some(session_id),
+                    session_id,
                 )
                 .await;
             }
@@ -2236,7 +2236,7 @@ fn build_codex_anthropic_sse_response(
             .unwrap_or_else(|| ctx.request_model.clone());
         let app_type_str = ctx.app_type_str;
         let start_time = ctx.start_time;
-        let session_id = ctx.session_id.clone();
+        let session_id = ctx.usage_session_id();
 
         Some(SseUsageCollector::new(
             start_time,
@@ -2273,7 +2273,7 @@ fn build_codex_anthropic_sse_response(
                         first_token_ms,
                         true,
                         status.as_u16(),
-                        Some(session_id),
+                        session_id,
                     )
                     .await;
                 });
@@ -3238,7 +3238,7 @@ fn log_forward_error(
         error_message,
         ctx.latency_ms(),
         is_streaming,
-        Some(ctx.session_id.clone()),
+        ctx.usage_session_id(),
         None,
     ) {
         log::warn!("记录失败请求日志失败: {e}");
@@ -3318,6 +3318,120 @@ mod tests {
         proxy::{server::CodexWireApiDetection, ProxyError},
     };
     use serde_json::json;
+
+    #[tokio::test]
+    async fn transformed_usage_persists_only_client_session_identities() {
+        use crate::database::Database;
+        use crate::proxy::handler_context::tests::usage_context;
+        use crate::proxy::response_processor::tests::{
+            assert_usage_log, build_state, usage_response,
+        };
+        use std::sync::Arc;
+
+        for route in [
+            "claude-chat",
+            "codex-namespace",
+            "codex-chat",
+            "codex-anthropic",
+        ] {
+            for provided in [false, true] {
+                for streaming in [false, true] {
+                    let db = Arc::new(Database::memory().unwrap());
+                    let state = build_state(db.clone());
+                    let app = if route == "claude-chat" {
+                        "claude"
+                    } else {
+                        "codex"
+                    };
+                    let ctx = usage_context(&db, app, provided).await;
+                    let protocol = match route {
+                        "codex-namespace" => "responses",
+                        "codex-anthropic" => "claude",
+                        _ => "chat",
+                    };
+                    let upstream = usage_response(protocol, streaming);
+                    let response = match route {
+                        "claude-chat" => {
+                            super::handle_claude_transform(
+                                upstream,
+                                &ctx,
+                                &state,
+                                &json!({}),
+                                streaming,
+                                "openai_chat",
+                                None,
+                            )
+                            .await
+                        }
+                        "codex-namespace" => {
+                            super::handle_codex_responses_namespace_restore(
+                                upstream,
+                                &ctx,
+                                &state,
+                                None,
+                                Default::default(),
+                            )
+                            .await
+                        }
+                        "codex-chat" => {
+                            super::handle_codex_chat_to_responses_transform(
+                                upstream,
+                                &ctx,
+                                &state,
+                                streaming,
+                                None,
+                                Default::default(),
+                            )
+                            .await
+                        }
+                        "codex-anthropic" => {
+                            super::handle_codex_anthropic_to_responses_transform(
+                                upstream,
+                                &ctx,
+                                &state,
+                                streaming,
+                                None,
+                                Default::default(),
+                            )
+                            .await
+                        }
+                        _ => unreachable!(),
+                    }
+                    .unwrap();
+                    // Drive SSE to completion so its real usage collector runs.
+                    axum::body::to_bytes(response.into_body(), 64 * 1024)
+                        .await
+                        .unwrap();
+                    assert_usage_log(&db, &ctx, streaming, 200, true).await;
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn forward_errors_persist_only_client_session_identities() {
+        use crate::database::Database;
+        use crate::proxy::handler_context::tests::usage_context;
+        use crate::proxy::response_processor::tests::{assert_usage_log, build_state};
+        use std::sync::Arc;
+
+        for app in ["claude", "claude-desktop", "codex", "grokbuild", "gemini"] {
+            for provided in [false, true] {
+                for streaming in [false, true] {
+                    let db = Arc::new(Database::memory().unwrap());
+                    let state = build_state(db.clone());
+                    let ctx = usage_context(&db, app, provided).await;
+                    super::log_forward_error(
+                        &state,
+                        &ctx,
+                        streaming,
+                        &ProxyError::Internal("test error".into()),
+                    );
+                    assert_usage_log(&db, &ctx, streaming, 500, false).await;
+                }
+            }
+        }
+    }
 
     fn codex_test_provider(id: &str, base_url: &str, api_key: &str) -> Provider {
         Provider::with_id(

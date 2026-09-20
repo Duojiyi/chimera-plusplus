@@ -1,3 +1,5 @@
+> **上流プロジェクトの参考資料**：本マニュアルは CC Switch の説明を保存したものであり、現在の Chimera++ の製品範囲を示すものではありません。現行の利用方法は [Chimera++ README](../../../README.md)、開発と検証の手順は [貢献ガイド](../../../CONTRIBUTING.md) を参照してください。
+
 # CC Switch ユーザーマニュアル
 
 > Claude Code / Claude Desktop / Codex / Gemini CLI / OpenCode / OpenClaw / Hermes オールインワンアシスタント

@@ -51,9 +51,27 @@ impl SessionSyncResult {
     }
 }
 
+/// Serializes complete session imports (usage commit through cursor update) with
+/// database replacement (local snapshot through final commit). Acquire before DB
+/// or snapshot locks; session importers must not acquire runtime/per-app locks.
 pub fn session_sync_mutex() -> &'static tokio::sync::Mutex<()> {
     static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+/// Keep the guard in the actual worker: cancelling its async caller only detaches
+/// spawn_blocking, so an outer guard would unlock an import still writing cursors.
+/// The operation must not reacquire session_sync_mutex.
+pub(crate) async fn run_session_sync_blocking<T: Send + 'static>(
+    operation: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, String> {
+    let guard = session_sync_mutex().lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = guard;
+        operation()
+    })
+    .await
+    .map_err(|error| error.to_string())
 }
 
 fn merge_sync_step(
@@ -412,13 +430,12 @@ fn sync_single_file(db: &Database, file_path: &Path) -> Result<(u32, u32), AppEr
             msg.message_id
         );
 
-        match insert_session_log_entry(&tx, &request_id, msg) {
-            Ok(true) => imported += 1,
-            Ok(false) => skipped += 1,
-            Err(e) => {
-                log::warn!("[SESSION-SYNC] 插入失败 ({}): {e}", msg.message_id);
-                skipped += 1;
-            }
+        // Keep the cursor and roll back this batch on ambiguous historical
+        // usage or a database error, so the outer caller can report and retry.
+        if insert_session_log_entry(&tx, &request_id, msg)? {
+            imported += 1;
+        } else {
+            skipped += 1;
         }
     }
 
@@ -509,6 +526,7 @@ fn insert_session_log_entry(
         });
 
     let dedup_key = DedupKey {
+        session_id: msg.session_id.as_deref(),
         app_type: "claude",
         model: &msg.model,
         input_tokens: msg.input_tokens,
@@ -607,7 +625,7 @@ fn find_model_pricing_for_session(
 pub fn get_data_source_breakdown(db: &Database) -> Result<Vec<DataSourceSummary>, AppError> {
     let conn = lock_conn!(db.conn);
 
-    let effective_filter = effective_usage_log_filter("l");
+    let effective_filter = effective_usage_log_filter(&conn, "l")?;
     let sql = format!(
         "SELECT COALESCE(l.data_source, 'proxy') as ds, COUNT(*) as cnt,
                 COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as cost
@@ -638,6 +656,42 @@ pub fn get_data_source_breakdown(db: &Database) -> Result<Vec<DataSourceSummary>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ambiguous_archive_keeps_claude_file_retryable() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("legacy.jsonl");
+        fs::write(&file, concat!(
+            r#"{"type":"assistant","sessionId":"direct","timestamp":"2020-01-01T12:00:00Z","message":{"id":"msg-direct","model":"unknown","usage":{"input_tokens":10,"output_tokens":2}}}"#,
+            "\n"
+        )).unwrap();
+        lock_conn!(db.conn).execute(
+            "INSERT INTO usage_daily_rollups (date, app_type, provider_id, model, request_count)
+             VALUES (date(1577880000, 'unixepoch', 'localtime'), 'claude', 'proxy', 'unknown', 1)",
+            [],
+        )?;
+        for _ in 0..2 {
+            let error = sync_single_file(&db, &file).unwrap_err();
+            assert!(error.to_string().contains("历史用量汇总缺少请求身份"));
+            assert_eq!(get_sync_state(&db, &file.to_string_lossy())?, (0, 0));
+            let conn = lock_conn!(db.conn);
+            assert_eq!(
+                conn.query_row("SELECT COUNT(*) FROM proxy_request_logs", [], |r| r
+                    .get::<_, i64>(0))?,
+                0
+            );
+            assert_eq!(
+                conn.query_row(
+                    "SELECT SUM(request_count) FROM usage_daily_rollups",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )?,
+                1
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn sync_retries_partial_tail_without_reimporting_completed_lines() -> Result<(), AppError> {
@@ -715,6 +769,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn session_sync_mutex_serializes_callers() {
         let first = session_sync_mutex().lock().await;
         assert!(session_sync_mutex().try_lock().is_err());

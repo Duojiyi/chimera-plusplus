@@ -2,14 +2,18 @@
 
 ## Supported Versions / 支持的版本
 
-Only the latest release of CC Switch receives security updates.
+Only the latest release of Chimera++ receives security updates.
 
-仅最新版本的 CC Switch 会收到安全更新。
+仅最新版本的 Chimera++ 会收到安全更新。
 
-| Version / 版本 | Supported / 是否支持 |
-|----------------|---------------------|
-| Latest 3.x     | ✅ Yes / 是          |
-| < 3.0          | ❌ No / 否           |
+| Version / 版本                                | Supported / 是否支持 |
+| --------------------------------------------- | -------------------- |
+| Latest Chimera++ release / Chimera++ 最新版本 | Yes / 是             |
+| Older Chimera++ releases / Chimera++ 较旧版本 | No / 否              |
+
+The inherited CC Switch 3.x entries in the changelog are upstream history, not Chimera++ release versions.
+
+更新日志中保留的 CC Switch 3.x 条目属于上游历史，不是 Chimera++ 的发行版本。
 
 ## Reporting a Vulnerability / 报告漏洞
 
@@ -56,3 +60,17 @@ Reporters will be credited in the release notes unless they prefer to remain ano
 Security fixes are released as patch versions and announced via [GitHub Releases](https://github.com/Duojiyi/chimera-plusplus/releases). We recommend always updating to the latest version.
 
 安全修复通过补丁版本发布，并通过 [GitHub Releases](https://github.com/Duojiyi/chimera-plusplus/releases) 通知。建议始终更新到最新版本。
+
+## Dependency Audit Scope / 依赖审计范围
+
+CI blocks release on known npm vulnerabilities (including development dependencies) and RustSec vulnerability findings. The lockfiles are reviewed together with application code; a clean vulnerability count is not a guarantee of zero risk.
+
+CI 将 npm 已知漏洞（含开发依赖）和 RustSec 漏洞项作为发布阻断条件。锁文件与应用代码一并复核；漏洞计数为零不等于不存在风险。
+
+The 2.7.7 dependency review still reports upstream informational advisories for the Tauri/GTK dependency graph: unmaintained `fxhash`, `proc-macro-error` and `unic-*` crates, plus soundness advisories affecting `glib 0.18` (RUSTSEC-2024-0429) and `rand 0.7` (RUSTSEC-2026-0097). These are not hidden with audit ignore rules. They require upstream-compatible dependency migrations and remain tracked limitations; new reachable security issues must still block release.
+
+2.7.7 的依赖复查仍包含 Tauri/GTK 依赖链的上游信息提示：停止维护的 `fxhash`、`proc-macro-error`、`unic-*`，以及 `glib 0.18`（RUSTSEC-2024-0429）和 `rand 0.7`（RUSTSEC-2026-0097）的健全性警告。没有使用审计忽略规则隐藏这些提示；相关升级需要与上游依赖链保持兼容，仍属于已知边界。新增且可达的安全问题仍须阻断发布。
+
+`rand 0.7` is reached through `phf_generator` in the Tauri HTML-selector build dependency chain; `glib 0.18` belongs to the Linux GTK runtime stack. They are not interchangeable drop-in upgrades, and this release does not claim those upstream advisories are fixed.
+
+`rand 0.7` 经由 Tauri HTML 选择器的构建依赖 `phf_generator` 引入；`glib 0.18` 属于 Linux GTK 运行时依赖。两者均不能直接跨不兼容版本替换，本版本不宣称已经修复这些上游警告。

@@ -1,5 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { DeepLinkImportRequest, deeplinkApi } from "@/lib/api/deeplink";
 import {
   Dialog,
@@ -24,11 +23,6 @@ import {
   riskI18nKey,
 } from "@/utils/deeplinkRisk";
 
-interface DeeplinkError {
-  url: string;
-  error: string;
-}
-
 function safeDisplayUrl(value?: string): string {
   if (!value) return "—";
 
@@ -42,17 +36,31 @@ function safeDisplayUrl(value?: string): string {
     return url.toString();
   } catch {
     // Never render a raw malformed URL: it may contain credentials or a token
-    // in a query-like suffix. Keep only a short diagnostic fragment.
-    return trimmed.length > 160 ? `${trimmed.slice(0, 160)}…` : "[invalid URL]";
+    // in a query-like suffix.
+    return "[invalid URL]";
   }
 }
 
-export function DeepLinkImportDialog() {
+export function DeepLinkImportDialog({
+  request: incomingRequest,
+  onHandled,
+  onProviderImported,
+}: {
+  request: DeepLinkImportRequest;
+  onHandled: () => Promise<void>;
+  onProviderImported: (app?: DeepLinkImportRequest["app"]) => void;
+}) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const [request, setRequest] = useState<DeepLinkImportRequest | null>(null);
+  const [request, setRequest] = useState(incomingRequest);
   const [isImporting, setIsImporting] = useState(false);
-  const [isOpen, setIsOpen] = useState(false);
+  const [isPreparing, setIsPreparing] = useState(
+    !!(incomingRequest.config || incomingRequest.configUrl),
+  );
+  const [mergeFailed, setMergeFailed] = useState(false);
+  const [imported, setImported] = useState(false);
+  const inFlightRef = useRef(false);
+  const importedRef = useRef(false);
 
   // 容错判断：MCP 导入结果可能缺少 type 字段
   const isMcpImportResult = (
@@ -73,52 +81,43 @@ export function DeepLinkImportDialog() {
   };
 
   useEffect(() => {
-    // Listen for deep link import events
-    const unlistenImport = listen<DeepLinkImportRequest>(
-      "deeplink-import",
-      async (event) => {
-        // If config is present, merge it to get the complete configuration
-        if (event.payload.config || event.payload.configUrl) {
-          try {
-            const mergedRequest = await deeplinkApi.mergeDeeplinkConfig(
-              event.payload,
-            );
-            setRequest(mergedRequest);
-          } catch (error) {
-            console.error("Failed to merge deep-link config");
-            toast.error(t("deeplink.configMergeError"));
-            // Fall back to original request
-            setRequest(event.payload);
-          }
-        } else {
-          setRequest(event.payload);
-        }
-
-        setIsOpen(true);
-      },
-    );
-
-    // Listen for deep link error events
-    const unlistenError = listen<DeeplinkError>("deeplink-error", (event) => {
-      console.error("Deep link parsing failed");
-      toast.error(t("deeplink.parseError"), {
-        description: event.payload.error,
-      });
-    });
-
+    let active = true;
+    if (incomingRequest.config || incomingRequest.configUrl) {
+      setIsPreparing(true);
+      void deeplinkApi
+        .mergeDeeplinkConfig(incomingRequest)
+        .then((merged) => {
+          if (active) setRequest(merged);
+        })
+        .catch(() => {
+          if (active) setMergeFailed(true);
+        })
+        .finally(() => {
+          if (active) setIsPreparing(false);
+        });
+    }
     return () => {
-      unlistenImport.then((fn) => fn());
-      unlistenError.then((fn) => fn());
+      active = false;
     };
-  }, [t]);
+  }, [incomingRequest]);
 
   const handleImport = async () => {
-    if (!request) return;
-
+    if (inFlightRef.current || isPreparing || mergeFailed) return;
+    inFlightRef.current = true;
     setIsImporting(true);
 
     try {
+      // A failed acknowledgement/cache refresh must never repeat a successful import.
+      if (importedRef.current) {
+        await onHandled();
+        return;
+      }
       const result = await deeplinkApi.importFromDeeplink(request);
+      importedRef.current = true;
+      setImported(true);
+      if (typeof result === "string" || result.type === "provider") {
+        onProviderImported(request.app);
+      }
       const refreshMcp = async (summary: {
         importedCount: number;
         importedIds: string[];
@@ -152,7 +151,7 @@ export function DeepLinkImportDialog() {
       };
 
       // Handle different result types
-      if ("type" in result) {
+      if (typeof result === "object" && "type" in result) {
         if (result.type === "provider") {
           await queryClient.invalidateQueries({
             queryKey: ["providers", request.app],
@@ -212,19 +211,39 @@ export function DeepLinkImportDialog() {
       }
 
       // Close dialog after all refreshes complete
-      setIsOpen(false);
+      await onHandled();
     } catch (error) {
-      console.error("Failed to import from deep link:", error);
-      toast.error(t("deeplink.importError"), {
-        description: error instanceof Error ? error.message : String(error),
-      });
+      console.error("Failed to finish deep link import");
+      if (importedRef.current) {
+        toast.error(
+          t("deeplink.importFinalizeError", {
+            defaultValue:
+              "导入已完成，但刷新或确认清理失败。请点击“完成”重试，不会重复导入。",
+          }),
+        );
+      } else {
+        toast.error(t("deeplink.importError"), {
+          description: error instanceof Error ? error.message : String(error),
+        });
+      }
     } finally {
+      inFlightRef.current = false;
       setIsImporting(false);
     }
   };
 
-  const handleCancel = () => {
-    setIsOpen(false);
+  const handleCancel = async () => {
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
+    setIsImporting(true);
+    try {
+      await onHandled();
+    } catch {
+      toast.error(t("deeplink.importError"));
+    } finally {
+      inFlightRef.current = false;
+      setIsImporting(false);
+    }
   };
 
   // Mask API key for display (show first 4 chars + ***)
@@ -351,7 +370,12 @@ export function DeepLinkImportDialog() {
   };
 
   return (
-    <Dialog open={isOpen && !!request} onOpenChange={setIsOpen}>
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) void handleCancel();
+      }}
+    >
       <DialogContent className="sm:max-w-[500px]" zIndex="top">
         {request && (
           <>
@@ -740,16 +764,33 @@ export function DeepLinkImportDialog() {
               )}
             </div>
 
+            {isPreparing && (
+              <p role="status">
+                {t("common.loading", { defaultValue: "正在读取配置…" })}
+              </p>
+            )}
+            {mergeFailed && (
+              <p role="alert">{t("deeplink.configMergeError")}</p>
+            )}
             <DialogFooter>
               <Button
                 variant="outline"
                 onClick={handleCancel}
                 disabled={isImporting}
               >
-                {t("common.cancel")}
+                {imported
+                  ? t("common.close", { defaultValue: "关闭" })
+                  : t("common.cancel")}
               </Button>
-              <Button onClick={handleImport} disabled={isImporting}>
-                {isImporting ? t("deeplink.importing") : t("deeplink.import")}
+              <Button
+                onClick={handleImport}
+                disabled={isImporting || isPreparing || mergeFailed}
+              >
+                {isImporting
+                  ? t("deeplink.importing")
+                  : imported
+                    ? t("common.done", { defaultValue: "完成" })
+                    : t("deeplink.import")}
               </Button>
             </DialogFooter>
           </>

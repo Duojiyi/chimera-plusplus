@@ -9,12 +9,17 @@ export interface DeleteSessionOptions {
 
 export interface DeleteSessionResult extends DeleteSessionOptions {
   success: boolean;
+  /** Content is gone even when index cleanup needs another attempt. */
+  sourceDeleted: boolean;
+  cleanupPending: boolean;
   error?: string;
 }
 
 export interface CodexHistoryReclaimResult {
   reclaimedJsonlFiles: number;
   reclaimedStateRows: number;
+  /** Active files deferred until their writers stop; retry the same operation. */
+  deferredJsonlFiles: number;
   /** 本次归拢涉及的来源桶 id。 */
   sourceProviderIds: string[];
   /** 被跳过的原因，用于区分「无需恢复」与「恢复了 0 项」。 */

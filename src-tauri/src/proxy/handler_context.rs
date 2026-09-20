@@ -176,6 +176,12 @@ impl RequestContext {
         })
     }
 
+    /// Usage 身份必须来自客户端；路由用的合成 UUID 无法与本地会话日志关联。
+    pub(crate) fn usage_session_id(&self) -> Option<String> {
+        self.session_client_provided
+            .then(|| self.session_id.clone())
+    }
+
     /// 从 URI 提取模型名称（Gemini 专用）
     ///
     /// Gemini API 的模型名称在 URI 中，格式如：
@@ -336,13 +342,57 @@ pub(crate) fn extract_gemini_model_from_path(endpoint: &str) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::{extract_gemini_model_from_path, update_provider_copies};
     use crate::provider::{Provider, ProviderMeta};
     use serde_json::json;
 
     fn provider(id: &str) -> Provider {
         Provider::with_id(id.to_string(), id.to_string(), json!({}), None)
+    }
+
+    /// Build an isolated context through the real identity extractor, without
+    /// reading device settings or selecting a live provider.
+    pub(crate) async fn usage_context(
+        db: &crate::database::Database,
+        app_type_str: &'static str,
+        client_provided: bool,
+    ) -> super::RequestContext {
+        let mut headers = axum::http::HeaderMap::new();
+        let mut body = json!({});
+        if client_provided {
+            const SESSION: &str = "6e872697-4ff0-4942-9541-e0f25e99b994";
+            match app_type_str {
+                "claude" => {
+                    headers.insert("x-claude-code-session-id", SESSION.parse().unwrap());
+                }
+                "codex" => {
+                    headers.insert("session_id", SESSION.parse().unwrap());
+                }
+                _ => {
+                    body = json!({"metadata": {"session_id": SESSION}});
+                }
+            }
+        }
+        let session = super::extract_session_id(&headers, &body, app_type_str);
+        assert_eq!(session.client_provided, client_provided);
+        super::RequestContext {
+            start_time: std::time::Instant::now(),
+            app_config: db.get_proxy_config_for_app(app_type_str).await.unwrap(),
+            provider: provider("usage-provider"),
+            providers: vec![provider("usage-provider")],
+            current_provider_id: "usage-provider".to_string(),
+            request_model: "req-model".to_string(),
+            outbound_model: None,
+            tag: "UsageTest",
+            app_type_str,
+            app_type: app_type_str.parse().unwrap(),
+            session_id: session.session_id,
+            session_client_provided: session.client_provided,
+            rectifier_config: Default::default(),
+            optimizer_config: Default::default(),
+            copilot_optimizer_config: Default::default(),
+        }
     }
 
     #[test]

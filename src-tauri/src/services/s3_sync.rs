@@ -3,7 +3,6 @@
 //! Implements manifest-based synchronization on top of the S3 transport
 //! primitives in [`super::s3`]. Artifact set: `db.sql` + `skills.zip`.
 
-use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::OnceLock;
 
@@ -15,11 +14,12 @@ use crate::services::s3::{self, S3Credentials};
 use crate::settings::{update_s3_sync_status, S3SyncSettings, WebDavSyncStatus};
 
 use super::sync_protocol::{
-    apply_snapshot, build_local_snapshot, localized, persist_sync_success_best_effort,
-    remote_changed_conflict_error, remote_unchanged_since_last_sync, sha256_hex,
-    torn_snapshot_error, validate_artifact_size_limit, validate_manifest_compat, verify_artifact,
-    ArtifactMeta, RemoteLayout, SyncManifest, UploadOptions, DB_COMPAT_VERSION, MAX_MANIFEST_BYTES,
-    MAX_SYNC_ARTIFACT_BYTES, PROTOCOL_VERSION, REMOTE_DB_SQL, REMOTE_MANIFEST, REMOTE_SKILLS_ZIP,
+    apply_snapshot, artifact_relative_path, build_local_snapshot, localized,
+    manifest_write_condition, persist_sync_success_best_effort, sha256_hex, torn_snapshot_error,
+    validate_artifact_size_limit, validate_manifest_compat, verify_artifact, LocalSnapshot,
+    RemoteLayout, SyncManifest, UploadOptions, WriteCondition, DB_COMPAT_VERSION,
+    MAX_MANIFEST_BYTES, MAX_SYNC_ARTIFACT_BYTES, PROTOCOL_VERSION, REMOTE_DB_SQL, REMOTE_MANIFEST,
+    REMOTE_SKILLS_ZIP,
 };
 
 // ─── Sync lock ───────────────────────────────────────────────
@@ -54,7 +54,7 @@ pub async fn upload(
     upload_with_options(db, settings, UploadOptions::default()).await
 }
 
-/// Upload local snapshot; `options.force` overwrites the remote unconditionally.
+/// Upload a new generation; force may replace a known manifest without CAS.
 pub async fn upload_with_options(
     db: &crate::database::Database,
     settings: &mut S3SyncSettings,
@@ -65,70 +65,65 @@ pub async fn upload_with_options(
 
     let manifest_key = s3_key(settings, REMOTE_MANIFEST);
 
-    // Optimistic concurrency: compare the remote manifest's current ETag to
-    // what we recorded at the end of our last successful sync. A mismatch
-    // means another device uploaded since then — abort instead of silently
-    // overwriting it. See `remote_unchanged_since_last_sync` for exactly
-    // what counts as "unchanged".
-    let remote_etag_before = s3::head_object(&creds, &manifest_key).await?;
-    let local_known_etag = settings.status.last_remote_etag.clone();
-    if options.force {
-        log::warn!(
-            "[S3] force upload requested: overwriting the remote snapshot regardless of its version (remote etag {remote_etag_before:?}, last known {local_known_etag:?})"
-        );
-    } else if !remote_unchanged_since_last_sync(&remote_etag_before, &local_known_etag) {
-        return Err(remote_changed_conflict_error());
+    let remote = s3::get_object(&creds, &manifest_key, MAX_MANIFEST_BYTES).await?;
+    let condition = manifest_write_condition(
+        remote.as_ref(),
+        settings.status.last_remote_etag.as_deref(),
+        settings.status.last_remote_manifest_hash.as_deref(),
+        options,
+    )?;
+    if condition == WriteCondition::Unconditional && !options.force {
+        return Err(localized(
+            "s3.sync.cas_unavailable",
+            "远端 S3 manifest 缺少强 ETag，无法安全地条件发布",
+            "Remote S3 manifest has no strong ETag; conditional publication is unavailable.",
+        ));
     }
-
     let snapshot = build_local_snapshot(db)?;
+    let manifest_hash = snapshot.manifest_hash.clone();
+    let etag = publish_snapshot(settings, &creds, snapshot, &condition).await?;
 
-    // Upload order: artifacts first, manifest last (best-effort consistency)
-    let db_key = s3_key(settings, REMOTE_DB_SQL);
-    s3::put_object(&creds, &db_key, snapshot.db_sql, "application/sql", None).await?;
+    let _persisted =
+        persist_sync_success_best_effort(settings, manifest_hash, etag, persist_sync_success);
+    Ok(serde_json::json!({ "status": "uploaded" }))
+}
 
-    let skills_key = s3_key(settings, REMOTE_SKILLS_ZIP);
+/// Never overwrite artifacts from a previous (or competing) publication.
+/// ponytail: keep orphaned and historical generations until safe remote GC exists.
+pub(super) async fn publish_snapshot(
+    settings: &S3SyncSettings,
+    creds: &S3Credentials,
+    snapshot: LocalSnapshot,
+    condition: &WriteCondition,
+) -> Result<Option<String>, AppError> {
+    let (db_path, skills_path) = snapshot.artifact_paths()?;
+    let db_key = s3_key(settings, &db_path);
+    let skills_key = s3_key(settings, &skills_path);
     s3::put_object(
-        &creds,
+        creds,
+        &db_key,
+        snapshot.db_sql,
+        "application/sql",
+        &WriteCondition::IfNoneMatch,
+    )
+    .await?;
+    s3::put_object(
+        creds,
         &skills_key,
         snapshot.skills_zip,
         "application/zip",
-        None,
+        &WriteCondition::IfNoneMatch,
     )
     .await?;
-
-    // Conditional write on the manifest itself: closes most of the race
-    // window between the HEAD check above and this PUT on backends that
-    // support conditional writes (see `s3::put_object`).
-    let manifest_if_match = if options.force {
-        None
-    } else {
-        local_known_etag.as_deref()
-    };
+    let manifest_key = s3_key(settings, REMOTE_MANIFEST);
     s3::put_object(
-        &creds,
+        creds,
         &manifest_key,
         snapshot.manifest_bytes,
         "application/json",
-        manifest_if_match,
+        condition,
     )
-    .await?;
-
-    // Fetch etag (best-effort, don't fail the upload)
-    let etag = match s3::head_object(&creds, &manifest_key).await {
-        Ok(e) => e,
-        Err(e) => {
-            log::debug!("[S3] Failed to fetch ETag after upload: {e}");
-            None
-        }
-    };
-
-    let _persisted = persist_sync_success_best_effort(
-        settings,
-        snapshot.manifest_hash,
-        etag,
-        persist_sync_success,
-    );
-    Ok(serde_json::json!({ "status": "uploaded" }))
+    .await
 }
 
 /// Download remote snapshot and apply to local database + skills.
@@ -159,12 +154,11 @@ pub async fn download(
     validate_manifest_compat(&manifest, RemoteLayout::Current)?;
 
     // Download and verify artifacts
-    let db_sql = download_and_verify(settings, &creds, REMOTE_DB_SQL, &manifest.artifacts).await?;
-    let skills_zip =
-        download_and_verify(settings, &creds, REMOTE_SKILLS_ZIP, &manifest.artifacts).await?;
+    let db_sql = download_and_verify(settings, &creds, REMOTE_DB_SQL, &manifest).await?;
+    let skills_zip = download_and_verify(settings, &creds, REMOTE_SKILLS_ZIP, &manifest).await?;
 
     // Apply snapshot
-    apply_snapshot(db, &db_sql, &skills_zip)?;
+    apply_snapshot(db, &db_sql, &skills_zip).await?;
 
     let manifest_hash = sha256_hex(&manifest_bytes);
     let _persisted =
@@ -226,13 +220,14 @@ fn persist_sync_success(
 
 // ─── Download & verify ───────────────────────────────────────
 
-async fn download_and_verify(
+pub(super) async fn download_and_verify(
     settings: &S3SyncSettings,
     creds: &S3Credentials,
     artifact_name: &str,
-    artifacts: &BTreeMap<String, ArtifactMeta>,
+    manifest: &SyncManifest,
 ) -> Result<Vec<u8>, AppError> {
-    let meta = artifacts.get(artifact_name).ok_or_else(|| {
+    let relative_path = artifact_relative_path(manifest, artifact_name)?;
+    let meta = manifest.artifacts.get(artifact_name).ok_or_else(|| {
         localized(
             "s3.sync.manifest_missing_artifact",
             format!("manifest 中缺少 artifact: {artifact_name}"),
@@ -241,7 +236,7 @@ async fn download_and_verify(
     })?;
     validate_artifact_size_limit(artifact_name, meta.size)?;
 
-    let key = s3_key(settings, artifact_name);
+    let key = s3_key(settings, &relative_path);
     let (bytes, _) = s3::get_object(creds, &key, MAX_SYNC_ARTIFACT_BYTES as usize)
         .await?
         .ok_or_else(|| {
