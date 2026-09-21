@@ -3111,9 +3111,9 @@ fn migrate_codex_reserved_provider_tables(
     let mut changed = false;
     let mut active_migration = None;
     for reserved in ["openai", "ollama", "lmstudio"] {
-        if !providers
+        if providers
             .get(reserved)
-            .is_some_and(|item| item.as_table_like().is_some())
+            .is_none_or(|item| item.as_table_like().is_none())
         {
             continue;
         }
