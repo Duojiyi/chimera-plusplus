@@ -3766,7 +3766,12 @@ mod tests {
         let service = ProxyService::new(db.clone());
 
         let backup = json!({"env": {"ANTHROPIC_BASE_URL": "https://example.com"}});
-        write_json_file(&get_claude_settings_path(), &backup).unwrap();
+        let live = json!({"env": {
+            "ANTHROPIC_BASE_URL": "http://127.0.0.1:15721",
+            "ANTHROPIC_AUTH_TOKEN": PROXY_TOKEN_PLACEHOLDER
+        }});
+        assert!(ProxyService::is_claude_live_taken_over(&live));
+        write_json_file(&get_claude_settings_path(), &live).unwrap();
         db.save_live_backup("claude", &backup.to_string())
             .await
             .unwrap();
