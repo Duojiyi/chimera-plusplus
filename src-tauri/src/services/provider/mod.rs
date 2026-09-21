@@ -429,6 +429,63 @@ mod tests {
         });
     }
 
+    #[test]
+    #[serial]
+    fn universal_sync_preserves_child_metadata() {
+        with_test_home(|state, _| {
+            let mut parent = UniversalProvider::new(
+                "metadata".into(),
+                "Original".into(),
+                "custom".into(),
+                "https://old.example".into(),
+                "old-key".into(),
+            );
+            parent.apps.claude = true;
+            parent.apps.codex = true;
+            parent.apps.gemini = true;
+            state.db.save_universal_provider(&parent).unwrap();
+            ProviderService::sync_universal_to_apps(state, &parent.id).unwrap();
+            let mut expected = Vec::new();
+            for app in ["claude", "codex", "gemini"] {
+                let id = format!("universal-{app}-metadata");
+                let mut child = state.db.get_provider_by_id(&id, app).unwrap().unwrap();
+                child.meta = Some(
+                    serde_json::from_value(
+                        json!({"commonConfigEnabled": false, "endpointAutoSelect": true}),
+                    )
+                    .unwrap(),
+                );
+                child.created_at = Some(123);
+                child.sort_index = Some(7);
+                child.settings_config["local_setting"] = json!(app);
+                state.db.save_provider(app, &child).unwrap();
+                expected.push((app, child));
+            }
+            parent.name = "Updated".into();
+            parent.api_key = "new-key".into();
+            for metadata in [None, Some(Default::default())] {
+                parent.meta = metadata;
+                state.db.save_universal_provider(&parent).unwrap();
+                ProviderService::sync_universal_to_apps(state, &parent.id).unwrap();
+                for (app, before) in &expected {
+                    let after = state
+                        .db
+                        .get_provider_by_id(&before.id, app)
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(
+                        serde_json::to_value(&after.meta).unwrap(),
+                        serde_json::to_value(&before.meta).unwrap()
+                    );
+                    assert_eq!(after.created_at, before.created_at);
+                    assert_eq!(after.sort_index, before.sort_index);
+                    assert_eq!(after.name, "Updated");
+                    assert_eq!(after.settings_config["local_setting"], json!(app));
+                }
+            }
+        });
+    }
+
     fn codex_settings(base_url: &str, api_key: &str) -> Value {
         json!({
             "auth": {
@@ -4399,6 +4456,9 @@ impl ProviderService {
                 let mut merged = existing.settings_config.clone();
                 Self::merge_json(&mut merged, &claude_provider.settings_config);
                 claude_provider.settings_config = merged;
+                claude_provider.meta = existing.meta;
+                claude_provider.created_at = existing.created_at;
+                claude_provider.sort_index = existing.sort_index;
             }
             state.db.save_provider("claude", &claude_provider)?;
         } else {
@@ -4414,6 +4474,9 @@ impl ProviderService {
                 let mut merged = existing.settings_config.clone();
                 Self::merge_json(&mut merged, &codex_provider.settings_config);
                 codex_provider.settings_config = merged;
+                codex_provider.meta = existing.meta;
+                codex_provider.created_at = existing.created_at;
+                codex_provider.sort_index = existing.sort_index;
             }
             state.db.save_provider("codex", &codex_provider)?;
         } else {
@@ -4428,6 +4491,9 @@ impl ProviderService {
                 let mut merged = existing.settings_config.clone();
                 Self::merge_json(&mut merged, &gemini_provider.settings_config);
                 gemini_provider.settings_config = merged;
+                gemini_provider.meta = existing.meta;
+                gemini_provider.created_at = existing.created_at;
+                gemini_provider.sort_index = existing.sort_index;
             }
             state.db.save_provider("gemini", &gemini_provider)?;
         } else {

@@ -1,0 +1,74 @@
+name: Codex Portable Validation
+
+on:
+  push:
+    branches:
+      - "**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codex-portable-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  launcher:
+    name: Native portable launcher (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            architecture: x64
+          - os: windows-11-arm
+            architecture: arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+      - name: Locate pinned engine
+        shell: pwsh
+        run: |
+          $metadata = cargo metadata --locked --format-version 1 --manifest-path src-tauri/Cargo.toml | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Cargo metadata failed' }
+          $engines = @($metadata.packages | Where-Object name -eq 'codex-win-engine')
+          if ($engines.Count -ne 1) { throw 'Expected exactly one pinned Windows engine' }
+          "ENGINE_MANIFEST=$($engines[0].manifest_path)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Verify relocated native launcher and PE imports
+        shell: pwsh
+        run: cargo test --manifest-path "$env:ENGINE_MANIFEST" portable_launcher_survives_directory_move -- --nocapture
+      - name: Verify BlockMap extraction and bundled CLI guards
+        shell: pwsh
+        run: cargo test --manifest-path "$env:ENGINE_MANIFEST" portable::tests -- --nocapture
+      - name: Download pinned signed official Codex package
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE_ARCH: ${{ matrix.architecture }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $destination = Join-Path $env:RUNNER_TEMP 'codex-real-msix'
+          New-Item -ItemType Directory -Path $destination -Force | Out-Null
+          $pin = Get-Content -LiteralPath '.github/codex-portable-pin.json' -Raw | ConvertFrom-Json
+          $release = gh api "repos/$($pin.repository)/releases/tags/$($pin.tag)" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Codex release lookup failed' }
+          if ($release.tag_name -ne $pin.tag) { throw "Codex release tag mismatch: $($release.tag_name)" }
+          $commit = gh api "repos/$($pin.repository)/commits/$($pin.tag)" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $commit.sha -ne $pin.commit) { throw "Codex release commit mismatch: expected $($pin.commit), got $($commit.sha)" }
+          $asset = $pin.assets.($env:PACKAGE_ARCH)
+          gh release download $pin.tag --repo $pin.repository --pattern $asset.name --pattern release-manifest.json --dir $destination
+          if ($LASTEXITCODE -ne 0) { throw 'Codex MSIX download failed' }
+          $packages = @(Get-ChildItem -LiteralPath $destination -Filter $asset.name)
+          if ($packages.Count -ne 1 -or $packages[0].Name -ne $asset.name) { throw "Expected pinned $($asset.name)" }
+          $manifest = Get-Content -LiteralPath (Join-Path $destination 'release-manifest.json') -Raw | ConvertFrom-Json
+          $expectedHash = $manifest.derived.latestChecksums.($packages[0].Name)
+          $actualHash = (Get-FileHash -LiteralPath $packages[0].FullName -Algorithm SHA256).Hash
+          if ($asset.sha256 -notmatch '^[0-9a-f]{64}$' -or $expectedHash -ne $asset.sha256 -or $actualHash -ne $asset.sha256) { throw 'Codex package pin or manifest hash mismatch' }
+          "Validated source: $($pin.repository) $($pin.tag)@$($pin.commit), $($packages[0].Name), SHA256 $actualHash" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          "CODEX_REAL_MSIX=$($packages[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Verify Authenticode and real Computer Use module resolution
+        shell: pwsh
+        run: cargo test --manifest-path "$env:ENGINE_MANIFEST" real_msix_uses_computer_use_logical_paths -- --ignored --nocapture

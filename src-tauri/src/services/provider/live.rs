@@ -2560,6 +2560,44 @@ base_url = "https://a.example/v1"
     }
 
     #[test]
+    fn codex_common_merge_preserves_transport_and_nested_settings() {
+        let config = r#"
+model = "old"
+[mcp_servers.node_repl]
+command = "node"
+[mcp_servers.node_repl.env]
+CODEX_HOME = "/home/test/.codex"
+[windows]
+sandbox = "elevated"
+[features]
+multi_agent = true
+"#;
+        let snippet = r#"
+model = "new"
+[mcp_servers.node_repl]
+cwd = "/tmp"
+[mcp_servers]
+"#;
+        let merged = update_toml_common_config_snippet(config, snippet, true).unwrap();
+        let doc: toml::Value = merged.parse().unwrap();
+        assert_eq!(doc["model"].as_str(), Some("new"));
+        assert_eq!(
+            doc["mcp_servers"]["node_repl"]["command"].as_str(),
+            Some("node")
+        );
+        assert_eq!(
+            doc["mcp_servers"]["node_repl"]["cwd"].as_str(),
+            Some("/tmp")
+        );
+        assert_eq!(
+            doc["mcp_servers"]["node_repl"]["env"]["CODEX_HOME"].as_str(),
+            Some("/home/test/.codex")
+        );
+        assert_eq!(doc["windows"]["sandbox"].as_str(), Some("elevated"));
+        assert_eq!(doc["features"]["multi_agent"].as_bool(), Some(true));
+    }
+
+    #[test]
     fn claude_common_config_apply_and_remove_roundtrip_for_non_overlapping_fields() {
         let settings = json!({
             "env": {

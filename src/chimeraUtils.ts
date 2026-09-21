@@ -352,7 +352,7 @@ export function isCustomizedCatalogRow(row: CodexCatalogModel): boolean {
   if (row.reasoningLevels?.length) return true;
   if (row.defaultReasoningLevel) return true;
   if (row.baseInstructions?.trim()) return true;
-  if (catalogRowSupportsImage(row)) return true;
+  if (row.inputModalities?.length) return true;
   if (row.supportsParallelToolCalls !== undefined) return true;
   return false;
 }

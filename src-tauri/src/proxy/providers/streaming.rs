@@ -267,7 +267,12 @@ pub fn create_anthropic_sse_stream<E: std::error::Error + Send + 'static>(
                                         }
 
                                         // 处理 reasoning（thinking）
-                                        if let Some(reasoning) = &choice.delta.reasoning {
+                                        if let Some(reasoning) = choice
+                                            .delta
+                                            .reasoning
+                                            .as_ref()
+                                            .filter(|r| !r.is_empty())
+                                        {
                                             if current_non_tool_block_type != Some("thinking") {
                                                 if let Some(index) = current_non_tool_block_index.take() {
                                                     let event = json!({
@@ -746,6 +751,23 @@ mod tests {
 
     fn event_type(event: &Value) -> Option<&str> {
         event.get("type").and_then(|v| v.as_str())
+    }
+
+    fn collect_delta_text(events: &[Value], delta_type: &str, field: &str) -> String {
+        events
+            .iter()
+            .filter(|event| {
+                event_type(event) == Some("content_block_delta")
+                    && event.pointer("/delta/type").and_then(|v| v.as_str()) == Some(delta_type)
+            })
+            .map(|event| {
+                event
+                    .pointer(field)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .collect()
     }
 
     #[test]
@@ -1244,5 +1266,89 @@ mod tests {
         assert!(!events
             .iter()
             .any(|e| e.get("type").and_then(|v| v.as_str()) == Some("message_stop")));
+    }
+
+    #[tokio::test]
+    async fn test_empty_reasoning_alongside_content_does_not_fragment_blocks() {
+        let input = concat!(
+            "data: {\"id\":\"chatcmpl_frag\",\"model\":\"gpt-4o\",\"choices\":[{\"delta\":{\"content\":\"某个历史\",\"reasoning_content\":\"\"}}]}\n\n",
+            "data: {\"id\":\"chatcmpl_frag\",\"model\":\"gpt-4o\",\"choices\":[{\"delta\":{\"content\":\"？\",\"reasoning_content\":\"\"}}]}\n\n",
+            "data: {\"id\":\"chatcmpl_frag\",\"model\":\"gpt-4o\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2}}\n\n",
+            "data: [DONE]\n\n"
+        );
+
+        let events = collect_anthropic_events(input).await;
+
+        let block_starts: Vec<(Option<u64>, &str)> = events
+            .iter()
+            .filter(|event| event_type(event) == Some("content_block_start"))
+            .map(|event| {
+                (
+                    event.get("index").and_then(|v| v.as_u64()),
+                    event
+                        .pointer("/content_block/type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            block_starts,
+            vec![(Some(0), "text")],
+            "empty reasoning_content must not open any thinking block, and all content \
+             chunks must append to a single text block"
+        );
+
+        let thinking: String = collect_delta_text(&events, "thinking_delta", "/delta/thinking");
+        assert!(
+            thinking.is_empty(),
+            "no thinking_delta should be emitted, got: {:?}",
+            thinking
+        );
+
+        assert_eq!(
+            collect_delta_text(&events, "text_delta", "/delta/text"),
+            "某个历史？"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_non_empty_reasoning_still_creates_thinking_block() {
+        let input = concat!(
+            "data: {\"id\":\"chatcmpl_think\",\"model\":\"glm-5.1\",\"choices\":[{\"delta\":{\"reasoning_content\":\"让我想想\"}}]}\n\n",
+            "data: {\"id\":\"chatcmpl_think\",\"model\":\"glm-5.1\",\"choices\":[{\"delta\":{\"content\":\"答案是 42\"}}]}\n\n",
+            "data: {\"id\":\"chatcmpl_think\",\"model\":\"glm-5.1\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n"
+        );
+
+        let events = collect_anthropic_events(input).await;
+
+        let block_starts: Vec<(Option<u64>, &str)> = events
+            .iter()
+            .filter(|event| event_type(event) == Some("content_block_start"))
+            .map(|event| {
+                (
+                    event.get("index").and_then(|v| v.as_u64()),
+                    event
+                        .pointer("/content_block/type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            block_starts,
+            vec![(Some(0), "thinking"), (Some(1), "text")],
+            "real reasoning must yield exactly one thinking block followed by one text block"
+        );
+
+        assert_eq!(
+            collect_delta_text(&events, "thinking_delta", "/delta/thinking"),
+            "让我想想"
+        );
+        assert_eq!(
+            collect_delta_text(&events, "text_delta", "/delta/text"),
+            "答案是 42"
+        );
     }
 }

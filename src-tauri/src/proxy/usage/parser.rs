@@ -13,6 +13,7 @@ fn openai_cache_read_tokens(usage: &Value) -> u32 {
     usage
         .get("cache_read_input_tokens")
         .or_else(|| usage.pointer("/input_tokens_details/cached_tokens"))
+        .or_else(|| usage.pointer("/input_token_details/cached_tokens"))
         .or_else(|| usage.pointer("/prompt_tokens_details/cached_tokens"))
         // DeepSeek's Chat Completions usage object reports cache hits under
         // its own top-level field instead of any of the shapes above —
@@ -534,6 +535,14 @@ impl TokenUsage {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn images_usage_reads_singular_token_details() {
+        let usage = serde_json::json!({"input_tokens":100,"output_tokens":40,"input_token_details":{"cached_tokens":25}});
+        assert_eq!(openai_cache_read_tokens(&usage), 25);
+        let both = serde_json::json!({"input_token_details":{"cached_tokens":25},"input_tokens_details":{"cached_tokens":30}});
+        assert_eq!(openai_cache_read_tokens(&both), 30);
+    }
+
     use super::*;
     use serde_json::json;
 

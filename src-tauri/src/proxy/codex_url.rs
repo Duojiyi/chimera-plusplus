@@ -91,7 +91,30 @@ pub fn codex_upstream_url(
         .full_endpoint_suffix()
         .is_some_and(|suffix| base_path.to_ascii_lowercase().ends_with(suffix));
 
-    if !(is_full_url || base_is_full_endpoint) {
+    if matches!(endpoint_path, "/images/generations" | "/images/edits") {
+        let lower_path = base_path.to_ascii_lowercase();
+        let source_suffix = [
+            "/responses/compact",
+            "/responses",
+            "/chat/completions",
+            "/messages",
+            "/images/generations",
+            "/images/edits",
+        ]
+        .into_iter()
+        .find(|suffix| lower_path.ends_with(suffix));
+        if let Some(suffix) = source_suffix {
+            url.set_path(&format!(
+                "{}{endpoint_path}",
+                &base_path[..base_path.len() - suffix.len()]
+            ));
+        } else if is_full_url {
+            return Err("Cannot derive Images endpoint from an opaque full URL".to_string());
+        } else {
+            url.set_path(&join_codex_path(&base_path, endpoint_path));
+        }
+        url.set_fragment(None);
+    } else if !(is_full_url || base_is_full_endpoint) {
         url.set_path(&join_codex_path(&base_path, endpoint_path));
     }
 
@@ -129,6 +152,49 @@ fn join_codex_path(base_path: &str, endpoint_path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn image_siblings_preserve_prefix_query_and_ignore_suffix_case() {
+        for suffix in [
+            "responses",
+            "responses/compact",
+            "CHAT/completions",
+            "messages",
+            "images/generations",
+            "images/edits",
+        ] {
+            for full in [true, false] {
+                for endpoint in ["/images/generations", "/images/edits"] {
+                    let base = format!("https://example.com/custom/v1/{suffix}?tenant=a#fragment");
+                    let result =
+                        codex_upstream_url(&base, full, CodexUpstreamProtocol::Native, endpoint)
+                            .unwrap();
+                    assert_eq!(
+                        result.as_str(),
+                        format!("https://example.com/custom/v1{endpoint}?tenant=a")
+                    );
+                }
+            }
+        }
+        assert!(codex_upstream_url(
+            "https://example.com/opaque",
+            true,
+            CodexUpstreamProtocol::Native,
+            "/images/edits"
+        )
+        .is_err());
+        assert_eq!(
+            codex_upstream_url(
+                "https://example.com",
+                false,
+                CodexUpstreamProtocol::Native,
+                "/images/generations"
+            )
+            .unwrap()
+            .as_str(),
+            "https://example.com/v1/images/generations"
+        );
+    }
+
     use super::*;
 
     fn resolve(base: &str, full: bool, protocol: CodexUpstreamProtocol) -> String {

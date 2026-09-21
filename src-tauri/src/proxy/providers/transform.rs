@@ -59,8 +59,6 @@ pub fn is_openai_o_series(model: &str) -> bool {
 /// Supported families:
 /// - o-series: o1, o3, o4-mini, etc.
 /// - GPT-5+: gpt-5, gpt-5.1, gpt-5.4, gpt-5-codex, etc.
-/// - xAI Grok Build models. `grok-4.5` is the current documented Grok Build
-///   model; retain the previous `grok-build-*` family for saved providers.
 pub fn supports_reasoning_effort(model: &str) -> bool {
     let normalized = model.to_lowercase();
     is_openai_o_series(&normalized)
@@ -70,6 +68,8 @@ pub fn supports_reasoning_effort(model: &str) -> bool {
             .is_some_and(|c| c.is_ascii_digit() && c >= '5')
         || normalized == "grok-4.5"
         || normalized.starts_with("grok-4.5-")
+        || normalized == "grok-4.6"
+        || normalized.starts_with("grok-4.6-")
         || normalized.starts_with("grok-build-")
 }
 
@@ -77,7 +77,6 @@ pub fn supports_reasoning_effort(model: &str) -> bool {
 ///
 /// Priority:
 /// 1. Explicit `output_config.effort` — preserves the user's intent directly.
-///    `low`/`medium`/`high` map 1:1; `max` maps to `xhigh`
 ///    (supported by mainstream GPT models). Unknown values are ignored.
 /// 2. Fallback: `thinking.type` + `budget_tokens`:
 ///    - `adaptive` → `xhigh` (adaptive = maximum reasoning effort)
@@ -94,6 +93,7 @@ pub fn resolve_reasoning_effort(body: &Value) -> Option<&'static str> {
             "low" => Some("low"),
             "medium" => Some("medium"),
             "high" => Some("high"),
+            "xhigh" => Some("xhigh"),
             "max" => Some("xhigh"), // OpenAI xhigh = maximum reasoning effort
             _ => None,              // unknown value — do not inject
         };
@@ -151,14 +151,18 @@ pub fn anthropic_to_openai_with_reasoning_content(
                 messages.push(json!({"role": "system", "content": text}));
             }
         } else if let Some(arr) = system.as_array() {
+            let mut parts = Vec::new();
             for msg in arr {
                 if let Some(text) = msg.get("text").and_then(|t| t.as_str()) {
                     let text = strip_leading_anthropic_billing_header(text);
                     if text.is_empty() {
                         continue;
                     }
-                    messages.push(json!({"role": "system", "content": text}));
+                    parts.push(text.to_string());
                 }
+            }
+            if !parts.is_empty() {
+                messages.push(json!({"role": "system", "content": parts.join("\n")}));
             }
         }
     }
@@ -173,7 +177,6 @@ pub fn anthropic_to_openai_with_reasoning_content(
         }
     }
 
-    normalize_openai_system_messages(&mut messages);
     result["messages"] = json!(messages);
 
     // 转换参数 — o-series 模型需要 max_completion_tokens
@@ -211,14 +214,15 @@ pub fn anthropic_to_openai_with_reasoning_content(
             .iter()
             .filter(|t| t.get("type").and_then(|v| v.as_str()) != Some("BatchTool"))
             .map(|t| {
-                json!({
-                    "type": "function",
-                    "function": {
-                        "name": t.get("name").and_then(|n| n.as_str()).unwrap_or(""),
-                        "description": t.get("description"),
-                        "parameters": clean_schema(t.get("input_schema").cloned().unwrap_or(json!({})))
-                    }
-                })
+                let mut function = json!({
+                    "name": t.get("name").and_then(|n| n.as_str()).unwrap_or(""),
+                });
+                if let Some(description) = t.get("description").filter(|d| !d.is_null()) {
+                    function["description"] = description.clone();
+                }
+                function["parameters"] =
+                    clean_schema(t.get("input_schema").cloned().unwrap_or(json!({})));
+                json!({"type": "function", "function": function})
             })
             .collect();
 
@@ -295,57 +299,6 @@ fn map_tool_choice_to_chat(tool_choice: &Value) -> Value {
             _ => tool_choice.clone(),
         },
         _ => tool_choice.clone(),
-    }
-}
-
-fn normalize_openai_system_messages(messages: &mut Vec<Value>) {
-    let system_count = messages
-        .iter()
-        .filter(|message| message.get("role").and_then(|value| value.as_str()) == Some("system"))
-        .count();
-
-    if system_count == 0 {
-        return;
-    }
-
-    if system_count == 1 {
-        if let Some(index) = messages.iter().position(|message| {
-            message.get("role").and_then(|value| value.as_str()) == Some("system")
-        }) {
-            if index > 0 {
-                let message = messages.remove(index);
-                messages.insert(0, message);
-            }
-        }
-        return;
-    }
-
-    let mut parts = Vec::new();
-    messages.retain(|message| {
-        if message.get("role").and_then(|value| value.as_str()) != Some("system") {
-            return true;
-        }
-
-        match message.get("content") {
-            Some(Value::String(text)) if !text.is_empty() => parts.push(text.clone()),
-            Some(Value::Array(content_parts)) => {
-                let text = content_parts
-                    .iter()
-                    .filter_map(|part| part.get("text").and_then(|value| value.as_str()))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                if !text.is_empty() {
-                    parts.push(text);
-                }
-            }
-            _ => {}
-        }
-
-        false
-    });
-
-    if !parts.is_empty() {
-        messages.insert(0, json!({"role": "system", "content": parts.join("\n")}));
     }
 }
 
@@ -970,6 +923,35 @@ mod tests {
     }
 
     #[test]
+    fn test_anthropic_to_openai_preserves_mid_conversation_system_in_place() {
+        let input = json!({
+            "model": "claude-3-sonnet",
+            "max_tokens": 1024,
+            "system": "You are Claude Code.",
+            "messages": [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hi there!"},
+                {"role": "system", "content": "<total_tokens>14963538 tokens left</total_tokens>"},
+                {"role": "user", "content": "Continue"}
+            ]
+        });
+
+        let result = anthropic_to_openai(input).unwrap();
+        let messages = result["messages"].as_array().unwrap();
+
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(messages[0]["content"], "You are Claude Code.");
+
+        assert_eq!(messages[3]["role"], "system");
+        assert_eq!(
+            messages[3]["content"],
+            "<total_tokens>14963538 tokens left</total_tokens>"
+        );
+
+        assert_eq!(messages.len(), 5);
+    }
+
+    #[test]
     fn test_anthropic_to_openai_strips_cache_control_from_conflicting_system() {
         let input = json!({
             "model": "claude-3-sonnet",
@@ -1053,6 +1035,33 @@ mod tests {
         assert_eq!(msg["reasoning_content"], "tool call");
         assert!(msg.get("tool_calls").is_some());
         assert_eq!(msg["tool_calls"][0]["id"], "call_123");
+    }
+
+    #[test]
+    fn test_anthropic_to_openai_omits_missing_tool_description() {
+        let input = json!({
+            "model": "claude-opus-5",
+            "max_tokens": 50,
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [
+                {"name": "Bash", "description": "Run a bash command",
+                 "input_schema": {"type": "object"}},
+                {"name": "NoDesc",
+                 "input_schema": {"type": "object"}},
+                {"type": "web_search_20250305", "name": "web_search", "max_uses": 8}
+            ]
+        });
+
+        let result = anthropic_to_openai_with_reasoning_content(input, false).unwrap();
+        let tools = result["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 3);
+        assert_eq!(
+            tools[0]["function"]["description"],
+            json!("Run a bash command")
+        );
+        assert!(tools[1]["function"].get("description").is_none());
+        assert!(tools[2]["function"].get("description").is_none());
+        assert!(tools[1]["function"].get("parameters").is_some());
     }
 
     #[test]
@@ -1572,9 +1581,12 @@ mod tests {
         assert!(supports_reasoning_effort("gpt-5.4"));
         assert!(supports_reasoning_effort("gpt-5-codex"));
         assert!(supports_reasoning_effort("grok-4.5"));
+        assert!(supports_reasoning_effort("grok-4.6"));
+        assert!(supports_reasoning_effort("grok-4.6-build"));
         assert!(supports_reasoning_effort("grok-build-0.1"));
         assert!(!supports_reasoning_effort("gpt-4o"));
         assert!(!supports_reasoning_effort("claude-sonnet-4-6"));
+        assert!(!supports_reasoning_effort("grok-4"));
     }
 
     // ── resolve_reasoning_effort unit tests ──
@@ -1600,6 +1612,12 @@ mod tests {
     #[test]
     fn test_output_config_max_maps_to_reasoning_effort_xhigh() {
         let body = json!({"output_config": {"effort": "max"}});
+        assert_eq!(resolve_reasoning_effort(&body), Some("xhigh"));
+    }
+
+    #[test]
+    fn test_output_config_xhigh_maps_verbatim() {
+        let body = json!({"output_config": {"effort": "xhigh"}});
         assert_eq!(resolve_reasoning_effort(&body), Some("xhigh"));
     }
 

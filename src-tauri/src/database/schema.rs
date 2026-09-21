@@ -321,6 +321,8 @@ impl Database {
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
 
+        Self::add_column_if_missing(conn, "session_log_sync", "last_file_size", "INTEGER")?;
+
         // 19. Profiles 表（全应用共享的项目实体，payload 按 app 分槽快照
         //     供应商/MCP/Skills/Prompt；各应用分组的 current 标记在 settings 表）
         conn.execute(
@@ -2936,6 +2938,33 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opening_legacy_sync_table_adds_nullable_file_size() -> Result<(), AppError> {
+        let conn = Connection::open_in_memory()?;
+        conn.execute_batch(
+            "CREATE TABLE session_log_sync (
+                file_path TEXT PRIMARY KEY,
+                last_modified INTEGER NOT NULL,
+                last_line_offset INTEGER NOT NULL DEFAULT 0,
+                last_synced_at INTEGER NOT NULL
+             );
+             INSERT INTO session_log_sync VALUES ('legacy.jsonl', 123, 7, 456);",
+        )?;
+        Database::set_user_version(&conn, SCHEMA_VERSION)?;
+        for _ in 0..2 {
+            Database::create_tables_on_conn(&conn)?;
+            assert_eq!(Database::get_user_version(&conn)?, SCHEMA_VERSION);
+            let state: (i64, i64, i64, Option<u64>) = conn.query_row(
+                "SELECT last_modified, last_line_offset, last_synced_at, last_file_size
+                 FROM session_log_sync WHERE file_path = 'legacy.jsonl'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+            assert_eq!(state, (123, 7, 456, None));
+        }
+        Ok(())
+    }
 
     #[test]
     fn opening_legacy_usage_tables_preserves_ids_without_trusting_them() -> Result<(), AppError> {

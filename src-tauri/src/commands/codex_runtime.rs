@@ -536,20 +536,20 @@ fn wait_for_codex_stopped(
     Ok(false)
 }
 
-fn launch_executable_with_codex_home(
-    executable: &Path,
-    working_dir: &Path,
+fn portable_command_with_codex_home(
+    root: &Path,
     codex_home: &Path,
     options: codex_win_engine::LaunchOptions,
-) -> Result<(), String> {
-    let mut command = Command::new(executable);
+) -> Result<Command, String> {
+    let launcher = codex_win_engine::portable::ensure_portable_launcher(root)
+        .map_err(|error| format!("无法准备 Codex 免安装版启动器: {error}"))?;
+    let mut command = Command::new(launcher);
     command
-        .current_dir(working_dir)
+        .current_dir(root)
         .env("CODEX_HOME", codex_home)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-
     if options.disable_codex_self_updates {
         command.env("CODEX_SPARKLE_ENABLED", "false");
     }
@@ -559,24 +559,201 @@ fn launch_executable_with_codex_home(
             &format!("--remote-debugging-port={port}"),
         ]);
     }
-
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x08000000);
     }
+    Ok(command)
+}
 
-    let child = command.spawn().map_err(|error| {
-        format!(
-            "无法启动 Codex 可执行文件 {}: {error}",
-            executable.display()
-        )
+#[cfg(any(windows, test))]
+#[derive(Default)]
+struct CodexStartupWindows {
+    main_visible: bool,
+    dialog_visible: bool,
+}
+
+#[cfg(any(windows, test))]
+impl CodexStartupWindows {
+    fn observe(&mut self, class: &str) {
+        self.main_visible |= class == "Chrome_WidgetWin_1";
+        self.dialog_visible |= class == "#32770";
+    }
+
+    fn ready(&self) -> Result<bool, String> {
+        if self.dialog_visible {
+            return Err(
+                "Codex 启动时出现原生对话框，无法确认启动成功，请检查 Codex 窗口".to_string(),
+            );
+        }
+        Ok(self.main_visible)
+    }
+}
+
+#[cfg(windows)]
+fn codex_main_window_ready(root: &Path, deadline: Instant) -> Result<bool, String> {
+    use std::os::windows::process::CommandExt;
+    use windows_sys::Win32::Foundation::{HWND, LPARAM};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetClassNameW, GetWindowThreadProcessId, IsWindowVisible,
+    };
+
+    let mut command = Command::new("powershell.exe");
+    command.creation_flags(0x08000000);
+    command.env("CHIMERA_CODEX_STARTUP_ROOT", root).args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        r#"
+$ErrorActionPreference = 'Stop'
+$root = (Resolve-Path -LiteralPath $env:CHIMERA_CODEX_STARTUP_ROOT).ProviderPath.TrimEnd('\')
+$ids = @(Get-Process -Name Codex,ChatGPT -ErrorAction SilentlyContinue | ForEach-Object {
+    $path = $_.Path
+    if (-not [string]::IsNullOrWhiteSpace($path)) {
+        $parent = Split-Path -LiteralPath $path
+        if ([string]::Equals($parent, $root, [StringComparison]::OrdinalIgnoreCase)) { $_.Id }
+    }
+})
+ConvertTo-Json -InputObject $ids -Compress
+"#,
+    ]);
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Ok(false);
+    }
+    let output = crate::process_utils::output_with_timeout(
+        command,
+        remaining.min(Duration::from_secs(5)),
+        crate::security_limits::MAX_PROCESS_OUTPUT_BYTES,
+    )
+    .map_err(|error| {
+        if error.kind() == std::io::ErrorKind::TimedOut {
+            format!("Codex 主窗口进程探测超时（单次最多 5 秒，且受剩余启动预算限制）；机器响应较慢时也可能发生。无法确认启动成功，请检查 Codex 窗口后重试：{error}")
+        } else {
+            format!("Codex 主窗口进程探测失败，无法确认启动成功: {error}")
+        }
     })?;
-    // The process is intentionally owned by Codex after launch. In standard library,
-    // dropping `Child` closes the OS process handle without terminating the spawned process,
-    // preventing handle leakage while letting Codex run independently.
-    drop(child);
-    Ok(())
+    if !output.status.success() {
+        return Err("Codex 主窗口进程探测失败，无法确认启动成功".to_string());
+    }
+    let pids: Vec<u32> = serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("Codex 主窗口进程结果无效: {error}"))?;
+    struct Probe {
+        pids: Vec<u32>,
+        windows: CodexStartupWindows,
+        failed: bool,
+    }
+    unsafe extern "system" fn inspect(hwnd: HWND, param: LPARAM) -> i32 {
+        let probe = unsafe { &mut *(param as *mut Probe) };
+        let mut pid = 0;
+        unsafe {
+            GetWindowThreadProcessId(hwnd, &mut pid);
+        }
+        if !probe.pids.contains(&pid) || unsafe { IsWindowVisible(hwnd) } == 0 {
+            return 1;
+        }
+        let mut class = [0_u16; 128];
+        let length = unsafe { GetClassNameW(hwnd, class.as_mut_ptr(), class.len() as i32) };
+        if length == 0 {
+            probe.failed = true;
+        } else {
+            probe
+                .windows
+                .observe(&String::from_utf16_lossy(&class[..length as usize]));
+        }
+        1
+    }
+    let mut probe = Probe {
+        pids,
+        windows: CodexStartupWindows::default(),
+        failed: false,
+    };
+    let enumerated = unsafe { EnumWindows(Some(inspect), &mut probe as *mut _ as LPARAM) };
+    if enumerated == 0 || probe.failed {
+        return Err("Codex 主窗口枚举失败，无法确认启动成功".to_string());
+    }
+    probe.windows.ready()
+}
+
+#[cfg(not(windows))]
+fn codex_main_window_ready(_root: &Path, _deadline: Instant) -> Result<bool, String> {
+    Err("Codex 主窗口检查仅支持 Windows".to_string())
+}
+
+fn portable_startup_ready(
+    main_ready: bool,
+    renderer_ready: bool,
+    stable: bool,
+    now: Instant,
+    deadline: Instant,
+) -> bool {
+    main_ready && renderer_ready && stable && now < deadline
+}
+
+fn launch_portable_with_codex_home(
+    installed: &codex_win_engine::InstalledWindowsCodex,
+    codex_home: &Path,
+    options: codex_win_engine::LaunchOptions,
+) -> Result<(), String> {
+    let mut command =
+        portable_command_with_codex_home(Path::new(&installed.path), codex_home, options)?;
+    let mut launcher = command
+        .spawn()
+        .map_err(|error| format!("Codex 免安装版启动器失败: {error}"))?;
+    let launcher_deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        if let Some(status) = launcher
+            .try_wait()
+            .map_err(|error| format!("无法检查 Codex 启动器状态: {error}"))?
+        {
+            if !status.success() {
+                return Err(format!("Codex 免安装版启动器退出: {status}"));
+            }
+            break;
+        }
+        if Instant::now() >= launcher_deadline {
+            let _ = launcher.kill();
+            let _ = launcher.wait();
+            return Err("Codex 免安装版启动器超时".to_string());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut running_since = None;
+    while Instant::now() < deadline {
+        let main_ready = codex_main_window_ready(Path::new(&installed.path), deadline)?;
+        if main_ready {
+            let since = running_since.get_or_insert_with(Instant::now);
+            if Instant::now() >= deadline {
+                break;
+            }
+            let renderer_ready = options
+                .remote_debugging_port
+                .is_none_or(|port| crate::codex_cdp::probe_codex_renderer_unlock(port).attachable);
+            if Instant::now() >= deadline {
+                break;
+            }
+            let main_ready = renderer_ready
+                && since.elapsed() >= Duration::from_secs(3)
+                && codex_main_window_ready(Path::new(&installed.path), deadline)?;
+            if portable_startup_ready(
+                main_ready,
+                renderer_ready,
+                since.elapsed() >= Duration::from_secs(3),
+                Instant::now(),
+                deadline,
+            ) {
+                return Ok(());
+            }
+        } else {
+            running_since = None;
+        }
+        std::thread::sleep(
+            Duration::from_millis(250).min(deadline.saturating_duration_since(Instant::now())),
+        );
+    }
+    Err("Codex 启动后未通过主窗口/渲染器就绪检查，请在更新页运行诊断".to_string())
 }
 
 fn launch_msix_with_codex_home(
@@ -644,10 +821,7 @@ pub(crate) fn launch_codex_with_config(
     let codex_home = crate::codex_config::get_codex_config_dir();
 
     if installed.source == "portable" {
-        let root = Path::new(&installed.path);
-        let executable = codex_win_engine::installed_app_exe(root)
-            .ok_or_else(|| format!("未找到 Codex 启动程序：{}", root.display()))?;
-        return launch_executable_with_codex_home(&executable, root, &codex_home, options);
+        return launch_portable_with_codex_home(installed, &codex_home, options);
     }
 
     // The audited engine uses IApplicationActivationManager when Electron
@@ -1055,114 +1229,6 @@ fn mode_label(mode: InstallMode) -> String {
     .to_string()
 }
 
-/// Decode a single filesystem entry name if it contains OPC percent-escapes,
-/// returning `None` when there is nothing to do or the decode is not a clean
-/// round-trip to UTF-8 (defensive: never guess on ambiguous input).
-fn decode_percent_encoded_entry_name(name: &str) -> Option<String> {
-    if !name.contains('%') {
-        return None;
-    }
-    let decoded = percent_encoding::percent_decode_str(name)
-        .decode_utf8()
-        .ok()?;
-    if decoded == name {
-        return None;
-    }
-    // `name` is a single filesystem entry (one path component) and the
-    // caller renames within its existing parent directory via
-    // `path.with_file_name(&decoded_name)`. A decoded value that introduces
-    // a path separator or resolves to `.`/`..` would let a crafted
-    // percent-encoded entry name (e.g. `%2e%2e%5cescape`) rename outside
-    // that directory — reject it defensively rather than trust the
-    // round-trip decode alone. `:` must be rejected too: on Windows,
-    // `with_file_name`/`join` treat a component with a drive prefix (e.g.
-    // `C:foo`, from `C%3Afoo`) as replacing the ENTIRE base path, escaping
-    // the parent with no separator involved; a mid-name colon (`foo:bar`)
-    // would instead target an NTFS alternate data stream. Reaching this at
-    // all already requires an MSIX that passed sha256 + Authenticode +
-    // package-identity checks, so this is defense-in-depth, not the
-    // primary guard.
-    if decoded.contains('/')
-        || decoded.contains('\\')
-        || decoded.contains(':')
-        || decoded == ".."
-        || decoded == "."
-    {
-        log::warn!(
-            "[portable-payload-fixup] 拒绝可疑的百分号解码结果（包含路径分隔符/盘符/流分隔符）: {name} → {decoded}"
-        );
-        return None;
-    }
-    Some(decoded.into_owned())
-}
-
-/// Workaround for a known extraction bug in the pinned `codex-win-engine`
-/// crate (upstream Codex App Manager issue #260): its `extract_msix` writes
-/// ZIP entry names to disk verbatim via `enclosed_name()`, without
-/// percent-decoding the OPC (Open Packaging Conventions) percent-escapes
-/// MSIX payloads use for characters outside the ASCII path-safe set — e.g. an
-/// `@oai` directory is stored in the package as `%40oai`, `$_StatsigGlobal.js`
-/// as `%24_StatsigGlobal.js`. Left undecoded, those are the literal names
-/// that land on disk, breaking anything that looks the real names up at
-/// runtime — most visibly Node's `require()` resolution for the `@oai/...`
-/// scoped packages the bundled Computer Use plugin depends on.
-///
-/// We do not control the pinned crate's extraction code, so this fixes it up
-/// ourselves immediately after a successful portable install/update: walk
-/// the install tree post-order (a directory's children are fixed up, and can
-/// still be found under its original name while that happens, before the
-/// directory itself is renamed) and rename any entry whose name is still
-/// percent-encoded back to its decoded form.
-///
-/// Best-effort by design: a failure fixing up one entry is logged and does
-/// not abort the walk or the caller's success result — a partially-fixed
-/// tree is still strictly better than an entirely unfixed one, and this must
-/// never turn an otherwise-successful install into a reported failure.
-fn fix_up_percent_encoded_portable_payload(dir: &Path) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(error) => {
-            log::warn!(
-                "[portable-payload-fixup] 无法读取目录 {}: {error}",
-                dir.display()
-            );
-            return;
-        }
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
-            fix_up_percent_encoded_portable_payload(&path);
-        }
-        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        let Some(decoded_name) = decode_percent_encoded_entry_name(name) else {
-            continue;
-        };
-        let target = path.with_file_name(&decoded_name);
-        if target.exists() {
-            log::warn!(
-                "[portable-payload-fixup] 跳过重命名 {} → {}：目标已存在",
-                path.display(),
-                target.display()
-            );
-            continue;
-        }
-        if let Err(error) = std::fs::rename(&path, &target) {
-            log::warn!(
-                "[portable-payload-fixup] 重命名 {} → {} 失败: {error}",
-                path.display(),
-                target.display()
-            );
-        }
-    }
-}
-
-/// Mirrors the private `chimera_runtime::manager::safe_package_moniker`
-/// check: the moniker is interpolated into a filesystem path
-/// (`{moniker}.Msix`), so this is validated defensively before we do that
-/// ourselves in `install_runtime_release_with_observer` below.
 fn safe_package_moniker(value: &str) -> bool {
     value.starts_with("OpenAI.Codex_")
         && value.len() <= 180
@@ -1249,32 +1315,38 @@ fn install_runtime_release_with_observer(
         })?;
         verify_staged_runtime_package(plan, &package_path)?;
         let mut notes = Vec::new();
-        let mut attempted_standard = false;
         if install_mode == InstallMode::Standard {
             let capability = codex_win_engine::probe_capabilities();
             notes = capability.notes;
             if capability.recommendation
-                != codex_win_engine::SideloadRecommendation::PortableFallback
+                == codex_win_engine::SideloadRecommendation::PortableFallback
             {
-                codex_win_engine::close_msix_codex_processes(30)
-                    .map_err(|error| format!("无法关闭 Codex，安装已中止：{error}"))?;
-                attempted_standard = true;
-                let report =
-                    codex_win_engine::install_msix_sideload(&package_path, &plan.package_moniker)
-                        .map_err(|error| msix_launch_error(&error.to_string()))?;
-                if report.success && codex_win_engine::verify_msix_health().healthy {
-                    return Ok(CodexRuntimeOperation {
-                        version: plan.version.clone(),
-                        requested_mode: "standard".to_string(),
-                        actual_mode: "standard".to_string(),
-                        affected_path: report.installed.map(|installed| installed.path),
-                        backup_path: None,
-                        message: "Codex 标准安装完成并通过启动检查".to_string(),
-                        notes,
-                    });
-                }
+                return Err(format!(
+                    "Windows 当前不允许注册 Codex MSIX，已阻止回退到无包身份的免安装版；请由管理员修复 AppX/MSIX 服务后重试。{}",
+                    if notes.is_empty() {
+                        String::new()
+                    } else {
+                        format!("诊断：{}", notes.join("；"))
+                    }
+                ));
             }
-            notes.push("标准 MSIX 不可用，已将验证过的安装包安装为免安装版".to_string());
+            codex_win_engine::close_msix_codex_processes(30)
+                .map_err(|error| format!("无法关闭 Codex，安装已中止：{error}"))?;
+            let report =
+                codex_win_engine::install_msix_sideload(&package_path, &plan.package_moniker)
+                    .map_err(|error| msix_launch_error(&error.to_string()))?;
+            if report.success && codex_win_engine::verify_msix_health().healthy {
+                return Ok(CodexRuntimeOperation {
+                    version: plan.version.clone(),
+                    requested_mode: "standard".to_string(),
+                    actual_mode: "standard".to_string(),
+                    affected_path: report.installed.map(|installed| installed.path),
+                    backup_path: None,
+                    message: "Codex 标准安装完成并通过启动检查".to_string(),
+                    notes,
+                });
+            }
+            return Err("Codex MSIX 安装完成但启动健康检查未通过；为避免无程序包标识符错误，未回退到免安装版。请在更新页运行诊断或由管理员修复 MSIX。".to_string());
         }
         let report = codex_win_engine::install_portable_from_msix_with_observer(
             &package_path,
@@ -1284,24 +1356,11 @@ fn install_runtime_release_with_observer(
             observer,
         )
         .map_err(|error| error.to_string())?;
-        if attempted_standard {
-            if let Err(error) = codex_win_engine::remove_msix_package() {
-                notes.push(format!(
-                    "免安装版已就绪，但标准安装移除失败，请运行诊断：{error}"
-                ));
-            }
-        }
-        fix_up_percent_encoded_portable_payload(Path::new(&report.install_root));
         notes.extend(report.notes);
         Ok(CodexRuntimeOperation {
             version: report.version,
             requested_mode: mode_label(install_mode),
-            actual_mode: if install_mode == InstallMode::Standard {
-                "portable_fallback"
-            } else {
-                "portable"
-            }
-            .to_string(),
+            actual_mode: "portable".to_string(),
             affected_path: Some(report.install_root),
             backup_path: report.backup_path,
             message: report.message,
@@ -1964,8 +2023,6 @@ pub async fn install_codex_runtime_release(
     let portable_root = portable_root()?;
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = acquire_operation_lock("codex_runtime_install")?;
-        // See `install_release`'s matching comment: `Standard` mode can fall
-        // back internally to the same unguarded portable-install swap.
         ensure_portable_root_safe_for_install(&portable_root)?;
         let journal = InstallJournal::at(&root);
         let journal_id = journal
@@ -2195,7 +2252,6 @@ pub async fn install_codex_runtime_offline(
         match result {
             Ok(report) => {
                 let _ = journal.finish(&journal_id, "completed", Some(report.message.clone()));
-                fix_up_percent_encoded_portable_payload(Path::new(&report.install_root));
                 Ok(CodexRuntimeOperation {
                     version: report.version,
                     requested_mode: "portable".to_string(),
@@ -2538,51 +2594,107 @@ mod tests {
         assert!(releases[1].name.is_none());
     }
 
-    // ── OPC percent-decode fixup ─────────────────────────────────────────
-
     #[test]
-    fn percent_decode_entry_name_decodes_known_opc_escapes() {
+    fn portable_launcher_preserves_home_and_debug_options_without_renaming_payload() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("Codex.exe"), b"fixture").unwrap();
+        std::fs::create_dir(root.join("resources")).unwrap();
+        std::fs::write(root.join("resources/codex.exe"), b"cli").unwrap();
+        let literal_name = root.join("resources/%40literal");
+        std::fs::write(&literal_name, b"literal percent name").unwrap();
+        let home = root.join("custom home");
+        let command = super::portable_command_with_codex_home(
+            root,
+            &home,
+            codex_win_engine::LaunchOptions {
+                disable_codex_self_updates: true,
+                remote_debugging_port: Some(9222),
+            },
+        )
+        .unwrap();
+        #[cfg(windows)]
         assert_eq!(
-            super::decode_percent_encoded_entry_name("%40oai").as_deref(),
-            Some("@oai")
+            command.get_program(),
+            root.join("LaunchCodex.exe").as_os_str()
         );
+        assert_eq!(command.get_current_dir(), Some(root));
+        assert!(command
+            .get_envs()
+            .any(|(key, value)| { key == "CODEX_HOME" && value == Some(home.as_os_str()) }));
+        assert!(command.get_envs().any(|(key, value)| {
+            key == "CODEX_SPARKLE_ENABLED" && value == Some(std::ffi::OsStr::new("false"))
+        }));
         assert_eq!(
-            super::decode_percent_encoded_entry_name("%24_StatsigGlobal.js").as_deref(),
-            Some("$_StatsigGlobal.js")
+            command.get_args().collect::<Vec<_>>(),
+            [
+                "--remote-debugging-address=127.0.0.1",
+                "--remote-debugging-port=9222"
+            ]
         );
+        assert!(literal_name.is_file());
+        assert!(!root.join("resources/@literal").exists());
+        let ordinary = super::portable_command_with_codex_home(
+            root,
+            &home,
+            codex_win_engine::LaunchOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(ordinary.get_args().count(), 0);
+        assert!(!ordinary.get_envs().any(|(key, _)| key == "CODEX_CLI_PATH"));
     }
 
     #[test]
-    fn percent_decode_entry_name_leaves_plain_names_alone() {
-        // No '%' at all, and a '%' that isn't a valid escape sequence (the
-        // decode round-trips to the same string) — both mean "nothing to do".
-        assert_eq!(super::decode_percent_encoded_entry_name("app.asar"), None);
-        assert_eq!(super::decode_percent_encoded_entry_name("100%"), None);
+    fn portable_startup_requires_main_window_and_rejects_dialogs() {
+        let mut windows = super::CodexStartupWindows::default();
+        assert!(!windows.ready().unwrap());
+        windows.observe("ConsoleWindowClass");
+        assert!(!windows.ready().unwrap());
+        windows.observe("Chrome_WidgetWin_1");
+        assert!(windows.ready().unwrap());
+        windows.observe("#32770");
+        assert!(windows.ready().is_err());
+        windows.observe("Chrome_WidgetWin_1");
+        assert!(windows.ready().is_err());
     }
 
     #[test]
-    fn percent_decode_entry_name_rejects_traversal_and_drive_prefixes() {
-        // Separator smuggling (`..\escape` via mixed encodings), bare
-        // dot-dot, drive-relative prefixes (`C:foo` — with_file_name/join
-        // REPLACE the whole base path for those on Windows), NTFS alternate
-        // data streams (`foo:bar`), and invalid UTF-8 must all be refused
-        // rather than renamed.
-        for name in [
-            "%2e%2e",       // ".."
-            "%2e",          // "."
-            "%2fescape",    // "/escape"
-            "x%5cy",        // "x\y"
-            "%2e%2e%5cesc", // "..\esc"
-            "C%3afoo",      // "C:foo"
-            "foo%3Abar",    // "foo:bar"
-            "%ff",          // invalid UTF-8
+    fn portable_startup_never_accepts_late_or_process_only_success() {
+        let now = std::time::Instant::now();
+        let deadline = now + std::time::Duration::from_secs(30);
+        assert!(super::portable_startup_ready(
+            true, true, true, now, deadline
+        ));
+        for (main, renderer, stable) in [
+            (false, true, true),
+            (true, false, true),
+            (true, true, false),
         ] {
-            assert_eq!(
-                super::decode_percent_encoded_entry_name(name),
-                None,
-                "{name} must be rejected"
-            );
+            assert!(!super::portable_startup_ready(
+                main, renderer, stable, now, deadline
+            ));
         }
+        assert!(!super::portable_startup_ready(
+            true, true, true, deadline, deadline
+        ));
+        assert!(!super::portable_startup_ready(
+            true,
+            true,
+            true,
+            deadline + std::time::Duration::from_millis(1),
+            deadline
+        ));
+    }
+
+    #[test]
+    fn portable_launcher_rejects_missing_payload() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(super::portable_command_with_codex_home(
+            dir.path(),
+            dir.path(),
+            codex_win_engine::LaunchOptions::default(),
+        )
+        .is_err());
     }
 
     // ── Portable-root install safety guard ──────────────────────────────

@@ -26,10 +26,12 @@ pub struct FetchedModel {
 #[derive(Debug, Deserialize)]
 struct ModelsResponse {
     data: Option<Vec<ModelEntry>>,
+    models: Option<Vec<ModelEntry>>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ModelEntry {
+    #[serde(alias = "slug")]
     id: String,
     owned_by: Option<String>,
 }
@@ -127,6 +129,7 @@ pub async fn fetch_models(
 
             let mut models: Vec<FetchedModel> = resp
                 .data
+                .or(resp.models)
                 .unwrap_or_default()
                 .into_iter()
                 .map(|m| FetchedModel {
@@ -1594,6 +1597,32 @@ fn ends_with_version_segment(url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn discovers_zhipu_response_model_slugs() {
+        let (url, server) = serve_test_router(axum::Router::new().fallback(|| async {
+            axum::Json(serde_json::json!({"models": [{"slug": "glm-5.3"}, {"slug": "glm-5"}]}))
+        }))
+        .await;
+        let models = fetch_models(&url, "test-discovery-key", false, None, None)
+            .await
+            .unwrap();
+        server.abort();
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["glm-5", "glm-5.3"]
+        );
+        assert!(models.iter().all(|model| model.owned_by.is_none()));
+        let standard: ModelsResponse =
+            serde_json::from_str(r#"{"data":[{"id":"gpt-test","owned_by":"vendor"}]}"#).unwrap();
+        assert_eq!(
+            standard.data.unwrap()[0].owned_by.as_deref(),
+            Some("vendor")
+        );
+    }
 
     async fn serve_test_router(router: axum::Router) -> (String, tokio::task::JoinHandle<()>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

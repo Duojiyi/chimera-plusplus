@@ -35,6 +35,7 @@ pub mod streaming_responses;
 pub mod transform;
 pub mod transform_codex_anthropic;
 pub mod transform_codex_chat;
+pub mod transform_codex_chat_moonshot_schema;
 pub mod transform_codex_responses_namespace;
 pub mod transform_codex_responses_xai_sanitize;
 pub mod transform_gemini;
@@ -73,7 +74,6 @@ pub use codex::{
     codex_provider_uses_chat_completions,
     inject_codex_chat_prompt_cache_key,
     is_codex_official_provider,
-    provider_needs_responses_namespace_flatten,
     resolve_codex_catalog_tool_profile,
     resolve_codex_chat_reasoning_config,
     should_convert_codex_responses_to_anthropic_for_model,

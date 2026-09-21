@@ -87,6 +87,25 @@ jobs:
               exit 1
             fi
           done
+          portable_runs_json=$(gh api "repos/$REPOSITORY/actions/workflows/codex-portable-validation.yml/runs?head_sha=$tag_commit&event=push&per_page=100")
+          portable_run_id=$(jq -r --arg sha "$tag_commit" '
+            .workflow_runs[]
+            | select(.head_sha == $sha and .head_branch == "main" and .status == "completed" and .conclusion == "success")
+            | .id
+          ' <<<"$portable_runs_json" | head -n 1)
+          if [[ -z "$portable_run_id" || "$portable_run_id" == "null" ]]; then
+            echo "No successful native portable validation on main found for $tag_commit" >&2
+            exit 1
+          fi
+          portable_jobs_json=$(gh api "repos/$REPOSITORY/actions/runs/$portable_run_id/jobs?per_page=100")
+          for runner in windows-2022 windows-11-arm; do
+            if ! jq -e --arg name "Native portable launcher ($runner)" \
+              '.jobs[] | select(.name == $name and .conclusion == "success")' \
+              <<<"$portable_jobs_json" >/dev/null; then
+              echo "Required portable validation did not pass: $runner" >&2
+              exit 1
+            fi
+          done
           echo "Release $RELEASE_TAG is bound to audited commit $tag_commit and successful CI run $ci_run_id"
 
   release:
@@ -431,10 +450,11 @@ jobs:
             New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
             Copy-Item $exePath $portableDir
 
-            # Bundle one exact, audited Codex desktop package from the pinned mirror release.
-            $codexMirrorRepository = 'Duojiyi/codex-app-mirror'
-            $codexMirrorTag = 'codex-app-26.721.41059'
-            $codexMirrorCommit = '84c625145ad2e2cfc6f06439250c1fddce0eff14'
+            # Bundle one exact, audited Codex desktop package from the shared pin.
+            $codexPin = Get-Content -LiteralPath '.github/codex-portable-pin.json' -Raw | ConvertFrom-Json
+            $codexMirrorRepository = $codexPin.repository
+            $codexMirrorTag = $codexPin.tag
+            $codexMirrorCommit = $codexPin.commit
             $apiHeaders = @{
               Accept = 'application/vnd.github+json'
               'X-GitHub-Api-Version' = '2022-11-28'
@@ -449,27 +469,53 @@ jobs:
               throw "Codex mirror commit mismatch: expected $codexMirrorCommit, got $($mirrorCommitResponse.sha)"
             }
             $archPattern = if ($isArm64) { '_arm64__.*\.Msix$' } else { '_x64__.*\.Msix$' }
-            $msixAssets = @($mirrorRelease.assets | Where-Object { $_.name -match $archPattern })
-            $sumsAssets = @($mirrorRelease.assets | Where-Object { $_.name -eq 'SHA256SUMS-windows.txt' })
-            if ($msixAssets.Count -ne 1 -or $sumsAssets.Count -ne 1) {
-              throw "Codex mirror must contain exactly one $env:WINDOWS_RELEASE_ARCH MSIX and one SHA256SUMS-windows.txt"
-            }
-            $msixAsset = $msixAssets[0]
-            $sumsAsset = $sumsAssets[0]
+            $packageArch = if ($isArm64) { 'arm64' } else { 'x64' }
+            $msixAsset = $codexPin.assets.$packageArch
+            if ($null -eq $msixAsset -or $msixAsset.name -notmatch $archPattern) { throw "Codex pin has no valid $env:WINDOWS_RELEASE_ARCH asset" }
+            $downloadAssets = @($mirrorRelease.assets | Where-Object name -eq $msixAsset.name)
+            if ($downloadAssets.Count -ne 1) { throw 'Expected exactly one pinned Codex asset' }
             $codexMsix = Join-Path $env:RUNNER_TEMP $msixAsset.name
-            $checksumFile = Join-Path $env:RUNNER_TEMP 'SHA256SUMS-windows.txt'
-            Invoke-WebRequest -Uri $msixAsset.browser_download_url -OutFile $codexMsix
-            Invoke-WebRequest -Uri $sumsAsset.browser_download_url -OutFile $checksumFile
-            $checksumPattern = "(^|\s){0}$" -f [regex]::Escape($msixAsset.name)
-            $checksumLine = @(Get-Content $checksumFile | Where-Object { $_ -match $checksumPattern }) | Select-Object -First 1
-            $expectedHash = (($checksumLine -split '\s+')[0])
+            Invoke-WebRequest -Uri $downloadAssets[0].browser_download_url -OutFile $codexMsix
             $actualHash = (Get-FileHash -Algorithm SHA256 $codexMsix).Hash.ToLowerInvariant()
-            if ($expectedHash -notmatch '^[0-9a-fA-F]{64}$' -or $actualHash -ne $expectedHash.ToLowerInvariant()) {
-              throw 'Codex mirror checksum verification failed'
+            if ($msixAsset.sha256 -notmatch '^[0-9a-f]{64}$' -or $actualHash -ne $msixAsset.sha256) { throw 'Codex package pin checksum verification failed' }
+            $engineMetadata = cargo metadata --locked --format-version 1 --manifest-path src-tauri/Cargo.toml | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0) { throw 'Cargo metadata failed' }
+            $enginePackage = @($engineMetadata.packages | Where-Object name -eq 'codex-win-engine')
+            if ($enginePackage.Count -ne 1) { throw 'Expected exactly one pinned Windows engine' }
+            $engineManifest = $enginePackage[0].manifest_path
+            $examples = Join-Path (Split-Path -Parent $engineManifest) 'examples'
+            New-Item -ItemType Directory -Force -Path $examples | Out-Null
+            $helper = Join-Path $examples 'chimera_package.rs'
+            if (Test-Path -LiteralPath $helper) { throw 'Packaging example already exists' }
+            @'
+          use std::{env, path::Path, process::Command};
+          fn main() {
+              let args: Vec<_> = env::args_os().collect();
+              let msix = Path::new(&args[1]);
+              let root = Path::new(&args[2]);
+              assert!(!root.exists(), "Packaging destination must be fresh");
+              let signature = codex_win_engine::verify_openai_authenticode(msix).unwrap();
+              assert!(signature.is_valid_openai(), "Untrusted Codex MSIX signature");
+              let report = codex_win_engine::install_portable_from_msix_with_observer(
+                  msix, root, false, false, &mut |_| Ok(()),
+              ).expect("Codex MSIX portable extraction failed");
+              assert!(report.success, "Codex portable extraction was not successful");
+              assert!(root.join("LaunchCodex.exe").is_file(), "native Codex launcher missing");
+              assert!(root.join("codex-portable-launcher.txt").is_file());
+              let node_bin = root.join("resources/cua_node/bin");
+              let output = Command::new(node_bin.join("node.exe"))
+                  .arg("-e")
+                  .arg("const root=process.argv[1]; console.log(require.resolve('@oai/sky',{paths:[root]})); console.log(require.resolve('@statsig/client-core',{paths:[root]}));")
+                  .arg(&node_bin).output().expect("Run bundled Computer Use Node");
+              assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+          }
+          '@ | Set-Content -LiteralPath $helper -Encoding utf8
+            try {
+              cargo run --locked --manifest-path $engineManifest --example chimera_package --quiet -- $codexMsix (Join-Path (Get-Location) "$portableDir/Codex")
+              if ($LASTEXITCODE -ne 0) { throw 'Codex engine packaging failed' }
+            } finally {
+              Remove-Item -LiteralPath $helper -Force
             }
-            $codexArchive = Join-Path $env:RUNNER_TEMP 'codex-package.zip'
-            Copy-Item $codexMsix $codexArchive
-            Expand-Archive -LiteralPath $codexArchive -DestinationPath (Join-Path $portableDir 'Codex') -Force
             Set-Content -Path (Join-Path $portableDir 'Codex\CHIMERA-CODEX-VERSION.txt') -Value "$codexMirrorTag`n$codexMirrorCommit" -Encoding UTF8
             $codexPlatform = if ($isArm64) { 'windows-arm64' } else { 'windows-x86_64' }
             [ordered]@{

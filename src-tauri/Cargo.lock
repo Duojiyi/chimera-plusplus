@@ -112,7 +112,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "parking_lot",
  "percent-encoding",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
  "x11rb",
 ]
 
@@ -777,7 +777,7 @@ dependencies = [
 [[package]]
 name = "chimera-domain"
 version = "1.2.42-chimera.1"
-source = "git+https://github.com/Duojiyi/chimera-plusplus.git?rev=c1b59b27d1571134339714cefb0a5617616c73a9#c1b59b27d1571134339714cefb0a5617616c73a9"
+source = "git+https://github.com/Duojiyi/chimera-plusplus.git?rev=ac846589c9bb3b60cbaec3f7d26287c55afdc493#ac846589c9bb3b60cbaec3f7d26287c55afdc493"
 dependencies = [
  "serde",
  "thiserror 2.0.20",
@@ -788,7 +788,7 @@ dependencies = [
 [[package]]
 name = "chimera-platform"
 version = "1.2.42-chimera.1"
-source = "git+https://github.com/Duojiyi/chimera-plusplus.git?rev=c1b59b27d1571134339714cefb0a5617616c73a9#c1b59b27d1571134339714cefb0a5617616c73a9"
+source = "git+https://github.com/Duojiyi/chimera-plusplus.git?rev=ac846589c9bb3b60cbaec3f7d26287c55afdc493#ac846589c9bb3b60cbaec3f7d26287c55afdc493"
 dependencies = [
  "anyhow",
  "chimera-domain",
@@ -800,7 +800,7 @@ dependencies = [
 
 [[package]]
 name = "chimera-plus-plus"
-version = "2.7.8"
+version = "2.7.9"
 dependencies = [
  "anyhow",
  "arboard",
@@ -880,7 +880,7 @@ dependencies = [
 [[package]]
 name = "chimera-runtime"
 version = "1.2.42-chimera.1"
-source = "git+https://github.com/Duojiyi/chimera-plusplus.git?rev=c1b59b27d1571134339714cefb0a5617616c73a9#c1b59b27d1571134339714cefb0a5617616c73a9"
+source = "git+https://github.com/Duojiyi/chimera-plusplus.git?rev=ac846589c9bb3b60cbaec3f7d26287c55afdc493#ac846589c9bb3b60cbaec3f7d26287c55afdc493"
 dependencies = [
  "anyhow",
  "chimera-domain",
@@ -950,7 +950,7 @@ dependencies = [
 [[package]]
 name = "codex-theme-engine"
 version = "0.1.0"
-source = "git+https://github.com/Wangnov/Codex-App-Manager.git?rev=222de90cfce587007056129f567f556b75711086#222de90cfce587007056129f567f556b75711086"
+source = "git+https://github.com/Wangnov/Codex-App-Manager.git?rev=296721f429e7359ad6618fdc897412fe6fe4c29b#296721f429e7359ad6618fdc897412fe6fe4c29b"
 dependencies = [
  "base64 0.23.1",
  "futures-util",
@@ -969,7 +969,7 @@ dependencies = [
 [[package]]
 name = "codex-win-engine"
 version = "0.1.0"
-source = "git+https://github.com/Wangnov/Codex-App-Manager.git?rev=222de90cfce587007056129f567f556b75711086#222de90cfce587007056129f567f556b75711086"
+source = "git+https://github.com/Wangnov/Codex-App-Manager.git?rev=296721f429e7359ad6618fdc897412fe6fe4c29b#296721f429e7359ad6618fdc897412fe6fe4c29b"
 dependencies = [
  "log",
  "roxmltree",
@@ -1661,7 +1661,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3274,7 +3274,7 @@ dependencies = [
  "png 0.18.1",
  "serde",
  "thiserror 2.0.20",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4345,7 +4345,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4873,7 +4873,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4932,7 +4932,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5436,7 +5436,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -6169,7 +6169,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6646,7 +6646,7 @@ dependencies = [
  "png 0.18.1",
  "serde",
  "thiserror 2.0.20",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -6703,7 +6703,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset",
  "tempfile",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]

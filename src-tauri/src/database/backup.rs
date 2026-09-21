@@ -1164,14 +1164,17 @@ mod tests {
         let source_conn = crate::database::lock_conn!(source.conn);
         let target_conn = crate::database::lock_conn!(target.conn);
         source_conn.execute_batch(
-            "INSERT INTO session_log_sync VALUES ('/a.jsonl', 1000, 7, 1001);
-             INSERT INTO session_log_sync VALUES ('/b.jsonl', 1000, 7, 1001);
+            "INSERT INTO session_log_sync (file_path, last_modified, last_line_offset, last_synced_at)
+             VALUES ('/a.jsonl', 1000, 7, 1001);
+             INSERT INTO session_log_sync (file_path, last_modified, last_line_offset, last_synced_at)
+             VALUES ('/b.jsonl', 1000, 7, 1001);
              CREATE INDEX local_cursor_mtime ON session_log_sync(last_modified);",
         )?;
         target_conn.execute_batch(
             "DROP TABLE session_log_sync;
              CREATE TABLE session_log_sync (
                 file_path TEXT PRIMARY KEY, last_modified INTEGER NOT NULL,
+                last_file_size INTEGER,
                 last_line_offset INTEGER UNIQUE ON CONFLICT IGNORE,
                 last_synced_at INTEGER NOT NULL
              );",

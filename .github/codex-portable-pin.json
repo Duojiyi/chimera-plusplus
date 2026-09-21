@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "repository": "Duojiyi/codex-app-mirror",
+  "tag": "codex-app-26.915.31945",
+  "commit": "d3557683a0ade00a0d80b6d0883cc7729406e5e5",
+  "assets": {
+    "x64": {
+      "name": "OpenAI.Codex_26.915.4065.0_x64__2p2nqsd0c76g0.Msix",
+      "sha256": "fb4745f5378c8a4122f74643a3c7c1000da5f4b184f0d9dc9faf275c79ac73a4"
+    },
+    "arm64": {
+      "name": "OpenAI.Codex_26.915.4065.0_arm64__2p2nqsd0c76g0.Msix",
+      "sha256": "bfe1c58a37702581a8170ea84aaedfd8a27be8eca5e191dd17c6d51d244434b4"
+    }
+  }
+}
