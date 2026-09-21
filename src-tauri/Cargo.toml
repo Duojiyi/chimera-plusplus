@@ -1,6 +1,6 @@
 [package]
 name = "chimera-plus-plus"
-version = "2.7.8"
+version = "2.7.9"
 description = "Clean Codex provider switcher and desktop runtime manager"
 authors = ["Duojiyi", "CC Switch contributors"]
 license = "MIT"
@@ -90,10 +90,10 @@ hmac = "0.12"
 json5 = "0.4"
 json-five = "0.3.1"
 sys-locale = "0.3"
-chimera-runtime = { git = "https://github.com/Duojiyi/chimera-plusplus.git", rev = "c1b59b27d1571134339714cefb0a5617616c73a9", package = "chimera-runtime" }
-chimera-platform = { git = "https://github.com/Duojiyi/chimera-plusplus.git", rev = "c1b59b27d1571134339714cefb0a5617616c73a9", package = "chimera-platform" }
-codex-win-engine = { git = "https://github.com/Wangnov/Codex-App-Manager.git", rev = "222de90cfce587007056129f567f556b75711086", package = "codex-win-engine" }
-codex-theme-engine = { git = "https://github.com/Wangnov/Codex-App-Manager.git", rev = "222de90cfce587007056129f567f556b75711086", package = "codex-theme-engine" }
+chimera-runtime = { git = "https://github.com/Duojiyi/chimera-plusplus.git", rev = "ac846589c9bb3b60cbaec3f7d26287c55afdc493", package = "chimera-runtime" }
+chimera-platform = { git = "https://github.com/Duojiyi/chimera-plusplus.git", rev = "ac846589c9bb3b60cbaec3f7d26287c55afdc493", package = "chimera-platform" }
+codex-win-engine = { git = "https://github.com/Wangnov/Codex-App-Manager.git", rev = "296721f429e7359ad6618fdc897412fe6fe4c29b", package = "codex-win-engine" }
+codex-theme-engine = { git = "https://github.com/Wangnov/Codex-App-Manager.git", rev = "296721f429e7359ad6618fdc897412fe6fe4c29b", package = "codex-theme-engine" }
 
 [target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = "2"

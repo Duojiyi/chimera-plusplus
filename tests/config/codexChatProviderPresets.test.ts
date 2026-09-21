@@ -46,13 +46,6 @@ const expectedChatPresets = new Map<
     },
   ],
   [
-    "Kimi",
-    {
-      baseUrl: "https://api.moonshot.cn/v1",
-      contextWindows: { "kimi-k2.7-code": 262144, "kimi-k3": 1048576 },
-    },
-  ],
-  [
     "StepFun",
     {
       baseUrl: "https://api.stepfun.com/step_plan/v1",
@@ -84,7 +77,7 @@ const expectedChatPresets = new Map<
   [
     "BaiLing",
     {
-      baseUrl: "https://api.tbox.cn/api/llm/v1",
+      baseUrl: "https://api.ant-ling.com/v1",
       contextWindows: { "Ling-2.6-1T": 262144 },
     },
   ],
@@ -119,12 +112,12 @@ const expectedChatPresets = new Map<
 ]);
 
 describe("Codex Chat provider presets", () => {
-  it("enables session-based prompt cache routing for Kimi Coding", () => {
+  it("does not inject Chat prompt cache routing for native Kimi Coding", () => {
     const preset = codexProviderPresets.find(
       (item) => item.name === "Kimi For Coding",
     );
 
-    expect(preset?.promptCacheRouting).toBe("enabled");
+    expect(preset?.promptCacheRouting).toBeUndefined();
   });
 
   it("marks migrated Chat Completions presets for local routing", () => {
@@ -160,14 +153,38 @@ describe("Codex Chat provider presets", () => {
         "DouBaoSeed",
         { contextWindows: { "doubao-seed-2-1-pro-260628": 262144 } },
       ],
-      ["Bailian", { contextWindows: { "qwen3-coder-plus": 1048576 } }],
+      [
+        "Bailian",
+        {
+          contextWindows: {
+            "qwen3.8-max": 983616,
+            "qwen3.8-2.4t-a95b": 983616,
+            "qwen3.8-27b": 983616,
+          },
+        },
+      ],
+      [
+        "Kimi",
+        { contextWindows: { "kimi-k3": 1048576, "kimi-k2.7-code": 262144 } },
+      ],
+      [
+        "Kimi For Coding",
+        {
+          contextWindows: {
+            "kimi-for-coding": 1048576,
+            "kimi-for-coding-highspeed": 262144,
+            k3: 1048576,
+            "k3-256k": 262144,
+          },
+        },
+      ],
       // DeepSeek 官方 Codex 文档确认 deepseek-v4-flash 原生 Responses；
       // catalog 由后端按 deepseek.com host 镜像官方 models.json 生成
       [
         "DeepSeek",
         {
           contextWindows: {
-            "deepseek-v4-flash": 1048576,
+            "deepseek-flash": 1048576,
             "deepseek-v4-pro": 1048576,
           },
         },

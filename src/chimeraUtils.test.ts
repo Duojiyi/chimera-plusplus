@@ -3,6 +3,7 @@ import type { Provider } from "@/types";
 import {
   activityStorageKey,
   buildCodexModelCatalog,
+  extractCodexMappingRows,
   formatDuration,
   loadOperationRecords,
   resolveCurrentProvider,
@@ -125,6 +126,23 @@ describe("setCodexProviderApiKey", () => {
 });
 
 describe("buildCodexModelCatalog", () => {
+  it("retains explicit text-only mapping metadata", () => {
+    const configured = provider("custom", "https://example.com", "custom-text");
+    const rows = [
+      { model: "custom-text", inputModalities: ["text"] },
+      { model: "custom-vision", inputModalities: ["text", "image"] },
+      { model: "custom-context", contextWindow: "200000" },
+    ];
+    configured.settingsConfig.modelCatalog = {
+      models: [...rows, { model: "plain" }],
+    };
+    const mappings = extractCodexMappingRows(configured);
+    expect(mappings).toEqual(rows);
+    expect(buildCodexModelCatalog("custom-text", mappings)).toEqual(
+      rows.map((row) => ({ ...row, displayName: row.model })),
+    );
+  });
+
   it("adds the default model when the provider did not return a catalog", () => {
     expect(buildCodexModelCatalog(" claude-sonnet-5 ", [])).toEqual([
       { model: "claude-sonnet-5", displayName: "claude-sonnet-5" },

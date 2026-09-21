@@ -10,6 +10,15 @@ numbers belong to a separate upstream line.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.9] - 2026-09-22
+
+### Fixed
+
+- Stop standard Codex MSIX installs from silently falling back to an unpackaged executable, which can fail with “This process has no package identity” on Windows.
+- Pin both direct and runtime-workspace Codex engines to App Manager v0.5.8. Use its portable launcher and BlockMap-aware extraction instead of directly launching the unpackaged executable or locally rewriting extracted filenames.
+- Track Codex rollout file sizes alongside modification times so Windows logs can continue importing while the writer keeps the file open; preserve legacy cursors and incomplete-tail retries.
+- Accept Zhipu Responses model discovery lists using `models[].slug`, retaining authenticated-request limits and redaction.
+
 ## [2.7.8] - 2026-09-21
 
 ### Fixed

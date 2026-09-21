@@ -346,7 +346,11 @@ pub fn mask_url(url: &str) -> String {
     } else {
         // URL 解析失败，返回部分内容
         if url.len() > 20 {
-            format!("{}...", &url[..20])
+            let boundary = (0..=20)
+                .rev()
+                .find(|&index| url.is_char_boundary(index))
+                .unwrap_or(0);
+            format!("{}...", &url[..boundary])
         } else {
             url.to_string()
         }
@@ -355,6 +359,12 @@ pub fn mask_url(url: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mask_invalid_unicode_url_does_not_split_codepoints() {
+        assert_eq!(mask_url("无效代理地址无效代理地址"), "无效代理地址...");
+        assert_eq!(mask_url("short invalid"), "short invalid");
+    }
+
     use super::*;
     use std::sync::{Mutex, OnceLock};
 

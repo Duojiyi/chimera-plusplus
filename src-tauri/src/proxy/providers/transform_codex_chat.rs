@@ -346,6 +346,20 @@ pub fn responses_to_chat_completions_with_reasoning(
     Ok(result)
 }
 
+fn kimi_coding_model(model: &str) -> bool {
+    let model = model.to_ascii_lowercase();
+    model.starts_with("k3") || model.contains("kimi-k3") || model.contains("for-coding")
+}
+
+fn kimi_coding_effort(effort: &str) -> Option<&'static str> {
+    match effort.trim().to_ascii_lowercase().as_str() {
+        "minimal" | "low" => Some("low"),
+        "medium" | "high" => Some("high"),
+        "xhigh" | "max" | "ultra" => Some("max"),
+        _ => None,
+    }
+}
+
 fn apply_reasoning_options(
     result: &mut Value,
     body: &Value,
@@ -353,7 +367,20 @@ fn apply_reasoning_options(
     config: Option<&CodexChatReasoningConfig>,
 ) {
     let Some(config) = config else {
-        if super::transform::supports_reasoning_effort(model) {
+        if kimi_coding_model(model) {
+            if let Some(enabled) = reasoning_requested(body) {
+                result["thinking"] = json!({"type": if enabled { "adaptive" } else { "disabled" }});
+                if enabled {
+                    if let Some(effort) = body
+                        .pointer("/reasoning/effort")
+                        .and_then(Value::as_str)
+                        .and_then(kimi_coding_effort)
+                    {
+                        result["reasoning_effort"] = json!(effort);
+                    }
+                }
+            }
+        } else if super::transform::supports_reasoning_effort(model) {
             if let Some(effort) = body.pointer("/reasoning/effort") {
                 result["reasoning_effort"] = effort.clone();
             }
@@ -378,7 +405,9 @@ fn apply_reasoning_options(
         {
             "thinking" => {
                 result["thinking"] = json!({
-                    "type": if reasoning_enabled { "enabled" } else { "disabled" }
+                    "type": if reasoning_enabled {
+                        if kimi_coding_model(model) { "adaptive" } else { "enabled" }
+                    } else { "disabled" }
                 });
             }
             "enable_thinking" => {
@@ -658,7 +687,8 @@ fn append_responses_item_as_chat_message(
                 {
                     responses_content_to_chat_content("tool", array_value)
                 }
-                Some(v) => Value::String(canonical_json_string(v)),
+                Some(value) => structured_tool_output(value)
+                    .unwrap_or_else(|| Value::String(canonical_json_string(value))),
                 None => Value::String(String::new()),
             };
             messages.push(json!({
@@ -693,7 +723,8 @@ fn append_responses_item_as_chat_message(
                 {
                     responses_content_to_chat_content("tool", array_value)
                 }
-                Some(v) => Value::String(canonical_json_string(v)),
+                Some(value) => structured_tool_output(value)
+                    .unwrap_or_else(|| Value::String(canonical_json_string(value))),
                 None => Value::String(canonical_json_string(item)),
             };
             messages.push(json!({
@@ -799,6 +830,15 @@ fn flush_pending_tool_calls(
         return;
     }
 
+    if merge_pending_tool_calls_into_adjacent_assistant(
+        messages,
+        pending_tool_calls,
+        pending_reasoning,
+    ) {
+        *last_assistant_index = Some(messages.len() - 1);
+        return;
+    }
+
     let mut message = json!({
         "role": "assistant",
         "content": null,
@@ -807,6 +847,78 @@ fn flush_pending_tool_calls(
     attach_pending_reasoning_to_assistant(&mut message, pending_reasoning);
     *last_assistant_index = Some(messages.len());
     messages.push(message);
+}
+
+fn merge_pending_tool_calls_into_adjacent_assistant(
+    messages: &mut [Value],
+    pending_tool_calls: &mut Vec<Value>,
+    pending_reasoning: &mut Option<String>,
+) -> bool {
+    let Some(message) = messages.last_mut() else {
+        return false;
+    };
+    if message.get("role").and_then(Value::as_str) != Some("assistant") {
+        return false;
+    }
+    let has_tool_calls = message
+        .get("tool_calls")
+        .and_then(Value::as_array)
+        .is_some_and(|calls| !calls.is_empty());
+    if has_tool_calls {
+        return false;
+    }
+
+    let Some(obj) = message.as_object_mut() else {
+        return false;
+    };
+    obj.insert(
+        "tool_calls".to_string(),
+        Value::Array(std::mem::take(pending_tool_calls)),
+    );
+    attach_pending_reasoning_to_assistant_unique(message, pending_reasoning);
+    true
+}
+
+fn attach_pending_reasoning_to_assistant_unique(
+    message: &mut Value,
+    pending_reasoning: &mut Option<String>,
+) {
+    let Some(reasoning) = pending_reasoning.take() else {
+        return;
+    };
+    let reasoning = reasoning.trim();
+    if reasoning.is_empty() {
+        return;
+    }
+
+    let existing_text = message
+        .get("reasoning_content")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let existing_segments: Vec<&str> = existing_text
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    let missing_segments: Vec<&str> = reasoning
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty() && !existing_segments.contains(segment))
+        .collect();
+    if missing_segments.is_empty() {
+        return;
+    }
+
+    let merged = if existing_segments.is_empty() {
+        missing_segments.join("\n\n")
+    } else {
+        let existing = existing_segments.join("\n\n");
+        let missing = missing_segments.join("\n\n");
+        format!("{existing}\n\n{missing}")
+    };
+    if let Some(obj) = message.as_object_mut() {
+        obj.insert("reasoning_content".to_string(), Value::String(merged));
+    }
 }
 
 fn responses_message_item_to_chat_message(
@@ -1031,6 +1143,57 @@ fn responses_reasoning_item_text(item: &Value) -> Option<String> {
 /// Callers should fall back to whole-value JSON stringification (as before
 /// this distinction existed) for every other array shape, matching what
 /// they did before tool-output image handling was added.
+fn structured_tool_output(output: &Value) -> Option<Value> {
+    match output {
+        Value::Array(parts) => {
+            let converted: Vec<_> = parts.iter().map(structured_tool_output).collect();
+            if !converted.iter().any(Option::is_some) {
+                return None;
+            }
+            let mut result = Vec::new();
+            for (part, converted) in parts.iter().zip(converted) {
+                if let Some(Value::Array(parts)) = converted {
+                    result.extend(parts);
+                } else {
+                    let text = part
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                        .unwrap_or_else(|| canonical_json_string(part));
+                    result.push(json!({"type":"text","text":text}));
+                }
+            }
+            Some(Value::Array(result))
+        }
+        Value::Object(object) => {
+            if responses_output_array_has_binary_content_part(std::slice::from_ref(output)) {
+                return Some(responses_content_to_chat_content("tool", &json!([output])));
+            }
+            let mut metadata = object.clone();
+            let mut parts = Vec::new();
+            for key in ["content", "output"] {
+                if let Some(Value::Array(converted)) =
+                    object.get(key).and_then(structured_tool_output)
+                {
+                    parts.extend(converted);
+                    metadata.remove(key);
+                }
+            }
+            if parts.is_empty() {
+                return None;
+            }
+            if !metadata.is_empty() {
+                parts.insert(
+                    0,
+                    json!({"type":"text","text":canonical_json_string(&Value::Object(metadata))}),
+                );
+            }
+            Some(Value::Array(parts))
+        }
+        _ => None,
+    }
+}
+
 fn responses_output_array_has_binary_content_part(parts: &[Value]) -> bool {
     parts.iter().any(|part| {
         matches!(
@@ -1255,9 +1418,15 @@ fn responses_function_tool_to_chat_tool(tool: &Value, chat_name: &str) -> Option
 
     let mut function = json!({
         "name": chat_name,
-        "description": tool.get("description").cloned().unwrap_or(Value::Null),
+
         "parameters": normalize_function_parameters(tool.get("parameters"))
     });
+    if let Some(description) = tool
+        .get("description")
+        .filter(|description| !description.is_null())
+    {
+        function["description"] = description.clone();
+    }
     if let Some(strict) = tool.get("strict") {
         function["strict"] = strict.clone();
     }
@@ -1906,6 +2075,107 @@ pub fn chat_error_to_response_error(body: Option<&Value>) -> Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn wrapped_tool_images_preserve_media_and_metadata() {
+        let output = json!({"isError":false,"content":[{"type":"input_image","image_url":"data:image/png;base64,AAAA"},{"type":"text","text":"caption"},{"custom":42}]});
+        for kind in [
+            "function_call_output",
+            "custom_tool_call_output",
+            "tool_search_output",
+        ] {
+            let result = responses_to_chat_completions(json!({"model":"gpt-4.1","input":[{"type":kind,"call_id":"call_a","output":output}]})).unwrap();
+            let parts = result["messages"][0]["content"].as_array().unwrap();
+            assert!(parts
+                .iter()
+                .any(|part| part["image_url"]["url"] == "data:image/png;base64,AAAA"));
+            let text = parts
+                .iter()
+                .filter_map(|part| part["text"].as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert!(text.contains("isError"));
+            assert!(text.contains("custom"));
+            assert!(!text.contains("base64"));
+        }
+        assert!(structured_tool_output(&json!({"content":null})).is_none());
+        assert!(structured_tool_output(&json!({"count":42})).is_none());
+    }
+
+    #[test]
+    fn responses_chat_tools_omit_missing_description() {
+        let result = responses_to_chat_completions(json!({"model":"gpt-4.1","input":"hi","tools":[{"type":"function","name":"read","parameters":{"type":"object"}}]})).unwrap();
+        assert!(result["tools"][0]["function"].get("description").is_none());
+    }
+
+    #[test]
+    fn commentary_and_parallel_calls_share_one_assistant_turn() {
+        let result = responses_to_chat_completions(json!({"model":"gpt-4.1","input":[
+            {"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"Checking now"}]},
+            {"type":"function_call","call_id":"call_a","name":"read","arguments":"{}"},
+            {"type":"function_call","call_id":"call_b","name":"read","arguments":"{}"},
+            {"type":"function_call_output","call_id":"call_a","output":"ok"},
+            {"type":"function_call_output","call_id":"call_b","output":"ok"}
+        ]})).unwrap();
+        let messages = result["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0]["content"], "Checking now");
+        assert_eq!(messages[0]["tool_calls"].as_array().unwrap().len(), 2);
+        assert_eq!(messages[1]["role"], "tool");
+    }
+
+    #[test]
+    fn tool_call_merge_preserves_turn_boundaries_and_deduplicates_reasoning() {
+        let mut messages =
+            vec![json!({"role":"assistant","content":"Checking","reasoning_content":"Plan"})];
+        let mut calls = vec![json!({"id":"call_a"})];
+        let mut reasoning = Some("Plan".to_string());
+        assert!(merge_pending_tool_calls_into_adjacent_assistant(
+            &mut messages,
+            &mut calls,
+            &mut reasoning
+        ));
+        assert_eq!(messages[0]["reasoning_content"], "Plan");
+        assert!(calls.is_empty());
+        for role in ["user", "tool"] {
+            messages.push(json!({"role":role,"content":"next"}));
+            calls.push(json!({"id":"call_b"}));
+            assert!(!merge_pending_tool_calls_into_adjacent_assistant(
+                &mut messages,
+                &mut calls,
+                &mut reasoning
+            ));
+            assert!(!calls.is_empty());
+            calls.clear();
+        }
+    }
+
+    #[test]
+    fn kimi_coding_uses_adaptive_and_preserves_explicit_disable() {
+        for model in ["k3", "kimi-k3", "kimi-for-coding"] {
+            for (effort, expected) in [("low", "low"), ("medium", "high"), ("xhigh", "max")] {
+                let mut result = json!({});
+                apply_reasoning_options(
+                    &mut result,
+                    &json!({"reasoning":{"effort":effort}}),
+                    model,
+                    None,
+                );
+                assert_eq!(result["thinking"]["type"], "adaptive");
+                assert_eq!(result["reasoning_effort"], expected);
+            }
+            let mut result = json!({});
+            apply_reasoning_options(
+                &mut result,
+                &json!({"reasoning":{"effort":"none"}}),
+                model,
+                None,
+            );
+            assert_eq!(result["thinking"]["type"], "disabled");
+            assert!(result.get("reasoning_effort").is_none());
+        }
+        assert!(!kimi_coding_model("kimi-k2-thinking"));
+    }
+
     use super::*;
 
     #[test]

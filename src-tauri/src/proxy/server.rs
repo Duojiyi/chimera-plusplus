@@ -406,6 +406,29 @@ impl ProxyServer {
             // `:streamGenerateContent` / `:countTokens` 之外，Gemini SDK / CLI 还会发
             // GET `/models`、GET `/models/<id>` 等只读端点。如果只挂 POST，这些 GET
             // 请求会在路由层 404，绕过本地代理的统计、整流和故障转移。
+            .route(
+                "/images/generations",
+                post(handlers::handle_images_generations),
+            )
+            .route(
+                "/v1/images/generations",
+                post(handlers::handle_images_generations),
+            )
+            .route(
+                "/v1/v1/images/generations",
+                post(handlers::handle_images_generations),
+            )
+            .route(
+                "/codex/v1/images/generations",
+                post(handlers::handle_images_generations),
+            )
+            .route("/images/edits", post(handlers::handle_images_edits))
+            .route("/v1/images/edits", post(handlers::handle_images_edits))
+            .route("/v1/v1/images/edits", post(handlers::handle_images_edits))
+            .route(
+                "/codex/v1/images/edits",
+                post(handlers::handle_images_edits),
+            )
             .route("/v1beta/*path", any(handlers::handle_gemini))
             .route("/gemini/v1beta/*path", any(handlers::handle_gemini))
             // Gemini 的 GA 版本也叫 /v1，给原 SDK 留一条出口

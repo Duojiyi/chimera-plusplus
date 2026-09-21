@@ -567,6 +567,14 @@ pub fn extract_codex_api_key(auth: Option<&Value>, config_text: Option<&str>) ->
 pub fn extract_codex_base_url(config_text: &str) -> Option<String> {
     let doc = config_text.parse::<toml::Value>().ok()?;
 
+    if doc.get("model_provider").is_none()
+        || doc.get("model_provider").and_then(|value| value.as_str()) == Some("openai")
+    {
+        if let Some(url) = doc.get("openai_base_url").and_then(|value| value.as_str()) {
+            return Some(url.to_string());
+        }
+    }
+
     if let Some(active_provider) = doc.get("model_provider").and_then(|v| v.as_str()) {
         if let Some(base_url) = doc
             .get("model_providers")
@@ -1808,6 +1816,13 @@ fn codex_vendor_catalog_model_entry(
         entry_obj.insert("display_name".to_string(), json!(display_name));
         entry_obj.insert("description".to_string(), json!(display_name));
         entry_obj.insert("priority".to_string(), json!(1000 + priority));
+        entry_obj.insert(
+            "input_modalities".to_string(),
+            json!(codex_catalog_input_modalities(
+                &spec.model,
+                spec.input_modalities.as_deref()
+            )),
+        );
     }
 
     // Explicit user overrides win over the official entry; absent values keep
@@ -2041,6 +2056,24 @@ fn set_codex_model_catalog_json_field(
         .parse::<DocumentMut>()
         .map_err(|e| AppError::Message(format!("Invalid Codex config.toml: {e}")))?;
 
+    if doc
+        .get("model_catalog_json")
+        .and_then(|item| item.as_str())
+        .is_some_and(|path| {
+            static VARIABLE: OnceCell<regex::Regex> = OnceCell::new();
+            VARIABLE
+                .get_or_init(|| {
+                    regex::Regex::new(r"%[A-Za-z_][A-Za-z0-9_]*%|\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\}")
+                        .expect("valid variable expression regex")
+                })
+                .is_match(path)
+        })
+    {
+        return Err(AppError::Message(
+            "Codex model_catalog_json does not expand shell variables; use a literal path".into(),
+        ));
+    }
+
     // Ownership check, applied symmetrically to both directions: a value we
     // did not write ourselves (the field is absent, or its filename is not
     // ours) belongs to the user — never touch it either way. Before this,
@@ -2265,7 +2298,9 @@ fn build_simplified_catalog_from_texts(config_text: &str, catalog_text: &str) ->
         }
 
         if let Some(context_window) = entry
-            .get("context_window")
+            .get("max_context_window")
+            .filter(|value| !value.is_null())
+            .or_else(|| entry.get("context_window"))
             .and_then(|v| v.as_u64())
             .filter(|v| *v > 0 && *v != default_context_window)
         {
@@ -2369,11 +2404,59 @@ pub fn write_codex_provider_live_with_catalog(
     config_text: Option<&str>,
     profile: CodexCatalogToolProfile,
 ) -> Result<(), AppError> {
+    let config_text = config_text
+        .map(|text| {
+            if category == Some("official") && text.trim().is_empty() {
+                Ok(text.to_string())
+            } else {
+                preserve_codex_local_settings(text, &read_codex_config_text()?)
+            }
+        })
+        .transpose()?;
     let prepared_config = config_text
+        .as_deref()
         .map(|text| prepare_codex_config_text_with_model_catalog(settings, text, profile))
         .transpose()?;
 
     write_codex_live_for_provider(category, auth, prepared_config.as_deref())
+}
+
+fn preserve_codex_local_settings(config_text: &str, live_text: &str) -> Result<String, AppError> {
+    let mut target = config_text
+        .parse::<DocumentMut>()
+        .map_err(|err| AppError::Message(format!("Invalid Codex config.toml: {err}")))?;
+    let live = live_text
+        .parse::<DocumentMut>()
+        .map_err(|err| AppError::Message(format!("Invalid live Codex config.toml: {err}")))?;
+    for key in [
+        "sandbox_mode",
+        "approval_policy",
+        "sandbox_workspace_write",
+        "windows",
+    ] {
+        if let Some(value) = live.get(key) {
+            target[key] = value.clone();
+        }
+    }
+    if let Some(features) = live
+        .get("features")
+        .and_then(toml_edit::Item::as_table_like)
+    {
+        if !target.contains_key("features") {
+            target["features"] = toml_edit::table();
+        }
+        if let Some(target_features) = target
+            .get_mut("features")
+            .and_then(toml_edit::Item::as_table_like_mut)
+        {
+            for (key, value) in features.iter() {
+                if !target_features.contains_key(key) {
+                    target_features.insert(key, value.clone());
+                }
+            }
+        }
+    }
+    Ok(target.to_string())
 }
 
 /// Extract a provider-scoped `experimental_bearer_token` from Codex `config.toml`.
@@ -2396,9 +2479,9 @@ pub fn extract_codex_experimental_bearer_token(config_text: &str) -> Option<Stri
     let token = match provider_id.as_deref() {
         Some(id) if is_custom_codex_model_provider_id(id) => doc
             .get("model_providers")
-            .and_then(|item| item.as_table())
+            .and_then(|item| item.as_table_like())
             .and_then(|table| table.get(id))
-            .and_then(|item| item.as_table())
+            .and_then(|item| item.as_table_like())
             .and_then(|table| table.get("experimental_bearer_token"))
             .and_then(|item| item.as_str())
             .or_else(top_level_token),
@@ -2439,13 +2522,13 @@ fn set_codex_experimental_bearer_token(config_text: &str, token: &str) -> Result
 
     if let Some(model_providers) = doc
         .get_mut("model_providers")
-        .and_then(|item| item.as_table_mut())
+        .and_then(|item| item.as_table_like_mut())
     {
         if let Some(provider_table) = model_providers
             .get_mut(provider_id.as_str())
-            .and_then(|item| item.as_table_mut())
+            .and_then(|item| item.as_table_like_mut())
         {
-            provider_table["experimental_bearer_token"] = toml_edit::value(token);
+            provider_table.insert("experimental_bearer_token", toml_edit::value(token));
             return Ok(doc.to_string());
         }
     }
@@ -2999,11 +3082,83 @@ pub fn prepare_codex_provider_live_config(
 ) -> Result<String, AppError> {
     let token = extract_codex_auth_api_key(auth)
         .or_else(|| extract_codex_experimental_bearer_token(config_text));
+    let migrated = migrate_codex_reserved_provider_tables(config_text, token.is_some())?;
+    let config_text = migrated.as_deref().unwrap_or(config_text);
 
     Ok(match token {
         Some(token) => set_codex_experimental_bearer_token(config_text, &token)?,
         None => config_text.to_string(),
     })
+}
+
+fn migrate_codex_reserved_provider_tables(
+    config_text: &str,
+    has_token: bool,
+) -> Result<Option<String>, AppError> {
+    if !config_text.contains("model_providers") {
+        return Ok(None);
+    }
+    let mut doc = config_text
+        .parse::<DocumentMut>()
+        .map_err(|err| AppError::Message(format!("Invalid Codex config.toml: {err}")))?;
+    let active = active_codex_model_provider_id(&doc).unwrap_or_else(|| "openai".into());
+    let Some(providers) = doc
+        .get_mut("model_providers")
+        .and_then(|item| item.as_table_like_mut())
+    else {
+        return Ok(None);
+    };
+    let mut changed = false;
+    let mut active_migration = None;
+    for reserved in ["openai", "ollama", "lmstudio"] {
+        if !providers
+            .get(reserved)
+            .is_some_and(|item| item.as_table_like().is_some())
+        {
+            continue;
+        }
+        let mut migrated_id = "cc-switch".to_string();
+        let mut suffix = 2;
+        while providers.contains_key(&migrated_id) {
+            migrated_id = format!("cc-switch-{suffix}");
+            suffix += 1;
+        }
+        let mut provider = providers.remove(reserved).expect("existing provider table");
+        let table = provider.as_table_like_mut().expect("provider table");
+        if !table.contains_key("wire_api") {
+            table.insert("wire_api", toml_edit::value("responses"));
+        }
+        let has_own_auth = ["env_key", "experimental_bearer_token"]
+            .iter()
+            .any(|key| {
+                table
+                    .get(key)
+                    .and_then(|item| item.as_str())
+                    .is_some_and(|value| !value.trim().is_empty())
+            })
+            || ["auth", "aws"].iter().any(|key| table.contains_key(key))
+            || ["http_headers", "env_http_headers"].iter().any(|key| {
+                table
+                    .get(key)
+                    .and_then(|item| item.as_table_like())
+                    .is_some_and(|headers| {
+                        headers.iter().any(|(name, value)| {
+                            name.eq_ignore_ascii_case("authorization")
+                                && value.as_str().is_some_and(|value| !value.trim().is_empty())
+                        })
+                    })
+            });
+        if active == reserved && (has_token || has_own_auth) {
+            table.remove("requires_openai_auth");
+            active_migration = Some(migrated_id.clone());
+        }
+        providers.insert(&migrated_id, provider);
+        changed = true;
+    }
+    if let Some(provider_id) = active_migration {
+        doc["model_provider"] = toml_edit::value(provider_id);
+    }
+    Ok(changed.then(|| doc.to_string()))
 }
 
 /// During DB backfill, lift a live `experimental_bearer_token` back into
@@ -3062,10 +3217,10 @@ pub fn restore_codex_settings_for_backfill(
 /// Update a field in Codex config.toml using toml_edit (syntax-preserving).
 ///
 /// Supported fields:
-/// - `"base_url"`: writes to `[model_providers.<current>].base_url` if `model_provider` exists,
-///   otherwise falls back to top-level `base_url`.
-/// - `"wire_api"`: writes to `[model_providers.<current>].wire_api` if `model_provider` exists,
-///   otherwise falls back to top-level `wire_api`.
+/// - `"base_url"`: writes to `[model_providers.<current>].base_url`, or
+///   `openai_base_url` when Codex's built-in provider is active.
+/// - `"wire_api"`: writes to `[model_providers.<current>].wire_api`; the
+///   built-in provider keeps its native protocol.
 /// - `"model"` / `"model_catalog_json"`: writes to top-level field.
 ///
 /// Empty value removes the field.
@@ -3081,29 +3236,49 @@ pub fn update_codex_toml_field(toml_str: &str, field: &str, value: &str) -> Resu
             let model_provider = doc
                 .get("model_provider")
                 .and_then(|item| item.as_str())
-                .map(str::to_string);
+                .map(str::to_string)
+                .or_else(|| (!doc.contains_key("model_provider")).then(|| "openai".to_string()));
 
             if let Some(provider_key) = model_provider {
+                if provider_key == "openai" {
+                    if field == "base_url" {
+                        if trimmed.is_empty() {
+                            doc.as_table_mut().remove("openai_base_url");
+                        } else {
+                            doc["openai_base_url"] = toml_edit::value(trimmed);
+                        }
+                    }
+                    return Ok(doc.to_string());
+                }
+                if provider_key == "ollama" || provider_key == "lmstudio" {
+                    return Err(format!(
+                        "Cannot override built-in Codex provider `{provider_key}`"
+                    ));
+                }
                 // Ensure [model_providers] table exists
                 if doc.get("model_providers").is_none() {
                     doc["model_providers"] = toml_edit::table();
                 }
 
-                if let Some(model_providers) = doc["model_providers"].as_table_mut() {
+                if let Some(model_providers) = doc["model_providers"].as_table_like_mut() {
                     // Ensure [model_providers.<provider_key>] table exists
                     if !model_providers.contains_key(&provider_key) {
-                        model_providers[&provider_key] = toml_edit::table();
+                        model_providers.insert(&provider_key, toml_edit::table());
                     }
 
-                    if let Some(provider_table) = model_providers[&provider_key].as_table_mut() {
+                    if let Some(provider_table) = model_providers
+                        .get_mut(&provider_key)
+                        .and_then(toml_edit::Item::as_table_like_mut)
+                    {
                         if trimmed.is_empty() {
                             provider_table.remove(field);
                         } else {
-                            provider_table[field] = toml_edit::value(trimmed);
+                            provider_table.insert(field, toml_edit::value(trimmed));
                         }
                         return Ok(doc.to_string());
                     }
                 }
+                return Err("Codex provider table is not writable".to_string());
             }
 
             // Fallback: no model_provider or structure mismatch → top-level field
@@ -3835,7 +4010,7 @@ model = "gpt-4"
     }
 
     #[test]
-    fn base_url_falls_back_to_top_level_without_model_provider() {
+    fn base_url_uses_openai_override_without_model_provider() {
         let input = r#"model = "gpt-4"
 "#;
 
@@ -3843,10 +4018,160 @@ model = "gpt-4"
         let parsed: toml::Value = toml::from_str(&result).unwrap();
 
         let base_url = parsed
-            .get("base_url")
+            .get("openai_base_url")
             .and_then(|v| v.as_str())
-            .expect("should set top-level base_url");
+            .expect("should set openai_base_url");
         assert_eq!(base_url, "https://fallback.api/v1");
+        assert_eq!(
+            extract_codex_base_url(&result).as_deref(),
+            Some("https://fallback.api/v1")
+        );
+        assert!(parsed.get("base_url").is_none());
+        assert!(parsed.get("model_providers").is_none());
+        assert_eq!(
+            update_codex_toml_field(&result, "wire_api", "responses").unwrap(),
+            result
+        );
+        let cleared = update_codex_toml_field(&result, "base_url", "").unwrap();
+        assert_eq!(
+            cleared.parse::<toml::Value>().unwrap(),
+            input.parse::<toml::Value>().unwrap()
+        );
+    }
+
+    #[test]
+    fn update_provider_fields_respects_reserved_and_inline_tables() {
+        for reserved in ["ollama", "lmstudio"] {
+            let config = format!("model_provider = {reserved:?}\n");
+            assert!(update_codex_toml_field(&config, "base_url", "https://new.example").is_err());
+        }
+        for custom in ["OpenAI", "bedrock", "oss", "custom"] {
+            let config = format!("model_provider = {custom:?}\nmodel_providers = {{ {custom} = {{ name = \"kept\", wire_api = \"responses\" }} }}\n");
+            let updated =
+                update_codex_toml_field(&config, "base_url", "https://new.example").unwrap();
+            let doc: toml::Value = updated.parse().unwrap();
+            assert_eq!(
+                doc["model_providers"][custom]["base_url"].as_str(),
+                Some("https://new.example")
+            );
+            assert_eq!(
+                doc["model_providers"][custom]["name"].as_str(),
+                Some("kept")
+            );
+            assert!(doc.get("base_url").is_none());
+        }
+    }
+
+    #[test]
+    fn vendor_catalog_resolves_unknown_modalities_without_overwriting_declarations() {
+        let specs = codex_catalog_model_specs(&json!({"modelCatalog": {"models": [
+            {"model": "unknown-vision"},
+            {"model": "explicit-text", "inputModalities": ["text"]},
+            {"model": "known"}
+        ]}}));
+        let vendor =
+            vec![json!({"slug": "known", "input_modalities": ["text"], "context_window": 200000})];
+        for (index, expected) in [json!(["text", "image"]), json!(["text"]), json!(["text"])]
+            .iter()
+            .enumerate()
+        {
+            let entry = codex_vendor_catalog_model_entry(&vendor, &specs[index], index);
+            assert_eq!(&entry["input_modalities"], expected);
+            assert_eq!(entry["context_window"], json!(200000));
+        }
+    }
+
+    #[test]
+    fn catalog_pointer_rejects_unexpanded_variables() {
+        for pointer in [
+            "%USERPROFILE%/catalog.json",
+            "$HOME/catalog.json",
+            "${HOME}/catalog.json",
+            "C:/catalogs/%_ROOT2%/catalog.json",
+            "C:/catalogs/$_ROOT2/catalog.json",
+            "C:/catalogs/${_ROOT2}/catalog.json",
+        ] {
+            let config = format!("model_catalog_json = {pointer:?}\n");
+            assert!(set_codex_model_catalog_json_field(&config, None).is_err());
+            assert!(
+                set_codex_model_catalog_json_field(&config, Some(Path::new("catalog.json")))
+                    .is_err()
+            );
+        }
+        let config = "model_catalog_json = \"custom-catalog.json\"\n";
+        assert_eq!(
+            set_codex_model_catalog_json_field(config, None).unwrap(),
+            config
+        );
+    }
+
+    #[test]
+    fn catalog_import_prefers_absolute_context_limit() {
+        let catalog = r#"{"models":[
+            {"slug":"large","context_window":272000,"max_context_window":1000000},
+            {"slug":"max-only","max_context_window":500000},
+            {"slug":"fallback","context_window":200000,"max_context_window":null}
+        ]}"#;
+        let result = build_simplified_catalog_from_texts("", catalog).unwrap();
+        for (index, expected) in [1000000, 500000, 200000].iter().enumerate() {
+            assert_eq!(result["models"][index]["contextWindow"], json!(expected));
+        }
+    }
+
+    #[test]
+    fn catalog_switch_rebuilds_models_and_clears_only_owned_pointer() {
+        let first =
+            json!({"modelCatalog": {"models": [{"model":"first", "contextWindow": 500000}]}});
+        let second =
+            json!({"modelCatalog": {"models": [{"model":"second", "contextWindow": 200000}]}});
+        for (settings, model, window) in [(&first, "first", 500000), (&second, "second", 200000)] {
+            let catalog = codex_model_catalog_from_settings(
+                settings,
+                "",
+                CodexCatalogToolProfile::NativeResponses,
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(catalog["models"].as_array().unwrap().len(), 1);
+            assert_eq!(catalog["models"][0]["slug"], json!(model));
+            assert_eq!(catalog["models"][0]["context_window"], json!(window));
+            assert_eq!(catalog["models"][0]["max_context_window"], json!(window));
+        }
+        assert!(codex_model_catalog_from_settings(
+            &json!({}),
+            "",
+            CodexCatalogToolProfile::NativeResponses
+        )
+        .unwrap()
+        .is_none());
+        let owned = "model_catalog_json = \"cc-switch-model-catalog.json\"\n";
+        let cleared = set_codex_model_catalog_json_field(owned, None).unwrap();
+        assert!(cleared
+            .parse::<DocumentMut>()
+            .unwrap()
+            .get("model_catalog_json")
+            .is_none());
+    }
+
+    #[test]
+    fn provider_switch_preserves_local_settings_without_old_routing() {
+        let live = r#"
+model = "old"
+model_catalog_json = "old.json"
+[windows]
+sandbox = "elevated"
+[features]
+multi_agent_v2 = true
+memories = true
+"#;
+        let target = "model = \"new\"\n[features]\nmemories = false\n";
+        let result = preserve_codex_local_settings(target, live).unwrap();
+        let doc: toml::Value = result.parse().unwrap();
+        assert_eq!(doc["model"].as_str(), Some("new"));
+        assert!(doc.get("model_catalog_json").is_none());
+        assert_eq!(doc["windows"]["sandbox"].as_str(), Some("elevated"));
+        assert_eq!(doc["features"]["multi_agent_v2"].as_bool(), Some(true));
+        assert_eq!(doc["features"]["memories"].as_bool(), Some(false));
     }
 
     #[test]

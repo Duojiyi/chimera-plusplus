@@ -21,14 +21,13 @@ use crate::proxy::usage::parser::TokenUsage;
 use crate::security_limits::{
     collect_files_with_extensions, open_regular_file_no_symlink, MAX_SESSION_SCAN_DEPTH,
 };
-use crate::services::session_usage::{
-    get_sync_state, metadata_modified_nanos, update_sync_state, SessionSyncResult,
-};
+use crate::services::session_usage::{metadata_modified_nanos, SessionSyncResult};
 use crate::services::usage_stats::{
     effective_usage_log_filter, find_model_pricing, has_suspected_codex_session_duplicate,
     should_skip_session_insert, DedupKey,
 };
 use chrono::{DateTime, Utc};
+use rusqlite::OptionalExtension;
 use rust_decimal::Decimal;
 use std::collections::HashMap;
 use std::fs;
@@ -396,10 +395,21 @@ fn parse_token_signature(info: &serde_json::Value) -> Option<TokenUsageSignature
     (total.is_some() || last.is_some()).then_some(TokenUsageSignature { total, last })
 }
 
-fn get_codex_sync_state(db: &Database, file_path: &Path) -> Result<(i64, i64), AppError> {
+fn get_codex_sync_state(
+    db: &Database,
+    file_path: &Path,
+) -> Result<(i64, i64, Option<u64>), AppError> {
     let file_path_str = file_path.to_string_lossy().to_string();
-    let state = get_sync_state(db, &file_path_str)?;
-    if state != (0, 0)
+    let state = lock_conn!(db.conn)
+        .query_row(
+            "SELECT last_modified, last_line_offset, last_file_size
+             FROM session_log_sync WHERE file_path = ?1",
+            [&file_path_str],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?
+        .unwrap_or((0, 0, None));
+    if state != (0, 0, None)
         || file_path
             .parent()
             .and_then(Path::file_name)
@@ -416,7 +426,7 @@ fn get_codex_sync_state(db: &Database, file_path: &Path) -> Result<(i64, i64), A
     let backslash_suffix = format!("\\{file_name}");
     let conn = lock_conn!(db.conn);
     let inherited = conn.query_row(
-        "SELECT last_modified, last_line_offset
+        "SELECT last_modified, last_line_offset, last_file_size
          FROM session_log_sync
          WHERE file_path <> ?1
            AND (substr(file_path, -length(?2)) = ?2
@@ -424,13 +434,19 @@ fn get_codex_sync_state(db: &Database, file_path: &Path) -> Result<(i64, i64), A
          ORDER BY last_line_offset DESC, last_modified DESC
          LIMIT 1",
         rusqlite::params![file_path_str, slash_suffix, backslash_suffix],
-        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<u64>>(2)?,
+            ))
+        },
     );
     drop(conn);
 
     match inherited {
         Ok(inherited) => {
-            update_sync_state(db, &file_path_str, inherited.0, inherited.1)?;
+            update_codex_sync_state(db, &file_path_str, inherited.0, inherited.1, inherited.2)?;
             Ok(inherited)
         }
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(state),
@@ -438,6 +454,26 @@ fn get_codex_sync_state(db: &Database, file_path: &Path) -> Result<(i64, i64), A
             "查询 Codex 归档文件同步状态失败: {error}"
         ))),
     }
+}
+
+fn update_codex_sync_state(
+    db: &Database,
+    file_path: &str,
+    last_modified: i64,
+    last_offset: i64,
+    last_file_size: Option<u64>,
+) -> Result<(), AppError> {
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0);
+    lock_conn!(db.conn).execute(
+        "INSERT OR REPLACE INTO session_log_sync
+         (file_path, last_modified, last_line_offset, last_synced_at, last_file_size)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![file_path, last_modified, last_offset, now, last_file_size],
+    )?;
+    Ok(())
 }
 
 /// 归一化 Codex 模型名
@@ -1231,10 +1267,10 @@ fn sync_single_codex_file(
     let file_size = metadata.len();
 
     // 检查同步状态
-    let (last_modified, last_offset) = get_codex_sync_state(db, file_path)?;
+    let (last_modified, last_offset, last_file_size) = get_codex_sync_state(db, file_path)?;
 
     // 文件未变化则跳过
-    if file_modified <= last_modified {
+    if file_modified == last_modified && last_file_size == Some(file_size) {
         return Ok(CodexFileSyncResult::default());
     }
 
@@ -1272,12 +1308,14 @@ fn sync_single_codex_file(
     } else {
         file_modified
     };
+    let acknowledged_size = (!parsed.incomplete_tail).then_some(file_size);
     if !parsed.has_billable_tokens {
-        update_sync_state(
+        update_codex_sync_state(
             db,
             &file_path_str,
             acknowledged_modified,
             parsed.line_offset,
+            acknowledged_size,
         )?;
         return Ok(CodexFileSyncResult {
             deferred: parsed.incomplete_tail,
@@ -1406,11 +1444,12 @@ fn sync_single_codex_file(
         .map_err(|e| AppError::Database(format!("提交导入事务失败: {e}")))?;
     drop(conn);
 
-    update_sync_state(
+    update_codex_sync_state(
         db,
         &file_path_str,
         acknowledged_modified,
         parsed.line_offset,
+        acknowledged_size,
     )?;
     Ok(result)
 }
@@ -1546,6 +1585,8 @@ fn find_codex_pricing(conn: &rusqlite::Connection, model_id: &str) -> Option<Mod
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::session_usage::{get_sync_state, update_sync_state};
+    use std::io::Write;
     use tempfile::tempdir;
 
     const PARENT_ID: &str = "00000000-0000-4000-8000-000000000001";
@@ -1643,6 +1684,114 @@ mod tests {
     }
 
     #[test]
+    fn same_mtime_append_imports_only_new_usage() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let temp = tempdir().unwrap();
+        let file = rollout_path(temp.path(), PARENT_ID);
+        write_jsonl(
+            &file,
+            &[
+                session_meta(PARENT_ID),
+                turn_context(),
+                token_count(100, 50, 10),
+            ],
+        );
+        let modified = fs::metadata(&file).unwrap().modified().unwrap();
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+        let before = get_codex_sync_state(&db, &file)?;
+        let mut writer = fs::OpenOptions::new().append(true).open(&file).unwrap();
+        writeln!(writer, "{}", token_count(200, 100, 20)).unwrap();
+        writer.set_modified(modified).unwrap();
+        assert_eq!(
+            metadata_modified_nanos(&fs::metadata(&file).unwrap()),
+            before.0
+        );
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 0);
+        let after = get_codex_sync_state(&db, &file)?;
+        assert_eq!(after.1, 4);
+        assert_eq!(after.2, Some(fs::metadata(&file).unwrap().len()));
+        assert!(after.2 > before.2);
+        let totals: (i64, i64, i64, i64) = lock_conn!(db.conn).query_row(
+            "SELECT COUNT(*), SUM(input_tokens), SUM(cache_read_tokens), SUM(output_tokens)
+             FROM proxy_request_logs WHERE data_source = 'codex_session'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        assert_eq!(totals, (2, 200, 100, 20));
+        Ok(())
+    }
+
+    #[test]
+    fn archived_rollout_preserves_size_and_detects_same_mtime_growth() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let temp = tempdir().unwrap();
+        let sessions = temp.path().join("sessions");
+        let archived = temp.path().join("archived_sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        fs::create_dir_all(&archived).unwrap();
+        let source = rollout_path(&sessions, PARENT_ID);
+        let target = rollout_path(&archived, PARENT_ID);
+        write_jsonl(
+            &source,
+            &[
+                session_meta(PARENT_ID),
+                turn_context(),
+                token_count(100, 50, 10),
+            ],
+        );
+        assert_eq!(sync_test_file(&db, &source, &[&source])?.imported, 1);
+        let state = get_codex_sync_state(&db, &source)?;
+        let modified = fs::metadata(&source).unwrap().modified().unwrap();
+        fs::rename(&source, &target).unwrap();
+        assert_eq!(get_codex_sync_state(&db, &target)?, state);
+        assert_eq!(sync_test_file(&db, &target, &[&target])?.imported, 0);
+        let mut writer = fs::OpenOptions::new().append(true).open(&target).unwrap();
+        writeln!(writer, "{}", token_count(200, 100, 20)).unwrap();
+        writer.set_modified(modified).unwrap();
+        assert_eq!(sync_test_file(&db, &target, &[&target])?.imported, 1);
+        assert_eq!(sync_test_file(&db, &target, &[&target])?.imported, 0);
+        assert_eq!(get_codex_sync_state(&db, &target)?.1, 4);
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_null_size_rescans_once_preserving_cursor() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let temp = tempdir().unwrap();
+        let file = rollout_path(temp.path(), PARENT_ID);
+        write_jsonl(
+            &file,
+            &[
+                session_meta(PARENT_ID),
+                turn_context(),
+                token_count(100, 50, 10),
+                token_count(200, 100, 20),
+            ],
+        );
+        let modified = metadata_modified_nanos(&fs::metadata(&file).unwrap());
+        update_sync_state(&db, &file.to_string_lossy(), modified, 3)?;
+        assert_eq!(get_codex_sync_state(&db, &file)?.2, None);
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+        assert_eq!(
+            get_codex_sync_state(&db, &file)?,
+            (modified, 4, Some(fs::metadata(&file).unwrap().len()))
+        );
+        lock_conn!(db.conn).execute(
+            "UPDATE session_log_sync SET last_synced_at = -1 WHERE file_path = ?1",
+            [file.to_string_lossy().as_ref()],
+        )?;
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 0);
+        let synced: i64 = lock_conn!(db.conn).query_row(
+            "SELECT last_synced_at FROM session_log_sync WHERE file_path = ?1",
+            [file.to_string_lossy().as_ref()],
+            |row| row.get(0),
+        )?;
+        assert_eq!(synced, -1);
+        Ok(())
+    }
+
+    #[test]
     fn incomplete_tail_is_retried_when_completed() -> Result<(), AppError> {
         let db = Database::memory()?;
         let temp = tempdir().unwrap();
@@ -1650,10 +1799,19 @@ mod tests {
         let header = format!("{}\n{}\n", session_meta(PARENT_ID), turn_context());
         let event = token_count(1000, 300, 50).to_string();
         fs::write(&file, format!("{header}{}", &event[..event.len() / 2])).unwrap();
+        let modified = fs::metadata(&file).unwrap().modified().unwrap();
         assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 0);
         assert_eq!(get_codex_sync_state(&db, &file)?.1, 2);
-        fs::write(&file, format!("{header}{event}\n")).unwrap();
+        assert_eq!(get_codex_sync_state(&db, &file)?.2, None);
+        assert!(sync_test_file(&db, &file, &[&file])?.deferred);
+        let mut writer = fs::OpenOptions::new().append(true).open(&file).unwrap();
+        writeln!(writer, "{}", &event[event.len() / 2..]).unwrap();
+        writer.set_modified(modified).unwrap();
         assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+        assert_eq!(
+            get_codex_sync_state(&db, &file)?.2,
+            Some(fs::metadata(&file).unwrap().len())
+        );
         assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 0);
         Ok(())
     }

@@ -704,6 +704,56 @@ pub async fn handle_chat_completions(
     State(state): State<ProxyState>,
     request: axum::extract::Request,
 ) -> Result<axum::response::Response, ProxyError> {
+    handle_codex_passthrough(state, request, "/chat/completions", &OPENAI_PARSER_CONFIG).await
+}
+
+pub async fn handle_images_generations(
+    State(state): State<ProxyState>,
+    request: axum::extract::Request,
+) -> Result<axum::response::Response, ProxyError> {
+    handle_codex_passthrough(state, request, "/images/generations", &CODEX_PARSER_CONFIG).await
+}
+
+pub async fn handle_images_edits(
+    State(state): State<ProxyState>,
+    request: axum::extract::Request,
+) -> Result<axum::response::Response, ProxyError> {
+    handle_codex_passthrough(state, request, "/images/edits", &CODEX_PARSER_CONFIG).await
+}
+
+fn images_media_type_error(
+    endpoint: &str,
+    headers: &http::HeaderMap,
+) -> Option<axum::response::Response> {
+    if !matches!(endpoint, "/images/generations" | "/images/edits") {
+        return None;
+    }
+    let content_type = headers
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .unwrap_or_default()
+        .trim();
+    if content_type.eq_ignore_ascii_case("application/json") {
+        return None;
+    }
+    Some(axum::response::IntoResponse::into_response((
+        http::StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        axum::Json(
+            json!({"error":{"type":"unsupported_media_type","message":"Images proxy supports application/json only; multipart image uploads are not supported."}}),
+        ),
+    )))
+}
+
+async fn handle_codex_passthrough(
+    state: ProxyState,
+    request: axum::extract::Request,
+    canonical_endpoint: &str,
+    parser_config: &super::handler_config::UsageParserConfig,
+) -> Result<axum::response::Response, ProxyError> {
+    if let Some(response) = images_media_type_error(canonical_endpoint, request.headers()) {
+        return Ok(response);
+    }
     let (parts, req_body) = request.into_parts();
     let method = parts.method.clone();
     let uri = parts.uri;
@@ -720,7 +770,7 @@ pub async fn handle_chat_completions(
 
     let mut ctx =
         RequestContext::new(&state, &body, &headers, AppType::Codex, "Codex", "codex").await?;
-    let endpoint = endpoint_with_query(&uri, "/chat/completions");
+    let endpoint = endpoint_with_query(&uri, canonical_endpoint);
 
     let is_stream = body
         .get("stream")
@@ -755,14 +805,7 @@ pub async fn handle_chat_completions(
     ctx.provider = result.provider;
     let response = result.response;
 
-    process_response(
-        response,
-        &ctx,
-        &state,
-        &OPENAI_PARSER_CONFIG,
-        connection_guard,
-    )
-    .await
+    process_response(response, &ctx, &state, parser_config, connection_guard).await
 }
 
 /// Record an auto-detected Codex wire protocol in both the in-process cache and
@@ -1374,9 +1417,7 @@ async fn handle_responses_for_app(
     // function tools, so the upstream returns flat function-call names. Restore
     // them to `{name, namespace}` so the Codex client matches them against its
     // namespaced tool registry.
-    if super::providers::provider_needs_responses_namespace_flatten(&ctx.provider)
-        && !namespace_restore_map.is_empty()
-    {
+    if result.xai_native_responses {
         return handle_codex_responses_namespace_restore(
             response,
             &ctx,
@@ -1642,9 +1683,7 @@ async fn handle_responses_compact_for_app(
         Some(CodexUpstreamProtocol::Native) | None => {}
     }
 
-    if super::providers::provider_needs_responses_namespace_flatten(&ctx.provider)
-        && !namespace_restore_map.is_empty()
-    {
+    if result.xai_native_responses {
         return handle_codex_responses_namespace_restore(
             response,
             &ctx,
@@ -1700,7 +1739,7 @@ async fn handle_codex_responses_namespace_restore(
         }
 
         let restore_stream =
-            transform_codex_responses_namespace::create_namespace_restore_sse_stream(
+            super::providers::transform_codex_responses_xai_sanitize::create_xai_native_responses_sse_stream(
                 response.bytes_stream(),
                 restore_map,
             );
@@ -1743,6 +1782,7 @@ async fn handle_codex_responses_namespace_restore(
                 &mut value,
                 &restore_map,
             );
+            super::providers::transform_codex_responses_xai_sanitize::normalize_xai_function_call_integer_arguments(&mut value);
             if let Some(usage) =
                 TokenUsage::from_codex_response_auto(&value).filter(TokenUsage::has_billable_tokens)
             {
@@ -3305,6 +3345,29 @@ async fn log_usage(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn images_reject_multipart_before_forwarding() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            http::header::CONTENT_TYPE,
+            http::HeaderValue::from_static("multipart/form-data; boundary=test"),
+        );
+        for endpoint in ["/images/edits", "/images/generations"] {
+            assert_eq!(
+                images_media_type_error(endpoint, &headers)
+                    .unwrap()
+                    .status(),
+                http::StatusCode::UNSUPPORTED_MEDIA_TYPE
+            );
+        }
+        assert!(images_media_type_error("/chat/completions", &headers).is_none());
+        headers.insert(
+            http::header::CONTENT_TYPE,
+            http::HeaderValue::from_static("application/json; charset=utf-8"),
+        );
+        assert!(images_media_type_error("/images/edits", &headers).is_none());
+    }
+
     use super::{
         body_looks_like_sse, chat_sse_to_response_value, classify_body_for_diagnostics,
         codex_auto_fallback_matches_provider, codex_provider_detection_fingerprint,

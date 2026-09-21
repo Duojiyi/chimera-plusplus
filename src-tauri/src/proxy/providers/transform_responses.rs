@@ -15,6 +15,8 @@ use super::reasoning_bridge::{
     anthropic_block_from_openai_reasoning_item, openai_reasoning_item_from_anthropic_block,
 };
 
+pub(crate) const RESPONSES_MIN_MAX_OUTPUT_TOKENS: u64 = 16;
+
 pub(crate) const TOOL_RESULT_ERROR_MARKER: &str = "[cc-switch:tool-result-error]";
 
 fn anthropic_image_to_responses_part(block: &Value) -> Option<Value> {
@@ -214,9 +216,13 @@ pub fn anthropic_to_responses(
         result["input"] = json!(input);
     }
 
-    // max_tokens → max_output_tokens (Responses API uses max_output_tokens for all models)
     if let Some(v) = body.get("max_tokens") {
-        result["max_output_tokens"] = v.clone();
+        result["max_output_tokens"] = match v.as_u64() {
+            Some(n) if (1..RESPONSES_MIN_MAX_OUTPUT_TOKENS).contains(&n) => {
+                json!(RESPONSES_MIN_MAX_OUTPUT_TOKENS)
+            }
+            _ => v.clone(),
+        };
     }
 
     // 直接透传的参数
@@ -247,14 +253,20 @@ pub fn anthropic_to_responses(
             .iter()
             .filter(|t| t.get("type").and_then(|v| v.as_str()) != Some("BatchTool"))
             .map(|t| {
-                json!({
+                let mut tool = json!({
                     "type": "function",
                     "name": t.get("name").and_then(|n| n.as_str()).unwrap_or(""),
-                    "description": t.get("description"),
                     "parameters": super::transform::clean_schema(
                         t.get("input_schema").cloned().unwrap_or(json!({}))
                     )
-                })
+                });
+                if let Some(description) = t
+                    .get("description")
+                    .filter(|description| !description.is_null())
+                {
+                    tool["description"] = description.clone();
+                }
+                tool
             })
             .collect();
 
@@ -265,6 +277,13 @@ pub fn anthropic_to_responses(
 
     if let Some(v) = body.get("tool_choice") {
         result["tool_choice"] = map_tool_choice_to_responses(v);
+        if is_codex_oauth {
+            if let Some(disable_parallel) =
+                v.get("disable_parallel_tool_use").and_then(Value::as_bool)
+            {
+                result["parallel_tool_calls"] = json!(!disable_parallel);
+            }
+        }
     }
 
     // Inject prompt_cache_key for improved cache routing on OpenAI-compatible endpoints
@@ -321,7 +340,7 @@ pub fn anthropic_to_responses(
             obj.entry("instructions".to_string()).or_insert(json!(""));
             obj.entry("tools".to_string()).or_insert(json!([]));
             obj.entry("parallel_tool_calls".to_string())
-                .or_insert(json!(false));
+                .or_insert(json!(true));
 
             // —— 强制覆盖 stream = true ——
             // 即便客户端误传 stream:false 也要覆盖，因为 codex-rs 永远 true，
@@ -858,6 +877,24 @@ pub fn responses_to_anthropic(body: Value) -> Result<Value, ProxyError> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn responses_tools_omit_absent_and_null_descriptions() {
+        let result = anthropic_to_responses(
+            json!({"model":"gpt-4.1","messages":[],"tools":[
+                {"name":"absent","input_schema":{}},
+                {"name":"null","description":null,"input_schema":{}},
+                {"name":"empty","description":"","input_schema":{}}
+            ]}),
+            None,
+            false,
+            false,
+        )
+        .unwrap();
+        assert!(result["tools"][0].get("description").is_none());
+        assert!(result["tools"][1].get("description").is_none());
+        assert_eq!(result["tools"][2]["description"], "");
+    }
+
     use super::*;
 
     #[test]
@@ -1721,6 +1758,32 @@ mod tests {
     }
 
     #[test]
+    fn test_responses_output_config_xhigh_sets_reasoning_xhigh() {
+        let input = json!({
+            "model": "gpt-5.4",
+            "max_tokens": 1024,
+            "output_config": {"effort": "xhigh"},
+            "messages": [{"role": "user", "content": "Hello"}]
+        });
+
+        let result = anthropic_to_responses(input, None, false, false).unwrap();
+        assert_eq!(result["reasoning"]["effort"], "xhigh");
+    }
+
+    #[test]
+    fn test_responses_grok_4_6_reasoning_effort_not_dropped() {
+        let input = json!({
+            "model": "grok-4.6-build",
+            "max_tokens": 1024,
+            "output_config": {"effort": "xhigh"},
+            "messages": [{"role": "user", "content": "Hello"}]
+        });
+
+        let result = anthropic_to_responses(input, None, false, false).unwrap();
+        assert_eq!(result["reasoning"]["effort"], "xhigh");
+    }
+
+    #[test]
     fn test_responses_output_config_takes_priority_over_thinking() {
         let input = json!({
             "model": "gpt-5.4",
@@ -1806,6 +1869,10 @@ mod tests {
         let input = json!({
             "model": "gpt-5-codex",
             "max_tokens": 1024,
+            "tool_choice": {
+                "type": "auto",
+                "disable_parallel_tool_use": false
+            },
             "messages": [{"role": "user", "content": "Hello"}]
         });
 
@@ -1916,6 +1983,39 @@ mod tests {
         assert_eq!(result["max_output_tokens"], json!(1024));
     }
 
+    #[test]
+    fn test_anthropic_to_responses_clamps_sub_floor_max_tokens() {
+        for budget in [1u64, 8, 15] {
+            let input = json!({
+                "model": "claude-haiku-4-5",
+                "max_tokens": budget,
+                "messages": [{"role": "user", "content": "ping"}]
+            });
+            let result = anthropic_to_responses(input, None, false, false).unwrap();
+            assert_eq!(result["max_output_tokens"], json!(16));
+        }
+
+        for budget in [16u64, 1024] {
+            let input = json!({
+                "model": "claude-haiku-4-5",
+                "max_tokens": budget,
+                "messages": [{"role": "user", "content": "ping"}]
+            });
+            let result = anthropic_to_responses(input, None, false, false).unwrap();
+            assert_eq!(result["max_output_tokens"], json!(budget));
+        }
+
+        for raw in [json!(0), json!("16"), json!(12.5)] {
+            let input = json!({
+                "model": "claude-haiku-4-5",
+                "max_tokens": raw,
+                "messages": [{"role": "user", "content": "ping"}]
+            });
+            let result = anthropic_to_responses(input, None, false, false).unwrap();
+            assert_eq!(result["max_output_tokens"], raw);
+        }
+    }
+
     // ==================== 第二轮：P0 + P1 字段对齐 ====================
 
     #[test]
@@ -1974,10 +2074,53 @@ mod tests {
         assert_eq!(result["tools"], json!([]), "tools 缺失时应兜底为空数组");
         assert_eq!(
             result["parallel_tool_calls"],
-            json!(false),
-            "parallel_tool_calls 应兜底为 false"
+            json!(true),
+            "parallel_tool_calls 应默认允许并行工具调用"
         );
         assert_eq!(result["stream"], json!(true), "stream 应被强制设为 true");
+    }
+
+    #[test]
+    fn test_codex_oauth_maps_anthropic_parallel_tool_choice() {
+        let enabled = anthropic_to_responses(
+            json!({
+                "model": "gpt-5.6-sol",
+                "tools": [{
+                    "name": "read_file",
+                    "input_schema": {"type": "object"}
+                }],
+                "tool_choice": {
+                    "type": "auto",
+                    "disable_parallel_tool_use": false
+                },
+                "messages": [{"role": "user", "content": "Read both files"}]
+            }),
+            None,
+            true,
+            true,
+        )
+        .unwrap();
+        assert_eq!(enabled["parallel_tool_calls"], json!(true));
+
+        let disabled = anthropic_to_responses(
+            json!({
+                "model": "gpt-5.6-sol",
+                "tools": [{
+                    "name": "read_file",
+                    "input_schema": {"type": "object"}
+                }],
+                "tool_choice": {
+                    "type": "auto",
+                    "disable_parallel_tool_use": true
+                },
+                "messages": [{"role": "user", "content": "Read one file"}]
+            }),
+            None,
+            true,
+            true,
+        )
+        .unwrap();
+        assert_eq!(disabled["parallel_tool_calls"], json!(false));
     }
 
     #[test]

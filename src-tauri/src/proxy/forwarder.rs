@@ -73,6 +73,7 @@ pub struct ForwardResult {
     /// mapped to another protocol, which fed Chat streams to the Responses
     /// passthrough and native streams to the Chat converter.
     pub codex_bridge: Option<super::codex_url::CodexUpstreamProtocol>,
+    pub xai_native_responses: bool,
     /// 活跃连接 RAII guard：随响应一起流转到 response_processor / handle_claude_transform，
     /// 最终被 move 进流式 body future（或非流式响应作用域），覆盖整个响应生命周期。
     pub(crate) connection_guard: Option<ActiveConnectionGuard>,
@@ -115,6 +116,7 @@ pub(crate) struct Forwarded {
     pub claude_api_format: Option<String>,
     pub outbound_model: Option<String>,
     pub codex_bridge: Option<super::codex_url::CodexUpstreamProtocol>,
+    pub xai_native_responses: bool,
 }
 
 pub struct ForwardError {
@@ -556,6 +558,7 @@ impl RequestForwarder {
                     claude_api_format,
                     outbound_model,
                     codex_bridge,
+                    xai_native_responses,
                 }) => {
                     // 成功：普通闭合熔断状态异步记录，避免阻塞流式首包返回；
                     // HalfOpen 探测仍同步等待，保证 permit 与熔断状态及时释放。
@@ -606,6 +609,7 @@ impl RequestForwarder {
                         claude_api_format,
                         outbound_model,
                         codex_bridge,
+                        xai_native_responses,
                         connection_guard: None,
                     });
                 }
@@ -661,6 +665,7 @@ impl RequestForwarder {
                                     claude_api_format,
                                     outbound_model,
                                     codex_bridge,
+                                    xai_native_responses,
                                 }) => {
                                     log::info!(
                                         "[{app_type_str}] [Media] Unsupported-image retry succeeded"
@@ -715,6 +720,7 @@ impl RequestForwarder {
                                         claude_api_format,
                                         outbound_model,
                                         codex_bridge,
+                                        xai_native_responses,
                                         connection_guard: None,
                                     });
                                 }
@@ -813,6 +819,7 @@ impl RequestForwarder {
                                         claude_api_format,
                                         outbound_model,
                                         codex_bridge,
+                                        xai_native_responses,
                                     }) => {
                                         log::info!("[{app_type_str}] [RECT-002] 整流重试成功");
                                         self.record_success_result(
@@ -870,6 +877,7 @@ impl RequestForwarder {
                                             claude_api_format,
                                             outbound_model,
                                             codex_bridge,
+                                            xai_native_responses,
                                             connection_guard: None,
                                         });
                                     }
@@ -985,6 +993,7 @@ impl RequestForwarder {
                                     claude_api_format,
                                     outbound_model,
                                     codex_bridge,
+                                    xai_native_responses,
                                 }) => {
                                     log::info!("[{app_type_str}] [RECT-011] budget 整流重试成功");
                                     self.record_success_result(
@@ -1036,6 +1045,7 @@ impl RequestForwarder {
                                         claude_api_format,
                                         outbound_model,
                                         codex_bridge,
+                                        xai_native_responses,
                                         connection_guard: None,
                                     });
                                 }
@@ -1685,6 +1695,17 @@ impl RequestForwarder {
             mapped_body
         };
 
+        let xai_native_responses = matches!(app_type, AppType::Codex | AppType::GrokBuild)
+            && !codex_responses_to_chat && !codex_responses_to_anthropic
+            && super::providers::transform_codex_responses_xai_sanitize::is_xai_native_responses_url(&url);
+
+        if xai_native_responses {
+            if let Some(model) = super::providers::codex_provider_upstream_model(provider) {
+                let allowed = super::providers::transform_codex_responses_xai_sanitize::collect_xai_catalog_model_ids(&provider.settings_config);
+                super::providers::transform_codex_responses_xai_sanitize::rewrite_xai_unknown_request_model(&mut request_body, &model, &allowed);
+            }
+        }
+
         // Native Responses passthrough to a strict third-party gateway (xAI):
         // flatten Codex's private `namespace`/plugin tool declarations into
         // top-level function tools so the upstream's strict serde parser does
@@ -1692,10 +1713,7 @@ impl RequestForwarder {
         // above already unwrap namespaces, so this only fires on the native
         // passthrough. The response handler restores the flat names using a map
         // re-derived from the same request tools.
-        if matches!(app_type, AppType::Codex | AppType::GrokBuild)
-            && !codex_responses_to_chat
-            && !codex_responses_to_anthropic
-            && super::providers::provider_needs_responses_namespace_flatten(provider)
+        if xai_native_responses
             && super::providers::transform_codex_responses_namespace::flatten_request_namespaces(
                 &mut request_body,
             )?
@@ -1713,10 +1731,7 @@ impl RequestForwarder {
         // xAI OAuth path, so the prompt-cache prefix stays stable and no other
         // provider is affected. Runs after the flatten above so lifted
         // `namespace` tools survive the tool-type whitelist.
-        if matches!(app_type, AppType::Codex | AppType::GrokBuild)
-            && !codex_responses_to_chat
-            && !codex_responses_to_anthropic
-            && super::providers::provider_needs_responses_namespace_flatten(provider)
+        if xai_native_responses
             && super::providers::transform_codex_responses_xai_sanitize::sanitize_xai_responses_request(
                 &mut request_body,
             )
@@ -1727,7 +1742,19 @@ impl RequestForwarder {
             );
         }
 
-        if matches!(app_type, AppType::Codex | AppType::GrokBuild) {
+        if codex_responses_to_chat
+            && super::providers::transform_codex_chat_moonshot_schema::upstream_requires_ref_sibling_all_of(&base_url)
+        {
+            super::providers::transform_codex_chat_moonshot_schema::wrap_ref_siblings_in_chat_tools(&mut request_body);
+        }
+
+        if matches!(app_type, AppType::Codex | AppType::GrokBuild)
+            && !endpoint
+                .split('?')
+                .next()
+                .unwrap_or(endpoint)
+                .starts_with("/images/")
+        {
             self.apply_media_prevention(&mut request_body, provider);
         }
 
@@ -2493,6 +2520,7 @@ impl RequestForwarder {
                 claude_api_format: resolved_claude_api_format,
                 outbound_model,
                 codex_bridge: codex_protocol,
+                xai_native_responses,
             })
         } else {
             let status_code = status.as_u16();

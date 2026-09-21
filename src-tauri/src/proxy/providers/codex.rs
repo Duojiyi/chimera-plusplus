@@ -472,6 +472,11 @@ pub fn should_convert_codex_responses_to_anthropic_for_model(
 /// managed xAI (Grok) OAuth provider — the first strict gateway cc-switch hit.
 pub fn provider_needs_responses_namespace_flatten(provider: &Provider) -> bool {
     provider.is_xai_oauth()
+        || CodexAdapter
+            .extract_base_url(provider)
+            .ok()
+            .and_then(|base| url::Url::parse(&base).ok())
+            .is_some_and(|url| url.host_str() == Some("api.x.ai"))
 }
 
 /// The single built-in official Codex provider.  Unlike managed Codex OAuth

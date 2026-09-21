@@ -34,19 +34,24 @@ function catalogModel(presetName: string, modelId: string) {
 
 describe("Codex preset pre-filled reasoning levels", () => {
   // 每条期望值都对应官方文档证据（见预设文件内注释）；改动任一侧前先核对来源
-  const EXPECTED: Array<[string, string, string[]]> = [
+  const EXPECTED: Array<[string, string, string[], string?]> = [
     // OpenAI-compatible Chat gateways expose thinking as a switch unless the
     // provider explicitly documents a real effort enum.
-    ["Kimi", "kimi-k2.7-code", ["none", "high"]],
-    ["Kimi", "kimi-k3", ["none", "high"]],
-    ["Kimi For Coding", "kimi-for-coding", ["none", "high"]],
+    ["Kimi", "kimi-k2.7-code", ["high"]],
+    ["Kimi", "kimi-k3", ["low", "high", "max"]],
+    ["Kimi For Coding", "kimi-for-coding", ["low", "high", "max"], "high"],
+    ["Kimi For Coding", "kimi-for-coding-highspeed", ["high"]],
+    ["Kimi For Coding", "k3", ["low", "high", "max"], "high"],
+    ["Kimi For Coding", "k3-256k", ["low", "high", "max"], "high"],
     ["StepFun", "step-3.7-flash", ["none", "high"]],
     ["StepFun", "step-3.5-flash-2603", ["low", "high"]],
     ["StepFun", "step-3.5-flash", ["none", "high"]],
     ["StepFun en", "step-3.7-flash", ["none", "high"]],
     ["StepFun en", "step-3.5-flash-2603", ["low", "high"]],
     ["StepFun en", "step-3.5-flash", ["none", "high"]],
-    ["Bailian", "qwen3-coder-plus", ["none", "high"]],
+    ["Bailian", "qwen3.8-max", ["low", "medium", "xhigh"], "xhigh"],
+    ["Bailian", "qwen3.8-2.4t-a95b", ["low", "medium", "xhigh"], "xhigh"],
+    ["Bailian", "qwen3.8-27b", ["low", "medium", "xhigh"], "xhigh"],
     ["ModelScope", "ZhipuAI/GLM-5.1", ["none", "high"]],
     // 火山官方 Codex 接入文档四份一致：low/medium/high
     ["火山Agentplan", "ark-code-latest", ["low", "medium", "high"]],
@@ -67,7 +72,7 @@ describe("Codex preset pre-filled reasoning levels", () => {
     ["xAI (Grok) OAuth", "grok-4.5", ["low", "medium", "high"]],
     // DeepSeek 直连照抄官方 catalog 镜像（Jason 2026-08-15 拍板：表单可见性
     // 优先，接受快照过时风险——官方目录变更时须同步）
-    ["DeepSeek", "deepseek-v4-flash", ["low", "high", "max"]],
+    ["DeepSeek", "deepseek-flash", ["low", "high", "max"]],
     ["DeepSeek", "deepseek-v4-pro", ["low", "high", "max"]],
     // MiniMax/MiMo 官方 catalog=none/high（与模板默认一致，声明只为表单可见）
     ["MiniMax", "MiniMax-M3", ["none", "high"]],
@@ -84,12 +89,10 @@ describe("Codex preset pre-filled reasoning levels", () => {
 
   it.each(EXPECTED)(
     "%s / %s declares the vendor-documented levels",
-    (presetName, modelId, levels) => {
+    (presetName, modelId, levels, defaultLevel) => {
       const model = catalogModel(presetName, modelId);
       expect(model.reasoningLevels).toEqual(levels);
-      // 默认档一律不显式声明：后端 fallback（模板默认 high ∈ 声明子集时保留）
-      // 在上述每一家都自然落到正确的 high
-      expect(model.defaultReasoningLevel).toBeUndefined();
+      expect(model.defaultReasoningLevel).toBe(defaultLevel);
     },
   );
 

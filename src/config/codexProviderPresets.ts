@@ -142,31 +142,26 @@ export const codexProviderPresets: CodexProviderPreset[] = [
     config: generateThirdPartyConfig(
       "kimi",
       "https://api.moonshot.cn/v1",
-      "kimi-k2.7-code",
+      "kimi-k3",
     ),
     endpointCandidates: ["https://api.moonshot.cn/v1"],
-    apiFormat: "openai_chat",
+    apiFormat: "openai_responses",
     modelCatalog: modelCatalog([
-      {
-        model: "kimi-k2.7-code",
-        displayName: "Kimi K2.7 Code",
-        contextWindow: 262144,
-        reasoningLevels: ["none", "high"],
-      },
       {
         model: "kimi-k3",
         displayName: "Kimi K3",
         contextWindow: 1048576,
-        reasoningLevels: ["none", "high"],
+        supportsParallelToolCalls: true,
+        reasoningLevels: ["low", "high", "max"],
+      },
+      {
+        model: "kimi-k2.7-code",
+        displayName: "Kimi K2.7 Code",
+        contextWindow: 262144,
+        supportsParallelToolCalls: true,
+        reasoningLevels: ["high"],
       },
     ]),
-    codexChatReasoning: {
-      supportsThinking: true,
-      supportsEffort: false,
-      thinkingParam: "thinking",
-      effortParam: "none",
-      outputFormat: "reasoning_content",
-    },
     category: "cn_official",
     icon: "kimi",
     iconColor: "#6366F1",
@@ -183,23 +178,41 @@ export const codexProviderPresets: CodexProviderPreset[] = [
       "kimi-for-coding",
     ),
     endpointCandidates: ["https://api.kimi.com/coding/v1"],
-    apiFormat: "openai_chat",
-    promptCacheRouting: "enabled",
+    apiFormat: "openai_responses",
     modelCatalog: modelCatalog([
       {
         model: "kimi-for-coding",
-        displayName: "Kimi For Coding",
+        displayName: "Kimi For Coding (K2.8 Preview)",
+        contextWindow: 1048576,
+        supportsParallelToolCalls: true,
+        inputModalities: ["text", "image"],
+        reasoningLevels: ["low", "high", "max"],
+        defaultReasoningLevel: "high",
+      },
+      {
+        model: "kimi-for-coding-highspeed",
+        displayName: "Kimi For Coding HighSpeed",
         contextWindow: 262144,
-        reasoningLevels: ["none", "high"],
+        supportsParallelToolCalls: true,
+        reasoningLevels: ["high"],
+      },
+      {
+        model: "k3",
+        displayName: "Kimi K3",
+        contextWindow: 1048576,
+        supportsParallelToolCalls: true,
+        reasoningLevels: ["low", "high", "max"],
+        defaultReasoningLevel: "high",
+      },
+      {
+        model: "k3-256k",
+        displayName: "Kimi K3 256K",
+        contextWindow: 262144,
+        supportsParallelToolCalls: true,
+        reasoningLevels: ["low", "high", "max"],
+        defaultReasoningLevel: "high",
       },
     ]),
-    codexChatReasoning: {
-      supportsThinking: true,
-      supportsEffort: false,
-      thinkingParam: "thinking",
-      effortParam: "none",
-      outputFormat: "reasoning_content",
-    },
     category: "cn_official",
     icon: "kimi",
     iconColor: "#6366F1",
@@ -979,29 +992,22 @@ requires_openai_auth = false`,
     config: generateThirdPartyConfig(
       "deepseek",
       "https://api.deepseek.com",
-      "deepseek-v4-flash",
+      "deepseek-flash",
     ),
     endpointCandidates: ["https://api.deepseek.com"],
-    // DeepSeek 官方 Codex 文档（api-docs.deepseek.com → agent_integrations/codex）：
-    // deepseek-v4-flash 原生 Responses（wire_api=responses 对自家 base_url），无需路由接管转换。
-    // 后端按 deepseek.com host 直接镜像官方 models.json（freeform apply_patch +
-    // GPT-5 harness + low/high/max 思考档，需 codex >= 0.144.0），这里只保留行清单与展示名。
-    // 档位照抄官方 catalog（low/high/max 默认 high，2026-08-15 复核 flash/pro
-    // 逐字节一致）：per-row 值会覆盖官方镜像，DeepSeek 官方目录变更时须同步这里
-    // （Jason 2026-08-15 拍板：表单可见性优先于快照过时风险，"未设置"误导性更大）
     apiFormat: "openai_responses",
     modelCatalog: modelCatalog([
       {
-        model: "deepseek-v4-flash",
-        displayName: "DeepSeek V4 Flash",
+        model: "deepseek-flash",
+        displayName: "DeepSeek V4.1 Flash",
+        inputModalities: ["text", "image"],
         contextWindow: 1048576,
         reasoningLevels: ["low", "high", "max"],
       },
-      // 官方预计 2026-08 初开通 pro 的 Codex 集成（官方 models.json 已含该条目），
-      // 在那之前切到 pro 会上游报错
       {
         model: "deepseek-v4-pro",
         displayName: "DeepSeek V4 Pro",
+        inputModalities: ["text"],
         contextWindow: 1048576,
         reasoningLevels: ["low", "high", "max"],
       },
@@ -1112,18 +1118,39 @@ requires_openai_auth = false`,
     config: generateThirdPartyConfig(
       "bailian",
       "https://dashscope.aliyuncs.com/compatible-mode/v1",
-      "qwen3-coder-plus",
+      "qwen3.8-max",
+    ).replace(
+      'model_reasoning_effort = "high"',
+      'model_reasoning_effort = "xhigh"',
     ),
     endpointCandidates: ["https://dashscope.aliyuncs.com/compatible-mode/v1"],
-    // 阿里百炼 DashScope 原生支持 OpenAI Responses API（/compatible-mode/v1/responses，同一 base_url），无需路由接管转换
     apiFormat: "openai_responses",
-    // 无官方 catalog：合成 MiMo 式（shell_command 编辑、不发 freeform apply_patch）
     modelCatalog: modelCatalog([
       {
-        model: "qwen3-coder-plus",
-        displayName: "Qwen3 Coder Plus",
-        contextWindow: 1048576,
-        reasoningLevels: ["none", "high"],
+        model: "qwen3.8-max",
+        displayName: "Qwen3.8 Max",
+        contextWindow: 983616,
+        supportsParallelToolCalls: false,
+        reasoningLevels: ["low", "medium", "xhigh"],
+        defaultReasoningLevel: "xhigh",
+      },
+      {
+        model: "qwen3.8-2.4t-a95b",
+        displayName: "Qwen3.8 2.4T A95B",
+        contextWindow: 983616,
+        inputModalities: ["text"],
+        supportsParallelToolCalls: false,
+        reasoningLevels: ["low", "medium", "xhigh"],
+        defaultReasoningLevel: "xhigh",
+      },
+      {
+        model: "qwen3.8-27b",
+        displayName: "Qwen3.8 27B",
+        contextWindow: 983616,
+        inputModalities: ["text", "image"],
+        supportsParallelToolCalls: false,
+        reasoningLevels: ["low", "medium", "xhigh"],
+        defaultReasoningLevel: "xhigh",
       },
     ]),
     category: "cn_official",
@@ -1313,22 +1340,16 @@ requires_openai_auth = false`,
   },
   {
     name: "MiniMax",
-    websiteUrl: "https://platform.minimaxi.com",
-    apiKeyUrl: "https://platform.minimaxi.com/subscribe/coding-plan",
+    websiteUrl: "https://platform.minimax.cn",
+    apiKeyUrl: "https://platform.minimax.cn/subscribe/token-plan",
     auth: generateThirdPartyAuth(""),
     config: generateThirdPartyConfig(
       "minimax",
-      "https://api.minimaxi.com/v1",
+      "https://api.minimax.cn/v1",
       "MiniMax-M3",
     ),
-    endpointCandidates: ["https://api.minimaxi.com/v1"],
-    // MiniMax 官方 API 参考已列 /v1/responses 为正式端点（CN/intl 双区，POST /v1/responses），原生 Responses，无需路由接管转换
+    endpointCandidates: ["https://api.minimax.cn/v1"],
     apiFormat: "openai_responses",
-    // 官方 Codex catalog（platform.minimaxi.com/docs/token-plan/codex-cli）：
-    // shell_command 编辑、并行工具、文本+图像，不声明 freeform apply_patch。
-    // 档位照抄官方 catalog：none/high（M3 的 effort 是思考开关，minimal/low/medium
-    // 端点接受但与 high 行为完全等价，不给假差异档）。与模板默认一致故 Codex 侧
-    // 零行为变化，显式声明只为表单可见（"未设置"误导性更大，Jason 2026-08-15 拍板）
     modelCatalog: modelCatalog([
       {
         model: "MiniMax-M3",
@@ -1391,21 +1412,22 @@ requires_openai_auth = false`,
   },
   {
     name: "BaiLing",
-    websiteUrl: "https://alipaytbox.yuque.com/sxs0ba/ling/get_started",
-    apiKeyUrl: "https://ling.tbox.cn/open",
+    websiteUrl: "https://developer.ant-ling.com/zh-CN/docs/",
+    apiKeyUrl: "https://chat.ant-ling.com/open",
     auth: generateThirdPartyAuth(""),
     config: generateThirdPartyConfig(
       "bailing",
-      "https://api.tbox.cn/api/llm/v1",
+      "https://api.ant-ling.com/v1",
       "Ling-2.6-1T",
     ),
-    endpointCandidates: ["https://api.tbox.cn/api/llm/v1"],
+    endpointCandidates: ["https://api.ant-ling.com/v1"],
     apiFormat: "openai_chat",
     modelCatalog: modelCatalog([
       {
         model: "Ling-2.6-1T",
         displayName: "Ling-2.6-1T",
         contextWindow: 262144,
+        inputModalities: ["text"],
       },
     ]),
     category: "cn_official",
@@ -1632,8 +1654,16 @@ requires_openai_auth = false`,
         displayName: "Kimi K2.7 Code",
         contextWindow: 262144,
       },
-      { model: "deepseek-v4-pro", displayName: "DeepSeek V4 Pro" },
-      { model: "deepseek-v4-flash", displayName: "DeepSeek V4 Flash" },
+      {
+        model: "deepseek-v4-pro",
+        displayName: "DeepSeek V4 Pro",
+        inputModalities: ["text"],
+      },
+      {
+        model: "deepseek-v4-flash",
+        displayName: "DeepSeek V4 Flash",
+        inputModalities: ["text"],
+      },
       {
         model: "mimo-v2.5-pro",
         displayName: "MiMo V2.5 Pro",
