@@ -261,6 +261,14 @@ pub fn responses_to_chat_completions_with_reasoning(
     body: Value,
     reasoning_config: Option<&CodexChatReasoningConfig>,
 ) -> Result<Value, ProxyError> {
+    responses_to_chat_completions_with_reasoning_for_upstream(body, reasoning_config, "")
+}
+
+pub fn responses_to_chat_completions_with_reasoning_for_upstream(
+    body: Value,
+    reasoning_config: Option<&CodexChatReasoningConfig>,
+    upstream_url: &str,
+) -> Result<Value, ProxyError> {
     let mut result = json!({});
     let tool_context = build_codex_tool_context_from_request(&body);
 
@@ -282,7 +290,11 @@ pub fn responses_to_chat_completions_with_reasoning(
     if let Some(input) = body.get("input") {
         append_responses_input_as_chat_messages(input, &mut messages, &tool_context)?;
     }
-    let messages = collapse_system_messages_to_head(messages);
+    let messages = if is_minimax_endpoint(upstream_url) {
+        collapse_system_messages_to_head(messages)
+    } else {
+        messages
+    };
     result["messages"] = json!(messages);
 
     let model = body.get("model").and_then(|v| v.as_str()).unwrap_or("");
@@ -344,6 +356,16 @@ pub fn responses_to_chat_completions_with_reasoning(
     super::transform::inject_openai_stream_include_usage(&mut result);
 
     Ok(result)
+}
+
+fn is_minimax_endpoint(upstream_url: &str) -> bool {
+    let Ok(url) = url::Url::parse(upstream_url.trim()) else {
+        return false;
+    };
+    matches!(
+        url.host_str(),
+        Some("api.minimax.cn" | "api.minimax.io" | "api.minimaxi.com")
+    )
 }
 
 fn kimi_coding_model(model: &str) -> bool {
@@ -527,7 +549,6 @@ fn map_reasoning_effort(effort: &str, mode: Option<&str>) -> Option<&'static str
 /// MiniMax 严格要求 messages 中只能首条出现 `role=system`，
 /// 否则返回 `invalid params, chat content has invalid message role: system (2013)`。
 /// 把所有 system 消息合并到首位，避免中间 system（如 Codex 的 `developer` 指令）触发该约束；
-/// 该重排对 OpenAI / DeepSeek 等宽松兼容层也是无损的。
 fn collapse_system_messages_to_head(messages: Vec<Value>) -> Vec<Value> {
     let mut system_chunks: Vec<String> = Vec::new();
     let mut rest: Vec<Value> = Vec::with_capacity(messages.len());
@@ -2960,7 +2981,7 @@ mod tests {
     #[test]
     fn responses_request_to_chat_merges_mid_stream_system_into_head() {
         let input = json!({
-            "model": "MiniMax-M2.7",
+            "model": "custom-model-alias",
             "instructions": "You are Codex.",
             "input": [
                 {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "Permissions block"}]},
@@ -2972,25 +2993,85 @@ mod tests {
             ]
         });
 
-        let result = responses_to_chat_completions(input).unwrap();
-        let messages = result["messages"].as_array().unwrap();
+        for endpoint in [
+            "https://api.minimax.io/v1/chat/completions",
+            "https://api.minimax.cn/v1/chat/completions",
+            "https://api.minimaxi.com/v1/chat/completions",
+        ] {
+            let result = responses_to_chat_completions_with_reasoning_for_upstream(
+                input.clone(),
+                None,
+                endpoint,
+            )
+            .unwrap();
+            let messages = result["messages"].as_array().unwrap();
 
-        for (idx, msg) in messages.iter().enumerate() {
-            let role = msg.get("role").and_then(|v| v.as_str()).unwrap();
-            if idx == 0 {
-                assert_eq!(role, "system", "first message must be system");
-            } else {
-                assert_ne!(
-                    role, "system",
-                    "no system role allowed past index 0 (got at {idx})"
-                );
+            for (idx, msg) in messages.iter().enumerate() {
+                let role = msg.get("role").and_then(|v| v.as_str()).unwrap();
+                if idx == 0 {
+                    assert_eq!(role, "system", "first message must be system");
+                } else {
+                    assert_ne!(
+                        role, "system",
+                        "no system role allowed past index 0 (got at {idx})"
+                    );
+                }
+            }
+
+            let head_content = messages[0]["content"].as_str().unwrap();
+            assert!(head_content.contains("You are Codex."));
+            assert!(head_content.contains("Permissions block"));
+            assert!(head_content.contains("Collaboration Mode: Default"));
+            assert_eq!(messages.len(), 5);
+            assert_eq!(messages[1]["content"], "AGENTS.md");
+        }
+    }
+
+    #[test]
+    fn responses_request_to_chat_preserves_intermediate_system_order() {
+        for model in ["gpt-5.4", "MiniMax-M2.7"] {
+            let input = json!({
+                "model": model,
+                "instructions": "S0",
+                "input": [
+                    {"role": "user", "content": "U1"},
+                    {"role": "developer", "content": "D1"},
+                    {"role": "assistant", "content": "A1"},
+                    {"role": "system", "content": "S1"},
+                    {"role": "user", "content": "U2"}
+                ]
+            });
+            let expected = json!([
+                {"role": "system", "content": "S0"},
+                {"role": "user", "content": "U1"},
+                {"role": "system", "content": "D1"},
+                {"role": "assistant", "content": "A1"},
+                {"role": "system", "content": "S1"},
+                {"role": "user", "content": "U2"}
+            ]);
+            assert_eq!(
+                responses_to_chat_completions(input.clone()).unwrap()["messages"],
+                expected
+            );
+            for endpoint in [
+                "https://api.openai.com/v1/chat/completions",
+                "https://api.deepseek.com/chat/completions",
+                "https://openrouter.ai/api/v1/chat/completions",
+                "https://api.siliconflow.cn/v1/chat/completions",
+                "https://api.minimax.io.example.com/v1",
+                "https://api.minimax.io@other.example/v1",
+                "https://other.example/minimax.io?model=MiniMax-M2.7",
+                "not a URL",
+            ] {
+                let result = responses_to_chat_completions_with_reasoning_for_upstream(
+                    input.clone(),
+                    None,
+                    endpoint,
+                )
+                .unwrap();
+                assert_eq!(result["messages"], expected, "{model} at {endpoint}");
             }
         }
-
-        let head_content = messages[0]["content"].as_str().unwrap();
-        assert!(head_content.contains("You are Codex."));
-        assert!(head_content.contains("Permissions block"));
-        assert!(head_content.contains("Collaboration Mode: Default"));
     }
 
     #[test]

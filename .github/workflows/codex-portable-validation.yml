@@ -2,11 +2,8 @@ name: Codex Portable Validation
 
 on:
   push:
-    paths:
-      - src-tauri/Cargo.toml
-      - src-tauri/Cargo.lock
-      - src-tauri/src/commands/codex_runtime.rs
-      - .github/workflows/codex-portable-validation.yml
+    branches:
+      - "**"
   workflow_dispatch:
 
 permissions:
@@ -53,10 +50,17 @@ jobs:
         run: |
           $destination = Join-Path $env:RUNNER_TEMP 'codex-real-msix'
           New-Item -ItemType Directory -Path $destination -Force | Out-Null
-          gh release download --repo Wangnov/codex-app-mirror --pattern "OpenAI.Codex_*_${env:PACKAGE_ARCH}__*.Msix" --dir $destination
+          $release = gh api repos/Duojiyi/codex-app-mirror/releases/latest | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Codex release lookup failed' }
+          gh release download $release.tag_name --repo Duojiyi/codex-app-mirror --pattern "OpenAI.Codex_*_${env:PACKAGE_ARCH}__*.Msix" --pattern release-manifest.json --dir $destination
           if ($LASTEXITCODE -ne 0) { throw 'Codex MSIX download failed' }
           $packages = @(Get-ChildItem -LiteralPath $destination -Filter '*.Msix')
           if ($packages.Count -ne 1) { throw 'Expected exactly one current architecture package' }
+          $manifest = Get-Content -LiteralPath (Join-Path $destination 'release-manifest.json') -Raw | ConvertFrom-Json
+          $expectedHash = $manifest.derived.latestChecksums.($packages[0].Name)
+          $actualHash = (Get-FileHash -LiteralPath $packages[0].FullName -Algorithm SHA256).Hash
+          if ($expectedHash -notmatch '^[0-9a-fA-F]{64}$' -or $actualHash -ne $expectedHash) { throw 'Codex package manifest hash mismatch' }
+          "Validated source: Duojiyi/codex-app-mirror $($release.tag_name), $($packages[0].Name), SHA256 $actualHash" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
           "CODEX_REAL_MSIX=$($packages[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Verify Authenticode and real Computer Use module resolution
         shell: pwsh

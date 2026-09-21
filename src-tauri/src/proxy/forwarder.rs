@@ -1607,9 +1607,10 @@ impl RequestForwarder {
             );
             let reasoning_config =
                 super::providers::resolve_codex_chat_reasoning_config(provider, &mapped_body);
-            let mut chat_body = super::providers::transform_codex_chat::responses_to_chat_completions_with_reasoning(
+            let mut chat_body = super::providers::transform_codex_chat::responses_to_chat_completions_with_reasoning_for_upstream(
                 mapped_body,
                 reasoning_config.as_ref(),
+                &url,
             )?;
             super::providers::inject_codex_chat_prompt_cache_key(
                 provider,

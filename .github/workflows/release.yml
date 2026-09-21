@@ -87,6 +87,25 @@ jobs:
               exit 1
             fi
           done
+          portable_runs_json=$(gh api "repos/$REPOSITORY/actions/workflows/codex-portable-validation.yml/runs?head_sha=$tag_commit&event=push&per_page=100")
+          portable_run_id=$(jq -r --arg sha "$tag_commit" '
+            .workflow_runs[]
+            | select(.head_sha == $sha and .head_branch == "main" and .status == "completed" and .conclusion == "success")
+            | .id
+          ' <<<"$portable_runs_json" | head -n 1)
+          if [[ -z "$portable_run_id" || "$portable_run_id" == "null" ]]; then
+            echo "No successful native portable validation on main found for $tag_commit" >&2
+            exit 1
+          fi
+          portable_jobs_json=$(gh api "repos/$REPOSITORY/actions/runs/$portable_run_id/jobs?per_page=100")
+          for runner in windows-2022 windows-11-arm; do
+            if ! jq -e --arg name "Native portable launcher ($runner)" \
+              '.jobs[] | select(.name == $name and .conclusion == "success")' \
+              <<<"$portable_jobs_json" >/dev/null; then
+              echo "Required portable validation did not pass: $runner" >&2
+              exit 1
+            fi
+          done
           echo "Release $RELEASE_TAG is bound to audited commit $tag_commit and successful CI run $ci_run_id"
 
   release:

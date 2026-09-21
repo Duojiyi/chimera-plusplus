@@ -11,6 +11,20 @@ const readWorkflow = (name) =>
 const candidate = readWorkflow("candidate");
 const release = readWorkflow("release");
 const ci = readWorkflow("ci");
+const portable = readWorkflow("codex-portable-validation");
+
+test("release requires same-commit main portable validation on both Windows architectures", () => {
+  assert.match(portable, /push:\s+branches:\s+- "\*\*"/);
+  assert.doesNotMatch(portable, /paths:/);
+  assert.match(portable, /gh api repos\/Duojiyi\/codex-app-mirror\/releases\/latest/);
+  assert.match(portable, /gh release download \$release.tag_name --repo Duojiyi\/codex-app-mirror/);
+  assert.match(portable, /Codex package manifest hash mismatch/);
+  assert.match(release, /codex-portable-validation\.yml\/runs\?head_sha=\$tag_commit&event=push/);
+  assert.match(release, /select\(\.head_sha == \$sha and \.head_branch == "main" and \.status == "completed" and \.conclusion == "success"\)/);
+  assert.match(release, /for runner in windows-2022 windows-11-arm/);
+  assert.match(release, /Native portable launcher \(\$runner\)/);
+  assert.match(release, /Required portable validation did not pass: \$runner" >&2\s+exit 1/);
+});
 
 test("candidate checks fail at the first native command failure", () => {
   const step = candidate.match(
