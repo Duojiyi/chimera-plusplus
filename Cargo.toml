@@ -63,5 +63,5 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 # Pinned MIT engine from Wangnov/Codex-App-Manager. Keeping this as an exact
 # git revision lets Chimera reuse the audited Windows installer without
 # copying a second implementation into this repository.
-codex-win-engine = { git = "https://github.com/Wangnov/Codex-App-Manager.git", rev = "222de90cfce587007056129f567f556b75711086", package = "codex-win-engine" }
-codex-theme-engine = { git = "https://github.com/Wangnov/Codex-App-Manager.git", rev = "222de90cfce587007056129f567f556b75711086", package = "codex-theme-engine" }
+codex-win-engine = { git = "https://github.com/Wangnov/Codex-App-Manager.git", rev = "296721f429e7359ad6618fdc897412fe6fe4c29b", package = "codex-win-engine" }
+codex-theme-engine = { git = "https://github.com/Wangnov/Codex-App-Manager.git", rev = "296721f429e7359ad6618fdc897412fe6fe4c29b", package = "codex-theme-engine" }
