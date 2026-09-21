@@ -16,7 +16,6 @@ import { Input } from "@/components/ui/input";
 import JsonEditor from "@/components/JsonEditor";
 import { useDarkMode } from "@/hooks/useDarkMode";
 import { providerSchema, type ProviderFormData } from "@/lib/schemas/provider";
-import { detectCodexApiFormats } from "@/lib/api/model-fetch";
 import {
   buildLocalProxyRequestOverrides,
   formatRequestOverrideObject,
@@ -41,6 +40,7 @@ import {
 } from "@/config/grokBuildProviderPresets";
 import {
   codexApiFormatFromWireApi,
+  codexApiFormatForModel,
   extractCodexBaseUrl,
   extractCodexModelName,
   extractCodexWireApi,
@@ -375,56 +375,19 @@ export function GrokBuildProviderForm({
       { apiFormat: CodexApiFormat; anthropicAuthField?: ClaudeApiKeyField }
     > = {};
     if (apiFormat === "auto") {
-      try {
-        const detectionModels = Array.from(
-          new Set([upstreamModel.trim(), profile.trim()].filter(Boolean)),
-        );
-        const { detected: detectedFormats } = await detectCodexApiFormats(
-          baseUrl,
-          apiKey,
-          detectionModels,
-          isFullUrl,
-          customUserAgent,
-        );
-        const defaultModel = upstreamModel.trim() || profile.trim();
-        const defaultDetection = detectedFormats[defaultModel];
-        if (!defaultDetection) {
-          throw new Error("默认模型未能识别上游协议");
-        }
-        detectedModelFormats = detectedFormats;
-        resolvedApiFormat = defaultDetection.apiFormat;
-        resolvedApiBackend = grokApiBackendFromApiFormat(
-          defaultDetection.apiFormat,
-        );
-        setApiFormat(defaultDetection.apiFormat);
-        setApiBackend(resolvedApiBackend);
-        if (defaultDetection.anthropicAuthField) {
-          resolvedAnthropicAuthField = defaultDetection.anthropicAuthField;
-          setAnthropicAuthField(defaultDetection.anthropicAuthField);
-        }
-        toast.success(
-          t("codexConfig.upstreamFormatDetected", {
-            defaultValue:
-              "已自动识别 {{count}} 个模型的上游协议；默认模型协议：{{format}}",
-            count: Object.keys(detectedFormats).length,
-            format:
-              defaultDetection.apiFormat === "openai_responses"
-                ? "Responses"
-                : defaultDetection.apiFormat === "openai_chat"
-                  ? "Chat Completions"
-                  : "Anthropic Messages",
-          }),
-        );
-      } catch (error) {
-        console.warn("[GROKBUILD_API_FORMAT_AUTO_DETECT_FAILED]", error);
-        toast.error(
-          t("codexConfig.upstreamFormatDetectFailed", {
-            defaultValue:
-              "无法自动识别上游 API 协议。请确认端点和 API Key，或在高级设置中手动选择协议。",
-          }),
-        );
-        return;
-      }
+      const modelNames = Array.from(
+        new Set([upstreamModel.trim(), profile.trim()].filter(Boolean)),
+      );
+      detectedModelFormats = Object.fromEntries(
+        modelNames.map((model) => [
+          model,
+          { apiFormat: codexApiFormatForModel(model) },
+        ]),
+      );
+      resolvedApiFormat = codexApiFormatForModel(upstreamModel || profile);
+      resolvedApiBackend = grokApiBackendFromApiFormat(resolvedApiFormat);
+      setApiFormat(resolvedApiFormat);
+      setApiBackend(resolvedApiBackend);
     }
 
     const finalConfig = updateGrokBuildConfig(rawConfig, {

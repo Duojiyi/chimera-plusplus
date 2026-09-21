@@ -31,9 +31,7 @@ describe("Codex model catalog feedback", () => {
   });
 
   it("does not use another catalog model's protocol as the selected default model fallback", () => {
-    expect(appSource).toContain(
-      "const defaultDetection = detectedFormats[draft.model.trim()];",
-    );
+    expect(appSource).toContain("codexApiFormatForModel(draft.model)");
     expect(appSource).not.toContain(
       "detectedFormats[draft.model.trim()] ??\n              Object.values(detectedFormats)[0]",
     );
@@ -48,7 +46,7 @@ describe("Codex model catalog feedback", () => {
     );
     expect(fetchHandler).toContain("fetchModelsForConfig(");
     expect(fetchHandler).not.toContain("detectCodexApiFormats(");
-    expect(appSource).toContain("自动模式保存时会探测协议，可能产生调用费用");
+    expect(appSource).toContain("不会在保存时调用上游");
     expect(appSource).toContain("测试地址连通性");
     expect(appSource).toContain("未验证 Key、模型或推理能力");
   });

@@ -63,7 +63,6 @@ import { WindowControls } from "@/components/WindowControls";
 import { useUpdate } from "@/contexts/UpdateContext";
 import type { Settings } from "@/types";
 import {
-  detectCodexApiFormats,
   fetchModelsForConfig,
   type DetectedCodexApiFormat,
   type FetchedModel,
@@ -80,6 +79,7 @@ import {
   setCodexModelName,
   setCodexRemoteCompaction,
   setCodexWireApi,
+  codexApiFormatForModel,
 } from "@/utils/providerConfigUtils";
 import { subscriptionApi } from "@/lib/api/subscription";
 import { useQuery } from "@tanstack/react-query";
@@ -92,7 +92,6 @@ import {
   codexProbeModels,
   describeCodexDetectionFailure,
   extractCodexMappingRows,
-  findCodexCatalogModelsWithoutProtocol,
   loadOperationRecords,
   persistedCodexModelApiFormats,
   pickDefaultFetchedModel,
@@ -1232,7 +1231,6 @@ export default function ChimeraApp({
         }
       }
       const endpointIdentity = codexEndpointIdentity(draft);
-      const protocolIdentity = codexProtocolIdentity(draft);
       let fetchedForSave =
         models !== null && modelFetchIdentity === endpointIdentity
           ? models
@@ -1282,8 +1280,6 @@ export default function ChimeraApp({
       // generated catalog still carries every fetched model; those follow the
       // provider protocol and the router's lazy probe at request time.
       const probeModels = codexProbeModels(draft.model, draft.catalogModels);
-      const probeRows = probeModels.map((model) => ({ model }));
-      const modelRoutes = draft.original?.meta?.codexModelRoutes;
       let detectedFormats: Record<string, DetectedCodexApiFormat> = {};
       const catalogModels = buildCodexModelCatalog(
         draft.model,
@@ -1291,91 +1287,15 @@ export default function ChimeraApp({
         fetchedForSave,
       );
       if (draft.apiFormat === "auto") {
-        const cached =
-          apiFormatDetection?.identity === protocolIdentity
-            ? apiFormatDetection
-            : null;
-        detectedFormats = { ...cached?.formats };
-        let failures: Record<string, string> = { ...cached?.failures };
-        // Results persisted with the provider or produced by an earlier probe
-        // are reused; only models still unknown for this identity are probed.
-        const pendingModels = findCodexCatalogModelsWithoutProtocol(
-          probeRows,
-          detectedFormats,
-          modelRoutes,
+        detectedFormats = Object.fromEntries(
+          probeModels.map((model) => [
+            model,
+            { apiFormat: codexApiFormatForModel(model) },
+          ]),
         );
-        if (pendingModels.length > 0) {
-          const seq = ++protocolProbeSeqRef.current;
-          setFetchingModels(true);
-          setApiFormatDetectionError(null);
-          try {
-            const report = await detectCodexApiFormats(
-              draft.baseUrl,
-              draft.apiKey,
-              pendingModels,
-              draft.isFullUrl,
-              draft.customUserAgent.trim() || undefined,
-            );
-            if (
-              seq !== protocolProbeSeqRef.current ||
-              editorRef.current !== draft
-            ) {
-              toast.info("线路配置已变化，请重新保存");
-              return;
-            }
-            detectedFormats = { ...detectedFormats, ...report.detected };
-            failures = { ...failures, ...report.failures };
-            for (const model of Object.keys(report.detected)) {
-              delete failures[model];
-            }
-          } catch (error) {
-            if (
-              seq !== protocolProbeSeqRef.current ||
-              editorRef.current !== draft
-            ) {
-              toast.info("线路配置已变化，请重新保存");
-              return;
-            }
-            const reason = String(error);
-            for (const model of pendingModels) failures[model] = reason;
-          } finally {
-            if (seq === protocolProbeSeqRef.current) setFetchingModels(false);
-          }
-          setApiFormatDetection({
-            identity: protocolIdentity,
-            formats: detectedFormats,
-            failures,
-          });
-        }
-        const defaultDetection = detectedFormats[draft.model.trim()];
-        if (!defaultDetection) {
-          setApiFormatDetectionError(
-            "未能确认默认模型的上游协议，不代表模型不可用。请查看各协议的响应详情，或按供应商说明指定协议保存。",
-          );
-          toast.error("尚未确认上游 API 协议", {
-            description:
-              failures[draft.model.trim()] ??
-              "请查看编辑器中的失败原因，或按 Chat / Responses / Anthropic 保存。",
-          });
-          return;
-        }
-        resolvedApiFormat = defaultDetection.apiFormat;
-        resolvedAnthropicAuthField =
-          defaultDetection.anthropicAuthField ?? draft.anthropicAuthField;
+        resolvedApiFormat = codexApiFormatForModel(draft.model);
+        resolvedAnthropicAuthField = draft.anthropicAuthField;
         setApiFormatDetectionError(null);
-        // Mapping rows that stayed undetected no longer block the save: they
-        // follow the default protocol and are listed so the user can fix them.
-        const undetectedMappedModels = findCodexCatalogModelsWithoutProtocol(
-          probeRows,
-          detectedFormats,
-          modelRoutes,
-        );
-        if (undetectedMappedModels.length > 0) {
-          toast.warning(
-            `${undetectedMappedModels.length} 个映射模型未识别协议，将沿用 ${codexApiFormatLabel(resolvedApiFormat)}`,
-            { description: undetectedMappedModels.join("、") },
-          );
-        }
       }
 
       if (editorRef.current !== draft) {
@@ -4519,7 +4439,9 @@ export function ProviderEditor({
                   </option>
                 </select>
                 <small>
-                  自动模式在保存时尝试识别协议。探测依赖上游参数校验，无法确认不代表模型不可用；若上游忽略非法参数，可能生成内容并计费。已知协议时请明确指定，跳过自动探测。
+                  自动模式按模型族选择协议：GPT、o1/o3/o4、Codex 和 ChatGPT 使用
+                  Responses；Claude 使用 Anthropic Messages；其他模型使用 Chat
+                  Completions。显式指定始终优先。
                 </small>
                 {editor.apiFormat === "auto" && detectedDefaultFormat && (
                   <small>
@@ -4762,7 +4684,7 @@ export function ProviderEditor({
       <div className="editor-bottom">
         {editor.apiFormat === "auto" && (
           <p className="editor-probe-notice" role="note">
-            自动模式保存时会探测协议，可能产生调用费用。
+            自动模式按模型名称选择默认协议，不会在保存时调用上游；第三方网关协议不符合模型族时请手动指定。
             <button
               type="button"
               className="link-button"

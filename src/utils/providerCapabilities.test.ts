@@ -176,7 +176,7 @@ describe("providerNeedsRouting", () => {
       ).toBe(false);
     });
 
-    it("apiFormat 与 wire_api 都缺省时需要路由完成兼容性探测", () => {
+    it("apiFormat 与 wire_api 都缺省时保守开启路由", () => {
       expect(providerNeedsRouting("codex", mkProvider({ meta: {} }))).toBe(
         true,
       );

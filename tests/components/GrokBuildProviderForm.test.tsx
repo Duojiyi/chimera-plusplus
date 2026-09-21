@@ -102,14 +102,14 @@ describe("GrokBuildProviderForm", () => {
 
     expect(config.models.default).toBe("grok-4.5");
     expect(submitted.meta.codexModelApiFormats).toEqual({
-      "grok-4.5": "openai_responses",
+      "grok-4.5": "openai_chat",
     });
     expect(config.model["grok-4.5"]).toEqual({
       model: "grok-4.5",
       base_url: "https://relay.example.com/v1",
       name: "Example Relay",
       api_key: "secret-key",
-      api_backend: "responses",
+      api_backend: "chat_completions",
       context_window: 500000,
     });
   });

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   codexApiFormatFromWireApi,
+  codexApiFormatForModel,
   isCodexAnthropicWireApi,
   extractCodexModelName,
   hasCommonConfigSnippet,
@@ -11,6 +12,15 @@ import {
 } from "./providerConfigUtils";
 
 describe("Codex wire API helpers", () => {
+  it("defaults model families without network detection", () => {
+    expect(codexApiFormatForModel("openai/gpt-5")).toBe("openai_responses");
+    expect(codexApiFormatForModel("o3-mini")).toBe("openai_responses");
+    expect(codexApiFormatForModel("anthropic/claude-sonnet-4-6")).toBe(
+      "anthropic",
+    );
+    expect(codexApiFormatForModel("deepseek-chat")).toBe("openai_chat");
+  });
+
   it("recognizes Anthropic Messages aliases", () => {
     expect(isCodexAnthropicWireApi("anthropic")).toBe(true);
     expect(isCodexAnthropicWireApi("anthropic_messages")).toBe(true);

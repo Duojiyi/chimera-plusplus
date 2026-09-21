@@ -194,9 +194,9 @@ export interface ProviderMeta {
   // - "gemini_native": Gemini Native generateContent API 格式，需要格式转换
   apiFormat?:
     "anthropic" | "openai_chat" | "openai_responses" | "gemini_native";
-  // Codex 自动检测意图标记：apiFormat 保存具体结果，此字段保留“自动”选择状态
+  // Codex 自动模式意图标记：apiFormat 保存具体结果，此字段保留“自动”选择状态
   apiFormatAutoDetected?: boolean;
-  // Codex 上游协议按模型保存的自动探测结果；apiFormat 仍作为旧配置/默认回退
+  // Codex 上游协议按模型保存的显式/默认映射；apiFormat 仍作为 provider 回退
   codexModelApiFormats?: Record<string, CodexApiFormat>;
   // Codex 按模型的独立上游路由（v2.5.0）：键为 catalog 模型名
   codexModelRoutes?: Record<string, CodexModelRoute>;

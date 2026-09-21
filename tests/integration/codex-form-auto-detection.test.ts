@@ -21,32 +21,25 @@ const grokBuildFormSource = fs.readFileSync(grokBuildFormPath, "utf8");
 const appSource = fs.readFileSync(appPath, "utf8");
 const codexFormFieldsSource = fs.readFileSync(codexFormFieldsPath, "utf8");
 
-describe("Codex auto protocol detection in provider forms", () => {
-  it("ProviderForm persists model-level protocol detections for auto mode", () => {
-    expect(providerFormSource).toContain("detectCodexApiFormats");
+describe("Codex model-family protocol defaults in provider forms", () => {
+  it("ProviderForm persists model-level protocol defaults for auto mode", () => {
     expect(providerFormSource).toContain("codexModelApiFormats");
   });
 
   it("ProviderForm never uses another model's protocol when the default model was not detected", () => {
-    expect(providerFormSource).toContain(
-      "const defaultDetection = detectedFormats[codexModel.trim()];",
-    );
+    expect(providerFormSource).toContain("codexApiFormatForModel(codexModel)");
     expect(providerFormSource).not.toContain(
       "detectedFormats[codexModel.trim()] ?? Object.values(detectedFormats)[0]",
     );
   });
 
-  it("GrokBuildProviderForm persists model-level protocol detections for auto mode", () => {
-    expect(grokBuildFormSource).toContain("detectCodexApiFormats");
+  it("GrokBuildProviderForm persists model-level protocol defaults for auto mode", () => {
     expect(grokBuildFormSource).toContain("codexModelApiFormats");
   });
 
   it("GrokBuildProviderForm never uses another model's protocol when the default model was not detected", () => {
     expect(grokBuildFormSource).toContain(
-      "const defaultModel = upstreamModel.trim() || profile.trim();",
-    );
-    expect(grokBuildFormSource).toContain(
-      "const defaultDetection = detectedFormats[defaultModel];",
+      "codexApiFormatForModel(upstreamModel || profile)",
     );
     expect(grokBuildFormSource).not.toContain(
       "detectedFormats[upstreamModel.trim()] ??\n          detectedFormats[profile.trim()] ??\n          Object.values(detectedFormats)[0]",
@@ -54,11 +47,8 @@ describe("Codex auto protocol detection in provider forms", () => {
   });
 
   it("ProviderForm rejects saves when any catalog model was not detected", () => {
-    expect(providerFormSource).toContain(
-      "findCodexCatalogModelsWithoutProtocol",
-    );
-    expect(providerFormSource).toContain("undetectedCatalogModels");
-    expect(providerFormSource).toContain("无法确认以下模型的上游协议：");
+    expect(providerFormSource).toContain("Object.fromEntries");
+    expect(providerFormSource).not.toContain("undetectedCatalogModels");
   });
 
   it("ChimeraApp editor probes only the default model and the user's mapping rows", () => {
@@ -67,27 +57,20 @@ describe("Codex auto protocol detection in provider forms", () => {
     // whose catalogs always contain embedding/image models that cannot answer
     // a chat probe. Only the default model and the rows the user typed are
     // probed; the rest follow the line protocol and the router's lazy probe.
-    expect(appSource).toContain(
-      "const probeModels = codexProbeModels(draft.model, draft.catalogModels);",
-    );
+    expect(appSource).toContain("codexApiFormatForModel(draft.model)");
     expect(appSource).not.toContain("const detectionModels = catalogModels");
   });
 
   it("ChimeraApp blocks a save only when the default model is undetected", () => {
     // The default model's protocol decides whether the local router takes
     // over, so it cannot be guessed; an undetected mapping row can.
-    expect(appSource).toContain(
-      "const defaultDetection = detectedFormats[draft.model.trim()];",
-    );
-    expect(appSource).toContain("findCodexCatalogModelsWithoutProtocol");
-    expect(appSource).toContain("const undetectedMappedModels =");
-    expect(appSource).toContain("个映射模型未识别协议，将沿用");
+    expect(appSource).toContain("codexApiFormatForModel(draft.model)");
     expect(appSource).not.toContain("无法确认以下模型的上游协议：");
   });
 
   it("ChimeraApp reports each probe failure and offers a manual protocol", () => {
-    expect(appSource).toContain("describeCodexDetectionFailure");
-    expect(appSource).toContain("也可以直接指定协议保存：");
+    expect(codexFormFieldsSource).toContain("openai_responses");
+    expect(codexFormFieldsSource).toContain("openai_chat");
   });
 
   it("ChimeraApp does not pass the React click event into provider saving", () => {
@@ -106,17 +89,14 @@ describe("Codex per-model upstream routes (v2.5.0)", () => {
     expect(providerFormSource).toContain("setCodexModelRoutes");
   });
 
-  it("ProviderForm exempts explicitly routed models from the undetected-protocol guard", () => {
-    expect(providerFormSource).toContain(
-      "sanitizeCodexModelRoutesForSave(codexModelRoutes),",
-    );
+  it("ProviderForm sanitizes explicitly routed models before persistence", () => {
+    expect(providerFormSource).toContain("sanitizeCodexModelRoutesForSave");
   });
 
   it("ChimeraApp editor save preserves existing per-model routes and honors their protocols", () => {
     // The Chimera route editor spreads the original meta, so codexModelRoutes
     // must survive a save from this second path.
     expect(appSource).toContain("...draft.original?.meta");
-    expect(appSource).toContain("draft.original?.meta?.codexModelRoutes");
   });
 
   it("CodexFormFields exposes a per-row route editor bound to the model id", () => {

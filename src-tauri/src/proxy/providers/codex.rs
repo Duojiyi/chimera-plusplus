@@ -63,6 +63,61 @@ fn codex_api_format_for_model<'a>(provider: &'a Provider, model: Option<&str>) -
                 .get("apiFormat")
                 .and_then(|value| value.as_str())
         })
+        .or_else(|| {
+            provider
+                .settings_config
+                .get("config")
+                .and_then(|value| value.as_str())
+                .and_then(extract_codex_wire_api_from_toml)
+                .and_then(|wire_api| {
+                    if is_chat_wire_api(&wire_api) {
+                        Some("openai_chat")
+                    } else if is_anthropic_wire_api(&wire_api) {
+                        Some("anthropic")
+                    } else if is_responses_wire_api(&wire_api) {
+                        Some("openai_responses")
+                    } else {
+                        None
+                    }
+                })
+        })
+        .or_else(|| {
+            provider
+                .settings_config
+                .get("base_url")
+                .or_else(|| provider.settings_config.get("baseURL"))
+                .and_then(|value| value.as_str())
+                .filter(|url| is_chat_completions_url(url))
+                .map(|_| "openai_chat")
+        })
+        .or_else(|| model.map(codex_model_default_api_format))
+}
+
+/// Default the upstream wire protocol from the model family only when the
+/// provider has not supplied a protocol declaration. This avoids network
+/// probing for the common case while keeping explicit provider settings in
+/// charge. The local Codex endpoint remains Responses in every case.
+fn codex_model_default_api_format(model: &str) -> &'static str {
+    let model = model
+        .rsplit_once('/')
+        .map_or(model, |(_, model)| model)
+        .rsplit_once(':')
+        .map_or(model, |(_, model)| model)
+        .to_ascii_lowercase();
+
+    if model.starts_with("claude") || model.starts_with("anthropic") {
+        "anthropic"
+    } else if model.starts_with("gpt")
+        || model.starts_with("o1")
+        || model.starts_with("o3")
+        || model.starts_with("o4")
+        || model.starts_with("codex")
+        || model.starts_with("chatgpt")
+    {
+        "openai_responses"
+    } else {
+        "openai_chat"
+    }
 }
 
 /// Whether an auto-detected line has no protocol recorded for `model`. Such a
@@ -770,6 +825,13 @@ fn is_anthropic_wire_api(value: &str) -> bool {
     matches!(
         value.trim().to_ascii_lowercase().as_str(),
         "anthropic" | "anthropic_messages" | "anthropic-messages" | "claude" | "messages"
+    )
+}
+
+fn is_responses_wire_api(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "responses" | "openai_responses" | "openai-responses"
     )
 }
 
@@ -1788,6 +1850,51 @@ wire_api = "chat"
         assert!(!should_convert_codex_responses_to_chat(
             &provider,
             "/chat/completions"
+        ));
+    }
+
+    #[test]
+    fn model_family_defaults_selects_upstream_protocol_without_probe() {
+        let provider = create_provider(json!({
+            "base_url": "https://gateway.example/v1"
+        }));
+
+        assert!(!should_convert_codex_responses_to_chat_for_model(
+            &provider,
+            "/responses",
+            Some("gpt-5.4")
+        ));
+        assert!(should_convert_codex_responses_to_anthropic_for_model(
+            &provider,
+            "/responses",
+            Some("anthropic/claude-sonnet-4-6")
+        ));
+        assert!(should_convert_codex_responses_to_chat_for_model(
+            &provider,
+            "/responses",
+            Some("deepseek-chat")
+        ));
+    }
+
+    #[test]
+    fn explicit_provider_protocol_overrides_model_family_default() {
+        let chat = create_provider(json!({
+            "base_url": "https://gateway.example/v1",
+            "apiFormat": "openai_chat"
+        }));
+        assert!(should_convert_codex_responses_to_chat_for_model(
+            &chat,
+            "/responses",
+            Some("gpt-5.4")
+        ));
+
+        let responses = create_provider(json!({
+            "config": "wire_api = \"responses\""
+        }));
+        assert!(!should_convert_codex_responses_to_anthropic_for_model(
+            &responses,
+            "/responses",
+            Some("claude-sonnet-4-6")
         ));
     }
 
