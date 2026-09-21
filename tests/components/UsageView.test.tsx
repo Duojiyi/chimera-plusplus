@@ -1,5 +1,5 @@
 import { StrictMode } from "react";
-import { act, render, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import {
   afterAll,
@@ -87,7 +87,10 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 async function loaded() {
-  await screen.findByText("统计加载完成");
+  await waitFor(() => {
+    expect(screen.getByText("统计加载完成")).toBeVisible();
+    expect(screen.getByRole("button", { name: "同步词元记录" })).toBeEnabled();
+  });
 }
 async function openRebuild(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole("button", { name: "更多统计操作" }));
@@ -117,11 +120,12 @@ describe("UsageView", () => {
     const user = userEvent.setup();
     render(<UsageView />);
     await loaded();
-    const args = api.getUsageSummary.mock.calls[0];
+    const args = api.getUsageSummary.mock.calls.at(-1)!;
     expect(args).toEqual([expect.any(Number), expect.any(Number), "codex"]);
     expect(args[0]).toBeLessThan(args[1]!);
-    expect(api.getUsageTrends.mock.calls).toEqual([args]);
-    expect(api.getModelStats.mock.calls).toEqual([args]);
+    expect(api.getUsageTrends).toHaveBeenLastCalledWith(...args);
+    expect(api.getModelStats).toHaveBeenLastCalledWith(...args);
+    expect(api.getUsageSummary).toHaveBeenCalledTimes(2);
     const metrics = within(
       screen.getByRole("region", { name: "词元总量与构成" }),
     );
@@ -145,6 +149,48 @@ describe("UsageView", () => {
     expect(dialog.getByText("10%")).toBeVisible();
     expect(dialog.getByText("40%")).toBeVisible();
   });
+
+  it("shows the existing database result while the historical sync is pending", async () => {
+    const pending = deferred<SessionSyncResult>();
+    api.syncCodexSessionUsage.mockReturnValue(pending.promise);
+    render(<UsageView />);
+
+    expect(await screen.findByTitle("2,000 词元")).toBeVisible();
+    expect(
+      screen.getByText("正在后台同步本机会话记录，已有数据仍可查看…"),
+    ).toBeVisible();
+    expect(api.getUsageSummary).toHaveBeenCalled();
+    expect(api.syncCodexSessionUsage).toHaveBeenCalledTimes(1);
+
+    await act(async () => pending.resolve(sync));
+    await loaded();
+  });
+
+  it.each(["reject", "throw"] as const)(
+    "keeps existing statistics visible when session sync %ss",
+    async (outcome) => {
+      const failure = new Error("history unavailable");
+      if (outcome === "reject")
+        api.syncCodexSessionUsage.mockRejectedValueOnce(failure);
+      else
+        api.syncCodexSessionUsage.mockImplementationOnce(() => {
+          throw failure;
+        });
+
+      render(<UsageView />);
+      await loaded();
+
+      expect(screen.getByTitle("2,000 词元")).toBeVisible();
+      expect(
+        screen.getByText("本机会话同步失败，正在显示已有记录", {
+          exact: false,
+        }),
+      ).toBeVisible();
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "history unavailable",
+      );
+    },
+  );
 
   it("renders the first and last labels for a sparse 30-day axis", async () => {
     api.getUsageTrends.mockResolvedValue(
@@ -179,7 +225,7 @@ describe("UsageView", () => {
     expect(
       screen.getByText("09:00", { selector: "tspan" }),
     ).toBeInTheDocument();
-    const args = api.getUsageSummary.mock.calls[1];
+    const args = api.getUsageSummary.mock.calls.at(-1)!;
     expect(api.getUsageTrends).toHaveBeenLastCalledWith(...args);
     expect(api.getModelStats).toHaveBeenLastCalledWith(...args);
     expect(args[2]).toBe("codex");
@@ -217,6 +263,13 @@ describe("UsageView", () => {
         { ...day, date: "2026-11-01T00:00:00-04:00" },
       ]);
       await user.click(screen.getByRole("button", { name: "今日" }));
+      await waitFor(() =>
+        expect(api.getUsageTrends).toHaveBeenLastCalledWith(
+          start,
+          start + duration,
+          "codex",
+        ),
+      );
       await loaded();
       expect(api.getUsageTrends).toHaveBeenLastCalledWith(
         start,
@@ -239,6 +292,7 @@ describe("UsageView", () => {
         end: start + (hourly ? 88200 : 3600),
       });
       const pending = deferred<UsageSummary>();
+      api.syncCodexSessionUsage.mockResolvedValueOnce({ ...sync, imported: 0 });
       api.getUsageSummary.mockReturnValueOnce(pending.promise);
       await user.click(screen.getByRole("button", { name: "同步词元记录" }));
       expect(screen.getByRole("heading", { name: heading })).toBeVisible();
@@ -266,10 +320,10 @@ describe("UsageView", () => {
     expect(screen.getByRole("button", { name: "同步词元记录" })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: "今日" }));
     expect(api.syncCodexSessionUsage).toHaveBeenCalledTimes(1);
-    expect(api.getUsageSummary).not.toHaveBeenCalled();
+    expect(api.getUsageSummary).toHaveBeenCalled();
     await act(async () => pending.resolve(sync));
     await loaded();
-    expect(api.getUsageSummary).toHaveBeenCalledTimes(1);
+    expect(api.getUsageSummary).toHaveBeenCalledTimes(4);
     expect(screen.getByText("今日 · 含缓存")).toBeVisible();
     expect(screen.getByRole("button", { name: "同步词元记录" })).toBeEnabled();
   });
@@ -336,7 +390,7 @@ describe("UsageView", () => {
       "title",
       "C:\\backups\\usage.db",
     );
-    expect(api.getUsageSummary).toHaveBeenCalledTimes(2);
+    expect(api.getUsageSummary).toHaveBeenCalledTimes(3);
     expect(api.syncCodexSessionUsage).toHaveBeenCalledTimes(1);
     expect(await openRebuild(user)).toBeVisible();
   });
@@ -361,6 +415,7 @@ describe("UsageView", () => {
 
   it("distinguishes an initial failure from an empty successful retry", async () => {
     const user = userEvent.setup();
+    api.syncCodexSessionUsage.mockResolvedValueOnce({ ...sync, imported: 0 });
     api.getUsageSummary.mockRejectedValueOnce(new Error("offline"));
     render(<UsageView />);
     await loaded();

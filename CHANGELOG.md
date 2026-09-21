@@ -10,6 +10,20 @@ numbers belong to a separate upstream line.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.8] - 2026-09-21
+
+### Fixed
+
+- Show existing token statistics without waiting for historical session imports. Refresh the current time range after imports and retain existing results when synchronization fails.
+- Use the application proxy for Codex release discovery and package downloads. Resolve latest releases to immutable tags, verify the architecture-specific asset exists, and preserve actionable network errors.
+- Share verified installation and recovery-journal handling between standard, portable and historical Codex installs. Keep package size, SHA-256 and OpenAI publisher verification mandatory.
+- Retry ordinary MSIX activation when launching with renderer debugging arguments fails. Explain Windows package registration errors separately from provider configuration and preserve local sessions and settings.
+- Invalidate outstanding update checks after uninstall or rollback so obsolete results cannot restore a stale installation offer.
+
+### Verification
+
+- Rust compilation and platform installation tests run in GitHub Actions, not on the maintainer's local machine. Successful ordinary MSIX fallback may not expose the extended renderer model list; Windows package-service permission problems can still require administrator repair or a portable reinstall.
+
 ## [2.7.7] - 2026-09-21
 
 ### Security

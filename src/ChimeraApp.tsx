@@ -1844,6 +1844,7 @@ export default function ChimeraApp({
       if (action === "update" || action === "repair") {
         await refreshRuntimeAfterInstall(preferences);
       } else {
+        runtimeCheckSeqRef.current += 1;
         setRelease(null);
         await loadRuntime();
       }

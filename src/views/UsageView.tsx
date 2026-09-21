@@ -105,41 +105,12 @@ export function UsageView() {
   );
   const initialUsageLoadStarted = useRef(false);
   const usageRequestId = useRef(0);
+  const latestRange = useRef(range);
+  latestRange.current = range;
+  const mounted = useRef(true);
 
-  const loadUsage = useCallback(
-    async (selectedRange: "today" | "7d" | "30d", syncSessions: boolean) => {
-      const requestId = ++usageRequestId.current;
-      if (!runningInTauri) {
-        setSummary(null);
-        setTrends([]);
-        setModels([]);
-        setSyncing(false);
-        setRangeLoading(false);
-        setSyncNote("浏览器预览不会读取本机会话数据");
-        return;
-      }
-      if (syncSessions) setSyncing(true);
-      else setRangeLoading(true);
-      setError("");
-      if (syncSessions || sessionSync.current) {
-        try {
-          if (!sessionSync.current)
-            sessionSync.current = usageApi.syncCodexSessionUsage();
-          const result = await sessionSync.current;
-          if (requestId !== usageRequestId.current) return;
-          sessionSync.current = null;
-          setSyncNote(
-            result.errors.length
-              ? `已读取 ${result.filesScanned} 个文件，${result.errors.length} 项未能导入`
-              : `已同步 ${result.filesScanned} 个本机会话文件`,
-          );
-        } catch (reason) {
-          if (requestId !== usageRequestId.current) return;
-          sessionSync.current = null;
-          setSyncNote("本机会话同步失败，正在显示已有记录");
-          setError(String(reason));
-        }
-      }
+  const loadStats = useCallback(
+    async (selectedRange: "today" | "7d" | "30d", requestId: number) => {
       const { start, end } = usageWindow(selectedRange);
       try {
         const [nextSummary, nextTrends, nextModels] = await Promise.all([
@@ -159,14 +130,83 @@ export function UsageView() {
       } catch (reason) {
         if (requestId !== usageRequestId.current) return;
         setError(String(reason));
-      } finally {
-        if (requestId === usageRequestId.current) {
-          setSyncing(false);
-          setRangeLoading(false);
-        }
       }
     },
     [],
+  );
+
+  const finishSessionSync = useCallback(
+    (syncPromise: Promise<SessionSyncResult>) => {
+      void syncPromise.then(
+        (result) => {
+          if (!mounted.current || sessionSync.current !== syncPromise) return;
+          sessionSync.current = null;
+          setSyncing(false);
+          setSyncNote(
+            result.errors.length
+              ? `已读取 ${result.filesScanned} 个文件，${result.errors.length} 项未能导入`
+              : `已同步 ${result.filesScanned} 个本机会话文件`,
+          );
+          if (!result.imported) return;
+
+          const requestId = ++usageRequestId.current;
+          setError("");
+          setRangeLoading(true);
+          void loadStats(latestRange.current, requestId).finally(() => {
+            if (requestId === usageRequestId.current) setRangeLoading(false);
+          });
+        },
+        (reason) => {
+          if (!mounted.current || sessionSync.current !== syncPromise) return;
+          sessionSync.current = null;
+          setSyncing(false);
+          setSyncNote("本机会话同步失败，正在显示已有记录");
+          setError(String(reason));
+        },
+      );
+    },
+    [loadStats],
+  );
+
+  const startSessionSync = useCallback(() => {
+    if (sessionSync.current) return;
+    // Resolve through a microtask so a bridge implementation that throws before
+    // returning a Promise follows the same failure path as an async rejection.
+    const syncPromise = Promise.resolve().then(() =>
+      usageApi.syncCodexSessionUsage(),
+    );
+    sessionSync.current = syncPromise;
+    finishSessionSync(syncPromise);
+  }, [finishSessionSync]);
+
+  const loadUsage = useCallback(
+    async (selectedRange: "today" | "7d" | "30d", syncSessions: boolean) => {
+      const requestId = ++usageRequestId.current;
+      if (!runningInTauri) {
+        setSummary(null);
+        setTrends([]);
+        setModels([]);
+        setSyncing(false);
+        setRangeLoading(false);
+        setSyncNote("浏览器预览不会读取本机会话数据");
+        return;
+      }
+      setRangeLoading(true);
+      setError("");
+      // Read the existing database first. The historical session scan can take
+      // minutes on a large Codex directory and must not hide usable data.
+      const statsPromise = loadStats(selectedRange, requestId);
+      if (syncSessions) {
+        setSyncing(true);
+        startSessionSync();
+      }
+      try {
+        await statsPromise;
+      } finally {
+        if (requestId === usageRequestId.current) setRangeLoading(false);
+      }
+    },
+    [loadStats, startSessionSync],
   );
 
   const rebuildUsage = useCallback(async () => {
@@ -198,6 +238,13 @@ export function UsageView() {
       setRebuilding(false);
     }
   }, [loadUsage, range, rebuilding]);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     const shouldSyncSessions = !initialUsageLoadStarted.current;
@@ -262,7 +309,7 @@ export function UsageView() {
             {rebuilding
               ? "正在备份并重建…"
               : syncing
-                ? "正在同步本机会话记录…"
+                ? "正在后台同步本机会话记录，已有数据仍可查看…"
                 : `${syncNote}，所有数据仅保存在这台电脑。`}
           </p>
         </div>

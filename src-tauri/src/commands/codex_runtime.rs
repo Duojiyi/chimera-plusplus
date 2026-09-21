@@ -10,8 +10,7 @@ use std::time::{Duration, Instant};
 
 use chimera_platform::lock::{LockError, LockGuard, OperationLock};
 use chimera_runtime::manager::{
-    detect_portable_codex, detect_windows_codex, diagnose_windows_codex,
-    fetch_windows_release_plan, install_windows_release, latest_portable_rollback,
+    detect_portable_codex, detect_windows_codex, diagnose_windows_codex, latest_portable_rollback,
     maintenance_route, parse_windows_release_plan, rollback_portable_install,
     uninstall_windows_codex, InstallMode, MaintenanceRoute, UpdateSource, WindowsReleasePlan,
 };
@@ -640,7 +639,7 @@ Start-Process ("shell:AppsFolder\" + $pkg.PackageFamilyName + "!" + $id)
 
 pub(crate) fn launch_codex_with_config(
     installed: &codex_win_engine::InstalledWindowsCodex,
-    options: codex_win_engine::LaunchOptions,
+    mut options: codex_win_engine::LaunchOptions,
 ) -> Result<(), String> {
     let codex_home = crate::codex_config::get_codex_config_dir();
 
@@ -656,8 +655,16 @@ pub(crate) fn launch_codex_with_config(
     // CDP flags to an MSIX desktop app. This path is used only with the default
     // ~/.codex directory, so no CODEX_HOME environment override is required.
     if options.remote_debugging_port.is_some() {
-        return codex_win_engine::launch_codex_with_options(installed, options)
-            .map_err(|error| format!("无法带 CDP 参数启动 MSIX Codex：{error}"));
+        match codex_win_engine::launch_codex_with_options(installed, options) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                log::warn!("带 CDP 参数启动 MSIX Codex 失败，尝试普通启动：{error}");
+                if codex_is_running(installed)? {
+                    return Ok(());
+                }
+                options.remote_debugging_port = None;
+            }
+        }
     }
 
     // Without renderer injection, prefer the environment-aware shell activation.
@@ -666,9 +673,19 @@ pub(crate) fn launch_codex_with_config(
         Ok(()) => Ok(()),
         Err(error) => {
             log::warn!("环境注入的 MSIX Codex 启动失败，回退到系统激活：{error}");
-            codex_win_engine::launch_codex_with_options(installed, options)
-                .map_err(|fallback| format!("{error}；系统激活也失败：{fallback}"))
+            codex_win_engine::launch_codex_with_options(installed, options).map_err(|fallback| {
+                msix_launch_error(&format!("{error}；系统激活也失败：{fallback}"))
+            })
         }
+    }
+}
+
+fn msix_launch_error(detail: &str) -> String {
+    let normalized = detail.to_ascii_lowercase();
+    if normalized.contains("80073d28") || normalized.contains("80073cf6") {
+        format!("Windows 无法注册或激活 Codex 安装包（打包服务可能需要管理员权限）。这不是线路配置损坏。请在更新页选择免安装版重新安装，或由管理员修复标准 MSIX 安装；无需删除 ~/.codex 会话与配置。原始错误：{detail}")
+    } else {
+        format!("MSIX Codex 启动失败；请在更新页运行诊断或选择免安装版。原始错误：{detail}")
     }
 }
 
@@ -1145,7 +1162,7 @@ fn fix_up_percent_encoded_portable_payload(dir: &Path) {
 /// Mirrors the private `chimera_runtime::manager::safe_package_moniker`
 /// check: the moniker is interpolated into a filesystem path
 /// (`{moniker}.Msix`), so this is validated defensively before we do that
-/// ourselves in `install_portable_release_with_observer` below.
+/// ourselves in `install_runtime_release_with_observer` below.
 fn safe_package_moniker(value: &str) -> bool {
     value.starts_with("OpenAI.Codex_")
         && value.len() <= 180
@@ -1198,72 +1215,107 @@ fn install_journal_observer<'a>(
     }
 }
 
-/// Replicates `chimera_runtime::manager::install_windows_release`'s portable
-/// path (download → verify size/sha256/Authenticode → install) using only
-/// the pinned engine's public functions, but calling
-/// `install_portable_from_msix_with_observer` instead of the plain
-/// `install_windows_release`/`install_portable_from_msix` the manager crate
-/// uses internally for this mode.
-///
-/// `install_windows_release` does not accept an observer — the online
-/// install/update path (by far the most used, versus the rarely-used
-/// offline-file path) therefore could not persist rename-boundary state into
-/// the crash-recovery journal, so a crash during the destructive swap window
-/// left the journal entry stuck at "started" with no `backup_path`, and the
-/// recovery banner would tell the user "if Codex works, ignore this" even
-/// when the install root had just been destroyed (see
-/// `ensure_portable_root_safe_for_install`'s doc comment for the swap
-/// mechanics). We do not control the pinned crate, so this bypasses its
-/// convenience wrapper for the one mode where observer access actually
-/// matters — standard/MSIX installs keep going through
-/// `install_windows_release` unchanged, since that path additionally runs
-/// capability probing and standard/portable fallback logic that belongs to
-/// the engine, not to us.
-fn install_portable_release_with_observer(
+fn install_runtime_release_with_observer(
     plan: &WindowsReleasePlan,
+    install_mode: InstallMode,
     staging_root: &Path,
     portable_root: &Path,
     on_progress: &dyn Fn(u64),
-    // `codex_win_engine::PortableObserver` (the type alias
-    // `install_portable_from_msix_with_observer` itself is declared in
-    // terms of) is a private type not re-exported from the crate root;
-    // spell out the same trait object using the two pieces that ARE
-    // exported (`PortableBoundary`, `EngineError`) instead.
     observer: &mut dyn FnMut(
         codex_win_engine::PortableBoundary,
     ) -> Result<(), codex_win_engine::EngineError>,
-) -> Result<codex_win_engine::PortableInstallReport, String> {
-    if !safe_package_moniker(&plan.package_moniker) {
-        return Err("安装计划中的包名不合法".to_string());
+) -> Result<CodexRuntimeOperation, String> {
+    if !safe_package_moniker(&plan.package_moniker)
+        || plan.size_bytes == 0
+        || plan.size_bytes > OFFLINE_PACKAGE_MAX_BYTES
+    {
+        return Err("安装计划中的包名或大小不合法".to_string());
     }
     std::fs::create_dir_all(staging_root).map_err(|error| format!("创建暂存目录失败: {error}"))?;
     let package_path = staging_root.join(format!("{}.Msix", plan.package_moniker));
-    codex_win_engine::download_to_with_progress_bounded(
-        &plan.package_url,
-        &package_path,
-        plan.size_bytes,
-        on_progress,
-    )
-    .map_err(|error| format!("下载安装包失败: {error}"))?;
-
-    let result =
-        verify_and_install_staged_portable_package(plan, &package_path, portable_root, observer);
-    // The staged .Msix is only useful during this one attempt — retries
-    // re-download unconditionally — so remove it on every exit. Cleaning
-    // only the success path used to leak a multi-hundred-MB package per
-    // failed attempt (one per version moniker) into the staging directory.
+    let network = crate::proxy::http_client::get_current_proxy_url()
+        .map(codex_win_engine::NetworkConfig::custom)
+        .unwrap_or_else(codex_win_engine::NetworkConfig::direct);
+    let result = (|| {
+        codex_win_engine::download_to_with_progress_bounded_with_network(
+            &plan.package_url,
+            &package_path,
+            plan.size_bytes,
+            on_progress,
+            &network,
+        )
+        .map_err(|error| {
+            format!("下载安装包失败，请检查网络与应用代理设置，或使用离线安装：{error}")
+        })?;
+        verify_staged_runtime_package(plan, &package_path)?;
+        let mut notes = Vec::new();
+        let mut attempted_standard = false;
+        if install_mode == InstallMode::Standard {
+            let capability = codex_win_engine::probe_capabilities();
+            notes = capability.notes;
+            if capability.recommendation
+                != codex_win_engine::SideloadRecommendation::PortableFallback
+            {
+                codex_win_engine::close_msix_codex_processes(30)
+                    .map_err(|error| format!("无法关闭 Codex，安装已中止：{error}"))?;
+                attempted_standard = true;
+                let report =
+                    codex_win_engine::install_msix_sideload(&package_path, &plan.package_moniker)
+                        .map_err(|error| msix_launch_error(&error.to_string()))?;
+                if report.success && codex_win_engine::verify_msix_health().healthy {
+                    return Ok(CodexRuntimeOperation {
+                        version: plan.version.clone(),
+                        requested_mode: "standard".to_string(),
+                        actual_mode: "standard".to_string(),
+                        affected_path: report.installed.map(|installed| installed.path),
+                        backup_path: None,
+                        message: "Codex 标准安装完成并通过启动检查".to_string(),
+                        notes,
+                    });
+                }
+            }
+            notes.push("标准 MSIX 不可用，已将验证过的安装包安装为免安装版".to_string());
+        }
+        let report = codex_win_engine::install_portable_from_msix_with_observer(
+            &package_path,
+            portable_root,
+            true,
+            false,
+            observer,
+        )
+        .map_err(|error| error.to_string())?;
+        if attempted_standard {
+            if let Err(error) = codex_win_engine::remove_msix_package() {
+                notes.push(format!(
+                    "免安装版已就绪，但标准安装移除失败，请运行诊断：{error}"
+                ));
+            }
+        }
+        fix_up_percent_encoded_portable_payload(Path::new(&report.install_root));
+        notes.extend(report.notes);
+        Ok(CodexRuntimeOperation {
+            version: report.version,
+            requested_mode: mode_label(install_mode),
+            actual_mode: if install_mode == InstallMode::Standard {
+                "portable_fallback"
+            } else {
+                "portable"
+            }
+            .to_string(),
+            affected_path: Some(report.install_root),
+            backup_path: report.backup_path,
+            message: report.message,
+            notes,
+        })
+    })();
     let _ = std::fs::remove_file(&package_path);
     result
 }
 
-fn verify_and_install_staged_portable_package(
+fn verify_staged_runtime_package(
     plan: &WindowsReleasePlan,
     package_path: &Path,
-    portable_root: &Path,
-    observer: &mut dyn FnMut(
-        codex_win_engine::PortableBoundary,
-    ) -> Result<(), codex_win_engine::EngineError>,
-) -> Result<codex_win_engine::PortableInstallReport, String> {
+) -> Result<(), String> {
     let size = package_path
         .metadata()
         .map_err(|error| format!("读取安装包信息失败: {error}"))?
@@ -1278,15 +1330,7 @@ fn verify_and_install_staged_portable_package(
     if !signature.is_valid_openai() {
         return Err("安装包未通过 OpenAI 发行者签名校验，已拒绝安装".to_string());
     }
-
-    codex_win_engine::install_portable_from_msix_with_observer(
-        package_path,
-        portable_root,
-        true,
-        false,
-        observer,
-    )
-    .map_err(|error| error.to_string())
+    Ok(())
 }
 
 fn operation_dto(value: chimera_runtime::manager::InstallOperationResult) -> CodexRuntimeOperation {
@@ -1399,11 +1443,10 @@ pub async fn check_codex_runtime_update(
     let source = parse_source(source)?;
     let install_mode = parse_install_mode(install_mode)?;
     let portable_root = portable_root()?;
+    let plan = fetch_latest_runtime_plan().await?;
     tauri::async_runtime::spawn_blocking(move || {
         let installed = detect_windows_codex(&portable_root);
         let current_version = installed.as_ref().map(|value| value.version.clone());
-        let plan = fetch_windows_release_plan(source, Some(std::env::consts::ARCH))
-            .map_err(|error| error.to_string())?;
         Ok(CodexReleaseStatus {
             update_available: plan.is_update_available(current_version.as_deref()),
             current_version,
@@ -1516,21 +1559,14 @@ async fn install_release(
     install_mode: Option<String>,
 ) -> Result<CodexRuntimeOperation, String> {
     require_windows()?;
-    let source = parse_source(source)?;
+    parse_source(source)?;
     let install_mode = parse_install_mode(install_mode)?;
     let root = runtime_root();
     let portable_root = portable_root()?;
+    let plan = fetch_latest_runtime_plan().await?;
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = acquire_operation_lock("codex_runtime_install")?;
-        // `install_windows_release`'s `Standard` arm can silently fall back to
-        // the same unguarded portable-install swap internally (e.g. when
-        // sideloading is policy-blocked or the post-install health check
-        // fails), so this guard must run for every mode, not just an
-        // explicit `Portable` request — see `ensure_portable_root_safe_for_install`'s
-        // doc comment for the swap it prevents.
         ensure_portable_root_safe_for_install(&portable_root)?;
-        let plan = fetch_windows_release_plan(source, Some(std::env::consts::ARCH))
-            .map_err(|error| error.to_string())?;
         if expected_version
             .as_deref()
             .is_some_and(|expected| expected != plan.version)
@@ -1555,56 +1591,24 @@ async fn install_release(
                 Some(&plan.sha256),
             )
             .map_err(|error| format!("写入安装事务日志失败，已中止安装: {error}"))?;
-        if install_mode == InstallMode::Portable {
-            // See `install_portable_release_with_observer`'s doc comment: the
-            // manager crate's `install_windows_release` has no observer hook,
-            // so the online path — the one users actually hit — could not
-            // record rename-boundary progress into the crash journal. Bypass
-            // it for this mode only.
-            let mut observer = install_journal_observer(&journal, &journal_id);
-            let result = install_portable_release_with_observer(
-                &plan,
-                &root.join("downloads"),
-                &portable_root,
-                &progress,
-                &mut observer,
-            );
-            return match result {
-                Ok(report) => {
-                    let _ = journal.finish(&journal_id, "completed", Some(report.message.clone()));
-                    fix_up_percent_encoded_portable_payload(Path::new(&report.install_root));
-                    Ok(CodexRuntimeOperation {
-                        version: report.version,
-                        requested_mode: "portable".to_string(),
-                        actual_mode: "portable".to_string(),
-                        affected_path: Some(report.install_root),
-                        backup_path: report.backup_path,
-                        message: report.message,
-                        notes: report.notes,
-                    })
-                }
-                Err(error) => {
-                    let _ = journal.finish(&journal_id, "failed", Some(error.clone()));
-                    Err(error)
-                }
-            };
-        }
-        let result = install_windows_release(
+        let mut observer = install_journal_observer(&journal, &journal_id);
+        let result = install_runtime_release_with_observer(
             &plan,
             install_mode,
             &root.join("downloads"),
             &portable_root,
             &progress,
+            &mut observer,
         );
         match &result {
             Ok(operation) => {
                 let _ = journal.finish(&journal_id, "completed", Some(operation.message.clone()));
             }
             Err(error) => {
-                let _ = journal.finish(&journal_id, "failed", Some(error.to_string()));
+                let _ = journal.finish(&journal_id, "failed", Some(error.clone()));
             }
         }
-        result.map(operation_dto).map_err(|error| error.to_string())
+        result
     })
     .await
     .map_err(|_| "Codex 安装任务中断，请先运行诊断".to_string())?
@@ -1758,7 +1762,7 @@ const MIRROR_USER_AGENT: &str = "chimera-plus-plus";
 /// 后被阻塞、进程无法退出，历史版本目录因此长期卡在“正在加载”。
 async fn fetch_mirror_text(url: &str) -> Result<String, String> {
     let client = crate::proxy::http_client::get();
-    let response = client
+    let mut response = client
         .get(url)
         .header(reqwest::header::USER_AGENT, MIRROR_USER_AGENT)
         .timeout(Duration::from_secs(MIRROR_FETCH_TIMEOUT_SECS))
@@ -1767,18 +1771,9 @@ async fn fetch_mirror_text(url: &str) -> Result<String, String> {
         .map_err(|error| format!("请求失败: {error}"))?;
     let status = response.status();
     if !status.is_success() {
-        // 附带有限错误体（如 GitHub API 速率限制信息），便于用户/日志排障。
-        let detail = response
-            .bytes()
-            .await
-            .map(|bytes| String::from_utf8_lossy(&bytes[..bytes.len().min(512)]).into_owned())
-            .unwrap_or_default();
-        let detail = detail.trim();
-        return Err(if detail.is_empty() {
-            format!("HTTP {status}")
-        } else {
-            format!("HTTP {status}: {detail}")
-        });
+        return Err(format!(
+            "HTTP {status}；请检查网络与应用代理设置，稍后重试或使用离线安装"
+        ));
     }
     if response
         .content_length()
@@ -1786,14 +1781,60 @@ async fn fetch_mirror_text(url: &str) -> Result<String, String> {
     {
         return Err(format!("响应超过 {} 字节上限", MIRROR_CATALOG_MAX_BYTES));
     }
-    let bytes = response
-        .bytes()
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
         .await
-        .map_err(|error| format!("读取响应失败: {error}"))?;
-    if bytes.len() > MIRROR_CATALOG_MAX_BYTES {
-        return Err(format!("响应超过 {} 字节上限", MIRROR_CATALOG_MAX_BYTES));
+        .map_err(|error| format!("读取响应失败: {error}"))?
+    {
+        if chunk.len() > MIRROR_CATALOG_MAX_BYTES.saturating_sub(bytes.len()) {
+            return Err(format!("响应超过 {} 字节上限", MIRROR_CATALOG_MAX_BYTES));
+        }
+        bytes.extend_from_slice(&chunk);
     }
-    String::from_utf8(bytes.to_vec()).map_err(|error| format!("响应不是有效 UTF-8: {error}"))
+    String::from_utf8(bytes).map_err(|error| format!("响应不是有效 UTF-8: {error}"))
+}
+
+async fn fetch_latest_runtime_plan() -> Result<WindowsReleasePlan, String> {
+    let body = fetch_mirror_text(&format!(
+        "https://api.github.com/repos/{MIRROR_REPO}/releases/latest"
+    ))
+    .await
+    .map_err(|error| format!("获取 Codex 安装版本失败：{error}"))?;
+    let release: serde_json::Value =
+        serde_json::from_str(&body).map_err(|error| format!("解析 Codex 安装版本失败：{error}"))?;
+    let tag = release
+        .get("tag_name")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "Codex 发布缺少版本 tag".to_string())?;
+    let plan = plan_codex_runtime_release(tag.to_string()).await?;
+    validate_release_asset(&release, &plan)?;
+    Ok(plan)
+}
+
+fn validate_release_asset(
+    release: &serde_json::Value,
+    plan: &WindowsReleasePlan,
+) -> Result<(), String> {
+    let name = format!("{}.Msix", plan.package_moniker);
+    let available = release
+        .get("assets")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|assets| {
+            assets.iter().any(|asset| {
+                asset.get("name").and_then(serde_json::Value::as_str) == Some(name.as_str())
+                    && asset.get("size").and_then(serde_json::Value::as_u64)
+                        == Some(plan.size_bytes)
+                    && plan.size_bytes > 0
+            })
+        });
+    if available {
+        Ok(())
+    } else {
+        Err(format!(
+            "该版本尚无完整的本机架构安装包 {name}；请稍后重试，或从历史版本选择可用安装包"
+        ))
+    }
 }
 
 /// 从 GitHub Releases 数组提取可展示/可安装的历史版本条目（纯函数，便于测试）。
@@ -1943,52 +1984,24 @@ pub async fn install_codex_runtime_release(
                 serde_json::json!({ "downloaded": downloaded, "total": total }),
             );
         };
-        if install_mode == InstallMode::Portable {
-            // See `install_portable_release_with_observer`'s doc comment.
-            let mut observer = install_journal_observer(&journal, &journal_id);
-            let result = install_portable_release_with_observer(
-                &plan,
-                &root.join("downloads"),
-                &portable_root,
-                &progress,
-                &mut observer,
-            );
-            return match result {
-                Ok(report) => {
-                    let _ = journal.finish(&journal_id, "completed", Some(report.message.clone()));
-                    fix_up_percent_encoded_portable_payload(Path::new(&report.install_root));
-                    Ok(CodexRuntimeOperation {
-                        version: report.version,
-                        requested_mode: "portable".to_string(),
-                        actual_mode: "portable".to_string(),
-                        affected_path: Some(report.install_root),
-                        backup_path: report.backup_path,
-                        message: report.message,
-                        notes: report.notes,
-                    })
-                }
-                Err(error) => {
-                    let _ = journal.finish(&journal_id, "failed", Some(error.clone()));
-                    Err(error)
-                }
-            };
-        }
-        let result = install_windows_release(
+        let mut observer = install_journal_observer(&journal, &journal_id);
+        let result = install_runtime_release_with_observer(
             &plan,
             install_mode,
             &root.join("downloads"),
             &portable_root,
             &progress,
+            &mut observer,
         );
         match &result {
             Ok(operation) => {
                 let _ = journal.finish(&journal_id, "completed", Some(operation.message.clone()));
             }
             Err(error) => {
-                let _ = journal.finish(&journal_id, "failed", Some(error.to_string()));
+                let _ = journal.finish(&journal_id, "failed", Some(error.clone()));
             }
         }
-        result.map(operation_dto).map_err(|error| error.to_string())
+        result
     })
     .await
     .map_err(|_| "Codex 安装任务中断，请先运行诊断".to_string())?
@@ -2231,6 +2244,44 @@ pub async fn acknowledge_codex_install_recovery(id: String) -> Result<(), String
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn msix_registration_errors_preserve_details_and_offer_non_destructive_recovery() {
+        for detail in ["0x80073D28", "registration failed (0x80073CF6)"] {
+            let message = super::msix_launch_error(detail);
+            assert!(message.contains(detail));
+            assert!(message.contains("免安装版"));
+            assert!(message.contains("无需删除"));
+        }
+        let message = super::msix_launch_error("activation timed out");
+        assert!(message.contains("activation timed out"));
+        assert!(!message.contains("管理员权限"));
+    }
+
+    #[test]
+    fn release_asset_must_match_package_name_and_size() {
+        let plan = super::WindowsReleasePlan {
+            version: "26.915.31945".to_string(),
+            package_version: "26.915.4065.0".to_string(),
+            package_moniker: "OpenAI.Codex_26.915.4065.0_x64__2p2nqsd0c76g0".to_string(),
+            package_url: String::new(),
+            sha256: "a".repeat(64),
+            size_bytes: 824570408,
+            released_at: None,
+        };
+        let release = serde_json::json!({"assets": [{
+            "name": format!("{}.Msix", plan.package_moniker),
+            "size": plan.size_bytes
+        }]});
+        assert!(super::validate_release_asset(&release, &plan).is_ok());
+        assert!(super::validate_release_asset(&serde_json::json!({"assets": []}), &plan).is_err());
+        let mut wrong_size = release.clone();
+        wrong_size["assets"][0]["size"] = serde_json::json!(1);
+        assert!(super::validate_release_asset(&wrong_size, &plan).is_err());
+        let mut wrong_arch = release;
+        wrong_arch["assets"][0]["name"] = serde_json::json!("OpenAI.Codex_arm64.Msix");
+        assert!(super::validate_release_asset(&wrong_arch, &plan).is_err());
+    }
+
     use super::{
         launch_action, normalize_expected_catalog_models, parse_catalog_model_identities,
         process_install_mode, validate_catalog_model_identities,
