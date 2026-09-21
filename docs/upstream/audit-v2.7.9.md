@@ -8,14 +8,15 @@ Static review is not a claim of absence of bugs or a substitute for cloud tests.
 | --- | --- | --- | --- | --- |
 | 1 | `169657a3` | Sartre | Boyle | Mirror validation used a different repository from the application; MiniMax-only system-message reordering affected other providers. Both corrected. Portable validation also made a mandatory release gate. |
 | 2 | `598b6427` | Beauvoir | Lagrange | A found a missing test import and incomplete cleanup of implicit OpenAI takeover URLs; B found no actionable issue. Both reviews completed after an intermediate progress report; the intermediate incomplete reports are not counted as passing audits. |
-| 3 | `defccbb5` (increment from `598b6427`) | Singer | Banach | A identified obsolete production wrappers; B identified a mismatch between the validated package and the bundled package pin. Remediation in progress. |
+| 3 | `defccbb5` (increment from `598b6427`) | Singer | Banach | A identified obsolete production wrappers; B identified a mismatch between the validated package and the bundled package pin. Corrected in `652688e5`, together with round-2 findings. Packaging now uses the upstream engine rather than raw ZIP extraction. |
+| 4 | `652688e5` (increment from `874e1733`) | Wegener | Gauss | Both independently reported no actionable findings in the remediation and its integration. Hosted compilation and real package validation still required. |
 
 ## Local validation before cloud compilation
 
 - Frontend: 113 test files / 884 tests passed with two workers.
 - Type checking, frontend formatting, renderer build and bundle budgets passed.
 - npm audit reported no known vulnerabilities.
-- Release safety tests: 20 passed after round-1 remediation.
+- Release safety tests: 23 passed after round-3 remediation; workflow PowerShell syntax and actionlint also passed.
 - Version consistency: 2.7.9; committed-secret and repository-reference checks passed.
 - Locked Cargo metadata and Rust formatting checked without compiling Rust.
 - No local Rust build, test, check, Clippy or Tauri compilation was performed.
