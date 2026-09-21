@@ -3372,7 +3372,7 @@ mod tests {
     use super::{
         body_looks_like_sse, chat_sse_to_response_value, classify_body_for_diagnostics,
         codex_auto_fallback_matches_provider, codex_provider_detection_fingerprint,
-        codex_proxy_error_json, codex_wire_api_cache_entry_applies,
+        codex_proxy_error_json, codex_wire_api_cache_entry_applies, images_media_type_error,
         providers_with_codex_api_format, responses_sse_to_response_value,
         should_try_codex_chat_auto_fallback, should_use_claude_transform_streaming, transform,
         upstream_body_parse_error,

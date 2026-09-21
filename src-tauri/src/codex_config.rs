@@ -3299,7 +3299,7 @@ pub fn update_codex_toml_field(toml_str: &str, field: &str, value: &str) -> Resu
 }
 
 /// Remove `base_url` from the active model_provider section only if it matches `predicate`.
-/// Also removes top-level `base_url` if it matches.
+/// Also removes top-level `base_url` and `openai_base_url` if they match.
 /// Used by proxy cleanup to strip local proxy URLs without touching user-configured URLs.
 pub fn remove_codex_toml_base_url_if(toml_str: &str, predicate: impl Fn(&str) -> bool) -> String {
     let mut doc = match toml_str.parse::<DocumentMut>() {
@@ -3341,6 +3341,15 @@ pub fn remove_codex_toml_base_url_if(toml_str: &str, predicate: impl Fn(&str) ->
         .unwrap_or(false);
     if should_remove_root {
         doc.as_table_mut().remove("base_url");
+    }
+
+    let should_remove_openai_base_url = doc
+        .get("openai_base_url")
+        .and_then(|item| item.as_str())
+        .map(&predicate)
+        .unwrap_or(false);
+    if should_remove_openai_base_url {
+        doc.as_table_mut().remove("openai_base_url");
     }
 
     doc.to_string()
@@ -4426,6 +4435,31 @@ base_url = "https://production.api/v1"
             .and_then(|v| v.get("base_url"))
             .and_then(|v| v.as_str());
         assert_eq!(base_url, Some("https://production.api/v1"));
+    }
+
+    #[test]
+    fn remove_base_url_if_handles_openai_takeover_endpoint() {
+        for input in ["", "model_provider = \"openai\"\n"] {
+            let local =
+                update_codex_toml_field(input, "base_url", "http://127.0.0.1:15721/v1").unwrap();
+            let local_result =
+                remove_codex_toml_base_url_if(&local, |url| url.starts_with("http://127.0.0.1"));
+            let local_parsed: toml::Value = toml::from_str(&local_result).unwrap();
+            assert!(local_parsed.get("openai_base_url").is_none());
+            assert_eq!(local_parsed, toml::from_str::<toml::Value>(input).unwrap());
+        }
+
+        let user = r#"openai_base_url = "https://api.openai.com/v1"
+"#;
+        let user_result =
+            remove_codex_toml_base_url_if(user, |url| url.starts_with("http://127.0.0.1"));
+        let user_parsed: toml::Value = toml::from_str(&user_result).unwrap();
+        assert_eq!(
+            user_parsed
+                .get("openai_base_url")
+                .and_then(|value| value.as_str()),
+            Some("https://api.openai.com/v1")
+        );
     }
 
     #[test]

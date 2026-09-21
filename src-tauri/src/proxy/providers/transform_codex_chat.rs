@@ -250,13 +250,14 @@ pub(crate) fn build_codex_tool_context_from_request(body: &Value) -> CodexToolCo
 }
 
 /// Convert an OpenAI Responses request into an OpenAI Chat Completions request.
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn responses_to_chat_completions(body: Value) -> Result<Value, ProxyError> {
     responses_to_chat_completions_with_reasoning(body, None)
 }
 
 /// Convert an OpenAI Responses request into an OpenAI Chat Completions request,
 /// using provider-declared Codex Chat reasoning capabilities when available.
+#[cfg(test)]
 pub fn responses_to_chat_completions_with_reasoning(
     body: Value,
     reasoning_config: Option<&CodexChatReasoningConfig>,
