@@ -1732,6 +1732,7 @@ async fn handle_codex_responses_namespace_restore(
     if response.is_sse() {
         let mut response_headers = response.headers().clone();
         strip_hop_by_hop_response_headers(&mut response_headers);
+        response_headers.remove(http::header::CONTENT_LENGTH);
 
         let mut builder = axum::response::Response::builder().status(status);
         for (key, value) in &response_headers {

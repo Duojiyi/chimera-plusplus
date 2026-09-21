@@ -23,6 +23,8 @@ recorded separately once the implementation snapshot is frozen.
   CLI payload validation remains in the upstream staging path before replacement.
 - Keep Chimera++ CODEX_HOME and existing renderer integration. Standard MSIX
   installation must not silently downgrade to portable mode after an error.
+- Require a visible main window belonging to the selected installation; reject
+  native startup dialogs and late readiness instead of accepting process liveness.
 - No official EXE/ASAR patching, global environment rewriting, or artificial
   package registration. Directly launching the unpackaged application executable
   is not equivalent to launching through LaunchCodex.exe.
@@ -35,16 +37,20 @@ recorded separately once the implementation snapshot is frozen.
 | Kimi | CC `db41d701`; CPP `c5ab8a1f`: ref siblings and adaptive thinking | Provider-specific; not global schema rewriting |
 | Images | CC `17be9092`, `e724270d`, `e0982799`: image routes, endpoint derivation and cache usage | JSON requests; multipart is not a newly supported interface |
 | Responses | CC `872ec775`, `6e4b0e6e`, `12296aeb`: parallel calls, minimum output tokens, safe UTF-8 truncation | Preserve existing authentication and request limits |
-| xAI | Request sanitation series; post-stable `c6286e14`, `bd247a4a` | Native xAI endpoint only; no Grok product expansion |
+| xAI | Request sanitation series; post-stable `c6286e14`, `bd247a4a`, `054673e0` | Actual native xAI route controls both request/response compatibility; completed tool arguments normalize integral floats |
 | Config | CC `99f9dd2`, `e0c2fd2`, `b5f9fd0`: implicit OpenAI provider, child metadata, modalities | Preserve user configuration and explicit choices |
 | Semantic merge | CPP `cd1eba23`, `6b84ae03`, `93686cd3` | Existing recursive merge/catalog lifecycle retained with regressions |
 | Local settings | CPP post-stable `494b12a8`, `28aff069`, `0dd16a31`, `de2c6f62` | Literal catalog paths, local sandbox/features, max context import |
 | Usage import | File size plus nanosecond timestamp, legacy cursor and incomplete-tail handling | Additive nullable schema column; preserve existing statistics |
+| Proxy settings | CC `11317c62`: global port updates and shutdown preserve per-app policy | Do not rewrite app-specific retries/timeouts through the legacy global writer |
 | Model discovery | CC post-stable `f49c7d68`: Zhipu models/slug response | Keep OpenAI data/id compatibility and security limits |
 | Presets | CC post-stable `48e572cc`, `e06ff90f`: Kimi Responses, Qwen3.8, MiniMax/BaiLing endpoints, DeepSeek modalities | Refresh existing presets, not saved user providers |
 
 Existing Responses item-ID normalization (CPP `e9572792`) and structured array
-tool-image output (CPP `d9873214`) are retained rather than duplicated.
+tool-image output (CPP `d9873214`) are retained rather than duplicated. Wrapped
+tool-image objects now retain structured images and accompanying metadata.
+Reserved provider tables migrate to collision-free custom IDs without dropping
+auth or vendor fields; config-only writes preserve those explicit auth choices.
 
 ## Deliberate exclusions
 

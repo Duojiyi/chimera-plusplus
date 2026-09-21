@@ -682,11 +682,6 @@ fn append_responses_item_as_chat_message(
                 // into real Chat `image_url`/`text` parts for ordinary
                 // messages; reuse it here so a tool result gets the same
                 // treatment instead of a bespoke one-off.
-                Some(array_value @ Value::Array(parts))
-                    if responses_output_array_has_binary_content_part(parts) =>
-                {
-                    responses_content_to_chat_content("tool", array_value)
-                }
                 Some(value) => structured_tool_output(value)
                     .unwrap_or_else(|| Value::String(canonical_json_string(value))),
                 None => Value::String(String::new()),
@@ -718,11 +713,6 @@ fn append_responses_item_as_chat_message(
             // whatever shape this item might otherwise have.
             let output = match item.get("output") {
                 Some(Value::String(s)) => Value::String(canonicalize_json_string_if_parseable(s)),
-                Some(array_value @ Value::Array(parts))
-                    if responses_output_array_has_binary_content_part(parts) =>
-                {
-                    responses_content_to_chat_content("tool", array_value)
-                }
                 Some(value) => structured_tool_output(value)
                     .unwrap_or_else(|| Value::String(canonical_json_string(value))),
                 None => Value::String(canonical_json_string(item)),
@@ -1166,6 +1156,30 @@ fn structured_tool_output(output: &Value) -> Option<Value> {
             Some(Value::Array(result))
         }
         Value::Object(object) => {
+            if output.get("type").and_then(Value::as_str) == Some("image_url") {
+                return Some(json!([output]));
+            }
+            if output.get("type").and_then(Value::as_str) == Some("image") {
+                if let Some(source) = output.get("source") {
+                    let image_url = match source.get("type").and_then(Value::as_str) {
+                        Some("base64") => source.get("data").and_then(Value::as_str).map(|data| {
+                            let media_type = source
+                                .get("media_type")
+                                .and_then(Value::as_str)
+                                .unwrap_or("image/png");
+                            format!("data:{media_type};base64,{data}")
+                        }),
+                        Some("url") => source
+                            .get("url")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                        _ => None,
+                    };
+                    if let Some(image_url) = image_url {
+                        return Some(json!([{"type":"image_url","image_url":{"url":image_url}}]));
+                    }
+                }
+            }
             if responses_output_array_has_binary_content_part(std::slice::from_ref(output)) {
                 return Some(responses_content_to_chat_content("tool", &json!([output])));
             }
@@ -2075,6 +2089,26 @@ pub fn chat_error_to_response_error(body: Option<&Value>) -> Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn wrapped_chat_and_anthropic_images_keep_binary_out_of_text() {
+        for image in [
+            json!({"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}}),
+            json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}}),
+        ] {
+            let converted =
+                structured_tool_output(&json!({"output":{"content":[image]},"status":"ok"}))
+                    .unwrap();
+            let parts = converted.as_array().unwrap();
+            assert!(parts
+                .iter()
+                .any(|part| part["image_url"]["url"] == "data:image/png;base64,AAAA"));
+            assert!(parts
+                .iter()
+                .filter_map(|part| part["text"].as_str())
+                .all(|text| !text.contains("AAAA")));
+        }
+    }
+
     #[test]
     fn wrapped_tool_images_preserve_media_and_metadata() {
         let output = json!({"isError":false,"content":[{"type":"input_image","image_url":"data:image/png;base64,AAAA"},{"type":"text","text":"caption"},{"custom":42}]});

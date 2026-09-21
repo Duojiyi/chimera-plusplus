@@ -1602,13 +1602,26 @@ mod tests {
     async fn discovers_zhipu_response_model_slugs() {
         let (url, server) = serve_test_router(axum::Router::new().fallback(|| async {
             axum::Json(serde_json::json!({"models": [{"slug": "glm-5.3"}, {"slug": "glm-5"}]}))
-        })).await;
-        let models = fetch_models(&url, "test-discovery-key", false, None, None).await.unwrap();
+        }))
+        .await;
+        let models = fetch_models(&url, "test-discovery-key", false, None, None)
+            .await
+            .unwrap();
         server.abort();
-        assert_eq!(models.iter().map(|model| model.id.as_str()).collect::<Vec<_>>(), vec!["glm-5", "glm-5.3"]);
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["glm-5", "glm-5.3"]
+        );
         assert!(models.iter().all(|model| model.owned_by.is_none()));
-        let standard: ModelsResponse = serde_json::from_str(r#"{"data":[{"id":"gpt-test","owned_by":"vendor"}]}"#).unwrap();
-        assert_eq!(standard.data.unwrap()[0].owned_by.as_deref(), Some("vendor"));
+        let standard: ModelsResponse =
+            serde_json::from_str(r#"{"data":[{"id":"gpt-test","owned_by":"vendor"}]}"#).unwrap();
+        assert_eq!(
+            standard.data.unwrap()[0].owned_by.as_deref(),
+            Some("vendor")
+        );
     }
 
     async fn serve_test_router(router: axum::Router) -> (String, tokio::task::JoinHandle<()>) {

@@ -2552,9 +2552,9 @@ pub fn remove_codex_experimental_bearer_token_if(
     if let Some(provider_id) = active_codex_model_provider_id(&doc) {
         if let Some(provider_table) = doc
             .get_mut("model_providers")
-            .and_then(|item| item.as_table_mut())
+            .and_then(|item| item.as_table_like_mut())
             .and_then(|table| table.get_mut(provider_id.as_str()))
-            .and_then(|item| item.as_table_mut())
+            .and_then(|item| item.as_table_like_mut())
         {
             let should_remove = provider_table
                 .get("experimental_bearer_token")
@@ -3128,15 +3128,12 @@ fn migrate_codex_reserved_provider_tables(
         if !table.contains_key("wire_api") {
             table.insert("wire_api", toml_edit::value("responses"));
         }
-        let has_own_auth = ["env_key", "experimental_bearer_token"]
-            .iter()
-            .any(|key| {
-                table
-                    .get(key)
-                    .and_then(|item| item.as_str())
-                    .is_some_and(|value| !value.trim().is_empty())
-            })
-            || ["auth", "aws"].iter().any(|key| table.contains_key(key))
+        let has_own_auth = ["env_key", "experimental_bearer_token"].iter().any(|key| {
+            table
+                .get(key)
+                .and_then(|item| item.as_str())
+                .is_some_and(|value| !value.trim().is_empty())
+        }) || ["auth", "aws"].iter().any(|key| table.contains_key(key))
             || ["http_headers", "env_http_headers"].iter().any(|key| {
                 table
                     .get(key)
@@ -4102,6 +4099,115 @@ model = "gpt-4"
         assert_eq!(
             set_codex_model_catalog_json_field(config, None).unwrap(),
             config
+        );
+    }
+
+    #[test]
+    fn catalog_pointer_preserves_literal_percent_and_dollar_paths() {
+        for pointer in [
+            "C:/100%/catalog.json",
+            "C:/cost$5/catalog.json",
+            "C:/literal$/catalog.json",
+            "C:/%NAME/catalog.json",
+            "C:/%9NAME%/catalog.json",
+            "C:/${9NAME}/catalog.json",
+            "C:/${NAME-NOT-A-VARIABLE}/catalog.json",
+            "C:/${NAME/catalog.json",
+            "C:/%NAME-NOT-A-VARIABLE%/catalog.json",
+        ] {
+            let config = format!("model_catalog_json = {pointer:?}\n");
+            for catalog in [None, Some(Path::new("generated.json"))] {
+                assert_eq!(
+                    set_codex_model_catalog_json_field(&config, catalog).unwrap(),
+                    config
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn config_only_migrates_reserved_tables_without_losing_metadata() {
+        for reserved in ["openai", "ollama", "lmstudio"] {
+            for inline in [false, true] {
+                let fields = r#"name = "User", base_url = "https://relay.example/v1", wire_api = "chat", env_key = "MY_KEY", http_headers = { "x-team" = "42" }, request_max_retries = 7"#;
+                let tables = if inline {
+                    format!("model_providers = {{ {reserved} = {{ {fields} }}, cc-switch = {{ name = \"Existing\" }} }}\n")
+                } else {
+                    format!("[model_providers.{reserved}]\n{}\n[model_providers.cc-switch]\nname = \"Existing\"\n", fields.replace(", ", "\n"))
+                };
+                let input = format!("model_provider = {reserved:?}\n{tables}");
+                let original: toml::Value = toml::from_str(&input).unwrap();
+                let output = prepare_codex_provider_live_config(&json!({}), &input).unwrap();
+                let parsed: toml::Value = toml::from_str(&output).unwrap();
+                assert_eq!(parsed["model_provider"].as_str(), Some("cc-switch-2"));
+                assert!(parsed["model_providers"].get(reserved).is_none());
+                assert_eq!(
+                    parsed["model_providers"]["cc-switch-2"],
+                    original["model_providers"][reserved]
+                );
+                assert_eq!(
+                    parsed["model_providers"]["cc-switch"],
+                    original["model_providers"]["cc-switch"]
+                );
+                assert_eq!(
+                    prepare_codex_provider_live_config(&json!({}), &output).unwrap(),
+                    output
+                );
+                let keyed = prepare_codex_provider_live_config(
+                    &json!({"OPENAI_API_KEY": "sk-test"}),
+                    &input,
+                )
+                .unwrap();
+                assert_eq!(
+                    extract_codex_experimental_bearer_token(&keyed).as_deref(),
+                    Some("sk-test")
+                );
+                let cleaned = remove_codex_experimental_bearer_token(&keyed).unwrap();
+                assert!(extract_codex_experimental_bearer_token(&cleaned).is_none());
+                let keyed: toml::Value = toml::from_str(&keyed).unwrap();
+                assert_eq!(
+                    keyed["model_providers"]["cc-switch-2"]["wire_api"].as_str(),
+                    Some("chat")
+                );
+                assert!(keyed.get("experimental_bearer_token").is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn reserved_migration_does_not_route_official_auth_to_stale_endpoints() {
+        let input = r#"model_providers = { openai = { base_url = "https://stale.example/v1" }, ollama = { name = "Local" }, lmstudio = { name = "Studio" }, OpenAI = { name = "Case variant" } }
+"#;
+        let output = prepare_codex_provider_live_config(&json!({}), input).unwrap();
+        let parsed: toml::Value = toml::from_str(&output).unwrap();
+        assert!(parsed.get("model_provider").is_none());
+        let inactive = format!("model_provider = \"OpenAI\"\n{input}");
+        let inactive = prepare_codex_provider_live_config(&json!({}), &inactive).unwrap();
+        let inactive: toml::Value = toml::from_str(&inactive).unwrap();
+        assert_eq!(inactive["model_provider"].as_str(), Some("OpenAI"));
+        assert_eq!(
+            parsed["model_providers"]["OpenAI"]["name"].as_str(),
+            Some("Case variant")
+        );
+        for (reserved, migrated) in [
+            ("openai", "cc-switch"),
+            ("ollama", "cc-switch-2"),
+            ("lmstudio", "cc-switch-3"),
+        ] {
+            assert!(parsed["model_providers"].get(reserved).is_none());
+            assert_eq!(
+                parsed["model_providers"][migrated]["wire_api"].as_str(),
+                Some("responses")
+            );
+        }
+        let keyed =
+            prepare_codex_provider_live_config(&json!({"OPENAI_API_KEY": "sk-test"}), input)
+                .unwrap();
+        let keyed: toml::Value = toml::from_str(&keyed).unwrap();
+        assert_eq!(keyed["model_provider"].as_str(), Some("cc-switch"));
+        assert_eq!(
+            keyed["model_providers"]["cc-switch"]["experimental_bearer_token"].as_str(),
+            Some("sk-test")
         );
     }
 

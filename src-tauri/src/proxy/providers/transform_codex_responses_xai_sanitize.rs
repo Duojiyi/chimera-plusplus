@@ -977,6 +977,23 @@ fn rewrite_xai_native_sse_block(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn xai_sse_preserves_malformed_events_and_propagates_errors() {
+        let chunks = vec![
+            Ok(Bytes::from_static(b"data: invalid-json\n\n")),
+            Err(std::io::Error::other("upstream failed")),
+        ];
+        let stream =
+            create_xai_native_responses_sse_stream(futures::stream::iter(chunks), HashMap::new());
+        tokio::pin!(stream);
+        assert_eq!(
+            stream.next().await.unwrap().unwrap(),
+            Bytes::from_static(b"data: invalid-json\n\n")
+        );
+        assert!(stream.next().await.unwrap().is_err());
+        assert!(stream.next().await.is_none());
+    }
+
     #[test]
     fn actual_route_controls_native_xai_compatibility() {
         for url in [

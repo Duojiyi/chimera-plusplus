@@ -567,6 +567,130 @@ fn portable_command_with_codex_home(
     Ok(command)
 }
 
+#[cfg(any(windows, test))]
+#[derive(Default)]
+struct CodexStartupWindows {
+    main_visible: bool,
+    dialog_visible: bool,
+}
+
+#[cfg(any(windows, test))]
+impl CodexStartupWindows {
+    fn observe(&mut self, class: &str) {
+        self.main_visible |= class == "Chrome_WidgetWin_1";
+        self.dialog_visible |= class == "#32770";
+    }
+
+    fn ready(&self) -> Result<bool, String> {
+        if self.dialog_visible {
+            return Err(
+                "Codex 启动时出现原生对话框，无法确认启动成功，请检查 Codex 窗口".to_string(),
+            );
+        }
+        Ok(self.main_visible)
+    }
+}
+
+#[cfg(windows)]
+fn codex_main_window_ready(root: &Path, deadline: Instant) -> Result<bool, String> {
+    use std::os::windows::process::CommandExt;
+    use windows_sys::Win32::Foundation::{HWND, LPARAM};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetClassNameW, GetWindowThreadProcessId, IsWindowVisible,
+    };
+
+    let mut command = Command::new("powershell.exe");
+    command.creation_flags(0x08000000);
+    command.env("CHIMERA_CODEX_STARTUP_ROOT", root).args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        r#"
+$ErrorActionPreference = 'Stop'
+$root = (Resolve-Path -LiteralPath $env:CHIMERA_CODEX_STARTUP_ROOT).ProviderPath.TrimEnd('\')
+$ids = @(Get-Process -Name Codex,ChatGPT -ErrorAction SilentlyContinue | ForEach-Object {
+    $path = $_.Path
+    if (-not [string]::IsNullOrWhiteSpace($path)) {
+        $parent = Split-Path -LiteralPath $path
+        if ([string]::Equals($parent, $root, [StringComparison]::OrdinalIgnoreCase)) { $_.Id }
+    }
+})
+ConvertTo-Json -InputObject $ids -Compress
+"#,
+    ]);
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Ok(false);
+    }
+    let output = crate::process_utils::output_with_timeout(
+        command,
+        remaining.min(Duration::from_secs(5)),
+        crate::security_limits::MAX_PROCESS_OUTPUT_BYTES,
+    )
+    .map_err(|error| {
+        if error.kind() == std::io::ErrorKind::TimedOut {
+            format!("Codex 主窗口进程探测超时（单次最多 5 秒，且受剩余启动预算限制）；机器响应较慢时也可能发生。无法确认启动成功，请检查 Codex 窗口后重试：{error}")
+        } else {
+            format!("Codex 主窗口进程探测失败，无法确认启动成功: {error}")
+        }
+    })?;
+    if !output.status.success() {
+        return Err("Codex 主窗口进程探测失败，无法确认启动成功".to_string());
+    }
+    let pids: Vec<u32> = serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("Codex 主窗口进程结果无效: {error}"))?;
+    struct Probe {
+        pids: Vec<u32>,
+        windows: CodexStartupWindows,
+        failed: bool,
+    }
+    unsafe extern "system" fn inspect(hwnd: HWND, param: LPARAM) -> i32 {
+        let probe = unsafe { &mut *(param as *mut Probe) };
+        let mut pid = 0;
+        unsafe {
+            GetWindowThreadProcessId(hwnd, &mut pid);
+        }
+        if !probe.pids.contains(&pid) || unsafe { IsWindowVisible(hwnd) } == 0 {
+            return 1;
+        }
+        let mut class = [0_u16; 128];
+        let length = unsafe { GetClassNameW(hwnd, class.as_mut_ptr(), class.len() as i32) };
+        if length == 0 {
+            probe.failed = true;
+        } else {
+            probe
+                .windows
+                .observe(&String::from_utf16_lossy(&class[..length as usize]));
+        }
+        1
+    }
+    let mut probe = Probe {
+        pids,
+        windows: CodexStartupWindows::default(),
+        failed: false,
+    };
+    let enumerated = unsafe { EnumWindows(Some(inspect), &mut probe as *mut _ as LPARAM) };
+    if enumerated == 0 || probe.failed {
+        return Err("Codex 主窗口枚举失败，无法确认启动成功".to_string());
+    }
+    probe.windows.ready()
+}
+
+#[cfg(not(windows))]
+fn codex_main_window_ready(_root: &Path, _deadline: Instant) -> Result<bool, String> {
+    Err("Codex 主窗口检查仅支持 Windows".to_string())
+}
+
+fn portable_startup_ready(
+    main_ready: bool,
+    renderer_ready: bool,
+    stable: bool,
+    now: Instant,
+    deadline: Instant,
+) -> bool {
+    main_ready && renderer_ready && stable && now < deadline
+}
+
 fn launch_portable_with_codex_home(
     installed: &codex_win_engine::InstalledWindowsCodex,
     codex_home: &Path,
@@ -598,20 +722,38 @@ fn launch_portable_with_codex_home(
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut running_since = None;
     while Instant::now() < deadline {
-        if codex_is_running(installed)? {
+        let main_ready = codex_main_window_ready(Path::new(&installed.path), deadline)?;
+        if main_ready {
             let since = running_since.get_or_insert_with(Instant::now);
+            if Instant::now() >= deadline {
+                break;
+            }
             let renderer_ready = options
                 .remote_debugging_port
                 .is_none_or(|port| crate::codex_cdp::probe_codex_renderer_unlock(port).attachable);
-            if since.elapsed() >= Duration::from_secs(3) && renderer_ready {
+            if Instant::now() >= deadline {
+                break;
+            }
+            let main_ready = renderer_ready
+                && since.elapsed() >= Duration::from_secs(3)
+                && codex_main_window_ready(Path::new(&installed.path), deadline)?;
+            if portable_startup_ready(
+                main_ready,
+                renderer_ready,
+                since.elapsed() >= Duration::from_secs(3),
+                Instant::now(),
+                deadline,
+            ) {
                 return Ok(());
             }
         } else {
             running_since = None;
         }
-        std::thread::sleep(Duration::from_millis(250));
+        std::thread::sleep(
+            Duration::from_millis(250).min(deadline.saturating_duration_since(Instant::now())),
+        );
     }
-    Err("Codex 启动后未通过运行/渲染器就绪检查，请在更新页运行诊断".to_string())
+    Err("Codex 启动后未通过主窗口/渲染器就绪检查，请在更新页运行诊断".to_string())
 }
 
 fn launch_msix_with_codex_home(
@@ -2500,6 +2642,48 @@ mod tests {
         .unwrap();
         assert_eq!(ordinary.get_args().count(), 0);
         assert!(!ordinary.get_envs().any(|(key, _)| key == "CODEX_CLI_PATH"));
+    }
+
+    #[test]
+    fn portable_startup_requires_main_window_and_rejects_dialogs() {
+        let mut windows = super::CodexStartupWindows::default();
+        assert!(!windows.ready().unwrap());
+        windows.observe("ConsoleWindowClass");
+        assert!(!windows.ready().unwrap());
+        windows.observe("Chrome_WidgetWin_1");
+        assert!(windows.ready().unwrap());
+        windows.observe("#32770");
+        assert!(windows.ready().is_err());
+        windows.observe("Chrome_WidgetWin_1");
+        assert!(windows.ready().is_err());
+    }
+
+    #[test]
+    fn portable_startup_never_accepts_late_or_process_only_success() {
+        let now = std::time::Instant::now();
+        let deadline = now + std::time::Duration::from_secs(30);
+        assert!(super::portable_startup_ready(
+            true, true, true, now, deadline
+        ));
+        for (main, renderer, stable) in [
+            (false, true, true),
+            (true, false, true),
+            (true, true, false),
+        ] {
+            assert!(!super::portable_startup_ready(
+                main, renderer, stable, now, deadline
+            ));
+        }
+        assert!(!super::portable_startup_ready(
+            true, true, true, deadline, deadline
+        ));
+        assert!(!super::portable_startup_ready(
+            true,
+            true,
+            true,
+            deadline + std::time::Duration::from_millis(1),
+            deadline
+        ));
     }
 
     #[test]
