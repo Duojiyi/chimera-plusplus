@@ -3766,6 +3766,7 @@ mod tests {
         let service = ProxyService::new(db.clone());
 
         let backup = json!({"env": {"ANTHROPIC_BASE_URL": "https://example.com"}});
+        write_json_file(&get_claude_settings_path(), &backup).unwrap();
         db.save_live_backup("claude", &backup.to_string())
             .await
             .unwrap();
@@ -6404,7 +6405,7 @@ model = "gpt-5.1-codex"
             toml::from_str(&output).expect("updated config should be valid TOML");
 
         let base_url = parsed
-            .get("base_url")
+            .get("openai_base_url")
             .and_then(|v| v.as_str())
             .expect("base_url should exist");
 
