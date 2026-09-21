@@ -167,6 +167,57 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
+describe("Chimera runtime request ownership", () => {
+  it("ignores an update check that finishes after uninstall", async () => {
+    const pending = deferred<unknown>();
+    let installed = true;
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "get_product_capabilities") return { capabilities: [] };
+      if (command === "check_codex_runtime_update") return pending.promise;
+      if (command === "get_codex_install_recovery") return [];
+      if (command === "uninstall_codex_runtime") installed = false;
+      return {
+        supported: true,
+        installed,
+        version: installed ? "1.2.0" : null,
+        running: false,
+        canUninstall: installed,
+        installMode: "standard",
+      };
+    });
+    mount();
+    fireEvent.click(await screen.findByRole("button", { name: "更新" }));
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith(
+        "check_codex_runtime_update",
+        expect.anything(),
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "安装方式与更新源" }));
+    fireEvent.click(screen.getByRole("button", { name: /卸载 Codex/ }));
+    fireEvent.click(screen.getByRole("button", { name: "确认继续" }));
+    expect(
+      await screen.findByRole("heading", { name: "尚未安装 Codex" }),
+    ).toBeVisible();
+    await act(async () =>
+      pending.resolve({
+        currentVersion: "1.2.0",
+        latestVersion: "1.3.0",
+        updateAvailable: true,
+        source: "auto",
+        installMode: "standard",
+        sizeBytes: 123,
+      }),
+    );
+    expect(
+      screen.getAllByRole("button", { name: "检查更新" }).length,
+    ).toBeGreaterThan(1);
+    expect(
+      screen.queryByRole("button", { name: "下载并安装 标准安装" }),
+    ).not.toBeInTheDocument();
+  });
+});
+
 describe("Chimera editor model request ownership", () => {
   it.each(["provider-base-url", "provider-api-key"])(
     "invalidates %s and ignores old completion without clearing a newer request",
