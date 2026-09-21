@@ -8,14 +8,9 @@
 //! *native* Responses passthrough forwards the body verbatim, so we scrub them
 //! here.
 //!
-//! This is a faithful port of sub2api's `patchGrokResponsesBody`
-//! (`backend/internal/service/openai_gateway_grok.go`), the production Go
-//! gateway that routes Codex → Grok subscriptions. Every transform is a
-//! deterministic field removal or structural lift — no semantic rewriting — so
-//! the same input always yields the same output and the upstream prompt-cache
-//! prefix stays stable across requests. Gated on the xAI OAuth path only (see
-//! [`super::codex::provider_needs_responses_namespace_flatten`]), so no other
-//! provider is ever touched.
+//! Request sanitation is adapted from sub2api and cc-switch, including
+//! xAI agent-message rewriting. Request and response transforms are gated on
+//! the actual upstream URL by [`is_xai_native_responses_url`], not provider metadata.
 //!
 //! Run this *after* namespace flattening: by then Codex's `namespace` tools are
 //! already lifted to top-level `function` tools, so the tool-type whitelist

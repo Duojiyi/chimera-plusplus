@@ -461,24 +461,6 @@ pub fn should_convert_codex_responses_to_anthropic_for_model(
     ) && codex_provider_uses_anthropic_for_model(provider, model)
 }
 
-/// Whether a native-Responses Codex upstream needs Codex `namespace`/plugin
-/// tool declarations flattened before forwarding.
-///
-/// Codex 0.142+ emits ChatGPT-backend-private `{"type":"namespace",…}` tool
-/// shapes that strict third-party Responses gateways reject with
-/// `422 unknown variant "namespace"`. Only providers whose upstream is such a
-/// strict native gateway need the flatten+restore pass; the Chat/Anthropic
-/// transform paths already unwrap namespaces on their own. Currently that is the
-/// managed xAI (Grok) OAuth provider — the first strict gateway cc-switch hit.
-pub fn provider_needs_responses_namespace_flatten(provider: &Provider) -> bool {
-    provider.is_xai_oauth()
-        || CodexAdapter
-            .extract_base_url(provider)
-            .ok()
-            .and_then(|base| url::Url::parse(&base).ok())
-            .is_some_and(|url| url.host_str() == Some("api.x.ai"))
-}
-
 /// The single built-in official Codex provider.  Unlike managed Codex OAuth
 /// providers used by Claude, this route receives authentication from the
 /// calling Codex client (`requires_openai_auth = true`).
@@ -2081,24 +2063,6 @@ wire_api = "responses"
             resolve_codex_catalog_tool_profile(&provider),
             crate::codex_config::CodexCatalogToolProfile::NativeResponses
         ));
-    }
-
-    #[test]
-    fn namespace_flatten_gate_only_fires_for_xai_oauth() {
-        // xAI OAuth: strict native gateway → needs namespace flattening.
-        let mut xai = create_provider(json!({ "auth": {}, "config": "" }));
-        xai.meta = Some(crate::provider::ProviderMeta {
-            provider_type: Some("xai_oauth".to_string()),
-            ..Default::default()
-        });
-        assert!(provider_needs_responses_namespace_flatten(&xai));
-
-        // A plain third-party API-key Codex provider must not be flattened.
-        let plain = create_provider(json!({
-            "auth": { "OPENAI_API_KEY": "sk-x" },
-            "config": "base_url = \"https://api.x.ai/v1\"\nwire_api = \"responses\""
-        }));
-        assert!(!provider_needs_responses_namespace_flatten(&plain));
     }
 
     // ─── codex_eligible_for_chat_auto_detect ────────────────────────────────
