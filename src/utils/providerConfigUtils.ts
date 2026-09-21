@@ -6,6 +6,32 @@ import { deepClone } from "@/utils/deepClone";
 import { normalizeTomlText } from "@/utils/textNormalization";
 import { parse as parseToml } from "smol-toml";
 
+export function codexApiFormatForModel(model: string): CodexApiFormat {
+  const normalized = model
+    .trim()
+    .split("/")
+    .pop()
+    ?.split(":")
+    .pop()
+    ?.toLowerCase();
+
+  if (!normalized) return "openai_chat";
+  if (normalized.startsWith("claude") || normalized.startsWith("anthropic")) {
+    return "anthropic";
+  }
+  if (
+    normalized.startsWith("gpt") ||
+    normalized.startsWith("o1") ||
+    normalized.startsWith("o3") ||
+    normalized.startsWith("o4") ||
+    normalized.startsWith("codex") ||
+    normalized.startsWith("chatgpt")
+  ) {
+    return "openai_responses";
+  }
+  return "openai_chat";
+}
+
 const isPlainObject = (value: unknown): value is Record<string, any> => {
   return Object.prototype.toString.call(value) === "[object Object]";
 };

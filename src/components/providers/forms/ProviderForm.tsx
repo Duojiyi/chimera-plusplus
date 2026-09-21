@@ -13,7 +13,6 @@ import {
   formatRequestOverrideObject,
 } from "@/lib/requestOverrides";
 import { providersApi, settingsApi, type AppId } from "@/lib/api";
-import { detectCodexApiFormats } from "@/lib/api/model-fetch";
 import { useDarkMode } from "@/hooks/useDarkMode";
 import type {
   ProviderCategory,
@@ -62,12 +61,10 @@ import {
   hasApiKeyField,
 } from "@/utils/providerConfigUtils";
 import { mergeProviderMeta } from "@/utils/providerMetaUtils";
-import {
-  findCodexCatalogModelsWithoutProtocol,
-  sanitizeCodexModelRoutesForSave,
-} from "@/chimeraUtils";
+import { sanitizeCodexModelRoutesForSave } from "@/chimeraUtils";
 import {
   codexApiFormatFromWireApi,
+  codexApiFormatForModel,
   extractCodexWireApi,
   setCodexWireApi,
   extractCodexModelName,
@@ -1452,71 +1449,21 @@ function ProviderFormFull({
       !isXaiOauthProvider &&
       localCodexApiFormat === "auto"
     ) {
-      try {
-        const detectionModels = Array.from(
-          new Set(
-            [
-              codexModel.trim(),
-              ...normalizedCatalogModels.map((entry) => entry.model.trim()),
-            ].filter(Boolean),
-          ),
-        );
-        const { detected: detectedFormats } = await detectCodexApiFormats(
-          codexBaseUrl,
-          codexApiKey,
-          detectionModels,
-          localIsFullUrl,
-          customUserAgent,
-        );
-        const defaultDetection = detectedFormats[codexModel.trim()];
-        if (!defaultDetection) {
-          throw new Error("默认模型未能识别上游协议");
-        }
-        detectedCodexModelFormats = detectedFormats;
-        // The backend probe returns partial success: models that fail to probe
-        // are simply absent from the map. An unmapped catalog model would fail
-        // closed (HTTP 400) at request time, so reject the save now instead of
-        // persisting a half-detected catalog the user only discovers later.
-        const undetectedCatalogModels = findCodexCatalogModelsWithoutProtocol(
-          normalizedCatalogModels,
-          detectedCodexModelFormats,
-          sanitizeCodexModelRoutesForSave(codexModelRoutes),
-        );
-        if (undetectedCatalogModels.length > 0) {
-          throw new Error(
-            `无法确认以下模型的上游协议：${undetectedCatalogModels.join(
-              "、",
-            )}。请重试自动识别、移除这些模型，或在高级设置中手动选择协议。`,
-          );
-        }
-        resolvedCodexApiFormat = defaultDetection.apiFormat;
-        if (defaultDetection.anthropicAuthField) {
-          resolvedCodexAnthropicAuthField = defaultDetection.anthropicAuthField;
-          setLocalCodexAnthropicAuthField(defaultDetection.anthropicAuthField);
-        }
-        toast.success(
-          t("codexConfig.upstreamFormatDetected", {
-            defaultValue:
-              "已自动识别 {{count}} 个模型的上游协议；默认模型协议：{{format}}",
-            count: Object.keys(detectedFormats).length,
-            format:
-              defaultDetection.apiFormat === "openai_responses"
-                ? "Responses"
-                : defaultDetection.apiFormat === "openai_chat"
-                  ? "Chat Completions"
-                  : "Anthropic Messages",
-          }),
-        );
-      } catch (error) {
-        console.warn("[CODEX_API_FORMAT_AUTO_DETECT_FAILED]", error);
-        toast.error(
-          t("codexConfig.upstreamFormatDetectFailed", {
-            defaultValue:
-              "无法自动识别上游 API 协议。请确认端点和 API Key，或在高级设置中手动选择协议。",
-          }),
-        );
-        return;
-      }
+      const modelNames = Array.from(
+        new Set(
+          [
+            codexModel.trim(),
+            ...normalizedCatalogModels.map((entry) => entry.model.trim()),
+          ].filter(Boolean),
+        ),
+      );
+      detectedCodexModelFormats = Object.fromEntries(
+        modelNames.map((model) => [
+          model,
+          { apiFormat: codexApiFormatForModel(model) },
+        ]),
+      );
+      resolvedCodexApiFormat = codexApiFormatForModel(codexModel);
     }
 
     let settingsConfig: string;

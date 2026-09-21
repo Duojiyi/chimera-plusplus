@@ -506,13 +506,13 @@ pub struct ProviderMeta {
     /// - "openai_responses": OpenAI Responses API 格式，需要转换
     #[serde(rename = "apiFormat", skip_serializing_if = "Option::is_none")]
     pub api_format: Option<String>,
-    /// Codex 自动检测意图标记。api_format 保存已识别的具体协议，本字段保留 UI 的“自动”选择。
+    /// Codex 自动模式意图标记。api_format 保存具体协议，本字段保留 UI 的“自动”选择。
     #[serde(
         rename = "apiFormatAutoDetected",
         skip_serializing_if = "Option::is_none"
     )]
     pub api_format_auto_detected: Option<bool>,
-    /// Codex 上游协议按模型保存的自动探测结果。
+    /// Codex 上游协议按模型保存的显式或模型族默认映射。
     #[serde(
         default,
         rename = "codexModelApiFormats",

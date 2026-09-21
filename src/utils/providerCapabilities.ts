@@ -87,7 +87,8 @@ export function providerNeedsRouting(
     }
     if (wireApi?.trim().toLowerCase() === "responses") return false;
 
-    // apiFormat 缺省且 config 未明确声明 Responses，代表仍需代理执行兼容性探测。
+    // apiFormat 缺省时由后端按请求模型族选择协议；保守接管可确保
+    // Claude/Chat 模型仍能转换为本地 Codex Responses 请求。
     return fmt == null;
   }
 

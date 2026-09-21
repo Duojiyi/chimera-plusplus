@@ -963,7 +963,7 @@ export function CodexFormFields({
                     {allowAutoApiFormat
                       ? t("codexConfig.upstreamFormatAutoHint", {
                           defaultValue:
-                            "默认自动识别：保存时会以不产生模型调用的校验请求探测端点；识别失败会提示你手动选择。供应商原生是 Responses API 就选 Responses（直连，不转换格式）；使用 Chat Completions 协议就选 Chat；供应商只提供原生 Anthropic Messages 协议就选 Anthropic Messages。Chat 与 Anthropic Messages 均需开启路由接管才能转换为 Responses。",
+                            "自动模式按模型族选择协议：GPT、o1/o3/o4、Codex 和 ChatGPT 使用 Responses；Claude 使用 Anthropic Messages；其他模型使用 Chat Completions。显式选择始终优先，不会因保存配置发起探测请求。Chat 与 Anthropic Messages 均需开启路由接管才能转换为 Responses。",
                         })
                       : t("codexConfig.upstreamFormatHint", {
                           defaultValue:
@@ -1526,7 +1526,7 @@ export function CodexFormFields({
                                       {t(
                                         "codexConfig.modelRouteFormatInherit",
                                         {
-                                          defaultValue: "协议：沿用探测结果",
+                                          defaultValue: "协议：按模型族默认",
                                         },
                                       )}
                                     </SelectItem>
