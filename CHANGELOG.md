@@ -10,6 +10,12 @@ numbers belong to a separate upstream line.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.10] - 2026-09-22
+
+### Fixed
+
+- Stop probing a provider's endpoint on every save. Newly added and edited providers now default to a protocol chosen from the model family instead, removing a network round-trip (and its failure modes) from the save path.
+
 ## [2.7.9] - 2026-09-22
 
 ### Fixed
