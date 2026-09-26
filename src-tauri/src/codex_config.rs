@@ -272,62 +272,130 @@ fn is_accepted_codex_approval_policy(item: &toml_edit::Item) -> bool {
         .is_some_and(|table| table.contains_key("granular"))
 }
 
-/// Remove `approval_policy` assignments Codex no longer accepts, in place, so
+/// MH-23: `GranularApprovalConfig` fields with no `#[serde(default)]` in
+/// Codex's own struct (verified against `protocol/src/protocol.rs`,
+/// `rust-v0.156.0`-era source; `skill_approval`/`request_permissions` do
+/// have one and are not listed here). A granular table missing any of
+/// these fails to deserialize, which — like the string-form rejections
+/// above — takes the whole config.toml down with it, not just this key.
+const CODEX_GRANULAR_APPROVAL_REQUIRED_BOOL_FIELDS: &[&str] =
+    &["sandbox_approval", "rules", "mcp_elicitations"];
+
+/// Backfill missing required boolean fields on an `approval_policy = {
+/// granular = { ... } }` table with `false` (deny that category, the
+/// conservative reading of the user's intent to use granular mode at all —
+/// never silently allow something they never opted into). No-op for any
+/// other shape (string policy, absent, or already-complete granular table).
+/// Returns the names backfilled, for the same one-time log line the
+/// string-rejection path already writes.
+fn backfill_granular_approval_required_fields(
+    item: &mut toml_edit::Item,
+    location: &str,
+    filled: &mut Vec<String>,
+) {
+    let Some(table) = item.as_table_like_mut() else {
+        return;
+    };
+    if !table.contains_key("granular") {
+        return;
+    }
+    let Some(granular) = table
+        .get_mut("granular")
+        .and_then(|item| item.as_table_like_mut())
+    else {
+        return;
+    };
+    for field in CODEX_GRANULAR_APPROVAL_REQUIRED_BOOL_FIELDS {
+        if !granular.contains_key(field) {
+            granular.insert(field, toml_edit::value(false));
+            filled.push(format!("{location}.granular.{field}"));
+        }
+    }
+}
+
+/// Remove `approval_policy`/top-level `profile` assignments Codex no longer
+/// accepts, and backfill an incomplete granular approval table, in place, so
 /// every other byte of the user's config.toml survives. Returns the text
-/// unchanged (same allocation) when there is nothing to strip.
+/// unchanged (same allocation) when there is nothing to fix.
 pub fn strip_rejected_codex_settings(config_text: &str) -> Result<String, AppError> {
-    if !config_text.contains("approval_policy") {
+    if !config_text.contains("approval_policy") && !config_text.contains("profile") {
         return Ok(config_text.to_string());
     }
     let mut doc = config_text
         .parse::<toml_edit::DocumentMut>()
         .map_err(|e| AppError::Config(format!("Codex 配置无法解析: {e}")))?;
     let mut removed = Vec::new();
+    let mut filled = Vec::new();
 
     let is_rejected = |item: &toml_edit::Item| !is_accepted_codex_approval_policy(item);
+
+    // MH-23: any top-level `profile = "x"` makes current Codex refuse the
+    // whole config ("legacy `profile = "..."` config is no longer
+    // supported; use `--profile ...` with `<name>.config.toml` instead"),
+    // unconditionally and regardless of value — verified against
+    // `core/src/config/mod.rs`. `[profiles.*]` tables themselves are a
+    // separate, still-supported mechanism and are untouched here.
+    if doc.remove("profile").is_some() {
+        removed.push("profile".to_string());
+    }
 
     if doc.get("approval_policy").is_some_and(is_rejected) {
         removed.push("approval_policy".to_string());
         doc.remove("approval_policy");
+    } else if let Some(item) = doc.get_mut("approval_policy") {
+        backfill_granular_approval_required_fields(item, "approval_policy", &mut filled);
     }
     if let Some(profiles) = doc
         .get_mut("profiles")
         .and_then(|item| item.as_table_like_mut())
     {
-        let names: Vec<String> = profiles
-            .iter()
-            .filter(|(_, profile)| {
-                profile
-                    .as_table_like()
-                    .and_then(|table| table.get("approval_policy"))
-                    .is_some_and(is_rejected)
-            })
-            .map(|(name, _)| name.to_string())
-            .collect();
+        let names: Vec<String> = profiles.iter().map(|(name, _)| name.to_string()).collect();
         for name in names {
-            if let Some(profile) = profiles
+            let Some(profile) = profiles
                 .get_mut(&name)
                 .and_then(|item| item.as_table_like_mut())
-            {
+            else {
+                continue;
+            };
+            let rejected = profile
+                .get("approval_policy")
+                .is_some_and(|item| is_rejected(item));
+            if rejected {
                 profile.remove("approval_policy");
                 removed.push(format!("profiles.{name}.approval_policy"));
+            } else if let Some(item) = profile.get_mut("approval_policy") {
+                backfill_granular_approval_required_fields(
+                    item,
+                    &format!("profiles.{name}.approval_policy"),
+                    &mut filled,
+                );
             }
         }
     }
 
-    if removed.is_empty() {
+    if removed.is_empty() && filled.is_empty() {
         return Ok(config_text.to_string());
     }
-    log::warn!(
-        "已从 Codex 配置移除 Codex 0.153+ 不再接受的 approval_policy 取值（{}），否则整份 config.toml 会被拒绝加载",
-        removed.join(", ")
-    );
+    if !removed.is_empty() {
+        log::warn!(
+            "已从 Codex 配置移除 Codex 0.153+ 不再接受的取值（{}），否则整份 config.toml 会被拒绝加载",
+            removed.join(", ")
+        );
+    }
+    if !filled.is_empty() {
+        log::warn!(
+            "已为 Codex granular 审批表补齐缺失的必填字段（{}，默认 false），否则整份 config.toml 会被拒绝加载",
+            filled.join(", ")
+        );
+    }
     Ok(doc.to_string())
 }
 
-/// Startup self-repair: if the live config.toml carries an `approval_policy`
-/// Codex rejects, back it up next to itself and rewrite it without the key.
-/// Nothing else is touched; a config that already loads is left byte-identical.
+/// Startup self-repair: if the live config.toml carries a setting Codex
+/// rejects wholesale (an old `approval_policy` value, a top-level `profile`,
+/// an incomplete granular approval table — see `strip_rejected_codex_settings`),
+/// back it up next to itself and rewrite it repaired. Nothing else is
+/// touched; a config that already loads is left byte-identical.
 pub fn repair_rejected_codex_settings_at_startup() -> Result<bool, AppError> {
     let config_path = get_codex_config_path();
     if !config_path.exists() {
@@ -739,10 +807,14 @@ pub fn codex_auth_has_oauth_login_material(auth: &Value) -> bool {
 /// into the third-party row's stored `auth` too, unless something strips
 /// it back out. Nothing did.
 ///
-/// Unconditionally removes fields that have no legitimate reason to be on
-/// any non-official row (`tokens` — nested `access_token`/`refresh_token`/
-/// `id_token` all live under it — plus `auth_mode`, `agent_identity`,
-/// `personal_access_token`, and any `bedrock_*` key).
+/// `auth_mode` is a generic label a non-official row can legitimately carry
+/// with a non-`"chatgpt"` value (e.g. `"apikey"`) — it is only removed, along
+/// with `tokens` (nested `access_token`/`refresh_token`/`id_token`), when
+/// its value is exactly `"chatgpt"`. `agent_identity`/`personal_access_token`/
+/// `bedrock_*` are unconditional: unlike `auth_mode`, these are Codex's own
+/// official-identity-specific concepts with no third-party meaning in this
+/// app's schema, so their mere presence on a non-official row is itself the
+/// pollution, regardless of `auth_mode`.
 ///
 /// `OPENAI_API_KEY` is handled separately and is **not** touched unless
 /// [`codex_auth_has_oauth_login_material`] is true for this exact `auth`
@@ -756,17 +828,20 @@ pub fn codex_auth_has_oauth_login_material(auth: &Value) -> bool {
 /// exhaustive against every future Codex auth shape.
 pub fn scrub_oauth_material_from_non_official_codex_auth(auth: &mut Value) -> bool {
     let should_remove_api_key = codex_auth_has_oauth_login_material(auth);
+    let is_chatgpt_mode = auth.get("auth_mode").and_then(Value::as_str) == Some("chatgpt");
     let Some(map) = auth.as_object_mut() else {
         return false;
     };
 
     let mut changed = false;
-    for key in [
-        "tokens",
-        "auth_mode",
-        "agent_identity",
-        "personal_access_token",
-    ] {
+    if is_chatgpt_mode {
+        for key in ["auth_mode", "tokens"] {
+            if map.remove(key).is_some() {
+                changed = true;
+            }
+        }
+    }
+    for key in ["agent_identity", "personal_access_token"] {
         if map.remove(key).is_some() {
             changed = true;
         }
@@ -4241,9 +4316,9 @@ wire_api = "responses"
             "tokens": { "access_token": "" },
         });
         let changed = scrub_oauth_material_from_non_official_codex_auth(&mut auth);
-        // tokens/auth_mode are still unconditionally stale-OAuth-shaped
-        // fields with no business being on a non-official row, so they are
-        // still removed; only the API key's fate depends on the signature.
+        // auth_mode is still exactly "chatgpt" here, so it (and tokens) are
+        // still removed regardless of the empty access_token; only the API
+        // key's fate depends on the fuller pollution signature.
         assert!(changed);
         assert_eq!(
             auth.get("OPENAI_API_KEY").and_then(Value::as_str),
@@ -6056,6 +6131,72 @@ base_url = "https://relay.example/v1"
                 "{text:?}"
             );
         }
+    }
+
+    // MH-23 regression: a top-level `profile = "x"` makes Codex refuse the
+    // whole config unconditionally (verified against `core/src/config/
+    // mod.rs`'s `cfg.profile` check), regardless of value.
+    #[test]
+    fn strip_rejected_settings_removes_top_level_profile() {
+        let text =
+            "profile = \"work\"\nmodel = \"gpt-5.6\"\n\n[profiles.work]\nmodel = \"gpt-5.6\"\n";
+        let stripped = strip_rejected_codex_settings(text).expect("valid toml");
+        let parsed: toml::Value = toml::from_str(&stripped).expect("still valid toml");
+
+        assert!(parsed.get("profile").is_none());
+        assert_eq!(parsed["model"].as_str(), Some("gpt-5.6"));
+        assert!(
+            parsed["profiles"]["work"].get("model").is_some(),
+            "the [profiles.*] table itself is a separate, still-supported mechanism"
+        );
+    }
+
+    #[test]
+    fn strip_rejected_settings_removes_profile_even_with_no_approval_policy_present() {
+        // Exercises the early-return guard directly: this input has no
+        // "approval_policy" substring at all, so the fix must key its
+        // early return on "profile" too, not only "approval_policy".
+        let text = "profile = \"work\"\nmodel = \"gpt-5.6\"\n";
+        let stripped = strip_rejected_codex_settings(text).expect("valid toml");
+        let parsed: toml::Value = toml::from_str(&stripped).expect("still valid toml");
+        assert!(parsed.get("profile").is_none());
+    }
+
+    // MH-23 regression: `GranularApprovalConfig::{sandbox_approval, rules,
+    // mcp_elicitations}` have no `#[serde(default)]` in Codex's own struct —
+    // missing any of them fails deserialization and takes the whole config
+    // down, just like the string-form rejections above.
+    #[test]
+    fn strip_rejected_settings_backfills_missing_granular_required_fields() {
+        let text = "approval_policy = { granular = { hints = [] } }\n\n[profiles.a]\napproval_policy = { granular = { sandbox_approval = true } }\n";
+        let stripped = strip_rejected_codex_settings(text).expect("valid toml");
+        let parsed: toml::Value = toml::from_str(&stripped).expect("still valid toml");
+
+        let root_granular = &parsed["approval_policy"]["granular"];
+        assert_eq!(root_granular["sandbox_approval"].as_bool(), Some(false));
+        assert_eq!(root_granular["rules"].as_bool(), Some(false));
+        assert_eq!(root_granular["mcp_elicitations"].as_bool(), Some(false));
+        // Fields Codex already defaults itself must not be force-inserted.
+        assert!(root_granular.get("skill_approval").is_none());
+        assert!(root_granular.get("request_permissions").is_none());
+
+        let profile_granular = &parsed["profiles"]["a"]["approval_policy"]["granular"];
+        assert_eq!(
+            profile_granular["sandbox_approval"].as_bool(),
+            Some(true),
+            "an explicitly set required field must survive untouched"
+        );
+        assert_eq!(profile_granular["rules"].as_bool(), Some(false));
+        assert_eq!(profile_granular["mcp_elicitations"].as_bool(), Some(false));
+    }
+
+    #[test]
+    fn strip_rejected_settings_leaves_complete_granular_table_byte_identical() {
+        let text = "approval_policy = { granular = { sandbox_approval = false, rules = true, mcp_elicitations = false } }\n";
+        assert_eq!(
+            strip_rejected_codex_settings(text).expect("valid toml"),
+            text
+        );
     }
 
     #[test]

@@ -1251,17 +1251,19 @@ mod tests {
             .get_provider_by_id(&provider_id, "codex")
             .expect("read imported provider")
             .expect("provider exists");
-        // No protocol is probed or persisted at import time; the request-time
-        // model-family default resolves it instead — and must resolve to
-        // Anthropic for this "claude-*" model, not the Chat Completions
-        // result the old probe-driven test simulated (there is no server
-        // shape to simulate a wrong answer from any more).
+        // No protocol is *probed* at import time (there is no server shape
+        // to simulate a wrong answer from any more), but it is still
+        // computed and persisted from the model-family default, matching
+        // "claude-*" to Anthropic — not left unset (see the MH-8a
+        // correction note in the implementation tracker for why leaving it
+        // unset would actually resolve to Native Responses instead, via
+        // build_codex_settings's hardcoded wire_api = "responses").
         assert_eq!(
             stored
                 .meta
                 .as_ref()
                 .and_then(|meta| meta.api_format.as_deref()),
-            None
+            Some("anthropic")
         );
         assert!(
             crate::proxy::providers::should_convert_codex_responses_to_anthropic_for_model(
