@@ -102,15 +102,24 @@ pub struct BackupEntry {
 
 impl Database {
     /// 导出为 SQLite 兼容的 SQL 文本（内存字符串，完整导出）
+    ///
+    /// MH-17: redacted by default — same as the sync export below — because
+    /// this text format is explicitly the "take this elsewhere" one (shared,
+    /// uploaded, or simply outliving a live session on disk longer than the
+    /// state.db file itself). A `.db` file-copy backup is the separate,
+    /// same-device, same-account mechanism for an exact local restore, and
+    /// stays full-fidelity, protected by file permissions instead (see
+    /// `Self::backup_database_file`).
     pub fn export_sql_string(&self) -> Result<String, AppError> {
         let snapshot = self.snapshot_to_memory()?;
+        Self::redact_codex_provider_auth(&snapshot)?;
         Self::dump_sql(&snapshot, &[])
     }
 
     /// Export SQL for sync (WebDAV), skipping local-only tables' data
     pub fn export_sql_string_for_sync(&self) -> Result<String, AppError> {
         let snapshot = self.snapshot_to_memory()?;
-        Self::redact_official_provider_auth(&snapshot)?;
+        Self::redact_codex_provider_auth(&snapshot)?;
         Self::dump_sql(&snapshot, SYNC_SKIP_TABLES)
     }
 
@@ -189,7 +198,7 @@ impl Database {
         Self::create_tables_on_conn(&temp_conn)?;
         Self::apply_schema_migrations_on_conn(&temp_conn)?;
         if !preserve_tables.is_empty() {
-            Self::redact_official_provider_auth(&temp_conn)?;
+            Self::redact_codex_provider_auth(&temp_conn)?;
         }
         Self::validate_basic_state(&temp_conn)?;
         if let Some(local_snapshot) = local_snapshot.as_ref() {
@@ -582,41 +591,59 @@ impl Database {
         Ok(())
     }
 
-    /// Remove live OAuth state from official providers in sync snapshots.
+    /// Remove OAuth login material from every Codex provider row in a
+    /// snapshot — content-based (MH-17), not category-based: the official
+    /// row's *entire* `auth` is reset (it exists only to track a live OAuth
+    /// session; nothing in it should ever leave the device), while a
+    /// non-official row is scrubbed with the same
+    /// [`crate::codex_config::scrub_oauth_material_from_non_official_codex_auth`]
+    /// used at backfill time (MH-19) — never wiped wholesale, since its own
+    /// `OPENAI_API_KEY`/env credential is exactly what a provider export or
+    /// sync exists to carry across devices. Non-Codex rows (whose `auth`/
+    /// `env` shapes are unrelated to this) are left alone.
     ///
-    /// Provider backfill intentionally keeps local runtime state so switching
-    /// between official accounts preserves each account's refreshed token.
-    /// The sync snapshot is the security boundary: that state must not leave
-    /// the device through the shared `providers` table.
-    fn redact_official_provider_auth(conn: &Connection) -> Result<(), AppError> {
+    /// Provider backfill intentionally keeps live runtime state, so this
+    /// boundary — every export and sync snapshot — is where OAuth material
+    /// must stop, regardless of which category or app_type row it drifted
+    /// into.
+    fn redact_codex_provider_auth(conn: &Connection) -> Result<(), AppError> {
         // Also protect devices that imported an unsafe snapshot with an older release.
         Self::validate_backup_schema(conn)?;
         let providers = {
             let mut stmt = conn.prepare(
-                "SELECT id, app_type, settings_config FROM main.providers WHERE category = 'official'",
+                "SELECT id, app_type, category, settings_config FROM main.providers WHERE app_type = 'codex'",
             )?;
             let rows = stmt.query_map([], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
                 ))
             })?;
             rows.collect::<Result<Vec<_>, _>>()?
         };
         let mut changed = 0;
-        for (id, app_type, raw) in providers {
+        for (id, app_type, category, raw) in providers {
             // Parse and reserialize even unchanged objects: SQLite json_set only
             // replaces the first duplicate auth key and could export later tokens.
             let mut settings: serde_json::Value = serde_json::from_str(&raw).map_err(|_| {
-                AppError::InvalidInput("官方供应商配置不是有效 JSON，无法安全脱敏同步".into())
+                AppError::InvalidInput("Codex 供应商配置不是有效 JSON，无法安全脱敏".into())
             })?;
             let object = settings.as_object_mut().ok_or_else(|| {
-                AppError::InvalidInput("官方供应商配置不是 JSON 对象，无法安全脱敏同步".into())
+                AppError::InvalidInput("Codex 供应商配置不是 JSON 对象，无法安全脱敏".into())
             })?;
-            if object.contains_key("auth") {
+            let is_official = category.as_deref() == Some("official");
+            if is_official {
                 object.insert("auth".into(), serde_json::json!({}));
+            } else if let Some(auth) = object.get_mut("auth") {
+                crate::codex_config::scrub_oauth_material_from_non_official_codex_auth(auth);
             }
+            // Always reserialize and write back every selected row, even one
+            // where nothing above changed — matching the prior behavior this
+            // replaces exactly: the JSON round-trip through serde_json is
+            // itself a canonicalization (collapses duplicate keys a crafted
+            // import could use to hide a secret past a narrower check).
             let sanitized = serde_json::to_string(&settings)
                 .map_err(|source| AppError::JsonSerialize { source })?;
             // Override imported IGNORE/REPLACE policies: a conflict must abort
@@ -627,13 +654,13 @@ impl Database {
             )?;
             if affected != 1 {
                 return Err(AppError::InvalidInput(
-                    "官方供应商记录不唯一，无法安全脱敏同步".into(),
+                    "Codex 供应商记录不唯一，无法安全脱敏".into(),
                 ));
             }
             changed += affected;
         }
         if changed > 0 {
-            log::debug!("Redacted auth from {changed} official providers for sync");
+            log::debug!("Redacted OAuth material from {changed} Codex provider row(s)");
         }
 
         Ok(())
@@ -1332,7 +1359,7 @@ mod tests {
             }
             assert!(db.export_sql_string_for_sync().is_err());
             let snapshot = db.snapshot_to_memory()?;
-            assert!(Database::redact_official_provider_auth(&snapshot).is_err());
+            assert!(Database::redact_codex_provider_auth(&snapshot).is_err());
             let preserved: i64 = {
                 let conn = crate::database::lock_conn!(db.conn);
                 conn.query_row(
@@ -1397,7 +1424,7 @@ mod tests {
         }
         assert!(db.export_sql_string_for_sync().is_err());
         let snapshot = db.snapshot_to_memory()?;
-        assert!(Database::redact_official_provider_auth(&snapshot).is_err());
+        assert!(Database::redact_codex_provider_auth(&snapshot).is_err());
         let leaked: i64 =
             snapshot.query_row("SELECT COUNT(*) FROM leaked_auth", [], |row| row.get(0))?;
         assert_eq!(leaked, 0, "redaction must not execute the imported trigger");
@@ -1458,9 +1485,15 @@ mod tests {
         let imported = Database::memory()?;
         imported.import_sql_string_for_sync(&sync_export)?;
 
-        // Older remote snapshots may still contain the previous leak. The
-        // sync import boundary must clean them instead of restoring tokens.
-        let full_export = db.export_sql_string()?;
+        // Older remote snapshots (or, before MH-17, a local .sql export —
+        // export_sql_string() is redacted the same way now, so this reaches
+        // straight past both export paths for an unredacted dump) may still
+        // contain the previous leak. The sync import boundary must clean it
+        // instead of restoring tokens.
+        let full_export = {
+            let snapshot = db.snapshot_to_memory()?;
+            Database::dump_sql(&snapshot, &[])?
+        };
         assert!(full_export.contains("official-live-token"));
         let legacy_import = Database::memory()?;
         legacy_import.import_sql_string_for_sync(&full_export)?;
@@ -1483,6 +1516,97 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&test_home);
 
+        Ok(())
+    }
+
+    // MH-17 regressions: redaction is content-based (any Codex row, not
+    // just category='official') and now also applies to the plain local
+    // export, not just the sync export — but a non-official row's own
+    // legitimate credential must survive, only genuine OAuth pollution
+    // scrubbed, mirroring the MH-19 backfill-time fix exactly.
+
+    #[test]
+    fn local_export_redacts_official_but_keeps_non_official_codex_credential(
+    ) -> Result<(), AppError> {
+        let db = Database::memory()?;
+        {
+            let conn = crate::database::lock_conn!(db.conn);
+            conn.execute(
+                "INSERT INTO providers (id, app_type, name, settings_config, category, meta)
+                 VALUES ('official', 'codex', 'Official',
+                         '{\"auth\":{\"tokens\":{\"access_token\":\"local-live-token\"}},\"config\":\"\"}',
+                         'official', '{}')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO providers (id, app_type, name, settings_config, meta)
+                 VALUES ('relay', 'codex', 'Relay',
+                         '{\"auth\":{\"OPENAI_API_KEY\":\"sk-relay-own-key\"}}', '{}')",
+                [],
+            )?;
+        }
+
+        let exported = db.export_sql_string()?;
+        assert!(
+            !exported.contains("local-live-token"),
+            "plain local export must redact the official row too, not just sync export"
+        );
+        assert!(
+            exported.contains("sk-relay-own-key"),
+            "a non-official row's own credential must survive a local export"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn export_scrubs_oauth_pollution_from_non_official_row_without_wiping_its_key(
+    ) -> Result<(), AppError> {
+        // Simulates a row already polluted by the MH-19 defect (real OAuth
+        // material backfilled alongside the row's own key): export must
+        // strip the pollution but not treat the whole row like the official
+        // one.
+        let db = Database::memory()?;
+        {
+            let conn = crate::database::lock_conn!(db.conn);
+            conn.execute(
+                "INSERT INTO providers (id, app_type, name, settings_config, meta)
+                 VALUES ('polluted', 'codex', 'Polluted',
+                         '{\"auth\":{\"OPENAI_API_KEY\":\"sk-own-key\",\"auth_mode\":\"chatgpt\",\
+                           \"tokens\":{\"access_token\":\"polluted-oauth-token\"}}}', '{}')",
+                [],
+            )?;
+        }
+
+        for exported in [db.export_sql_string()?, db.export_sql_string_for_sync()?] {
+            assert!(!exported.contains("polluted-oauth-token"));
+            assert!(!exported.contains("\"auth_mode\":\"chatgpt\""));
+            assert!(
+                exported.contains("sk-own-key"),
+                "the row's own key must survive: only the oauth pollution is scrubbed, \
+                 mirroring MH-19's backfill-time fix, not the official row's wholesale reset"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn export_leaves_non_codex_rows_untouched() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        {
+            let conn = crate::database::lock_conn!(db.conn);
+            conn.execute(
+                "INSERT INTO providers (id, app_type, name, settings_config, meta)
+                 VALUES ('claude-custom', 'claude', 'Custom',
+                         '{\"env\":{\"ANTHROPIC_API_KEY\":\"anthropic-key\"}}', '{}')",
+                [],
+            )?;
+        }
+
+        let exported = db.export_sql_string()?;
+        assert!(
+            exported.contains("anthropic-key"),
+            "redaction is scoped to app_type='codex'; other app types are untouched"
+        );
         Ok(())
     }
 
