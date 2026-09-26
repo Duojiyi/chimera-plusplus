@@ -663,6 +663,42 @@ fn prepare_codex_official_auth(stored_auth: &Value, live_auth: &Value) -> Value 
     if !official_auth.is_object() {
         official_auth = json!({});
     }
+
+    // MH-15: Codex's official identity supports logging in with a plain API
+    // key instead of ChatGPT OAuth (`codex login --api-key`) — a real,
+    // supported mode alongside `chatgpt`, not a stale mistake. The
+    // unconditional strip-and-relabel below used to also fire on that
+    // legitimate case, silently deleting a working API key and forcing an
+    // `auth_mode: "chatgpt"` with no actual tokens behind it — logging the
+    // user out and demanding a fresh ChatGPT login they never asked for.
+    //
+    // Distinguish "genuinely has usable OAuth tokens" from "auth_mode says
+    // chatgpt/apikey but there's nothing real behind it" directly — not via
+    // `codex_auth_has_oauth_login_material`, which itself requires
+    // `auth_mode == "chatgpt"` and would (correctly, for that function's own
+    // purpose) call a mislabeled-but-real oauth session "not oauth".
+    let has_real_oauth_tokens = official_auth
+        .pointer("/tokens/access_token")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|token| !token.is_empty());
+    let has_own_non_oauth_credential = extract_codex_auth_api_key(&official_auth).is_some()
+        || official_auth
+            .get("personal_access_token")
+            .and_then(Value::as_str)
+            .is_some_and(|token| !token.trim().is_empty());
+    if has_own_non_oauth_credential && !has_real_oauth_tokens {
+        // Leave a legitimate non-ChatGPT official login byte-identical.
+        // Coverage note: this recognizes `OPENAI_API_KEY` and
+        // `personal_access_token` specifically. Codex 0.157 is reported to
+        // also accept a `headers`-based login mode; that field's exact
+        // shape is not independently confirmed against upstream source in
+        // this codebase (no current caller references it), so it is not
+        // yet recognized here — a headers-only official login would still
+        // be incorrectly relabeled to chatgpt by the fallthrough below.
+        return official_auth;
+    }
+
     if let Some(object) = official_auth.as_object_mut() {
         object.remove("OPENAI_API_KEY");
         object.insert(
@@ -3520,15 +3556,47 @@ mod tests {
         assert!(prepared.get("OPENAI_API_KEY").is_none());
     }
 
+    // MH-15 regression: this used to be
+    // official_auth_without_oauth_forces_login_instead_of_reusing_api_key,
+    // asserting that a real, working `codex login --api-key` official login
+    // got silently wiped and replaced with a chatgpt auth_mode carrying no
+    // actual tokens — logging the user out of a login they never asked to
+    // change. A legitimate non-ChatGPT official login must survive
+    // byte-identical instead.
     #[test]
-    fn official_auth_without_oauth_forces_login_instead_of_reusing_api_key() {
-        let prepared = prepare_codex_official_auth(
-            &json!({}),
-            &json!({ "auth_mode": "apikey", "OPENAI_API_KEY": "stale-key" }),
-        );
+    fn official_auth_preserves_legitimate_api_key_login_without_oauth() {
+        let live = json!({ "auth_mode": "apikey", "OPENAI_API_KEY": "stale-key" });
+        let prepared = prepare_codex_official_auth(&json!({}), &live);
 
-        assert_eq!(prepared, json!({ "auth_mode": "chatgpt" }));
-        assert!(!codex_auth_has_oauth_login_material(&prepared));
+        assert_eq!(prepared, live, "a working apikey login must not be touched");
+    }
+
+    #[test]
+    fn official_auth_preserves_legitimate_personal_access_token_login() {
+        let live = json!({ "personal_access_token": "pat-real-token" });
+        let prepared = prepare_codex_official_auth(&json!({}), &live);
+
+        assert_eq!(prepared, live);
+    }
+
+    #[test]
+    fn official_auth_still_promotes_mislabeled_row_with_real_oauth_tokens() {
+        // Same shape as official_auth_keeps_oauth_and_removes_api_login_mode
+        // above, restated to make the apikey-vs-real-tokens distinction
+        // explicit: auth_mode says "apikey", but real oauth tokens are
+        // actually present, so this is not the legitimate-non-oauth-login
+        // case MH-15 protects — promoting it to chatgpt and dropping the
+        // stale key alongside real oauth tokens is still correct.
+        let live = json!({
+            "auth_mode": "apikey",
+            "OPENAI_API_KEY": "stale-alongside-real-oauth",
+            "tokens": { "access_token": "real-oauth-access" },
+        });
+        let prepared = prepare_codex_official_auth(&json!({}), &live);
+
+        assert_eq!(prepared["auth_mode"], "chatgpt");
+        assert!(prepared.get("OPENAI_API_KEY").is_none());
+        assert_eq!(prepared["tokens"]["access_token"], "real-oauth-access");
     }
 
     #[test]
