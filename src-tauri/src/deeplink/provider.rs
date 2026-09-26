@@ -99,26 +99,19 @@ pub async fn import_provider_from_deeplink(
 
     // Build provider configuration based on app type.
     let mut provider = build_provider_from_request(&app_type, &merged_request)?;
-    let enabled = merged_request.enabled.unwrap_or(false);
 
-    // An enabled Codex-family deep link must persist the resolved upstream
-    // protocol before the provider is added. Otherwise the generated Codex
-    // config says Responses for every endpoint and the automatic switch path
-    // cannot know that Chat Completions/Anthropic translation is required.
-    if matches!(app_type, AppType::Codex | AppType::GrokBuild) {
-        let detected = crate::services::model_fetch::detect_codex_api_format(
-            primary_endpoint,
-            api_key,
-            false,
-            merged_request.model.as_deref(),
-            None,
-        )
-        .await
-        .map_err(|e| AppError::Message(format!("自动识别上游 API 协议失败: {e}")))?;
-        let meta = provider.meta.get_or_insert_with(ProviderMeta::default);
-        meta.api_format = Some(detected.api_format);
-        meta.api_key_field = detected.anthropic_auth_field;
-    }
+    // MH-8a: this used to call detect_codex_api_format() here, a network
+    // round-trip to the (untrusted, deep-link-supplied) endpoint that could
+    // fail, hang, or be used to probe an internal address before the
+    // provider was ever added. Since c452dc59, the manual add/edit path no
+    // longer probes either: `codex_api_format_for_model()`
+    // (proxy/providers/codex.rs) resolves the wire protocol per request from
+    // the model name family, with no need to persist a single guessed
+    // protocol at creation time. Leaving `meta.api_format`/`api_key_field`
+    // unset here (deep links carry no explicit protocol field to override
+    // it with) defers to that same runtime default, matching the manual
+    // path instead of diverging from it.
+    let enabled = merged_request.enabled.unwrap_or(false);
 
     // Generate a unique ID for the provider using timestamp + sanitized name
     let timestamp = chrono::Utc::now().timestamp_millis();
@@ -975,7 +968,6 @@ fn extract_codex_base_url(toml_value: &toml::Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{http::StatusCode, response::IntoResponse, routing::post, Json, Router};
     use serial_test::serial;
     use std::env;
     use std::sync::Arc;
@@ -1164,37 +1156,15 @@ mod tests {
         .expect("set proxy port");
         let state = crate::store::AppState::new(db.clone());
 
-        async fn unsupported() -> impl IntoResponse {
-            (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "not found"})),
-            )
-        }
-        async fn chat_validation() -> impl IntoResponse {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": {"message": "max_tokens must be an integer for chat/completions"}
-                })),
-            )
-        }
-        let probe_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind probe server");
-        let probe_addr = probe_listener.local_addr().expect("probe addr");
-        let probe_server = tokio::spawn(async move {
-            axum::serve(
-                probe_listener,
-                Router::new()
-                    .route("/v1/responses", post(unsupported))
-                    .route("/v1/chat/completions", post(chat_validation))
-                    .route("/v1/messages", post(unsupported)),
-            )
-            .await
-            .expect("serve probe routes");
-        });
-
-        let endpoint = format!("http://{probe_addr}/v1");
+        // MH-8a: importing a Codex deep link no longer probes the endpoint
+        // (see import_provider_from_deeplink), so unlike before, nothing
+        // here ever connects to it — a reserved, guaranteed-unbound loopback
+        // port is enough to exercise takeover/direct config round-tripping.
+        let endpoint_listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("reserve endpoint port");
+        let endpoint_addr = endpoint_listener.local_addr().expect("endpoint addr");
+        drop(endpoint_listener);
+        let endpoint = format!("http://{endpoint_addr}/v1");
         let request = DeepLinkImportRequest {
             resource: "provider".to_string(),
             app: Some("codex".to_string()),
@@ -1235,54 +1205,28 @@ mod tests {
             std::fs::read_to_string(crate::get_codex_config_path()).expect("read direct config");
         assert!(direct.contains(&endpoint));
         assert!(!direct.contains(&format!("127.0.0.1:{proxy_port}")));
-        probe_server.abort();
     }
 
     #[tokio::test]
     #[serial]
-    async fn disabled_codex_deeplink_stays_inactive_and_persists_detected_protocol() {
+    async fn disabled_codex_deeplink_stays_inactive_and_defers_protocol_to_model_family() {
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("reload settings");
         let db = Arc::new(crate::database::Database::memory().expect("create memory db"));
         let state = crate::store::AppState::new(db.clone());
 
-        async fn unsupported() -> impl IntoResponse {
-            (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "not found"})),
-            )
-        }
-        async fn chat_validation() -> impl IntoResponse {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": {"message": "max_tokens must be an integer for chat/completions"}
-                })),
-            )
-        }
-        let probe_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind probe server");
-        let probe_addr = probe_listener.local_addr().expect("probe addr");
-        let probe_server = tokio::spawn(async move {
-            axum::serve(
-                probe_listener,
-                Router::new()
-                    .route("/v1/responses", post(unsupported))
-                    .route("/v1/chat/completions", post(chat_validation))
-                    .route("/v1/messages", post(unsupported)),
-            )
-            .await
-            .expect("serve probe routes");
-        });
-
-        let endpoint = format!("http://{probe_addr}/v1");
+        // MH-8a: no probe, so no live server needed — see the sibling test
+        // above for why a reserved, unbound port is sufficient here too.
+        let endpoint_listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("reserve endpoint port");
+        let endpoint_addr = endpoint_listener.local_addr().expect("endpoint addr");
+        drop(endpoint_listener);
         let request = DeepLinkImportRequest {
             resource: "provider".to_string(),
             app: Some("codex".to_string()),
             name: Some("Disabled Chat Import".to_string()),
             enabled: Some(false),
-            endpoint: Some(endpoint),
+            endpoint: Some(format!("http://{endpoint_addr}/v1")),
             api_key: Some("test-only-key".to_string()),
             model: Some("claude-disabled".to_string()),
             ..Default::default()
@@ -1295,12 +1239,31 @@ mod tests {
             .get_provider_by_id(&provider_id, "codex")
             .expect("read imported provider")
             .expect("provider exists");
+        // No protocol is probed or persisted at import time; the request-time
+        // model-family default resolves it instead — and must resolve to
+        // Anthropic for this "claude-*" model, not the Chat Completions
+        // result the old probe-driven test simulated (there is no server
+        // shape to simulate a wrong answer from any more).
         assert_eq!(
             stored
                 .meta
                 .as_ref()
                 .and_then(|meta| meta.api_format.as_deref()),
-            Some("openai_chat")
+            None
+        );
+        assert!(
+            crate::proxy::providers::should_convert_codex_responses_to_anthropic_for_model(
+                &stored,
+                "/v1/responses",
+                Some("claude-disabled"),
+            )
+        );
+        assert!(
+            !crate::proxy::providers::should_convert_codex_responses_to_chat_for_model(
+                &stored,
+                "/v1/responses",
+                Some("claude-disabled"),
+            )
         );
         assert_eq!(db.get_current_provider("codex").expect("db current"), None);
         assert_eq!(crate::settings::get_current_provider(&AppType::Codex), None);
@@ -1315,7 +1278,6 @@ mod tests {
         );
         assert!(!state.proxy_service.is_running().await);
         assert!(db.get_live_backup("codex").await.expect("backup").is_none());
-        probe_server.abort();
     }
 
     #[tokio::test]
@@ -1359,37 +1321,12 @@ mod tests {
         .await
         .expect("activate existing provider");
 
-        async fn unsupported() -> impl IntoResponse {
-            (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "not found"})),
-            )
-        }
-        async fn chat_validation() -> impl IntoResponse {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": {"message": "max_tokens must be an integer for chat/completions"}
-                })),
-            )
-        }
-        let probe_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind probe server");
-        let probe_addr = probe_listener.local_addr().expect("probe addr");
-        let probe_server = tokio::spawn(async move {
-            axum::serve(
-                probe_listener,
-                Router::new()
-                    .route("/v1/responses", post(unsupported))
-                    .route("/v1/chat/completions", post(chat_validation))
-                    .route("/v1/messages", post(unsupported)),
-            )
-            .await
-            .expect("serve probe routes");
-        });
-
-        let endpoint = format!("http://{probe_addr}/v1");
+        // MH-8a: no probe, so no live server needed here either.
+        let endpoint_listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("reserve endpoint port");
+        let endpoint_addr = endpoint_listener.local_addr().expect("endpoint addr");
+        drop(endpoint_listener);
+        let endpoint = format!("http://{endpoint_addr}/v1");
         let request = DeepLinkImportRequest {
             resource: "provider".to_string(),
             app: Some("codex".to_string()),
@@ -1434,7 +1371,6 @@ mod tests {
         assert!(restored.contains(&endpoint));
         assert!(!restored.contains("https://existing.example.invalid/v1"));
         assert!(!restored.contains(&format!("127.0.0.1:{proxy_port}")));
-        probe_server.abort();
     }
 
     #[tokio::test]
