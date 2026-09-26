@@ -772,6 +772,109 @@ fn dry_run_validates_schema_compatibility() {
     );
 }
 
+// MH-19② regression: the idempotent DB-wide scrub must fix a row already
+// polluted by the backfill defect, leave a clean non-official row alone,
+// and never touch the official row (whose stored auth is supposed to
+// track live OAuth state).
+#[test]
+fn scrub_oauth_material_from_non_official_codex_providers_fixes_only_polluted_rows() {
+    let db = Database::memory().expect("create memory db");
+
+    let make_provider = |id: &str, category: Option<&str>, auth: serde_json::Value| Provider {
+        id: id.to_string(),
+        name: id.to_string(),
+        settings_config: json!({ "auth": auth, "config": "" }),
+        website_url: None,
+        category: category.map(str::to_string),
+        created_at: Some(1),
+        sort_index: None,
+        notes: None,
+        meta: None,
+        icon: None,
+        icon_color: None,
+        in_failover_queue: false,
+    };
+
+    db.save_provider(
+        "codex",
+        &make_provider(
+            "polluted",
+            None,
+            json!({
+                "OPENAI_API_KEY": "sk-leaked",
+                "auth_mode": "chatgpt",
+                "tokens": { "access_token": "live-token" },
+            }),
+        ),
+    )
+    .expect("save polluted row");
+    db.save_provider(
+        "codex",
+        &make_provider("clean", None, json!({ "OPENAI_API_KEY": "sk-clean" })),
+    )
+    .expect("save clean row");
+    db.save_provider(
+        "codex",
+        &make_provider(
+            "official",
+            Some("official"),
+            json!({
+                "auth_mode": "chatgpt",
+                "tokens": { "access_token": "official-live-token" },
+            }),
+        ),
+    )
+    .expect("save official row");
+
+    let scrubbed = db
+        .scrub_oauth_material_from_non_official_codex_providers()
+        .expect("scrub");
+    assert_eq!(scrubbed, 1, "exactly the polluted row should be rewritten");
+
+    let polluted = db
+        .get_provider_by_id("polluted", "codex")
+        .expect("read polluted")
+        .expect("polluted row exists");
+    let auth = polluted.settings_config.get("auth").expect("auth field");
+    assert!(auth.get("OPENAI_API_KEY").is_none());
+    assert!(auth.get("auth_mode").is_none());
+    assert!(auth.get("tokens").is_none());
+
+    let clean = db
+        .get_provider_by_id("clean", "codex")
+        .expect("read clean")
+        .expect("clean row exists");
+    assert_eq!(
+        clean
+            .settings_config
+            .get("auth")
+            .and_then(|a| a.get("OPENAI_API_KEY"))
+            .and_then(serde_json::Value::as_str),
+        Some("sk-clean"),
+        "a row with no oauth marker must be left untouched"
+    );
+
+    let official = db
+        .get_provider_by_id("official", "codex")
+        .expect("read official")
+        .expect("official row exists");
+    let official_auth = official.settings_config.get("auth").expect("auth field");
+    assert_eq!(
+        official_auth
+            .get("auth_mode")
+            .and_then(serde_json::Value::as_str),
+        Some("chatgpt"),
+        "the official row's own oauth state must never be scrubbed"
+    );
+
+    // Re-running must be a no-op (idempotent, per R3A-N5) now that the DB
+    // is already clean.
+    let rerun = db
+        .scrub_oauth_material_from_non_official_codex_providers()
+        .expect("scrub again");
+    assert_eq!(rerun, 0);
+}
+
 #[test]
 fn schema_model_pricing_is_seeded_on_init() {
     let db = Database::memory().expect("create memory db");

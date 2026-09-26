@@ -686,6 +686,70 @@ pub fn codex_auth_has_oauth_login_material(auth: &Value) -> bool {
             .is_some_and(|token| !token.is_empty())
 }
 
+/// MH-19: scrub OAuth login material out of a **non-official** Codex
+/// provider's stored `auth`, in place. Returns whether anything changed
+/// (for logging a count only — never the removed values).
+///
+/// Backfill (`restore_live_settings_for_provider_backfill`) starts a
+/// non-official row's stored `settings` from a clone of the *entire* live
+/// `settings.json`/`auth.json`, so that a third-party row can pick up the
+/// one field it may legitimately need restored: a bearer token Codex
+/// materialized from `env_key`/header-based auth
+/// (`restore_codex_provider_token_for_backfill`). But whenever live
+/// `auth.json` still holds real ChatGPT OAuth material at that moment —
+/// most commonly right after switching away from official with
+/// `preserve_codex_official_auth_on_switch` on, which deliberately leaves
+/// official's own auth.json untouched — that OAuth material rides along
+/// into the third-party row's stored `auth` too, unless something strips
+/// it back out. Nothing did.
+///
+/// Unconditionally removes fields that have no legitimate reason to be on
+/// any non-official row (`tokens` — nested `access_token`/`refresh_token`/
+/// `id_token` all live under it — plus `auth_mode`, `agent_identity`,
+/// `personal_access_token`, and any `bedrock_*` key).
+///
+/// `OPENAI_API_KEY` is handled separately and is **not** touched unless
+/// [`codex_auth_has_oauth_login_material`] is true for this exact `auth`
+/// value, checked *before* the removals above run (a value-equality check
+/// against the live/official key would delete a legitimate third-party key
+/// that happens to match — e.g. a relay user whose apikey login uses the
+/// relay's own key, or any row that legitimately shares a key with another
+/// row — R3A-N1). A `personal_access_token`-only row (no `tokens`/`auth_mode`
+/// chatgpt marker) is not currently detected as a second pollution shape
+/// this function recognizes; call sites should not assume this is
+/// exhaustive against every future Codex auth shape.
+pub fn scrub_oauth_material_from_non_official_codex_auth(auth: &mut Value) -> bool {
+    let should_remove_api_key = codex_auth_has_oauth_login_material(auth);
+    let Some(map) = auth.as_object_mut() else {
+        return false;
+    };
+
+    let mut changed = false;
+    for key in [
+        "tokens",
+        "auth_mode",
+        "agent_identity",
+        "personal_access_token",
+    ] {
+        if map.remove(key).is_some() {
+            changed = true;
+        }
+    }
+    let bedrock_keys: Vec<String> = map
+        .keys()
+        .filter(|key| key.starts_with("bedrock_"))
+        .cloned()
+        .collect();
+    for key in bedrock_keys {
+        map.remove(&key);
+        changed = true;
+    }
+    if should_remove_api_key && map.remove("OPENAI_API_KEY").is_some() {
+        changed = true;
+    }
+    changed
+}
+
 pub fn should_restore_codex_provider_token_for_backfill(
     category: Option<&str>,
     template_settings: &Value,
@@ -4009,6 +4073,113 @@ wire_api = "responses"
                 .and_then(|v| v.get("vendor_beta"))
                 .is_some(),
             "backfill should not rewrite user-selected provider tables"
+        );
+    }
+
+    // MH-19 regression: scrub_oauth_material_from_non_official_codex_auth
+    // must remove genuine OAuth pollution but never touch a legitimate
+    // third-party API key just because it happens to have no oauth marker.
+
+    #[test]
+    fn scrub_removes_oauth_material_and_the_key_it_pollutes() {
+        let mut auth = json!({
+            "OPENAI_API_KEY": "sk-leaked-official-key",
+            "auth_mode": "chatgpt",
+            "tokens": {
+                "access_token": "live-access-token",
+                "refresh_token": "live-refresh-token",
+                "id_token": "live-id-token",
+            },
+            "agent_identity": "some-identity",
+            "personal_access_token": "pat-leaked",
+            "bedrock_credential_source": "leaked",
+            "last_refresh": 1234567890,
+        });
+
+        let changed = scrub_oauth_material_from_non_official_codex_auth(&mut auth);
+        assert!(changed);
+
+        for gone in [
+            "OPENAI_API_KEY",
+            "auth_mode",
+            "tokens",
+            "agent_identity",
+            "personal_access_token",
+            "bedrock_credential_source",
+        ] {
+            assert!(
+                auth.get(gone).is_none(),
+                "{gone} must be removed from a polluted row"
+            );
+        }
+    }
+
+    #[test]
+    fn scrub_leaves_plain_apikey_row_untouched() {
+        // R3A-N1 false positive 1: preserve_codex_official_auth_on_switch off
+        // writes the third-party row's own key into live; that key must
+        // survive backfill even if it happens to match some other key.
+        let mut auth = json!({ "OPENAI_API_KEY": "sk-legitimate-third-party-key" });
+        let changed = scrub_oauth_material_from_non_official_codex_auth(&mut auth);
+        assert!(!changed);
+        assert_eq!(
+            auth.get("OPENAI_API_KEY").and_then(Value::as_str),
+            Some("sk-legitimate-third-party-key")
+        );
+    }
+
+    #[test]
+    fn scrub_leaves_relay_key_untouched_even_without_chatgpt_marker() {
+        // R3A-N1 false positive 2: a relay user's Codex apikey login uses the
+        // relay's own key, and the official row's backfill always keeps live
+        // auth — so official key == relay key is a legitimate coincidence,
+        // not pollution, when there is no oauth marker alongside it.
+        let mut auth = json!({
+            "OPENAI_API_KEY": "shared-relay-key",
+            "auth_mode": "apikey",
+        });
+        let changed = scrub_oauth_material_from_non_official_codex_auth(&mut auth);
+        assert!(!changed);
+        assert_eq!(
+            auth.get("OPENAI_API_KEY").and_then(Value::as_str),
+            Some("shared-relay-key")
+        );
+        assert_eq!(
+            auth.get("auth_mode").and_then(Value::as_str),
+            Some("apikey")
+        );
+    }
+
+    #[test]
+    fn scrub_removes_oauth_material_even_without_own_api_key() {
+        let mut auth = json!({
+            "auth_mode": "chatgpt",
+            "tokens": { "access_token": "live-access-token" },
+        });
+        let changed = scrub_oauth_material_from_non_official_codex_auth(&mut auth);
+        assert!(changed);
+        assert!(auth.get("auth_mode").is_none());
+        assert!(auth.get("tokens").is_none());
+    }
+
+    #[test]
+    fn scrub_ignores_empty_access_token_as_not_yet_polluted() {
+        // codex_auth_has_oauth_login_material requires a non-empty access
+        // token; an auth_mode="chatgpt" row with no real token yet is not
+        // the pollution shape this targets.
+        let mut auth = json!({
+            "OPENAI_API_KEY": "sk-third-party",
+            "auth_mode": "chatgpt",
+            "tokens": { "access_token": "" },
+        });
+        let changed = scrub_oauth_material_from_non_official_codex_auth(&mut auth);
+        // tokens/auth_mode are still unconditionally stale-OAuth-shaped
+        // fields with no business being on a non-official row, so they are
+        // still removed; only the API key's fate depends on the signature.
+        assert!(changed);
+        assert_eq!(
+            auth.get("OPENAI_API_KEY").and_then(Value::as_str),
+            Some("sk-third-party")
         );
     }
 

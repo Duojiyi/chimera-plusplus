@@ -866,6 +866,26 @@ fn restore_live_settings_for_provider_backfill(
         );
     }
 
+    // MH-19: `settings` above started as a clone of the *entire* live
+    // settings.json/auth.json. That's fine for the official row (its stored
+    // auth is supposed to track live), but a non-official row must never
+    // keep OAuth login material that happened to still be sitting in live
+    // auth.json at this exact moment — most commonly right after switching
+    // away from official with preserve_codex_official_auth_on_switch on,
+    // which deliberately leaves official's own auth.json untouched. Runs
+    // after the restore above so a legitimately restored bearer token
+    // survives unless it's actually part of the polluted shape.
+    if provider.category.as_deref() != Some("official") {
+        if let Some(auth) = settings.get_mut("auth") {
+            if crate::codex_config::scrub_oauth_material_from_non_official_codex_auth(auth) {
+                log::info!(
+                    "Scrubbed OAuth login material from non-official provider '{}' during backfill",
+                    provider.id
+                );
+            }
+        }
+    }
+
     // MCP 服务器归 DB mcp_servers 表所有，live 里的 [mcp_servers] 是同步投影；
     // 回填时剥掉，否则已删除的服务器会随供应商快照复活（逐条 reconcile 清不掉孤儿）。
     if let Err(err) = crate::codex_config::strip_codex_mcp_servers_from_settings(&mut settings) {

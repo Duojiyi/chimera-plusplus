@@ -77,6 +77,23 @@ pub(crate) fn run_post_import_sync(state: &AppState) -> Result<(), AppError> {
     // settings even when the imported DB contains takeover data we cannot apply.
     crate::settings::reload_settings()?;
     ensure_no_takeover(state)?;
+
+    // MH-19②: an imported/restored DB (SQL import, .db backup restore) can
+    // carry rows polluted by the same defect this scrubs at backfill time —
+    // run it before syncing to live so a polluted row is never even
+    // momentarily written back out. Idempotent; failure here must not block
+    // the rest of the sync (see the DB method's own doc comment).
+    match state
+        .db
+        .scrub_oauth_material_from_non_official_codex_providers()
+    {
+        Ok(0) => {}
+        Ok(count) => log::info!(
+            "✓ Scrubbed OAuth login material from {count} non-official Codex provider(s) after import"
+        ),
+        Err(e) => log::warn!("✗ Post-import Codex non-official OAuth scrub failed: {e}"),
+    }
+
     ProviderService::sync_current_to_live(state)
 }
 

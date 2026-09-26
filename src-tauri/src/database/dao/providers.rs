@@ -339,6 +339,37 @@ impl Database {
         Ok(())
     }
 
+    /// MH-19②: one-time (but safely re-runnable) cleanup for Codex rows that
+    /// were already backfilled with OAuth login material before the forward
+    /// fix (`scrub_oauth_material_from_non_official_codex_auth`, applied at
+    /// backfill time) existed. Idempotent — a clean row is read, found
+    /// unchanged, and never written back — so call sites can re-run it after
+    /// every import/restore rather than tracking a "have we migrated yet"
+    /// flag (R3A-N5).
+    ///
+    /// Returns the number of rows actually changed, for a log line only —
+    /// never which rows or what was in them.
+    pub fn scrub_oauth_material_from_non_official_codex_providers(
+        &self,
+    ) -> Result<usize, AppError> {
+        let providers = self.get_all_providers("codex")?;
+        let mut scrubbed = 0usize;
+        for (id, provider) in providers {
+            if provider.category.as_deref() == Some("official") {
+                continue;
+            }
+            let mut settings_config = provider.settings_config;
+            let Some(auth) = settings_config.get_mut("auth") else {
+                continue;
+            };
+            if crate::codex_config::scrub_oauth_material_from_non_official_codex_auth(auth) {
+                self.update_provider_settings_config("codex", &id, &settings_config)?;
+                scrubbed += 1;
+            }
+        }
+        Ok(scrubbed)
+    }
+
     pub fn update_provider_settings_config(
         &self,
         app_type: &str,

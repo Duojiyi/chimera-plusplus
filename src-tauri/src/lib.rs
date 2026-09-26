@@ -975,6 +975,19 @@ pub fn run() {
                         Err(e) => log::warn!("✗ Codex config.toml self-repair failed: {e}"),
                     }
 
+                    // MH-19②: idempotent — see the DB method's own doc comment
+                    // for why this is safe to run unconditionally every startup
+                    // rather than only once.
+                    match db_for_codex_history_migration
+                        .scrub_oauth_material_from_non_official_codex_providers()
+                    {
+                        Ok(0) => {}
+                        Ok(count) => log::info!(
+                            "✓ Scrubbed OAuth login material from {count} non-official Codex provider(s)"
+                        ),
+                        Err(e) => log::warn!("✗ Codex non-official OAuth scrub failed: {e}"),
+                    }
+
                     match crate::codex_history_migration::maybe_migrate_codex_third_party_history_provider_bucket(
                         &db_for_codex_history_migration,
                     ) {
