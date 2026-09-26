@@ -104,13 +104,25 @@ pub async fn import_provider_from_deeplink(
     // round-trip to the (untrusted, deep-link-supplied) endpoint that could
     // fail, hang, or be used to probe an internal address before the
     // provider was ever added. Since c452dc59, the manual add/edit path no
-    // longer probes either: `codex_api_format_for_model()`
-    // (proxy/providers/codex.rs) resolves the wire protocol per request from
-    // the model name family, with no need to persist a single guessed
-    // protocol at creation time. Leaving `meta.api_format`/`api_key_field`
-    // unset here (deep links carry no explicit protocol field to override
-    // it with) defers to that same runtime default, matching the manual
-    // path instead of diverging from it.
+    // longer probes either: it computes `codexApiFormatForModel(draft.model)`
+    // locally from the model name and persists it into `meta.apiFormat`
+    // up front. Mirror that here rather than leaving `meta.api_format`
+    // unset: `build_codex_settings` below always writes a Codex-side
+    // `wire_api = "responses"` declaration regardless of the upstream's
+    // real protocol, and that declaration wins in
+    // `codex_api_format_for_model`'s fallback chain ahead of the
+    // model-family default this is meant to rely on — leaving the field
+    // unset would silently resolve every deep-linked import to Native
+    // Responses instead. `api_key_field` is left unset (deep links carry
+    // no explicit auth-header-field override); requests default to the
+    // standard `x-api-key` header, same as the manual path's "auto" mode.
+    if matches!(app_type, AppType::Codex | AppType::GrokBuild) {
+        if let Some(model) = merged_request.model.as_deref() {
+            let meta = provider.meta.get_or_insert_with(ProviderMeta::default);
+            meta.api_format =
+                Some(crate::proxy::providers::codex_model_default_api_format(model).to_string());
+        }
+    }
     let enabled = merged_request.enabled.unwrap_or(false);
 
     // Generate a unique ID for the provider using timestamp + sanitized name

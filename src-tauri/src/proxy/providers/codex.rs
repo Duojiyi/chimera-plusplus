@@ -97,7 +97,16 @@ fn codex_api_format_for_model<'a>(provider: &'a Provider, model: Option<&str>) -
 /// provider has not supplied a protocol declaration. This avoids network
 /// probing for the common case while keeping explicit provider settings in
 /// charge. The local Codex endpoint remains Responses in every case.
-fn codex_model_default_api_format(model: &str) -> &'static str {
+///
+/// `pub(crate)`: also called directly (not just as this module's internal
+/// fallback) by deep-link import, which must persist an explicit
+/// `meta.api_format` up front — a freshly built Codex provider's
+/// `config.toml` always declares `wire_api = "responses"` regardless of the
+/// upstream's real protocol (see `deeplink::provider::build_codex_settings`),
+/// so the fallback chain in `codex_api_format_for_model` would otherwise
+/// resolve every deep-linked import to Native Responses before ever
+/// reaching this function.
+pub(crate) fn codex_model_default_api_format(model: &str) -> &'static str {
     let model = model
         .rsplit_once('/')
         .map_or(model, |(_, model)| model)

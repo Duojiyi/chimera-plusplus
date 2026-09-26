@@ -2763,6 +2763,16 @@ pub fn codex_config_has_owned_official_proxy_route(
 /// user switches to it, that empty seed must not erase their sandbox, feature,
 /// profile, TUI, or notification settings. Only provider-routing and generated
 /// catalog fields are removed; unrelated user settings survive.
+///
+/// MH-13a: this used to strip only 6 keys, which left every route/credential
+/// key a third-party line could have written — most importantly
+/// `openai_base_url`/`chatgpt_base_url` — sitting on live. With the unified
+/// session bucket off, switching back to official then wrote a valid
+/// ChatGPT OAuth `auth.json` next to a `config.toml` that still pointed
+/// Codex's `openai_base_url`/`chatgpt_base_url` at that third party, so the
+/// official bearer token would be sent there on the next request. This must
+/// strip every key a non-official line could route through, not just the
+/// ones that also happen to break the model catalog.
 pub fn prepare_codex_official_live_config_baseline(config_text: &str) -> Result<String, AppError> {
     if config_text.trim().is_empty() {
         return Ok(String::new());
@@ -2779,6 +2789,17 @@ pub fn prepare_codex_official_live_config_baseline(config_text: &str) -> Result<
         "model_catalog_json",
         "model_reasoning_effort",
         "experimental_bearer_token",
+        // Route/credential keys (key-ownership class ②, v2.8.0 plan §2):
+        // never inherited from live when switching to the official line.
+        "openai_base_url",
+        "chatgpt_base_url",
+        "experimental_realtime_ws_base_url",
+        "experimental_realtime_webrtc_call_base_url",
+        "forced_login_method",
+        "forced_chatgpt_workspace_id",
+        "otel",
+        "apps_mcp_product_sku",
+        "responses_api_metadata",
     ] {
         doc.as_table_mut().remove(key);
     }
@@ -4459,6 +4480,100 @@ base_url = "https://production.api/v1"
                 .get("openai_base_url")
                 .and_then(|value| value.as_str()),
             Some("https://api.openai.com/v1")
+        );
+    }
+
+    // MH-13a regression: switching to the official line must never leave a
+    // third-party line's route/credential keys on live — otherwise the
+    // ChatGPT OAuth bearer this same switch installs gets sent to whatever
+    // address a prior third-party line left behind.
+    #[test]
+    fn official_baseline_strips_third_party_route_and_credential_keys() {
+        let third_party_live = r#"model_provider = "acme"
+model = "gpt-acme"
+model_catalog_json = "/tmp/catalog.json"
+model_reasoning_effort = "high"
+experimental_bearer_token = "leftover-third-party-bearer"
+openai_base_url = "https://acme.example/v1"
+chatgpt_base_url = "https://acme.example/chatgpt"
+experimental_realtime_ws_base_url = "wss://acme.example/rt"
+experimental_realtime_webrtc_call_base_url = "https://acme.example/rtc"
+forced_login_method = "apikey"
+forced_chatgpt_workspace_id = "acme-workspace"
+otel = "acme-otel"
+apps_mcp_product_sku = "acme-sku"
+responses_api_metadata = "acme-metadata"
+sandbox_mode = "workspace-write"
+
+[model_providers.acme]
+name = "Acme"
+base_url = "https://acme.example/v1"
+wire_api = "responses"
+"#;
+
+        let baseline = prepare_codex_official_live_config_baseline(third_party_live)
+            .expect("valid toml in, valid toml out");
+        let parsed: toml::Value = toml::from_str(&baseline).expect("baseline must parse");
+
+        for stripped_key in [
+            "model_provider",
+            "model_providers",
+            "model",
+            "model_catalog_json",
+            "model_reasoning_effort",
+            "experimental_bearer_token",
+            "openai_base_url",
+            "chatgpt_base_url",
+            "experimental_realtime_ws_base_url",
+            "experimental_realtime_webrtc_call_base_url",
+            "forced_login_method",
+            "forced_chatgpt_workspace_id",
+            "otel",
+            "apps_mcp_product_sku",
+            "responses_api_metadata",
+        ] {
+            assert!(
+                parsed.get(stripped_key).is_none(),
+                "{stripped_key} must not survive the official baseline"
+            );
+        }
+
+        // Unrelated user settings (sandbox/features/profile/TUI/notify) are
+        // exactly what this function exists to preserve — must not be
+        // collateral damage from widening the strip list.
+        assert_eq!(
+            parsed.get("sandbox_mode").and_then(|v| v.as_str()),
+            Some("workspace-write")
+        );
+    }
+
+    #[test]
+    fn official_baseline_is_idempotent_on_already_clean_config() {
+        let clean = r#"sandbox_mode = "workspace-write"
+approval_policy = "on-request"
+"#;
+        let baseline =
+            prepare_codex_official_live_config_baseline(clean).expect("valid toml in, valid out");
+        let parsed: toml::Value = toml::from_str(&baseline).expect("baseline must parse");
+        assert_eq!(
+            parsed.get("sandbox_mode").and_then(|v| v.as_str()),
+            Some("workspace-write")
+        );
+        assert_eq!(
+            parsed.get("approval_policy").and_then(|v| v.as_str()),
+            Some("on-request")
+        );
+    }
+
+    #[test]
+    fn official_baseline_of_empty_config_is_empty() {
+        assert_eq!(
+            prepare_codex_official_live_config_baseline("").expect("empty in, empty out"),
+            ""
+        );
+        assert_eq!(
+            prepare_codex_official_live_config_baseline("   \n\t  ").expect("blank in, empty out"),
+            ""
         );
     }
 
