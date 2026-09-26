@@ -1559,19 +1559,22 @@ mod tests {
     }
 
     #[test]
-    fn export_scrubs_oauth_pollution_from_non_official_row_without_wiping_its_key(
-    ) -> Result<(), AppError> {
-        // Simulates a row already polluted by the MH-19 defect (real OAuth
-        // material backfilled alongside the row's own key): export must
-        // strip the pollution but not treat the whole row like the official
-        // one.
+    fn export_scrubs_oauth_pollution_from_non_official_row() -> Result<(), AppError> {
+        // Simulates a row already polluted by the MH-19 defect: real ChatGPT
+        // OAuth material sitting next to an OPENAI_API_KEY. Per MH-19's
+        // pollution-signature rule, a key found alongside real chatgpt
+        // tokens is part of the pollution (Codex's browser login persists an
+        // exchanged key next to its tokens), so it goes too. A row whose own
+        // key has no OAuth material beside it is covered by
+        // local_export_redacts_official_but_keeps_non_official_codex_credential
+        // and must survive.
         let db = Database::memory()?;
         {
             let conn = crate::database::lock_conn!(db.conn);
             conn.execute(
                 "INSERT INTO providers (id, app_type, name, settings_config, meta)
                  VALUES ('polluted', 'codex', 'Polluted',
-                         '{\"auth\":{\"OPENAI_API_KEY\":\"sk-own-key\",\"auth_mode\":\"chatgpt\",\
+                         '{\"auth\":{\"OPENAI_API_KEY\":\"sk-exchanged-key\",\"auth_mode\":\"chatgpt\",\
                            \"tokens\":{\"access_token\":\"polluted-oauth-token\"}}}', '{}')",
                 [],
             )?;
@@ -1581,9 +1584,12 @@ mod tests {
             assert!(!exported.contains("polluted-oauth-token"));
             assert!(!exported.contains("\"auth_mode\":\"chatgpt\""));
             assert!(
-                exported.contains("sk-own-key"),
-                "the row's own key must survive: only the oauth pollution is scrubbed, \
-                 mirroring MH-19's backfill-time fix, not the official row's wholesale reset"
+                !exported.contains("sk-exchanged-key"),
+                "a key sitting next to real chatgpt tokens is part of the pollution signature"
+            );
+            assert!(
+                exported.contains("'polluted'"),
+                "the row itself survives: only its auth material is scrubbed, it is not dropped"
             );
         }
         Ok(())
