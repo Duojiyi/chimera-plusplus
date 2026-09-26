@@ -357,9 +357,7 @@ pub fn strip_rejected_codex_settings(config_text: &str) -> Result<String, AppErr
             else {
                 continue;
             };
-            let rejected = profile
-                .get("approval_policy")
-                .is_some_and(|item| is_rejected(item));
+            let rejected = profile.get("approval_policy").is_some_and(&is_rejected);
             if rejected {
                 profile.remove("approval_policy");
                 removed.push(format!("profiles.{name}.approval_policy"));
