@@ -1,14 +1,17 @@
-# Code owners for cc-switch
+# Code owners for Chimera++
 #
-# Branch protection on `main` has "Require review from Code Owners" enabled.
-# With this file present, a PR cannot merge to `main` without an approval from
-# the owner below. This closes the gap where two collaborators could approve
-# each other's malicious PRs (a single non-owner approval is no longer enough).
+# This only drives GitHub's automatic review-request feature: PRs touching a
+# matched path get the owner below auto-requested as a reviewer. It is NOT
+# enforced by branch protection — with a single maintainer, requiring the
+# PR author to also approve their own PR would deadlock every merge, so the
+# `main`/`release/*` ruleset intentionally leaves "Require review from Code
+# Owners" off. This file starts paying off once additional collaborators are
+# added and that requirement is turned on for their PRs.
 
-# Global fallback: every PR needs owner approval before merging to main.
-*                 @farion1231
+# Global fallback.
+*                 @Duojiyi
 
 # Most sensitive paths — CI/signing/release and the Rust backend. Listed
 # explicitly so they stay locked even if the global rule above is relaxed later.
-/.github/         @farion1231
-/src-tauri/       @farion1231
+/.github/         @Duojiyi
+/src-tauri/       @Duojiyi
