@@ -766,12 +766,13 @@ pub(crate) async fn query_codex_quota(
         ));
     }
 
-    let raw = match read_response_bytes_limited(resp, MAX_QUOTA_RESPONSE_BYTES, "quota API response")
-        .await
-    {
-        Ok(b) => b,
-        Err(e) => return Err(format!("Failed to read API response: {e}")),
-    };
+    let raw =
+        match read_response_bytes_limited(resp, MAX_QUOTA_RESPONSE_BYTES, "quota API response")
+            .await
+        {
+            Ok(b) => b,
+            Err(e) => return Err(format!("Failed to read API response: {e}")),
+        };
     let body: CodexUsageResponse = match serde_json::from_slice(&raw) {
         Ok(v) => v,
         Err(e) => {
@@ -1444,8 +1445,7 @@ mod tests {
     #[tokio::test]
     async fn capped_read_rejects_oversized_body_declared_via_content_length() {
         let (url, server) =
-            serve_test_router(axum::Router::new().fallback(|| async { "x".repeat(200_000) }))
-                .await;
+            serve_test_router(axum::Router::new().fallback(|| async { "x".repeat(200_000) })).await;
 
         let resp = reqwest::get(&url).await.unwrap();
         let err = read_response_bytes_limited(resp, 1024, "test body")
@@ -1463,9 +1463,7 @@ mod tests {
                 .collect();
             axum::response::Response::builder()
                 .status(200)
-                .body(axum::body::Body::from_stream(futures::stream::iter(
-                    chunks,
-                )))
+                .body(axum::body::Body::from_stream(futures::stream::iter(chunks)))
                 .unwrap()
         }))
         .await;
