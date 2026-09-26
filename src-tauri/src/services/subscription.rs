@@ -3,12 +3,59 @@
 //! 读取 CLI 工具的已有 OAuth 凭据，查询官方订阅额度。
 //! 第一层：仅读取凭据，不实现登录/刷新。
 
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use std::collections::HashMap;
 
 use crate::config;
+
+/// Cap for a successful quota/usage response body. The real payload is a
+/// small JSON object; this leaves generous headroom while still bounding
+/// worst-case memory use (MH-16).
+const MAX_QUOTA_RESPONSE_BYTES: usize = 256 * 1024;
+/// Cap for an error response body we only read for diagnostics (never
+/// surfaced verbatim to the caller — see `read_response_text_limited`).
+const MAX_QUOTA_ERROR_BODY_BYTES: usize = 64 * 1024;
+
+/// Read a response body with a hard byte cap instead of buffering an
+/// unbounded amount of untrusted network input (MH-16: this endpoint is not
+/// under our control and could return an oversized or slow-trickling body).
+async fn read_response_bytes_limited(
+    response: reqwest::Response,
+    max_bytes: usize,
+    label: &str,
+) -> Result<Vec<u8>, String> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > max_bytes as u64)
+    {
+        return Err(format!("{label} exceeds the {max_bytes}-byte limit"));
+    }
+
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| format!("Failed to read {label}: {error}"))?;
+        if body.len() + chunk.len() > max_bytes {
+            return Err(format!("{label} exceeds the {max_bytes}-byte limit"));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+/// Same as [`read_response_bytes_limited`], decoded lossily for a
+/// diagnostics-only string (never a public API/JSON parse target).
+async fn read_response_text_limited(
+    response: reqwest::Response,
+    max_bytes: usize,
+    label: &str,
+) -> Result<String, String> {
+    let body = read_response_bytes_limited(response, max_bytes, label).await?;
+    Ok(String::from_utf8_lossy(&body).into_owned())
+}
 
 // ── 数据类型 ──────────────────────────────────────────────
 
@@ -703,15 +750,25 @@ pub(crate) async fn query_codex_quota(
     }
 
     if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
+        // MH-16: this body comes from an endpoint we don't control and is
+        // never surfaced verbatim to the caller/UI — only its status code
+        // is. The body is capped and logged for diagnostics only.
+        match read_response_text_limited(resp, MAX_QUOTA_ERROR_BODY_BYTES, "quota API error body")
+            .await
+        {
+            Ok(body) => log::debug!("Codex quota API error (HTTP {status}): {body}"),
+            Err(e) => log::debug!("Codex quota API error (HTTP {status}); body unreadable: {e}"),
+        }
         return Ok(SubscriptionQuota::error(
             tool_label,
             CredentialStatus::Valid,
-            format!("API error (HTTP {status}): {body}"),
+            format!("API error (HTTP {status})"),
         ));
     }
 
-    let raw = match resp.bytes().await {
+    let raw = match read_response_bytes_limited(resp, MAX_QUOTA_RESPONSE_BYTES, "quota API response")
+        .await
+    {
         Ok(b) => b,
         Err(e) => return Err(format!("Failed to read API response: {e}")),
     };
@@ -1368,5 +1425,73 @@ mod tests {
         // 其他窗口按小时/天回退命名
         assert_eq!(window_seconds_to_tier_name(3600), "1_hour");
         assert_eq!(window_seconds_to_tier_name(86400), "1_day");
+    }
+
+    // MH-16 regression: `read_response_bytes_limited`/`read_response_text_limited`
+    // must reject an oversized body instead of buffering it without limit,
+    // both when the server declares an oversized `Content-Length` up front
+    // and when it streams past the cap without declaring a length at all
+    // (chunked transfer encoding — the case a misbehaving/adversarial server
+    // would use to dodge a naive `Content-Length` check).
+
+    async fn serve_test_router(router: axum::Router) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        (url, server)
+    }
+
+    #[tokio::test]
+    async fn capped_read_rejects_oversized_body_declared_via_content_length() {
+        let (url, server) =
+            serve_test_router(axum::Router::new().fallback(|| async { "x".repeat(200_000) }))
+                .await;
+
+        let resp = reqwest::get(&url).await.unwrap();
+        let err = read_response_bytes_limited(resp, 1024, "test body")
+            .await
+            .unwrap_err();
+        assert!(err.contains("exceeds"), "unexpected error: {err}");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn capped_read_rejects_oversized_body_streamed_without_content_length() {
+        let (url, server) = serve_test_router(axum::Router::new().fallback(|| async {
+            let chunks: Vec<Result<bytes::Bytes, std::io::Error>> = (0..300)
+                .map(|_| Ok(bytes::Bytes::from(vec![b'x'; 1024])))
+                .collect();
+            axum::response::Response::builder()
+                .status(200)
+                .body(axum::body::Body::from_stream(futures::stream::iter(
+                    chunks,
+                )))
+                .unwrap()
+        }))
+        .await;
+
+        let resp = reqwest::get(&url).await.unwrap();
+        assert!(
+            resp.content_length().is_none(),
+            "test setup must exercise the no-Content-Length path"
+        );
+        let err = read_response_bytes_limited(resp, 1024, "test body")
+            .await
+            .unwrap_err();
+        assert!(err.contains("exceeds"), "unexpected error: {err}");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn capped_read_accepts_body_within_limit() {
+        let (url, server) =
+            serve_test_router(axum::Router::new().fallback(|| async { "small body" })).await;
+
+        let resp = reqwest::get(&url).await.unwrap();
+        let text = read_response_text_limited(resp, MAX_QUOTA_ERROR_BODY_BYTES, "test body")
+            .await
+            .unwrap();
+        assert_eq!(text, "small body");
+        server.abort();
     }
 }
