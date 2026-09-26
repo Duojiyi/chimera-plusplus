@@ -108,6 +108,17 @@ impl Database {
 
         let conn = Connection::open(&db_path).map_err(|e| AppError::Database(e.to_string()))?;
 
+        // MH-6: this is the single long-lived, cross-thread-shared connection
+        // (wrapped below in `Mutex<Connection>`); without a busy_timeout, any
+        // writer that finds the file locked (e.g. an external SQLite tool, or
+        // a backup/restore holding a transaction) fails immediately with
+        // SQLITE_BUSY instead of waiting briefly. Capped well below typical
+        // request timeouts so a stuck lock still surfaces quickly rather than
+        // hanging the single-connection hot path. Do not enable WAL here —
+        // this app deliberately keeps the default rollback journal.
+        conn.busy_timeout(std::time::Duration::from_millis(500))
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
         // 启用外键约束
         conn.execute("PRAGMA foreign_keys = ON;", [])
             .map_err(|e| AppError::Database(e.to_string()))?;
@@ -175,6 +186,8 @@ impl Database {
             return Ok(None);
         }
         let conn = Connection::open(db_path).map_err(|e| AppError::Database(e.to_string()))?;
+        conn.busy_timeout(std::time::Duration::from_millis(500))
+            .map_err(|e| AppError::Database(e.to_string()))?;
         let version = Self::get_user_version(&conn)?;
         Ok((version > SCHEMA_VERSION).then_some(version))
     }

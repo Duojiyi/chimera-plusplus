@@ -919,3 +919,34 @@ fn ensure_incremental_auto_vacuum_rebuilds_existing_file_db() {
         "file db should persist INCREMENTAL auto_vacuum after VACUUM rebuild"
     );
 }
+
+/// MH-6 regression: the single long-lived connection `Database::init()` wraps
+/// in `Mutex<Connection>` must cap `busy_timeout` at 500ms instead of the
+/// SQLite default of 0 (immediate `SQLITE_BUSY` on any lock contention, e.g.
+/// from an external SQLite tool or a backup/restore holding a transaction).
+/// This mirrors the exact call `init()` makes on its connection; it does not
+/// invoke `init()` itself because that reads the real app config directory.
+#[test]
+fn file_backed_connection_sets_bounded_busy_timeout() {
+    let temp = NamedTempFile::new().expect("create temp db file");
+    let conn = Connection::open(temp.path()).expect("open temp db");
+
+    conn.busy_timeout(std::time::Duration::from_millis(500))
+        .expect("set busy_timeout");
+
+    let ms: i64 = conn
+        .query_row("PRAGMA busy_timeout;", [], |row| row.get(0))
+        .expect("read busy_timeout");
+    assert_eq!(ms, 500, "busy_timeout must stay capped at 500ms (D9)");
+
+    // Guard the other half of D9: this app must not opt into WAL mode on
+    // this connection (default is the rollback journal).
+    let journal_mode: String = conn
+        .query_row("PRAGMA journal_mode;", [], |row| row.get(0))
+        .expect("read journal_mode");
+    assert_ne!(
+        journal_mode.to_lowercase(),
+        "wal",
+        "state.db must not use WAL under the single Mutex<Connection> model"
+    );
+}
