@@ -3217,6 +3217,15 @@ impl ProxyService {
                 .map_err(|e| format!("生成 Codex 官方接管配置失败: {e}"));
         }
 
+        // MH-21: a config just switched away from official (or never touched
+        // by us) has no `model_provider`, which update_codex_toml_field
+        // treats as "the built-in `openai` provider, which carries
+        // requires_openai_auth". Force a non-reserved id first so the
+        // base_url write below creates a real [model_providers.custom]
+        // table instead of silently redirecting the official provider's
+        // endpoint to our local proxy while it still carries that flag.
+        let toml_str = &crate::codex_config::ensure_non_reserved_codex_model_provider(toml_str)
+            .map_err(|e| format!("准备 Codex 第三方线路失败: {e}"))?;
         let updated = crate::codex_config::update_codex_toml_field(toml_str, "base_url", proxy_url)
             .map_err(|e| format!("更新 Codex 代理地址失败: {e}"))?;
         let mut updated =
@@ -6261,6 +6270,68 @@ wire_api = "chat"
             Some(&provider),
         );
         assert!(result.is_err());
+    }
+
+    // MH-21 regression: right after switching away from official, live
+    // config.toml has no `model_provider` (prepare_codex_official_live_config_baseline
+    // strips it) — Codex then treats the built-in `openai` provider as
+    // active, which carries `requires_openai_auth`. Establishing a
+    // third-party takeover route from that state must never leave the
+    // proxy's own loopback address sitting on `openai_base_url`: that would
+    // have Codex send its official ChatGPT/API-key bearer to our proxy
+    // tagged as if it were the official request, defeating the third-party
+    // provider's own credentials entirely.
+    #[test]
+    fn apply_codex_proxy_toml_config_never_attaches_third_party_route_to_builtin_openai() {
+        for input in ["", "sandbox_mode = \"workspace-write\"\n"] {
+            let proxy_url = "http://127.0.0.1:61111/v1";
+            let output =
+                ProxyService::apply_codex_proxy_toml_config_for_provider(input, proxy_url, None)
+                    .expect("apply proxy config from an official-baseline config");
+            let parsed: toml::Value =
+                toml::from_str(&output).expect("updated config should be valid TOML");
+
+            assert!(
+                parsed.get("openai_base_url").is_none(),
+                "input {input:?}: proxy_url must not land on openai_base_url"
+            );
+            assert_ne!(
+                parsed.get("model_provider").and_then(|v| v.as_str()),
+                Some("openai"),
+                "input {input:?}: must not leave the built-in openai provider active"
+            );
+            let provider_id = parsed
+                .get("model_provider")
+                .and_then(|v| v.as_str())
+                .expect("a non-reserved model_provider must be set");
+            let route = parsed
+                .get("model_providers")
+                .and_then(|v| v.get(provider_id))
+                .unwrap_or_else(|| panic!("[model_providers.{provider_id}] must exist"));
+            assert_eq!(
+                route.get("base_url").and_then(|v| v.as_str()),
+                Some(proxy_url)
+            );
+        }
+    }
+
+    #[test]
+    fn apply_codex_proxy_toml_config_repoints_stale_openai_model_provider() {
+        // A config that explicitly names the reserved `openai` id (not just
+        // an absent key) must be repointed the same way.
+        let input = "model_provider = \"openai\"\nopenai_base_url = \"https://stale.example/v1\"\n";
+        let proxy_url = "http://127.0.0.1:61112/v1";
+        let output =
+            ProxyService::apply_codex_proxy_toml_config_for_provider(input, proxy_url, None)
+                .expect("apply proxy config over a stale explicit openai model_provider");
+        let parsed: toml::Value =
+            toml::from_str(&output).expect("updated config should be valid TOML");
+
+        assert!(parsed.get("openai_base_url").is_none());
+        assert_ne!(
+            parsed.get("model_provider").and_then(|v| v.as_str()),
+            Some("openai")
+        );
     }
 
     #[test]

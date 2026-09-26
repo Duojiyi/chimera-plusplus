@@ -2757,6 +2757,22 @@ pub fn codex_config_has_owned_official_proxy_route(
         })
 }
 
+/// Top-level route/credential keys (key-ownership class ②, v2.8.0 plan §2):
+/// never inherited across a line/identity change — the whole reason each of
+/// MH-13a and MH-21 exists. Shared by both so the list can't drift between
+/// "switching to official" and "switching off the built-in openai identity".
+const CODEX_TOP_LEVEL_ROUTE_CREDENTIAL_KEYS: &[&str] = &[
+    "openai_base_url",
+    "chatgpt_base_url",
+    "experimental_realtime_ws_base_url",
+    "experimental_realtime_webrtc_call_base_url",
+    "forced_login_method",
+    "forced_chatgpt_workspace_id",
+    "otel",
+    "apps_mcp_product_sku",
+    "responses_api_metadata",
+];
+
 /// Build a safe official Codex config baseline from the current live text.
 ///
 /// The built-in official seed intentionally stores an empty config. When the
@@ -2789,18 +2805,10 @@ pub fn prepare_codex_official_live_config_baseline(config_text: &str) -> Result<
         "model_catalog_json",
         "model_reasoning_effort",
         "experimental_bearer_token",
-        // Route/credential keys (key-ownership class ②, v2.8.0 plan §2):
-        // never inherited from live when switching to the official line.
-        "openai_base_url",
-        "chatgpt_base_url",
-        "experimental_realtime_ws_base_url",
-        "experimental_realtime_webrtc_call_base_url",
-        "forced_login_method",
-        "forced_chatgpt_workspace_id",
-        "otel",
-        "apps_mcp_product_sku",
-        "responses_api_metadata",
-    ] {
+    ]
+    .into_iter()
+    .chain(CODEX_TOP_LEVEL_ROUTE_CREDENTIAL_KEYS.iter().copied())
+    {
         doc.as_table_mut().remove(key);
     }
     Ok(doc.to_string())
@@ -3242,6 +3250,55 @@ pub fn restore_codex_settings_for_backfill(
 /// - `"model"` / `"model_catalog_json"`: writes to top-level field.
 ///
 /// Empty value removes the field.
+/// MH-21: force a non-reserved `model_provider` before establishing a
+/// third-party route, so `update_codex_toml_field("base_url", …)` cannot
+/// silently redirect the built-in `openai` provider's endpoint instead of
+/// creating a real `[model_providers.custom]` table.
+///
+/// Codex's built-in `openai` provider carries `requires_openai_auth = true`,
+/// so any config with `model_provider` absent or `"openai"` sends Codex's
+/// official ChatGPT/API-key bearer to whatever `base_url` ends up attached
+/// to it. `update_codex_toml_field` treats "no `model_provider` key" as
+/// "the built-in `openai` provider is active" and, deliberately, still
+/// writes there in that case (other callers rely on that to simulate a
+/// stale takeover `openai_base_url`) — so the fix belongs here, at the one
+/// call site that is about to establish a *third-party* route, not in that
+/// shared utility. This exact "absent `model_provider`" state is the live
+/// baseline immediately after switching away from the official line (see
+/// `prepare_codex_official_live_config_baseline`, which removes it).
+///
+/// A no-op when `model_provider` already names a non-reserved id — the
+/// common case, since every route we write ourselves already sets one.
+pub(crate) fn ensure_non_reserved_codex_model_provider(toml_str: &str) -> Result<String, AppError> {
+    // Deliberately no early return for blank input: an empty/whitespace-only
+    // config is exactly the state right after switching away from official
+    // (an empty document still has no `model_provider`, so it still needs
+    // one injected), unlike the strip-only helpers above where "nothing to
+    // remove" is a legitimate no-op.
+    let mut doc = toml_str
+        .parse::<DocumentMut>()
+        .map_err(|e| AppError::Message(format!("Invalid Codex config.toml: {e}")))?;
+
+    let needs_custom_id = match doc.get("model_provider").and_then(|item| item.as_str()) {
+        Some(id) => CODEX_RESERVED_MODEL_PROVIDER_IDS.contains(&id.trim()),
+        None => true,
+    };
+    if !needs_custom_id {
+        return Ok(toml_str.to_string());
+    }
+
+    doc["model_provider"] = toml_edit::value("custom");
+    // A stale openai_base_url/chatgpt_base_url/etc. left over from a prior
+    // official or reserved-id state would otherwise sit inert-but-present
+    // once model_provider no longer names that identity — harmless only
+    // for as long as nothing re-attaches that identity without also
+    // clearing them. Strip them here too rather than relying on that.
+    for key in CODEX_TOP_LEVEL_ROUTE_CREDENTIAL_KEYS {
+        doc.as_table_mut().remove(key);
+    }
+    Ok(doc.to_string())
+}
+
 pub fn update_codex_toml_field(toml_str: &str, field: &str, value: &str) -> Result<String, String> {
     let mut doc = toml_str
         .parse::<DocumentMut>()
