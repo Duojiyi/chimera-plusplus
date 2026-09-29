@@ -32,6 +32,7 @@ mod prompt;
 mod prompt_files;
 mod provider;
 mod provider_defaults;
+mod provider_dto;
 mod proxy;
 mod security_limits;
 mod services;
@@ -1617,6 +1618,7 @@ pub fn run() {
             product_policy::get_product_capabilities,
             commands::get_providers,
             commands::get_current_provider,
+            commands::get_codex_current_provider_resolution,
             commands::add_provider,
             commands::add_and_activate_provider,
             commands::update_provider,
@@ -1953,8 +1955,6 @@ pub fn run() {
             commands::copilot_get_auth_status,
             commands::copilot_logout,
             commands::copilot_is_authenticated,
-            commands::copilot_get_token,
-            commands::copilot_get_token_for_account,
             commands::copilot_get_models,
             commands::copilot_get_models_for_account,
             commands::copilot_get_usage,

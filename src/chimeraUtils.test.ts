@@ -3,10 +3,10 @@ import type { Provider } from "@/types";
 import {
   activityStorageKey,
   buildCodexModelCatalog,
+  codexApiKeyCleared,
   extractCodexMappingRows,
   formatDuration,
   loadOperationRecords,
-  resolveCurrentProvider,
   saveOperationRecords,
   setCodexProviderApiKey,
 } from "./chimeraUtils";
@@ -22,38 +22,28 @@ function provider(id: string, endpoint: string, model: string): Provider {
   } as Provider;
 }
 
-describe("resolveCurrentProvider", () => {
-  const providers = [
-    provider("first", "https://one.example/v1", "claude-a"),
-    provider("second", "https://two.example/v1/", "claude-b"),
-  ];
+// The current-line resolution moved into the backend
+// (`provider_dto::resolve_current_provider`), which still sees raw keys.
 
-  it("matches the live endpoint instead of blindly trusting the stored id", () => {
-    const result = resolveCurrentProvider(
-      providers,
-      "first",
-      {
-        config:
-          'model = "claude-b"\nmodel_provider = "custom"\n[model_providers.custom]\nbase_url = "https://two.example/v1"',
-      },
-      true,
-    );
-    expect(result.provider?.id).toBe("second");
-    expect(result.source).toBe("live");
+describe("codexApiKeyCleared", () => {
+  const withKey = (key: unknown) =>
+    ({
+      id: "relay",
+      name: "relay",
+      settingsConfig: { auth: { OPENAI_API_KEY: key }, config: "" },
+    }) as Provider;
+
+  it("asks for a clear only when a shown key is emptied", () => {
+    expect(codexApiKeyCleared(withKey("sk-shown"), "  ")).toBe(true);
+    expect(codexApiKeyCleared(withKey("sk-shown"), "sk-shown")).toBe(false);
+    expect(codexApiKeyCleared(withKey("sk-shown"), "sk-other")).toBe(false);
   });
 
-  it("reports an external configuration when no provider matches", () => {
-    const result = resolveCurrentProvider(
-      providers,
-      "first",
-      {
-        config:
-          'model = "other"\nmodel_provider = "custom"\n[model_providers.custom]\nbase_url = "https://external.example/v1"',
-      },
-      true,
-    );
-    expect(result.provider).toBeNull();
-    expect(result.source).toBe("external");
+  it("never clears a key the row was shown without", () => {
+    // An official row's exchanged key is withheld, so the field starts empty.
+    expect(codexApiKeyCleared(withKey(undefined), "")).toBe(false);
+    expect(codexApiKeyCleared(withKey(""), "")).toBe(false);
+    expect(codexApiKeyCleared(null, "")).toBe(false);
   });
 });
 

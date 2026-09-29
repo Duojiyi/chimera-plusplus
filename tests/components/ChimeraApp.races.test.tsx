@@ -28,7 +28,7 @@ const mocks = vi.hoisted(() => {
   return {
     getAll: vi.fn(),
     getCurrent: vi.fn(),
-    getLive: vi.fn(),
+    getResolution: vi.fn(),
     switchProvider: vi.fn(),
     fetchModels: vi.fn(),
     invoke: vi.fn(),
@@ -51,6 +51,7 @@ vi.mock("@/lib/api/providers", async (original) => {
       ...api.providersApi,
       getAll: mocks.getAll,
       getCurrent: mocks.getCurrent,
+      getCodexCurrentResolution: mocks.getResolution,
       switch: mocks.switchProvider,
     },
   };
@@ -70,7 +71,6 @@ vi.mock("@/lib/api", () => ({
 }));
 vi.mock("@/lib/api/vscode", () => ({
   vscodeApi: {
-    getLiveProviderSettings: mocks.getLive,
     testApiEndpoints: async () => [{ success: true }],
   },
 }));
@@ -140,7 +140,12 @@ beforeEach(() => {
     .mockReset()
     .mockResolvedValue({ Alpha: provider("Alpha"), Beta: provider("Beta") });
   mocks.getCurrent.mockReset().mockResolvedValue("Alpha");
-  mocks.getLive.mockReset().mockRejectedValue(new Error("no live config"));
+  // The backend resolves the current line; with no live config it reports
+  // the stored selection.
+  mocks.getResolution.mockReset().mockImplementation(async () => ({
+    id: await mocks.getCurrent("codex"),
+    source: "stored",
+  }));
   mocks.fetchModels.mockReset();
   mocks.switchProvider
     .mockReset()
@@ -322,22 +327,22 @@ describe("Chimera tray/profile subscription", () => {
     expect(handlers.get("provider-switched")?.size).toBe(0);
   });
 
-  it("ignores live settings from an older profile after newer providers have loaded", async () => {
+  it("ignores a current-line resolution from an older profile after newer providers have loaded", async () => {
     mount();
     await screen.findByRole("button", { name: /^Alpha，.*当前线路/ });
-    const oldLive = deferred<unknown>();
-    mocks.getLive.mockReturnValueOnce(oldLive.promise);
-    const previousReads = mocks.getLive.mock.calls.length;
+    const oldResolution = deferred<{ id: string | null; source: string }>();
+    mocks.getResolution.mockReturnValueOnce(oldResolution.promise);
+    const previousReads = mocks.getResolution.mock.calls.length;
     emit();
     await waitFor(() =>
-      expect(mocks.getLive).toHaveBeenCalledTimes(previousReads + 1),
+      expect(mocks.getResolution).toHaveBeenCalledTimes(previousReads + 1),
     );
     mocks.getAll.mockResolvedValue({ Gamma: provider("Gamma") });
     mocks.getCurrent.mockResolvedValue("Gamma");
     emit();
     await screen.findByRole("button", { name: /^Gamma，.*当前线路/ });
     await act(async () => {
-      oldLive.resolve(provider("Alpha").settingsConfig);
+      oldResolution.resolve({ id: "Alpha", source: "live" });
     });
     expect(
       screen.getByRole("button", { name: /^Gamma，.*当前线路/ }),
