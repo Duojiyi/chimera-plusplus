@@ -4,12 +4,14 @@ use std::sync::LazyLock;
 use std::time::Duration;
 
 use regex::Regex;
-use rusqlite::Connection;
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::codex_config::{get_codex_config_dir, read_codex_config_text};
-use crate::codex_state_db::codex_state_db_paths;
+use crate::codex_state_db::{
+    backup_sqlite_online, codex_sqlite_homes, codex_state_db_paths, CodexRuntimeDb,
+};
 use crate::session_manager::{SessionDeleteResult, SessionMessage, SessionMeta};
 
 use super::utils::{
@@ -261,58 +263,13 @@ pub(crate) fn delete_session_records(
     root: &Path,
     session_id: &str,
 ) -> Result<SessionDeleteResult, String> {
-    let config_dir = root
-        .parent()
-        .ok_or("Codex session root has no config directory")?;
-    let mut errors = Vec::new();
-    let config_path = config_dir.join("config.toml");
-    let config_text = match crate::security_limits::read_to_string_limited(
-        &config_path,
-        crate::security_limits::MAX_CONFIG_FILE_BYTES,
-    ) {
-        Ok(text) => match text.parse::<toml_edit::DocumentMut>() {
-            Ok(_) => Some(text),
-            Err(error) => {
-                errors.push(format!("{}: {error}", config_path.display()));
-                None
-            }
-        },
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(String::new()),
-        Err(error) => {
-            errors.push(format!("{}: {error}", config_path.display()));
-            None
-        }
-    };
-    if let Err(error) = remove_session_from_session_index(
-        &config_dir.join(CODEX_SESSION_INDEX_FILENAME),
-        session_id,
-    ) {
-        errors.push(format!("{CODEX_SESSION_INDEX_FILENAME}: {error}"));
+    let cleanup = SessionCleanup::prepare(root, session_id)?;
+    if let Err(error) = cleanup.backup() {
+        // The rollout is already gone, so report a retryable partial delete
+        // rather than touching any store without a backup.
+        return Ok(cleanup.finish(vec![error]));
     }
-    // Do not short-circuit on an index/DB error: the other stores may be writable.
-    let db_paths = match config_text {
-        Some(text) => codex_state_db_paths(config_dir, &text),
-        // With an unreadable config the external SQLite override is unknown.
-        // Clean the known local store; report the unresolved location for retry.
-        None => vec![config_dir.join(crate::codex_state_db::CODEX_STATE_DB_FILENAME)],
-    };
-    for db_path in db_paths {
-        if let Err(error) = remove_thread_from_state_db(&db_path, session_id) {
-            errors.push(format!("{}: {error}", db_path.display()));
-        }
-    }
-    let error = (!errors.is_empty()).then(|| format!(
-        "Session content has been deleted, but Codex index cleanup is incomplete. Retry this deletion to finish cleanup: {}",
-        errors.join("; ")
-    ));
-    if let Some(error) = &error {
-        log::warn!("{error}");
-    }
-    Ok(SessionDeleteResult {
-        source_deleted: true,
-        cleanup_pending: error.is_some(),
-        error,
-    })
+    Ok(cleanup.run())
 }
 
 pub(crate) fn delete_session(
@@ -336,6 +293,9 @@ pub(crate) fn delete_session(
             meta.session_id
         ));
     }
+    let cleanup = SessionCleanup::prepare(root, session_id)?;
+    // Nothing has been removed yet: a failed backup leaves the session intact.
+    cleanup.backup()?;
     match std::fs::remove_file(path) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -346,15 +306,482 @@ pub(crate) fn delete_session(
             ))
         }
     }
-    delete_session_records(root, session_id)
+    Ok(cleanup.run())
 }
 
-/// Rewrites `session_index.jsonl` without the line whose `id` matches
-/// `session_id`. Every other line is kept byte-for-byte — parsed only far
+/// One Codex session delete: the session, every thread it spawned (sub-agent
+/// sessions are hidden from the list but still own rollouts and rows), and
+/// the SQLite homes that may hold them. Resolved before anything is removed.
+struct SessionCleanup {
+    config_dir: PathBuf,
+    homes: Vec<PathBuf>,
+    /// The session first, then its spawned descendants.
+    thread_ids: Vec<String>,
+    /// Homes whose spawn graph could not be read. Their state DB keeps its
+    /// edges and thread rows so a retry can find the same subtree.
+    unreadable_graph_homes: Vec<PathBuf>,
+    errors: Vec<String>,
+}
+
+impl SessionCleanup {
+    fn prepare(root: &Path, session_id: &str) -> Result<Self, String> {
+        let config_dir = root
+            .parent()
+            .ok_or("Codex session root has no config directory")?
+            .to_path_buf();
+        let mut errors = Vec::new();
+        let config_path = config_dir.join("config.toml");
+        let config_text = match crate::security_limits::read_to_string_limited(
+            &config_path,
+            crate::security_limits::MAX_CONFIG_FILE_BYTES,
+        ) {
+            Ok(text) => match text.parse::<toml_edit::DocumentMut>() {
+                Ok(_) => Some(text),
+                Err(error) => {
+                    errors.push(format!("{}: {error}", config_path.display()));
+                    None
+                }
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(String::new()),
+            Err(error) => {
+                errors.push(format!("{}: {error}", config_path.display()));
+                None
+            }
+        };
+        let homes = match config_text {
+            Some(text) => codex_sqlite_homes(&config_dir, &text),
+            // With an unreadable config the external SQLite override is unknown.
+            // Clean the known local stores; report the unresolved location for retry.
+            None => vec![config_dir.clone()],
+        };
+
+        let mut thread_ids = vec![session_id.to_string()];
+        let mut unreadable_graph_homes = Vec::new();
+        for home in &homes {
+            let db_path = home.join(CodexRuntimeDb::State.filename());
+            match read_spawned_descendants(&db_path, session_id) {
+                Ok(descendants) => {
+                    for id in descendants {
+                        if !thread_ids.contains(&id) {
+                            thread_ids.push(id);
+                        }
+                    }
+                }
+                Err(error) => {
+                    errors.push(format!("{}: {error}", db_path.display()));
+                    unreadable_graph_homes.push(home.clone());
+                }
+            }
+        }
+
+        Ok(Self {
+            config_dir,
+            homes,
+            thread_ids,
+            unreadable_graph_homes,
+            errors,
+        })
+    }
+
+    /// Back up every runtime DB that holds rows for these threads, with the
+    /// online backup API (Codex keeps them open in WAL mode). DBs without
+    /// matching rows are left out so an unrelated large log DB is not copied.
+    fn backup(&self) -> Result<(), String> {
+        let backup_dir = session_delete_backup_root(&self.config_dir).join(format!(
+            "{}_{}",
+            chrono::Local::now().format("%Y%m%d_%H%M%S"),
+            uuid::Uuid::new_v4()
+        ));
+        for (index, home) in self.homes.iter().enumerate() {
+            for db in CodexRuntimeDb::DELETE_ORDER {
+                let db_path = home.join(db.filename());
+                let failed = |error: String| {
+                    format!(
+                        "Failed to back up {} before deleting the session: {error}",
+                        db_path.display()
+                    )
+                };
+                if !db_path
+                    .try_exists()
+                    .map_err(|error| failed(error.to_string()))?
+                {
+                    continue;
+                }
+                let conn = open_runtime_db(&db_path).map_err(|error| failed(error.to_string()))?;
+                if tables_with_thread_rows(db, &conn, &self.thread_ids)
+                    .map_err(|error| failed(error.to_string()))?
+                    .is_empty()
+                {
+                    continue;
+                }
+                let target_dir = backup_dir.join(index.to_string());
+                std::fs::create_dir_all(&target_dir).map_err(|error| failed(error.to_string()))?;
+                backup_sqlite_online(&conn, &target_dir.join(db.filename()))
+                    .map_err(|error| failed(error.to_string()))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn run(self) -> SessionDeleteResult {
+        let mut errors = Vec::new();
+
+        // The subtree's rollouts, plus any second copy of the session's own
+        // (an archived duplicate) that the requested path did not cover.
+        let mut rollouts_removed = true;
+        for path in rollout_files_for(&self.config_dir, &self.thread_ids) {
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    rollouts_removed = false;
+                    errors.push(format!("{}: {error}", path.display()));
+                }
+            }
+        }
+        if let Err(error) = remove_sessions_from_session_index(
+            &self.config_dir.join(CODEX_SESSION_INDEX_FILENAME),
+            &self.thread_ids,
+        ) {
+            errors.push(format!("{CODEX_SESSION_INDEX_FILENAME}: {error}"));
+        }
+
+        // Do not short-circuit on one store's error: the other stores and
+        // homes may be writable. Within a home, the state DB goes last and is
+        // kept while anything that depends on its spawn graph is pending.
+        for home in &self.homes {
+            let mut keep_graph = !rollouts_removed || self.unreadable_graph_homes.contains(home);
+            for db in CodexRuntimeDb::DELETE_ORDER {
+                let db_path = home.join(db.filename());
+                match db_path.try_exists() {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(error) => {
+                        errors.push(format!("{}: {error}", db_path.display()));
+                        keep_graph = true;
+                        continue;
+                    }
+                }
+                if db == CodexRuntimeDb::State && keep_graph {
+                    continue;
+                }
+                if let Err(error) = delete_thread_rows(db, &db_path, &self.thread_ids) {
+                    errors.push(format!("{}: {error}", db_path.display()));
+                    keep_graph = true;
+                }
+            }
+        }
+
+        self.verify(&mut errors);
+        self.finish(errors)
+    }
+
+    /// Re-read every store after the delete: a row or rollout still present
+    /// keeps the request pending for a retry.
+    fn verify(&self, errors: &mut Vec<String>) {
+        for home in &self.homes {
+            for db in CodexRuntimeDb::DELETE_ORDER {
+                let db_path = home.join(db.filename());
+                if !db_path.try_exists().unwrap_or(false) {
+                    continue;
+                }
+                let remaining = open_runtime_db(&db_path)
+                    .and_then(|conn| tables_with_thread_rows(db, &conn, &self.thread_ids));
+                match remaining {
+                    Ok(tables) if tables.is_empty() => {}
+                    Ok(tables) => errors.push(format!(
+                        "{}: rows remain in {}",
+                        db_path.display(),
+                        tables.join(", ")
+                    )),
+                    Err(error) => errors.push(format!("{}: {error}", db_path.display())),
+                }
+            }
+        }
+        for path in rollout_files_for(&self.config_dir, &self.thread_ids) {
+            errors.push(format!("{}: rollout still present", path.display()));
+        }
+    }
+
+    /// Report the result, with the problems found while preparing first.
+    fn finish(&self, errors: Vec<String>) -> SessionDeleteResult {
+        let errors: Vec<String> = self.errors.iter().cloned().chain(errors).collect();
+        let error = (!errors.is_empty()).then(|| format!(
+            "Session content has been deleted, but Codex index cleanup is incomplete. Retry this deletion to finish cleanup: {}",
+            errors.join("; ")
+        ));
+        if let Some(error) = &error {
+            log::warn!("{error}");
+        }
+        SessionDeleteResult {
+            source_deleted: true,
+            cleanup_pending: error.is_some(),
+            error,
+        }
+    }
+}
+
+#[cfg(not(test))]
+fn session_delete_backup_root(_config_dir: &Path) -> PathBuf {
+    crate::config::get_app_config_dir()
+        .join("backups")
+        .join("codex-session-delete")
+}
+
+/// Tests keep their backups inside the temporary Codex home.
+#[cfg(test)]
+fn session_delete_backup_root(config_dir: &Path) -> PathBuf {
+    config_dir.join("session-delete-backups")
+}
+
+/// Rollout files (active or archived) whose name carries one of `thread_ids`,
+/// the way Codex names them (`rollout-<timestamp>-<thread id>.jsonl[.zst]`).
+fn rollout_files_for(config_dir: &Path, thread_ids: &[String]) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    for root in [
+        config_dir.join("sessions"),
+        config_dir.join("archived_sessions"),
+    ] {
+        collect_jsonl_files(&root, &mut files);
+    }
+    files.retain(|path| {
+        infer_session_id_from_filename(path).is_some_and(|id| thread_ids.contains(&id))
+    });
+    files
+}
+
+fn open_runtime_db(db_path: &Path) -> rusqlite::Result<Connection> {
+    // Never create a store while cleaning a missing one. Codex keeps these
+    // open (often write-locked) while running, so tolerate a brief wait.
+    let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+    conn.busy_timeout(Duration::from_secs(2))?;
+    Ok(conn)
+}
+
+fn has_column(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2)",
+        [table, column],
+        |row| row.get(0),
+    )
+}
+
+fn read_spawned_descendants(db_path: &Path, thread_id: &str) -> Result<Vec<String>, String> {
+    if !db_path.try_exists().map_err(|error| error.to_string())? {
+        return Ok(Vec::new());
+    }
+    let conn = open_runtime_db(db_path).map_err(|error| error.to_string())?;
+    spawned_descendants(&conn, thread_id).map_err(|error| error.to_string())
+}
+
+// Adapted from openai/codex codex-rs/state/src/runtime/threads.rs
+// (`ThreadRelationFilter::DescendantsOf`) (MIT)
+/// Every thread spawned from `thread_id`, transitively, per `thread_spawn_edges`.
+fn spawned_descendants(conn: &Connection, thread_id: &str) -> rusqlite::Result<Vec<String>> {
+    if !has_column(conn, "thread_spawn_edges", "parent_thread_id")?
+        || !has_column(conn, "thread_spawn_edges", "child_thread_id")?
+    {
+        return Ok(Vec::new());
+    }
+    let mut stmt = conn.prepare(
+        "WITH RECURSIVE subtree(id) AS (
+             SELECT child_thread_id FROM thread_spawn_edges WHERE parent_thread_id = ?1
+             UNION
+             SELECT edge.child_thread_id FROM thread_spawn_edges AS edge
+             JOIN subtree ON edge.parent_thread_id = subtree.id
+         )
+         SELECT id FROM subtree",
+    )?;
+    let rows = stmt.query_map([thread_id], |row| row.get::<_, String>(0))?;
+    let mut ids = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    // A cycle back to the root must not list the root as its own descendant.
+    ids.retain(|id| id != thread_id);
+    Ok(ids)
+}
+
+// Adapted from openai/codex codex-rs/state/src/runtime/threads.rs
+// (`delete_threads_strict`) and codex-rs/thread-store/src/local/thread_history.rs
+// (`delete_thread`) (MIT)
+/// Rows keyed by thread id in each runtime DB, children before parents.
+/// `thread_spawn_edges` is listed for both ends, and `threads` comes last.
+/// `local_thread_catalog` is deliberately absent.
+fn thread_rows(db: CodexRuntimeDb) -> &'static [(&'static str, &'static str)] {
+    match db {
+        CodexRuntimeDb::Logs => &[("logs", "thread_id")],
+        CodexRuntimeDb::Queue => &[
+            ("queued_items", "thread_id"),
+            // The queued_items delete trigger re-creates this row; clear it after.
+            ("queued_thread_revisions", "thread_id"),
+        ],
+        CodexRuntimeDb::Memories | CodexRuntimeDb::MemoriesV2 => &[("stage1_outputs", "thread_id")],
+        CodexRuntimeDb::Goals => &[
+            ("thread_goal_continuation_deferrals", "thread_id"),
+            ("thread_goals", "thread_id"),
+        ],
+        CodexRuntimeDb::ThreadHistory => &[
+            ("thread_items", "thread_id"),
+            ("thread_realtime_items", "thread_id"),
+            ("thread_turns", "thread_id"),
+            ("thread_history_projection_state", "thread_id"),
+        ],
+        CodexRuntimeDb::State => &[
+            // Tables a state DB from before the 0.157 split still carries.
+            ("logs", "thread_id"),
+            ("stage1_outputs", "thread_id"),
+            ("thread_goals", "thread_id"),
+            ("thread_dynamic_tools", "thread_id"),
+            ("thread_attachments", "thread_id"),
+            ("thread_artifacts", "thread_id"),
+            ("thread_spawn_edges", "parent_thread_id"),
+            ("thread_spawn_edges", "child_thread_id"),
+            ("threads", "id"),
+        ],
+    }
+}
+
+/// Tables of one runtime DB that still hold rows for `thread_ids`.
+fn tables_with_thread_rows(
+    db: CodexRuntimeDb,
+    conn: &Connection,
+    thread_ids: &[String],
+) -> rusqlite::Result<Vec<&'static str>> {
+    let mut tables: Vec<&'static str> = Vec::new();
+    for (table, column) in thread_rows(db) {
+        if tables.contains(table) || !has_column(conn, table, column)? {
+            continue;
+        }
+        let sql = format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE {column} = ?1)");
+        for thread_id in thread_ids {
+            if conn.query_row(&sql, [thread_id], |row| row.get::<_, bool>(0))? {
+                tables.push(*table);
+                break;
+            }
+        }
+    }
+    if matches!(db, CodexRuntimeDb::Memories | CodexRuntimeDb::MemoriesV2)
+        && has_column(conn, "jobs", "job_key")?
+    {
+        for thread_id in thread_ids {
+            let pending = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM jobs WHERE kind = ?1 AND job_key = ?2)",
+                [MEMORY_STAGE1_JOB_KIND, thread_id.as_str()],
+                |row| row.get::<_, bool>(0),
+            )?;
+            if pending {
+                tables.push("jobs");
+                break;
+            }
+        }
+    }
+    Ok(tables)
+}
+
+/// Delete every row of `thread_ids` from one runtime DB in one transaction.
+/// Foreign keys are on so cascades (thread attachments, goal deferrals)
+/// follow their parent; `secure_delete` zeroes the freed pages.
+fn delete_thread_rows(
+    db: CodexRuntimeDb,
+    db_path: &Path,
+    thread_ids: &[String],
+) -> Result<(), String> {
+    let mut conn = open_runtime_db(db_path).map_err(|error| error.to_string())?;
+    conn.execute("PRAGMA foreign_keys = ON", [])
+        .map_err(|error| error.to_string())?;
+    // Setting secure_delete echoes the new value as a row.
+    conn.query_row("PRAGMA secure_delete = ON", [], |row| row.get::<_, i64>(0))
+        .map_err(|error| error.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    for thread_id in thread_ids {
+        if matches!(db, CodexRuntimeDb::Memories | CodexRuntimeDb::MemoriesV2) {
+            delete_thread_memory(&tx, thread_id).map_err(|error| error.to_string())?;
+        }
+        for (table, column) in thread_rows(db) {
+            if has_column(&tx, table, column).map_err(|error| error.to_string())? {
+                tx.execute(
+                    &format!("DELETE FROM {table} WHERE {column} = ?1"),
+                    [thread_id],
+                )
+                .map_err(|error| error.to_string())?;
+            }
+        }
+    }
+    tx.commit().map_err(|error| error.to_string())?;
+    // Move the zeroed pages out of the WAL too. Best effort: the rows are
+    // already gone and Codex checkpoints on its own.
+    let _ = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
+    Ok(())
+}
+
+// Adapted from openai/codex codex-rs/state/src/runtime/memories.rs
+// (`delete_thread_memory`, `enqueue_global_consolidation_with_executor`) (MIT)
+const MEMORY_STAGE1_JOB_KIND: &str = "memory_stage1";
+const MEMORY_CONSOLIDATE_JOB_KIND: &str = "memory_consolidate_global";
+const MEMORY_CONSOLIDATE_JOB_KEY: &str = "global";
+const MEMORY_JOB_RETRY_REMAINING: i64 = 3;
+
+/// Drop a thread's stage-1 memory and its job. When that memory fed the
+/// global phase-2 summary, queue a re-consolidation so the summary stops
+/// reflecting the deleted thread, as Codex does.
+fn delete_thread_memory(conn: &Connection, thread_id: &str) -> rusqlite::Result<()> {
+    if !has_column(conn, "stage1_outputs", "selected_for_phase2")?
+        || !has_column(conn, "jobs", "job_key")?
+    {
+        return Ok(());
+    }
+    let was_selected = conn
+        .query_row(
+            "SELECT selected_for_phase2 FROM stage1_outputs WHERE thread_id = ?1",
+            [thread_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .is_some_and(|selected| selected != 0);
+    let deleted = conn.execute(
+        "DELETE FROM stage1_outputs WHERE thread_id = ?1",
+        [thread_id],
+    )?;
+    conn.execute(
+        "DELETE FROM jobs WHERE kind = ?1 AND job_key = ?2",
+        [MEMORY_STAGE1_JOB_KIND, thread_id],
+    )?;
+    if deleted > 0 && was_selected {
+        conn.execute(
+            "INSERT INTO jobs (
+                 kind, job_key, status, worker_id, ownership_token, started_at, finished_at,
+                 lease_until, retry_at, retry_remaining, last_error, input_watermark,
+                 last_success_watermark
+             ) VALUES (?1, ?2, 'pending', NULL, NULL, NULL, NULL, NULL, NULL, ?3, NULL, ?4, 0)
+             ON CONFLICT(kind, job_key) DO UPDATE SET
+                 status = CASE WHEN jobs.status = 'running' THEN 'running' ELSE 'pending' END,
+                 retry_at = CASE WHEN jobs.status = 'running' THEN jobs.retry_at ELSE NULL END,
+                 retry_remaining = max(jobs.retry_remaining, excluded.retry_remaining),
+                 input_watermark = CASE
+                     WHEN excluded.input_watermark > COALESCE(jobs.input_watermark, 0)
+                         THEN excluded.input_watermark
+                     ELSE COALESCE(jobs.input_watermark, 0) + 1
+                 END",
+            params![
+                MEMORY_CONSOLIDATE_JOB_KIND,
+                MEMORY_CONSOLIDATE_JOB_KEY,
+                MEMORY_JOB_RETRY_REMAINING,
+                chrono::Utc::now().timestamp()
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+/// Rewrites `session_index.jsonl` without the lines whose `id` is one of
+/// `session_ids`. Every other line is kept byte-for-byte — parsed only far
 /// enough to read `id`, never re-serialized — so no unrelated line's
 /// formatting is ever disturbed. A no-op when the file doesn't exist or has
 /// no matching line: deleting a session Codex never indexed is not an error.
-fn remove_session_from_session_index(index_path: &Path, session_id: &str) -> Result<(), String> {
+fn remove_sessions_from_session_index(
+    index_path: &Path,
+    session_ids: &[String],
+) -> Result<(), String> {
     let content = match crate::security_limits::read_to_string_limited(
         index_path,
         crate::security_limits::MAX_CONFIG_FILE_BYTES,
@@ -370,7 +797,7 @@ fn remove_session_from_session_index(index_path: &Path, session_id: &str) -> Res
         let is_match = serde_json::from_str::<Value>(line)
             .ok()
             .and_then(|value| value.get("id").and_then(Value::as_str).map(str::to_string))
-            .is_some_and(|id| id == session_id);
+            .is_some_and(|id| session_ids.contains(&id));
         if is_match {
             changed = true;
         } else {
@@ -386,29 +813,6 @@ fn remove_session_from_session_index(index_path: &Path, session_id: &str) -> Res
         rewritten.push('\n');
     }
     crate::config::atomic_write(index_path, rewritten.as_bytes()).map_err(|error| error.to_string())
-}
-
-/// Best-effort `DELETE FROM threads WHERE id = ?` against one resolved
-/// `state_5.sqlite`. Codex keeps this DB open — and often write-locked —
-/// while running, so this tolerates a brief wait the same way the read path
-/// above does. Failures are returned as retryable partial cleanup results.
-fn remove_thread_from_state_db(db_path: &Path, session_id: &str) -> Result<(), String> {
-    if !db_path.try_exists().map_err(|error| error.to_string())? {
-        return Ok(());
-    }
-    // Never create a new state DB while cleaning a disappeared one.
-    let conn = Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
-        .map_err(|error| error.to_string())?;
-    conn.busy_timeout(Duration::from_secs(2))
-        .map_err(|error| error.to_string())?;
-    if !crate::database::Database::table_exists(&conn, "threads")
-        .map_err(|error| error.to_string())?
-    {
-        return Ok(());
-    }
-    conn.execute("DELETE FROM threads WHERE id = ?1", [session_id])
-        .map_err(|error| error.to_string())?;
-    Ok(())
 }
 
 fn parse_session(path: &Path) -> Option<SessionMeta> {
@@ -1402,5 +1806,552 @@ mod tests {
         assert!(result.source_deleted && result.cleanup_pending);
         assert!(result.error.unwrap().contains("config.toml"));
         assert!(std::fs::read_to_string(index).unwrap().is_empty());
+    }
+
+    // Codex 0.157 DDL from codex-rs/state/*migrations; `threads` is trimmed to
+    // the columns a delete touches, everything else is verbatim.
+    const STATE_SCHEMA: &str = "
+        CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, title TEXT NOT NULL);
+        CREATE TABLE thread_dynamic_tools (
+            thread_id TEXT NOT NULL,
+            position INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL,
+            input_schema TEXT NOT NULL,
+            PRIMARY KEY(thread_id, position),
+            FOREIGN KEY(thread_id) REFERENCES threads(id) ON DELETE CASCADE
+        );
+        CREATE TABLE thread_spawn_edges (
+            parent_thread_id TEXT NOT NULL,
+            child_thread_id TEXT NOT NULL PRIMARY KEY,
+            status TEXT NOT NULL
+        );
+        CREATE TABLE thread_attachments (
+            id TEXT PRIMARY KEY,
+            thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+            attachment_type TEXT NOT NULL,
+            identity_key TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            UNIQUE (thread_id, attachment_type, identity_key)
+        );
+        CREATE TABLE local_thread_catalog (thread_id TEXT PRIMARY KEY);
+    ";
+    const LOGS_SCHEMA: &str = "
+        CREATE TABLE logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts INTEGER NOT NULL,
+            ts_nanos INTEGER NOT NULL,
+            level TEXT NOT NULL,
+            target TEXT NOT NULL,
+            feedback_log_body TEXT,
+            module_path TEXT,
+            file TEXT,
+            line INTEGER,
+            thread_id TEXT,
+            process_uuid TEXT,
+            estimated_bytes INTEGER NOT NULL DEFAULT 0
+        );
+    ";
+    const QUEUE_SCHEMA: &str = "
+        CREATE TABLE queued_items (
+            id TEXT PRIMARY KEY NOT NULL,
+            thread_id TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            queue_order INTEGER NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+        CREATE TABLE queued_thread_revisions (
+            revision INTEGER PRIMARY KEY AUTOINCREMENT,
+            thread_id TEXT NOT NULL UNIQUE
+        );
+        CREATE TRIGGER queued_items_revision_after_insert
+        AFTER INSERT ON queued_items
+        BEGIN
+            INSERT INTO queued_thread_revisions (thread_id)
+            VALUES (NEW.thread_id)
+            ON CONFLICT(thread_id) DO UPDATE
+            SET revision = (SELECT COALESCE(MAX(revision), 0) + 1 FROM queued_thread_revisions);
+        END;
+        CREATE TRIGGER queued_items_revision_after_delete
+        AFTER DELETE ON queued_items
+        BEGIN
+            INSERT INTO queued_thread_revisions (thread_id)
+            VALUES (OLD.thread_id)
+            ON CONFLICT(thread_id) DO UPDATE
+            SET revision = (SELECT COALESCE(MAX(revision), 0) + 1 FROM queued_thread_revisions);
+        END;
+    ";
+    const MEMORIES_SCHEMA: &str = "
+        CREATE TABLE stage1_outputs (
+            thread_id TEXT PRIMARY KEY,
+            source_updated_at INTEGER NOT NULL,
+            raw_memory TEXT NOT NULL,
+            rollout_summary TEXT NOT NULL,
+            rollout_slug TEXT,
+            generated_at INTEGER NOT NULL,
+            usage_count INTEGER,
+            last_usage INTEGER,
+            selected_for_phase2 INTEGER NOT NULL DEFAULT 0,
+            selected_for_phase2_source_updated_at INTEGER
+        );
+        CREATE TABLE jobs (
+            kind TEXT NOT NULL,
+            job_key TEXT NOT NULL,
+            status TEXT NOT NULL,
+            worker_id TEXT,
+            ownership_token TEXT,
+            started_at INTEGER,
+            finished_at INTEGER,
+            lease_until INTEGER,
+            retry_at INTEGER,
+            retry_remaining INTEGER NOT NULL,
+            last_error TEXT,
+            input_watermark INTEGER,
+            last_success_watermark INTEGER,
+            PRIMARY KEY (kind, job_key)
+        );
+    ";
+    const GOALS_SCHEMA: &str = "
+        CREATE TABLE thread_goals (
+            thread_id TEXT PRIMARY KEY NOT NULL,
+            goal_id TEXT NOT NULL,
+            objective TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN (
+                'active', 'paused', 'blocked', 'usage_limited', 'budget_limited', 'complete'
+            )),
+            token_budget INTEGER,
+            tokens_used INTEGER NOT NULL DEFAULT 0,
+            time_used_seconds INTEGER NOT NULL DEFAULT 0,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+        CREATE TABLE thread_goal_continuation_deferrals (
+            thread_id TEXT PRIMARY KEY NOT NULL REFERENCES thread_goals(thread_id) ON DELETE CASCADE
+        );
+    ";
+    const THREAD_HISTORY_SCHEMA: &str = "
+        CREATE TABLE thread_turns (
+            thread_id TEXT NOT NULL,
+            turn_id TEXT NOT NULL,
+            rollout_ordinal INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            error_json TEXT,
+            started_at INTEGER,
+            completed_at INTEGER,
+            duration_ms INTEGER,
+            first_user_item_id TEXT,
+            final_agent_item_id TEXT,
+            PRIMARY KEY (thread_id, turn_id)
+        );
+        CREATE TABLE thread_items (
+            thread_id TEXT NOT NULL,
+            turn_id TEXT NOT NULL,
+            item_id TEXT NOT NULL,
+            rollout_ordinal INTEGER NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            item_json TEXT NOT NULL,
+            PRIMARY KEY (thread_id, turn_id, item_id)
+        );
+        CREATE TABLE thread_history_projection_state (
+            thread_id TEXT PRIMARY KEY,
+            next_rollout_byte_offset INTEGER NOT NULL,
+            next_rollout_ordinal INTEGER NOT NULL
+        );
+        CREATE TABLE thread_realtime_items (
+            thread_id TEXT NOT NULL,
+            item_id TEXT NOT NULL,
+            rollout_ordinal INTEGER NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            item_type TEXT NOT NULL,
+            item_json TEXT NOT NULL,
+            PRIMARY KEY (thread_id, item_id)
+        );
+        CREATE TRIGGER thread_realtime_items_projection_cleanup
+            AFTER DELETE ON thread_history_projection_state
+        BEGIN
+            DELETE FROM thread_realtime_items WHERE thread_id = OLD.thread_id;
+        END;
+    ";
+
+    /// Every per-thread table the delete must clear, per runtime DB.
+    const THREAD_TABLES: &[(CodexRuntimeDb, &str, &str)] = &[
+        (CodexRuntimeDb::Logs, "logs", "thread_id"),
+        (CodexRuntimeDb::Queue, "queued_items", "thread_id"),
+        (
+            CodexRuntimeDb::Queue,
+            "queued_thread_revisions",
+            "thread_id",
+        ),
+        (CodexRuntimeDb::Memories, "stage1_outputs", "thread_id"),
+        (CodexRuntimeDb::Memories, "jobs", "job_key"),
+        (CodexRuntimeDb::Goals, "thread_goals", "thread_id"),
+        (
+            CodexRuntimeDb::Goals,
+            "thread_goal_continuation_deferrals",
+            "thread_id",
+        ),
+        (CodexRuntimeDb::ThreadHistory, "thread_turns", "thread_id"),
+        (CodexRuntimeDb::ThreadHistory, "thread_items", "thread_id"),
+        (
+            CodexRuntimeDb::ThreadHistory,
+            "thread_realtime_items",
+            "thread_id",
+        ),
+        (
+            CodexRuntimeDb::ThreadHistory,
+            "thread_history_projection_state",
+            "thread_id",
+        ),
+        (CodexRuntimeDb::State, "threads", "id"),
+        (CodexRuntimeDb::State, "thread_dynamic_tools", "thread_id"),
+        (CodexRuntimeDb::State, "thread_attachments", "thread_id"),
+        (
+            CodexRuntimeDb::State,
+            "thread_spawn_edges",
+            "child_thread_id",
+        ),
+    ];
+
+    fn create_runtime_dbs(home: &Path, dbs: &[CodexRuntimeDb]) {
+        for db in dbs {
+            let schema = match db {
+                CodexRuntimeDb::Logs => LOGS_SCHEMA,
+                CodexRuntimeDb::Queue => QUEUE_SCHEMA,
+                CodexRuntimeDb::Memories | CodexRuntimeDb::MemoriesV2 => MEMORIES_SCHEMA,
+                CodexRuntimeDb::Goals => GOALS_SCHEMA,
+                CodexRuntimeDb::ThreadHistory => THREAD_HISTORY_SCHEMA,
+                CodexRuntimeDb::State => STATE_SCHEMA,
+            };
+            let conn = Connection::open(home.join(db.filename())).unwrap();
+            // Codex runs its stores in WAL mode.
+            let _: String = conn
+                .query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))
+                .unwrap();
+            conn.execute_batch(schema).unwrap();
+        }
+    }
+
+    /// One row per per-thread table for `id`, like a thread Codex has used.
+    fn seed_thread(home: &Path, id: &str, parent: Option<&str>) {
+        let open = |db: CodexRuntimeDb| Connection::open(home.join(db.filename())).unwrap();
+        let state = open(CodexRuntimeDb::State);
+        state
+            .execute(
+                "INSERT INTO threads VALUES (?1, 'rollout.jsonl', 'title')",
+                [id],
+            )
+            .unwrap();
+        state
+            .execute(
+                "INSERT INTO thread_dynamic_tools VALUES (?1, 0, 'tool', 'd', '{}')",
+                [id],
+            )
+            .unwrap();
+        state
+            .execute(
+                "INSERT INTO thread_attachments VALUES (?1 || '-a', ?1, 'image', 'k', '{}', 0)",
+                [id],
+            )
+            .unwrap();
+        state
+            .execute("INSERT INTO local_thread_catalog VALUES (?1)", [id])
+            .unwrap();
+        if let Some(parent) = parent {
+            state
+                .execute(
+                    "INSERT INTO thread_spawn_edges VALUES (?1, ?2, 'running')",
+                    [parent, id],
+                )
+                .unwrap();
+        }
+        open(CodexRuntimeDb::Logs)
+            .execute(
+                "INSERT INTO logs (ts, ts_nanos, level, target, thread_id) VALUES (0, 0, 'INFO', 't', ?1)",
+                [id],
+            )
+            .unwrap();
+        open(CodexRuntimeDb::Queue)
+            .execute(
+                "INSERT INTO queued_items VALUES (?1 || '-q', ?1, '{}', 0, 0, 0)",
+                [id],
+            )
+            .unwrap();
+        let memories = open(CodexRuntimeDb::Memories);
+        memories
+            .execute(
+                "INSERT INTO stage1_outputs (thread_id, source_updated_at, raw_memory, rollout_summary, generated_at, selected_for_phase2) VALUES (?1, 0, 'm', 's', 0, 1)",
+                [id],
+            )
+            .unwrap();
+        memories
+            .execute(
+                "INSERT INTO jobs (kind, job_key, status, retry_remaining) VALUES ('memory_stage1', ?1, 'done', 0)",
+                [id],
+            )
+            .unwrap();
+        let goals = open(CodexRuntimeDb::Goals);
+        goals
+            .execute(
+                "INSERT INTO thread_goals (thread_id, goal_id, objective, status, created_at_ms, updated_at_ms) VALUES (?1, 'g', 'o', 'active', 0, 0)",
+                [id],
+            )
+            .unwrap();
+        goals
+            .execute(
+                "INSERT INTO thread_goal_continuation_deferrals VALUES (?1)",
+                [id],
+            )
+            .unwrap();
+        let history = open(CodexRuntimeDb::ThreadHistory);
+        history
+            .execute_batch(&format!(
+                "INSERT INTO thread_turns (thread_id, turn_id, rollout_ordinal, status) VALUES ('{id}', 't', 0, 'done');
+                 INSERT INTO thread_items VALUES ('{id}', 't', 'i', 0, 0, '{{}}');
+                 INSERT INTO thread_realtime_items VALUES ('{id}', 'r', 0, 0, 'x', '{{}}');
+                 INSERT INTO thread_history_projection_state VALUES ('{id}', 0, 0);"
+            ))
+            .unwrap();
+    }
+
+    fn count_rows(home: &Path, db: CodexRuntimeDb, table: &str, column: &str, id: &str) -> i64 {
+        let conn = Connection::open(home.join(db.filename())).unwrap();
+        conn.query_row(
+            &format!("SELECT COUNT(*) FROM {table} WHERE {column} = ?1"),
+            [id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    fn codex_home_with_sessions(temp: &Path) -> (PathBuf, PathBuf) {
+        let sessions = temp.join("sessions");
+        let archived = temp.join("archived_sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::create_dir_all(&archived).unwrap();
+        std::fs::write(
+            temp.join("config.toml"),
+            format!("sqlite_home = '{}'\n", temp.display()),
+        )
+        .unwrap();
+        (sessions, archived)
+    }
+
+    const ROOT_ID: &str = "019cc369-bd7c-7891-b371-7b20b4fe0b18";
+    const CHILD_ID: &str = "029cc369-bd7c-7891-b371-7b20b4fe0b19";
+    const GRANDCHILD_ID: &str = "039cc369-bd7c-7891-b371-7b20b4fe0b1a";
+    const OTHER_ID: &str = "049cc369-bd7c-7891-b371-7b20b4fe0b1b";
+    const OTHER_CHILD_ID: &str = "059cc369-bd7c-7891-b371-7b20b4fe0b1c";
+
+    fn rollout_name(id: &str, extension: &str) -> String {
+        format!("rollout-2026-03-06T21-50-12-{id}.{extension}")
+    }
+
+    #[test]
+    fn delete_clears_the_spawned_subtree_from_every_runtime_db_after_backing_them_up() {
+        let temp = tempdir().unwrap();
+        let home = temp.path();
+        let (sessions, archived) = codex_home_with_sessions(home);
+        let all_dbs = [
+            CodexRuntimeDb::Logs,
+            CodexRuntimeDb::Queue,
+            CodexRuntimeDb::Memories,
+            CodexRuntimeDb::Goals,
+            CodexRuntimeDb::ThreadHistory,
+            CodexRuntimeDb::State,
+        ];
+        create_runtime_dbs(home, &all_dbs);
+        // Like a running-then-closed Codex, keep a writer open so the seeded
+        // rows are still in the -wal file when the backup is taken.
+        let wal_writer = Connection::open(home.join(CODEX_STATE_DB_FILENAME)).unwrap();
+        seed_thread(home, ROOT_ID, None);
+        seed_thread(home, CHILD_ID, Some(ROOT_ID));
+        seed_thread(home, GRANDCHILD_ID, Some(CHILD_ID));
+        seed_thread(home, OTHER_ID, None);
+        seed_thread(home, OTHER_CHILD_ID, Some(OTHER_ID));
+
+        let main = sessions.join(rollout_name(ROOT_ID, "jsonl"));
+        write_codex_session(&main, ROOT_ID, "root");
+        let child = sessions.join(rollout_name(CHILD_ID, "jsonl"));
+        write_codex_session(&child, CHILD_ID, "child");
+        let grandchild = archived.join(rollout_name(GRANDCHILD_ID, "jsonl.zst"));
+        std::fs::write(&grandchild, b"compressed").unwrap();
+        let other = sessions.join(rollout_name(OTHER_ID, "jsonl"));
+        write_codex_session(&other, OTHER_ID, "other");
+        let other_line = format!(r#"{{"id":"{OTHER_ID}","thread_name":"Keep"}}"#);
+        std::fs::write(
+            home.join(CODEX_SESSION_INDEX_FILENAME),
+            format!(
+                "{{\"id\":\"{ROOT_ID}\",\"thread_name\":\"Root\"}}\n{{\"id\":\"{CHILD_ID}\",\"thread_name\":\"Child\"}}\n{other_line}\n"
+            ),
+        )
+        .unwrap();
+
+        let result = delete_session(&sessions, &main, ROOT_ID).unwrap();
+        assert!(
+            result.source_deleted && !result.cleanup_pending,
+            "{:?}",
+            result.error
+        );
+
+        for (db, table, column) in THREAD_TABLES {
+            for id in [ROOT_ID, CHILD_ID, GRANDCHILD_ID] {
+                assert_eq!(
+                    count_rows(home, *db, table, column, id),
+                    0,
+                    "{table} still holds {id}"
+                );
+            }
+            for id in [OTHER_ID, OTHER_CHILD_ID] {
+                assert_eq!(
+                    count_rows(home, *db, table, column, id),
+                    if *table == "thread_spawn_edges" && id == OTHER_ID {
+                        0
+                    } else {
+                        1
+                    },
+                    "{table} lost unrelated {id}"
+                );
+            }
+        }
+        // Left alone until it has been verified on a real machine.
+        assert_eq!(
+            count_rows(
+                home,
+                CodexRuntimeDb::State,
+                "local_thread_catalog",
+                "thread_id",
+                ROOT_ID
+            ),
+            1
+        );
+        // The deleted memories fed phase 2, so a re-consolidation is queued.
+        assert_eq!(
+            count_rows(
+                home,
+                CodexRuntimeDb::Memories,
+                "jobs",
+                "kind",
+                "memory_consolidate_global"
+            ),
+            1
+        );
+
+        assert!(!main.exists() && !child.exists() && !grandchild.exists());
+        assert!(other.exists());
+        let index = std::fs::read_to_string(home.join(CODEX_SESSION_INDEX_FILENAME)).unwrap();
+        assert_eq!(index, format!("{other_line}\n"));
+
+        let generations: Vec<_> = std::fs::read_dir(home.join("session-delete-backups"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(generations.len(), 1);
+        for db in all_dbs {
+            assert!(
+                generations[0].join("0").join(db.filename()).is_file(),
+                "{} was not backed up",
+                db.filename()
+            );
+        }
+        let backup =
+            Connection::open(generations[0].join("0").join(CODEX_STATE_DB_FILENAME)).unwrap();
+        let backed_up: i64 = backup
+            .query_row("SELECT COUNT(*) FROM threads", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(backed_up, 5);
+        drop(backup);
+        drop(wal_writer);
+    }
+
+    #[test]
+    fn a_failed_store_keeps_the_spawn_graph_until_a_retry_finishes() {
+        let temp = tempdir().unwrap();
+        let home = temp.path();
+        let (sessions, _) = codex_home_with_sessions(home);
+        create_runtime_dbs(
+            home,
+            &[
+                CodexRuntimeDb::Logs,
+                CodexRuntimeDb::Queue,
+                CodexRuntimeDb::Memories,
+                CodexRuntimeDb::Goals,
+                CodexRuntimeDb::ThreadHistory,
+                CodexRuntimeDb::State,
+            ],
+        );
+        seed_thread(home, ROOT_ID, None);
+        seed_thread(home, CHILD_ID, Some(ROOT_ID));
+        let main = sessions.join(rollout_name(ROOT_ID, "jsonl"));
+        write_codex_session(&main, ROOT_ID, "root");
+        let child = sessions.join(rollout_name(CHILD_ID, "jsonl"));
+        write_codex_session(&child, CHILD_ID, "child");
+
+        let locker = Connection::open(home.join(CodexRuntimeDb::Logs.filename())).unwrap();
+        locker.execute_batch("BEGIN IMMEDIATE;").unwrap();
+        let partial = delete_session(&sessions, &main, ROOT_ID).unwrap();
+        assert!(partial.source_deleted && partial.cleanup_pending);
+        assert!(partial.error.unwrap().contains("logs_2.sqlite"));
+        assert!(!main.exists() && !child.exists());
+        // Threads and edges stay so the retry can rediscover the child.
+        assert_eq!(
+            count_rows(home, CodexRuntimeDb::State, "threads", "id", CHILD_ID),
+            1
+        );
+        assert_eq!(
+            count_rows(
+                home,
+                CodexRuntimeDb::State,
+                "thread_spawn_edges",
+                "child_thread_id",
+                CHILD_ID
+            ),
+            1
+        );
+
+        locker.execute_batch("ROLLBACK;").unwrap();
+        let retried = delete_session(&sessions, &main, ROOT_ID).unwrap();
+        assert!(
+            retried.source_deleted && !retried.cleanup_pending,
+            "{:?}",
+            retried.error
+        );
+        for (db, table, column) in THREAD_TABLES {
+            for id in [ROOT_ID, CHILD_ID] {
+                assert_eq!(
+                    count_rows(home, *db, table, column, id),
+                    0,
+                    "{table} still holds {id}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_failed_backup_deletes_nothing() {
+        let temp = tempdir().unwrap();
+        let home = temp.path();
+        let (sessions, _) = codex_home_with_sessions(home);
+        create_runtime_dbs(home, &[CodexRuntimeDb::State]);
+        Connection::open(home.join(CODEX_STATE_DB_FILENAME))
+            .unwrap()
+            .execute(
+                "INSERT INTO threads VALUES (?1, 'rollout.jsonl', 'title')",
+                [ROOT_ID],
+            )
+            .unwrap();
+        let main = sessions.join(rollout_name(ROOT_ID, "jsonl"));
+        write_codex_session(&main, ROOT_ID, "root");
+        // A file where the backup directory has to go.
+        std::fs::write(home.join("session-delete-backups"), b"").unwrap();
+
+        let error = delete_session(&sessions, &main, ROOT_ID).unwrap_err();
+        assert!(error.contains("Failed to back up"), "{error}");
+        assert!(main.exists());
+        assert_eq!(
+            count_rows(home, CodexRuntimeDb::State, "threads", "id", ROOT_ID),
+            1
+        );
     }
 }

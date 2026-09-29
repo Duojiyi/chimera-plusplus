@@ -76,6 +76,9 @@ pub async fn delete_session(
     let source_path = sourcePath.clone();
 
     tauri::async_runtime::spawn_blocking(move || {
+        if provider_id == "codex" {
+            ensure_codex_closed_for_delete()?;
+        }
         session_manager::delete_session(&provider_id, &session_id, &source_path)
     })
     .await
@@ -86,9 +89,27 @@ pub async fn delete_session(
 pub async fn delete_sessions(
     items: Vec<session_manager::DeleteSessionRequest>,
 ) -> Result<Vec<session_manager::DeleteSessionOutcome>, String> {
-    tauri::async_runtime::spawn_blocking(move || session_manager::delete_sessions(&items))
-        .await
-        .map_err(|e| format!("Failed to delete sessions: {e}"))
+    tauri::async_runtime::spawn_blocking(move || {
+        if items.iter().any(|item| item.provider_id == "codex") {
+            ensure_codex_closed_for_delete()?;
+        }
+        Ok::<_, String>(session_manager::delete_sessions(&items))
+    })
+    .await
+    .map_err(|e| format!("Failed to delete sessions: {e}"))?
+}
+
+/// Codex keeps its session DBs open while it runs, so a delete underneath it
+/// races its own writes. Refuse until the user has closed it.
+fn ensure_codex_closed_for_delete() -> Result<(), String> {
+    refuse_delete_while_codex_runs(super::codex_runtime::codex_desktop_is_running()?)
+}
+
+fn refuse_delete_while_codex_runs(running: bool) -> Result<(), String> {
+    if running {
+        return Err("Codex 正在运行，请先关闭 Codex 再删除会话".to_string());
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -135,4 +156,16 @@ pub async fn reclaim_codex_history_sessions() -> Result<CodexHistoryReclaimResul
         source_provider_ids: outcome.source_provider_ids,
         skipped_reason: outcome.skipped_reason,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codex_session_delete_is_refused_while_codex_runs() {
+        let error = refuse_delete_while_codex_runs(true).unwrap_err();
+        assert!(error.contains("关闭 Codex"), "{error}");
+        assert!(refuse_delete_while_codex_runs(false).is_ok());
+    }
 }
