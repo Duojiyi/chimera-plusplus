@@ -5,7 +5,6 @@ import { decodeBase64Utf8 } from "../../lib/utils/base64";
 import {
   classifyCommand,
   classifyEndpoint,
-  classifyEnvKey,
   maskValue,
   riskI18nKey,
   type RiskKind,
@@ -13,10 +12,15 @@ import {
 
 export function McpConfirmation({
   request,
+  deniedEnvKeys,
 }: {
   request: DeepLinkImportRequest;
+  /** Env keys the backend deny list flags (from `preview_deeplink_import`). */
+  deniedEnvKeys: ReadonlySet<string>;
 }) {
   const { t } = useTranslation();
+  const classifyEnvKey = (key: string): RiskKind | null =>
+    deniedEnvKeys.has(key) ? "envHijack" : null;
 
   const mcpServers = useMemo(() => {
     if (!request.config) return null;
@@ -49,7 +53,8 @@ export function McpConfirmation({
       }
     }
     return [...found];
-  }, [mcpServers]);
+    // classifyEnvKey only reads deniedEnvKeys.
+  }, [mcpServers, deniedEnvKeys]);
 
   /** 一行 key/value。`break-all` 而非 `truncate`：payload 不得被 CSS 藏起来。 */
   const Row = ({

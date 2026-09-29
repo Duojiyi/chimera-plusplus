@@ -73,6 +73,16 @@ pub fn parse_deeplink_url(url_str: &str) -> Result<DeepLinkImportRequest, AppErr
         .ok_or_else(|| AppError::InvalidInput("Missing 'resource' parameter".to_string()))?
         .clone();
 
+    // D10 / MH-4: the legacy scheme is kept for provider imports only.
+    // Prompts, MCP servers and skills are accepted through `chimera://` alone.
+    if scheme == crate::product_policy::LEGACY_DEEP_LINK_SCHEME && resource != "provider" {
+        return Err(AppError::InvalidInput(format!(
+            "'{}://' links can only import providers; use '{}://' for '{resource}'",
+            crate::product_policy::LEGACY_DEEP_LINK_SCHEME,
+            crate::product_policy::PRODUCT_DEEP_LINK_SCHEME,
+        )));
+    }
+
     // Dispatch to appropriate parser based on resource type
     match resource.as_str() {
         "provider" => parse_provider_deeplink(&params, version, resource),
@@ -95,6 +105,15 @@ fn parse_provider_deeplink(
         .get("app")
         .ok_or_else(|| AppError::InvalidInput("Missing 'app' parameter".to_string()))?
         .clone();
+
+    // MH-4 / D4: Mcode providers are never imported from a deep link, even
+    // once Mcode is a supported tool. Reject by app string, before any
+    // app-type parsing can start accepting it.
+    if app.trim().eq_ignore_ascii_case("mcode") {
+        return Err(AppError::InvalidInput(
+            "Mcode provider deep links are not supported".to_string(),
+        ));
+    }
 
     // Validate app type
     if !matches!(
@@ -191,6 +210,7 @@ fn parse_provider_deeplink(
         usage_access_token,
         usage_user_id,
         usage_auto_interval,
+        confirmed_env_keys: None,
     })
 }
 
@@ -261,6 +281,7 @@ fn parse_prompt_deeplink(
         usage_access_token: None,
         usage_user_id: None,
         usage_auto_interval: None,
+        confirmed_env_keys: None,
     })
 }
 
@@ -333,6 +354,7 @@ fn parse_mcp_deeplink(
         usage_access_token: None,
         usage_user_id: None,
         usage_auto_interval: None,
+        confirmed_env_keys: None,
     })
 }
 
@@ -388,5 +410,6 @@ fn parse_skill_deeplink(
         usage_access_token: None,
         usage_user_id: None,
         usage_auto_interval: None,
+        confirmed_env_keys: None,
     })
 }

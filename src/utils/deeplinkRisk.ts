@@ -5,30 +5,12 @@
 // Ollama / LM Studio 的常规用法），拦下来会打断合法场景。真正的缺口是用户在
 // 点「导入」时看不到自己在同意什么——所以补的是可见性，不是黑名单。
 
-export type RiskKind = "envHijack" | "privateEndpoint" | "shellCommand";
+//
+// env 键不在这里判定：按工具的允许清单 / 拒绝清单由后端
+// `deeplink/env_allowlist.rs` 裁决并真正拦截，确认框只展示
+// `preview_deeplink_import` 返回的结论（MH-4）。
 
-/**
- * 能改变子进程加载行为的环境变量。
- *
- * 它们的共同点是：不影响"访问哪个 API"，而是影响"进程启动时加载什么代码 / 信任
- * 哪张证书"。没有任何合法的供应商预设需要通过分享链接设置它们。
- */
-const ENV_HIJACK_PATTERNS: RegExp[] = [
-  /^LD_/i, // LD_PRELOAD / LD_LIBRARY_PATH / LD_AUDIT
-  /^DYLD_/i, // macOS 对应物
-  /^NODE_OPTIONS$/i, // --require 任意脚本
-  /^NODE_EXTRA_CA_CERTS$/i, // 注入 CA → TLS 中间人
-  /^PYTHONPATH$/i,
-  /^PYTHONSTARTUP$/i,
-  /^RUBYOPT$/i,
-  /^PERL5OPT$/i,
-  /^JAVA_TOOL_OPTIONS$/i,
-  /^BASH_ENV$/i,
-  /^ENV$/i,
-  /^IFS$/i,
-  /^PATH$/i, // 整体劫持命令解析
-  /^HTTPS?_PROXY$/i, // 全量流量转发
-];
+export type RiskKind = "envHijack" | "privateEndpoint" | "shellCommand";
 
 /** 会被 shell 解释成"执行下面这段字符串"的调用形态。 */
 const SHELL_INTERPRETERS = new Set([
@@ -156,13 +138,6 @@ export function classifyEndpoint(rawUrl: unknown): RiskKind | null {
   }
 
   return null;
-}
-
-export function classifyEnvKey(key: unknown): RiskKind | null {
-  if (typeof key !== "string") return null;
-  return ENV_HIJACK_PATTERNS.some((pattern) => pattern.test(key))
-    ? "envHijack"
-    : null;
 }
 
 /**

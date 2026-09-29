@@ -2,6 +2,7 @@
 //!
 //! Handles importing provider configurations via ccswitch:// URLs.
 
+use super::env_allowlist::retain_permitted_env;
 use super::utils::{decode_base64_param, infer_homepage_from_endpoint};
 use super::DeepLinkImportRequest;
 use crate::error::AppError;
@@ -123,7 +124,36 @@ pub async fn import_provider_from_deeplink(
                 Some(crate::proxy::providers::codex_model_default_api_format(model).to_string());
         }
     }
-    let enabled = merged_request.enabled.unwrap_or(false);
+
+    // MH-4: only allowlisted env keys, plus keys the user confirmed one by
+    // one in the dialog, are stored. Denied keys never are.
+    let confirmed_env_keys = merged_request
+        .confirmed_env_keys
+        .clone()
+        .unwrap_or_default();
+    if let Some(env) = provider
+        .settings_config
+        .get_mut("env")
+        .and_then(|env| env.as_object_mut())
+    {
+        let removed = retain_permitted_env(&app_type, env, &confirmed_env_keys);
+        if !removed.is_empty() {
+            log::warn!(
+                "Deep link import for {} dropped env keys that are not allowed: {}",
+                app_type.as_str(),
+                removed.join(", ")
+            );
+        }
+    }
+
+    let requested_enabled = merged_request.enabled.unwrap_or(false);
+    let enabled = requested_enabled && deeplink_import_may_activate(&app_type);
+    if requested_enabled && !enabled {
+        log::info!(
+            "{} is hidden; deep link imports the provider without activating it",
+            app_type.as_str()
+        );
+    }
 
     // Generate a unique ID for the provider using timestamp + sanitized name
     let timestamp = chrono::Utc::now().timestamp_millis();
@@ -177,6 +207,15 @@ pub async fn import_provider_from_deeplink(
     }
 
     Ok(provider_id)
+}
+
+/// MH-4: a deep link may activate a provider — and so write that tool's live
+/// config — only while the tool is visible. Hidden tools are import-only.
+pub(crate) fn deeplink_import_may_activate(app_type: &AppType) -> bool {
+    crate::settings::get_settings()
+        .visible_apps
+        .unwrap_or_default()
+        .is_visible(app_type)
 }
 
 /// Build a Provider structure from a deep link request
@@ -1040,6 +1079,113 @@ mod tests {
         }
     }
 
+    /// MH-4: a deep link only activates visible tools. Tests of the
+    /// activation path for Claude / Claude Desktop (hidden by default) must
+    /// show them first.
+    fn show_claude_family() {
+        crate::settings::mutate_settings(|settings| {
+            settings.visible_apps = Some(crate::settings::VisibleApps {
+                claude: true,
+                claude_desktop: true,
+                ..crate::settings::VisibleApps::default()
+            });
+        })
+        .expect("show Claude apps");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn enabled_deeplink_for_hidden_tool_is_import_only() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        assert!(!deeplink_import_may_activate(&AppType::Claude));
+        let db = Arc::new(crate::database::Database::memory().expect("create memory db"));
+        let state = crate::store::AppState::new(db.clone());
+
+        let provider_id = import_provider_from_deeplink(
+            &state,
+            DeepLinkImportRequest {
+                resource: "provider".to_string(),
+                app: Some("claude".to_string()),
+                name: Some("Hidden Claude".to_string()),
+                enabled: Some(true),
+                homepage: Some("https://example.com".to_string()),
+                endpoint: Some("https://api.example.invalid".to_string()),
+                api_key: Some("test-hidden".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("hidden-tool import is staged");
+
+        assert!(db
+            .get_all_providers("claude")
+            .expect("read providers")
+            .contains_key(&provider_id));
+        assert_eq!(db.get_current_provider("claude").expect("db current"), None);
+        assert!(
+            !crate::config::get_claude_settings_path().exists(),
+            "a hidden tool's live config must never be written"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn deeplink_env_keeps_allowlisted_and_confirmed_keys_only() {
+        use base64::prelude::*;
+
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        let db = Arc::new(crate::database::Database::memory().expect("create memory db"));
+        let state = crate::store::AppState::new(db.clone());
+        let config = json!({"env": {
+            "ANTHROPIC_AUTH_TOKEN": "test-token",
+            "API_TIMEOUT_MS": "3000000",
+            "VENDOR_FLAG": "1",
+            "UNCONFIRMED_FLAG": "1",
+            "NODE_OPTIONS": "--require /tmp/x.js"
+        }});
+
+        let provider_id = import_provider_from_deeplink(
+            &state,
+            DeepLinkImportRequest {
+                resource: "provider".to_string(),
+                app: Some("claude".to_string()),
+                name: Some("Env Claude".to_string()),
+                homepage: Some("https://example.com".to_string()),
+                endpoint: Some("https://api.example.invalid".to_string()),
+                api_key: Some("test-token".to_string()),
+                config: Some(BASE64_STANDARD.encode(config.to_string())),
+                config_format: Some("json".to_string()),
+                // A confirmed denied key still must not survive.
+                confirmed_env_keys: Some(vec![
+                    "VENDOR_FLAG".to_string(),
+                    "NODE_OPTIONS".to_string(),
+                ]),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("import provider");
+
+        let stored = db
+            .get_provider_by_id(&provider_id, "claude")
+            .expect("read provider")
+            .expect("provider exists");
+        let env = stored.settings_config["env"].as_object().expect("env");
+        let mut keys = env.keys().cloned().collect::<Vec<_>>();
+        keys.sort();
+        assert_eq!(
+            keys,
+            [
+                "ANTHROPIC_AUTH_TOKEN",
+                "ANTHROPIC_BASE_URL",
+                "API_TIMEOUT_MS",
+                "VENDOR_FLAG"
+            ]
+        );
+    }
+
     fn hermes_request() -> DeepLinkImportRequest {
         DeepLinkImportRequest {
             resource: "provider".to_string(),
@@ -1392,6 +1538,7 @@ mod tests {
     async fn enabled_non_codex_import_waits_for_profile_and_rolls_back_to_latest_live() {
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("reload settings");
+        show_claude_family();
         let db = Arc::new(crate::database::Database::memory().expect("create memory db"));
         let state = crate::store::AppState::new(db.clone());
 
@@ -1517,6 +1664,7 @@ mod tests {
     async fn enabled_claude_desktop_import_failure_restores_all_live_files() {
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("reload settings");
+        show_claude_family();
         if crate::claude_desktop_config::capture_live_snapshot()
             .expect("probe Claude Desktop snapshot support")
             .is_none()
@@ -1612,6 +1760,7 @@ mod tests {
     async fn enabled_import_removes_staged_provider_when_switch_fails() {
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("reload settings");
+        show_claude_family();
         let db = Arc::new(crate::database::Database::memory().expect("create memory db"));
         let state = crate::store::AppState::new(db.clone());
 

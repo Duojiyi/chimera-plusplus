@@ -17,7 +17,10 @@ import {
   it,
   vi,
 } from "vitest";
-import type { DeepLinkImportRequest } from "@/lib/api/deeplink";
+import type {
+  DeepLinkImportPreview,
+  DeepLinkImportRequest,
+} from "@/lib/api/deeplink";
 
 const mocks = vi.hoisted(() => {
   Object.defineProperty(window, "__TAURI_INTERNALS__", {
@@ -56,6 +59,7 @@ const request = (name: string): DeepLinkImportRequest => ({
   apiKey: "fake-secret-do-not-display",
 });
 let queue: Pending[];
+let preview: DeepLinkImportPreview;
 const handlers = new Map<string, Set<() => void>>();
 const notify = () =>
   act(() => {
@@ -86,9 +90,18 @@ const calls = (command: string) =>
 const importButton = () =>
   screen.getByRole("button", { name: "deeplink.import" });
 
+// The import button stays disabled until the backend preview has loaded.
+const importReady = () => waitFor(() => expect(importButton()).toBeEnabled());
+
 beforeEach(() => {
   handlers.clear();
   queue = [{ id: "first", request: request("Cold Start") }];
+  preview = {
+    targetPaths: ["/home/test/.codex/config.toml"],
+    writesLive: false,
+    content: "{}",
+    env: [],
+  };
   mocks.invoke
     .mockReset()
     .mockImplementation(
@@ -104,6 +117,7 @@ beforeEach(() => {
         if (command === "import_from_deeplink_unified")
           return { type: "provider", id: "provider-new" };
         if (command === "merge_deeplink_config") return payload?.request;
+        if (command === "preview_deeplink_import") return preview;
         throw new Error("Unexpected command: " + command);
       },
     );
@@ -131,6 +145,10 @@ describe("default App deep-link handoff", () => {
     ).not.toBeInTheDocument();
     expect(calls("import_from_deeplink_unified")).toHaveLength(0);
     expect(handlers.get("deeplink-import")?.size).toBe(1);
+    await importReady();
+    expect(
+      screen.getByText("/home/test/.codex/config.toml"),
+    ).toBeInTheDocument();
     fireEvent.click(importButton());
     await waitFor(() =>
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
@@ -153,6 +171,7 @@ describe("default App deep-link handoff", () => {
     notify();
     notify();
     await act(async () => {});
+    await importReady();
     fireEvent.click(importButton());
     fireEvent.click(screen.getByRole("button", { name: "deeplink.importing" }));
     notify();
@@ -190,7 +209,7 @@ describe("default App deep-link handoff", () => {
     });
     expect(screen.queryByText("Obsolete Merge")).not.toBeInTheDocument();
     expect(calls("import_from_deeplink_unified")).toHaveLength(0);
-    expect(importButton()).toBeEnabled();
+    await importReady();
   });
 
   it("blocks unreviewed remote config after a merge error", async () => {
@@ -220,6 +239,7 @@ describe("default App deep-link handoff", () => {
     });
     mount();
     await screen.findByText("Cold Start");
+    await importReady();
     fireEvent.click(importButton());
     const done = await screen.findByRole("button", { name: "完成" });
     expect(mocks.toast.error).toHaveBeenCalledWith(
@@ -272,6 +292,48 @@ describe("default App deep-link handoff", () => {
     expect(queue[0].id).toBe("second");
     fireEvent.focus(window);
     await screen.findByText("Second Request");
+    expect(calls("import_from_deeplink_unified")).toHaveLength(0);
+  });
+
+  it("sends only the env keys the user confirmed one by one", async () => {
+    queue[0].request = {
+      ...request("Env Claude"),
+      app: "claude",
+      config: btoa(JSON.stringify({ env: { VENDOR_FLAG: "1", PATH: "/x" } })),
+      configFormat: "json",
+    };
+    preview = {
+      ...preview,
+      env: [
+        { key: "VENDOR_FLAG", status: "needsConfirmation" },
+        { key: "PATH", status: "denied" },
+      ],
+    };
+    mount();
+    await screen.findByText("Env Claude");
+    await importReady();
+    // Only the unknown key gets a checkbox; the denied key is just flagged.
+    const checkbox = screen.getByRole("checkbox");
+    fireEvent.click(checkbox);
+    fireEvent.click(importButton());
+    await waitFor(() =>
+      expect(calls("import_from_deeplink_unified")).toHaveLength(1),
+    );
+    const [, payload] = calls("import_from_deeplink_unified")[0];
+    expect(payload.request.confirmedEnvKeys).toEqual(["VENDOR_FLAG"]);
+  });
+
+  it("blocks the import when the backend preview fails", async () => {
+    const normal = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation((command, payload) =>
+      command === "preview_deeplink_import"
+        ? Promise.reject(new Error("invalid"))
+        : normal(command, payload),
+    );
+    mount();
+    await screen.findByRole("alert");
+    expect(importButton()).toBeDisabled();
+    fireEvent.click(importButton());
     expect(calls("import_from_deeplink_unified")).toHaveLength(0);
   });
 
