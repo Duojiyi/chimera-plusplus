@@ -52,12 +52,7 @@ export function PromptConfirmation({
         </pre>
       </div>
 
-      {request.enabled && (
-        <div className="text-yellow-600 dark:text-yellow-500 text-sm flex items-center gap-2">
-          <span>⚠️</span>
-          <span>{t("deeplink.prompt.enabledWarning")}</span>
-        </div>
-      )}
+      {/* Prompt links always import disabled (MH-4), so no enable warning. */}
     </div>
   );
 }

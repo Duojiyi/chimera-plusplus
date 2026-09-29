@@ -1787,6 +1787,7 @@ pub fn run() {
             commands::dismiss_pending_deeplink,
             commands::parse_deeplink,
             commands::merge_deeplink_config,
+            commands::preview_deeplink_import,
             commands::import_from_deeplink,
             commands::import_from_deeplink_unified,
             update_tray_menu,

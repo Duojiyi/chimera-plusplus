@@ -107,6 +107,9 @@ impl Database {
         }
 
         let conn = Connection::open(&db_path).map_err(|e| AppError::Database(e.to_string()))?;
+        // MH-17: tighten the database, its directory and existing backups.
+        #[cfg(unix)]
+        backup::restrict_db_storage_permissions(&db_path);
 
         // MH-6: this is the single long-lived, cross-thread-shared connection
         // (wrapped below in `Mutex<Connection>`); without a busy_timeout, any

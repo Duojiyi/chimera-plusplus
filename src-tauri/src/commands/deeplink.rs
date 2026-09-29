@@ -90,6 +90,15 @@ pub fn merge_deeplink_config(
     crate::deeplink::parse_and_merge_config(&request).map_err(|e| e.to_string())
 }
 
+/// What confirming this request stores and writes: full content, absolute
+/// target paths, whether live files change now, and env-key verdicts (MH-4).
+#[tauri::command]
+pub fn preview_deeplink_import(
+    request: DeepLinkImportRequest,
+) -> Result<crate::deeplink::DeepLinkImportPreview, String> {
+    crate::deeplink::preview_deeplink_import(&request).map_err(|e| e.to_string())
+}
+
 /// Import a provider from a deep link request (legacy, kept for compatibility)
 #[tauri::command]
 pub async fn import_from_deeplink(

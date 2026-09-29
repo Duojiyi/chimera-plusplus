@@ -6,7 +6,6 @@ use super::utils::decode_base64_param;
 use super::DeepLinkImportRequest;
 use crate::error::AppError;
 use crate::prompt::Prompt;
-use crate::services::PromptService;
 use crate::store::AppState;
 use crate::AppType;
 use std::str::FromStr;
@@ -57,30 +56,25 @@ pub fn import_prompt_from_deeplink(
         .to_lowercase();
     let id = format!("{sanitized_name}-{timestamp}");
 
-    // Check if we should enable this prompt
-    let should_enable = request.enabled.unwrap_or(false);
-
-    // Create Prompt (initially disabled)
+    // MH-4: a deep-linked prompt is always stored disabled, whatever the
+    // link's `enabled` says, and nothing outside the database is touched.
+    // `PromptService::upsert_prompt` is deliberately not used: with no other
+    // prompt enabled it truncates the tool's live prompt file (AGENTS.md,
+    // CLAUDE.md, ...), which would let a link wipe a hand-written file.
+    if request.enabled == Some(true) {
+        log::info!("Ignoring enabled=true on prompt deep link; prompts import disabled");
+    }
     let prompt = Prompt {
         id: id.clone(),
         name: name.clone(),
         content,
         description: request.description,
-        enabled: false, // Always start as disabled, will be enabled later if needed
+        enabled: false,
         created_at: Some(timestamp),
         updated_at: Some(timestamp),
     };
-
-    // Save using PromptService
-    PromptService::upsert_prompt(state, app_type.clone(), &id, prompt)?;
-
-    // If enabled flag is set, enable this prompt (which will disable others)
-    if should_enable {
-        PromptService::enable_prompt(state, app_type, &id)?;
-        log::info!("Successfully imported and enabled prompt '{name}' for {app_str}");
-    } else {
-        log::info!("Successfully imported prompt '{name}' for {app_str} (disabled)");
-    }
+    state.db.save_prompt(app_type.as_str(), &prompt)?;
+    log::info!("Imported prompt '{name}' for {app_str} (disabled)");
 
     Ok(id)
 }

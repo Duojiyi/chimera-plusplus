@@ -1,15 +1,15 @@
-//! Deep link import functionality for CC Switch
+//! Deep link import for Chimera++.
 //!
-//! This module implements the ccswitch:// protocol for importing configurations
-//! via deep links. Supports importing:
-//! - Provider configurations (Claude/Codex/Gemini)
-//! - MCP server configurations
-//! - Prompts
-//! - Skills
-//!
+//! `chimera://` imports providers, MCP servers, prompts and skills. The
+//! legacy `ccswitch://` scheme imports providers only (D10). Every import is
+//! confirmed first; only a provider for a visible tool can be activated from
+//! a link, prompts and skills always import disabled, MCP servers import
+//! inert, and env keys go through [`env_allowlist`] (MH-4).
 
+pub mod env_allowlist;
 mod mcp;
 mod parser;
+mod preview;
 mod prompt;
 mod provider;
 mod skill;
@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 // Re-export public API
 pub use mcp::import_mcp_from_deeplink;
 pub use parser::parse_deeplink_url;
+pub use preview::{preview_deeplink_import, DeepLinkImportPreview};
 pub use prompt::import_prompt_from_deeplink;
 pub use provider::{import_provider_from_deeplink, parse_and_merge_config};
 pub use skill::import_skill_from_deeplink;
@@ -135,4 +136,10 @@ pub struct DeepLinkImportRequest {
     /// Auto query interval in minutes (0 to disable)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage_auto_interval: Option<u64>,
+
+    // ============ Confirmation (set by the confirm dialog, never by a URL) ============
+    /// Env keys outside the tool's allowlist that the user confirmed one by
+    /// one (see [`env_allowlist`]). Denied keys stay dropped regardless.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmed_env_keys: Option<Vec<String>>,
 }

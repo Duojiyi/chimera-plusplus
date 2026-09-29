@@ -13,6 +13,10 @@ use std::time::Duration;
 /// 全局 HTTP 客户端实例
 static GLOBAL_CLIENT: OnceCell<RwLock<Client>> = OnceCell::new();
 
+/// 代理转发专用客户端：与全局客户端共用代理配置，但使用
+/// [`forward_redirect_policy`]，单独缓存以保留连接池。
+static FORWARD_CLIENT: OnceCell<RwLock<Client>> = OnceCell::new();
+
 /// 当前代理 URL（用于日志和状态查询）
 static CURRENT_PROXY_URL: OnceCell<RwLock<Option<String>>> = OnceCell::new();
 
@@ -66,6 +70,8 @@ pub fn init(proxy_url: Option<&str>) -> Result<(), String> {
         return apply_proxy(proxy_url);
     }
 
+    refresh_forward_client(effective_url)?;
+
     // 初始化代理 URL 记录
     let _ = CURRENT_PROXY_URL.set(RwLock::new(effective_url.map(|s| s.to_string())));
 
@@ -118,6 +124,7 @@ pub fn apply_proxy(proxy_url: Option<&str>) -> Result<(), String> {
         // 如果还没初始化，则初始化
         return init(proxy_url);
     }
+    refresh_forward_client(effective_url)?;
 
     // 更新代理 URL 记录
     if let Some(lock) = CURRENT_PROXY_URL.get() {
@@ -162,6 +169,7 @@ pub fn update_proxy(proxy_url: Option<&str>) -> Result<(), String> {
         // 如果还没初始化，则初始化
         return init(proxy_url);
     }
+    refresh_forward_client(effective_url)?;
 
     // 更新代理 URL 记录
     if let Some(lock) = CURRENT_PROXY_URL.get() {
@@ -205,6 +213,72 @@ pub fn get_for_auth_probe() -> Result<Client, String> {
         get_current_proxy_url().as_deref(),
         reqwest::redirect::Policy::none(),
     )
+}
+
+/// 获取代理转发（`forwarder`）使用的客户端。
+///
+/// 与 [`get`] 共用代理配置，但重定向只允许同主机的 http→https 升级，
+/// 跨主机重定向一律拒绝：转发请求带着供应商凭据（`x-api-key` 等不在
+/// reqwest 跨源剥离范围内），上游不能借 3xx 把它们引到别的主机。
+/// 其它调用方（技能/运行时下载等）仍用 [`get`]，它们需要跟随 CDN 重定向。
+pub fn get_for_forwarding() -> Client {
+    FORWARD_CLIENT
+        .get()
+        .and_then(|lock| lock.read().ok())
+        .map(|c| c.clone())
+        .unwrap_or_else(|| {
+            log::warn!("[GlobalProxy] [GP-005] Forward client not initialized, using fallback");
+            build_forward_client(get_current_proxy_url().as_deref()).unwrap_or_else(|_| {
+                Client::builder()
+                    .redirect(reqwest::redirect::Policy::none())
+                    .build()
+                    .unwrap_or_default()
+            })
+        })
+}
+
+/// 同主机 http→https 升级之外的重定向一律拒绝（MH-8e）。
+fn forward_redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        let allowed = attempt
+            .previous()
+            .last()
+            .is_some_and(|previous| is_same_host_https_upgrade(previous, attempt.url()));
+        if allowed {
+            attempt.follow()
+        } else {
+            attempt
+                .error("upstream redirect refused: only a same-host http→https upgrade is allowed")
+        }
+    })
+}
+
+fn is_same_host_https_upgrade(previous: &reqwest::Url, next: &reqwest::Url) -> bool {
+    previous.scheme() == "http"
+        && next.scheme() == "https"
+        && previous.host_str().is_some()
+        && previous.host_str() == next.host_str()
+}
+
+fn build_forward_client(proxy_url: Option<&str>) -> Result<Client, String> {
+    build_client_with_redirect_policy(proxy_url, forward_redirect_policy())
+}
+
+fn refresh_forward_client(proxy_url: Option<&str>) -> Result<(), String> {
+    let client = build_forward_client(proxy_url)?;
+    match FORWARD_CLIENT.get() {
+        Some(lock) => {
+            let mut current = lock.write().map_err(|e| {
+                log::error!("[GlobalProxy] [GP-006] Failed to acquire forward client lock: {e}");
+                "Failed to update proxy: lock poisoned".to_string()
+            })?;
+            *current = client;
+        }
+        None => {
+            let _ = FORWARD_CLIENT.set(RwLock::new(client));
+        }
+    }
+    Ok(())
 }
 
 /// 获取当前代理 URL
@@ -444,6 +518,83 @@ mod tests {
         assert_eq!(hits_after_probe, 0);
         assert_eq!(ordinary.unwrap().status(), reqwest::StatusCode::OK);
         assert_eq!(destination_hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn forward_client_refuses_cross_host_redirects() {
+        use axum::response::IntoResponse;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let destination_hits = Arc::new(AtomicUsize::new(0));
+        let hits = destination_hits.clone();
+        let router = axum::Router::new().fallback(move |uri: axum::http::Uri| {
+            let hits = hits.clone();
+            async move {
+                match uri.path() {
+                    "/cross" => {
+                        axum::response::Redirect::temporary("http://attacker.invalid/steal")
+                            .into_response()
+                    }
+                    "/same-host-http" => {
+                        axum::response::Redirect::temporary("http://origin.invalid/steal")
+                            .into_response()
+                    }
+                    _ => {
+                        hits.fetch_add(1, Ordering::SeqCst);
+                        "target".into_response()
+                    }
+                }
+            }
+        });
+        // Explicit HTTP proxy, as in the auth-probe test: .invalid hosts never resolve.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+        let client = build_forward_client(Some(&proxy_url)).unwrap();
+        let mut results = Vec::new();
+        for path in ["/cross", "/same-host-http"] {
+            results.push(
+                client
+                    .post(format!("http://origin.invalid{path}"))
+                    .header("x-api-key", "sk-must-not-leave")
+                    .timeout(Duration::from_secs(3))
+                    .send()
+                    .await,
+            );
+        }
+        server.abort();
+
+        for result in results {
+            let error = result.expect_err("redirect must be refused, not followed");
+            assert!(error.is_redirect(), "{error}");
+        }
+        assert_eq!(destination_hits.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn forward_redirects_allow_only_same_host_https_upgrade() {
+        let url = |s: &str| reqwest::Url::parse(s).unwrap();
+        assert!(is_same_host_https_upgrade(
+            &url("http://api.example.com/v1/responses"),
+            &url("https://api.example.com/v1/responses"),
+        ));
+        for (previous, next) in [
+            ("http://api.example.com/v1", "https://evil.example.net/v1"),
+            ("http://api.example.com/v1", "http://api.example.com/v2"),
+            ("https://api.example.com/v1", "https://api.example.com/v2"),
+            ("https://api.example.com/v1", "http://api.example.com/v1"),
+            (
+                "http://api.example.com/v1",
+                "https://sub.api.example.com/v1",
+            ),
+        ] {
+            assert!(
+                !is_same_host_https_upgrade(&url(previous), &url(next)),
+                "{previous} -> {next}"
+            );
+        }
     }
 
     #[test]
