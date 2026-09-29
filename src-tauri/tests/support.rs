@@ -18,6 +18,10 @@ pub fn ensure_test_home() -> &'static Path {
         std::env::set_var("HOME", &base);
         #[cfg(windows)]
         std::env::set_var("USERPROFILE", &base);
+        // Claude Desktop 与 Hermes 在 Windows 上按 LOCALAPPDATA 定位目录；不覆盖
+        // 它，测试会读写真实用户的 %LOCALAPPDATA%\Claude* 与 %LOCALAPPDATA%\hermes。
+        #[cfg(windows)]
+        std::env::set_var("LOCALAPPDATA", base.join("AppData").join("Local"));
         base
     })
     .as_path()
@@ -36,6 +40,7 @@ pub fn reset_test_fs() {
         ".config",
         ".openclaw",
         "profiles",
+        "AppData",
     ] {
         let path = home.join(sub);
         if path.exists() {

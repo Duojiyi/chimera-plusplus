@@ -1750,7 +1750,7 @@
   },
   "dbUpgrade": {
     "title": "データベースのバージョンが新しすぎます",
-    "description": "このデータベースは新しいバージョンの CC Switch で作成されています。続行するにはアプリを更新してください。更新してもデータは削除されません。",
+    "description": "このデータベースは新しいバージョンの Chimera++ で作成されています。続行するにはアプリを更新してください。更新してもデータは削除されません。",
     "versionInfo": "データベース v{{db}} · アプリ対応 v{{supported}}",
     "dbPath": "データベースファイル",
     "checking": "利用可能な更新を確認中…",
@@ -2425,7 +2425,7 @@
   },
   "deeplink": {
     "confirmImport": "プロバイダーのインポートを確認",
-    "confirmImportDescription": "次の設定をディープリンクから CC Switch へインポートします",
+    "confirmImportDescription": "次の設定をディープリンクから Chimera++ へインポートします",
     "importPrompt": "プロンプトをインポート",
     "importPromptDescription": "このシステムプロンプトをインポートするか確認してください",
     "importMcp": "MCP サーバーをインポート",

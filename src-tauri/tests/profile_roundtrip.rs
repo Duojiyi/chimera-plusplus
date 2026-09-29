@@ -765,6 +765,21 @@ async fn profile_switch_preserves_takeover_and_hot_switches_provider() {
     );
 }
 
+/// Claude Desktop resolves its Windows directory from `LOCALAPPDATA`, so the
+/// test home must redirect it too, or these tests write the real user's
+/// `%LOCALAPPDATA%\Claude*`.
+#[cfg(windows)]
+#[test]
+#[serial]
+fn test_home_isolates_local_app_data() {
+    let home = ensure_test_home();
+    let local = std::env::var_os("LOCALAPPDATA").expect("test support sets LOCALAPPDATA");
+    assert!(
+        std::path::Path::new(&local).starts_with(home),
+        "LOCALAPPDATA must point inside the test home, got {local:?}"
+    );
+}
+
 #[cfg(any(target_os = "macos", windows))]
 #[tokio::test(flavor = "current_thread")]
 #[serial]

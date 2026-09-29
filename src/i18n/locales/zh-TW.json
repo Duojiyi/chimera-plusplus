@@ -1750,7 +1750,7 @@
   },
   "dbUpgrade": {
     "title": "資料庫版本過新",
-    "description": "目前資料庫由較新版本的 CC Switch 建立，需要升級應用後才能繼續使用。升級不會刪除你的資料。",
+    "description": "目前資料庫由較新版本的 Chimera++ 建立，需要升級應用後才能繼續使用。升級不會刪除你的資料。",
     "versionInfo": "資料庫版本 v{{db}} · 應用支援 v{{supported}}",
     "dbPath": "資料庫檔案",
     "checking": "正在檢查可用更新…",
@@ -2425,7 +2425,7 @@
   },
   "deeplink": {
     "confirmImport": "確認匯入供應商設定",
-    "confirmImportDescription": "以下設定將匯入至 CC Switch",
+    "confirmImportDescription": "以下設定將匯入至 Chimera++",
     "importPrompt": "匯入提示詞",
     "importPromptDescription": "請確認是否匯入此系統提示詞",
     "importMcp": "匯入 MCP Servers",

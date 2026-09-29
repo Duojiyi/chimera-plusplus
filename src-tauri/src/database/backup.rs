@@ -15,6 +15,9 @@ use tempfile::NamedTempFile;
 
 const CC_SWITCH_SQL_EXPORT_HEADER: &str = "-- CC Switch SQLite 导出";
 
+/// File-name prefix of the snapshots `backup_database_file` generates.
+const DB_BACKUP_PREFIX: &str = "db_backup_";
+
 /// `dump_sql` 会写出的 PRAGMA。其余 PRAGMA 一律拒绝——`temp_store_directory`
 /// 能把临时文件重定向到任意目录，`writable_schema` 能绕过 schema 完整性检查。
 const IMPORT_ALLOWED_PRAGMAS: &[&str] = &["foreign_keys", "user_version"];
@@ -342,7 +345,7 @@ impl Database {
                 let latest = fs::read_dir(&backup_dir).ok().and_then(|entries| {
                     entries
                         .filter_map(|e| e.ok())
-                        .filter(|e| e.path().extension().map(|ext| ext == "db").unwrap_or(false))
+                        .filter(|e| Self::is_rotated_db_backup(&e.path()))
                         .filter_map(|e| e.metadata().ok().and_then(|m| m.modified().ok()))
                         .max()
                 });
@@ -407,7 +410,7 @@ impl Database {
 
         fs::create_dir_all(&backup_dir).map_err(|e| AppError::io(&backup_dir, e))?;
 
-        let base_id = format!("db_backup_{}", Local::now().format("%Y%m%d_%H%M%S"));
+        let base_id = format!("{DB_BACKUP_PREFIX}{}", Local::now().format("%Y%m%d_%H%M%S"));
         let mut backup_id = base_id.clone();
         let mut backup_path = backup_dir.join(format!("{backup_id}.db"));
         let mut counter = 1;
@@ -432,19 +435,24 @@ impl Database {
         Ok(Some(backup_path))
     }
 
+    /// Only files `backup_database_file` itself generated take part in
+    /// rotation. A backup the user renamed, or any other `.db` placed in
+    /// `backups/`, is never auto-deleted (MH-8e).
+    fn is_rotated_db_backup(path: &Path) -> bool {
+        path.extension().is_some_and(|ext| ext == "db")
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(DB_BACKUP_PREFIX))
+    }
+
     /// 清理旧的数据库备份，保留最新的 N 个
     fn cleanup_db_backups(dir: &Path) -> Result<(), AppError> {
         let retain = crate::settings::effective_backup_retain_count();
         let entries = match fs::read_dir(dir) {
             Ok(iter) => iter
                 .filter_map(|entry| entry.ok())
-                .filter(|entry| {
-                    entry
-                        .path()
-                        .extension()
-                        .map(|ext| ext == "db")
-                        .unwrap_or(false)
-                })
+                .filter(|entry| Self::is_rotated_db_backup(&entry.path()))
                 .collect::<Vec<_>>(),
             Err(_) => return Ok(()),
         };
@@ -2028,5 +2036,59 @@ mod tests {
         let _ = std::fs::remove_dir_all(&test_home);
 
         Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn backup_rotation_only_deletes_generated_db_backups() -> Result<(), AppError> {
+        let old_test_home = std::env::var_os("CC_SWITCH_TEST_HOME");
+        let test_home = tempfile::tempdir().unwrap();
+        std::env::set_var("CC_SWITCH_TEST_HOME", test_home.path());
+
+        let previous_retain = crate::settings::get_settings().backup_retain_count;
+        let result = (|| -> Result<(), AppError> {
+            crate::settings::mutate_settings(|s| s.backup_retain_count = Some(1))?;
+            let dir = test_home.path().join("rotation-backups");
+            std::fs::create_dir_all(&dir).unwrap();
+            for name in [
+                "db_backup_20260101_000000.db",
+                "db_backup_20260102_000000.db",
+                "db_backup_20260103_000000.db",
+                "before-upgrade.db",
+                "other-tool.db",
+                "db_backup_notes.txt",
+            ] {
+                std::fs::write(dir.join(name), b"x").unwrap();
+                // Distinct mtimes so "newest" is deterministic.
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+
+            Database::cleanup_db_backups(&dir)?;
+
+            let mut remaining = std::fs::read_dir(&dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().to_string())
+                .collect::<Vec<_>>();
+            remaining.sort();
+            assert_eq!(
+                remaining,
+                [
+                    "before-upgrade.db",
+                    "db_backup_20260103_000000.db",
+                    "db_backup_notes.txt",
+                    "other-tool.db",
+                ],
+                "rotation must only prune its own db_backup_*.db snapshots"
+            );
+            Ok(())
+        })();
+
+        crate::settings::mutate_settings(|s| s.backup_retain_count = previous_retain)
+            .expect("restore backup retain count");
+        match old_test_home {
+            Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
+            None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+        }
+        result
     }
 }
