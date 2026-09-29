@@ -18,6 +18,51 @@ const CC_SWITCH_SQL_EXPORT_HEADER: &str = "-- CC Switch SQLite 导出";
 /// File-name prefix of the snapshots `backup_database_file` generates.
 const DB_BACKUP_PREFIX: &str = "db_backup_";
 
+/// MH-17: the database and its `.db` snapshots hold provider credentials,
+/// yet files created by older releases (or under the default umask) are
+/// typically 0644 inside 0755 directories. Tighten the database file, its
+/// directory, `backups/` and every regular `*.db` file in it to owner-only.
+/// Runs at startup and after each backup. Best effort: a failure is logged
+/// and never blocks startup or a backup. Symlinks are skipped, because
+/// `set_permissions` would change the link target instead.
+#[cfg(unix)]
+pub(crate) fn restrict_db_storage_permissions(db_path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    fn restrict(path: &Path, mode: u32, expect_dir: bool) {
+        let Ok(metadata) = fs::symlink_metadata(path) else {
+            return;
+        };
+        let kind_matches = if expect_dir {
+            metadata.is_dir()
+        } else {
+            metadata.is_file()
+        };
+        if !kind_matches || metadata.permissions().mode() & 0o777 == mode {
+            return;
+        }
+        if let Err(e) = fs::set_permissions(path, fs::Permissions::from_mode(mode)) {
+            log::warn!("收紧权限失败 {}: {e}", path.display());
+        }
+    }
+
+    restrict(db_path, 0o600, false);
+    let Some(dir) = db_path.parent() else {
+        return;
+    };
+    restrict(dir, 0o700, true);
+    let backup_dir = dir.join("backups");
+    restrict(&backup_dir, 0o700, true);
+    if let Ok(entries) = fs::read_dir(&backup_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "db") {
+                restrict(&path, 0o600, false);
+            }
+        }
+    }
+}
+
 /// `dump_sql` 会写出的 PRAGMA。其余 PRAGMA 一律拒绝——`temp_store_directory`
 /// 能把临时文件重定向到任意目录，`writable_schema` 能绕过 schema 完整性检查。
 const IMPORT_ALLOWED_PRAGMAS: &[&str] = &["foreign_keys", "user_version"];
@@ -111,12 +156,15 @@ impl Database {
     /// uploaded, or simply outliving a live session on disk longer than the
     /// state.db file itself). A `.db` file-copy backup is the separate,
     /// same-device, same-account mechanism for an exact local restore, and
-    /// stays full-fidelity, protected by file permissions instead (see
-    /// `Self::backup_database_file`).
+    /// keeps provider rows full-fidelity, protected by file permissions
+    /// instead (see `Self::backup_database_file`); only the device-local
+    /// takeover Live backup is dropped from both.
     pub fn export_sql_string(&self) -> Result<String, AppError> {
         let snapshot = self.snapshot_to_memory()?;
         Self::redact_codex_provider_auth(&snapshot)?;
-        Self::dump_sql(&snapshot, &[])
+        // The takeover Live backup (full Codex auth.json) never leaves the
+        // device, and an import would refuse it anyway (MH-17).
+        Self::dump_sql(&snapshot, &["proxy_live_backup"])
     }
 
     /// Export SQL for sync (WebDAV), skipping local-only tables' data
@@ -421,18 +469,38 @@ impl Database {
         }
 
         {
-            let conn = lock_conn!(self.conn);
+            // Stage through an in-memory snapshot so the takeover Live backup
+            // (MH-17) is dropped before any page reaches the backup file.
+            let snapshot = self.snapshot_to_memory()?;
+            Self::strip_proxy_live_backup(&snapshot)?;
             let mut dest_conn =
                 Connection::open(&backup_path).map_err(|e| AppError::Database(e.to_string()))?;
-            let backup = Backup::new(&conn, &mut dest_conn)
+            let backup = Backup::new(&snapshot, &mut dest_conn)
                 .map_err(|e| AppError::Database(e.to_string()))?;
             backup
                 .step(-1)
                 .map_err(|e| AppError::Database(e.to_string()))?;
         }
 
+        #[cfg(unix)]
+        restrict_db_storage_permissions(&db_path);
         Self::cleanup_db_backups(&backup_dir)?;
         Ok(Some(backup_path))
+    }
+
+    /// `proxy_live_backup` holds the whole pre-takeover Live state — for
+    /// Codex that is the full `auth.json`, OAuth tokens included (MH-17,
+    /// R3A-N7). It is device-local runtime state: every restore/import
+    /// already refuses a snapshot that still carries it
+    /// (`validate_stopped_proxy_state_on_conn`), so neither a local export
+    /// nor a `.db` backup gains anything by keeping it. `secure_delete`
+    /// zeroes the freed pages, so a page-level copy of this connection (the
+    /// SQLite Backup API) cannot carry the deleted content along.
+    fn strip_proxy_live_backup(conn: &Connection) -> Result<(), AppError> {
+        // Never run an unexpected trigger while rewriting the snapshot.
+        Self::validate_backup_schema(conn)?;
+        conn.execute_batch("PRAGMA secure_delete = ON; DELETE FROM main.proxy_live_backup;")
+            .map_err(|e| AppError::Database(format!("清理 Live 备份失败: {e}")))
     }
 
     /// Only files `backup_database_file` itself generated take part in
@@ -1714,9 +1782,14 @@ mod tests {
                  VALUES ('codex', '{}', 'now')",
             )?;
         }
-        // A legacy full snapshot may contain remote Live backups. They are
-        // replaced by local-only tables before the final runtime validation.
-        let remote_sql = remote_db.export_sql_string()?;
+        // A legacy full snapshot may contain remote Live backups (current
+        // exports drop them, so build one directly). They are replaced by
+        // local-only tables before the final runtime validation.
+        let remote_sql = {
+            let snapshot = remote_db.snapshot_to_memory()?;
+            Database::dump_sql(&snapshot, &[])?
+        };
+        assert!(remote_sql.contains("INSERT INTO \"proxy_live_backup\""));
 
         let local_db = Database::memory()?;
         {
@@ -2090,5 +2163,126 @@ mod tests {
             None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
         }
         result
+    }
+
+    #[test]
+    #[serial]
+    fn local_export_and_db_backup_drop_takeover_live_backup() -> Result<(), AppError> {
+        let old_test_home = std::env::var_os("CC_SWITCH_TEST_HOME");
+        let test_home = tempfile::tempdir().unwrap();
+        std::env::set_var("CC_SWITCH_TEST_HOME", test_home.path());
+
+        let result = (|| -> Result<(), AppError> {
+            let app_dir = crate::config::get_app_config_dir();
+            std::fs::create_dir_all(&app_dir).unwrap();
+            // `backup_database_file` only checks that the main DB path exists;
+            // the snapshot itself comes from `self.conn`.
+            std::fs::write(
+                app_dir.join(crate::product_policy::PRODUCT_DATABASE_FILE),
+                b"placeholder",
+            )
+            .unwrap();
+
+            let db = Database::memory()?;
+            {
+                let conn = crate::database::lock_conn!(db.conn);
+                conn.execute_batch(
+                    r#"INSERT INTO providers (id, app_type, name, settings_config, meta)
+                       VALUES ('relay', 'codex', 'Relay',
+                               '{"auth":{"OPENAI_API_KEY":"sk-relay-kept"}}', '{}');
+                       INSERT INTO proxy_live_backup (app_type, original_config, backed_up_at)
+                       VALUES ('codex',
+                               '{"auth":{"tokens":{"access_token":"takeover-live-oauth"}},"config":""}',
+                               'now');"#,
+                )?;
+            }
+
+            let exported = db.export_sql_string()?;
+            assert!(!exported.contains("takeover-live-oauth"));
+            assert!(exported.contains("sk-relay-kept"));
+
+            let backup_path = db.backup_database_file()?.expect("backup created");
+            let raw = std::fs::read(&backup_path).unwrap();
+            assert!(
+                !raw.windows(b"takeover-live-oauth".len())
+                    .any(|window| window == b"takeover-live-oauth"),
+                "the deleted Live backup must not survive in free pages either"
+            );
+            let backup = rusqlite::Connection::open(&backup_path)?;
+            let live_rows: i64 =
+                backup.query_row("SELECT COUNT(*) FROM proxy_live_backup", [], |row| {
+                    row.get(0)
+                })?;
+            assert_eq!(live_rows, 0);
+            let kept: String = backup.query_row(
+                "SELECT settings_config FROM providers WHERE id = 'relay'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert!(
+                kept.contains("sk-relay-kept"),
+                "provider rows stay full-fidelity"
+            );
+
+            let conn = crate::database::lock_conn!(db.conn);
+            let local_rows: i64 =
+                conn.query_row("SELECT COUNT(*) FROM proxy_live_backup", [], |row| {
+                    row.get(0)
+                })?;
+            assert_eq!(local_rows, 1, "the live database keeps its own Live backup");
+            Ok(())
+        })();
+
+        match old_test_home {
+            Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
+            None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+        }
+        result
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn storage_permissions_are_tightened_to_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        fn mode(path: &std::path::Path) -> u32 {
+            std::fs::symlink_metadata(path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777
+        }
+        fn set(path: &std::path::Path, mode: u32) {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap()
+        }
+
+        let root = tempfile::tempdir().unwrap();
+
+        let app_dir = root.path().join("app");
+        let backups = app_dir.join("backups");
+        std::fs::create_dir_all(&backups).unwrap();
+        let db_path = app_dir.join("chimera.db");
+        let snapshot = backups.join("db_backup_20260101_000000.db");
+        let renamed = backups.join("before-upgrade.db");
+        let notes = backups.join("notes.txt");
+        let outside = root.path().join("outside.db");
+        for file in [&db_path, &snapshot, &renamed, &notes, &outside] {
+            std::fs::write(file, b"x").unwrap();
+            set(file, 0o644);
+        }
+        let link = backups.join("link.db");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        set(&app_dir, 0o755);
+        set(&backups, 0o755);
+
+        super::restrict_db_storage_permissions(&db_path);
+
+        assert_eq!(mode(&db_path), 0o600);
+        assert_eq!(mode(&app_dir), 0o700);
+        assert_eq!(mode(&backups), 0o700);
+        assert_eq!(mode(&snapshot), 0o600);
+        assert_eq!(mode(&renamed), 0o600);
+        assert_eq!(mode(&notes), 0o644, "only .db files are touched");
+        assert_eq!(mode(&outside), 0o644, "symlinks are not followed");
     }
 }
