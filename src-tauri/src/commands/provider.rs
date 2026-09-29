@@ -5,6 +5,7 @@ use crate::app_config::AppType;
 use crate::commands::copilot::CopilotAuthState;
 use crate::error::AppError;
 use crate::provider::{ClaudeDesktopMode, Provider};
+use crate::provider_dto::{self, CurrentProviderResolution, LiveSettingsDto, ProviderDto};
 use crate::services::provider::LiveSnapshot;
 use crate::services::{
     EndpointLatency, ProviderService, ProviderSortUpdate, SpeedtestService, SwitchResult,
@@ -20,19 +21,60 @@ const TEMPLATE_TYPE_OFFICIAL_SUBSCRIPTION: &str = "official_subscription";
 const COPILOT_UNIT_PREMIUM: &str = "requests";
 
 /// 获取所有供应商
+///
+/// Rows cross into the renderer as `ProviderDto`, without OAuth material.
 #[tauri::command]
 pub fn get_providers(
     state: State<'_, AppState>,
     app: String,
-) -> Result<IndexMap<String, Provider>, String> {
+) -> Result<IndexMap<String, ProviderDto>, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
-    ProviderService::list(state.inner(), app_type).map_err(|e| e.to_string())
+    ProviderService::list(state.inner(), app_type)
+        .map(provider_dto::provider_dtos)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn get_current_provider(state: State<'_, AppState>, app: String) -> Result<String, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
     ProviderService::current(state.inner(), app_type).map_err(|e| e.to_string())
+}
+
+/// The Codex line live config actually runs, as `{id, source}`. Matching
+/// needs raw credentials, so it runs here instead of in the renderer.
+#[tauri::command]
+pub fn get_codex_current_provider_resolution(
+    state: State<'_, AppState>,
+) -> Result<CurrentProviderResolution, String> {
+    let providers =
+        ProviderService::list(state.inner(), AppType::Codex).map_err(|e| e.to_string())?;
+    let stored =
+        ProviderService::current(state.inner(), AppType::Codex).map_err(|e| e.to_string())?;
+    // An unreadable live config (Codex not set up yet) falls back to the
+    // stored selection, same as before this moved out of the renderer.
+    let live = ProviderService::read_live_settings(AppType::Codex).ok();
+    Ok(provider_dto::resolve_current_provider(
+        &providers,
+        &stored,
+        live.as_ref(),
+    ))
+}
+
+/// Renderer writes carry `ProviderDto` rows: a withheld secret comes back
+/// missing, masked or empty. Restore it from the stored row before saving.
+fn merge_renderer_provider_write(
+    state: &AppState,
+    app_type: &AppType,
+    stored_id: &str,
+    provider: &mut Provider,
+    clear_api_key: bool,
+) -> Result<(), String> {
+    let stored = state
+        .db
+        .get_provider_by_id(stored_id, app_type.as_str())
+        .map_err(|e| format!("读取 {} 原供应商失败: {e}", app_type.as_str()))?;
+    provider_dto::merge_withheld_secrets(provider, stored.as_ref(), clear_api_key);
+    Ok(())
 }
 
 #[tauri::command]
@@ -43,6 +85,9 @@ pub async fn add_provider(
     #[allow(non_snake_case)] addToLive: Option<bool>,
 ) -> Result<bool, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    let mut provider = provider;
+    let stored_id = provider.id.clone();
+    merge_renderer_provider_write(state.inner(), &app_type, &stored_id, &mut provider, false)?;
     add_provider_with_automatic_routing_state(
         state.inner().clone(),
         app_type,
@@ -66,6 +111,9 @@ pub async fn add_and_activate_provider(
     #[allow(non_snake_case)] addToLive: Option<bool>,
 ) -> Result<bool, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    let mut provider = provider;
+    let stored_id = provider.id.clone();
+    merge_renderer_provider_write(state.inner(), &app_type, &stored_id, &mut provider, false)?;
     add_and_activate_provider_with_automatic_routing_state(
         state.inner().clone(),
         app_type,
@@ -75,14 +123,26 @@ pub async fn add_and_activate_provider(
     .await
 }
 
+/// `clearApiKey` is the only way to remove a stored API key: an empty or
+/// masked key field means "unchanged" (see `merge_renderer_provider_write`).
 #[tauri::command]
 pub async fn update_provider(
     state: State<'_, AppState>,
     app: String,
     provider: Provider,
     #[allow(non_snake_case)] originalId: Option<String>,
+    #[allow(non_snake_case)] clearApiKey: Option<bool>,
 ) -> Result<bool, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    let mut provider = provider;
+    let stored_id = originalId.clone().unwrap_or_else(|| provider.id.clone());
+    merge_renderer_provider_write(
+        state.inner(),
+        &app_type,
+        &stored_id,
+        &mut provider,
+        clearApiKey.unwrap_or(false),
+    )?;
     update_provider_with_automatic_routing_state(
         state.inner().clone(),
         app_type,
@@ -102,8 +162,18 @@ pub async fn update_and_activate_provider(
     app: String,
     provider: Provider,
     #[allow(non_snake_case)] originalId: Option<String>,
+    #[allow(non_snake_case)] clearApiKey: Option<bool>,
 ) -> Result<bool, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    let mut provider = provider;
+    let stored_id = originalId.clone().unwrap_or_else(|| provider.id.clone());
+    merge_renderer_provider_write(
+        state.inner(),
+        &app_type,
+        &stored_id,
+        &mut provider,
+        clearApiKey.unwrap_or(false),
+    )?;
     update_provider_with_automatic_routing_mode(
         state.inner().clone(),
         app_type,
@@ -1772,10 +1842,13 @@ pub async fn testUsageScript(
     .map_err(|e| e.to_string())
 }
 
+/// Live settings as `LiveSettingsDto`: for Codex, `auth` is reduced to
+/// `auth_mode` and a masked API-key-mode key.
 #[tauri::command]
-pub fn read_live_provider_settings(app: String) -> Result<serde_json::Value, String> {
+pub fn read_live_provider_settings(app: String) -> Result<LiveSettingsDto, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
-    ProviderService::read_live_settings(app_type).map_err(|e| e.to_string())
+    let live = ProviderService::read_live_settings(app_type.clone()).map_err(|e| e.to_string())?;
+    Ok(LiveSettingsDto::new(&app_type, live))
 }
 
 #[tauri::command]

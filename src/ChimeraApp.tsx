@@ -88,6 +88,7 @@ import { openDialogCount, useDialogFocus } from "@/hooks/useDialogFocus";
 import {
   activityStorageKey,
   buildCodexModelCatalog,
+  codexApiKeyCleared,
   codexApprovalPolicyWarning,
   codexProbeModels,
   describeCodexDetectionFailure,
@@ -96,7 +97,6 @@ import {
   persistedCodexModelApiFormats,
   pickDefaultFetchedModel,
   previousCatalogAsFetched,
-  resolveCurrentProvider,
   saveOperationRecords,
   setCodexProviderApiKey,
   type ConnectionState,
@@ -721,31 +721,18 @@ export default function ChimeraApp({
       return;
     }
     try {
-      const [all, stored] = await Promise.all([
+      // Rows arrive without OAuth material, so the current line is matched
+      // against live config in the backend, which still sees raw values.
+      const [all, resolution] = await Promise.all([
         providersApi.getAll("codex"),
-        providersApi.getCurrent("codex"),
+        providersApi.getCodexCurrentResolution(),
       ]);
       if (seq !== providerLoadSeqRef.current) return;
       const sorted = Object.values(all).sort(
         (a, b) => (a.sortIndex ?? 0) - (b.sortIndex ?? 0),
       );
-      let live: unknown = null;
-      let liveReadSucceeded = false;
-      try {
-        live = await vscodeApi.getLiveProviderSettings("codex");
-        liveReadSucceeded = true;
-      } catch {
-        // The stored selection remains useful when Codex has not created its config yet.
-      }
-      if (seq !== providerLoadSeqRef.current) return;
-      const resolution = resolveCurrentProvider(
-        sorted,
-        stored,
-        live,
-        liveReadSucceeded,
-      );
       setProviders(sorted);
-      setCurrentId(resolution.provider?.id ?? "");
+      setCurrentId(resolution.id ?? "");
       setCurrentSource(resolution.source);
       setLoadError(null);
     } catch (error) {
@@ -1398,6 +1385,7 @@ export default function ChimeraApp({
             provider,
             "codex",
             draft.original.id,
+            { clearApiKey: codexApiKeyCleared(draft.original, draft.apiKey) },
           );
         } else {
           await providersApi.addAndActivate(provider, "codex", false);

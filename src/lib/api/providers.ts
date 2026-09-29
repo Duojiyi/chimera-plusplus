@@ -27,6 +27,18 @@ export interface OpenTerminalOptions {
   cwd?: string;
 }
 
+/** The Codex line live config runs, decided in the backend on raw values. */
+export interface CurrentProviderResolution {
+  id: string | null;
+  source: "live" | "stored" | "external" | "none";
+}
+
+export interface ProviderUpdateOptions {
+  /** Remove the stored API key. An empty or masked key field alone means
+   * "unchanged", because rows reach the renderer with secrets withheld. */
+  clearApiKey?: boolean;
+}
+
 export interface ClaudeDesktopStatus {
   supported: boolean;
   configured: boolean;
@@ -57,6 +69,10 @@ export const providersApi = {
     return await invoke("get_current_provider", { app: appId });
   },
 
+  async getCodexCurrentResolution(): Promise<CurrentProviderResolution> {
+    return await invoke("get_codex_current_provider_resolution");
+  },
+
   async add(
     provider: Provider,
     appId: AppId,
@@ -81,11 +97,13 @@ export const providersApi = {
     provider: Provider,
     appId: AppId,
     originalId?: string,
+    options?: ProviderUpdateOptions,
   ): Promise<boolean> {
     return await invoke("update_provider", {
       provider,
       app: appId,
       originalId,
+      clearApiKey: options?.clearApiKey,
     });
   },
 
@@ -93,11 +111,13 @@ export const providersApi = {
     provider: Provider,
     appId: AppId,
     originalId?: string,
+    options?: ProviderUpdateOptions,
   ): Promise<boolean> {
     return await invoke("update_and_activate_provider", {
       provider,
       app: appId,
       originalId,
+      clearApiKey: options?.clearApiKey,
     });
   },
 

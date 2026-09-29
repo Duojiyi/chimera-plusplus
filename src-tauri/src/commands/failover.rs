@@ -3,7 +3,7 @@
 //! 管理代理模式下的故障转移队列（基于 providers 表的 in_failover_queue 字段）
 
 use crate::database::FailoverQueueItem;
-use crate::provider::Provider;
+use crate::provider_dto::ProviderDto;
 use crate::store::AppState;
 use std::str::FromStr;
 use tauri::Emitter;
@@ -25,10 +25,11 @@ pub async fn get_failover_queue(
 pub async fn get_available_providers_for_failover(
     state: tauri::State<'_, AppState>,
     app_type: String,
-) -> Result<Vec<Provider>, String> {
+) -> Result<Vec<ProviderDto>, String> {
     state
         .db
         .get_available_providers_for_failover(&app_type)
+        .map(|providers| providers.into_iter().map(ProviderDto::from).collect())
         .map_err(|e| e.to_string())
 }
 
