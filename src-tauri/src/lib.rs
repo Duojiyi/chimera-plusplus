@@ -799,6 +799,14 @@ pub fn run() {
 
             let app_state = AppState::new(db);
 
+            // M2.0b: pin a missing `visibleApps` to Codex-only once, before the
+            // tray and the proxy restore read it.
+            match crate::settings::migrate_visible_apps_to_codex_only() {
+                Ok(true) => log::info!("✓ visibleApps visibility migration recorded"),
+                Ok(false) => {}
+                Err(e) => log::warn!("✗ Failed to migrate visibleApps: {e}"),
+            }
+
             // 设置 AppHandle 用于代理故障转移时的 UI 更新
             app_state.proxy_service.set_app_handle(app.handle().clone());
 

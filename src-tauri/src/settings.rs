@@ -290,7 +290,7 @@ pub struct VisibleApps {
         rename = "claude-desktop",
         alias = "claudeDesktop",
         alias = "claude_desktop",
-        default = "default_true"
+        default = "default_false"
     )]
     pub claude_desktop: bool,
     #[serde(default = "default_true")]
@@ -553,6 +553,17 @@ pub struct LocalMigrations {
     /// 这样重新开启能把"关闭期间"落入 openai 桶的官方会话补迁进来。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex_official_history_unify_v1: Option<CodexOfficialHistoryUnifyMigration>,
+    /// M2.0b：缺少 `visibleApps` 的老设置已显式写为仅 Codex 可见。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visible_apps_codex_only_v1: Option<VisibleAppsCodexOnlyMigration>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VisibleAppsCodexOnlyMigration {
+    pub completed_at: String,
+    /// `false` when `visibleApps` was already present and left untouched.
+    pub wrote_visible_apps: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1119,6 +1130,52 @@ pub fn mark_codex_third_party_history_provider_bucket_migrated(
     })
 }
 
+/// M2.0b: before v2.8.0 a missing `visibleApps` key meant "use the serde
+/// defaults", which showed Claude Desktop. Pin such settings explicitly to
+/// Codex-only once, so later default changes or unlocking `multi_tool` never
+/// make tools appear on their own. Settings that already store the key are
+/// left alone. Returns whether this call recorded the migration.
+fn apply_visible_apps_codex_only_migration(settings: &mut AppSettings, completed_at: &str) -> bool {
+    if settings
+        .local_migrations
+        .as_ref()
+        .is_some_and(|migrations| migrations.visible_apps_codex_only_v1.is_some())
+    {
+        return false;
+    }
+    let wrote_visible_apps = settings.visible_apps.is_none();
+    if wrote_visible_apps {
+        settings.visible_apps = Some(VisibleApps::default());
+    }
+    settings
+        .local_migrations
+        .get_or_insert_with(Default::default)
+        .visible_apps_codex_only_v1 = Some(VisibleAppsCodexOnlyMigration {
+        completed_at: completed_at.to_string(),
+        wrote_visible_apps,
+    });
+    true
+}
+
+/// Startup entry point for [`apply_visible_apps_codex_only_migration`]; the
+/// check and the write happen under the settings write lock, so it is
+/// idempotent and never rewrites the file once the marker exists.
+pub fn migrate_visible_apps_to_codex_only() -> Result<bool, AppError> {
+    if get_settings()
+        .local_migrations
+        .as_ref()
+        .is_some_and(|migrations| migrations.visible_apps_codex_only_v1.is_some())
+    {
+        return Ok(false);
+    }
+    let completed_at = chrono::Utc::now().to_rfc3339();
+    let mut applied = false;
+    mutate_settings(|settings| {
+        applied = apply_visible_apps_codex_only_migration(settings, &completed_at);
+    })?;
+    Ok(applied)
+}
+
 pub fn is_codex_provider_template_migrated() -> bool {
     get_settings()
         .local_migrations
@@ -1494,7 +1551,7 @@ mod tests {
     use crate::app_config::AppType;
 
     #[test]
-    fn visible_apps_old_settings_default_claude_desktop_visible() {
+    fn visible_apps_old_settings_default_claude_desktop_hidden() {
         let visible: VisibleApps = serde_json::from_value(serde_json::json!({
             "claude": true,
             "codex": true,
@@ -1505,7 +1562,85 @@ mod tests {
         }))
         .expect("visible apps");
 
-        assert!(visible.is_visible(&AppType::ClaudeDesktop));
+        // A missing key no longer surfaces Claude Desktop (M2.0b).
+        assert!(!visible.is_visible(&AppType::ClaudeDesktop));
+        let empty: VisibleApps = serde_json::from_value(serde_json::json!({})).unwrap();
+        let visible_apps: Vec<_> = AppType::all().filter(|app| empty.is_visible(app)).collect();
+        assert_eq!(visible_apps, vec![AppType::Codex]);
+    }
+
+    #[test]
+    fn visible_apps_migration_pins_missing_key_to_codex_only_once() {
+        let mut settings = AppSettings::default();
+        assert!(settings.visible_apps.is_none());
+
+        assert!(apply_visible_apps_codex_only_migration(
+            &mut settings,
+            "2026-10-01T00:00:00Z"
+        ));
+        let visible = settings.visible_apps.clone().expect("written explicitly");
+        let shown: Vec<_> = AppType::all()
+            .filter(|app| visible.is_visible(app))
+            .collect();
+        assert_eq!(shown, vec![AppType::Codex]);
+        let marker = settings
+            .local_migrations
+            .as_ref()
+            .and_then(|m| m.visible_apps_codex_only_v1.as_ref())
+            .expect("marker recorded");
+        assert!(marker.wrote_visible_apps);
+
+        // Idempotent: a second run changes nothing, even if the key was
+        // later cleared by a full settings save.
+        settings.visible_apps = None;
+        assert!(!apply_visible_apps_codex_only_migration(
+            &mut settings,
+            "2026-10-02T00:00:00Z"
+        ));
+        assert!(settings.visible_apps.is_none());
+        assert_eq!(
+            settings
+                .local_migrations
+                .as_ref()
+                .and_then(|m| m.visible_apps_codex_only_v1.as_ref())
+                .map(|m| m.completed_at.as_str()),
+            Some("2026-10-01T00:00:00Z")
+        );
+
+        // The marker survives a JSON round trip, so the next start skips it.
+        let mut restored: AppSettings =
+            serde_json::from_value(serde_json::to_value(&settings).unwrap()).unwrap();
+        assert!(!apply_visible_apps_codex_only_migration(
+            &mut restored,
+            "2026-10-03T00:00:00Z"
+        ));
+    }
+
+    #[test]
+    fn visible_apps_migration_keeps_an_existing_choice() {
+        let mut settings = AppSettings {
+            visible_apps: Some(VisibleApps {
+                claude: true,
+                ..VisibleApps::default()
+            }),
+            ..AppSettings::default()
+        };
+        assert!(apply_visible_apps_codex_only_migration(
+            &mut settings,
+            "2026-10-01T00:00:00Z"
+        ));
+        assert!(settings
+            .visible_apps
+            .as_ref()
+            .is_some_and(|visible| visible.claude && visible.codex));
+        assert!(
+            !settings
+                .local_migrations
+                .as_ref()
+                .and_then(|m| m.visible_apps_codex_only_v1.as_ref())
+                .expect("marker recorded")
+                .wrote_visible_apps
+        );
     }
 
     #[test]
