@@ -920,8 +920,7 @@ fn test_infer_homepage_from_endpoint_without_homepage() {
     );
 }
 
-// ======================================================================}
-
+// =============================================================================
 // MH-4 lockdown
 // =============================================================================
 
@@ -1070,7 +1069,8 @@ fn preview_reports_full_content_absolute_targets_and_env_verdicts() {
         .target_paths
         .iter()
         .any(|path| path.ends_with("config.toml")));
-=======
+}
+
 #[test]
 fn non_codex_deeplinks_are_rejected_while_multi_tool_is_off() {
     use super::ensure_targets_allowed;
