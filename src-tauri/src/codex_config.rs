@@ -1341,7 +1341,7 @@ fn codex_catalog_model_specs(settings: &Value) -> Vec<CodexCatalogModelSpec> {
 }
 
 fn find_codex_model_template(catalog: &Value) -> Option<Value> {
-    catalog
+    let mut template = catalog
         .get("models")
         .and_then(|models| models.as_array())
         .and_then(|models| {
@@ -1350,7 +1350,46 @@ fn find_codex_model_template(catalog: &Value) -> Option<Value> {
                     == Some(CODEX_MODEL_CATALOG_TEMPLATE_SLUG)
             })
         })
-        .cloned()
+        .cloned()?;
+    inline_retired_personality_placeholder(&mut template);
+    Some(template)
+}
+
+const RETIRED_PERSONALITY_PLACEHOLDER: &str = "{{ personality }}";
+
+/// Codex 0.156 retired personality selection (openai/codex `132c739171`):
+/// `model_messages.instructions_template` is literal text since then, and
+/// `instructions_variables` is only decoded for old catalogs, never rendered
+/// (`protocol/src/openai_models.rs`, `prompts/src/model_instructions.rs`
+/// @ rust-v0.157.0). A template captured from an older build
+/// (`models_cache.json`, `codex debug models --bundled`) would therefore send
+/// a literal `{{ personality }}` to the model. Inline the Friendly section —
+/// byte-for-byte what 0.157's own bundled gpt-5.5 entry ships — and drop the
+/// retired variables (MH-20).
+fn inline_retired_personality_placeholder(template: &mut Value) {
+    let Some(messages) = template
+        .get_mut("model_messages")
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    let section = ["personality_friendly", "personality_default"]
+        .iter()
+        .find_map(|key| {
+            messages
+                .get("instructions_variables")
+                .and_then(|variables| variables.get(*key))
+                .and_then(Value::as_str)
+        })
+        .unwrap_or("")
+        .trim_end_matches('\n')
+        .to_string();
+    if let Some(Value::String(text)) = messages.get_mut("instructions_template") {
+        if text.contains(RETIRED_PERSONALITY_PLACEHOLDER) {
+            *text = text.replace(RETIRED_PERSONALITY_PLACEHOLDER, &section);
+        }
+    }
+    messages.remove("instructions_variables");
 }
 
 fn load_codex_model_template_from_cache() -> Result<Option<Value>, AppError> {
@@ -6571,6 +6610,61 @@ base_url = "https://relay.example/v1"
             Some("gpt-5.5"),
             "static template slug must be gpt-5.5"
         );
+    }
+
+    #[test]
+    fn bundled_templates_carry_no_template_placeholders() {
+        // Codex >= 0.156 sends `instructions_template` verbatim, so any
+        // `{{ ... }}` left in a bundled template reaches the model literally.
+        for (name, text) in [
+            (
+                "gpt5_5_template.json",
+                include_str!("resources/gpt5_5_template.json"),
+            ),
+            (
+                "codex_native_responses_template.json",
+                include_str!("resources/codex_native_responses_template.json"),
+            ),
+            (
+                "codex_deepseek_catalog_template.json",
+                include_str!("resources/codex_deepseek_catalog_template.json"),
+            ),
+        ] {
+            assert!(!text.contains("{{"), "{name} must not contain `{{{{`");
+        }
+        let template = load_codex_model_template_static().expect("static template parses");
+        assert!(
+            template
+                .pointer("/model_messages/instructions_variables")
+                .is_none(),
+            "retired instructions_variables must not ship in the gpt-5.5 template"
+        );
+    }
+
+    #[test]
+    fn captured_template_inlines_retired_personality_placeholder() {
+        let catalog = json!({
+            "models": [{
+                "slug": CODEX_MODEL_CATALOG_TEMPLATE_SLUG,
+                "model_messages": {
+                    "instructions_template": "Intro.\n\n{{ personality }}\n\n# General\nBody",
+                    "instructions_variables": {
+                        "personality_default": "",
+                        "personality_friendly": "# Personality\n\nFriendly.\n",
+                        "personality_pragmatic": "# Personality\n\nPragmatic.\n"
+                    }
+                }
+            }]
+        });
+        let template = find_codex_model_template(&catalog).expect("template found");
+        let messages = template.get("model_messages").expect("model_messages kept");
+        assert_eq!(
+            messages
+                .get("instructions_template")
+                .and_then(Value::as_str),
+            Some("Intro.\n\n# Personality\n\nFriendly.\n\n# General\nBody")
+        );
+        assert!(messages.get("instructions_variables").is_none());
     }
 
     #[test]
