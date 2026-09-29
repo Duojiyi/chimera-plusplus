@@ -389,6 +389,14 @@ describe("cold-start import through the real App and Chimera", () => {
     const normal = mocks.invoke.getMockImplementation()!;
     mocks.invoke.mockImplementation(async (command, payload) => {
       if (command === "get_pending_deeplink") return pending;
+      if (command === "preview_deeplink_import") {
+        return {
+          targetPaths: ["C:\\Users\\test\\.codex\\config.toml"],
+          writesLive: true,
+          content: "",
+          env: [],
+        };
+      }
       if (command === "dismiss_pending_deeplink") {
         pending = null;
         return;
