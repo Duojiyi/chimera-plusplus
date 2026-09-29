@@ -110,6 +110,7 @@ pub async fn import_from_deeplink(
         request.name,
         request.app
     );
+    crate::deeplink::ensure_targets_allowed(&request).map_err(|e| e.to_string())?;
 
     let state = state.inner().clone();
     let provider_id = import_provider_from_deeplink(&state, request)
@@ -128,6 +129,7 @@ pub async fn import_from_deeplink_unified(
     request: DeepLinkImportRequest,
 ) -> Result<serde_json::Value, String> {
     log::info!("Importing {} resource from deep link", request.resource);
+    crate::deeplink::ensure_targets_allowed(&request).map_err(|e| e.to_string())?;
 
     match request.resource.as_str() {
         "provider" => {

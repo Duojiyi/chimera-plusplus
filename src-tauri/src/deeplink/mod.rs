@@ -143,3 +143,26 @@ pub struct DeepLinkImportRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confirmed_env_keys: Option<Vec<String>>,
 }
+
+/// Deep links behave as Codex-only while `multi_tool` is off: a link that
+/// targets any other app (`app`, or an entry of the MCP `apps` list) is
+/// refused before it is queued for confirmation or imported. An unknown
+/// target is treated as non-Codex.
+pub(crate) fn ensure_targets_allowed(
+    request: &DeepLinkImportRequest,
+) -> Result<(), crate::error::AppError> {
+    let targets = request
+        .app
+        .iter()
+        .chain(request.apps.iter())
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
+        .filter(|target| !target.is_empty());
+    for target in targets {
+        match target.parse::<crate::app_config::AppType>() {
+            Ok(app) => crate::product_policy::require_app(&app)?,
+            Err(_) => crate::product_policy::require(crate::product_policy::Capability::MultiTool)?,
+        }
+    }
+    Ok(())
+}

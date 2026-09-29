@@ -545,7 +545,7 @@ mod tests {
     use crate::settings::{
         AppSettings, CodexOfficialHistoryUnifyMigration, CodexProviderTemplateMigration,
         CodexThirdPartyHistoryProviderBucketMigration, LocalMigrations, S3SyncSettings,
-        WebDavSyncSettings,
+        VisibleAppsCodexOnlyMigration, WebDavSyncSettings,
     };
 
     #[test]
@@ -829,6 +829,10 @@ mod tests {
                     codex_config_dir: None,
                     deferred_files_checked: true,
                 }),
+                visible_apps_codex_only_v1: Some(VisibleAppsCodexOnlyMigration {
+                    completed_at: "2026-10-01T00:00:00Z".to_string(),
+                    wrote_visible_apps: true,
+                }),
             }),
             ..AppSettings::default()
         };
@@ -866,6 +870,13 @@ mod tests {
             .expect("official unify migration marker should be preserved");
         assert_eq!(unify_migration.migrated_jsonl_files, 5);
         assert_eq!(unify_migration.migrated_state_rows, 7);
+
+        // A frontend save must not replay the visibility migration.
+        assert!(merged
+            .local_migrations
+            .as_ref()
+            .and_then(|migrations| migrations.visible_apps_codex_only_v1.as_ref())
+            .is_some_and(|marker| marker.wrote_visible_apps));
     }
 
     /// incoming 带有 local_migrations（哪怕是空的）也不能覆盖后端维护的标记。
@@ -883,6 +894,7 @@ mod tests {
                     codex_config_dir: None,
                     deferred_files_checked: true,
                 }),
+                visible_apps_codex_only_v1: None,
             }),
             ..AppSettings::default()
         };
