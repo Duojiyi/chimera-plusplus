@@ -934,64 +934,266 @@ fn schema_model_pricing_is_seeded_on_init() {
     );
 }
 
+fn pricing_date(year: i32, month: u32, day: u32) -> chrono::NaiveDate {
+    chrono::NaiveDate::from_ymd_opt(year, month, day).expect("valid date")
+}
+
+fn pricing_row(conn: &Connection, model_id: &str) -> (String, String, String, String) {
+    conn.query_row(
+        "SELECT input_cost_per_million, output_cost_per_million,
+                cache_read_cost_per_million, cache_creation_cost_per_million
+         FROM model_pricing WHERE model_id = ?1",
+        [model_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )
+    .unwrap_or_else(|e| panic!("query {model_id} price: {e}"))
+}
+
+fn price(input: &str, output: &str, read: &str, write: &str) -> (String, String, String, String) {
+    (
+        input.to_string(),
+        output.to_string(),
+        read.to_string(),
+        write.to_string(),
+    )
+}
+
+/// 模拟首次指纹同步之前的老库：settings 里还没有内置定价指纹。
+fn forget_builtin_pricing_fingerprints(conn: &Connection) {
+    conn.execute(
+        "DELETE FROM settings WHERE key = ?1",
+        [super::schema::MODEL_PRICING_FINGERPRINTS_KEY],
+    )
+    .expect("forget pricing fingerprints");
+}
+
 #[test]
 fn model_pricing_seed_repairs_known_outdated_builtin_prices() {
     let db = Database::memory().expect("create memory db");
+    let conn = db.conn.lock().expect("lock conn");
+    forget_builtin_pricing_fingerprints(&conn);
+    conn.execute_batch(
+        "UPDATE model_pricing SET input_cost_per_million = '1.68', output_cost_per_million = '3.36',
+             cache_read_cost_per_million = '0.14', cache_creation_cost_per_million = '0'
+             WHERE model_id = 'deepseek-v4-pro';
+         UPDATE model_pricing SET input_cost_per_million = '9', output_cost_per_million = '9',
+             cache_read_cost_per_million = '9', cache_creation_cost_per_million = '0'
+             WHERE model_id = 'glm-5.1';
+         UPDATE model_pricing SET input_cost_per_million = '5', output_cost_per_million = '30',
+             cache_read_cost_per_million = '0.50', cache_creation_cost_per_million = '0'
+             WHERE model_id = 'gpt-5.6-sol';
+         UPDATE model_pricing SET input_cost_per_million = '0.12', output_cost_per_million = '0.95',
+             cache_read_cost_per_million = '0.03', cache_creation_cost_per_million = '0'
+             WHERE model_id = 'minimax-m2.5';
+         UPDATE model_pricing SET input_cost_per_million = '0.14', output_cost_per_million = '0.28',
+             cache_read_cost_per_million = '0.028', cache_creation_cost_per_million = '0'
+             WHERE model_id = 'deepseek-v4-flash';
+         UPDATE model_pricing SET input_cost_per_million = '1', output_cost_per_million = '6',
+             cache_read_cost_per_million = '0.10', cache_creation_cost_per_million = '1.25'
+             WHERE model_id = 'gpt-5.6-luna';",
+    )
+    .expect("restore old builtin prices");
 
-    {
-        let conn = db.conn.lock().expect("lock conn");
-        conn.execute(
-            "UPDATE model_pricing
-             SET input_cost_per_million = '1.68',
-                 output_cost_per_million = '3.36',
-                 cache_read_cost_per_million = '0.14',
-                 cache_creation_cost_per_million = '0'
-             WHERE model_id = 'deepseek-v4-pro'",
-            [],
-        )
-        .expect("restore old DeepSeek price");
-        conn.execute(
-            "UPDATE model_pricing
-             SET input_cost_per_million = '9',
-                 output_cost_per_million = '9',
-                 cache_read_cost_per_million = '9',
-                 cache_creation_cost_per_million = '0'
-             WHERE model_id = 'glm-5.1'",
-            [],
-        )
-        .expect("set custom GLM price");
-    }
-
-    db.ensure_model_pricing_seeded()
+    Database::ensure_model_pricing_seeded_at(&conn, pricing_date(2026, 10, 1))
         .expect("ensure pricing seeded");
 
-    let conn = db.conn.lock().expect("lock conn");
-    let deepseek: (String, String, String) = conn
-        .query_row(
-            "SELECT input_cost_per_million, output_cost_per_million, cache_read_cost_per_million
-             FROM model_pricing WHERE model_id = 'deepseek-v4-pro'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .expect("query DeepSeek price");
+    // 修价链顺序由这些多级跳锁住：新条目必须排在旧条目之后，否则老库会停在中间价位。
+    //   deepseek-v4-pro   1.68/3.36/0.14 → 0.435/0.87/0.003625 → 1.32/3.96/0.044
+    //   deepseek-v4-flash 0.14/0.28/0.028 → …/0.0028 → 0.44/1.32/0.014 → 0.3/1.2/0.006
+    //   minimax-m2.5      0.12 → 0.15 → 0.30/1.20/0.03/0.375
+    //   gpt-5.6-sol       5/30/0.50/0 → 挂牌 5/30/0.50/6.25 → 促销叠加 4/20/0.40/5
     assert_eq!(
-        deepseek,
-        (
-            "0.435".to_string(),
-            "0.87".to_string(),
-            "0.003625".to_string()
-        )
+        pricing_row(&conn, "deepseek-v4-pro"),
+        price("1.32", "3.96", "0.044", "0")
+    );
+    assert_eq!(
+        pricing_row(&conn, "deepseek-v4-flash"),
+        price("0.3", "1.2", "0.006", "0")
+    );
+    assert_eq!(
+        pricing_row(&conn, "minimax-m2.5"),
+        price("0.30", "1.20", "0.03", "0.375")
+    );
+    assert_eq!(
+        pricing_row(&conn, "gpt-5.6-sol"),
+        price("4", "20", "0.40", "5")
+    );
+    // 2026-07-30 OpenAI 降价 80%：旧内置价高估约 5 倍
+    assert_eq!(
+        pricing_row(&conn, "gpt-5.6-luna"),
+        price("0.20", "1.20", "0.02", "0.25")
+    );
+    // 用户自定义价不匹配任何旧内置值，保持不动
+    assert_eq!(pricing_row(&conn, "glm-5.1"), price("9", "9", "9", "0"));
+}
+
+#[test]
+fn model_pricing_seed_includes_upstream_resync_rows() {
+    let db = Database::memory().expect("create memory db");
+    let conn = db.conn.lock().expect("lock conn");
+
+    // cc-switch 种子表比我方多出的 42 行（m0-upstream-items §1.1）
+    for model_id in [
+        "claude-fable-5-1",
+        "claude-mythos-5-1",
+        "claude-opus-4-6",
+        "claude-opus-5",
+        "claude-opus-5-5",
+        "claude-sonnet-4-6",
+        "deepseek-flash",
+        "deepseek-v4-flash-0731",
+        "deepseek-v4-flash-vision-exp",
+        "gemini-3.5-flash-lite",
+        "gemini-3.6-flash",
+        "gemini-3.7-flash",
+        "gemini-3.8-flash",
+        "glm-5-turbo",
+        "glm-5.3",
+        "glm-5.3-flash",
+        "glm-5.3-flashx",
+        "glm-5v-turbo",
+        "gpt-4o",
+        "gpt-4o-mini",
+        "gpt-5.2-pro",
+        "gpt-5.3-codex-spark",
+        "gpt-5.4-pro",
+        "gpt-5.5-pro",
+        "gpt-5.6-cyber",
+        "gpt-6-astra",
+        "gpt-6-luna",
+        "gpt-6-sol",
+        "grok-4.5-build",
+        "grok-4.6",
+        "grok-4.7",
+        "hy4-preview",
+        "kimi-k2.7-code-highspeed",
+        "mimo-v2.6-flash",
+        "mimo-v2.6-pro",
+        "mimo-v2.6-pro-ultraspeed",
+        "qwen3.6-flash",
+        "qwen3.8-2.4t-a95b",
+        "qwen3.8-27b",
+        "qwen3.8-flash",
+        "qwen3.8-max",
+        "step-5-preview",
+    ] {
+        pricing_row(&conn, model_id);
+    }
+    assert_eq!(
+        pricing_row(&conn, "claude-opus-5-5"),
+        price("4", "20", "0.20", "5")
+    );
+    assert_eq!(
+        pricing_row(&conn, "gpt-5.6-luna"),
+        price("0.20", "1.20", "0.02", "0.25")
     );
 
-    let glm: (String, String, String) = conn
+    // 每个内置行都记下了指纹，后续重同步据此区分用户改动
+    let raw: String = conn
         .query_row(
-            "SELECT input_cost_per_million, output_cost_per_million, cache_read_cost_per_million
-             FROM model_pricing WHERE model_id = 'glm-5.1'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            "SELECT value FROM settings WHERE key = ?1",
+            [super::schema::MODEL_PRICING_FINGERPRINTS_KEY],
+            |row| row.get(0),
         )
-        .expect("query GLM price");
-    assert_eq!(glm, ("9".to_string(), "9".to_string(), "9".to_string()));
+        .expect("fingerprints stored");
+    let fingerprints: HashMap<String, String> = serde_json::from_str(&raw).expect("json");
+    assert!(fingerprints.len() >= 219, "{}", fingerprints.len());
+    assert!(fingerprints.contains_key("gpt-5.6-sol"));
+}
+
+#[test]
+fn model_pricing_promo_falls_back_to_list_price_after_expiry() {
+    let db = Database::memory().expect("create memory db");
+    let conn = db.conn.lock().expect("lock conn");
+    let sol_rows = ["gpt-5.6-sol", "gpt-5.6", "gpt-5.6-high"];
+    let gemini_rows = ["gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash"];
+
+    // 促销至少持续到 2026-11-21（含当天）
+    Database::ensure_model_pricing_seeded_at(&conn, pricing_date(2026, 11, 21)).expect("resync");
+    for model_id in sol_rows {
+        assert_eq!(
+            pricing_row(&conn, model_id),
+            price("4", "20", "0.40", "5"),
+            "{model_id}"
+        );
+    }
+
+    // 次日起回落挂牌价；Gemini 介绍价另有到期日，仍生效
+    Database::ensure_model_pricing_seeded_at(&conn, pricing_date(2026, 11, 22)).expect("resync");
+    for model_id in sol_rows {
+        assert_eq!(
+            pricing_row(&conn, model_id),
+            price("5", "30", "0.50", "6.25"),
+            "{model_id}"
+        );
+    }
+    for model_id in gemini_rows {
+        assert_eq!(
+            pricing_row(&conn, model_id),
+            price("0.75", "3.75", "0.075", "0"),
+            "{model_id}"
+        );
+    }
+
+    Database::ensure_model_pricing_seeded_at(&conn, pricing_date(2027, 1, 1)).expect("resync");
+    for model_id in gemini_rows {
+        assert_eq!(
+            pricing_row(&conn, model_id),
+            price("1.50", "7.50", "0.15", "0"),
+            "{model_id}"
+        );
+    }
+}
+
+#[test]
+fn model_pricing_resync_keeps_user_modified_builtin_rows() {
+    let db = Database::memory().expect("create memory db");
+    let conn = db.conn.lock().expect("lock conn");
+    Database::ensure_model_pricing_seeded_at(&conn, pricing_date(2026, 11, 21)).expect("resync");
+
+    conn.execute_batch(
+        "UPDATE model_pricing SET input_cost_per_million = '3', output_cost_per_million = '3',
+             cache_read_cost_per_million = '0.3', cache_creation_cost_per_million = '0'
+             WHERE model_id = 'gpt-5.6-sol';
+         UPDATE model_pricing SET input_cost_per_million = '1.68', output_cost_per_million = '3.36',
+             cache_read_cost_per_million = '0.14', cache_creation_cost_per_million = '0'
+             WHERE model_id = 'deepseek-v4-pro';
+         UPDATE model_pricing SET display_name = 'My Sol' WHERE model_id = 'gpt-5.6-high';",
+    )
+    .expect("user edits");
+
+    for _ in 0..2 {
+        Database::ensure_model_pricing_seeded_at(&conn, pricing_date(2026, 11, 22))
+            .expect("resync");
+    }
+
+    // 用户改过的价保持不动，即使它恰好等于某个历史内置值（修价链不再作用于有指纹的行）
+    assert_eq!(
+        pricing_row(&conn, "gpt-5.6-sol"),
+        price("3", "3", "0.3", "0")
+    );
+    assert_eq!(
+        pricing_row(&conn, "deepseek-v4-pro"),
+        price("1.68", "3.36", "0.14", "0")
+    );
+    // 只改了显示名也算用户改动：促销到期也不回写
+    assert_eq!(
+        pricing_row(&conn, "gpt-5.6-high"),
+        price("4", "20", "0.40", "5")
+    );
+    let name: String = conn
+        .query_row(
+            "SELECT display_name FROM model_pricing WHERE model_id = 'gpt-5.6-high'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("display name");
+    assert_eq!(name, "My Sol");
+    // 未改动的别名行照常回落挂牌价
+    assert_eq!(
+        pricing_row(&conn, "gpt-5.6"),
+        price("5", "30", "0.50", "6.25")
+    );
 }
 
 #[test]

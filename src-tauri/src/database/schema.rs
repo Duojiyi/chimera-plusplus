@@ -4,13 +4,82 @@
 
 use super::{lock_conn, Database, SCHEMA_VERSION};
 use crate::error::AppError;
-use rusqlite::{params, Connection};
+use chrono::{Datelike, NaiveDate};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 
 #[derive(Serialize)]
 struct LegacySkillMigrationRow {
     directory: String,
     app_type: String,
+}
+
+/// `settings` 表中记录"上次写入的内置定价"指纹的键（model_id → 指纹 JSON）。
+pub(crate) const MODEL_PRICING_FINGERPRINTS_KEY: &str = "model_pricing_builtin_fingerprints";
+
+type BuiltinPricingRow = (&'static str, &'static str, [&'static str; 4]);
+
+/// 带到期日的内置限时价（促销价 / 介绍价）。`until` 当天（UTC）仍按限时价，
+/// 次日起回落 `Database::builtin_model_pricing` 里的挂牌价。
+struct BuiltinPricingPromo {
+    model_ids: &'static [&'static str],
+    /// input / output / cache_read / cache_creation
+    price: [&'static str; 4],
+    /// (year, month, day)，含当天
+    until: (i32, u32, u32),
+}
+
+const BUILTIN_PRICING_PROMOS: &[BuiltinPricingPromo] = &[
+    // OpenAI GPT-5.6 Sol 促销价（2026-09-06 核对价页，原文"至少持续到 2026-11-21"）；
+    // 裸名与 effort 后缀行同步。挂牌价 5/30/0.50/6.25。
+    BuiltinPricingPromo {
+        model_ids: &[
+            "gpt-5.6-sol",
+            "gpt-5.6",
+            "gpt-5.6-low",
+            "gpt-5.6-medium",
+            "gpt-5.6-high",
+            "gpt-5.6-xhigh",
+            "gpt-5.6-minimal",
+        ],
+        price: ["4", "20", "0.40", "5"],
+        until: (2026, 11, 21),
+    },
+    // Google Gemini 3.6 / 3.7 / 3.8 Flash 介绍价至 2026-12-31，挂牌价 1.50/7.50/0.15。
+    BuiltinPricingPromo {
+        model_ids: &["gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash"],
+        price: ["0.75", "3.75", "0.075", "0"],
+        until: (2026, 12, 31),
+    },
+];
+
+fn pricing_promo_for(model_id: &str) -> Option<&'static BuiltinPricingPromo> {
+    BUILTIN_PRICING_PROMOS
+        .iter()
+        .find(|promo| promo.model_ids.contains(&model_id))
+}
+
+/// 内置行在 `today` 的生效价：限时价未到期用限时价，否则用挂牌价。
+fn effective_builtin_price(
+    model_id: &str,
+    list_price: [&'static str; 4],
+    today: NaiveDate,
+) -> [&'static str; 4] {
+    match pricing_promo_for(model_id) {
+        Some(promo) if (today.year(), today.month(), today.day()) <= promo.until => promo.price,
+        _ => list_price,
+    }
+}
+
+fn pricing_fingerprint(display_name: &str, price: [&str; 4]) -> String {
+    let digest = Sha256::digest(
+        [display_name, price[0], price[1], price[2], price[3]]
+            .join("\u{1f}")
+            .as_bytes(),
+    );
+    format!("{digest:x}")
 }
 
 impl Database {
@@ -1538,11 +1607,172 @@ impl Database {
         crate::services::session_usage_codex::reset_codex_usage_on_conn(conn, &codex_dir)
     }
 
-    /// 插入默认模型定价数据
+    /// 插入默认模型定价数据（按今天的 UTC 日期叠加限时价）
+    fn seed_model_pricing(conn: &Connection) -> Result<(), AppError> {
+        Self::seed_model_pricing_at(conn, chrono::Utc::now().date_naive())
+    }
+
+    fn seed_model_pricing_at(conn: &Connection, today: NaiveDate) -> Result<(), AppError> {
+        let pricing_data = Self::builtin_model_pricing();
+        let mut stmt = conn
+            .prepare(
+                "INSERT OR IGNORE INTO model_pricing (
+                    model_id, display_name, input_cost_per_million, output_cost_per_million,
+                    cache_read_cost_per_million, cache_creation_cost_per_million
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )
+            .map_err(|e| AppError::Database(format!("准备模型定价语句失败: {e}")))?;
+        for &(model_id, display_name, list_price) in &pricing_data {
+            let [input, output, cache_read, cache_creation] =
+                effective_builtin_price(model_id, list_price, today);
+            stmt.execute(rusqlite::params![
+                model_id,
+                display_name,
+                input,
+                output,
+                cache_read,
+                cache_creation
+            ])
+            .map_err(|e| AppError::Database(format!("插入模型定价失败: {e}")))?;
+        }
+
+        log::info!("已插入 {} 条默认模型定价数据", pricing_data.len());
+        Ok(())
+    }
+
+    /// 按指纹重同步内置定价：只改写"当前值仍是上次写入的内置值"的行，用户改过的行不动。
+    ///
+    /// 指纹存于 `settings` 表（[`MODEL_PRICING_FINGERPRINTS_KEY`]），不改 schema。
+    /// 尚无指纹的行（首次运行本机制前的库）：价格等于该行的挂牌价或限时价才视为内置值；
+    /// 更早的历史内置值已由 `repair_current_model_pricing` 的修价链先收敛到挂牌价。
+    fn resync_builtin_model_pricing(
+        conn: &Connection,
+        today: NaiveDate,
+        fingerprints: &mut BTreeMap<String, String>,
+    ) -> Result<(), AppError> {
+        for (model_id, display_name, list_price) in Self::builtin_model_pricing() {
+            let current: Option<(String, [String; 4])> = conn
+                .query_row(
+                    "SELECT display_name, input_cost_per_million, output_cost_per_million,
+                            cache_read_cost_per_million, cache_creation_cost_per_million
+                     FROM model_pricing WHERE model_id = ?1",
+                    [model_id],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            [row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?],
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(|e| AppError::Database(format!("读取模型 {model_id} 定价失败: {e}")))?;
+            let Some((current_name, current_price)) = current else {
+                continue;
+            };
+            let current_price = current_price.each_ref().map(String::as_str);
+            let target = effective_builtin_price(model_id, list_price, today);
+            let target_fingerprint = pricing_fingerprint(display_name, target);
+
+            if current_name == display_name && current_price == target {
+                fingerprints.insert(model_id.to_string(), target_fingerprint);
+                continue;
+            }
+
+            let unmodified = match fingerprints.get(model_id) {
+                Some(stored) => *stored == pricing_fingerprint(&current_name, current_price),
+                None => {
+                    current_price == list_price
+                        || pricing_promo_for(model_id).is_some_and(|p| current_price == p.price)
+                }
+            };
+            if !unmodified {
+                continue;
+            }
+
+            conn.execute(
+                "UPDATE model_pricing SET
+                    display_name = ?2,
+                    input_cost_per_million = ?3,
+                    output_cost_per_million = ?4,
+                    cache_read_cost_per_million = ?5,
+                    cache_creation_cost_per_million = ?6
+                 WHERE model_id = ?1",
+                rusqlite::params![
+                    model_id,
+                    display_name,
+                    target[0],
+                    target[1],
+                    target[2],
+                    target[3]
+                ],
+            )
+            .map_err(|e| AppError::Database(format!("同步模型 {model_id} 定价失败: {e}")))?;
+            fingerprints.insert(model_id.to_string(), target_fingerprint);
+        }
+        Ok(())
+    }
+
+    fn load_model_pricing_fingerprints(
+        conn: &Connection,
+    ) -> Result<BTreeMap<String, String>, AppError> {
+        let raw: Option<String> = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                [MODEL_PRICING_FINGERPRINTS_KEY],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| AppError::Database(format!("读取内置定价指纹失败: {e}")))?;
+        Ok(raw
+            .and_then(
+                |raw| match serde_json::from_str::<BTreeMap<String, String>>(&raw) {
+                    Ok(map) => Some(map),
+                    Err(error) => {
+                        log::warn!("内置定价指纹无法解析，按首次同步处理: {error}");
+                        None
+                    }
+                },
+            )
+            .unwrap_or_default())
+    }
+
+    fn store_model_pricing_fingerprints(
+        conn: &Connection,
+        fingerprints: &BTreeMap<String, String>,
+    ) -> Result<(), AppError> {
+        let value = serde_json::to_string(fingerprints)
+            .map_err(|e| AppError::Database(format!("序列化内置定价指纹失败: {e}")))?;
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+            params![MODEL_PRICING_FINGERPRINTS_KEY, value],
+        )
+        .map_err(|e| AppError::Database(format!("保存内置定价指纹失败: {e}")))?;
+        Ok(())
+    }
+
+    /// 内置模型定价（挂牌价；限时价见 `BUILTIN_PRICING_PROMOS`）。
     /// 格式: (model_id, display_name, input, output, cache_read, cache_creation)
     /// 注意: model_id 使用短横线格式（如 claude-haiku-4-5），与 API 返回的模型名称标准化后一致
-    fn seed_model_pricing(conn: &Connection) -> Result<(), AppError> {
+    fn builtin_model_pricing() -> Vec<BuiltinPricingRow> {
         let pricing_data = [
+            // Claude Fable 5.1 / Mythos 5.1（2026-09-01 发布；同 Fable 5 价，
+            // 但缓存读为 0.025x = $0.25，非 Fable 5 的 $1）
+            (
+                "claude-fable-5-1",
+                "Claude Fable 5.1",
+                "10",
+                "50",
+                "0.25",
+                "12.50",
+            ),
+            (
+                "claude-mythos-5-1",
+                "Claude Mythos 5.1",
+                "10",
+                "50",
+                "0.25",
+                "12.50",
+            ),
             // Claude Fable 5（Opus 之上的新档）
             (
                 "claude-fable-5",
@@ -1560,6 +1790,11 @@ impl Database {
                 "1.00",
                 "12.50",
             ),
+            // Claude Opus 5.5（2026-09-23 发布；缓存读为 0.05x = $0.20，非常规 0.1x 的
+            // $0.40，也非 Opus 5 的 $0.50；fast mode $8/$40 不入表）
+            ("claude-opus-5-5", "Claude Opus 5.5", "4", "20", "0.20", "5"),
+            // Claude Opus 5（与 Opus 4.8 同价位；fast mode $10/$50 不入表）
+            ("claude-opus-5", "Claude Opus 5", "5", "25", "0.50", "6.25"),
             // Claude 4.8 系列
             (
                 "claude-opus-4-8",
@@ -1569,14 +1804,15 @@ impl Database {
                 "0.50",
                 "6.25",
             ),
-            // Claude Sonnet 5（list 价，与 Sonnet 4.6 一致；促销 $2/$10 至 2026-08-31 不入表）
+            // Claude Sonnet 5（官方定价页 2026-09 确认：$2/$10 介绍价转为正式价，
+            // 原定 09-01 涨至 $3/$15 取消）
             (
                 "claude-sonnet-5",
                 "Claude Sonnet 5",
-                "3",
-                "15",
-                "0.30",
-                "3.75",
+                "2",
+                "10",
+                "0.20",
+                "2.50",
             ),
             // Claude 4.7 系列
             (
@@ -1587,7 +1823,23 @@ impl Database {
                 "0.50",
                 "6.25",
             ),
-            // Claude 4.6 系列
+            // Claude 4.6 系列（裸 id 行覆盖无日期后缀的日志变体，与 dated 行同价）
+            (
+                "claude-opus-4-6",
+                "Claude Opus 4.6",
+                "5",
+                "25",
+                "0.50",
+                "6.25",
+            ),
+            (
+                "claude-sonnet-4-6",
+                "Claude Sonnet 4.6",
+                "3",
+                "15",
+                "0.30",
+                "3.75",
+            ),
             (
                 "claude-opus-4-6-20260206",
                 "Claude Opus 4.6",
@@ -1671,19 +1923,44 @@ impl Database {
                 "0.30",
                 "3.75",
             ),
+            // GPT-6 系列（Astra 2026-09-04 发布，1.05M 窗口；Sol / Luna 2026-09-22 发布）
+            // 2026-09-23 核对官方价页 + 模型页 + models.dev：录入 Standard 短上下文价，
+            // cache read 0.1×、cache write 1.25× 输入价。>272K 长上下文档（输入与缓存 2×、输出 1.5×）、
+            // Batch/Flex、Fast mode、区域加价本表无法表达，与 gpt-5.5 同样忽略。
+            // effort 档 low/medium/high/xhigh 由查价剥后缀回落到本行；max 不在剥离列表
+            //（会与 *-max 真 id 撞名），不另加后缀行。
+            ("gpt-6-astra", "GPT-6 Astra", "10", "50", "1", "12.5"),
+            ("gpt-6-sol", "GPT-6 Sol", "2", "10", "0.20", "2.50"),
+            ("gpt-6-luna", "GPT-6 Luna", "0.10", "0.50", "0.01", "0.125"),
             // GPT-5.6 系列（Sol / Terra / Luna，2026-06 发布）
             // 5.6 家族起 cache write 收 1.25× 输入价（此前 GPT 模型写缓存免费，勿回填旧系列）
+            // 本表录挂牌价 5/30/0.50/6.25；2026-09-06 起的促销价 4/20/0.40/5（OpenAI 价页原文
+            // "至少持续到 2026-11-21"）由 BUILTIN_PRICING_PROMOS 按日期叠加，到期自动回落挂牌价。
             ("gpt-5.6-sol", "GPT-5.6 Sol", "5", "30", "0.50", "6.25"),
+            // 2026-07-30 OpenAI 降价：luna -80%、terra -20%，sol 不变（Fast mode 2× 价不入表）
+            ("gpt-5.6-terra", "GPT-5.6 Terra", "2", "12", "0.20", "2.50"),
             (
-                "gpt-5.6-terra",
-                "GPT-5.6 Terra",
-                "2.50",
-                "15",
+                "gpt-5.6-luna",
+                "GPT-5.6 Luna",
+                "0.20",
+                "1.20",
+                "0.02",
                 "0.25",
-                "3.125",
             ),
-            ("gpt-5.6-luna", "GPT-5.6 Luna", "1", "6", "0.10", "1.25"),
-            // 裸名 gpt-5.6 是 sol 的官方别名；effort 后缀对齐 gpt-5.5 系列的记账形态
+            // GPT-5.6 Cyber（Daybreak 计划的网安模型，需 Trusted Access；2026-09-23 核对官方价页）。
+            // 别名 gpt-daybreak-red-latest / gpt-daybreak-blue-latest 当前分别指向 gpt-5.6-cyber /
+            // gpt-5.6-sol，官方明说别名改指向时价格随之改变，故别名不入表。
+            (
+                "gpt-5.6-cyber",
+                "GPT-5.6 Cyber",
+                "12.50",
+                "75",
+                "1.25",
+                "15.625",
+            ),
+            // 裸名 gpt-5.6 是 sol 的官方别名；effort 后缀对齐 gpt-5.5 系列的记账形态。
+            // 查价先精确匹配 id 再剥 effort 后缀，这些行必须与 sol 同步改价，否则旧价会压过基础行
+            //（促销叠加同样覆盖这些行，见 BUILTIN_PRICING_PROMOS）。
             ("gpt-5.6", "GPT-5.6 Sol", "5", "30", "0.50", "6.25"),
             ("gpt-5.6-low", "GPT-5.6 Sol", "5", "30", "0.50", "6.25"),
             ("gpt-5.6-medium", "GPT-5.6 Sol", "5", "30", "0.50", "6.25"),
@@ -1742,6 +2019,14 @@ impl Database {
             ),
             // GPT-5.3 Codex 系列
             ("gpt-5.3-codex", "GPT-5.3 Codex", "1.75", "14", "0.175", "0"),
+            (
+                "gpt-5.3-codex-spark",
+                "GPT-5.3 Codex Spark",
+                "1.75",
+                "14",
+                "0.175",
+                "0",
+            ),
             (
                 "gpt-5.3-codex-low",
                 "GPT-5.3 Codex",
@@ -1868,6 +2153,44 @@ impl Database {
             ("gpt-4.1", "GPT-4.1", "2", "8", "0.50", "0"),
             ("gpt-4.1-mini", "GPT-4.1 Mini", "0.40", "1.60", "0.10", "0"),
             ("gpt-4.1-nano", "GPT-4.1 Nano", "0.10", "0.40", "0.025", "0"),
+            // OpenAI 文本模型补全（2026-09-23）：各模型页的标准 token 价。
+            // 来源：https://developers.openai.com/api/docs/models/<model_id>
+            // 已按 /api/docs/deprecations 排除弃用模型；不含工具调用费及多模态价格。
+            // Pro 系列未提供缓存折扣，与 o3-pro 一样将未支持的缓存价格记为 0。
+            // 有意不收：chat-latest 是滚动别名（改指向即改价）；gpt-rosalind-research 官方
+            // 2026-10-05 才开始计费且仅限 Trusted Access，提前入表会给免费期用量记账。
+            ("gpt-5.5-pro", "GPT-5.5 Pro", "30", "180", "0", "0"),
+            ("gpt-5.4-pro", "GPT-5.4 Pro", "30", "180", "0", "0"),
+            ("gpt-5.2-pro", "GPT-5.2 Pro", "21", "168", "0", "0"),
+            ("gpt-4o", "GPT-4o", "2.50", "10", "1.25", "0"),
+            ("gpt-4o-mini", "GPT-4o Mini", "0.15", "0.60", "0.075", "0"),
+            // Gemini 3.6 / 3.7 / 3.8 Flash：本表录挂牌价 1.50/7.50/0.15（2027-01-01 起生效）；
+            // 介绍价 0.75/3.75/0.075（官方公告 + ai.google.dev 价表，至 2026-12-31）由
+            // BUILTIN_PRICING_PROMOS 按日期叠加，到期自动回落挂牌价。
+            (
+                "gemini-3.8-flash",
+                "Gemini 3.8 Flash",
+                "1.50",
+                "7.50",
+                "0.15",
+                "0",
+            ),
+            (
+                "gemini-3.7-flash",
+                "Gemini 3.7 Flash",
+                "1.50",
+                "7.50",
+                "0.15",
+                "0",
+            ),
+            (
+                "gemini-3.6-flash",
+                "Gemini 3.6 Flash",
+                "1.50",
+                "7.50",
+                "0.15",
+                "0",
+            ),
             // Gemini 3.5 系列
             (
                 "gemini-3.5-flash",
@@ -1875,6 +2198,14 @@ impl Database {
                 "1.50",
                 "9.00",
                 "0.15",
+                "0",
+            ),
+            (
+                "gemini-3.5-flash-lite",
+                "Gemini 3.5 Flash Lite",
+                "0.30",
+                "2.50",
+                "0.03",
                 "0",
             ),
             // Gemini 3.1 系列
@@ -1953,7 +2284,16 @@ impl Database {
                 "0.025",
                 "0",
             ),
-            // StepFun 系列
+            // StepFun 系列：CNY 按 1 USD ≈ 7.14 CNY 折算，保留两位小数。
+            // Step 5 Preview 官方输入 / 输出 / 缓存读取：7 / 20 / 0.35 元。
+            (
+                "step-5-preview",
+                "Step 5 Preview",
+                "0.98",
+                "2.80",
+                "0.05",
+                "0",
+            ),
             (
                 "step-3.7-flash",
                 "Step 3.7 Flash",
@@ -2066,37 +2406,93 @@ impl Database {
                 "0",
             ),
             ("deepseek-v3", "DeepSeek V3", "0.28", "1.11", "0.028", "0"),
+            // ── DeepSeek V4 系列：2026-08-16 16:00 UTC 起改为峰谷双档计价 ──
+            // 官方价页（api-docs.deepseek.com/quick_start/pricing，中英一致）直接挂 USD，
+            // 不再需要 CNY 折算。高峰时段 = 北京时间 9:00-12:00 与 14:00-18:00
+            // （= UTC 01:00-04:00、06:00-10:00），共 7h/天；其余 17h 为空闲档。
+            //
+            // 🔴 本表每模型仅一行、无时段维度，**统一录高峰档**（Jason 2026-08-18 拍板）：
+            //   ① 官方措辞是「空闲价为高峰价的一半」，高峰档才是基准挂牌价；
+            //   ② 高峰时段正是中文用户的工作时间，是 AI 编程主力时段。
+            //   代价=夜间/凌晨用量高估一倍。勿按「阶梯取低档」惯例改成空闲档。
+            //
+            // input=缓存未命中价，cache_read=缓存命中价；DeepSeek 不单收 cache write → 0。
+            //
+            // ── 2026-09-11：V4 Flash 退役，三个 id 全部由 DeepSeek-V4.1-Flash 承接 ──
+            // 官方价页原文：legacy names `deepseek-v4-flash` / `deepseek-v4-flash-vision-exp`
+            // 仍被接受，但「the corresponding models have been retired」，请求由 V4.1-Flash 服务
+            // 并按 Flash 价计费 → 三者同价。V4.1 Flash 高峰档 0.3/1.2/0.006（空闲档 0.15/0.6/0.003
+            // 恰为一半；models.dev 录的正是空闲档，故审计 A 段会长期报这几行，属预期）。
+            // deepseek-flash 是官方当前唯一推荐名，必须单列：查价前缀兜底是 LIKE '{id}-%'，
+            // 只命中更长的行，短 id 匹配不到 deepseek-v4-flash，缺行即静默按 0 计费。
+            //
+            // 🔴 deepseek-chat / deepseek-reasoner 停在 V4 Flash 高峰档不动（2026-09-11 复核）：
+            // 官方文档站已全站搜不到这两个 id、models.dev 第一方条目也已删除 —— 无权威源可证
+            // 「跟随 V4.1 Flash 降价」或「已下线」任一方向，按无源不动原则保留旧值。
             (
                 "deepseek-chat",
                 "DeepSeek Chat",
-                "0.27",
-                "1.10",
-                "0.07",
+                "0.44",
+                "1.32",
+                "0.014",
                 "0",
             ),
             (
                 "deepseek-reasoner",
                 "DeepSeek Reasoner",
-                "0.55",
-                "2.19",
-                "0.14",
+                "0.44",
+                "1.32",
+                "0.014",
                 "0",
             ),
-            // DeepSeek V4 系列（官方 CNY 按 1 USD ≈ 7.14 折算）
+            (
+                "deepseek-flash",
+                "DeepSeek V4.1 Flash",
+                "0.3",
+                "1.2",
+                "0.006",
+                "0",
+            ),
             (
                 "deepseek-v4-flash",
                 "DeepSeek V4 Flash",
-                "0.14",
-                "0.28",
-                "0.0028",
+                "0.3",
+                "1.2",
+                "0.006",
                 "0",
             ),
+            // 部分上游（如阿里百炼）回传 4 位 MMDD 日期变体。查价的
+            // strip_model_date_suffix 只剥 ISO / 8 位 YYYYMMDD / 6 位 YYMMDD，
+            // 剥不到裸 id，前缀兜底也只匹配更长的行 —— 不补别名会静默按 0 计费
+            (
+                "deepseek-v4-flash-0731",
+                "DeepSeek V4 Flash",
+                "0.3",
+                "1.2",
+                "0.006",
+                "0",
+            ),
+            // 旧视觉实验名，官方定价页明示「仍被接受、由 V4.1-Flash 承接并按 Flash 价计费」。
+            // 官方安装脚本 ≤1.2.0 写过这个 id，存量供应商仍在用；前缀兜底匹配不到更短的
+            // deepseek-v4-flash，不单列会静默按 0 计费
+            (
+                "deepseek-v4-flash-vision-exp",
+                "DeepSeek V4 Flash Vision Exp",
+                "0.3",
+                "1.2",
+                "0.006",
+                "0",
+            ),
+            // V4 Pro 高峰档 1.32/3.96/0.044（CNY 9/27/0.3）。官方 2026-09-12 撤回了「09-14 起
+            // 路由到 V4.1 Flash」的公告，定价页注(2)：9 月 14 日之后继续提供 V4 Pro API，
+            // 计费方式保持不变（2026-09-15 复核）。
+            // 🔴 勿按未生效的厂商公告提前改价：v3.20.3 曾因此发出 0.3/1.2/0.006 错价。
             (
                 "deepseek-v4-pro",
                 "DeepSeek V4 Pro",
-                "0.435",
-                "0.87",
-                "0.003625",
+                "1.32",
+                "3.96",
+                "0.044",
                 "0",
             ),
             // Kimi (月之暗面)
@@ -2127,14 +2523,41 @@ impl Database {
                 "0.19",
                 "0",
             ),
+            // HighSpeed 加速档=本体 2 倍价（Kimi 官方一贯模式，同 K2 Turbo）
+            (
+                "kimi-k2.7-code-highspeed",
+                "Kimi K2.7 Code HighSpeed",
+                "1.90",
+                "8.00",
+                "0.38",
+                "0",
+            ),
             ("kimi-k3", "Kimi K3", "3.00", "15.00", "0.30", "0"),
             // Kimi For Coding 套餐里 K3 的裸名（无 kimi- 前缀），同标准 list 价
             ("k3", "Kimi K3", "3.00", "15.00", "0.30", "0"),
             // 腾讯混元 (Tencent Hunyuan)（官方 CNY 1/4/0.25 按 1 USD ≈ 7.14 折算；Hy3 阶梯计价取最低档）
             ("hunyuan-hy3", "Hunyuan Hy3", "0.14", "0.56", "0.035", "0"),
             ("hy3", "Hunyuan Hy3", "0.14", "0.56", "0.035", "0"),
+            // Hy4 preview：官方广州地域 CNY 6/18/0.3（1823/130055，2026-09-11 版）按 7.14 折算，无阶梯
+            (
+                "hy4-preview",
+                "Hunyuan Hy4 Preview",
+                "0.84",
+                "2.52",
+                "0.042",
+                "0",
+            ),
             // MiniMax 系列
-            ("minimax-m2.1", "MiniMax M2.1", "0.27", "0.95", "0.03", "0"),
+            // 2026-09-06 审计：官方按量价页（platform.minimax.io/docs/guides/pricing-paygo）
+            // M2 / M2.1 / M2.5 均为 0.3/1.2/0.03/0.375，models.dev 一致；旧值 0.27/0.95 与 0.15 为早期误录。
+            (
+                "minimax-m2.1",
+                "MiniMax M2.1",
+                "0.30",
+                "1.20",
+                "0.03",
+                "0.375",
+            ),
             (
                 "minimax-m2.1-lightning",
                 "MiniMax M2.1 Lightning",
@@ -2143,8 +2566,15 @@ impl Database {
                 "0.03",
                 "0",
             ),
-            ("minimax-m2", "MiniMax M2", "0.27", "0.95", "0.03", "0"),
-            ("minimax-m2.5", "MiniMax M2.5", "0.15", "0.95", "0.03", "0"),
+            ("minimax-m2", "MiniMax M2", "0.30", "1.20", "0.03", "0.375"),
+            (
+                "minimax-m2.5",
+                "MiniMax M2.5",
+                "0.30",
+                "1.20",
+                "0.03",
+                "0.375",
+            ),
             (
                 "minimax-m2.5-lightning",
                 "MiniMax M2.5 Lightning",
@@ -2169,13 +2599,32 @@ impl Database {
                 "0.06",
                 "0.375",
             ),
-            ("minimax-m3", "MiniMax M3", "0.60", "2.40", "0.12", "0"),
+            ("minimax-m3", "MiniMax M3", "0.30", "1.20", "0.06", "0"),
             // GLM (智谱)
             ("glm-4.7", "GLM-4.7", "0.6", "2.2", "0.11", "0"),
             ("glm-4.6", "GLM-4.6", "0.6", "2.2", "0.11", "0"),
             ("glm-5", "GLM-5", "1", "3.2", "0.2", "0"),
             ("glm-5.1", "GLM-5.1", "1.4", "4.4", "0.26", "0"),
             ("glm-5.2", "GLM-5.2", "1.4", "4.4", "0.26", "0"),
+            ("glm-5.3", "GLM-5.3", "1.4", "4.4", "0.26", "0"),
+            (
+                "glm-5.3-flash",
+                "GLM-5.3-Flash",
+                "0.15",
+                "0.50",
+                "0.03",
+                "0",
+            ),
+            (
+                "glm-5.3-flashx",
+                "GLM-5.3-FlashX",
+                "0.37",
+                "1.25",
+                "0.075",
+                "0",
+            ),
+            ("glm-5-turbo", "GLM-5-Turbo", "1.2", "4", "0.24", "0"),
+            ("glm-5v-turbo", "GLM-5V-Turbo", "1.2", "4", "0.24", "0"),
             // MiMo (小米)
             (
                 "mimo-v2-flash",
@@ -2186,7 +2635,7 @@ impl Database {
                 "0",
             ),
             ("mimo-v2-pro", "MiMo V2 Pro", "0.435", "0.87", "0.0036", "0"),
-            ("mimo-v2.5", "MiMo V2.5", "0.14", "0.29", "0.0028", "0"),
+            ("mimo-v2.5", "MiMo V2.5", "0.14", "0.28", "0.0028", "0"),
             (
                 "mimo-v2.5-pro",
                 "MiMo V2.5 Pro",
@@ -2196,6 +2645,28 @@ impl Database {
                 "0",
             ),
             // Qwen 系列 (阿里巴巴)
+            ("qwen3.8-max", "Qwen3.8 Max", "2", "6", "0.25", "2.50"),
+            // 2026-09-06：阿里国际站价页 0.15/0.47 全区间（0<Token≤1M）平价、无阶梯；
+            // 缓存两列官方只注明"非常规比例"未给数字，取 models.dev（与 qwen3.8-max 同口径）
+            (
+                "qwen3.8-flash",
+                "Qwen3.8 Flash",
+                "0.15",
+                "0.47",
+                "0.016",
+                "0.20",
+            ),
+            // 2026-09-15：开放权重两款，取阿里国际站（新加坡）模型页单价，无阶梯；缓存两列为
+            // 隐式缓存命中价与显式缓存创建价，与 qwen3.8-max 同口径
+            (
+                "qwen3.8-2.4t-a95b",
+                "Qwen3.8 2.4T A95B",
+                "2",
+                "6",
+                "0.25",
+                "2.50",
+            ),
+            ("qwen3.8-27b", "Qwen3.8 27B", "0.50", "3", "0.10", "0.625"),
             ("qwen3.7-max", "Qwen3.7 Max", "2.50", "7.50", "0.25", "0"),
             ("qwen3.7-plus", "Qwen3.7 Plus", "0.40", "1.60", "0.08", "0"),
             (
@@ -2204,6 +2675,14 @@ impl Database {
                 "0.325",
                 "1.95",
                 "0.065",
+                "0",
+            ),
+            (
+                "qwen3.6-flash",
+                "Qwen3.6 Flash",
+                "0.1875",
+                "1.125",
+                "0.0375",
                 "0",
             ),
             ("qwen3.5-plus", "Qwen3.5 Plus", "0.26", "1.56", "0.052", "0"),
@@ -2260,7 +2739,15 @@ impl Database {
             ("qwq-32b", "QwQ 32B", "0.20", "0.60", "0", "0"),
             ("qwen3-32b", "Qwen3 32B", "0.16", "0.64", "0", "0"),
             // Grok 系列 (xAI)
-            ("grok-4.5", "Grok 4.5", "2", "6", "0.50", "0"),
+            // 4.5/4.6/4.7 均为分档计价：prompt ≥200K 时单价翻倍（4/12，cached 亦翻倍）。
+            // 本表无档位列，统一取基础档（<200K），与其它分档厂商口径一致
+            ("grok-4.7", "Grok 4.7", "2", "6", "0.50", "0"),
+            ("grok-4.6", "Grok 4.6", "2", "6", "0.50", "0"),
+            ("grok-4.5", "Grok 4.5", "2", "6", "0.30", "0"),
+            // Grok CLI 官方 OAuth 态 modelUsage 上报的内部别名。定价由
+            // costUsdTicks（1 tick = 1e-10 USD）双轮实测反推：input/output 与
+            // grok-4.5 同为 2/6，cache read 同为 0.30
+            ("grok-4.5-build", "Grok 4.5 Build", "2", "6", "0.30", "0"),
             ("grok-4.3", "Grok 4.3", "1.25", "2.50", "0.20", "0"),
             (
                 "grok-4.20-0309-reasoning",
@@ -2395,40 +2882,167 @@ impl Database {
             ("command-r", "Cohere Command R", "0.15", "0.60", "0", "0"),
             // OpenAI 补充
             ("o3-pro", "OpenAI o3-pro", "20", "80", "0", "0"),
-            ("o3-mini", "OpenAI o3-mini", "0.55", "2.20", "0.55", "0"),
+            ("o3-mini", "OpenAI o3-mini", "1.10", "4.40", "0.55", "0"),
             ("o1", "OpenAI o1", "15", "60", "7.50", "0"),
             ("o1-mini", "OpenAI o1-mini", "0.55", "2.20", "0.55", "0"),
             ("codex-mini", "Codex Mini", "0.75", "3", "0.025", "0"),
             ("gpt-5-mini", "GPT-5 Mini", "0.25", "2", "0.025", "0"),
             ("gpt-5-nano", "GPT-5 Nano", "0.05", "0.40", "0.005", "0"),
+            // MiMo 2.6：2026-09-23 核对官方标准价格，单位 USD / 百万 tokens。
+            (
+                "mimo-v2.6-pro",
+                "MiMo V2.6 Pro",
+                "0.435",
+                "0.87",
+                "0.0036",
+                "0",
+            ),
+            (
+                "mimo-v2.6-flash",
+                "MiMo V2.6 Flash",
+                "0.14",
+                "0.28",
+                "0.0028",
+                "0",
+            ),
+            (
+                "mimo-v2.6-pro-ultraspeed",
+                "MiMo V2.6 Pro UltraSpeed",
+                "4.35",
+                "8.7",
+                "0.036",
+                "0",
+            ),
         ];
-
-        let mut stmt = conn
-            .prepare(
-                "INSERT OR IGNORE INTO model_pricing (
-                    model_id, display_name, input_cost_per_million, output_cost_per_million,
-                    cache_read_cost_per_million, cache_creation_cost_per_million
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        pricing_data
+            .into_iter()
+            .map(
+                |(model_id, display_name, input, output, cache_read, cache_creation)| {
+                    (
+                        model_id,
+                        display_name,
+                        [input, output, cache_read, cache_creation],
+                    )
+                },
             )
-            .map_err(|e| AppError::Database(format!("准备模型定价语句失败: {e}")))?;
-        for (model_id, display_name, input, output, cache_read, cache_creation) in pricing_data {
-            stmt.execute(rusqlite::params![
-                model_id,
-                display_name,
-                input,
-                output,
-                cache_read,
-                cache_creation
-            ])
-            .map_err(|e| AppError::Database(format!("插入模型定价失败: {e}")))?;
-        }
-
-        log::info!("已插入 {} 条默认模型定价数据", pricing_data.len());
-        Ok(())
+            .collect()
     }
-
-    fn repair_current_model_pricing(conn: &Connection) -> Result<(), AppError> {
+    /// 历史修价链：只作用于尚无内置指纹的行（首次指纹同步前的库），按"仍等于旧内置值"守卫。
+    /// 之后的内置改价只需改 `builtin_model_pricing`，由指纹重同步处理。
+    fn repair_current_model_pricing(
+        conn: &Connection,
+        fingerprints: &BTreeMap<String, String>,
+    ) -> Result<(), AppError> {
         let pricing_fixes = [
+            // 2026-09-02 官方定价页确认 Sonnet 5 $2/$10 介绍价转为正式价、原定 09-01 涨至
+            // $3/$15 取消：早先按 list 价 seed 的行改回正式价（用户手改过的行不匹配旧值，不动）
+            (
+                "claude-sonnet-5",
+                "Claude Sonnet 5",
+                "2",
+                "10",
+                "0.20",
+                "2.50",
+                "3",
+                "15",
+                "0.30",
+                "3.75",
+            ),
+            // 2026-08-13 models.dev 审计核价：grok-4.5 的 cached input 官方挂牌为 0.30
+            // （docs.x.ai 现行价表），与 grok-4.5-build 的实测计费一致；早先按 0.50
+            // 录入的行在此校正。注意 0.50 是 grok-4.6 的 cached 价，勿两者互串
+            (
+                "grok-4.5", "Grok 4.5", "2", "6", "0.30", "0", "2", "6", "0.50", "0",
+            ),
+            // 2026-07-30 OpenAI GPT-5.6 降价：luna -80%、terra -20%（sol 不变）。
+            // 每档两条守卫：主守卫匹配 ≥v3.19（已跑过 07-12 cache_write 修正），
+            // 0 态守卫匹配 <v3.19 直升用户（cache_write 仍为旧 seed 的 0）
+            (
+                "gpt-5.6-luna",
+                "GPT-5.6 Luna",
+                "0.20",
+                "1.20",
+                "0.02",
+                "0.25",
+                "1",
+                "6",
+                "0.10",
+                "1.25",
+            ),
+            (
+                "gpt-5.6-luna",
+                "GPT-5.6 Luna",
+                "0.20",
+                "1.20",
+                "0.02",
+                "0.25",
+                "1",
+                "6",
+                "0.10",
+                "0",
+            ),
+            (
+                "gpt-5.6-terra",
+                "GPT-5.6 Terra",
+                "2",
+                "12",
+                "0.20",
+                "2.50",
+                "2.50",
+                "15",
+                "0.25",
+                "3.125",
+            ),
+            (
+                "gpt-5.6-terra",
+                "GPT-5.6 Terra",
+                "2",
+                "12",
+                "0.20",
+                "2.50",
+                "2.50",
+                "15",
+                "0.25",
+                "0",
+            ),
+            // 2026-07-31 models.dev 审计核价：DeepSeek V4 发布后 chat/reasoner 降为 V4 Flash
+            // 别名价；MiniMax M3 官方 standard 档 0.3/1.2（旧值疑似录了加速档）
+            (
+                "deepseek-chat",
+                "DeepSeek Chat",
+                "0.14",
+                "0.28",
+                "0.0028",
+                "0",
+                "0.27",
+                "1.10",
+                "0.07",
+                "0",
+            ),
+            (
+                "deepseek-reasoner",
+                "DeepSeek Reasoner",
+                "0.14",
+                "0.28",
+                "0.0028",
+                "0",
+                "0.55",
+                "2.19",
+                "0.14",
+                "0",
+            ),
+            (
+                "minimax-m3",
+                "MiniMax M3",
+                "0.30",
+                "1.20",
+                "0.06",
+                "0",
+                "0.60",
+                "2.40",
+                "0.12",
+                "0",
+            ),
             // 2026-07-12 GPT-5.6 家族 cache write=1.25× 输入价（OpenAI 5.6 起的新规），
             // 修正早期 seed 的 0 值；只匹配未被用户改过的行
             (
@@ -2728,6 +3342,188 @@ impl Database {
                 "0.02",
                 "0",
             ),
+            // 2026-08-16 16:00 UTC DeepSeek V4 全系改峰谷双档计价（本表统一录高峰档，
+            // 理由见 seed_model_pricing 里 DeepSeek V4 段的注释）。涨幅很大：
+            // flash 0.14/0.28/0.0028 → 0.44/1.32/0.014；pro 0.435/0.87/0.003625 → 1.32/3.96/0.044。
+            //
+            // 🔴 这五条必须留在数组末尾：上面 2026-07-31 的 chat/reasoner 条目与
+            // 2026-07 的 v4-flash(cache_read 0.028→0.0028) / v4-pro(1.68/3.36→0.435/0.87)
+            // 条目会先把各种历史形态收敛到同一个旧值，这里才能单守卫命中。
+            // 若把本组挪到它们之前，老库会停在中间价位不再前进。
+            (
+                "deepseek-chat",
+                "DeepSeek Chat",
+                "0.44",
+                "1.32",
+                "0.014",
+                "0",
+                "0.14",
+                "0.28",
+                "0.0028",
+                "0",
+            ),
+            (
+                "deepseek-reasoner",
+                "DeepSeek Reasoner",
+                "0.44",
+                "1.32",
+                "0.014",
+                "0",
+                "0.14",
+                "0.28",
+                "0.0028",
+                "0",
+            ),
+            (
+                "deepseek-v4-flash",
+                "DeepSeek V4 Flash",
+                "0.44",
+                "1.32",
+                "0.014",
+                "0",
+                "0.14",
+                "0.28",
+                "0.0028",
+                "0",
+            ),
+            (
+                "deepseek-v4-flash-0731",
+                "DeepSeek V4 Flash",
+                "0.44",
+                "1.32",
+                "0.014",
+                "0",
+                "0.14",
+                "0.28",
+                "0.0028",
+                "0",
+            ),
+            (
+                "deepseek-v4-pro",
+                "DeepSeek V4 Pro",
+                "1.32",
+                "3.96",
+                "0.044",
+                "0",
+                "0.435",
+                "0.87",
+                "0.003625",
+                "0",
+            ),
+            // 2026-09-06 审计。以下条目须排在上方所有旧条目之后（链式守卫，顺序由
+            // tests.rs::model_pricing_seed_repairs_known_outdated_builtin_prices 锁住）：
+            // - minimax-m2.5：先经 0.12→0.15 条目，再由本条到 0.30
+            // GPT-5.6 Sol 促销价与 Gemini 3.6 Flash 介绍价不在本表：它们是带到期日的数据
+            //（BUILTIN_PRICING_PROMOS），由 resync_builtin_model_pricing 在挂牌价/限时价之间切换。
+            // MiniMax 官方按量价：M2 / M2.1 / M2.5 = 0.3/1.2/0.03/0.375
+            (
+                "minimax-m2",
+                "MiniMax M2",
+                "0.30",
+                "1.20",
+                "0.03",
+                "0.375",
+                "0.27",
+                "0.95",
+                "0.03",
+                "0",
+            ),
+            (
+                "minimax-m2.1",
+                "MiniMax M2.1",
+                "0.30",
+                "1.20",
+                "0.03",
+                "0.375",
+                "0.27",
+                "0.95",
+                "0.03",
+                "0",
+            ),
+            (
+                "minimax-m2.5",
+                "MiniMax M2.5",
+                "0.30",
+                "1.20",
+                "0.03",
+                "0.375",
+                "0.15",
+                "0.95",
+                "0.03",
+                "0",
+            ),
+            // 2026-09-11 审计：DeepSeek V4 Flash 退役，打到 deepseek-v4-flash / -0731 的
+            // 请求已由 V4.1-Flash 承接并按 Flash 价计费（官方定价页 quick_start/pricing），
+            // 高峰档 0.44/1.32/0.014 → 0.3/1.2/0.006。
+            //
+            // 🔴 必须排在上方 2026-08-16 峰谷调价五条之后：老库要先被那一组推到
+            // 0.44/1.32/0.014，本组的守卫才能命中；挪到其前老库会停在 0.44 不再前进。
+            // deepseek-chat / deepseek-reasoner 刻意不在本组 —— 官方已全面下架、无权威源
+            // 可证其跟随降价，见 seed_model_pricing 的 DeepSeek V4 段注释。
+            (
+                "deepseek-v4-flash",
+                "DeepSeek V4 Flash",
+                "0.3",
+                "1.2",
+                "0.006",
+                "0",
+                "0.44",
+                "1.32",
+                "0.014",
+                "0",
+            ),
+            (
+                "deepseek-v4-flash-0731",
+                "DeepSeek V4 Flash",
+                "0.3",
+                "1.2",
+                "0.006",
+                "0",
+                "0.44",
+                "1.32",
+                "0.014",
+                "0",
+            ),
+            // 2026-09-15：撤销 09-11 提前执行的 V4 Pro → Flash 档回调（官方 09-12 撤回迁移公告，
+            // V4 Pro 继续按原价计费）。v3.20.3 已把老库推到 0.3/1.2/0.006，本条修回高峰档。
+            // 🔴 原 1.32→0.3 条目必须删除而非保留：两条并存会让每次启动都来回改写。
+            (
+                "deepseek-v4-pro",
+                "DeepSeek V4 Pro",
+                "1.32",
+                "3.96",
+                "0.044",
+                "0",
+                "0.3",
+                "1.2",
+                "0.006",
+                "0",
+            ),
+            // 2026-09-23 核对标准价格，仅修正仍匹配旧内置值的记录。
+            (
+                "mimo-v2.5",
+                "MiMo V2.5",
+                "0.14",
+                "0.28",
+                "0.0028",
+                "0",
+                "0.14",
+                "0.29",
+                "0.0028",
+                "0",
+            ),
+            (
+                "o3-mini",
+                "OpenAI o3-mini",
+                "1.10",
+                "4.40",
+                "0.55",
+                "0",
+                "0.55",
+                "2.20",
+                "0.55",
+                "0",
+            ),
         ];
 
         for (
@@ -2743,6 +3539,9 @@ impl Database {
             old_cache_creation,
         ) in pricing_fixes
         {
+            if fingerprints.contains_key(model_id) {
+                continue;
+            }
             conn.execute(
                 "UPDATE model_pricing SET
                     display_name = ?2,
@@ -2781,9 +3580,20 @@ impl Database {
     }
 
     pub(crate) fn ensure_model_pricing_seeded_on_conn(conn: &Connection) -> Result<(), AppError> {
-        // 每次启动都执行 INSERT OR IGNORE，增量追加新模型；仅修复仍等于旧内置值的定价。
-        Self::seed_model_pricing(conn)?;
-        Self::repair_current_model_pricing(conn)
+        Self::ensure_model_pricing_seeded_at(conn, chrono::Utc::now().date_naive())
+    }
+
+    /// 每次启动：INSERT OR IGNORE 追加新模型 → 无指纹的旧行走历史修价链 →
+    /// 按指纹重同步未被用户改过的内置行（含限时价到期回落）→ 保存指纹。
+    pub(crate) fn ensure_model_pricing_seeded_at(
+        conn: &Connection,
+        today: NaiveDate,
+    ) -> Result<(), AppError> {
+        let mut fingerprints = Self::load_model_pricing_fingerprints(conn)?;
+        Self::seed_model_pricing_at(conn, today)?;
+        Self::repair_current_model_pricing(conn, &fingerprints)?;
+        Self::resync_builtin_model_pricing(conn, today, &mut fingerprints)?;
+        Self::store_model_pricing_fingerprints(conn, &fingerprints)
     }
 
     // --- 辅助方法 ---
