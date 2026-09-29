@@ -1237,6 +1237,9 @@ impl RequestForwarder {
             == Some("github_copilot")
             || base_url.contains("githubcopilot.com");
 
+        // Refuse before any Copilot model/vendor lookup can use a stored token.
+        require_managed_accounts(is_copilot || provider.is_codex_oauth())?;
+
         let codex_official_auth_passthrough = matches!(app_type, AppType::Codex)
             && super::providers::is_codex_official_provider(provider);
 
@@ -1827,6 +1830,10 @@ impl RequestForwarder {
             {
                 auth.strategy = AuthStrategy::Anthropic;
             }
+            require_managed_accounts(matches!(
+                auth.strategy,
+                AuthStrategy::GitHubCopilot | AuthStrategy::CodexOAuth
+            ))?;
             // GitHub Copilot 特殊处理：从 CopilotAuthManager 获取真实 token
             if auth.strategy == AuthStrategy::GitHubCopilot {
                 if let Some(app_handle) = &self.app_handle {
@@ -3461,6 +3468,20 @@ fn headers_contain_proxy_placeholder(headers: &http::HeaderMap) -> bool {
     })
 }
 
+/// Proxy-injected managed accounts (GitHub Copilot and the ChatGPT
+/// subscription `codex_oauth` line) are closed while `managed_accounts` is
+/// off: their stored tokens are never resolved or sent upstream. The
+/// capability is a backend constant, so the renderer cannot reopen this.
+/// xAI OAuth is not part of it; it backs the live Codex "xAI (Grok) OAuth"
+/// preset and keeps working.
+fn require_managed_accounts(uses_managed_account: bool) -> Result<(), ProxyError> {
+    if !uses_managed_account {
+        return Ok(());
+    }
+    crate::product_policy::require(crate::product_policy::Capability::ManagedAccounts)
+        .map_err(|error| ProxyError::AuthError(error.to_string()))
+}
+
 fn should_preserve_exact_header_case(
     adapter_name: &str,
     provider: &Provider,
@@ -4296,6 +4317,22 @@ value"
         assert!(!should_preserve_exact_header_case(
             "Gemini", &provider, None, false
         ));
+    }
+
+    #[test]
+    fn managed_account_token_injection_is_rejected_while_managed_accounts_is_off() {
+        assert!(matches!(
+            require_managed_accounts(true),
+            Err(ProxyError::AuthError(_))
+        ));
+        assert!(require_managed_accounts(false).is_ok());
+
+        // The providers that feed the gate: Copilot and ChatGPT-subscription
+        // OAuth are managed accounts; xAI OAuth (live Codex preset) is not.
+        assert!(test_provider_with_type(Some("github_copilot")).is_github_copilot());
+        assert!(test_provider_with_type(Some("codex_oauth")).is_codex_oauth());
+        let xai = test_provider_with_type(Some("xai_oauth"));
+        assert!(!xai.is_github_copilot() && !xai.is_codex_oauth());
     }
 
     #[test]

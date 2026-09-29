@@ -393,6 +393,14 @@ fn handle_deeplink_url(
                 request.name
             );
 
+            if let Err(error) = crate::deeplink::ensure_targets_allowed(&request) {
+                log::warn!("Deep link for a tool that is not enabled was ignored: {error}");
+                let _ = app.emit(
+                    "deeplink-error",
+                    serde_json::json!({ "error": error.to_string() }),
+                );
+                return true;
+            }
             if let Err(error) = commands::queue_deeplink(app, url_str, request) {
                 log::error!("Failed to queue deep link: {error}");
                 let _ = app.emit("deeplink-error", serde_json::json!({ "error": error }));
@@ -860,7 +868,7 @@ pub fn run() {
             let fresh_install_at_startup =
                 app_state.db.is_providers_empty().unwrap_or(false);
 
-            for app_type in product_policy::startup_managed_apps()
+            for app_type in product_policy::startup_import_apps()
                 .filter(|t| !t.is_additive_mode())
             {
                 if !crate::services::provider::should_import_default_config_on_startup(
@@ -2115,7 +2123,7 @@ pub async fn cleanup_before_exit(app_handle: &tauri::AppHandle) {
         let proxy_service = &state.proxy_service;
         let mut apps_to_restore = Vec::new();
 
-        for app_type in product_policy::startup_managed_apps() {
+        for app_type in product_policy::recovery_apps() {
             let app_name = app_type.as_str();
             let has_backup = match state.db.get_live_backup(app_name).await {
                 Ok(backup) => backup.is_some(),
@@ -2183,14 +2191,12 @@ pub(crate) fn remove_tray_icon_before_exit(app_handle: &tauri::AppHandle) {
 // 启动时恢复代理状态
 // ============================================================
 
-/// 启动时根据 proxy_config 表中的代理状态自动恢复代理服务
+/// 启动时恢复 `RECOVERY_APPS` 中残留的代理接管或 Live 备份（崩溃恢复）。
 ///
-/// 检查 `proxy_config.enabled` 字段，如果有任一应用的状态为 `true`，
-/// 则自动启动代理服务并接管对应应用的 Live 配置。
-const PROXY_STARTUP_APP_TYPES: [&str; 4] = ["claude", "codex", "gemini", "grokbuild"];
-
+/// 代理接管状态本身由 [`restore_proxy_state_on_startup`] 按
+/// `PROXY_AUTOSTART_APPS`（可见 + 用户曾显式接管）恢复。
 async fn recover_product_managed_live_configs(state: &store::AppState) {
-    for app_type in product_policy::startup_managed_apps() {
+    for app_type in product_policy::recovery_apps() {
         let app_name = app_type.as_str();
         let has_backup = match state.db.get_live_backup(app_name).await {
             Ok(backup) => backup.is_some(),
@@ -2220,18 +2226,26 @@ async fn recover_product_managed_live_configs(state: &store::AppState) {
     }
 }
 
-async fn enabled_proxy_apps_on_startup(db: &database::Database) -> Vec<&'static str> {
+/// Apps whose recorded takeover (`proxy_config.enabled`, only ever set by an
+/// explicit user action) may resume at startup: the app must be in the D5
+/// autostart set and visible both to the product and in `visibleApps`.
+async fn enabled_proxy_apps_on_startup(
+    db: &database::Database,
+    visible_apps: &crate::settings::VisibleApps,
+) -> Vec<&'static str> {
     let mut apps = Vec::new();
-    for app_type in PROXY_STARTUP_APP_TYPES {
-        if !product_policy::is_startup_managed_app_name(app_type) {
-            continue;
-        }
-        if db
-            .get_proxy_config_for_app(app_type)
+    for app_type in product_policy::proxy_autostart_candidates() {
+        let app_name = app_type.as_str();
+        let taken_over = db
+            .get_proxy_config_for_app(app_name)
             .await
-            .is_ok_and(|config| config.enabled)
-        {
-            apps.push(app_type);
+            .is_ok_and(|config| config.enabled);
+        if product_policy::should_autostart_proxy(
+            app_type,
+            visible_apps.is_visible(app_type),
+            taken_over,
+        ) {
+            apps.push(app_name);
         }
     }
     apps
@@ -2239,7 +2253,10 @@ async fn enabled_proxy_apps_on_startup(db: &database::Database) -> Vec<&'static 
 
 async fn restore_proxy_state_on_startup(state: &store::AppState) {
     // 收集需要恢复接管的应用列表（从 proxy_config.enabled 读取）
-    let apps_to_restore = enabled_proxy_apps_on_startup(&state.db).await;
+    let visible_apps = crate::settings::get_settings()
+        .visible_apps
+        .unwrap_or_default();
+    let apps_to_restore = enabled_proxy_apps_on_startup(&state.db, &visible_apps).await;
 
     if apps_to_restore.is_empty() {
         log::debug!("启动时无需恢复代理状态");
@@ -2277,7 +2294,7 @@ fn initialize_common_config_snippets(state: &store::AppState) {
     // Auto-extract common config snippets from clean live files when snippet is missing.
     // This must run before proxy takeover is restored on startup, otherwise we'd read
     // proxy-placeholder configs instead of the user's actual live settings.
-    for app_type in product_policy::startup_managed_apps() {
+    for app_type in product_policy::startup_import_apps() {
         if !state
             .db
             .should_auto_extract_config_snippet(app_type.as_str())
@@ -2330,7 +2347,7 @@ fn initialize_common_config_snippets(state: &store::AppState) {
         .unwrap_or(true);
 
     if should_run_legacy_migration {
-        for app_type in product_policy::startup_managed_apps() {
+        for app_type in product_policy::startup_import_apps() {
             if let Err(e) = crate::services::provider::ProviderService::migrate_legacy_common_config_usage_if_needed(
                 state,
                 app_type.clone(),
@@ -2559,6 +2576,7 @@ mod tests {
         strip_bare_userinfo, ExitRequestAction,
     };
     use crate::database::Database;
+    use crate::settings::VisibleApps;
 
     #[test]
     fn log_url_redaction_strips_credentials_and_query_keeps_path() {
@@ -2684,29 +2702,59 @@ mod tests {
         );
     }
 
+    async fn enable_takeover(db: &Database, app: &str) {
+        let mut config = db
+            .get_proxy_config_for_app(app)
+            .await
+            .expect("read proxy config");
+        config.enabled = true;
+        db.update_proxy_config_for_app(config)
+            .await
+            .expect("enable proxy config");
+    }
+
     #[tokio::test]
-    async fn startup_restore_only_includes_product_managed_apps() {
+    async fn startup_proxy_restore_needs_autostart_set_visibility_and_takeover() {
         let db = Database::memory().expect("initialize database");
-        let mut codex = db
-            .get_proxy_config_for_app("codex")
-            .await
-            .expect("read Codex proxy config");
-        codex.enabled = true;
-        db.update_proxy_config_for_app(codex)
-            .await
-            .expect("enable Codex proxy config");
+        let codex_only = VisibleApps::default();
 
-        let mut grokbuild = db
-            .get_proxy_config_for_app("grokbuild")
+        // Nothing was taken over: nothing resumes.
+        assert!(enabled_proxy_apps_on_startup(&db, &codex_only)
             .await
-            .expect("read Grok Build proxy config");
-        grokbuild.enabled = true;
-        db.update_proxy_config_for_app(grokbuild)
+            .is_empty());
+
+        for app in ["codex", "grokbuild", "claude", "gemini"] {
+            enable_takeover(&db, app).await;
+        }
+        assert_eq!(
+            enabled_proxy_apps_on_startup(&db, &codex_only).await,
+            vec!["codex"]
+        );
+
+        // Showing GrokBuild in visibleApps is not enough while multi_tool keeps
+        // it hard-hidden; Claude/Gemini are outside the autostart set.
+        let everything_visible = VisibleApps {
+            claude: true,
+            claude_desktop: true,
+            codex: true,
+            gemini: true,
+            grokbuild: true,
+            opencode: true,
+            openclaw: true,
+            hermes: true,
+        };
+        assert_eq!(
+            enabled_proxy_apps_on_startup(&db, &everything_visible).await,
+            vec!["codex"]
+        );
+
+        // A hidden Codex does not auto-start either.
+        let codex_hidden = VisibleApps {
+            codex: false,
+            ..VisibleApps::default()
+        };
+        assert!(enabled_proxy_apps_on_startup(&db, &codex_hidden)
             .await
-            .expect("enable Grok Build proxy config");
-
-        let apps = enabled_proxy_apps_on_startup(&db).await;
-
-        assert_eq!(apps, vec!["codex"]);
+            .is_empty());
     }
 }

@@ -1211,10 +1211,54 @@ pub fn import_default_config_test_hook(
     import_default_config_internal(state, app_type)
 }
 
+/// Renderer entry point for importing an app's live config as its first
+/// provider. Importing a non-Codex tool is a `multi_tool` entry point.
+fn import_default_config_command(state: &AppState, app_type: AppType) -> Result<bool, AppError> {
+    crate::product_policy::require_app(&app_type)?;
+    import_default_config_internal(state, app_type)
+}
+
 #[tauri::command]
 pub fn import_default_config(state: State<'_, AppState>, app: String) -> Result<bool, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
-    import_default_config_internal(&state, app_type).map_err(Into::into)
+    import_default_config_command(&state, app_type).map_err(Into::into)
+}
+
+#[cfg(test)]
+mod first_enable_import_gate_tests {
+    use super::import_default_config_command;
+    use crate::app_config::AppType;
+    use crate::database::Database;
+    use crate::error::AppError;
+    use crate::store::AppState;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn non_codex_first_enable_import_is_rejected_while_multi_tool_is_off() {
+        let db = Arc::new(Database::memory().expect("init db"));
+        let state = AppState::new(db.clone());
+        for app in AppType::all().filter(|app| *app != AppType::Codex) {
+            let before = db.get_all_providers(app.as_str()).expect("list").len();
+            let error = import_default_config_command(&state, app.clone())
+                .expect_err("non-Codex import must be gated");
+            assert!(
+                matches!(
+                    error,
+                    AppError::Localized {
+                        key: "capability.disabled",
+                        ..
+                    }
+                ),
+                "{}: {error}",
+                app.as_str()
+            );
+            // Rejected before anything is read or seeded.
+            assert_eq!(
+                db.get_all_providers(app.as_str()).expect("list").len(),
+                before
+            );
+        }
+    }
 }
 
 #[tauri::command]

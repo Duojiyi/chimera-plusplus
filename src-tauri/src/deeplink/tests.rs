@@ -909,3 +909,59 @@ fn test_infer_homepage_from_endpoint_without_homepage() {
         Some("https://cubence.com".to_string())
     );
 }
+
+#[test]
+fn non_codex_deeplinks_are_rejected_while_multi_tool_is_off() {
+    use super::ensure_targets_allowed;
+
+    let codex_provider = DeepLinkImportRequest {
+        resource: "provider".to_string(),
+        app: Some("codex".to_string()),
+        ..Default::default()
+    };
+    assert!(ensure_targets_allowed(&codex_provider).is_ok());
+    // A link without any target (e.g. a skill repo) is not an app-scoped import.
+    assert!(ensure_targets_allowed(&DeepLinkImportRequest::default()).is_ok());
+
+    for app in [
+        "claude",
+        "gemini",
+        "grokbuild",
+        "opencode",
+        "openclaw",
+        "hermes",
+    ] {
+        let request = DeepLinkImportRequest {
+            resource: "provider".to_string(),
+            app: Some(app.to_string()),
+            ..Default::default()
+        };
+        assert!(
+            matches!(
+                ensure_targets_allowed(&request),
+                Err(crate::error::AppError::Localized {
+                    key: "capability.disabled",
+                    ..
+                })
+            ),
+            "{app} deep link should be rejected"
+        );
+    }
+
+    // One non-Codex entry in an MCP `apps` list is enough to refuse it, and an
+    // unknown target is never treated as Codex.
+    for apps in ["codex,claude", " gemini ", "not-a-tool"] {
+        let request = DeepLinkImportRequest {
+            resource: "mcp".to_string(),
+            apps: Some(apps.to_string()),
+            ..Default::default()
+        };
+        assert!(ensure_targets_allowed(&request).is_err(), "{apps}");
+    }
+    let codex_mcp = DeepLinkImportRequest {
+        resource: "mcp".to_string(),
+        apps: Some("codex".to_string()),
+        ..Default::default()
+    };
+    assert!(ensure_targets_allowed(&codex_mcp).is_ok());
+}
