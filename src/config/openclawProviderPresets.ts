@@ -7,6 +7,7 @@ import type {
   OpenClawProviderConfig,
   OpenClawDefaultModel,
 } from "../types";
+import { chimeraHubPreset } from "./codexTemplates";
 import type { PresetTheme, TemplateValueConfig } from "./claudeProviderPresets";
 
 /** Suggested default model configuration for a preset */
@@ -99,6 +100,36 @@ export const openclawApiProtocols = [
  * OpenClaw provider presets list
  */
 export const openclawProviderPresets: OpenClawProviderPreset[] = [
+  // Our own relay, served by the backend template; OpenAI-compatible /v1 only
+  // (Anthropic / Gemini endpoints are not verified).
+  chimeraHubPreset<OpenClawProviderPreset>((template) => ({
+    name: template.name,
+    websiteUrl: template.websiteUrl,
+    settingsConfig: {
+      baseUrl: template.baseUrl,
+      apiKey: "",
+      api: "openai-completions",
+      models: template.model
+        ? [{ id: template.model, name: "GPT-5.6 Sol" }]
+        : [],
+    },
+    category: "third_party",
+    templateValues: {
+      apiKey: {
+        label: "API Key",
+        placeholder: "",
+        editorValue: "",
+      },
+    },
+    suggestedDefaults: template.model
+      ? {
+          model: { primary: `chimerahub/${template.model}` },
+          modelCatalog: {
+            [`chimerahub/${template.model}`]: { alias: "GPT-5.6 Sol" },
+          },
+        }
+      : undefined,
+  })),
   {
     name: "Kimi",
     websiteUrl: "https://platform.kimi.com",

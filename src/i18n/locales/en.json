@@ -1436,7 +1436,8 @@
     "sortAriaLabel": "Toggle preset sorting",
     "sortNameAscTooltip": "Sort by name A-Z",
     "sortOriginalTooltip": "Restore original order",
-    "noSearchResults": "No provider presets match your search."
+    "noSearchResults": "No provider presets match your search.",
+    "builtinTemplate": "Built-in"
   },
   "usage": {
     "title": "Usage Statistics",

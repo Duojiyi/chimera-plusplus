@@ -9,6 +9,7 @@ import type {
   PromptCacheRoutingMode,
 } from "../types";
 import type { PresetTheme } from "./claudeProviderPresets";
+import { chimeraHubPreset } from "./codexTemplates";
 
 export interface CodexProviderPreset {
   name: string;
@@ -24,6 +25,8 @@ export interface CodexProviderPreset {
   partnerPromotionKey?: string; // 合作伙伴促销信息的 i18n key
   category?: ProviderCategory; // 新增：分类
   isCustomTemplate?: boolean; // 标识是否为自定义模板
+  // 产品自带模板（ChimeraHub，自家中转站；不是合作或推广）：置顶并标注“内置”
+  isBuiltinTemplate?: boolean;
   // 新增：请求地址候选列表（用于地址管理/测速）
   endpointCandidates?: string[];
   // 新增：视觉主题配置
@@ -117,6 +120,17 @@ function modelCatalog(
 }
 
 export const codexProviderPresets: CodexProviderPreset[] = [
+  // Built-in template, owned by the backend (`get_chimerahub_template`).
+  chimeraHubPreset<CodexProviderPreset>((template) => ({
+    name: template.name,
+    websiteUrl: template.websiteUrl,
+    auth: template.auth,
+    config: template.config,
+    category: "third_party",
+    isBuiltinTemplate: true,
+    apiFormat: "openai_responses",
+    endpointCandidates: template.baseUrl ? [template.baseUrl] : [],
+  })),
   {
     name: "OpenAI Official",
     websiteUrl: "https://chatgpt.com/codex",

@@ -1,17 +1,83 @@
 //! 供应商余额查询服务
 //!
-//! 支持 DeepSeek、StepFun、SiliconFlow、OpenRouter、Novita AI 的账户余额查询。
-//! 返回 UsageResult 格式，与现有用量系统无缝对接。
+//! 支持 DeepSeek、StepFun、SiliconFlow、OpenRouter、Novita AI 与 ChimeraHub 的账户余额查询。
+//! 返回 UsageResult 格式（外加可选 `status`），与现有用量系统无缝对接。
 //!
 //! 错误通道语义（与 coding_plan / subscription 两个服务保持一致）：
 //! - `Err(String)` = 瞬时传输失败（网络不可达/超时/读体中断）。前端 invoke reject，
 //!   react-query 触发 retry 并保留上一次成功的 data（天然 keep-last-good）。
-//! - `Ok(success:false)` = 确定性失败（空 key/未知供应商/鉴权/非 2xx/响应体非法 JSON），
-//!   立即透出错误文案。判定按 reqwest 错误种类在折叠点完成，不依赖错误文案匹配。
+//! - `Ok(success:false)` = 确定性失败（鉴权/非 2xx/响应体非法 JSON），立即透出错误文案。
+//!   判定按 reqwest 错误种类在折叠点完成，不依赖错误文案匹配。
+//! - `Ok(status: Some(..))` = 没有发请求：缺地址或 key（`missing_credentials`），
+//!   或该地址没有已知余额接口（`unsupported`）。
 
 use crate::provider::{UsageData, UsageResult};
+use serde::Serialize;
 use std::time::Duration;
 use url::Url;
+
+// ── 查询结果 ────────────────────────────────────────────────
+
+/// 未发出余额请求的原因。类型化给前端，界面不再匹配后端错误文案。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BalanceStatus {
+    /// 该请求地址没有已知的余额接口（并不说明它是不是中转站）。
+    Unsupported,
+    /// 请求地址或 API Key 为空。
+    MissingCredentials,
+}
+
+impl BalanceStatus {
+    fn message(self) -> &'static str {
+        match self {
+            BalanceStatus::Unsupported => "Balance query is not supported for this endpoint",
+            BalanceStatus::MissingCredentials => "Base URL or API key is missing",
+        }
+    }
+}
+
+/// `UsageResult` 加上可选的 `status`；status 存在时表示没有发出请求。
+#[derive(Debug, Clone, Serialize)]
+pub struct BalanceResult {
+    #[serde(flatten)]
+    pub usage: UsageResult,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<BalanceStatus>,
+}
+
+impl BalanceResult {
+    fn unavailable(status: BalanceStatus) -> Self {
+        BalanceResult {
+            usage: UsageResult {
+                success: false,
+                data: None,
+                error: None,
+            },
+            status: Some(status),
+        }
+    }
+
+    /// 给只认 `UsageResult` 的调用方（用量脚本模板）：status 折成稳定的错误文案。
+    pub fn into_usage_result(self) -> UsageResult {
+        let mut usage = self.usage;
+        if let Some(status) = self.status {
+            usage
+                .error
+                .get_or_insert_with(|| status.message().to_string());
+        }
+        usage
+    }
+}
+
+impl From<UsageResult> for BalanceResult {
+    fn from(usage: UsageResult) -> Self {
+        BalanceResult {
+            usage,
+            status: None,
+        }
+    }
+}
 
 // ── 供应商检测 ──────────────────────────────────────────────
 
@@ -23,7 +89,11 @@ enum BalanceProvider {
     SiliconFlowEn,
     OpenRouter,
     NovitaAI,
-    ChimeraHub,
+    /// 自家中转站：整个 chimerahub.org 域（地址可编辑，含专属中转地址），
+    /// 余额请求发回用户配置的同一 origin，key 不会离开该主机。
+    ChimeraHub {
+        origin: String,
+    },
 }
 
 fn detect_provider(base_url: &str) -> Option<BalanceProvider> {
@@ -54,7 +124,11 @@ fn detect_provider(base_url: &str) -> Option<BalanceProvider> {
         "api.siliconflow.com" => Some(BalanceProvider::SiliconFlowEn),
         "openrouter.ai" => Some(BalanceProvider::OpenRouter),
         "api.novita.ai" => Some(BalanceProvider::NovitaAI),
-        "api.chimerahub.org" => Some(BalanceProvider::ChimeraHub),
+        host if crate::builtin_templates::is_chimerahub_host(host) => {
+            Some(BalanceProvider::ChimeraHub {
+                origin: format!("https://{host}"),
+            })
+        }
         _ => None,
     }
 }
@@ -271,9 +345,9 @@ fn parse_chimerahub_response(body: &serde_json::Value) -> Result<Vec<UsageData>,
     }])
 }
 
-async fn query_chimerahub(api_key: &str) -> Result<UsageResult, String> {
+async fn query_chimerahub(origin: &str, api_key: &str) -> Result<UsageResult, String> {
     let resp = crate::proxy::http_client::get()
-        .get("https://api.chimerahub.org/api/usage/token/")
+        .get(format!("{origin}/api/usage/token/"))
         .header("Authorization", format!("Bearer {api_key}"))
         .header("Accept", "application/json")
         .timeout(Duration::from_secs(15))
@@ -302,7 +376,7 @@ async fn query_chimerahub(api_key: &str) -> Result<UsageResult, String> {
     // 换算规则（中转站计价）：1 元 = 10 点，充值比例 1 元 ≈ 1 美元，
     // 故 soft_limit_usd × 10 = 总点数，total_usage ÷ 10 = 已用点数。
     if let Some(data0) = data.first_mut() {
-        if let Some(account) = query_chimerahub_account(api_key).await {
+        if let Some(account) = query_chimerahub_account(origin, api_key).await {
             let points = (account.soft_limit * 10.0 - account.used / 10.0).max(0.0);
             data0.remaining = Some(points);
             data0.used = Some(account.used / 10.0);
@@ -326,10 +400,10 @@ struct ChimeraHubAccount {
     used: f64,
 }
 
-async fn query_chimerahub_account(api_key: &str) -> Option<ChimeraHubAccount> {
+async fn query_chimerahub_account(origin: &str, api_key: &str) -> Option<ChimeraHubAccount> {
     let client = crate::proxy::http_client::get();
     let sub = client
-        .get("https://api.chimerahub.org/v1/dashboard/billing/subscription")
+        .get(format!("{origin}/v1/dashboard/billing/subscription"))
         .header("Authorization", format!("Bearer {api_key}"))
         .header("Accept", "application/json")
         .timeout(Duration::from_secs(10))
@@ -344,7 +418,7 @@ async fn query_chimerahub_account(api_key: &str) -> Option<ChimeraHubAccount> {
         .and_then(|v| v.as_f64())
         .unwrap_or(0.0);
     let used = client
-        .get("https://api.chimerahub.org/v1/dashboard/billing/usage")
+        .get(format!("{origin}/v1/dashboard/billing/usage"))
         .header("Authorization", format!("Bearer {api_key}"))
         .header("Accept", "application/json")
         .timeout(Duration::from_secs(10))
@@ -639,36 +713,29 @@ fn parse_f64_field(obj: &serde_json::Value, field: &str) -> Option<f64> {
 // ── 公开入口 ────────────────────────────────────────────────
 
 /// 查询余额。瞬时传输失败返回 `Err`（前端 reject → retry + 保留上次成功值），
-/// 确定性失败返回 `Ok(success:false)`（见模块级文档）。
-pub async fn get_balance(base_url: &str, api_key: &str) -> Result<UsageResult, String> {
-    if api_key.trim().is_empty() {
-        return Ok(UsageResult {
-            success: false,
-            data: None,
-            error: Some("API key is empty".to_string()),
-        });
+/// 确定性失败返回 `Ok(success:false)`（见模块级文档）。缺凭据或地址没有已知
+/// 余额接口时不发请求，返回带类型化 `status` 的结果。
+pub async fn get_balance(base_url: &str, api_key: &str) -> Result<BalanceResult, String> {
+    if base_url.trim().is_empty() || api_key.trim().is_empty() {
+        return Ok(BalanceResult::unavailable(
+            BalanceStatus::MissingCredentials,
+        ));
     }
 
-    let provider = match detect_provider(base_url) {
-        Some(p) => p,
-        None => {
-            return Ok(UsageResult {
-                success: false,
-                data: None,
-                error: Some("Unknown balance provider".to_string()),
-            })
-        }
+    let Some(provider) = detect_provider(base_url) else {
+        return Ok(BalanceResult::unavailable(BalanceStatus::Unsupported));
     };
 
-    match provider {
+    let usage = match provider {
         BalanceProvider::DeepSeek => query_deepseek(api_key).await,
         BalanceProvider::StepFun => query_stepfun(api_key).await,
         BalanceProvider::SiliconFlow => query_siliconflow(api_key, true).await,
         BalanceProvider::SiliconFlowEn => query_siliconflow(api_key, false).await,
         BalanceProvider::OpenRouter => query_openrouter(api_key).await,
         BalanceProvider::NovitaAI => query_novita(api_key).await,
-        BalanceProvider::ChimeraHub => query_chimerahub(api_key).await,
-    }
+        BalanceProvider::ChimeraHub { origin } => query_chimerahub(&origin, api_key).await,
+    }?;
+    Ok(usage.into())
 }
 
 #[cfg(test)]
@@ -824,5 +891,87 @@ mod tests {
         assert!(detect_provider("https://api.deepseek.com:8443/v1").is_none());
         assert!(detect_provider("").is_none());
         assert!(detect_provider("not a url").is_none());
+    }
+
+    #[test]
+    fn chimerahub_is_detected_on_its_whole_domain_and_queried_on_the_same_origin() {
+        assert_eq!(
+            detect_provider(crate::builtin_templates::CHIMERAHUB_BASE_URL),
+            Some(BalanceProvider::ChimeraHub {
+                origin: "https://api.chimerahub.org".to_string()
+            })
+        );
+        // A dedicated relay address keeps its own host; the key never goes to
+        // a different host than the one the line already uses.
+        assert_eq!(
+            detect_provider("https://Relay-2.ChimeraHub.org/v1"),
+            Some(BalanceProvider::ChimeraHub {
+                origin: "https://relay-2.chimerahub.org".to_string()
+            })
+        );
+        assert!(detect_provider("http://api.chimerahub.org/v1").is_none());
+        assert!(detect_provider("https://api.chimerahub.org:8443/v1").is_none());
+        assert!(detect_provider("https://user:pass@api.chimerahub.org/v1").is_none());
+        assert!(detect_provider("https://chimerahub.org.evil.test/v1").is_none());
+        assert!(detect_provider("https://evilchimerahub.org/v1").is_none());
+    }
+
+    #[tokio::test]
+    async fn balance_without_credentials_or_known_api_returns_a_typed_status() {
+        for (base_url, api_key) in [
+            ("", "sk-test"),
+            ("   ", "sk-test"),
+            ("https://api.chimerahub.org/v1", ""),
+            ("https://api.chimerahub.org/v1", "  "),
+        ] {
+            let result = get_balance(base_url, api_key).await.expect("no request");
+            assert_eq!(result.status, Some(BalanceStatus::MissingCredentials));
+            assert!(!result.usage.success);
+            assert!(result.usage.error.is_none());
+        }
+
+        // Any relay without a known balance API, not only "non-relay" lines.
+        let result = get_balance("https://relay.example.com/v1", "sk-test")
+            .await
+            .expect("no request");
+        assert_eq!(result.status, Some(BalanceStatus::Unsupported));
+        assert!(!result.usage.success);
+        assert!(result.usage.error.is_none());
+    }
+
+    #[test]
+    fn balance_status_serializes_next_to_the_usage_fields() {
+        let unsupported =
+            serde_json::to_value(BalanceResult::unavailable(BalanceStatus::Unsupported)).unwrap();
+        assert_eq!(
+            unsupported,
+            json!({ "success": false, "status": "unsupported" })
+        );
+        let missing = serde_json::to_value(BalanceResult::unavailable(
+            BalanceStatus::MissingCredentials,
+        ))
+        .unwrap();
+        assert_eq!(missing["status"], "missing_credentials");
+
+        let ok = serde_json::to_value(BalanceResult::from(UsageResult {
+            success: true,
+            data: None,
+            error: None,
+        }))
+        .unwrap();
+        assert_eq!(ok, json!({ "success": true }));
+    }
+
+    #[test]
+    fn usage_template_callers_get_a_stable_message_for_a_status() {
+        let usage = BalanceResult::unavailable(BalanceStatus::Unsupported).into_usage_result();
+        assert!(!usage.success);
+        assert_eq!(
+            usage.error.as_deref(),
+            Some("Balance query is not supported for this endpoint")
+        );
+        let untouched =
+            BalanceResult::from(make_error("API error (HTTP 500)".to_string())).into_usage_result();
+        assert_eq!(untouched.error.as_deref(), Some("API error (HTTP 500)"));
     }
 }

@@ -4,6 +4,7 @@
  */
 import type { ProviderCategory } from "../types";
 import type { PresetTheme, TemplateValueConfig } from "./claudeProviderPresets";
+import { chimeraHubPreset } from "./codexTemplates";
 
 /**
  * Marker field and source values that `hermes_config.rs::get_providers`
@@ -129,6 +130,25 @@ export interface HermesProviderSettingsConfig {
 }
 
 export const hermesProviderPresets: HermesProviderPreset[] = [
+  // Our own relay, served by the backend template; OpenAI-compatible /v1 only
+  // (Anthropic / Gemini endpoints are not verified).
+  chimeraHubPreset<HermesProviderPreset>((template) => ({
+    name: template.name,
+    websiteUrl: template.websiteUrl,
+    settingsConfig: {
+      name: "chimerahub",
+      base_url: template.baseUrl,
+      api_key: "",
+      api_mode: "chat_completions",
+      models: template.model
+        ? [{ id: template.model, name: "GPT-5.6 Sol" }]
+        : [],
+    },
+    category: "third_party",
+    suggestedDefaults: template.model
+      ? { model: { default: template.model, provider: "chimerahub" } }
+      : undefined,
+  })),
   {
     name: "Kimi",
     websiteUrl: "https://platform.kimi.com",

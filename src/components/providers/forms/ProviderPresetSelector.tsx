@@ -51,6 +51,10 @@ export type PresetEntry = {
   preset: AnyPreset;
 };
 
+export function isBuiltinTemplate(preset: AnyPreset): boolean {
+  return "isBuiltinTemplate" in preset && preset.isBuiltinTemplate === true;
+}
+
 export function getPresetDisplayName(
   preset: AnyPreset,
   t: PresetTranslator,
@@ -91,6 +95,19 @@ export function sortPresetEntries(
     getPresetDisplayName(a.preset, t).localeCompare(
       getPresetDisplayName(b.preset, t),
     );
+
+  // The product's own built-in template (ChimeraHub) always leads the list.
+  const builtin = entries.filter((entry) => isBuiltinTemplate(entry.preset));
+  if (builtin.length > 0) {
+    return [
+      ...builtin,
+      ...sortPresetEntries(
+        entries.filter((entry) => !isBuiltinTemplate(entry.preset)),
+        sortMode,
+        t,
+      ),
+    ];
+  }
 
   if (sortMode === PresetSortMode.Original) {
     // 置顶优先级：官方分类 > 尊享合作伙伴（Kimi）> 其余赞助商 > 非赞助商。
@@ -432,7 +449,13 @@ export function ProviderPresetSelector({
               <span className="truncate">
                 {getPresetDisplayName(entry.preset, t)}
               </span>
-              {isPrimePartner ? (
+              {isBuiltinTemplate(entry.preset) ? (
+                <span className="absolute -top-1 -right-1 rounded-full bg-blue-500 px-1.5 py-0.5 text-[10px] font-bold text-white shadow-md">
+                  {t("providerPreset.builtinTemplate", {
+                    defaultValue: "内置",
+                  })}
+                </span>
+              ) : isPrimePartner ? (
                 <Heart
                   className="absolute -top-1 -right-1 h-5 w-5 fill-amber-500 text-amber-500 drop-shadow-sm"
                   strokeWidth={0}

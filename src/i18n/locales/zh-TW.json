@@ -1436,7 +1436,8 @@
     "sortAriaLabel": "切換預設排序",
     "sortNameAscTooltip": "按名稱 A-Z 排序",
     "sortOriginalTooltip": "恢復原始順序",
-    "noSearchResults": "沒有相符的預設供應商。"
+    "noSearchResults": "沒有相符的預設供應商。",
+    "builtinTemplate": "內建"
   },
   "usage": {
     "title": "使用統計",

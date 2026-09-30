@@ -1436,7 +1436,8 @@
     "sortAriaLabel": "切换预设排序",
     "sortNameAscTooltip": "按名称 A-Z 排序",
     "sortOriginalTooltip": "恢复原始顺序",
-    "noSearchResults": "没有匹配的预设供应商。"
+    "noSearchResults": "没有匹配的预设供应商。",
+    "builtinTemplate": "内置"
   },
   "usage": {
     "title": "使用统计",

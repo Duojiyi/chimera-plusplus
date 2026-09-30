@@ -1,4 +1,5 @@
 import type { ProviderCategory, OpenCodeProviderConfig } from "../types";
+import { chimeraHubPreset } from "./codexTemplates";
 import type { PresetTheme, TemplateValueConfig } from "./claudeProviderPresets";
 
 export interface OpenCodeProviderPreset {
@@ -286,6 +287,31 @@ export function getPresetModelDefaults(
 }
 
 export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
+  // Our own relay, served by the backend template; OpenAI-compatible /v1 only
+  // (Anthropic / Gemini endpoints are not verified).
+  chimeraHubPreset<OpenCodeProviderPreset>((template) => ({
+    name: template.name,
+    websiteUrl: template.websiteUrl,
+    settingsConfig: {
+      npm: "@ai-sdk/openai-compatible",
+      name: template.name,
+      options: {
+        baseURL: template.baseUrl,
+        apiKey: "",
+      },
+      models: template.model
+        ? { [template.model]: { name: "GPT-5.6 Sol" } }
+        : {},
+    },
+    category: "third_party",
+    templateValues: {
+      apiKey: {
+        label: "API Key",
+        placeholder: "",
+        editorValue: "",
+      },
+    },
+  })),
   {
     name: "Kimi",
     websiteUrl: "https://platform.kimi.com",

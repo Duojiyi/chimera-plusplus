@@ -1,6 +1,7 @@
 mod app_config;
 mod app_store;
 mod auto_launch;
+mod builtin_templates;
 mod claude_desktop_config;
 mod claude_mcp;
 mod claude_plugin;
@@ -1632,6 +1633,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             product_policy::get_product_capabilities,
+            builtin_templates::get_chimerahub_template,
             commands::get_providers,
             commands::get_current_provider,
             commands::get_codex_current_provider_resolution,

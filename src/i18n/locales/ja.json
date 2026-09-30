@@ -1436,7 +1436,8 @@
     "sortAriaLabel": "プリセットの並び順を切り替え",
     "sortNameAscTooltip": "名前順 A-Z で並び替え",
     "sortOriginalTooltip": "元の順序に戻す",
-    "noSearchResults": "一致するプロバイダープリセットがありません。"
+    "noSearchResults": "一致するプロバイダープリセットがありません。",
+    "builtinTemplate": "組み込み"
   },
   "usage": {
     "title": "利用統計",

@@ -15,6 +15,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { message } from "@tauri-apps/plugin-dialog";
 import { exit } from "@tauri-apps/plugin-process";
 import { FrontendErrorBoundary } from "./components/FrontendErrorBoundary";
+import { loadChimeraHubTemplate } from "./config/codexTemplates";
 import {
   installGlobalErrorHandlers,
   reportFrontendError,
@@ -122,6 +123,12 @@ async function bootstrap() {
     } catch (error) {
       // 忽略拉取错误，继续渲染
       reportFrontendError("get_init_error", error);
+    }
+    // 内置 ChimeraHub 模板由后端定义；渲染前取一次，失败时编辑器退化为空白草稿
+    try {
+      await loadChimeraHubTemplate();
+    } catch (error) {
+      reportFrontendError("get_chimerahub_template", error);
     }
   }
 
