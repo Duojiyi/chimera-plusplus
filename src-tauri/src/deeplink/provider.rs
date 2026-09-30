@@ -237,6 +237,12 @@ pub(crate) fn build_provider_from_request(
         AppType::OpenClaw => build_additive_app_settings(request),
         AppType::Hermes => build_hermes_settings(request),
         AppType::Pi => build_pi_settings(request),
+        // D4: MiniMax Code providers are never imported from a deep link.
+        AppType::Mcode => {
+            return Err(AppError::InvalidInput(
+                "Mcode provider deep links are not supported".to_string(),
+            ))
+        }
     };
 
     // Build usage script configuration if provided
@@ -1264,6 +1270,13 @@ mod tests {
                 "models": [{ "id": "anthropic/claude-opus-4-8", "name": "anthropic/claude-opus-4-8" }]
             })
         );
+    }
+
+    #[test]
+    fn mcode_deeplink_never_builds_a_provider() {
+        let mut request = hermes_request();
+        request.app = Some("mcode".to_string());
+        assert!(build_provider_from_request(&AppType::Mcode, &request).is_err());
     }
 
     #[test]

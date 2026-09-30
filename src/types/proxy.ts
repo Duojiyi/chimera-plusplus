@@ -52,6 +52,8 @@ export interface ProxyTakeoverStatus {
   hermes: boolean;
   /** Pi never goes through the local proxy. */
   pi?: boolean;
+  /** MiniMax Code never goes through the local proxy. */
+  mcode?: boolean;
 }
 
 export interface ProviderHealth {

@@ -1216,6 +1216,7 @@ mod tests {
             openclaw: true,
             hermes: true,
             pi: true,
+            mcode: true,
         };
         let shown: Vec<_> = TRAY_SECTIONS
             .iter()

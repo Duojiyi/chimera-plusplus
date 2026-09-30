@@ -116,7 +116,8 @@ pub fn allowed_env_keys(app: &AppType) -> &'static [&'static str] {
         | AppType::OpenCode
         | AppType::OpenClaw
         | AppType::Hermes
-        | AppType::Pi => &[],
+        | AppType::Pi
+        | AppType::Mcode => &[],
     }
 }
 

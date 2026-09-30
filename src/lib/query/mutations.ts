@@ -260,6 +260,36 @@ export const useDeleteProviderMutation = (appId: AppId) => {
   });
 };
 
+/**
+ * Additive tools: take a provider out of the tool's own config but keep it in
+ * the catalog. The provider list carries `liveConfigManaged`, so it must be
+ * refetched after removal (cc-switch #7578).
+ */
+export const useRemoveProviderFromLiveMutation = (appId: AppId) => {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (providerId: string) =>
+      providersApi.removeFromLiveConfig(providerId, appId),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["providers", appId] });
+      if (appId === "opencode") {
+        await queryClient.invalidateQueries({
+          queryKey: ["opencodeLiveProviderIds"],
+        });
+      }
+      if (appId === "openclaw") {
+        await queryClient.invalidateQueries({
+          queryKey: openclawKeys.liveProviderIds,
+        });
+      }
+      if (appId === "hermes") {
+        await invalidateHermesProviderCaches(queryClient);
+      }
+    },
+  });
+};
+
 export const useSwitchProviderMutation = (appId: AppId) => {
   const queryClient = useQueryClient();
   const { t } = useTranslation();

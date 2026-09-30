@@ -260,8 +260,8 @@ impl McpService {
             AppType::Hermes => {
                 mcp::sync_single_server_to_hermes(&Default::default(), &server.id, &server.server)?;
             }
-            AppType::Pi => {
-                log::debug!("Pi core has no native MCP registry, skipping sync");
+            AppType::Pi | AppType::Mcode => {
+                log::debug!("{} MCP is not managed, skipping sync", app.as_str());
             }
         }
         Ok(())
@@ -286,8 +286,8 @@ impl McpService {
             AppType::Hermes => {
                 mcp::remove_server_from_hermes(id)?;
             }
-            AppType::Pi => {
-                log::debug!("Pi core has no native MCP registry, skipping remove");
+            AppType::Pi | AppType::Mcode => {
+                log::debug!("{} MCP is not managed, skipping remove", app.as_str());
             }
         }
         Ok(())
@@ -333,10 +333,10 @@ impl McpService {
         servers: &IndexMap<String, McpServer>,
         app: &AppType,
     ) -> Result<(), AppError> {
-        // Pi has no MCP registry: never project into (or remove from) it.
+        // Pi and MiniMax Code MCP are not managed: never project into (or remove from) them.
         if matches!(
             app,
-            AppType::OpenClaw | AppType::ClaudeDesktop | AppType::Pi
+            AppType::OpenClaw | AppType::ClaudeDesktop | AppType::Pi | AppType::Mcode
         ) {
             return Ok(());
         }

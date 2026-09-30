@@ -329,6 +329,7 @@ mod tests {
                 "openclaw",
                 "hermes",
                 "pi",
+                "mcode",
             ]
         );
         assert_eq!(policy.default_visible_apps, vec!["codex"]);

@@ -43,7 +43,7 @@ pub(super) fn add(
 ) -> Result<bool, AppError> {
     let app_type = AppType::Pi;
     let _guard = lock(state);
-    strip_unsupported_pi_metadata(&mut provider);
+    strip_unsupported_metadata(&mut provider);
     ProviderService::validate_provider_settings(&app_type, &provider)?;
     align_native_display_name(&mut provider);
     ProviderService::normalize_usage_script_credential_overrides(&app_type, &mut provider);
@@ -103,7 +103,7 @@ pub(super) fn update(
         .db
         .get_provider_by_id(&original_id, PI_APP)?
         .ok_or_else(|| AppError::InvalidInput(format!("Pi provider '{original_id}' not found")))?;
-    strip_unsupported_pi_metadata(&mut provider);
+    strip_unsupported_metadata(&mut provider);
     ProviderService::validate_provider_settings(&app_type, &provider)?;
     ProviderService::normalize_usage_script_credential_overrides(&app_type, &mut provider);
 
@@ -224,21 +224,21 @@ fn sync_native_locked(
     Ok(changed)
 }
 
-fn merge_native_config(provider: &mut Provider, config: Value) {
+pub(super) fn merge_native_config(provider: &mut Provider, config: Value) {
     if let Some(name) = native_provider_name(&config) {
         provider.name = name.to_string();
     }
     provider.settings_config = config;
 }
 
-fn native_provider_name(config: &Value) -> Option<&str> {
+pub(super) fn native_provider_name(config: &Value) -> Option<&str> {
     config
         .get("name")
         .and_then(Value::as_str)
         .filter(|name| !name.trim().is_empty())
 }
 
-fn align_native_display_name(provider: &mut Provider) {
+pub(super) fn align_native_display_name(provider: &mut Provider) {
     let Some(config) = provider.settings_config.as_object_mut() else {
         return;
     };
@@ -247,9 +247,9 @@ fn align_native_display_name(provider: &mut Provider) {
     }
 }
 
-/// Pi has no proxy, failover, common config or partner content: keep only
-/// the usage script from the renderer-supplied metadata.
-fn strip_unsupported_pi_metadata(provider: &mut Provider) {
+/// Pi and MiniMax Code have no proxy, failover, common config or partner
+/// content: keep only the usage script from the renderer-supplied metadata.
+pub(super) fn strip_unsupported_metadata(provider: &mut Provider) {
     provider.in_failover_queue = false;
     let Some(meta) = provider.meta.take() else {
         return;

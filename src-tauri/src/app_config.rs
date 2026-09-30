@@ -32,7 +32,8 @@ impl McpApps {
             AppType::OpenCode => self.opencode,
             AppType::OpenClaw => false, // OpenClaw doesn't support MCP
             AppType::Hermes => self.hermes,
-            AppType::Pi => false, // Pi core has no native MCP registry.
+            AppType::Pi => false,    // Pi core has no native MCP registry.
+            AppType::Mcode => false, // MiniMax Code MCP is out of scope (plan M3).
             AppType::ClaudeDesktop => false,
         }
     }
@@ -48,6 +49,7 @@ impl McpApps {
             AppType::OpenClaw => {} // OpenClaw doesn't support MCP, ignore
             AppType::Hermes => self.hermes = enabled,
             AppType::Pi => {}            // Pi core has no native MCP registry.
+            AppType::Mcode => {}         // MiniMax Code MCP is out of scope (plan M3).
             AppType::ClaudeDesktop => {} // Claude Desktop 3P provider config doesn't support MCP here
         }
     }
@@ -115,8 +117,8 @@ impl SkillApps {
             AppType::OpenCode => self.opencode,
             AppType::Hermes => self.hermes,
             AppType::OpenClaw => false, // OpenClaw doesn't support Skills
-            // Skills are not managed for Pi in this release (plan M3).
-            AppType::Pi => false,
+            // Skills are not managed for Pi or MiniMax Code in this release (plan M3).
+            AppType::Pi | AppType::Mcode => false,
             AppType::ClaudeDesktop => false,
         }
     }
@@ -131,7 +133,7 @@ impl SkillApps {
             AppType::OpenCode => self.opencode = enabled,
             AppType::Hermes => self.hermes = enabled,
             AppType::OpenClaw => {} // OpenClaw doesn't support Skills, ignore
-            AppType::Pi => {}       // Skills are not managed for Pi in this release
+            AppType::Pi | AppType::Mcode => {} // Skills are not managed for these in this release
             AppType::ClaudeDesktop => {} // Claude Desktop 3P profiles don't use CC Switch skill sync
         }
     }
@@ -387,6 +389,7 @@ pub enum AppType {
     OpenClaw,
     Hermes,
     Pi,
+    Mcode,
 }
 
 impl AppType {
@@ -401,6 +404,7 @@ impl AppType {
             AppType::OpenClaw => "openclaw",
             AppType::Hermes => "hermes",
             AppType::Pi => "pi",
+            AppType::Mcode => "mcode",
         }
     }
 
@@ -408,11 +412,11 @@ impl AppType {
     ///
     /// - Switch mode (false): Only the current provider is written to live config (Claude, Codex, Gemini)
     /// - Additive mode (true): Providers coexist in the native config and are enabled
-    ///   independently (OpenCode, OpenClaw, Hermes, Pi)
+    ///   independently (OpenCode, OpenClaw, Hermes, Pi, MiniMax Code)
     pub fn is_additive_mode(&self) -> bool {
         matches!(
             self,
-            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::Pi
+            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::Pi | AppType::Mcode
         )
     }
 
@@ -428,6 +432,7 @@ impl AppType {
             AppType::OpenClaw,
             AppType::Hermes,
             AppType::Pi,
+            AppType::Mcode,
         ]
         .into_iter()
     }
@@ -438,10 +443,10 @@ impl FromStr for AppType {
 
     /// Every renderer-supplied app id passes through here, so this is where
     /// the tools added in v2.8.0 are gated: while `multi_tool` is off, `pi`
-    /// is rejected exactly as a build that predates it would reject it.
+    /// and `mcode` are rejected exactly as a build that predates them would.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let app = Self::parse_id(s)?;
-        if matches!(app, AppType::Pi) {
+        if matches!(app, AppType::Pi | AppType::Mcode) {
             crate::product_policy::require_app(&app)?;
         }
         Ok(app)
@@ -462,10 +467,11 @@ impl AppType {
             "openclaw" => Ok(AppType::OpenClaw),
             "hermes" => Ok(AppType::Hermes),
             "pi" => Ok(AppType::Pi),
+            "mcode" => Ok(AppType::Mcode),
             other => Err(AppError::localized(
                 "unsupported_app",
-                format!("不支持的应用标识: '{other}'。可选值: claude, claude-desktop, codex, gemini, grokbuild, opencode, openclaw, hermes, pi。"),
-                format!("Unsupported app id: '{other}'. Allowed: claude, claude-desktop, codex, gemini, grokbuild, opencode, openclaw, hermes, pi."),
+                format!("不支持的应用标识: '{other}'。可选值: claude, claude-desktop, codex, gemini, grokbuild, opencode, openclaw, hermes, pi, mcode。"),
+                format!("Unsupported app id: '{other}'. Allowed: claude, claude-desktop, codex, gemini, grokbuild, opencode, openclaw, hermes, pi, mcode."),
             )),
         }
     }
@@ -505,7 +511,7 @@ impl CommonConfigSnippets {
             AppType::OpenCode => self.opencode.as_ref(),
             AppType::OpenClaw => self.openclaw.as_ref(),
             AppType::Hermes => self.hermes.as_ref(),
-            AppType::Pi => None,
+            AppType::Pi | AppType::Mcode => None,
         }
     }
 
@@ -520,7 +526,7 @@ impl CommonConfigSnippets {
             AppType::OpenCode => self.opencode = snippet,
             AppType::OpenClaw => self.openclaw = snippet,
             AppType::Hermes => self.hermes = snippet,
-            AppType::Pi => {}
+            AppType::Pi | AppType::Mcode => {}
         }
     }
 }
@@ -844,9 +850,9 @@ impl MultiAppConfig {
             AppType::OpenCode => &mut config.prompts.opencode.prompts,
             AppType::OpenClaw => &mut config.prompts.openclaw.prompts,
             AppType::Hermes => &mut config.prompts.hermes.prompts,
-            // Pi was added after prompts moved to SQLite; it has no slot in
-            // this legacy config.
-            AppType::Pi => return Ok(false),
+            // Pi and MiniMax Code were added after prompts moved to SQLite;
+            // they have no slot in this legacy config.
+            AppType::Pi | AppType::Mcode => return Ok(false),
         };
 
         prompts.insert(id, prompt);
@@ -890,7 +896,7 @@ impl MultiAppConfig {
                 AppType::OpenCode => &self.mcp.opencode.servers,
                 AppType::OpenClaw => continue, // OpenClaw MCP is still in development, skip
                 AppType::Hermes => continue,   // Hermes didn't exist in v3.6.x, skip
-                AppType::Pi => continue,       // Pi didn't exist in v3.6.x, skip
+                AppType::Pi | AppType::Mcode => continue, // didn't exist in v3.6.x, skip
             };
 
             for (id, entry) in old_servers {
@@ -1029,31 +1035,39 @@ mod tests {
             assert_eq!(AppType::parse_id(app.as_str()).unwrap(), app);
         }
         assert!(AppType::Pi.is_additive_mode());
+        assert!(AppType::Mcode.is_additive_mode());
     }
 
     #[test]
     fn new_tool_ids_are_rejected_while_multi_tool_is_off() {
         assert!(!crate::product_policy::Capability::MultiTool.enabled());
-        assert!(matches!(
-            "pi".parse::<AppType>(),
-            Err(AppError::Localized {
-                key: "capability.disabled",
-                ..
-            })
-        ));
+        for id in ["pi", "mcode"] {
+            assert!(
+                matches!(
+                    id.parse::<AppType>(),
+                    Err(AppError::Localized {
+                        key: "capability.disabled",
+                        ..
+                    })
+                ),
+                "{id}"
+            );
+        }
         assert_eq!("codex".parse::<AppType>().unwrap(), AppType::Codex);
     }
 
     #[test]
-    fn pi_has_no_mcp_or_skill_projection() {
-        let mut mcp = McpApps::default();
-        mcp.set_enabled_for(&AppType::Pi, true);
-        assert!(!mcp.is_enabled_for(&AppType::Pi));
-        assert!(mcp.is_empty());
-        let mut skills = SkillApps::default();
-        skills.set_enabled_for(&AppType::Pi, true);
-        assert!(!skills.is_enabled_for(&AppType::Pi));
-        assert!(skills.is_empty());
+    fn new_tools_have_no_mcp_or_skill_projection() {
+        for app in [AppType::Pi, AppType::Mcode] {
+            let mut mcp = McpApps::default();
+            mcp.set_enabled_for(&app, true);
+            assert!(!mcp.is_enabled_for(&app));
+            assert!(mcp.is_empty());
+            let mut skills = SkillApps::default();
+            skills.set_enabled_for(&app, true);
+            assert!(!skills.is_enabled_for(&app));
+            assert!(skills.is_empty());
+        }
     }
 
     struct TempHome {

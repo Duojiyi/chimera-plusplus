@@ -21,6 +21,7 @@ mod init_status;
 mod lightweight;
 #[cfg(target_os = "linux")]
 mod linux_fix;
+mod mcode_config;
 mod mcp;
 mod model_capabilities;
 mod openclaw_config;
@@ -2754,6 +2755,7 @@ mod tests {
             openclaw: true,
             hermes: true,
             pi: true,
+            mcode: true,
         };
         assert_eq!(
             enabled_proxy_apps_on_startup(&db, &everything_visible).await,

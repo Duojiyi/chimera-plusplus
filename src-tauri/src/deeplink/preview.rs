@@ -98,6 +98,7 @@ fn provider_live_paths(app_type: &AppType) -> Vec<PathBuf> {
         AppType::Pi => crate::pi_config::get_pi_models_path()
             .map(|path| vec![path])
             .unwrap_or_default(),
+        AppType::Mcode => vec![crate::mcode_config::config_path()],
     }
 }
 
