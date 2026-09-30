@@ -821,9 +821,88 @@ pub(super) fn json_server_to_toml_table(spec: &Value) -> Result<toml_edit::Table
     Ok(t)
 }
 
+/// 06B write preview: the `[mcp_servers.<id>]` section a projection would
+/// write for `spec`, with every `env`/header value replaced by `mask`.
+/// Returns `(section header, TOML text)`.
+pub fn codex_mcp_section_preview(
+    id: &str,
+    spec: &Value,
+    mask: impl Fn(&str) -> String,
+) -> Result<(String, String), AppError> {
+    let mut masked = spec.clone();
+    for key in ["env", "headers", "http_headers"] {
+        if let Some(map) = masked.get_mut(key).and_then(Value::as_object_mut) {
+            for value in map.values_mut() {
+                if let Some(text) = value.as_str() {
+                    *value = Value::String(mask(text));
+                }
+            }
+        }
+    }
+    let mut doc = toml_edit::DocumentMut::new();
+    let mut servers = toml_edit::Table::new();
+    servers.set_implicit(true);
+    servers.insert(
+        id,
+        toml_edit::Item::Table(json_server_to_toml_table(&masked)?),
+    );
+    doc.insert("mcp_servers", toml_edit::Item::Table(servers));
+    let text = doc.to_string();
+    let header = text
+        .lines()
+        .find(|line| line.starts_with("[mcp_servers"))
+        .unwrap_or_default()
+        .to_string();
+    Ok((header, text))
+}
+
+/// Whether Chimera++ owns the live `[mcp_servers.<id>]` entry (MH-24 ledger).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CodexMcpProjection {
+    /// Written by us and unchanged since.
+    Managed,
+    /// Live has an entry with this id that we did not write; left alone.
+    Conflict,
+    /// Not in live config.toml from us.
+    NotProjected,
+}
+
+impl CodexMcpLedger {
+    pub fn projection(&self, id: &str) -> CodexMcpProjection {
+        if self.conflicts.contains(id) {
+            CodexMcpProjection::Conflict
+        } else if self.servers.contains_key(id) {
+            CodexMcpProjection::Managed
+        } else {
+            CodexMcpProjection::NotProjected
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn section_preview_masks_env_and_names_the_section() {
+        let (header, text) = codex_mcp_section_preview(
+            "github",
+            &json!({
+                "type": "stdio",
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-github"],
+                "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_secretvaluea91f"},
+                "enabled": false
+            }),
+            |value| format!("••••{}", &value[value.len() - 4..]),
+        )
+        .unwrap();
+        assert_eq!(header, "[mcp_servers.github]");
+        assert!(text.contains("enabled = false"), "{text}");
+        assert!(text.contains("••••a91f"), "{text}");
+        assert!(!text.contains("ghp_secretvalue"), "{text}");
+    }
 
     #[test]
     fn http_headers_are_only_written_to_codex_http_headers() {

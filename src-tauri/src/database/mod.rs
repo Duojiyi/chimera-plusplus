@@ -41,6 +41,7 @@ pub(crate) use dao::proxy::{
     PRICING_SOURCE_RESPONSE,
 };
 pub use dao::FailoverQueueItem;
+pub use dao::NotesTable;
 pub use dao::Profile;
 
 use crate::config::get_app_config_dir;
@@ -53,7 +54,10 @@ use std::sync::Mutex;
 
 /// 当前 Schema 版本号
 /// 每次修改表结构时递增，并在 schema.rs 中添加相应的迁移逻辑
-pub(crate) const SCHEMA_VERSION: i32 = 16;
+pub(crate) const SCHEMA_VERSION: i32 = 17;
+
+/// `prompts.origin` of rows owned by the whole-file `AGENTS.md` writer (v17).
+pub(crate) const PROMPT_ORIGIN_LEGACY_WHOLE_FILE: &str = "legacy-whole-file";
 
 /// 安全地序列化 JSON，避免 unwrap panic
 pub(crate) fn to_json_string<T: Serialize>(value: &T) -> Result<String, AppError> {
@@ -147,7 +151,14 @@ impl Database {
                 log::info!(
                     "Creating pre-migration database backup (v{version} → v{SCHEMA_VERSION})"
                 );
-                if let Err(e) = db.backup_database_file() {
+                // Crossing v17 keeps a separate, never-rotated, token-free
+                // backup: restoring it is the downgrade path to 2.7.x (M3.5).
+                let result = if version < 17 {
+                    db.backup_pre_v17_database_file().map(|_| ())
+                } else {
+                    db.backup_database_file().map(|_| ())
+                };
+                if let Err(e) = result {
                     log::warn!("Pre-migration backup failed, continuing migration: {e}");
                 }
             }
