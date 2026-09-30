@@ -998,6 +998,34 @@ async fn fetch_pypi_latest_version(client: &reqwest::Client, package: &str) -> O
 static VERSION_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"\d+\.\d+\.\d+(-[\w.]+)?").expect("Invalid version regex"));
 
+/// Printed by the WSL version probe before the tool runs. Output from the
+/// user's shell startup files (Ubuntu's update-motd, the sudo hint in
+/// `/etc/bash.bashrc`, nvm's `Using Node vX.Y.Z`, ...) comes before it, and
+/// only what follows it is parsed.
+///
+/// Adapted from farion1231/cc-switch 701c079ba (MIT).
+#[cfg_attr(not(windows), allow(dead_code))]
+const VERSION_PROBE_SENTINEL: &str = "__CHIMERA_VERSION__";
+
+/// Command the user's shell runs for a version probe: the sentinel, then
+/// `--version`. Contains no single quote, so it nests inside an outer `'...'`.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn version_probe_payload(tool: &str) -> String {
+    format!("echo {VERSION_PROBE_SENTINEL}; {tool} --version")
+}
+
+/// Output after the **last** sentinel. Last: the `-lic || -lc || -c` fallback
+/// chain may print it several times. Substring, not whole line: an OSC
+/// sequence may be glued in front of it. Without a sentinel (the shell failed
+/// before the payload ran) the output is returned unchanged.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn after_version_sentinel(output: &str) -> &str {
+    match output.rfind(VERSION_PROBE_SENTINEL) {
+        Some(i) => output[i + VERSION_PROBE_SENTINEL.len()..].trim(),
+        None => output,
+    }
+}
+
 /// 从版本输出中提取纯版本号
 fn extract_version(raw: &str) -> String {
     VERSION_RE
@@ -1260,17 +1288,18 @@ fn try_get_version_wsl(
             default_flag_for_shell(shell)
         };
 
-        (shell.to_string(), flag, format!("{tool} --version"))
+        (shell.to_string(), flag, version_probe_payload(tool))
     } else {
+        let payload = version_probe_payload(tool);
         let cmd = if let Some(flag) = force_shell_flag {
             if !is_valid_shell_flag(flag) {
                 return ShellProbe::NotFound(format!("[WSL:{distro}] invalid shell flag: {flag}"));
             }
-            format!("\"${{SHELL:-sh}}\" {flag} '{tool} --version'")
+            format!("\"${{SHELL:-sh}}\" {flag} '{payload}'")
         } else {
             // 兜底：自动尝试 -lic, -lc, -c
             format!(
-                "\"${{SHELL:-sh}}\" -lic '{tool} --version' 2>/dev/null || \"${{SHELL:-sh}}\" -lc '{tool} --version' 2>/dev/null || \"${{SHELL:-sh}}\" -c '{tool} --version'"
+                "\"${{SHELL:-sh}}\" -lic '{payload}' 2>/dev/null || \"${{SHELL:-sh}}\" -lc '{payload}' 2>/dev/null || \"${{SHELL:-sh}}\" -c '{payload}'"
             )
         };
 
@@ -1287,15 +1316,25 @@ fn try_get_version_wsl(
         Ok(out) => {
             let stdout = decode_command_output(&out.stdout).trim().to_string();
             let stderr = decode_command_output(&out.stderr).trim().to_string();
+            // Shell startup output comes before the sentinel; parse only after it.
+            let payload_out = after_version_sentinel(&stdout).to_string();
             if out.status.success() {
-                let raw = if stdout.is_empty() { &stderr } else { &stdout };
+                let raw = if payload_out.is_empty() {
+                    &stderr
+                } else {
+                    &payload_out
+                };
                 if raw.is_empty() {
                     ShellProbe::NotFound(format!("[WSL:{distro}] {NOT_INSTALLED}"))
                 } else {
                     ShellProbe::Found(extract_version(raw))
                 }
             } else {
-                let err = if stderr.is_empty() { stdout } else { stderr };
+                let err = if stderr.is_empty() {
+                    payload_out
+                } else {
+                    stderr
+                };
                 // wsl.exe 透传的退出码不总可靠，故同时用 exit 127 与 "command not found"
                 // 文本兜底判别"没装"；其余非零退出视作"装了但 --version 报错"。
                 let not_found = err.is_empty()
@@ -3765,6 +3804,36 @@ mod tests {
             executable_zsh.to_string_lossy()
         )));
         assert!(!valid_user_shell_path("/usr/bin/powershell"));
+    }
+
+    #[test]
+    fn version_probe_sentinel_drops_shell_startup_output() {
+        assert_eq!(
+            version_probe_payload("claude"),
+            "echo __CHIMERA_VERSION__; claude --version"
+        );
+
+        // Ubuntu's update-motd prints the MOTD in the first interactive login
+        // shell of the day; the first x.y.z of the whole output is 24.04.4.
+        let motd = "Welcome to Ubuntu 24.04.4 LTS (GNU/Linux 6.6.87.2-microsoft-standard-WSL2 x86_64)\n\n * Documentation:  https://help.ubuntu.com\n__CHIMERA_VERSION__\n2.1.270 (Claude Code)";
+        assert_eq!(after_version_sentinel(motd), "2.1.270 (Claude Code)");
+
+        // The `-lic || -lc || -c` chain may print the sentinel several times.
+        let chained = "__CHIMERA_VERSION__\nbash: warning\n__CHIMERA_VERSION__\n1.2.3";
+        assert_eq!(after_version_sentinel(chained), "1.2.3");
+
+        // An OSC sequence glued in front of the sentinel (RFC 5737 address).
+        let glued = "\x1b]1337;RemoteHost=user@198.51.100.23\x07__CHIMERA_VERSION__\n0.154.0";
+        assert_eq!(after_version_sentinel(glued), "0.154.0");
+
+        // Version printed on stderr: nothing after the sentinel, caller falls back.
+        assert_eq!(after_version_sentinel("__CHIMERA_VERSION__\n"), "");
+
+        // No sentinel (shell failed before the payload): unchanged.
+        assert_eq!(
+            after_version_sentinel("sh: 1: bad: not found"),
+            "sh: 1: bad: not found"
+        );
     }
 
     #[test]
