@@ -1436,8 +1436,21 @@ fn sync_current_provider_for_app_respecting_takeover(
 ///
 /// For additive mode apps (OpenCode), all providers are synced instead of just the current one.
 pub fn sync_current_to_live(state: &AppState) -> Result<(), AppError> {
+    sync_current_to_live_except(state, None)
+}
+
+/// `sync_current_to_live`, leaving the provider live config of `skip`
+/// untouched. MH-13b: while an imported Codex config waits for the user's
+/// confirmation, the post-import sync must not write it to live.
+pub fn sync_current_to_live_except(
+    state: &AppState,
+    skip: Option<&AppType>,
+) -> Result<(), AppError> {
     let mut failures = Vec::new();
     for app_type in AppType::all() {
+        if skip == Some(&app_type) {
+            continue;
+        }
         let result = if app_type.is_additive_mode() {
             sync_all_providers_to_live(state, &app_type)
         } else {

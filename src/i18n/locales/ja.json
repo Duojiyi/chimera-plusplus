@@ -446,6 +446,16 @@
     "syncLiveFailed": "インポートしましたが、現在のプロバイダーへの同期に失敗しました。手動で再選択してください。",
     "importPartialSuccess": "設定はインポートされましたが、現在のプロバイダーへの同期に失敗しました。",
     "importPartialHint": "ライブ設定を更新するため、もう一度プロバイダーを選択してください。",
+    "codexImportReview": {
+      "title": "インポートした Codex 設定の確認が必要です",
+      "description": "Codex にはまだ同期していません。プロバイダーが持つべきでない設定は削除しました。不明な環境変数は確認するまで保持されます。",
+      "line": "{{name}}: 削除 {{removed}} / 要確認 {{confirm}}",
+      "commonConfig": "共通設定",
+      "none": "なし",
+      "confirm": "確認して同期",
+      "synced": "Codex 設定を同期しました",
+      "syncFailed": "Codex の同期に失敗しました: {{message}}"
+    },
     "configExported": "設定をエクスポートしました:",
     "exportFailed": "エクスポートに失敗しました",
     "selectFileFailed": "有効な SQL バックアップファイルを選択してください",

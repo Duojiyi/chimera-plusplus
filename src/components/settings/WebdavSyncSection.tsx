@@ -33,6 +33,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { settingsApi } from "@/lib/api";
+import { promptCodexImportReview } from "@/utils/codexImportReview";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import type { SettingsFormState } from "@/hooks/useSettings";
 import type {
@@ -667,6 +668,7 @@ export function WebdavSyncSection({
         toast.success(t("settings.webdavSync.downloadSuccess"));
       }
       await queryClient.invalidateQueries();
+      await promptCodexImportReview(t);
     } catch (error) {
       toast.error(
         t("settings.webdavSync.downloadFailed", {
@@ -907,6 +909,7 @@ export function WebdavSyncSection({
         toast.success(t("settings.s3Sync.downloadSuccess"));
       }
       await queryClient.invalidateQueries();
+      await promptCodexImportReview(t);
     } catch (error) {
       toast.error(
         t("settings.s3Sync.downloadFailed", {

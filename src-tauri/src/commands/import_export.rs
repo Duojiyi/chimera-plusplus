@@ -5,9 +5,10 @@ use std::path::PathBuf;
 use tauri::State;
 use tauri_plugin_dialog::DialogExt;
 
+use crate::codex_key_ownership::CodexImportReview;
 use crate::commands::sync_support::{
-    post_import_warning, replace_database, run_post_import_sync, success_payload_with_warning,
-    with_stopped_proxy,
+    pending_codex_import_review, post_import_warning, replace_database, run_live_sync,
+    success_payload_with_warning, with_stopped_proxy, CODEX_IMPORT_REVIEW_KEY,
 };
 use crate::database::backup::BackupEntry;
 use crate::database::Database;
@@ -62,7 +63,36 @@ pub async fn sync_current_providers_live(state: State<'_, AppState>) -> Result<V
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         with_stopped_proxy(&state, || {
-            run_post_import_sync(&state)?;
+            run_live_sync(&state)?;
+            Ok(json!({
+                "success": true,
+                "message": "Live configuration synchronized"
+            }))
+        })
+    })
+    .await
+    .map_err(|e| format!("同步当前供应商失败: {e}"))?
+    .map_err(|e: AppError| e.to_string())
+}
+
+/// MH-13b: what the last import/restore/download removed from, or still needs
+/// confirmed in, the Codex config (names only). `None` when nothing is pending.
+#[tauri::command]
+pub async fn get_codex_import_review(
+    state: State<'_, AppState>,
+) -> Result<Option<CodexImportReview>, String> {
+    pending_codex_import_review(&state).map_err(|e| e.to_string())
+}
+
+/// MH-13b: the user confirmed the imported Codex config; clear the review and
+/// run the live sync that was held back.
+#[tauri::command]
+pub async fn confirm_codex_import_sync(state: State<'_, AppState>) -> Result<Value, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        with_stopped_proxy(&state, || {
+            state.db.delete_setting(CODEX_IMPORT_REVIEW_KEY)?;
+            run_live_sync(&state)?;
             Ok(json!({
                 "success": true,
                 "message": "Live configuration synchronized"

@@ -33,6 +33,23 @@ export interface WebDavSyncResult {
   warning?: string;
 }
 
+/** Key names only (MH-13b): what was removed, and unknown env vars to confirm. */
+export interface UntrustedConfigReport {
+  stripped: string[];
+  needsConfirmation: string[];
+}
+
+export interface CodexImportReviewLine extends UntrustedConfigReport {
+  id: string;
+  name: string;
+}
+
+/** Pending after an import/restore/download; Codex live is not synced until confirmed. */
+export interface CodexImportReview {
+  providers: CodexImportReviewLine[];
+  commonConfig?: UntrustedConfigReport;
+}
+
 export type PreferencesPatch = Partial<
   Pick<
     Settings,
@@ -245,6 +262,20 @@ export const settingsApi = {
     };
     if (!result?.success) {
       throw new Error(result?.message || "Sync current providers failed");
+    }
+  },
+
+  async getCodexImportReview(): Promise<CodexImportReview | null> {
+    return await invoke("get_codex_import_review");
+  },
+
+  async confirmCodexImportSync(): Promise<void> {
+    const result = (await invoke("confirm_codex_import_sync")) as {
+      success?: boolean;
+      message?: string;
+    };
+    if (!result?.success) {
+      throw new Error(result?.message || "Codex sync failed");
     }
   },
 

@@ -7593,11 +7593,14 @@ command = "latest-command"
         let db = Arc::new(Database::memory().expect("init db"));
         let state = crate::store::AppState::new(db.clone());
 
+        // A common config never provides execution keys such as
+        // `[mcp_servers]` (plan §2 key-ownership table ⑤), so use a
+        // local-shared key here.
         db.set_config_snippet(
             "codex",
             Some(
-                r#"[mcp_servers.shared]
-command = "shared-command"
+                r#"[tui]
+notifications = true
 "#
                 .to_string(),
             ),
@@ -7725,11 +7728,11 @@ requires_openai_auth = true
             "config.toml must reference model_catalog_json after switch"
         );
         assert!(
-            config_text.contains("[mcp_servers.shared]"),
+            config_text.contains("[tui]"),
             "config.toml must keep common config after switch"
         );
         assert!(
-            config_text.contains(r#"command = "shared-command""#),
+            config_text.contains("notifications = true"),
             "config.toml must include common config content after switch"
         );
     }

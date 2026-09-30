@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { settingsApi } from "@/lib/api";
 import { syncCurrentProvidersLiveSafe } from "@/utils/postChangeSync";
+import { promptCodexImportReview } from "@/utils/codexImportReview";
 
 export type ImportStatus =
   "idle" | "importing" | "success" | "partial-success" | "error";
@@ -119,6 +120,7 @@ export function useImportExport(
           }),
         );
       }
+      await promptCodexImportReview(t);
     } catch (error) {
       console.error("[useImportExport] Failed to import config", error);
       setStatus("error");

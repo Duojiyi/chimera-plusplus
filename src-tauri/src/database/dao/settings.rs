@@ -56,6 +56,14 @@ impl Database {
         Ok(())
     }
 
+    /// 删除设置值（不存在时为 no-op）
+    pub fn delete_setting(&self, key: &str) -> Result<(), AppError> {
+        let conn = lock_conn!(self.conn);
+        conn.execute("DELETE FROM settings WHERE key = ?1", params![key])
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     // --- 通用配置片段 (Common Config Snippet) ---
 
     /// 获取通用配置片段
@@ -125,6 +133,13 @@ impl Database {
     ) -> Result<(), AppError> {
         let key = format!("common_config_{app_type}");
         if let Some(value) = snippet {
+            // ⑤ / MH-13b: every writer (editor, live extraction, import)
+            // funnels through here, so the Codex snippet is sanitized once.
+            let value = if app_type == "codex" {
+                crate::codex_key_ownership::sanitize_codex_common_snippet(&value)?
+            } else {
+                value
+            };
             self.set_setting(&key, &value)
         } else {
             // 如果为 None 则删除

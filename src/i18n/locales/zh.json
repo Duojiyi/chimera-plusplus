@@ -446,6 +446,16 @@
     "syncLiveFailed": "已导入，但同步到当前供应商失败，请手动重新选择一次供应商。",
     "importPartialSuccess": "配置已导入，但同步到当前供应商失败。",
     "importPartialHint": "请手动重新选择一次供应商以刷新对应配置。",
+    "codexImportReview": {
+      "title": "导入的 Codex 配置需要确认",
+      "description": "尚未同步到 Codex。供应商不应携带的设置已移除；未知环境变量会保留，确认后才生效。",
+      "line": "{{name}}：已移除 {{removed}}；待确认 {{confirm}}",
+      "commonConfig": "通用配置",
+      "none": "无",
+      "confirm": "确认并同步",
+      "synced": "Codex 配置已同步",
+      "syncFailed": "Codex 同步失败：{{message}}"
+    },
     "configExported": "配置已导出到：",
     "exportFailed": "导出失败",
     "selectFileFailed": "请选择有效的 SQL 备份文件",

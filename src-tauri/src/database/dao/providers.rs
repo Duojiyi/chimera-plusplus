@@ -370,6 +370,92 @@ impl Database {
         Ok(scrubbed)
     }
 
+    /// CPP-A1①: DB half of the idempotent fix for leftover non-official
+    /// provider tables named `"OpenAI"` (the live half runs in
+    /// `repair_rejected_codex_settings_at_startup`). Rows whose config does
+    /// not parse are left alone; the live write path rejects them anyway.
+    /// Returns the number of rows changed.
+    pub fn rename_non_official_openai_named_codex_provider_tables(
+        &self,
+    ) -> Result<usize, AppError> {
+        let mut renamed = 0usize;
+        for (id, provider) in self.get_all_providers("codex")? {
+            let mut settings_config = provider.settings_config;
+            let Some(config) = settings_config.get("config").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let fixed =
+                match crate::codex_config::rename_non_official_openai_named_provider_tables(config)
+                {
+                    Ok(Some(fixed)) => fixed,
+                    Ok(None) => continue,
+                    Err(e) => {
+                        log::warn!("Skipped CPP-A1 rename for unreadable Codex row '{id}': {e}");
+                        continue;
+                    }
+                };
+            settings_config["config"] = serde_json::Value::String(fixed);
+            self.update_provider_settings_config("codex", &id, &settings_config)?;
+            renamed += 1;
+        }
+        Ok(renamed)
+    }
+
+    /// MH-13b: treat every Codex row and the stored Codex common-config
+    /// snippet as untrusted TOML (called after SQL import, `.db` restore and
+    /// cloud-sync download). Stripped keys are removed from the stored text;
+    /// the returned review lists, by name only, what was removed and which
+    /// unknown environment variables still need the user's confirmation.
+    pub fn sanitize_untrusted_codex_configs(
+        &self,
+    ) -> Result<crate::codex_key_ownership::CodexImportReview, AppError> {
+        use crate::codex_key_ownership::{
+            sanitize_untrusted_codex_config, CodexImportReview, CodexImportReviewLine,
+        };
+
+        let mut review = CodexImportReview::default();
+        for (id, provider) in self.get_all_providers("codex")? {
+            let official = provider.category.as_deref() == Some("official");
+            let mut settings_config = provider.settings_config;
+            let Some(config) = settings_config.get("config").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let (clean, report) = match sanitize_untrusted_codex_config(config, official) {
+                Ok(result) => result,
+                Err(e) => {
+                    log::warn!("Skipped MH-13b sanitize for unreadable Codex row '{id}': {e}");
+                    continue;
+                }
+            };
+            if report.is_empty() {
+                continue;
+            }
+            if !report.stripped.is_empty() {
+                settings_config["config"] = serde_json::Value::String(clean);
+                self.update_provider_settings_config("codex", &id, &settings_config)?;
+            }
+            review.providers.push(CodexImportReviewLine {
+                id,
+                name: provider.name,
+                report,
+            });
+        }
+
+        if let Some(snippet) = self.get_config_snippet("codex")? {
+            match sanitize_untrusted_codex_config(&snippet, false) {
+                Ok((clean, report)) if !report.is_empty() => {
+                    if !report.stripped.is_empty() {
+                        self.set_config_snippet("codex", Some(clean))?;
+                    }
+                    review.common_config = Some(report);
+                }
+                Ok(_) => {}
+                Err(e) => log::warn!("Skipped MH-13b sanitize for the Codex common config: {e}"),
+            }
+        }
+        Ok(review)
+    }
+
     pub fn update_provider_settings_config(
         &self,
         app_type: &str,

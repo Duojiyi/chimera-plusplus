@@ -392,8 +392,10 @@ pub fn strip_rejected_codex_settings(config_text: &str) -> Result<String, AppErr
 /// Startup self-repair: if the live config.toml carries a setting Codex
 /// rejects wholesale (an old `approval_policy` value, a top-level `profile`,
 /// an incomplete granular approval table — see `strip_rejected_codex_settings`),
-/// back it up next to itself and rewrite it repaired. Nothing else is
-/// touched; a config that already loads is left byte-identical.
+/// or a leftover non-official provider table named `"OpenAI"` (CPP-A1①, see
+/// `rename_non_official_openai_named_provider_tables`), back it up next to
+/// itself and rewrite it repaired. Nothing else is touched; a config that
+/// needs neither fix is left byte-identical.
 pub fn repair_rejected_codex_settings_at_startup() -> Result<bool, AppError> {
     let config_path = get_codex_config_path();
     if !config_path.exists() {
@@ -401,6 +403,7 @@ pub fn repair_rejected_codex_settings_at_startup() -> Result<bool, AppError> {
     }
     let text = fs::read_to_string(&config_path).map_err(|e| AppError::io(&config_path, e))?;
     let repaired = strip_rejected_codex_settings(&text)?;
+    let repaired = rename_non_official_openai_named_provider_tables(&repaired)?.unwrap_or(repaired);
     if repaired == text {
         return Ok(false);
     }
@@ -578,12 +581,14 @@ pub fn normalize_codex_third_party_auth_config(config_text: &str) -> Result<Stri
             .get_mut("model_providers")
             .and_then(|item| item.as_table_mut())
         {
-            if let Some(provider) = model_providers.get_mut(&provider_id) {
-                if let Some(table) = provider.as_table_mut() {
-                    table.remove("requires_openai_auth");
-                } else if let Some(table) = provider.as_inline_table_mut() {
-                    table.remove("requires_openai_auth");
-                }
+            if let Some(table) = model_providers
+                .get_mut(&provider_id)
+                .and_then(|item| item.as_table_like_mut())
+            {
+                table.remove("requires_openai_auth");
+                // CPP-A1①: a third-party route must not present itself as
+                // Codex's built-in OpenAI provider either.
+                rename_openai_named_non_official_table(&provider_id, table);
             }
         }
     }
@@ -695,6 +700,80 @@ fn codex_auth_last_refresh(auth: &Value) -> Option<chrono::DateTime<chrono::Fixe
         .and_then(|text| chrono::DateTime::parse_from_rfc3339(text).ok())
 }
 
+/// MH-14: the ChatGPT identity behind an auth.json value, as
+/// (`chatgpt_user_id`, `chatgpt_account_id`). Both come from the `id_token`
+/// claims under `https://api.openai.com/auth` (user id falls back to
+/// `user_id`, as Codex's own `parse_chatgpt_jwt_claims` does at
+/// `rust-v0.157.0`); the account id falls back to `tokens.account_id`.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct CodexChatgptIdentity {
+    user_id: Option<String>,
+    account_id: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum CodexIdentityMatch {
+    Same,
+    Different,
+    Unknown,
+}
+
+fn codex_id_token_auth_claims(id_token: &str) -> Option<Value> {
+    use base64::Engine;
+    let mut parts = id_token.split('.');
+    let (_header, payload, _signature) = (parts.next()?, parts.next()?, parts.next()?);
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload.trim_end_matches('='))
+        .ok()?;
+    let claims: Value = serde_json::from_slice(&bytes).ok()?;
+    claims.get("https://api.openai.com/auth").cloned()
+}
+
+fn codex_auth_chatgpt_identity(auth: &Value) -> CodexChatgptIdentity {
+    let non_empty = |value: Option<&Value>| {
+        value
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_string)
+    };
+    let claims = auth
+        .pointer("/tokens/id_token")
+        .and_then(Value::as_str)
+        .and_then(codex_id_token_auth_claims);
+    let claim = |key: &str| non_empty(claims.as_ref().and_then(|claims| claims.get(key)));
+    CodexChatgptIdentity {
+        user_id: claim("chatgpt_user_id").or_else(|| claim("user_id")),
+        account_id: claim("chatgpt_account_id")
+            .or_else(|| non_empty(auth.pointer("/tokens/account_id"))),
+    }
+}
+
+/// Two identities are the same only when every component known on both
+/// sides agrees and at least one component was compared.
+fn compare_codex_chatgpt_identities(
+    left: &CodexChatgptIdentity,
+    right: &CodexChatgptIdentity,
+) -> CodexIdentityMatch {
+    let mut compared = false;
+    for (left, right) in [
+        (&left.user_id, &right.user_id),
+        (&left.account_id, &right.account_id),
+    ] {
+        if let (Some(left), Some(right)) = (left, right) {
+            if left != right {
+                return CodexIdentityMatch::Different;
+            }
+            compared = true;
+        }
+    }
+    if compared {
+        CodexIdentityMatch::Same
+    } else {
+        CodexIdentityMatch::Unknown
+    }
+}
+
 fn prepare_codex_official_auth(stored_auth: &Value, live_auth: &Value) -> Value {
     let stored_has_oauth = codex_auth_has_oauth_login_material(stored_auth);
     // While a third-party provider was active, Codex itself kept refreshing
@@ -708,19 +787,30 @@ fn prepare_codex_official_auth(stored_auth: &Value, live_auth: &Value) -> Value 
     // the ChatGPT auth server already rotated past — each refresh
     // invalidates the previous one — forcing a surprise re-login. Prefer
     // `live_auth` in exactly that situation: both sides have real oauth
-    // material, and live's `last_refresh` is strictly newer. Any other
-    // combination (missing/unparseable timestamps, live has no oauth
-    // material, live was never refreshed) keeps the historical
-    // stored-wins-when-present default below unchanged.
+    // material, and live's `last_refresh` is strictly newer.
+    //
+    // MH-14: freshness is only comparable within one ChatGPT identity. When
+    // both sides are the same identity the newer live login wins; when they
+    // are known to be different identities, the selected official line's own
+    // account wins (switching between official accounts); when the identity
+    // cannot be established on both sides, live wins — it is the login Codex
+    // is actually using, and the stored snapshot may belong to anyone.
     let prefer_live_over_stored = stored_has_oauth
         && codex_auth_has_oauth_login_material(live_auth)
-        && matches!(
-            (
-                codex_auth_last_refresh(stored_auth),
-                codex_auth_last_refresh(live_auth),
+        && match compare_codex_chatgpt_identities(
+            &codex_auth_chatgpt_identity(stored_auth),
+            &codex_auth_chatgpt_identity(live_auth),
+        ) {
+            CodexIdentityMatch::Same => matches!(
+                (
+                    codex_auth_last_refresh(stored_auth),
+                    codex_auth_last_refresh(live_auth),
+                ),
+                (Some(stored_refresh), Some(live_refresh)) if live_refresh > stored_refresh
             ),
-            (Some(stored_refresh), Some(live_refresh)) if live_refresh > stored_refresh
-        );
+            CodexIdentityMatch::Different => false,
+            CodexIdentityMatch::Unknown => true,
+        };
     let mut official_auth = if stored_has_oauth && !prefer_live_over_stored {
         stored_auth.clone()
     } else {
@@ -2971,19 +3061,10 @@ pub fn codex_config_has_owned_official_proxy_route(
 
 /// Top-level route/credential keys (key-ownership class ②, v2.8.0 plan §2):
 /// never inherited across a line/identity change — the whole reason each of
-/// MH-13a and MH-21 exists. Shared by both so the list can't drift between
-/// "switching to official" and "switching off the built-in openai identity".
-const CODEX_TOP_LEVEL_ROUTE_CREDENTIAL_KEYS: &[&str] = &[
-    "openai_base_url",
-    "chatgpt_base_url",
-    "experimental_realtime_ws_base_url",
-    "experimental_realtime_webrtc_call_base_url",
-    "forced_login_method",
-    "forced_chatgpt_workspace_id",
-    "otel",
-    "apps_mcp_product_sku",
-    "responses_api_metadata",
-];
+/// MH-13a and MH-21 exists. The list itself lives in the key-ownership table
+/// so it cannot drift between those two and the MH-13b import sanitizer.
+const CODEX_TOP_LEVEL_ROUTE_CREDENTIAL_KEYS: &[&str] =
+    crate::codex_key_ownership::ROUTE_CREDENTIAL_ROOT_KEYS;
 
 /// Build a safe official Codex config baseline from the current live text.
 ///
@@ -3332,6 +3413,75 @@ pub fn prepare_codex_provider_live_config(
     })
 }
 
+/// The name of Codex's built-in provider. `ModelProviderInfo::is_openai()`
+/// (`model-provider-info/src/lib.rs`, `rust-v0.157.0`) is an exact match on
+/// it and gates OpenAI-only behaviour such as remote compaction.
+const CODEX_OPENAI_PROVIDER_NAME: &str = "OpenAI";
+
+/// Naming rule for a provider table moved off the built-in OpenAI identity
+/// (the MH-21 reserved-table migration and CPP-A1①): it must not keep
+/// `name = "OpenAI"`, and takes its own table id instead, which is unique in
+/// the file and stable across repeated runs. Returns whether it renamed.
+fn rename_openai_named_provider_table(id: &str, table: &mut dyn toml_edit::TableLike) -> bool {
+    if table.get("name").and_then(|item| item.as_str()) != Some(CODEX_OPENAI_PROVIDER_NAME) {
+        return false;
+    }
+    table.insert("name", toml_edit::value(id));
+    true
+}
+
+/// Whether a provider table still routes to OpenAI's own backend: our
+/// official takeover route, or a table whose endpoint is Codex's default or
+/// on the official base-URL allowlist.
+fn codex_provider_table_routes_to_official(id: &str, table: &dyn toml_edit::TableLike) -> bool {
+    id == CC_SWITCH_CODEX_OFFICIAL_PROXY_PROVIDER_ID
+        || table
+            .get("base_url")
+            .and_then(|item| item.as_str())
+            .is_none_or(crate::codex_key_ownership::is_official_codex_base_url)
+}
+
+/// Apply the CPP-A1① naming rule to one table unless it still routes to the
+/// official backend.
+fn rename_openai_named_non_official_table(id: &str, table: &mut dyn toml_edit::TableLike) -> bool {
+    !codex_provider_table_routes_to_official(id, table)
+        && rename_openai_named_provider_table(id, table)
+}
+
+/// CPP-A1①: idempotent fix for leftover non-official provider tables named
+/// `"OpenAI"`. Such a table makes Codex treat a third-party endpoint as the
+/// built-in OpenAI provider (remote compaction and other OpenAI-only paths
+/// are sent to it). Tables that still route to the official backend keep the
+/// name. Returns `None` when nothing needed renaming.
+pub fn rename_non_official_openai_named_provider_tables(
+    config_text: &str,
+) -> Result<Option<String>, AppError> {
+    if !config_text.contains(CODEX_OPENAI_PROVIDER_NAME) {
+        return Ok(None);
+    }
+    let mut doc = config_text
+        .parse::<DocumentMut>()
+        .map_err(|e| AppError::Message(format!("Invalid Codex config.toml: {e}")))?;
+    let Some(providers) = doc
+        .get_mut("model_providers")
+        .and_then(|item| item.as_table_like_mut())
+    else {
+        return Ok(None);
+    };
+    let ids: Vec<String> = providers.iter().map(|(id, _)| id.to_string()).collect();
+    let mut changed = false;
+    for id in ids {
+        let Some(table) = providers
+            .get_mut(&id)
+            .and_then(|item| item.as_table_like_mut())
+        else {
+            continue;
+        };
+        changed |= rename_openai_named_non_official_table(&id, table);
+    }
+    Ok(changed.then(|| doc.to_string()))
+}
+
 fn migrate_codex_reserved_provider_tables(
     config_text: &str,
     has_token: bool,
@@ -3369,6 +3519,7 @@ fn migrate_codex_reserved_provider_tables(
         if !table.contains_key("wire_api") {
             table.insert("wire_api", toml_edit::value("responses"));
         }
+        rename_openai_named_non_official_table(&migrated_id, table);
         let has_own_auth = ["env_key", "experimental_bearer_token"].iter().any(|key| {
             table
                 .get(key)
@@ -3731,6 +3882,131 @@ mod tests {
         assert_eq!(prepared["tokens"]["access_token"], "live-access");
         assert_eq!(prepared["tokens"]["refresh_token"], "live-refresh");
         assert!(!codex_auth_has_oauth_login_material(&stored));
+    }
+
+    fn chatgpt_auth(access: &str, claims: Option<Value>, last_refresh: Option<&str>) -> Value {
+        use base64::Engine;
+        let mut tokens = json!({ "access_token": access, "refresh_token": "refresh" });
+        if let Some(claims) = claims {
+            let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+                serde_json::to_vec(&json!({ "https://api.openai.com/auth": claims })).unwrap(),
+            );
+            tokens["id_token"] = json!(format!("e30.{payload}.sig"));
+        }
+        let mut auth = json!({ "auth_mode": "chatgpt", "tokens": tokens });
+        if let Some(last_refresh) = last_refresh {
+            auth["last_refresh"] = json!(last_refresh);
+        }
+        auth
+    }
+
+    #[test]
+    fn official_auth_freshness_is_only_compared_within_one_identity() {
+        let user_a = json!({ "chatgpt_user_id": "user-a", "chatgpt_account_id": "acct-a" });
+        let user_b = json!({ "chatgpt_user_id": "user-b", "chatgpt_account_id": "acct-a" });
+        let older = Some("2026-07-01T00:00:00Z");
+        let newer = Some("2026-07-02T00:00:00Z");
+
+        // Same identity: the newer live login wins, an older one does not.
+        let stored = chatgpt_auth("stored", Some(user_a.clone()), older);
+        let live = chatgpt_auth("live", Some(user_a.clone()), newer);
+        assert_eq!(
+            prepare_codex_official_auth(&stored, &live)["tokens"]["access_token"],
+            "live"
+        );
+        let stored = chatgpt_auth("stored", Some(user_a.clone()), newer);
+        let live = chatgpt_auth("live", Some(user_a.clone()), older);
+        assert_eq!(
+            prepare_codex_official_auth(&stored, &live)["tokens"]["access_token"],
+            "stored"
+        );
+
+        // Different identity (same workspace, other user): the selected line's
+        // own account wins even when live is newer.
+        let stored = chatgpt_auth("stored", Some(user_a), older);
+        let live = chatgpt_auth("live", Some(user_b), newer);
+        assert_eq!(
+            prepare_codex_official_auth(&stored, &live)["tokens"]["access_token"],
+            "stored"
+        );
+    }
+
+    #[test]
+    fn official_auth_prefers_live_when_identity_is_unknown() {
+        // No id_token and no account id on the stored side: live wins even
+        // though it is not newer.
+        let stored = chatgpt_auth("stored", None, Some("2026-07-02T00:00:00Z"));
+        let live = chatgpt_auth(
+            "live",
+            Some(json!({ "chatgpt_user_id": "user-a" })),
+            Some("2026-07-01T00:00:00Z"),
+        );
+        assert_eq!(
+            prepare_codex_official_auth(&stored, &live)["tokens"]["access_token"],
+            "live"
+        );
+
+        // `tokens.account_id` alone identifies the account.
+        let mut stored = chatgpt_auth("stored", None, None);
+        stored["tokens"]["account_id"] = json!("acct-b");
+        let mut live = chatgpt_auth("live", None, None);
+        live["tokens"]["account_id"] = json!("acct-a");
+        assert_eq!(
+            prepare_codex_official_auth(&stored, &live)["tokens"]["access_token"],
+            "stored"
+        );
+    }
+
+    #[test]
+    fn leftover_openai_named_non_official_tables_are_renamed_idempotently() {
+        let input = r#"model_provider = "relay"
+
+[model_providers.relay]
+name = "OpenAI"
+base_url = "https://relay.example/v1"
+
+[model_providers.official-shape]
+name = "OpenAI"
+base_url = "https://api.openai.com/v1"
+
+[model_providers.default-endpoint]
+name = "OpenAI"
+requires_openai_auth = true
+
+[model_providers.cc-switch-official]
+name = "OpenAI"
+base_url = "http://127.0.0.1:15721/v1"
+
+[model_providers.other]
+name = "Other"
+base_url = "https://other.example/v1"
+"#;
+        let output = rename_non_official_openai_named_provider_tables(input)
+            .unwrap()
+            .expect("the relay table must be renamed");
+        let parsed: toml::Value = toml::from_str(&output).unwrap();
+        let providers = &parsed["model_providers"];
+        assert_eq!(providers["relay"]["name"].as_str(), Some("relay"));
+        for id in ["official-shape", "default-endpoint", "cc-switch-official"] {
+            assert_eq!(providers[id]["name"].as_str(), Some("OpenAI"), "{id}");
+        }
+        assert_eq!(providers["other"]["name"].as_str(), Some("Other"));
+        assert!(rename_non_official_openai_named_provider_tables(&output)
+            .unwrap()
+            .is_none());
+        assert!(
+            rename_non_official_openai_named_provider_tables("model = \"x\"\n")
+                .unwrap()
+                .is_none()
+        );
+
+        // The third-party write path applies the same rule to its active table.
+        let normalized = normalize_codex_third_party_auth_config(input).unwrap();
+        let normalized: toml::Value = toml::from_str(&normalized).unwrap();
+        assert_eq!(
+            normalized["model_providers"]["relay"]["name"].as_str(),
+            Some("relay")
+        );
     }
 
     #[test]

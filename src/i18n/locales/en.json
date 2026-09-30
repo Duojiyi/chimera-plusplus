@@ -446,6 +446,16 @@
     "syncLiveFailed": "Imported, but failed to sync to the current provider. Please reselect the provider manually.",
     "importPartialSuccess": "Config imported, but failed to sync to the current provider.",
     "importPartialHint": "Please manually reselect the provider to refresh the live configuration.",
+    "codexImportReview": {
+      "title": "Imported Codex config needs your confirmation",
+      "description": "Codex was not synced yet. Settings that a provider must not carry were removed; unknown environment variables are kept until you confirm.",
+      "line": "{{name}}: removed {{removed}}; confirm {{confirm}}",
+      "commonConfig": "Common config",
+      "none": "none",
+      "confirm": "Confirm and sync",
+      "synced": "Codex configuration synced",
+      "syncFailed": "Codex sync failed: {{message}}"
+    },
     "configExported": "Config exported to:",
     "exportFailed": "Export failed",
     "selectFileFailed": "Please choose a valid SQL backup file",

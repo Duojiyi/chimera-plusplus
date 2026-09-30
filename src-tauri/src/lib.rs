@@ -7,6 +7,7 @@ mod claude_plugin;
 mod codex_cdp;
 mod codex_config;
 mod codex_history_migration;
+mod codex_key_ownership;
 mod codex_state_db;
 mod commands;
 mod config;
@@ -1005,6 +1006,17 @@ pub fn run() {
                         Err(e) => log::warn!("✗ Codex non-official OAuth scrub failed: {e}"),
                     }
 
+                    // CPP-A1①: idempotent, see the DB method.
+                    match db_for_codex_history_migration
+                        .rename_non_official_openai_named_codex_provider_tables()
+                    {
+                        Ok(0) => {}
+                        Ok(count) => log::info!(
+                            "✓ Renamed leftover OpenAI-named provider tables in {count} Codex provider(s)"
+                        ),
+                        Err(e) => log::warn!("✗ Codex OpenAI-named table fix failed: {e}"),
+                    }
+
                     match crate::codex_history_migration::maybe_migrate_codex_third_party_history_provider_bucket(
                         &db_for_codex_history_migration,
                     ) {
@@ -1800,6 +1812,8 @@ pub fn run() {
             commands::rename_db_backup,
             commands::delete_db_backup,
             commands::sync_current_providers_live,
+            commands::get_codex_import_review,
+            commands::confirm_codex_import_sync,
             // Deep link import
             commands::get_pending_deeplink,
             commands::dismiss_pending_deeplink,

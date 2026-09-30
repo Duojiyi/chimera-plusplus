@@ -24,7 +24,7 @@ use crate::store::AppState;
 pub use live::{
     import_default_config, import_hermes_providers_from_live, import_openclaw_providers_from_live,
     import_opencode_providers_from_live, read_live_settings,
-    should_import_default_config_on_startup, sync_current_to_live,
+    should_import_default_config_on_startup, sync_current_to_live, sync_current_to_live_except,
     update_toml_common_config_snippet,
 };
 
@@ -2375,6 +2375,7 @@ impl ProviderService {
         let mut provider = provider;
         Self::normalize_provider_if_claude(&app_type, &mut provider);
         Self::validate_provider_settings(&app_type, &provider)?;
+        Self::sanitize_codex_provider_config(&app_type, &mut provider)?;
         normalize_provider_common_config_for_storage(state.db.as_ref(), &app_type, &mut provider)?;
         Self::normalize_usage_script_credential_overrides(&app_type, &mut provider);
         if app_type.is_additive_mode() {
@@ -2395,6 +2396,7 @@ impl ProviderService {
         // Normalize Claude model keys
         Self::normalize_provider_if_claude(&app_type, &mut provider);
         Self::validate_provider_settings(&app_type, &provider)?;
+        Self::sanitize_codex_provider_config(&app_type, &mut provider)?;
         normalize_provider_common_config_for_storage(state.db.as_ref(), &app_type, &mut provider)?;
         Self::normalize_usage_script_credential_overrides(&app_type, &mut provider);
         if app_type.is_additive_mode() {
@@ -2472,6 +2474,7 @@ impl ProviderService {
         // Normalize Claude model keys
         Self::normalize_provider_if_claude(&app_type, &mut provider);
         Self::validate_provider_settings(&app_type, &provider)?;
+        Self::sanitize_codex_provider_config(&app_type, &mut provider)?;
         normalize_provider_common_config_for_storage(state.db.as_ref(), &app_type, &mut provider)?;
         Self::normalize_usage_script_credential_overrides(&app_type, &mut provider);
 
@@ -3240,6 +3243,14 @@ impl ProviderService {
         sync_current_to_live(state)
     }
 
+    /// Sync current providers to live, except `skip` (re-export)
+    pub fn sync_current_to_live_except(
+        state: &AppState,
+        skip: Option<&AppType>,
+    ) -> Result<(), AppError> {
+        sync_current_to_live_except(state, skip)
+    }
+
     pub fn sync_current_provider_for_app(
         state: &AppState,
         app_type: AppType,
@@ -3944,6 +3955,37 @@ impl ProviderService {
 
     pub(crate) fn write_gemini_live(provider: &Provider) -> Result<(), AppError> {
         write_gemini_live(provider)
+    }
+
+    /// MH-13b: every add/update (editor, deep link, tray) is untrusted TOML.
+    /// Strip what a Codex line must never carry. Unknown env-var names are
+    /// kept here: on this path the user typed them.
+    fn sanitize_codex_provider_config(
+        app_type: &AppType,
+        provider: &mut Provider,
+    ) -> Result<(), AppError> {
+        if !matches!(app_type, AppType::Codex) {
+            return Ok(());
+        }
+        let Some(config) = provider
+            .settings_config
+            .get("config")
+            .and_then(Value::as_str)
+        else {
+            return Ok(());
+        };
+        let official = provider.category.as_deref() == Some("official");
+        let (clean, report) =
+            crate::codex_key_ownership::sanitize_untrusted_codex_config(config, official)?;
+        if !report.stripped.is_empty() {
+            log::warn!(
+                "Removed keys a Codex line must not carry from '{}': {}",
+                provider.id,
+                report.stripped.join(", ")
+            );
+            provider.settings_config["config"] = Value::String(clean);
+        }
+        Ok(())
     }
 
     fn validate_provider_settings(app_type: &AppType, provider: &Provider) -> Result<(), AppError> {
