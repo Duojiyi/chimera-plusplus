@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   codexApiFormatFromWireApi,
   codexApiFormatForModel,
+  codexRemoteCompactionAllowed,
   isCodexAnthropicWireApi,
   extractCodexModelName,
   hasCommonConfigSnippet,
@@ -45,6 +46,21 @@ describe("Codex wire API helpers", () => {
 });
 
 describe("Codex remote compaction config helpers", () => {
+  it("is only offered when every probed model reaches native Responses", () => {
+    expect(codexRemoteCompactionAllowed("openai_responses", ["kimi-k3"])).toBe(
+      true,
+    );
+    expect(codexRemoteCompactionAllowed("openai_chat", ["gpt-5.5"])).toBe(
+      false,
+    );
+    expect(codexRemoteCompactionAllowed("anthropic", ["gpt-5.5"])).toBe(false);
+    expect(codexRemoteCompactionAllowed("auto", ["gpt-5.5", "o3"])).toBe(true);
+    // One model converted over Chat makes the whole line unsafe.
+    expect(
+      codexRemoteCompactionAllowed("auto", ["gpt-5.5", "deepseek-chat"]),
+    ).toBe(false);
+    expect(codexRemoteCompactionAllowed("auto", [])).toBe(false);
+  });
   it("enables remote compaction by naming the active custom provider OpenAI", () => {
     const input = `model_provider = "custom"
 model = "gpt-5.4"

@@ -416,6 +416,10 @@ fn handle_deeplink_url(
 
             if focus_main_window {
                 if let Some(window) = app.get_webview_window("main") {
+                    #[cfg(target_os = "windows")]
+                    {
+                        let _ = window.set_skip_taskbar(false);
+                    }
                     let _ = window.unminimize();
                     let _ = window.show();
                     let _ = window.set_focus();
@@ -521,6 +525,14 @@ pub fn run() {
 
             // Show and focus window regardless
             if let Some(window) = app.get_webview_window("main") {
+                // A silent start or close-to-tray leaves the running instance
+                // with skip_taskbar(true); show() alone keeps it off the
+                // taskbar, and minimizing it then makes it vanish.
+                // Adapted from farion1231/cc-switch 6f6087cdb (MIT).
+                #[cfg(target_os = "windows")]
+                {
+                    let _ = window.set_skip_taskbar(false);
+                }
                 let _ = window.unminimize();
                 let _ = window.show();
                 let _ = window.set_focus();
@@ -730,6 +742,10 @@ pub fn run() {
                     });
                     // 主窗口默认 visible:false，恢复界面必须强制显示
                     if let Some(window) = app.get_webview_window("main") {
+                        #[cfg(target_os = "windows")]
+                        {
+                            let _ = window.set_skip_taskbar(false);
+                        }
                         let _ = window.show();
                         let _ = window.set_focus();
                     }
@@ -1004,6 +1020,13 @@ pub fn run() {
                             "✓ Scrubbed OAuth login material from {count} non-official Codex provider(s)"
                         ),
                         Err(e) => log::warn!("✗ Codex non-official OAuth scrub failed: {e}"),
+                    }                    // MH-8c 1.7: idempotent, like the scrub above.
+                    match db_for_codex_history_migration.normalize_codex_provider_wire_apis() {
+                        Ok(0) => {}
+                        Ok(count) => log::info!(
+                            "✓ Normalized wire_api to responses in {count} Codex provider(s)"
+                        ),
+                        Err(e) => log::warn!("✗ Codex wire_api normalization failed: {e}"),
                     }
 
                     // CPP-A1①: idempotent, see the DB method.

@@ -80,6 +80,7 @@ import {
   setCodexRemoteCompaction,
   setCodexWireApi,
   codexApiFormatForModel,
+  codexRemoteCompactionAllowed,
 } from "@/utils/providerConfigUtils";
 import { subscriptionApi } from "@/lib/api/subscription";
 import { useQuery } from "@tanstack/react-query";
@@ -1299,9 +1300,13 @@ export default function ChimeraApp({
       // formats. Normalize stale/imported TOML before routing is evaluated.
       config = setCodexWireApi(config, "responses");
       config = setCodexGoalMode(config, draft.goalModeEnabled);
+      // A conversion route can never answer Codex's remote compaction, so
+      // the switch is forced off there (the backend rejects it too).
       config = setCodexRemoteCompaction(
         config,
-        draft.remoteCompactionEnabled,
+        draft.remoteCompactionEnabled &&
+          codexRemoteCompactionAllowed(draft.apiFormat, probeModels) &&
+          resolvedApiFormat === "openai_responses",
         draft.name.trim(),
       );
       const auth = setCodexProviderApiKey(draft.auth, draft.apiKey);
@@ -3823,6 +3828,10 @@ export function ProviderEditor({
     setEditor({ ...editor, [key]: value });
   const detectedDefaultFormat =
     apiFormatDetection?.formats[editor.model.trim()] ?? null;
+  const remoteCompactionAvailable = codexRemoteCompactionAllowed(
+    editor.apiFormat,
+    codexProbeModels(editor.model, editor.catalogModels),
+  );
   // Only the models this line actually probes are worth explaining; a fetched
   // catalog entry that failed is corrected by the router at request time.
   const detectionFailures = useMemo(() => {
@@ -4328,12 +4337,20 @@ export function ProviderEditor({
                       远程上下文压缩
                       <em className="experimental-tag">实验性</em>
                     </b>
-                    <small>让兼容线路尝试由上游压缩长对话，默认关闭。</small>
+                    <small>
+                      {remoteCompactionAvailable
+                        ? "仅原生 Responses 上游可用，由上游压缩长对话，默认关闭。"
+                        : "经 Chat 或 Anthropic 转换的线路不支持远程压缩。"}
+                    </small>
                   </span>
                   <input
                     name="provider-remote-compaction"
                     type="checkbox"
-                    checked={editor.remoteCompactionEnabled}
+                    checked={
+                      editor.remoteCompactionEnabled &&
+                      remoteCompactionAvailable
+                    }
+                    disabled={!remoteCompactionAvailable}
                     onChange={(event) =>
                       setEditor({
                         ...editor,

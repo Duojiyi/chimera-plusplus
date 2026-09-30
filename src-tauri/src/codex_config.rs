@@ -43,6 +43,8 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 // CODEX_HOME and seed different model templates.
 #[cfg(not(test))]
 static CODEX_MODEL_CATALOG_TEMPLATE_CACHE: OnceCell<Value> = OnceCell::new();
+#[cfg(not(test))]
+static CODEX_RUNTIME_CATALOG_CACHE: OnceCell<Option<Value>> = OnceCell::new();
 
 /// Top-level `config.toml` key that controls Codex's built-in web-search tool.
 pub(crate) const CODEX_WEB_SEARCH_FIELD: &str = "web_search";
@@ -1098,16 +1100,18 @@ fn codex_inferred_reasoning_levels(
     }
 
     // gpt-5.6 and gpt-6 (Codex 0.153+) add the `max` and `ultra` tiers above
-    // xhigh; older gpt-5 releases stop at xhigh.
+    // xhigh; older gpt-5 releases stop at xhigh. `ultra` is a Codex client
+    // tier the `*-luna` models do not offer (openai/codex 0.157
+    // `models-manager/models.json`: gpt-6-luna and gpt-5.6-luna stop at max).
     if profile == CodexCatalogToolProfile::NativeResponses
         && (model.starts_with("gpt-5.6") || model.starts_with("gpt-6"))
     {
-        return Some(
-            ["low", "medium", "high", "xhigh", "max", "ultra"]
-                .into_iter()
-                .map(str::to_string)
-                .collect(),
-        );
+        let levels: &[&str] = if model.contains("-luna") {
+            &["low", "medium", "high", "xhigh", "max"]
+        } else {
+            &["low", "medium", "high", "xhigh", "max", "ultra"]
+        };
+        return Some(levels.iter().copied().map(str::to_string).collect());
     }
     if profile == CodexCatalogToolProfile::NativeResponses
         && (model.starts_with("gpt-5") || model.starts_with("grok-4.5"))
@@ -1210,6 +1214,7 @@ fn codex_catalog_model_entry(
     let Some(entry_obj) = entry.as_object_mut() else {
         return json!({});
     };
+    harden_codex_generated_catalog_entry(entry_obj, profile);
 
     let display_name = spec.display_name.as_deref().unwrap_or(&spec.model);
     let context_window = spec.context_window.unwrap_or(default_context_window);
@@ -1291,6 +1296,116 @@ fn codex_catalog_model_entry(
     apply_codex_reasoning_level_override(entry_obj, template_default, &effective_spec);
 
     entry
+}
+
+/// Keys a ProxyChat catalog entry keeps from the Codex entry it clones
+/// (MH-8c 1.5). The template comes from `models_cache.json`, the bundled
+/// catalog or the static copy, and its field set follows whichever Codex build
+/// wrote it, so only fields a third-party Chat route can honor survive:
+/// every field 0.157 `ModelInfo` requires without a serde default (`slug`,
+/// `display_name`, `supported_reasoning_levels`, `shell_type`, `visibility`,
+/// `supported_in_api`, `priority`, `support_verbosity`, `truncation_policy`,
+/// `experimental_supported_tools`), the legacy parser-required backfill
+/// ([`CODEX_CATALOG_PARSER_REQUIRED_FIELDS`]), and the tool/instruction,
+/// context and reasoning contract of the model. Dropped: account- or
+/// ChatGPT-backend-bound metadata (guardian policy, access programs, plans,
+/// compaction hash, auto-review overrides, default service tier, websocket
+/// preference) and anything a newer build adds until it is reviewed here.
+const CODEX_PROXY_CHAT_CATALOG_KEYS: &[&str] = &[
+    "slug",
+    "display_name",
+    "description",
+    "priority",
+    "visibility",
+    "supported_in_api",
+    "default_reasoning_level",
+    "supported_reasoning_levels",
+    "default_reasoning_summary",
+    "supports_reasoning_summary_parameter",
+    "support_verbosity",
+    "default_verbosity",
+    "base_instructions",
+    "model_messages",
+    "include_skills_usage_instructions",
+    "include_plugin_usage_instructions",
+    "include_apps_usage_instructions",
+    "shell_type",
+    "apply_patch_tool_type",
+    "web_search_tool_type",
+    "supports_search_tool",
+    "tool_mode",
+    "multi_agent_version",
+    "multi_agent_reasoning_effort",
+    "node_repl_disabled",
+    "experimental_supported_tools",
+    "supports_experimental_context",
+    "truncation_policy",
+    "context_window",
+    "max_context_window",
+    "auto_compact_token_limit",
+    "effective_context_window_percent",
+    "input_modalities",
+    "supports_image_detail_original",
+    "service_tiers",
+    "additional_speed_tiers",
+    "availability_nux",
+    "upgrade",
+    "use_responses_lite",
+    "supports_reasoning_effort_updates",
+];
+
+/// Values a generated catalog entry (always a non-official route) must never
+/// inherit from a cloned Codex entry. Responses Lite and reasoning-effort
+/// `configuration_update` items are ChatGPT-backend features (CPP-A6, W8),
+/// guardian policy and access programs are account-bound (W8), and Chat
+/// gateways reject `detail:"original"` images, so ProxyChat never advertises
+/// them (adapted from farion1231/cc-switch 83a24dfbb, MIT).
+fn harden_codex_generated_catalog_entry(
+    entry: &mut serde_json::Map<String, Value>,
+    profile: CodexCatalogToolProfile,
+) {
+    if profile == CodexCatalogToolProfile::ProxyChat {
+        let dropped: Vec<String> = entry
+            .keys()
+            .filter(|key| {
+                !CODEX_PROXY_CHAT_CATALOG_KEYS.contains(&key.as_str())
+                    && !CODEX_CATALOG_PARSER_REQUIRED_FIELDS.contains(&key.as_str())
+            })
+            .cloned()
+            .collect();
+        for key in dropped {
+            entry.remove(&key);
+        }
+        entry.insert("supports_image_detail_original".to_string(), json!(false));
+    }
+    entry.remove("guardian");
+    entry.remove("available_access_programs");
+    entry.insert("use_responses_lite".to_string(), json!(false));
+    entry.insert(
+        "supports_reasoning_effort_updates".to_string(),
+        json!(false),
+    );
+}
+
+/// The configured model's own entry in the local Codex catalog, as its
+/// ProxyChat template (CPP-A6): a relay serving an official slug (for
+/// example gpt-6-luna) gets that model's instructions, tool mode and
+/// reasoning levels instead of gpt-5.5's. Exact slug first, then
+/// case-insensitive. The profile rules and hardening still apply on top.
+fn codex_official_slug_template(runtime_models: &[Value], model: &str) -> Option<Value> {
+    let slug_of = |entry: &&Value| entry.get("slug").and_then(Value::as_str);
+    let found = runtime_models
+        .iter()
+        .find(|entry| slug_of(entry) == Some(model))
+        .or_else(|| {
+            runtime_models
+                .iter()
+                .find(|entry| slug_of(entry).is_some_and(|slug| slug.eq_ignore_ascii_case(model)))
+        })?;
+    let mut template = found.clone();
+    inline_retired_personality_placeholder(&mut template);
+    fill_template_fields_from_static(&mut template);
+    Some(template)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1482,7 +1597,8 @@ fn inline_retired_personality_placeholder(template: &mut Value) {
     messages.remove("instructions_variables");
 }
 
-fn load_codex_model_template_from_cache() -> Result<Option<Value>, AppError> {
+/// ① `models_cache.json`, when it carries the template entry.
+fn load_codex_runtime_catalog_from_cache() -> Result<Option<Value>, AppError> {
     let path = get_codex_config_dir().join("models_cache.json");
     if !path.exists() {
         return Ok(None);
@@ -1490,7 +1606,7 @@ fn load_codex_model_template_from_cache() -> Result<Option<Value>, AppError> {
 
     let text = fs::read_to_string(&path).map_err(|e| AppError::io(&path, e))?;
     let catalog: Value = serde_json::from_str(&text).map_err(|e| AppError::json(&path, e))?;
-    Ok(find_codex_model_template(&catalog))
+    Ok(find_codex_model_template(&catalog).map(|_| catalog))
 }
 
 /// Fixed candidates for locating the `codex` CLI when it is not on the process
@@ -1762,7 +1878,9 @@ fn codex_runtime_models_command(candidate: &Path, codex_home: &Path) -> Command 
     codex_command(candidate, &["debug", "models"], Some(codex_home))
 }
 
-fn load_codex_model_template_from_bundled() -> Result<Option<Value>, AppError> {
+/// ② `codex debug models --bundled`: the first CLI whose catalog carries the
+/// template entry.
+fn load_codex_runtime_catalog_from_bundled() -> Result<Option<Value>, AppError> {
     for candidate in codex_cli_candidates() {
         let candidate_label = candidate.to_string_lossy();
         let output = match crate::process_utils::output_with_timeout(
@@ -1799,8 +1917,8 @@ fn load_codex_model_template_from_bundled() -> Result<Option<Value>, AppError> {
                 continue;
             }
         };
-        if let Some(template) = find_codex_model_template(&catalog) {
-            return Ok(Some(template));
+        if find_codex_model_template(&catalog).is_some() {
+            return Ok(Some(catalog));
         }
     }
 
@@ -2155,6 +2273,8 @@ fn codex_vendor_catalog_model_entry(
     // The vendor file is the base (its own levels stay when no override is
     // declared); its default_reasoning_level is the fallback.
     apply_codex_reasoning_level_override(entry_obj, vendor_default.as_deref(), spec);
+    // A vendor mirror serves a non-official route: never Responses Lite.
+    entry_obj.insert("use_responses_lite".to_string(), json!(false));
 
     // Defensive: if a future codex parser requires a field the vendor file
     // predates, backfill only whitelisted parser-required keys.
@@ -2245,14 +2365,52 @@ fn fill_template_fields_from_static(template: &mut Value) {
     }
 }
 
-fn load_codex_model_catalog_template_uncached() -> Result<Value, AppError> {
-    // ① models_cache.json (created by Codex when it connects to OpenAI)
-    if let Some(mut template) = load_codex_model_template_from_cache()? {
-        fill_template_fields_from_static(&mut template);
-        return Ok(template);
+/// The model catalog the local Codex itself uses, read-only: ①
+/// `models_cache.json` (created by Codex when it connects to OpenAI), else ②
+/// the codex CLI's bundled catalog (PATH + platform-specific common paths).
+/// A source only counts when it carries the gpt-5.5 template entry.
+fn load_codex_runtime_catalog_uncached() -> Result<Option<Value>, AppError> {
+    if let Some(catalog) = load_codex_runtime_catalog_from_cache()? {
+        return Ok(Some(catalog));
     }
-    // ② codex CLI (PATH + platform-specific common paths)
-    if let Some(mut template) = load_codex_model_template_from_bundled()? {
+    load_codex_runtime_catalog_from_bundled()
+}
+
+#[cfg(not(test))]
+fn load_codex_runtime_catalog() -> Result<Option<Value>, AppError> {
+    CODEX_RUNTIME_CATALOG_CACHE
+        .get_or_try_init(load_codex_runtime_catalog_uncached)
+        .cloned()
+}
+
+#[cfg(test)]
+fn load_codex_runtime_catalog() -> Result<Option<Value>, AppError> {
+    load_codex_runtime_catalog_uncached()
+}
+
+/// Entries of the local Codex catalog, for official-slug templates. A missing
+/// or unreadable source only means no slug gets its own template.
+fn load_codex_runtime_catalog_models() -> Vec<Value> {
+    match load_codex_runtime_catalog() {
+        Ok(Some(catalog)) => catalog
+            .get("models")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default(),
+        Ok(None) => Vec::new(),
+        Err(error) => {
+            log::debug!("Codex runtime catalog unavailable for slug templates: {error}");
+            Vec::new()
+        }
+    }
+}
+
+fn load_codex_model_catalog_template_uncached() -> Result<Value, AppError> {
+    // ①/② the local Codex catalog's own gpt-5.5 entry
+    if let Some(mut template) = load_codex_runtime_catalog()?
+        .as_ref()
+        .and_then(find_codex_model_template)
+    {
         fill_template_fields_from_static(&mut template);
         return Ok(template);
     }
@@ -2295,11 +2453,40 @@ fn codex_model_catalog_from_specs(
     profile: CodexCatalogToolProfile,
     default_context_window: u64,
 ) -> Value {
+    codex_model_catalog_from_specs_with_runtime(
+        specs,
+        template,
+        &[],
+        profile,
+        default_context_window,
+    )
+}
+
+/// Like [`codex_model_catalog_from_specs`], but a ProxyChat spec whose model
+/// is an official slug in `runtime_models` uses that entry as its template.
+fn codex_model_catalog_from_specs_with_runtime(
+    specs: &[CodexCatalogModelSpec],
+    template: &Value,
+    runtime_models: &[Value],
+    profile: CodexCatalogToolProfile,
+    default_context_window: u64,
+) -> Value {
     let entries: Vec<Value> = specs
         .iter()
         .enumerate()
         .map(|(index, spec)| {
-            codex_catalog_model_entry(template, spec, index, profile, default_context_window)
+            let official = if profile == CodexCatalogToolProfile::ProxyChat {
+                codex_official_slug_template(runtime_models, &spec.model)
+            } else {
+                None
+            };
+            codex_catalog_model_entry(
+                official.as_ref().unwrap_or(template),
+                spec,
+                index,
+                profile,
+                default_context_window,
+            )
         })
         .collect();
 
@@ -2336,15 +2523,21 @@ fn codex_model_catalog_from_settings(
     // Native providers use the bundled clean template (no freeform apply_patch,
     // no cache dependency); proxy-chat providers keep cloning Codex's gpt-5.5
     // entry so the proxy can rewrite custom<->function tools as before.
-    let template = match profile {
+    // Native and Anthropic lines keep the neutral template even for official
+    // slugs: an official harness names tools those profiles strip.
+    let (template, runtime_models) = match profile {
         CodexCatalogToolProfile::NativeResponses | CodexCatalogToolProfile::Anthropic => {
-            load_codex_native_responses_template()
+            (load_codex_native_responses_template(), Vec::new())
         }
-        CodexCatalogToolProfile::ProxyChat => load_codex_model_catalog_template()?,
+        CodexCatalogToolProfile::ProxyChat => (
+            load_codex_model_catalog_template()?,
+            load_codex_runtime_catalog_models(),
+        ),
     };
-    Ok(Some(codex_model_catalog_from_specs(
+    Ok(Some(codex_model_catalog_from_specs_with_runtime(
         &specs,
         &template,
+        &runtime_models,
         profile,
         default_context_window,
     )))
@@ -5869,7 +6062,16 @@ wire_api = "responses"
             flash.get("supports_reasoning_summaries"),
             Some(&json!(true))
         );
-        assert_eq!(flash.get("input_modalities"), Some(&json!(["text"])));
+        // The vendor serves the legacy V4 Flash name with the vision-capable
+        // Flash model (api-docs.deepseek.com); V4 Pro stays text-only.
+        assert_eq!(
+            flash.get("input_modalities"),
+            Some(&json!(["text", "image"]))
+        );
+        assert_eq!(
+            catalog["models"][1].get("input_modalities"),
+            Some(&json!(["text"]))
+        );
         assert!(
             flash.get("model_messages").is_some(),
             "official entries are mirrored verbatim, incl. model_messages"
@@ -7130,5 +7332,200 @@ approval_policy = "never"
                 "required field {key} has no fallback value"
             );
         }
+    }
+
+    fn catalog_spec(model: &str) -> CodexCatalogModelSpec {
+        CodexCatalogModelSpec {
+            model: model.to_string(),
+            display_name: None,
+            context_window: None,
+            supports_parallel_tool_calls: None,
+            input_modalities: None,
+            base_instructions: None,
+            reasoning_levels: None,
+            default_reasoning_level: None,
+        }
+    }
+
+    fn catalog_efforts(entry: &Value) -> Vec<String> {
+        entry["supported_reasoning_levels"]
+            .as_array()
+            .map(|levels| {
+                levels
+                    .iter()
+                    .filter_map(|level| level.get("effort").and_then(Value::as_str))
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn luna_models_never_offer_the_ultra_tier() {
+        let native = CodexCatalogToolProfile::NativeResponses;
+        for model in ["gpt-6-luna", "gpt-5.6-luna", "openai/GPT-6-Luna"] {
+            let levels = codex_inferred_reasoning_levels(model, native).unwrap();
+            assert_eq!(levels.last().map(String::as_str), Some("max"), "{model}");
+            assert!(!levels.iter().any(|level| level == "ultra"), "{model}");
+        }
+        for model in ["gpt-6-sol", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra"] {
+            let levels = codex_inferred_reasoning_levels(model, native).unwrap();
+            assert_eq!(levels.last().map(String::as_str), Some("ultra"), "{model}");
+        }
+    }
+
+    #[test]
+    fn proxy_chat_clones_keep_only_reviewed_fields_and_never_backend_features() {
+        // A captured Codex entry carrying ChatGPT-backend and account metadata.
+        let template = json!({
+            "slug": "gpt-5.5",
+            "display_name": "GPT-5.5",
+            "shell_type": "shell_command",
+            "visibility": "list",
+            "supported_in_api": true,
+            "priority": 1,
+            "support_verbosity": true,
+            "truncation_policy": {"mode": "tokens", "limit": 10000},
+            "experimental_supported_tools": [],
+            "supported_reasoning_levels": [{"effort": "high", "description": "h"}],
+            "model_messages": {"instructions_template": "agent"},
+            "tool_mode": "code_mode_only",
+            "use_responses_lite": true,
+            "supports_reasoning_effort_updates": true,
+            "supports_image_detail_original": true,
+            "guardian": {"shell": "review"},
+            "available_access_programs": {"programs": ["x"]},
+            "prefer_websockets": true,
+            "comp_hash": "3000",
+            "available_in_plans": ["plus"],
+            "auto_review_model_override": "codex-auto-review",
+            "default_service_tier": "priority",
+            "some_future_field": true
+        });
+        let catalog = codex_model_catalog_from_specs(
+            &[catalog_spec("relay-model")],
+            &template,
+            CodexCatalogToolProfile::ProxyChat,
+            128_000,
+        );
+        let entry = catalog["models"][0].as_object().unwrap();
+        for key in entry.keys() {
+            assert!(
+                CODEX_PROXY_CHAT_CATALOG_KEYS.contains(&key.as_str())
+                    || CODEX_CATALOG_PARSER_REQUIRED_FIELDS.contains(&key.as_str()),
+                "unreviewed key {key} leaked into a ProxyChat entry"
+            );
+        }
+        assert_eq!(entry["use_responses_lite"], json!(false));
+        assert_eq!(entry["supports_reasoning_effort_updates"], json!(false));
+        assert_eq!(entry["supports_image_detail_original"], json!(false));
+        assert_eq!(entry["model_messages"], template["model_messages"]);
+        assert_eq!(entry["tool_mode"], json!("code_mode_only"));
+        // Every field 0.157 `ModelInfo` requires survives the whitelist.
+        for key in [
+            "slug",
+            "display_name",
+            "supported_reasoning_levels",
+            "shell_type",
+            "visibility",
+            "supported_in_api",
+            "priority",
+            "support_verbosity",
+            "truncation_policy",
+            "experimental_supported_tools",
+        ] {
+            assert!(entry.contains_key(key), "required key {key} was dropped");
+        }
+    }
+
+    #[test]
+    fn proxy_chat_official_slug_uses_its_own_codex_entry() {
+        let default_template = json!({
+            "slug": "gpt-5.5",
+            "model_messages": {"instructions_template": "gpt-5.5 agent"},
+            "supported_reasoning_levels": [{"effort": "xhigh", "description": "x"}],
+            "default_reasoning_level": "xhigh"
+        });
+        let runtime = vec![
+            default_template.clone(),
+            json!({
+                "slug": "gpt-6-luna",
+                "model_messages": {"instructions_template": "luna agent {{ personality }}",
+                    "instructions_variables": {"personality_default": "Be kind."}},
+                "tool_mode": "code_mode_only",
+                "supported_reasoning_levels": [
+                    {"effort": "low", "description": "l"},
+                    {"effort": "max", "description": "m"}
+                ],
+                "default_reasoning_level": "low",
+                "use_responses_lite": true,
+                "guardian": {"shell": "review"}
+            }),
+        ];
+        let catalog = codex_model_catalog_from_specs_with_runtime(
+            &[
+                catalog_spec("gpt-6-luna"),
+                catalog_spec("GPT-6-LUNA"),
+                catalog_spec("kimi-k3"),
+            ],
+            &default_template,
+            &runtime,
+            CodexCatalogToolProfile::ProxyChat,
+            128_000,
+        );
+        let models = catalog["models"].as_array().unwrap();
+        for luna in &models[..2] {
+            assert_eq!(
+                luna["model_messages"]["instructions_template"],
+                json!("luna agent Be kind.")
+            );
+            assert!(luna["model_messages"]
+                .get("instructions_variables")
+                .is_none());
+            assert_eq!(luna["tool_mode"], json!("code_mode_only"));
+            assert_eq!(catalog_efforts(luna), vec!["low", "max"]);
+            assert_eq!(luna["default_reasoning_level"], json!("low"));
+            assert_eq!(luna["use_responses_lite"], json!(false));
+            assert!(luna.get("guardian").is_none());
+        }
+        assert_eq!(models[1]["slug"], json!("GPT-6-LUNA"));
+        // A model the local Codex does not know keeps the gpt-5.5 template.
+        assert_eq!(
+            models[2]["model_messages"]["instructions_template"],
+            json!("gpt-5.5 agent")
+        );
+        assert_eq!(catalog_efforts(&models[2]), vec!["xhigh"]);
+
+        // Native lines keep the neutral template even for official slugs.
+        let native = codex_model_catalog_from_specs_with_runtime(
+            &[catalog_spec("gpt-6-luna")],
+            &load_codex_native_responses_template(),
+            &runtime,
+            CodexCatalogToolProfile::NativeResponses,
+            128_000,
+        );
+        assert!(native["models"][0].get("model_messages").is_none());
+    }
+
+    #[test]
+    fn generated_catalogs_never_enable_responses_lite() {
+        let lite_template = json!({"slug": "gpt-5.5", "use_responses_lite": true});
+        for profile in [
+            CodexCatalogToolProfile::ProxyChat,
+            CodexCatalogToolProfile::NativeResponses,
+            CodexCatalogToolProfile::Anthropic,
+        ] {
+            let catalog = codex_model_catalog_from_specs(
+                &[catalog_spec("m")],
+                &lite_template,
+                profile,
+                128_000,
+            );
+            assert_eq!(catalog["models"][0]["use_responses_lite"], json!(false));
+        }
+        let vendor = vec![json!({"slug": "deepseek-v4-flash", "use_responses_lite": true})];
+        let entry =
+            codex_vendor_catalog_model_entry(&vendor, &catalog_spec("deepseek-v4-flash"), 0);
+        assert_eq!(entry["use_responses_lite"], json!(false));
     }
 }

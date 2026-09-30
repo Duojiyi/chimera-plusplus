@@ -970,6 +970,58 @@ fn leftover_openai_named_tables_in_codex_rows_are_renamed_once() {
 }
 
 #[test]
+fn normalize_codex_provider_wire_apis_rewrites_chat_rows_once() {
+    let db = Database::memory().expect("create memory db");
+    let make_provider = |id: &str, config: &str| Provider {
+        id: id.to_string(),
+        name: id.to_string(),
+        settings_config: json!({ "auth": {}, "config": config }),
+        website_url: None,
+        category: None,
+        created_at: Some(1),
+        sort_index: None,
+        notes: None,
+        meta: None,
+        icon: None,
+        icon_color: None,
+        in_failover_queue: false,
+    };
+    db.save_provider(
+        "codex",
+        &make_provider(
+            "chat",
+            "model_provider = \"custom\"\n[model_providers.custom]\nwire_api = \"chat\"\n",
+        ),
+    )
+    .expect("save chat row");
+    db.save_provider(
+        "codex",
+        &make_provider(
+            "responses",
+            "model_provider = \"custom\"\n[model_providers.custom]\nwire_api = \"responses\"\n",
+        ),
+    )
+    .expect("save responses row");
+
+    assert_eq!(
+        db.normalize_codex_provider_wire_apis().expect("normalize"),
+        1
+    );
+    let chat = db
+        .get_provider_by_id("chat", "codex")
+        .expect("read chat")
+        .expect("chat row exists");
+    assert!(chat.settings_config["config"]
+        .as_str()
+        .unwrap()
+        .contains("wire_api = \"responses\""));
+    assert_eq!(
+        chat.meta.and_then(|meta| meta.api_format).as_deref(),
+        Some("openai_chat")
+    );
+    assert_eq!(db.normalize_codex_provider_wire_apis().expect("rerun"), 0);
+}
+#[test]
 fn schema_model_pricing_is_seeded_on_init() {
     let db = Database::memory().expect("create memory db");
 

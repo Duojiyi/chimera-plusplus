@@ -2,7 +2,37 @@
 //!
 //! 提供 Tauri 命令，供前端在供应商表单中获取可用模型列表。
 
-use crate::services::model_fetch::{self, FetchedModel};
+use std::collections::HashMap;
+
+use crate::product_policy::{self, Capability};
+use crate::provider::LocalProxyRequestOverrides;
+use crate::services::model_fetch::{self, FetchedModel, UpstreamRequestHeaders};
+
+/// Headers for discovery and probe requests: the custom User-Agent (invalid
+/// values are silently ignored, as in the forwarder) and the form's custom
+/// request headers. Custom headers are gated by `custom_request_headers` and
+/// validated like a save, so errors name the header but never echo a value.
+fn request_headers(
+    custom_user_agent: Option<&str>,
+    custom_headers: Option<HashMap<String, String>>,
+) -> Result<UpstreamRequestHeaders, String> {
+    let user_agent = crate::provider::parse_custom_user_agent(custom_user_agent)
+        .ok()
+        .flatten();
+    let headers = UpstreamRequestHeaders::with_user_agent(user_agent);
+    let Some(custom_headers) = custom_headers.filter(|headers| !headers.is_empty()) else {
+        return Ok(headers);
+    };
+    product_policy::require(Capability::CustomRequestHeaders).map_err(|error| error.to_string())?;
+    let overrides = LocalProxyRequestOverrides {
+        headers: custom_headers,
+        body: None,
+    };
+    overrides
+        .validate_headers()
+        .map_err(|error| error.to_string())?;
+    Ok(headers.with_overrides(Some(&overrides), true))
+}
 
 /// 获取供应商的可用模型列表
 ///
@@ -15,17 +45,15 @@ pub async fn fetch_models_for_config(
     is_full_url: Option<bool>,
     models_url: Option<String>,
     custom_user_agent: Option<String>,
+    custom_headers: Option<HashMap<String, String>>,
 ) -> Result<Vec<FetchedModel>, String> {
-    // 与转发 / 检测路径共用 parse_custom_user_agent：非法 UA 静默忽略（不阻断取模型）。
-    let user_agent = crate::provider::parse_custom_user_agent(custom_user_agent.as_deref())
-        .ok()
-        .flatten();
+    let headers = request_headers(custom_user_agent.as_deref(), custom_headers)?;
     model_fetch::fetch_models(
         &base_url,
         &api_key,
         is_full_url.unwrap_or(false),
         models_url.as_deref(),
-        user_agent,
+        headers,
     )
     .await
 }
@@ -40,16 +68,15 @@ pub async fn detect_codex_api_format(
     is_full_url: Option<bool>,
     model: Option<String>,
     custom_user_agent: Option<String>,
+    custom_headers: Option<HashMap<String, String>>,
 ) -> Result<model_fetch::DetectedCodexApiFormat, String> {
-    let user_agent = crate::provider::parse_custom_user_agent(custom_user_agent.as_deref())
-        .ok()
-        .flatten();
+    let headers = request_headers(custom_user_agent.as_deref(), custom_headers)?;
     model_fetch::detect_codex_api_format(
         &base_url,
         &api_key,
         is_full_url.unwrap_or(false),
         model.as_deref(),
-        user_agent,
+        headers,
     )
     .await
 }
@@ -64,16 +91,35 @@ pub async fn detect_codex_api_formats(
     is_full_url: Option<bool>,
     models: Vec<String>,
     custom_user_agent: Option<String>,
+    custom_headers: Option<HashMap<String, String>>,
 ) -> Result<model_fetch::DetectedCodexApiFormats, String> {
-    let user_agent = crate::provider::parse_custom_user_agent(custom_user_agent.as_deref())
-        .ok()
-        .flatten();
+    let headers = request_headers(custom_user_agent.as_deref(), custom_headers)?;
     model_fetch::detect_codex_api_formats(
         &base_url,
         &api_key,
         is_full_url.unwrap_or(false),
         models,
-        user_agent,
+        headers,
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn custom_headers_are_gated_and_absent_headers_pass() {
+        assert!(request_headers(Some("Chimera-Test/1.0"), None).is_ok());
+        assert!(request_headers(None, Some(HashMap::new())).is_ok());
+        let result = request_headers(
+            None,
+            Some(HashMap::from([("X-Gateway".into(), "team-a".into())])),
+        );
+        assert_eq!(
+            result.is_ok(),
+            Capability::CustomRequestHeaders.enabled(),
+            "custom headers must follow the custom_request_headers capability"
+        );
+    }
 }

@@ -44,6 +44,19 @@ use live::{
 };
 use usage::validate_usage_script;
 
+/// Save-time check for a line's custom request headers (CPP-A7), only while
+/// the `custom_request_headers` capability is `enabled`: rows written before
+/// the feature existed keep saving unchanged.
+fn validate_request_header_overrides(
+    overrides: &crate::provider::LocalProxyRequestOverrides,
+    enabled: bool,
+) -> Result<(), AppError> {
+    if !enabled {
+        return Ok(());
+    }
+    overrides.validate_headers()
+}
+
 /// The built-in Codex official provider is safe to select during takeover:
 /// Codex keeps ownership of its ChatGPT login and the proxy only forwards the
 /// authenticated request. Other official providers retain the existing block.
@@ -926,6 +939,23 @@ mod tests {
         });
     }
 
+    #[test]
+    fn custom_request_header_save_check_follows_the_capability() {
+        let overrides = crate::provider::LocalProxyRequestOverrides {
+            headers: std::collections::HashMap::from([(
+                "Authorization".to_string(),
+                "Bearer x".to_string(),
+            )]),
+            body: None,
+        };
+        // Off: rows written before the feature existed keep saving.
+        assert!(super::validate_request_header_overrides(&overrides, false).is_ok());
+        // On: a protected header is rejected by name.
+        let error = super::validate_request_header_overrides(&overrides, true)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("authorization"), "{error}");
+    }
     #[test]
     fn validate_provider_settings_rejects_missing_auth() {
         let provider = Provider::with_id(
@@ -2234,6 +2264,14 @@ requires_openai_auth = true
 }
 
 impl ProviderService {
+    /// MH-8c 1.7: store only `wire_api = "responses"`; the declared protocol
+    /// moves to `meta.apiFormat` (see `normalize_codex_provider_wire_api`).
+    fn normalize_codex_wire_api(app_type: &AppType, provider: &mut Provider) {
+        if matches!(app_type, AppType::Codex) {
+            crate::proxy::providers::normalize_codex_provider_wire_api(provider);
+        }
+    }
+
     fn normalize_provider_if_claude(app_type: &AppType, provider: &mut Provider) {
         if matches!(app_type, AppType::Claude) {
             let mut v = provider.settings_config.clone();
@@ -2375,6 +2413,7 @@ impl ProviderService {
     ) -> Result<bool, AppError> {
         let mut provider = provider;
         Self::normalize_provider_if_claude(&app_type, &mut provider);
+        Self::normalize_codex_wire_api(&app_type, &mut provider);
         Self::validate_provider_settings(&app_type, &provider)?;
         Self::sanitize_codex_provider_config(&app_type, &mut provider)?;
         normalize_provider_common_config_for_storage(state.db.as_ref(), &app_type, &mut provider)?;
@@ -2396,6 +2435,7 @@ impl ProviderService {
         let mut provider = provider;
         // Normalize Claude model keys
         Self::normalize_provider_if_claude(&app_type, &mut provider);
+        Self::normalize_codex_wire_api(&app_type, &mut provider);
         Self::validate_provider_settings(&app_type, &provider)?;
         Self::sanitize_codex_provider_config(&app_type, &mut provider)?;
         normalize_provider_common_config_for_storage(state.db.as_ref(), &app_type, &mut provider)?;
@@ -2474,6 +2514,7 @@ impl ProviderService {
             .get_provider_by_id(&original_id, app_type.as_str())?;
         // Normalize Claude model keys
         Self::normalize_provider_if_claude(&app_type, &mut provider);
+        Self::normalize_codex_wire_api(&app_type, &mut provider);
         Self::validate_provider_settings(&app_type, &provider)?;
         Self::sanitize_codex_provider_config(&app_type, &mut provider)?;
         normalize_provider_common_config_for_storage(state.db.as_ref(), &app_type, &mut provider)?;
@@ -4117,6 +4158,14 @@ impl ProviderService {
             }
             if let Some(usage_script) = &meta.usage_script {
                 validate_usage_script(usage_script)?;
+            }
+            // CPP-A7: custom request headers are validated at save while the
+            // feature is on; the proxy filters them again either way.
+            if let Some(overrides) = &meta.local_proxy_request_overrides {
+                validate_request_header_overrides(
+                    overrides,
+                    crate::product_policy::Capability::CustomRequestHeaders.enabled(),
+                )?;
             }
         }
 

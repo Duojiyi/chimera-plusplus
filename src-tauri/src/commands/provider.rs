@@ -74,6 +74,18 @@ fn merge_renderer_provider_write(
         .get_provider_by_id(stored_id, app_type.as_str())
         .map_err(|e| format!("读取 {} 原供应商失败: {e}", app_type.as_str()))?;
     provider_dto::merge_withheld_secrets(provider, stored.as_ref(), clear_api_key);
+    // CPP-A1①: remote compaction (a provider table named "OpenAI") only on
+    // lines that reach a native Responses upstream for every request.
+    if matches!(app_type, AppType::Codex)
+        && crate::proxy::providers::codex_remote_compaction_blocked(provider)
+    {
+        return Err(AppError::localized(
+            "provider.codex.remote_compaction.conversion_route",
+            "远程上下文压缩只支持原生 Responses 上游；经 Chat 或 Anthropic 转换的线路请关闭该开关",
+            "Remote compaction needs a native Responses upstream; turn it off for lines converted to Chat or Anthropic",
+        )
+        .to_string());
+    }
     Ok(())
 }
 

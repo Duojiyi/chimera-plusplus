@@ -9,7 +9,7 @@ use super::{
         chat_usage_to_responses_usage, custom_tool_input_from_chat_arguments,
         response_id_from_chat_id, response_status_from_finish_reason,
         response_tool_call_item_from_chat_name, response_tool_call_item_id_from_chat_name,
-        CodexToolContext,
+        response_tool_call_status, CodexToolContext,
     },
 };
 use crate::proxy::json_canonical::canonicalize_tool_arguments_str;
@@ -596,6 +596,8 @@ impl ChatToResponsesState {
     fn finalize_tools(&mut self) -> Vec<Bytes> {
         let mut events = Vec::new();
         let keys: Vec<usize> = self.tools.keys().copied().collect();
+        let truncated =
+            response_status_from_finish_reason(self.finish_reason.as_deref()) == "incomplete";
 
         for key in keys {
             let mut add_event: Option<Bytes> = None;
@@ -662,7 +664,7 @@ impl ChatToResponsesState {
             let is_custom_tool = self.tool_context.is_custom_tool_chat_name(&state.name);
             let item = response_tool_call_item_from_chat_name(
                 &state.item_id,
-                "completed",
+                response_tool_call_status(&arguments, truncated),
                 &state.call_id,
                 &state.name,
                 &arguments,
@@ -1349,6 +1351,31 @@ mod tests {
         assert!(output.contains("\"status\":\"incomplete\""));
         assert!(output.contains("\"incomplete_details\":{\"reason\":\"max_output_tokens\"}"));
         assert!(!output.contains("event: response.failed"));
+    }
+
+    #[tokio::test]
+    async fn truncated_tool_call_is_marked_incomplete_not_completed() {
+        let output = collect(vec![
+            "data: {\"id\":\"chatcmpl_cut_tool\",\"model\":\"gpt-5.4\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_cut\",\"type\":\"function\",\"function\":{\"name\":\"write_file\",\"arguments\":\"{\\\"path\\\":\\\"a.txt\\\",\\\"content\\\":\\\"hel\"}}]},\"finish_reason\":\"length\"}]}\n\n",
+            "data: [DONE]\n\n",
+        ])
+        .await;
+
+        let events = parse_sse_events(&output);
+        let done_item = events
+            .iter()
+            .find(|event| {
+                event["type"] == "response.output_item.done"
+                    && event["item"]["type"] == "function_call"
+            })
+            .expect("tool call item is still delivered");
+        assert_eq!(done_item["item"]["status"], "incomplete");
+        let completed = events
+            .iter()
+            .find(|event| event["type"] == "response.completed")
+            .unwrap();
+        assert_eq!(completed["response"]["status"], "incomplete");
+        assert_eq!(completed["response"]["output"][0]["status"], "incomplete");
     }
 
     #[tokio::test]
