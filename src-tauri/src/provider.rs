@@ -71,6 +71,15 @@ impl Provider {
         self.provider_type() == Some("codex_oauth")
     }
 
+    /// Vault account this official Codex line is pinned to, if any.
+    pub fn official_account_key(&self) -> Option<&str> {
+        self.meta
+            .as_ref()?
+            .official_account
+            .as_ref()
+            .map(|pin| pin.account_key.as_str())
+    }
+
     pub fn is_xai_oauth(&self) -> bool {
         self.provider_type() == Some("xai_oauth")
     }
@@ -807,6 +816,18 @@ pub struct ProviderMeta {
     /// 用于多账号支持，关联到特定的 GitHub 账号
     #[serde(rename = "githubAccountId", skip_serializing_if = "Option::is_none")]
     pub github_account_id: Option<String>,
+    /// Official Codex line pinned to a vault account (`codex_accounts`). The
+    /// pin is a pseudonymous key; the credential itself never lives in a row.
+    #[serde(rename = "officialAccount", skip_serializing_if = "Option::is_none")]
+    pub official_account: Option<OfficialAccountPin>,
+}
+
+/// `meta.officialAccount` of an official Codex line.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OfficialAccountPin {
+    pub v: u32,
+    #[serde(rename = "accountKey")]
+    pub account_key: String,
 }
 
 /// 解析 Provider 级自定义 User-Agent 字符串（单一真理来源）。

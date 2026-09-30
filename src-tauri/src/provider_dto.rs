@@ -144,6 +144,7 @@ pub fn merge_withheld_secrets(
     stored: Option<&Provider>,
     clear_api_key: bool,
 ) {
+    keep_stored_official_account_pin(incoming, stored);
     let stored_auth = stored
         .and_then(|provider| provider.settings_config.get("auth"))
         .and_then(Value::as_object);
@@ -175,6 +176,24 @@ pub fn merge_withheld_secrets(
     }
     if clear_api_key {
         incoming_auth.insert(API_KEY_FIELD.to_string(), Value::String(String::new()));
+    }
+}
+
+/// `meta.officialAccount` is owned by the official-account commands: a
+/// renderer write can neither add, change nor remove a line's pin.
+fn keep_stored_official_account_pin(incoming: &mut Provider, stored: Option<&Provider>) {
+    let stored_pin = stored
+        .and_then(|provider| provider.meta.as_ref())
+        .and_then(|meta| meta.official_account.clone());
+    match incoming.meta.as_mut() {
+        Some(meta) => meta.official_account = stored_pin,
+        None if stored_pin.is_some() => {
+            incoming.meta = Some(crate::provider::ProviderMeta {
+                official_account: stored_pin,
+                ..Default::default()
+            });
+        }
+        None => {}
     }
 }
 
@@ -382,6 +401,42 @@ mod tests {
         for secret in fixture_secrets() {
             assert!(!json.contains(secret), "DTO JSON leaked {secret}: {json}");
         }
+    }
+
+    // ACC-T18: generic provider writes cannot pin, re-pin or unpin a line.
+    #[test]
+    fn renderer_writes_keep_the_stored_official_account_pin() {
+        use crate::provider::{OfficialAccountPin, ProviderMeta};
+        let pin = |key: &str| OfficialAccountPin {
+            v: 1,
+            account_key: key.to_string(),
+        };
+        let with_pin = |key: Option<&str>| {
+            let mut line = provider("codex-official-x", json!({ "auth": {}, "config": "" }));
+            line.meta = Some(ProviderMeta {
+                official_account: key.map(pin),
+                ..Default::default()
+            });
+            line
+        };
+
+        let stored = with_pin(Some("stored-key"));
+        let mut repinned = with_pin(Some("forged-key"));
+        merge_withheld_secrets(&mut repinned, Some(&stored), false);
+        assert_eq!(repinned.official_account_key(), Some("stored-key"));
+
+        let mut unpinned = with_pin(None);
+        merge_withheld_secrets(&mut unpinned, Some(&stored), false);
+        assert_eq!(unpinned.official_account_key(), Some("stored-key"));
+
+        let mut without_meta = provider("codex-official-x", json!({ "auth": {} }));
+        merge_withheld_secrets(&mut without_meta, Some(&stored), false);
+        assert_eq!(without_meta.official_account_key(), Some("stored-key"));
+
+        // A new row cannot arrive pinned.
+        let mut created = with_pin(Some("forged-key"));
+        merge_withheld_secrets(&mut created, None, false);
+        assert_eq!(created.official_account_key(), None);
     }
 
     #[test]
