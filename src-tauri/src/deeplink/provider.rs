@@ -1606,7 +1606,7 @@ mod tests {
 
     #[tokio::test]
     #[serial]
-    async fn enabled_non_codex_import_waits_for_profile_and_rolls_back_to_latest_live() {
+    async fn non_codex_import_ignores_enabled_flag_per_tool_policy() {
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("reload settings");
         show_claude_family();
@@ -1624,26 +1624,77 @@ mod tests {
             }),
             None,
         );
-        let provider_b = Provider::with_id(
-            "claude-b".to_string(),
-            "Claude B".to_string(),
+        db.save_provider("claude", &provider_a)
+            .expect("save provider A");
+        ProviderService::switch(&state, AppType::Claude, "claude-a").expect("activate provider A");
+
+        // Non-Codex tools (Claude) have ImportOnly deep link policy (M3).
+        // Even if enabled = true is requested, it must never auto-activate.
+        let result = import_provider_from_deeplink(
+            &state,
+            DeepLinkImportRequest {
+                resource: "provider".to_string(),
+                app: Some("claude".to_string()),
+                name: Some("Transactional Import".to_string()),
+                enabled: Some(true),
+                homepage: Some("https://example.com".to_string()),
+                endpoint: Some("https://c.example.invalid".to_string()),
+                api_key: Some("test-c".to_string()),
+                model: Some("claude-test".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("import succeeds as import-only");
+
+        assert_eq!(
+            db.get_current_provider("claude")
+                .expect("read current")
+                .as_deref(),
+            Some("claude-a")
+        );
+        assert_eq!(
+            crate::settings::get_current_provider(&AppType::Claude).as_deref(),
+            Some("claude-a")
+        );
+        let providers = db.get_all_providers("claude").expect("read providers");
+        assert_eq!(providers.len(), 2);
+        let imported = providers.get(&result.id).expect("imported exists");
+        assert!(!imported.is_current);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn enabled_codex_import_waits_for_profile_and_rolls_back_to_latest_live() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        let db = Arc::new(crate::database::Database::memory().expect("create memory db"));
+        let state = crate::store::AppState::new(db.clone());
+
+        let provider_a = Provider::with_id(
+            "codex-a".to_string(),
+            "Codex A".to_string(),
             json!({
-                "env": {
-                    "ANTHROPIC_AUTH_TOKEN": "test-b",
-                    "ANTHROPIC_BASE_URL": "https://b.example.invalid"
-                }
+                "auth": {"OPENAI_API_KEY": "sk-a"},
+                "config": "model = \"model-a\"\n"
             }),
             None,
         );
-        db.save_provider("claude", &provider_a)
+        let provider_b = Provider::with_id(
+            "codex-b".to_string(),
+            "Codex B".to_string(),
+            json!({
+                "auth": {"OPENAI_API_KEY": "sk-b"},
+                "config": "model = \"model-b\"\n"
+            }),
+            None,
+        );
+        db.save_provider("codex", &provider_a)
             .expect("save provider A");
-        db.save_provider("claude", &provider_b)
+        db.save_provider("codex", &provider_b)
             .expect("save provider B");
-        ProviderService::switch(&state, AppType::Claude, "claude-a").expect("activate provider A");
+        ProviderService::switch(&state, AppType::Codex, "codex-a").expect("activate provider A");
 
-        // Model the complete Profile Apply transaction. The enabled Deep Link
-        // may parse/build its provider concurrently, but it must not snapshot or
-        // stage anything until the Profile transaction has committed provider B.
         let profile_lock = state.profile_apply_lock.clone();
         let profile_guard = profile_lock.lock().await;
         let import_state = state.clone();
@@ -1652,13 +1703,13 @@ mod tests {
                 &import_state,
                 DeepLinkImportRequest {
                     resource: "provider".to_string(),
-                    app: Some("claude".to_string()),
+                    app: Some("codex".to_string()),
                     name: Some("Transactional Import".to_string()),
                     enabled: Some(true),
                     homepage: Some("https://example.com".to_string()),
                     endpoint: Some("https://c.example.invalid".to_string()),
-                    api_key: Some("test-c".to_string()),
-                    model: Some("claude-test".to_string()),
+                    api_key: Some("sk-c".to_string()),
+                    model: Some("model-c".to_string()),
                     ..Default::default()
                 },
             )
@@ -1667,7 +1718,7 @@ mod tests {
 
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert_eq!(
-            db.get_all_providers("claude")
+            db.get_all_providers("codex")
                 .expect("read providers while profile lock held")
                 .len(),
             2,
@@ -1676,8 +1727,8 @@ mod tests {
 
         crate::switch_provider_with_automatic_routing_profile_lock_held_state(
             state.clone(),
-            AppType::Claude,
-            "claude-b".to_string(),
+            AppType::Codex,
+            "codex-b".to_string(),
         )
         .await
         .expect("commit Profile provider B");
@@ -1685,9 +1736,9 @@ mod tests {
         {
             let conn = db.conn.lock().expect("lock database");
             conn.execute_batch(
-                "CREATE TRIGGER reject_imported_claude_current_update
+                "CREATE TRIGGER reject_imported_codex_current_update
                  BEFORE UPDATE OF is_current ON providers
-                 WHEN NEW.app_type = 'claude'
+                 WHEN NEW.app_type = 'codex'
                    AND NEW.id LIKE 'transactionalimport-%'
                    AND NEW.is_current = 1
                  BEGIN
@@ -1707,27 +1758,26 @@ mod tests {
             .contains("forced concurrent enabled-import failure"));
 
         let providers = db
-            .get_all_providers("claude")
+            .get_all_providers("codex")
             .expect("read providers after rollback");
         assert_eq!(providers.len(), 2);
         assert!(!providers
             .keys()
             .any(|id| id.starts_with("transactionalimport-")));
         assert_eq!(
-            db.get_current_provider("claude")
+            db.get_current_provider("codex")
                 .expect("read db current after rollback")
                 .as_deref(),
-            Some("claude-b")
+            Some("codex-b")
         );
         assert_eq!(
-            crate::settings::get_current_provider(&AppType::Claude).as_deref(),
-            Some("claude-b")
+            crate::settings::get_current_provider(&AppType::Codex).as_deref(),
+            Some("codex-b")
         );
-        let live = std::fs::read_to_string(crate::config::get_claude_settings_path())
-            .expect("read Claude Live after rollback");
-        assert!(live.contains("https://b.example.invalid"));
-        assert!(!live.contains("https://a.example.invalid"));
-        assert!(!live.contains("https://c.example.invalid"));
+        let live = std::fs::read_to_string(crate::config::get_codex_config_path())
+            .expect("read Codex Live after rollback");
+        assert!(live.contains("model-b"));
+        assert!(!live.contains("model-c"));
     }
 
     #[tokio::test]
@@ -1831,16 +1881,15 @@ mod tests {
     async fn enabled_import_removes_staged_provider_when_switch_fails() {
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("reload settings");
-        show_claude_family();
         let db = Arc::new(crate::database::Database::memory().expect("create memory db"));
         let state = crate::store::AppState::new(db.clone());
 
         {
             let conn = db.conn.lock().expect("lock database");
             conn.execute_batch(
-                "CREATE TRIGGER reject_claude_current_update
+                "CREATE TRIGGER reject_codex_current_update
                  BEFORE UPDATE OF is_current ON providers
-                 WHEN NEW.app_type = 'claude'
+                 WHEN NEW.app_type = 'codex'
                  BEGIN
                    SELECT RAISE(ABORT, 'forced enabled-import switch failure');
                  END;",
@@ -1850,13 +1899,13 @@ mod tests {
 
         let request = DeepLinkImportRequest {
             resource: "provider".to_string(),
-            app: Some("claude".to_string()),
+            app: Some("codex".to_string()),
             name: Some("Transactional Import".to_string()),
             enabled: Some(true),
             homepage: Some("https://example.com".to_string()),
             endpoint: Some("https://api.example.com/v1".to_string()),
             api_key: Some("test-key".to_string()),
-            model: Some("claude-test".to_string()),
+            model: Some("codex-test".to_string()),
             ..Default::default()
         };
 
@@ -1867,22 +1916,19 @@ mod tests {
             .to_string()
             .contains("forced enabled-import switch failure"));
         assert!(
-            db.get_all_providers("claude")
+            db.get_all_providers("codex")
                 .expect("read providers after rollback")
                 .is_empty(),
             "failed enabled import must not leave the staged provider"
         );
         assert_eq!(
-            db.get_current_provider("claude")
+            db.get_current_provider("codex")
                 .expect("read db current after rollback"),
             None
         );
-        assert_eq!(
-            crate::settings::get_current_provider(&AppType::Claude),
-            None
-        );
+        assert_eq!(crate::settings::get_current_provider(&AppType::Codex), None);
         assert!(
-            !crate::config::get_claude_settings_path().exists(),
+            !crate::config::get_codex_config_path().exists(),
             "failed enabled import must restore the missing Live config"
         );
     }

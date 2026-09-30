@@ -1100,7 +1100,13 @@ fn body_carries_error_envelope(body: &str) -> bool {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
         return false;
     };
-    if value.get("error").is_some_and(|error| !error.is_null()) {
+    if value.get("error").is_some_and(|error| match error {
+        serde_json::Value::Null | serde_json::Value::Bool(false) => false,
+        serde_json::Value::String(s) => !s.trim().is_empty(),
+        serde_json::Value::Array(items) => !items.is_empty(),
+        serde_json::Value::Object(fields) => !fields.is_empty(),
+        _ => true,
+    }) {
         return true;
     }
     value

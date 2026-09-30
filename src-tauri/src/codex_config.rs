@@ -6803,7 +6803,7 @@ base_url = "https://relay.example/v1"
                 { "slug": "gpt-5.4", "input_modalities": ["text", "image"] },
                 { "slug": "deepseek-v4-pro", "input_modalities": ["text"] },
                 { "slug": "gpt-text-override", "input_modalities": ["text"] },
-                { "slug": "deepseek-v4-flash", "input_modalities": ["text", "image"] }
+                { "slug": "deepseek-chat", "input_modalities": ["text", "image"] }
             ]
         }"#;
 
