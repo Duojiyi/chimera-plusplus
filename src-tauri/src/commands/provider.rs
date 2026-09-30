@@ -1813,6 +1813,7 @@ async fn query_provider_usage_inner(
 
         return crate::services::balance::get_balance(&base_url, &api_key)
             .await
+            .map(crate::services::balance::BalanceResult::into_usage_result)
             .map_err(|e| format!("Failed to query balance: {e}"));
     }
 

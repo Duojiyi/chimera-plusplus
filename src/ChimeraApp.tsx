@@ -82,7 +82,7 @@ import {
   codexApiFormatForModel,
   codexRemoteCompactionAllowed,
 } from "@/utils/providerConfigUtils";
-import { subscriptionApi } from "@/lib/api/subscription";
+import { subscriptionApi, type BalanceResult } from "@/lib/api/subscription";
 import { useQuery } from "@tanstack/react-query";
 import { generateUUID } from "@/utils/uuid";
 import { openDialogCount, useDialogFocus } from "@/hooks/useDialogFocus";
@@ -338,6 +338,21 @@ function isEditorDraftDirty(
 function editorDraftSignature(draft: ReturnType<typeof providerDraft>): string {
   const { original: _original, ...rest } = draft;
   return JSON.stringify(rest);
+}
+
+/**
+ * Neutral balance hint when no balance can be shown; `null` means show the
+ * result. Driven by the backend's typed status, never by its message text.
+ */
+export function providerBalanceNotice(
+  hasCredentials: boolean,
+  result: BalanceResult | undefined,
+): string | null {
+  if (!hasCredentials || result?.status === "missing_credentials") {
+    return "填写请求地址和 API Key 后可查询余额";
+  }
+  if (result?.status === "unsupported") return "此线路暂不支持余额查询";
+  return null;
 }
 
 function codexApiFormatLabel(format: CodexApiFormat): string {
@@ -3217,14 +3232,14 @@ export function NewProvidersView({
       : balanceQuery.error
         ? String(balanceQuery.error)
         : undefined;
-  const balanceIsUnsupported =
-    !!balanceErrorText &&
-    (balanceErrorText.includes("Unknown balance provider") ||
-      balanceErrorText.includes("API key is empty"));
+  const balanceNotice = providerBalanceNotice(
+    !!balanceBaseUrl && !!balanceApiKey,
+    balanceQuery.data,
+  );
   const balanceLabel = balanceQuery.isLoading
     ? "余额查询中…"
-    : balanceIsUnsupported
-      ? "非中转线路不支持余额查询"
+    : balanceNotice
+      ? balanceNotice
       : balanceErrorText
         ? `查询失败：${balanceErrorText}`
         : balanceData
@@ -3446,9 +3461,7 @@ export function NewProvidersView({
             <div className="route-balance-bar">
               <span className="route-balance-bar-label">余额</span>
               <code
-                className={
-                  balanceIsUnsupported || balanceErrorText ? "is-muted" : ""
-                }
+                className={balanceNotice || balanceErrorText ? "is-muted" : ""}
               >
                 {balanceLabel}
               </code>
@@ -3457,6 +3470,7 @@ export function NewProvidersView({
                 className="route-balance-refresh"
                 aria-label="刷新余额"
                 title="刷新余额"
+                disabled={!balanceEnabled}
                 onClick={() => void balanceQuery.refetch()}
               >
                 {balanceQuery.isFetching ? (

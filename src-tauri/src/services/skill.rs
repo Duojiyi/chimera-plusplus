@@ -286,46 +286,14 @@ pub struct SkillState {
 }
 
 /// 持久化存储结构（仓库配置）
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// 默认不带任何技能仓库：仓库只来自用户自己的添加。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SkillStore {
     /// directory -> 安装状态（旧版兼容，新版不使用）
     pub skills: HashMap<String, SkillState>,
     /// 仓库列表
     pub repos: Vec<SkillRepo>,
-}
-
-impl Default for SkillStore {
-    fn default() -> Self {
-        SkillStore {
-            skills: HashMap::new(),
-            repos: vec![
-                SkillRepo {
-                    owner: "anthropics".to_string(),
-                    name: "skills".to_string(),
-                    branch: "main".to_string(),
-                    enabled: true,
-                },
-                SkillRepo {
-                    owner: "ComposioHQ".to_string(),
-                    name: "awesome-claude-skills".to_string(),
-                    branch: "master".to_string(),
-                    enabled: true,
-                },
-                SkillRepo {
-                    owner: "cexll".to_string(),
-                    name: "myclaude".to_string(),
-                    branch: "master".to_string(),
-                    enabled: true,
-                },
-                SkillRepo {
-                    owner: "JimLiu".to_string(),
-                    name: "baoyu-skills".to_string(),
-                    branch: "main".to_string(),
-                    enabled: true,
-                },
-            ],
-        }
-    }
 }
 
 /// Skill 卸载结果
@@ -357,58 +325,6 @@ pub struct MigrationResult {
     pub migrated_count: usize,
     pub skipped_count: usize,
     pub errors: Vec<String>,
-}
-
-// ========== skills.sh API 类型 ==========
-
-/// skills.sh API 原始响应
-///
-/// 注意：API 命名不一致（searchType 是 camelCase，duration_ms 是 snake_case），
-/// 因此不能用 rename_all，需要逐字段指定。
-#[derive(Debug, Clone, Deserialize)]
-struct SkillsShApiResponse {
-    pub query: String,
-    #[serde(rename = "searchType")]
-    #[allow(dead_code)]
-    pub search_type: String,
-    pub skills: Vec<SkillsShApiSkill>,
-    pub count: usize,
-    #[allow(dead_code)]
-    pub duration_ms: u64,
-}
-
-/// skills.sh API 原始技能条目
-#[derive(Debug, Clone, Deserialize)]
-struct SkillsShApiSkill {
-    pub id: String,
-    #[serde(rename = "skillId")]
-    pub skill_id: String,
-    pub name: String,
-    pub installs: u64,
-    pub source: String,
-}
-
-/// skills.sh 搜索结果（返回给前端）
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SkillsShSearchResult {
-    pub skills: Vec<SkillsShDiscoverableSkill>,
-    pub total_count: usize,
-    pub query: String,
-}
-
-/// skills.sh 可安装技能（返回给前端）
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SkillsShDiscoverableSkill {
-    pub key: String,
-    pub name: String,
-    pub directory: String,
-    pub repo_owner: String,
-    pub repo_name: String,
-    pub repo_branch: String,
-    pub installs: u64,
-    pub readme_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -4505,67 +4421,6 @@ impl SkillService {
             .retain(|r| !(r.owner == owner && r.name == name));
 
         Ok(())
-    }
-
-    // ========== skills.sh 搜索 ==========
-
-    /// 搜索 skills.sh 公共目录
-    pub async fn search_skills_sh(
-        query: &str,
-        limit: usize,
-        offset: usize,
-    ) -> Result<SkillsShSearchResult> {
-        let client = crate::proxy::http_client::get();
-
-        let url = url::Url::parse_with_params(
-            "https://skills.sh/api/search",
-            &[
-                ("q", query),
-                ("limit", &limit.to_string()),
-                ("offset", &offset.to_string()),
-            ],
-        )?;
-
-        let resp = client
-            .get(url)
-            .timeout(std::time::Duration::from_secs(10))
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<SkillsShApiResponse>()
-            .await?;
-
-        let skills = resp
-            .skills
-            .into_iter()
-            .filter_map(|s| {
-                let parts: Vec<&str> = s.source.splitn(2, '/').collect();
-                if parts.len() != 2 {
-                    return None;
-                }
-                let (owner, repo) = (parts[0].to_string(), parts[1].to_string());
-                // 过滤非 GitHub 来源（如 "skills.volces.com"、"mcp-hub.momenta.works"）
-                if owner.contains('.') || repo.contains('.') {
-                    return None;
-                }
-                Some(SkillsShDiscoverableSkill {
-                    key: s.id,
-                    name: s.name,
-                    directory: s.skill_id.clone(),
-                    repo_owner: owner.clone(),
-                    repo_name: repo.clone(),
-                    repo_branch: "main".to_string(),
-                    installs: s.installs,
-                    readme_url: Some(format!("https://github.com/{}/{}", owner, repo)),
-                })
-            })
-            .collect();
-
-        Ok(SkillsShSearchResult {
-            skills,
-            total_count: resp.count,
-            query: resp.query,
-        })
     }
 }
 

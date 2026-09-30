@@ -39,7 +39,28 @@ const withJson = async <T>(request: Request): Promise<T> => {
 
 const success = <T>(payload: T) => HttpResponse.json(payload as any);
 
+// Mirrors `builtin_templates::chimerahub_template()` (pinned by its Rust tests).
+export const chimeraHubTemplateFixture = {
+  name: "ChimeraHub",
+  websiteUrl: "https://api.chimerahub.org/",
+  baseUrl: "https://api.chimerahub.org/v1",
+  model: "gpt-5.6-sol",
+  auth: { OPENAI_API_KEY: "" },
+  config: `model_provider = "custom"
+model = "gpt-5.6-sol"
+model_reasoning_effort = "high"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = false
+base_url = "https://api.chimerahub.org/v1"`,
+};
+
 export const handlers = [
+  http.post(`${TAURI_ENDPOINT}/get_chimerahub_template`, () =>
+    success(chimeraHubTemplateFixture),
+  ),
   http.post(`${TAURI_ENDPOINT}/get_migration_result`, () => success(false)),
   http.post(`${TAURI_ENDPOINT}/get_skills_migration_result`, () =>
     success(null),

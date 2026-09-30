@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { SubscriptionQuota } from "@/types/subscription";
+import type { UsageResult } from "@/types";
 
 export const subscriptionApi = {
   getQuota: (tool: string): Promise<SubscriptionQuota> =>
@@ -26,9 +27,11 @@ export const subscriptionApi = {
       teamOrganizationId,
       teamProjectId,
     }),
-  getBalance: (
-    baseUrl: string,
-    apiKey: string,
-  ): Promise<import("@/types").UsageResult> =>
+  getBalance: (baseUrl: string, apiKey: string): Promise<BalanceResult> =>
     invoke("get_balance", { baseUrl, apiKey }),
 };
+
+/** Why no balance request was sent: no base URL / key, or no known balance API. */
+export type BalanceStatus = "unsupported" | "missing_credentials";
+
+export type BalanceResult = UsageResult & { status?: BalanceStatus };
