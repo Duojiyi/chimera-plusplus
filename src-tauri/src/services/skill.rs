@@ -121,6 +121,31 @@ impl HashBudget {
     }
 }
 
+// Adapted from yynxxxxx/Codex-X apps/desktop/src-tauri/src/skills_mcp/archive.rs `safe_relative` (MIT)
+/// Extra ZIP entry-name rules on top of the size/ratio/entry limits, applied
+/// on every OS so an archive stays usable when it moves between machines:
+/// no backslash, colon or NUL; no empty, `.` or `..` segment; no segment
+/// ending in a space or dot; no Windows device name (CON, PRN, AUX, NUL,
+/// COM0-9, LPT0-9), with or without an extension.
+fn portable_archive_name_error(name: &str) -> Option<&'static str> {
+    if name.contains('\\') || name.contains(':') || name.contains('\0') {
+        return Some("Skill ZIP 条目路径含反斜杠、冒号或空字符");
+    }
+    for part in name.trim_end_matches('/').split('/') {
+        let stem = part.split('.').next().unwrap_or("").to_ascii_uppercase();
+        let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+            || (stem.len() == 4
+                && (stem.starts_with("COM") || stem.starts_with("LPT"))
+                && stem.as_bytes()[3].is_ascii_digit());
+        if part.is_empty() || part.ends_with(' ') || part.ends_with('.') || reserved {
+            return Some(
+                "Skill ZIP 条目路径无法跨平台使用（空段、以空格或点结尾，或是 Windows 保留名）",
+            );
+        }
+    }
+    None
+}
+
 #[derive(Debug, Default)]
 struct CopyBudget {
     files: usize,
@@ -3362,6 +3387,9 @@ impl SkillService {
 
         for index in 0..archive.len() {
             let mut file = archive.by_index(index)?;
+            if let Some(reason) = portable_archive_name_error(file.name()) {
+                return Err(anyhow!(reason));
+            }
             let enclosed = file
                 .enclosed_name()
                 .ok_or_else(|| anyhow!("Skill ZIP 包含不安全路径"))?;

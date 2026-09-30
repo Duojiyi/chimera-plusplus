@@ -432,35 +432,7 @@ impl McpService {
 
         // 调用原有的导入逻辑（从 mcp.rs）
         let count = crate::mcp::import_from_claude(&mut temp_config)?;
-
-        let mut new_count = 0;
-
-        // 如果有导入的服务器，保存到数据库
-        if count > 0 {
-            if let Some(servers) = &temp_config.mcp.servers {
-                let mut existing = state.db.get_all_mcp_servers()?;
-                for server in servers.values() {
-                    // 已存在：仅启用 Claude，不覆盖其他字段（与导入模块语义保持一致）
-                    let to_save = if let Some(existing_server) = existing.get(&server.id) {
-                        let mut merged = existing_server.clone();
-                        merged.apps.claude = true;
-                        merged
-                    } else {
-                        // 真正的新服务器
-                        new_count += 1;
-                        server.clone()
-                    };
-
-                    state.db.save_mcp_server(&to_save)?;
-                    existing.insert(to_save.id.clone(), to_save.clone());
-
-                    // 导入是读取已有配置，不应反向写回任何应用的 live 配置。
-                    // 显式编辑、启用/禁用或手动同步时再执行写回。
-                }
-            }
-        }
-
-        Ok(new_count)
+        Self::save_imported(state, count, &temp_config, &AppType::Claude)
     }
 
     /// 从 Codex 导入 MCP（v3.7.0 已更新为统一结构）
@@ -470,35 +442,7 @@ impl McpService {
 
         // 调用原有的导入逻辑（从 mcp.rs）
         let count = crate::mcp::import_from_codex(&mut temp_config)?;
-
-        let mut new_count = 0;
-
-        // 如果有导入的服务器，保存到数据库
-        if count > 0 {
-            if let Some(servers) = &temp_config.mcp.servers {
-                let mut existing = state.db.get_all_mcp_servers()?;
-                for server in servers.values() {
-                    // 已存在：仅启用 Codex，不覆盖其他字段（与导入模块语义保持一致）
-                    let to_save = if let Some(existing_server) = existing.get(&server.id) {
-                        let mut merged = existing_server.clone();
-                        merged.apps.codex = true;
-                        merged
-                    } else {
-                        // 真正的新服务器
-                        new_count += 1;
-                        server.clone()
-                    };
-
-                    state.db.save_mcp_server(&to_save)?;
-                    existing.insert(to_save.id.clone(), to_save.clone());
-
-                    // 导入是读取已有配置，不应反向写回任何应用的 live 配置。
-                    // 显式编辑、启用/禁用或手动同步时再执行写回。
-                }
-            }
-        }
-
-        Ok(new_count)
+        Self::save_imported(state, count, &temp_config, &AppType::Codex)
     }
 
     /// 从 Gemini 导入 MCP（v3.7.0 已更新为统一结构）
@@ -508,61 +452,14 @@ impl McpService {
 
         // 调用原有的导入逻辑（从 mcp.rs）
         let count = crate::mcp::import_from_gemini(&mut temp_config)?;
-
-        let mut new_count = 0;
-
-        // 如果有导入的服务器，保存到数据库
-        if count > 0 {
-            if let Some(servers) = &temp_config.mcp.servers {
-                let mut existing = state.db.get_all_mcp_servers()?;
-                for server in servers.values() {
-                    // 已存在：仅启用 Gemini，不覆盖其他字段（与导入模块语义保持一致）
-                    let to_save = if let Some(existing_server) = existing.get(&server.id) {
-                        let mut merged = existing_server.clone();
-                        merged.apps.gemini = true;
-                        merged
-                    } else {
-                        // 真正的新服务器
-                        new_count += 1;
-                        server.clone()
-                    };
-
-                    state.db.save_mcp_server(&to_save)?;
-                    existing.insert(to_save.id.clone(), to_save.clone());
-
-                    // 导入是读取已有配置，不应反向写回任何应用的 live 配置。
-                    // 显式编辑、启用/禁用或手动同步时再执行写回。
-                }
-            }
-        }
-
-        Ok(new_count)
+        Self::save_imported(state, count, &temp_config, &AppType::Gemini)
     }
 
     /// 从 Grok Build 的 `[mcp_servers]` 导入 MCP。
     pub fn import_from_grokbuild(state: &AppState) -> Result<usize, AppError> {
         let mut temp_config = crate::app_config::MultiAppConfig::default();
         let count = crate::mcp::import_from_grokbuild(&mut temp_config)?;
-        let mut new_count = 0;
-
-        if count > 0 {
-            if let Some(servers) = &temp_config.mcp.servers {
-                let mut existing = state.db.get_all_mcp_servers()?;
-                for server in servers.values() {
-                    let to_save = if let Some(existing_server) = existing.get(&server.id) {
-                        let mut merged = existing_server.clone();
-                        merged.apps.grokbuild = true;
-                        merged
-                    } else {
-                        new_count += 1;
-                        server.clone()
-                    };
-                    state.db.save_mcp_server(&to_save)?;
-                    existing.insert(to_save.id.clone(), to_save);
-                }
-            }
-        }
-        Ok(new_count)
+        Self::save_imported(state, count, &temp_config, &AppType::GrokBuild)
     }
 
     /// 从 OpenCode 导入 MCP（v3.9.2+ 新增）
@@ -572,35 +469,7 @@ impl McpService {
 
         // 调用原有的导入逻辑（从 mcp/opencode.rs）
         let count = crate::mcp::import_from_opencode(&mut temp_config)?;
-
-        let mut new_count = 0;
-
-        // 如果有导入的服务器，保存到数据库
-        if count > 0 {
-            if let Some(servers) = &temp_config.mcp.servers {
-                let mut existing = state.db.get_all_mcp_servers()?;
-                for server in servers.values() {
-                    // 已存在：仅启用 OpenCode，不覆盖其他字段（与导入模块语义保持一致）
-                    let to_save = if let Some(existing_server) = existing.get(&server.id) {
-                        let mut merged = existing_server.clone();
-                        merged.apps.opencode = true;
-                        merged
-                    } else {
-                        // 真正的新服务器
-                        new_count += 1;
-                        server.clone()
-                    };
-
-                    state.db.save_mcp_server(&to_save)?;
-                    existing.insert(to_save.id.clone(), to_save.clone());
-
-                    // 导入是读取已有配置，不应反向写回任何应用的 live 配置。
-                    // 显式编辑、启用/禁用或手动同步时再执行写回。
-                }
-            }
-        }
-
-        Ok(new_count)
+        Self::save_imported(state, count, &temp_config, &AppType::OpenCode)
     }
 
     /// 从 Hermes 导入 MCP
@@ -610,35 +479,84 @@ impl McpService {
 
         // 调用导入逻辑（从 mcp/hermes.rs）
         let count = crate::mcp::import_from_hermes(&mut temp_config)?;
+        Self::save_imported(state, count, &temp_config, &AppType::Hermes)
+    }
 
-        let mut new_count = 0;
-
-        // 如果有导入的服务器，保存到数据库
-        if count > 0 {
-            if let Some(servers) = &temp_config.mcp.servers {
-                let mut existing = state.db.get_all_mcp_servers()?;
-                for server in servers.values() {
-                    // 已存在：仅启用 Hermes，不覆盖其他字段（与导入模块语义保持一致）
-                    let to_save = if let Some(existing_server) = existing.get(&server.id) {
-                        let mut merged = existing_server.clone();
-                        merged.apps.hermes = true;
-                        merged
-                    } else {
-                        // 真正的新服务器
-                        new_count += 1;
-                        server.clone()
-                    };
-
-                    state.db.save_mcp_server(&to_save)?;
-                    existing.insert(to_save.id.clone(), to_save.clone());
-
-                    // 导入是读取已有配置，不应反向写回任何应用的 live 配置。
-                    // 显式编辑、启用/禁用或手动同步时再执行写回。
-                }
-            }
+    fn save_imported(
+        state: &AppState,
+        count: usize,
+        imported: &crate::app_config::MultiAppConfig,
+        app: &AppType,
+    ) -> Result<usize, AppError> {
+        match &imported.mcp.servers {
+            Some(servers) if count > 0 => Self::save_imported_servers(state, servers, app),
+            _ => Ok(0),
         }
+    }
 
+    /// Store servers read from one app's live config; returns the number of
+    /// new rows. A known id only gets `app` enabled (other fields kept). A
+    /// server whose content already exists under another id is skipped, so
+    /// an import never creates a duplicate that would then be projected a
+    /// second time under the new id. Imports never write any live config.
+    fn save_imported_servers(
+        state: &AppState,
+        servers: &HashMap<String, McpServer>,
+        app: &AppType,
+    ) -> Result<usize, AppError> {
+        let mut existing = state.db.get_all_mcp_servers()?;
+        let mut new_count = 0;
+        for server in servers.values() {
+            let to_save = match import_target(&existing, server) {
+                ImportTarget::SameId(mut merged) => {
+                    merged.apps.set_enabled_for(app, true);
+                    merged
+                }
+                ImportTarget::SameContent(other) => {
+                    log::info!(
+                        "跳过导入 MCP 服务器 '{}'：与已有的 '{other}' 内容相同",
+                        server.id
+                    );
+                    continue;
+                }
+                ImportTarget::New => {
+                    new_count += 1;
+                    server.clone()
+                }
+            };
+            state.db.save_mcp_server(&to_save)?;
+            existing.insert(to_save.id.clone(), to_save);
+        }
         Ok(new_count)
+    }
+
+    /// 06B switch: only this server's Codex section changes. For a
+    /// Codex-only server, off keeps the section (and the token in it) with
+    /// `enabled = false`; for a server shared with other apps, off removes it
+    /// from Codex only. Returns whether anything changed. The caller holds
+    /// the Codex switch lock.
+    pub fn set_codex_enabled(state: &AppState, id: &str, enabled: bool) -> Result<bool, AppError> {
+        let Some(previous) = state.db.get_all_mcp_servers()?.get(id).cloned() else {
+            return Err(AppError::InvalidInput(format!("MCP 服务器不存在: {id}")));
+        };
+        let updated = codex_toggle_target(&previous, enabled);
+        if updated.apps == previous.apps && updated.server == previous.server {
+            return Ok(false);
+        }
+        crate::mcp::validation::validate_server_spec(&updated.server)?;
+        state.db.save_mcp_server(&updated)?;
+        if let Err(primary_error) = Self::sync_enabled_for_app(state, &AppType::Codex) {
+            let mut snapshots = IndexMap::new();
+            snapshots.insert(id.to_string(), Some(previous));
+            let apps = HashSet::from([AppType::Codex]);
+            return Err(Self::rollback_changes(
+                state,
+                &snapshots,
+                &apps,
+                primary_error,
+            ));
+        }
+        Ok(true)
     }
 
     /// 从所有支持 MCP 的应用导入服务器，返回新导入的数量。
@@ -677,5 +595,223 @@ impl McpService {
                 failures.join("; ")
             )))
         }
+    }
+}
+
+/// Where an imported server lands in the DB (see `save_imported_servers`).
+#[derive(Debug)]
+pub(crate) enum ImportTarget {
+    SameId(McpServer),
+    SameContent(String),
+    New,
+}
+
+pub(crate) fn import_target(
+    existing: &IndexMap<String, McpServer>,
+    incoming: &McpServer,
+) -> ImportTarget {
+    if let Some(found) = existing.get(&incoming.id) {
+        return ImportTarget::SameId(found.clone());
+    }
+    let wanted = canonical_import_spec(&incoming.server);
+    existing
+        .values()
+        .find(|server| canonical_import_spec(&server.server) == wanted)
+        .map_or(ImportTarget::New, |server| {
+            ImportTarget::SameContent(server.id.clone())
+        })
+}
+
+/// Spec as compared for import dedup: the transport Codex would infer when
+/// `type` is absent, Codex's `http_headers` spelling folded into `headers`,
+/// and the per-app `enabled` override ignored.
+fn canonical_import_spec(spec: &serde_json::Value) -> serde_json::Value {
+    let mut spec = spec.clone();
+    if let Some(obj) = spec.as_object_mut() {
+        let typed = obj
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty());
+        if !typed {
+            let inferred = if !obj.contains_key("command") && obj.contains_key("url") {
+                "http"
+            } else {
+                "stdio"
+            };
+            obj.insert("type".into(), inferred.into());
+        }
+        if let Some(headers) = obj.remove("http_headers") {
+            obj.entry("headers").or_insert(headers);
+        }
+        obj.remove("enabled");
+    }
+    spec
+}
+
+/// Whether Codex loads this server: enabled for Codex and not switched off
+/// with the Codex `enabled = false` override.
+pub(crate) fn is_codex_enabled(server: &McpServer) -> bool {
+    server.apps.codex
+        && server
+            .server
+            .get("enabled")
+            .and_then(serde_json::Value::as_bool)
+            != Some(false)
+}
+
+/// The row after the 06B switch (see `McpService::set_codex_enabled`).
+pub(crate) fn codex_toggle_target(server: &McpServer, enabled: bool) -> McpServer {
+    let mut updated = server.clone();
+    let codex_only = updated
+        .apps
+        .enabled_apps()
+        .iter()
+        .all(|app| *app == AppType::Codex);
+    let obj = updated.server.as_object_mut();
+    match (enabled, obj) {
+        (true, obj) => {
+            updated.apps.codex = true;
+            if let Some(obj) = obj {
+                if obj.get("enabled").and_then(serde_json::Value::as_bool) == Some(false) {
+                    obj.remove("enabled");
+                }
+            }
+        }
+        (false, Some(obj)) if server.apps.codex && codex_only => {
+            obj.insert("enabled".into(), serde_json::Value::Bool(false));
+        }
+        (false, _) => updated.apps.codex = false,
+    }
+    updated
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app_config::McpApps;
+    use serde_json::json;
+
+    fn server(id: &str, spec: serde_json::Value, apps: McpApps) -> McpServer {
+        McpServer {
+            id: id.into(),
+            name: id.into(),
+            server: spec,
+            apps,
+            description: None,
+            homepage: None,
+            docs: None,
+            tags: Vec::new(),
+        }
+    }
+
+    fn codex_only() -> McpApps {
+        McpApps {
+            codex: true,
+            ..McpApps::default()
+        }
+    }
+
+    #[test]
+    fn import_dedups_by_content_not_only_by_id() {
+        let mut existing = IndexMap::new();
+        existing.insert(
+            "gh".to_string(),
+            server(
+                "gh",
+                json!({"type": "stdio", "command": "npx", "args": ["-y", "server-github"]}),
+                codex_only(),
+            ),
+        );
+
+        // Same content, other id, `type` left for inference: skipped.
+        let same = server(
+            "github",
+            json!({"command": "npx", "args": ["-y", "server-github"], "enabled": false}),
+            McpApps::default(),
+        );
+        assert!(matches!(
+            import_target(&existing, &same),
+            ImportTarget::SameContent(id) if id == "gh"
+        ));
+        // Same id: merged into the stored row.
+        let same_id = server("gh", json!({"command": "other"}), McpApps::default());
+        assert!(matches!(
+            import_target(&existing, &same_id),
+            ImportTarget::SameId(found) if found.server["command"] == "npx"
+        ));
+        // Different args: a real new server.
+        let other = server(
+            "fs",
+            json!({"command": "npx", "args": ["-y", "server-filesystem"]}),
+            McpApps::default(),
+        );
+        assert!(matches!(
+            import_target(&existing, &other),
+            ImportTarget::New
+        ));
+        // Codex's `http_headers` spelling matches the unified `headers`.
+        existing.insert(
+            "remote".to_string(),
+            server(
+                "remote",
+                json!({"type": "http", "url": "https://mcp.example.com", "headers": {"A": "1"}}),
+                codex_only(),
+            ),
+        );
+        let remote = server(
+            "remote-2",
+            json!({"url": "https://mcp.example.com", "http_headers": {"A": "1"}}),
+            McpApps::default(),
+        );
+        assert!(matches!(
+            import_target(&existing, &remote),
+            ImportTarget::SameContent(id) if id == "remote"
+        ));
+    }
+
+    #[test]
+    fn codex_switch_keeps_a_codex_only_section_and_its_token() {
+        let github = server(
+            "github",
+            json!({"type": "stdio", "command": "npx", "env": {"TOKEN": "ghp_x"}}),
+            codex_only(),
+        );
+        assert!(is_codex_enabled(&github));
+
+        let off = codex_toggle_target(&github, false);
+        assert!(off.apps.codex, "the section stays projected");
+        assert_eq!(off.server["enabled"], false);
+        assert_eq!(off.server["env"]["TOKEN"], "ghp_x");
+        assert!(!is_codex_enabled(&off));
+
+        let on = codex_toggle_target(&off, true);
+        assert!(on.server.get("enabled").is_none());
+        assert!(is_codex_enabled(&on));
+        assert_eq!(on.server, github.server);
+    }
+
+    #[test]
+    fn codex_switch_never_touches_other_apps() {
+        let shared = server(
+            "fs",
+            json!({"type": "stdio", "command": "npx"}),
+            McpApps {
+                codex: true,
+                claude: true,
+                ..McpApps::default()
+            },
+        );
+        let off = codex_toggle_target(&shared, false);
+        assert!(!off.apps.codex);
+        assert!(off.apps.claude);
+        assert!(
+            off.server.get("enabled").is_none(),
+            "no Codex override leaks to Claude"
+        );
+
+        let never = server("x", json!({"command": "x"}), McpApps::default());
+        let on = codex_toggle_target(&never, true);
+        assert!(on.apps.codex);
+        assert!(!on.apps.claude);
     }
 }

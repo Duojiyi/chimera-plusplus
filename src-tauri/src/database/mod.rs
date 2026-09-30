@@ -41,6 +41,7 @@ pub(crate) use dao::proxy::{
     PRICING_SOURCE_RESPONSE,
 };
 pub use dao::FailoverQueueItem;
+pub use dao::NotesTable;
 pub use dao::Profile;
 
 use crate::config::get_app_config_dir;
