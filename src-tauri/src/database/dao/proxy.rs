@@ -10,6 +10,39 @@ use rust_decimal::Decimal;
 
 use super::super::{lock_conn, Database};
 
+/// MH-17 / L4: drop `auth` from a Codex takeover backup. The proxy
+/// placeholder is not a credential and is kept, so a backup that captured an
+/// already taken-over `auth.json` is still recognized and skipped on
+/// restore. Returns `None` when there is nothing to strip; invalid JSON is
+/// an error (the caller must not store it).
+pub(crate) fn codex_live_backup_without_auth(
+    config_json: &str,
+) -> Result<Option<String>, AppError> {
+    let invalid = || AppError::Config("Codex Live 备份必须是 JSON 对象".to_string());
+    let mut value: serde_json::Value = serde_json::from_str(config_json).map_err(|_| invalid())?;
+    let root = value.as_object_mut().ok_or_else(invalid)?;
+    let Some(auth) = root.remove("auth") else {
+        return Ok(None);
+    };
+    let placeholder = crate::codex_config::CODEX_PROXY_AUTH_PLACEHOLDER;
+    if auth
+        .get("OPENAI_API_KEY")
+        .and_then(serde_json::Value::as_str)
+        == Some(placeholder)
+    {
+        if auth.as_object().is_some_and(|auth| auth.len() == 1) {
+            return Ok(None);
+        }
+        root.insert(
+            "auth".to_string(),
+            serde_json::json!({ "OPENAI_API_KEY": placeholder }),
+        );
+    }
+    serde_json::to_string(&value)
+        .map(Some)
+        .map_err(|source| AppError::JsonSerialize { source })
+}
+
 pub(crate) const PRICING_SOURCE_RESPONSE: &str = "response";
 pub(crate) const PRICING_SOURCE_REQUEST: &str = "request";
 
@@ -776,11 +809,21 @@ impl Database {
     // ==================== Live Backup ====================
 
     /// 保存 Live 配置备份
+    ///
+    /// MH-17 / L4: a Codex backup keeps `config.toml` (and the inline
+    /// catalog) only. `auth.json` is never stored; restoring a backup leaves
+    /// it alone and switch rollback keeps it in memory.
     pub async fn save_live_backup(
         &self,
         app_type: &str,
         config_json: &str,
     ) -> Result<(), AppError> {
+        let stripped = if app_type == "codex" {
+            codex_live_backup_without_auth(config_json)?
+        } else {
+            None
+        };
+        let config_json = stripped.as_deref().unwrap_or(config_json);
         let conn = lock_conn!(self.conn);
         let now = chrono::Utc::now().to_rfc3339();
 
@@ -841,6 +884,52 @@ impl Database {
 
         log::info!("已删除 {app_type} Live 配置备份");
         Ok(())
+    }
+
+    /// Startup migration (MH-17 / L4, idempotent): strip `auth` from a Codex
+    /// backup stored by an older version. A row that is not valid JSON
+    /// cannot be stripped and is deleted (restore already skips it). Old
+    /// pages are overwritten (`secure_delete`). Returns whether it changed
+    /// anything.
+    pub fn strip_auth_from_codex_live_backup(&self) -> Result<bool, AppError> {
+        use rusqlite::OptionalExtension;
+
+        let conn = lock_conn!(self.conn);
+        let stored: Option<String> = conn
+            .query_row(
+                "SELECT original_config FROM proxy_live_backup WHERE app_type = 'codex'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let Some(stored) = stored else {
+            return Ok(false);
+        };
+        let replacement = match codex_live_backup_without_auth(&stored) {
+            Ok(None) => return Ok(false),
+            Ok(Some(stripped)) => Some(stripped),
+            Err(_) => None,
+        };
+
+        let secure_delete: i64 = conn
+            .query_row("PRAGMA secure_delete", [], |row| row.get(0))
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        conn.execute_batch("PRAGMA secure_delete = ON;")
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let result = match replacement.as_deref() {
+            Some(stripped) => conn.execute(
+                "UPDATE proxy_live_backup SET original_config = ?1 WHERE app_type = 'codex'",
+                rusqlite::params![stripped],
+            ),
+            None => conn.execute("DELETE FROM proxy_live_backup WHERE app_type = 'codex'", []),
+        };
+        if let Err(error) = conn.execute_batch(&format!("PRAGMA secure_delete = {secure_delete};"))
+        {
+            log::warn!("恢复 secure_delete 设置失败: {error}");
+        }
+        result.map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(true)
     }
 
     /// 删除所有 Live 配置备份

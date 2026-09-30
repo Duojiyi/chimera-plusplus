@@ -9,6 +9,7 @@ mod codex_cdp;
 mod codex_config;
 mod codex_history_migration;
 mod codex_key_ownership;
+mod codex_live_write;
 mod codex_state_db;
 mod commands;
 mod config;

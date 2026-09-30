@@ -154,6 +154,12 @@ impl Database {
         }
 
         db.apply_schema_migrations()?;
+        // MH-17 / L4: before any takeover recovery reads it.
+        match db.strip_auth_from_codex_live_backup() {
+            Ok(true) => log::info!("Removed auth.json from the stored Codex takeover backup"),
+            Ok(false) => {}
+            Err(e) => log::warn!("Failed to strip auth from the Codex takeover backup: {e}"),
+        }
         if let Err(e) = db.ensure_incremental_auto_vacuum() {
             log::warn!("Failed to ensure incremental auto-vacuum: {e}");
         }

@@ -21,7 +21,7 @@ pub const CC_SWITCH_CODEX_MODEL_PROVIDER_ID: &str = "custom";
 /// cleaned up without mistaking a user's own local provider for takeover.
 pub const CC_SWITCH_CODEX_OFFICIAL_PROXY_PROVIDER_ID: &str = "cc-switch-official";
 pub const CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME: &str = "cc-switch-model-catalog.json";
-const CODEX_PROXY_AUTH_PLACEHOLDER: &str = "PROXY_MANAGED";
+pub(crate) const CODEX_PROXY_AUTH_PLACEHOLDER: &str = "PROXY_MANAGED";
 
 /// A model identity returned by Codex's own `debug models` command.
 ///

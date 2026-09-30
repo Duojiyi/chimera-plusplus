@@ -16,8 +16,9 @@ use crate::error::AppError;
 // The CAS changeset lives beside `atomic_write` because it is built on the
 // same temp-file + replace primitive (`atomic_write_checked`), and keeping it
 // in this module preserves a single implementation of symlink refusal and
-// the Windows `MoveFileExW` replace. Production write paths adopt it in
-// write lane L4; until then it is only exercised by its own tests.
+// the Windows `MoveFileExW` replace. Codex live files are written through it
+// by `codex_live_write`; parts of the API (inspection accessors, explicit
+// rollback) are for callers pairing a commit with a DB transaction.
 #[allow(dead_code)]
 pub mod cas;
 
@@ -273,12 +274,14 @@ pub fn write_json_file<T: Serialize>(path: &Path, data: &T) -> Result<(), AppErr
         fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
     }
 
-    let value = serde_json::to_value(data).map_err(|e| AppError::JsonSerialize { source: e })?;
-    let sorted_value = sort_json_keys(&value);
-    let json = serde_json::to_string_pretty(&sorted_value)
-        .map_err(|e| AppError::JsonSerialize { source: e })?;
+    atomic_write(path, json_file_text(data)?.as_bytes())
+}
 
-    atomic_write(path, json.as_bytes())
+/// The exact text [`write_json_file`] writes (sorted keys, pretty-printed).
+pub(crate) fn json_file_text<T: Serialize>(data: &T) -> Result<String, AppError> {
+    let value = serde_json::to_value(data).map_err(|e| AppError::JsonSerialize { source: e })?;
+    serde_json::to_string_pretty(&sort_json_keys(&value))
+        .map_err(|e| AppError::JsonSerialize { source: e })
 }
 
 /// 原子写入文本文件（用于 TOML/纯文本）

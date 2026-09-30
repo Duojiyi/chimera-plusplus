@@ -1102,6 +1102,26 @@ impl LiveSnapshot {
         }
     }
 
+    /// The CAS write that puts a Codex snapshot back; `None` for other apps.
+    pub(crate) fn codex_restore_write(
+        &self,
+    ) -> Option<crate::codex_live_write::CodexLiveWrite<'_>> {
+        use crate::codex_live_write::{CodexLiveWrite, LiveFile};
+        let Self::Codex {
+            auth,
+            config,
+            model_catalog,
+        } = self
+        else {
+            return None;
+        };
+        Some(CodexLiveWrite {
+            auth: LiveFile::restore(auth.as_ref()),
+            config: LiveFile::restore(config.as_deref()),
+            model_catalog: LiveFile::restore(model_catalog.as_deref()),
+        })
+    }
+
     #[allow(dead_code)]
     pub(crate) fn restore(&self) -> Result<(), AppError> {
         match self {
@@ -1116,57 +1136,13 @@ impl LiveSnapshot {
             LiveSnapshot::ClaudeDesktop { snapshot } => {
                 snapshot.restore()?;
             }
-            LiveSnapshot::Codex {
-                auth,
-                config,
-                model_catalog,
-            } => {
-                let auth_path = get_codex_auth_path();
-                let config_path = get_codex_config_path();
-                let model_catalog_path = get_codex_model_catalog_path();
-                // Restore every component independently. The catalog is
-                // written before config.toml during provider projection, so a
-                // failure restoring auth/config must not prevent us from at
-                // least restoring the old catalog and reducing split-brain.
-                let mut errors = Vec::new();
-                let auth_result = if let Some(value) = auth {
-                    write_json_file(&auth_path, value)
-                } else if auth_path.exists() {
-                    delete_file(&auth_path)
-                } else {
-                    Ok(())
-                };
-                if let Err(error) = auth_result {
-                    errors.push(format!("auth.json: {error}"));
-                }
-
-                let config_result = if let Some(text) = config {
-                    crate::config::write_text_file(&config_path, text)
-                } else if config_path.exists() {
-                    delete_file(&config_path)
-                } else {
-                    Ok(())
-                };
-                if let Err(error) = config_result {
-                    errors.push(format!("config.toml: {error}"));
-                }
-
-                let catalog_result = if let Some(text) = model_catalog {
-                    crate::config::write_text_file(&model_catalog_path, text)
-                } else if model_catalog_path.exists() {
-                    delete_file(&model_catalog_path)
-                } else {
-                    Ok(())
-                };
-                if let Err(error) = catalog_result {
-                    errors.push(format!("cc-switch-model-catalog.json: {error}"));
-                }
-
-                if !errors.is_empty() {
-                    return Err(AppError::Message(format!(
-                        "恢复 Codex Live 快照失败: {}",
-                        errors.join("；")
-                    )));
+            LiveSnapshot::Codex { .. } => {
+                // One CAS changeset: all three files come back or none do,
+                // and auth.json is restored from the bytes held in memory.
+                if let Some(write) = self.codex_restore_write() {
+                    crate::codex_live_write::write_codex_live_files(write).map_err(|error| {
+                        AppError::Message(format!("恢复 Codex Live 快照失败: {error}"))
+                    })?;
                 }
             }
             LiveSnapshot::Gemini { env, .. } => {
@@ -2252,7 +2228,7 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    fn codex_snapshot_restore_attempts_catalog_after_auth_failure() {
+    fn codex_snapshot_restore_is_all_or_nothing_when_auth_is_unwritable() {
         let original = std::env::var_os("CC_SWITCH_TEST_HOME");
         let home = tempfile::tempdir().expect("create test home");
         std::env::set_var("CC_SWITCH_TEST_HOME", home.path());
@@ -2268,10 +2244,67 @@ mod tests {
         std::fs::create_dir_all(&auth_path).expect("block auth write");
         let error = snapshot.restore().expect_err("auth restore fails");
         assert!(error.to_string().contains("auth.json"));
+        // Nothing is half-restored: the catalog keeps the newer state that
+        // matches the rest of live.
         assert_eq!(
             std::fs::read_to_string(&catalog_path).expect("catalog"),
-            "catalog-a"
+            "catalog-b"
         );
+        match original {
+            Some(v) => std::env::set_var("CC_SWITCH_TEST_HOME", v),
+            None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn codex_snapshot_restore_aborts_cleanly_on_conflict_and_rolls_auth_back_from_memory() {
+        let original = std::env::var_os("CC_SWITCH_TEST_HOME");
+        let home = tempfile::tempdir().expect("create test home");
+        std::env::set_var("CC_SWITCH_TEST_HOME", home.path());
+        let auth_path = get_codex_auth_path();
+        let config_path = get_codex_config_path();
+        let old_auth = json!({"auth_mode": "chatgpt", "tokens": {"access_token": "old"}});
+        write_json_file(&auth_path, &old_auth).expect("seed auth");
+        crate::config::write_text_file(&config_path, "model = \"old\"\n").expect("seed config");
+        let snapshot = LiveSnapshot::capture(&AppType::Codex)
+            .expect("capture")
+            .expect("supported");
+
+        // A switch writes new files; auth.json is not copied anywhere.
+        write_json_file(&auth_path, &json!({"OPENAI_API_KEY": "new"})).expect("new auth");
+        crate::config::write_text_file(&config_path, "model = \"new\"\n").expect("new config");
+        let entries = std::fs::read_dir(auth_path.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(entries
+            .iter()
+            .all(|name| !name.contains("auth") || name == "auth.json"));
+
+        // Another program changes config.toml between plan and commit: the
+        // restore aborts before touching anything.
+        let planned = crate::codex_live_write::plan(snapshot.codex_restore_write().unwrap())
+            .expect("plan restore");
+        std::fs::write(&config_path, "model = \"external\"\n").expect("external write");
+        assert!(planned.commit().is_err());
+        assert_eq!(
+            read_json_file::<Value>(&auth_path).expect("auth"),
+            json!({"OPENAI_API_KEY": "new"})
+        );
+        assert_eq!(
+            std::fs::read_to_string(&config_path).unwrap(),
+            "model = \"external\"\n"
+        );
+
+        // Without interference the rollback restores auth.json from memory.
+        snapshot.restore().expect("restore");
+        assert_eq!(read_json_file::<Value>(&auth_path).expect("auth"), old_auth);
+        assert_eq!(
+            std::fs::read_to_string(&config_path).unwrap(),
+            "model = \"old\"\n"
+        );
+
         match original {
             Some(v) => std::env::set_var("CC_SWITCH_TEST_HOME", v),
             None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
