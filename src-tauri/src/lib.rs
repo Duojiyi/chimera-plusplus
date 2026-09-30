@@ -1855,6 +1855,11 @@ pub fn run() {
             commands::sync_current_providers_live,
             commands::get_codex_import_review,
             commands::confirm_codex_import_sync,
+            // Per-tool live backups (M2.1 ②, `live_backups`)
+            commands::list_live_backups,
+            commands::create_live_backup,
+            commands::restore_live_backup,
+            commands::delete_live_backup,
             // Deep link import
             commands::get_pending_deeplink,
             commands::dismiss_pending_deeplink,

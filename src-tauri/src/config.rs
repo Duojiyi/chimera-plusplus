@@ -16,9 +16,9 @@ use crate::error::AppError;
 // The CAS changeset lives beside `atomic_write` because it is built on the
 // same temp-file + replace primitive (`atomic_write_checked`), and keeping it
 // in this module preserves a single implementation of symlink refusal and
-// the Windows `MoveFileExW` replace. Codex live files are written through it
-// by `codex_live_write`; parts of the API (inspection accessors, explicit
-// rollback) are for callers pairing a commit with a DB transaction.
+// the Windows `MoveFileExW` replace. Codex live files and per-tool live backups
+// use it; parts of the API (inspection accessors, explicit rollback) are for callers
+// pairing a commit with a DB transaction.
 #[allow(dead_code)]
 pub mod cas;
 
