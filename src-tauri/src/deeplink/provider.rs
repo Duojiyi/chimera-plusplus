@@ -1657,10 +1657,14 @@ mod tests {
             crate::settings::get_current_provider(&AppType::Claude).as_deref(),
             Some("claude-a")
         );
-        let providers = db.get_all_providers("claude").expect("read providers");
-        assert_eq!(providers.len(), 2);
-        let imported = providers.get(&result.id).expect("imported exists");
-        assert!(!imported.is_current);
+        let imported = providers.get(&result).expect("imported exists");
+        assert_eq!(imported.id, result);
+        assert_ne!(
+            db.get_current_provider("claude")
+                .expect("read current")
+                .as_deref(),
+            Some(result.as_str())
+        );
     }
 
     #[tokio::test]
@@ -1774,7 +1778,7 @@ mod tests {
             crate::settings::get_current_provider(&AppType::Codex).as_deref(),
             Some("codex-b")
         );
-        let live = std::fs::read_to_string(crate::config::get_codex_config_path())
+        let live = std::fs::read_to_string(crate::codex_config::get_codex_config_path())
             .expect("read Codex Live after rollback");
         assert!(live.contains("model-b"));
         assert!(!live.contains("model-c"));
@@ -1928,7 +1932,7 @@ mod tests {
         );
         assert_eq!(crate::settings::get_current_provider(&AppType::Codex), None);
         assert!(
-            !crate::config::get_codex_config_path().exists(),
+            !crate::codex_config::get_codex_config_path().exists(),
             "failed enabled import must restore the missing Live config"
         );
     }

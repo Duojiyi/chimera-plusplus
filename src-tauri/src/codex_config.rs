@@ -414,7 +414,9 @@ pub fn repair_rejected_codex_settings_at_startup() -> Result<bool, AppError> {
         chrono::Local::now().format("%Y%m%d%H%M%S")
     ));
     fs::write(&backup_path, text.as_bytes()).map_err(|e| AppError::io(&backup_path, e))?;
-    write_text_file(&config_path, &repaired)?;
+    crate::codex_live_write::write_codex_live_files(
+        crate::codex_live_write::CodexLiveWrite::config_only(&repaired),
+    )?;
     log::info!(
         "✓ Repaired Codex config.toml (backup: {})",
         backup_path.display()
@@ -427,48 +429,14 @@ pub fn write_codex_live_atomic(
     auth: &Value,
     config_text_opt: Option<&str>,
 ) -> Result<(), AppError> {
-    let auth_path = get_codex_auth_path();
-    let config_path = get_codex_config_path();
-
-    if let Some(parent) = auth_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
-    }
-
-    // 读取旧内容用于回滚
-    let old_auth = if auth_path.exists() {
-        Some(fs::read(&auth_path).map_err(|e| AppError::io(&auth_path, e))?)
-    } else {
-        None
-    };
-    let _old_config = if config_path.exists() {
-        Some(fs::read(&config_path).map_err(|e| AppError::io(&config_path, e))?)
-    } else {
-        None
-    };
-
-    // 准备写入内容
-    let cfg_text = match config_text_opt {
-        Some(s) => strip_rejected_codex_settings(s)?,
-        None => String::new(),
-    };
-    if !cfg_text.trim().is_empty() {
-        toml::from_str::<toml::Table>(&cfg_text).map_err(|e| AppError::toml(&config_path, e))?;
-    }
-
-    // 第一步：写 auth.json
-    write_json_file(&auth_path, auth)?;
-
-    // 第二步：写 config.toml（失败则回滚 auth.json）
-    if let Err(e) = write_text_file(&config_path, &cfg_text) {
-        // 回滚 auth.json
-        if let Some(bytes) = old_auth {
-            let _ = atomic_write(&auth_path, &bytes);
-        } else {
-            let _ = delete_file(&auth_path);
-        }
-        return Err(e);
-    }
-
+    crate::codex_live_write::write_codex_live_files(crate::codex_live_write::CodexLiveWrite {
+        auth: crate::codex_live_write::LiveFile::Write(auth),
+        config: match config_text_opt {
+            Some(s) => crate::codex_live_write::LiveFile::Write(s),
+            None => crate::codex_live_write::LiveFile::Write(""),
+        },
+        model_catalog: crate::codex_live_write::LiveFile::Keep,
+    })?;
     Ok(())
 }
 
@@ -604,17 +572,11 @@ pub fn normalize_codex_third_party_auth_config(config_text: &str) -> Result<Stri
 /// and provider-scoped bearer tokens live in `config.toml`. Provider switches
 /// should not overwrite the user's ChatGPT login cache.
 pub fn write_codex_live_config_atomic(config_text_opt: Option<&str>) -> Result<(), AppError> {
-    let config_path = get_codex_config_path();
-    let cfg_text = match config_text_opt {
-        Some(config_text) => strip_rejected_codex_settings(config_text)?,
-        None => String::new(),
-    };
-
-    if !cfg_text.trim().is_empty() {
-        toml::from_str::<toml::Table>(&cfg_text).map_err(|e| AppError::toml(&config_path, e))?;
-    }
-
-    write_text_file(&config_path, &cfg_text)
+    let cfg = config_text_opt.unwrap_or("");
+    crate::codex_live_write::write_codex_live_files(
+        crate::codex_live_write::CodexLiveWrite::config_only(cfg),
+    )?;
+    Ok(())
 }
 
 pub fn extract_codex_auth_api_key(auth: &Value) -> Option<String> {

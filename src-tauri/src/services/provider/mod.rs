@@ -3,6 +3,7 @@
 //! Handles provider CRUD operations, switching, and configuration management.
 
 mod endpoints;
+pub(crate) mod first_write;
 mod gemini_auth;
 mod live;
 mod mcode;
@@ -3195,8 +3196,10 @@ impl ProviderService {
                 }
             }
 
+            let provider_to_write =
+                first_write::protect_first_live_write(state, &app_type, provider)?;
             if let Err(error) =
-                write_live_with_common_config(state.db.as_ref(), &app_type, provider)
+                write_live_with_common_config(state.db.as_ref(), &app_type, &provider_to_write)
             {
                 let rollback = live_snapshot
                     .as_ref()

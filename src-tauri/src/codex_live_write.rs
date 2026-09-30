@@ -110,10 +110,92 @@ pub(crate) fn plan(write: CodexLiveWrite<'_>) -> Result<PlannedCodexLiveWrite, A
     Ok(PlannedCodexLiveWrite { changeset })
 }
 
+/// L5 gate: validate model_instructions_file references.
+/// Codex 0.157 fails to start if an instructions file does not exist (line 3957)
+/// or is empty (line 4513).
+///
+/// Chimera-owned instructions live in `chimera/instructions/`.
+/// When an instruction file reference is a chimera-owned pointer that is dangling
+/// (missing or empty), this gate strips the dangling pointer from `config.toml`
+/// so Codex will still start safely. External/user paths are preserved verbatim.
+pub(crate) fn validate_instruction_refs(toml_text: &str) -> Result<String, AppError> {
+    if !toml_text.contains("model_instructions_file") {
+        return Ok(toml_text.to_string());
+    }
+
+    let mut doc = match toml_text.parse::<toml_edit::DocumentMut>() {
+        Ok(doc) => doc,
+        Err(_) => return Ok(toml_text.to_string()),
+    };
+
+    let codex_dir = crate::codex_config::get_codex_config_dir();
+    let mut modified = false;
+
+    let check_ref = |raw_val: &str| -> Result<bool, AppError> {
+        let norm = raw_val.to_ascii_lowercase().replace('\\', "/");
+        let is_owned =
+            norm.starts_with("chimera/instructions/") || norm.contains("/chimera/instructions/");
+        let resolved = if std::path::Path::new(raw_val).is_absolute() {
+            PathBuf::from(raw_val)
+        } else {
+            codex_dir.join(raw_val)
+        };
+        let is_dangling = match std::fs::metadata(&resolved) {
+            Ok(meta) => meta.len() == 0,
+            Err(_) => true,
+        };
+        if is_dangling {
+            if is_owned {
+                // Strip dangling chimera-owned instruction files
+                Ok(true)
+            } else {
+                // Fail closed for broken external user paths: Codex 0.157 crashes on missing/empty files
+                Err(AppError::Message(format!(
+                    "指令文件 '{raw_val}' 不存在或为空文件，Codex 0.157 拒载该配置。请修正路径或补充内容。"
+                )))
+            }
+        } else {
+            Ok(false)
+        }
+    };
+
+    if let Some(val) = doc.get("model_instructions_file").and_then(|v| v.as_str()) {
+        if check_ref(val)? {
+            log::warn!("Stripping dangling chimera instructions file pointer: {val}");
+            doc.remove("model_instructions_file");
+            modified = true;
+        }
+    }
+
+    if let Some(profiles) = doc.get_mut("profiles").and_then(|p| p.as_table_like_mut()) {
+        for (_name, profile_item) in profiles.iter_mut() {
+            if let Some(table) = profile_item.as_table_like_mut() {
+                if let Some(val) = table
+                    .get("model_instructions_file")
+                    .and_then(|v| v.as_str())
+                {
+                    if check_ref(val)? {
+                        log::warn!("Stripping dangling profile instructions file pointer: {val}");
+                        table.remove("model_instructions_file");
+                        modified = true;
+                    }
+                }
+            }
+        }
+    }
+
+    if modified {
+        Ok(doc.to_string())
+    } else {
+        Ok(toml_text.to_string())
+    }
+}
+
 /// Every `config.toml` text passes here before it is planned: settings
 /// Codex rejects wholesale are removed and the result must parse.
 fn prepare_config_text(text: &str) -> Result<String, AppError> {
     let text = crate::codex_config::strip_rejected_codex_settings(text)?;
+    let text = validate_instruction_refs(&text)?;
     crate::codex_config::validate_config_toml(&text)?;
     Ok(text)
 }
@@ -213,5 +295,80 @@ mod tests {
             fs::read_to_string(get_codex_config_path()).unwrap(),
             "model = \"b\"\n"
         );
+    }
+
+    #[test]
+    #[serial]
+    fn validate_instruction_refs_strips_dangling_chimera_instructions() {
+        let _home = TestHome::new();
+        let input = r#"model = "gpt-4o"
+model_instructions_file = "chimera/instructions/nonexistent.md"
+
+[profiles.custom]
+model = "claude-3-7-sonnet"
+model_instructions_file = "chimera/instructions/empty.md"
+"#;
+        // Create the empty file to test empty file stripping
+        let empty_path =
+            crate::codex_config::get_codex_config_dir().join("chimera/instructions/empty.md");
+        std::fs::create_dir_all(empty_path.parent().unwrap()).unwrap();
+        std::fs::write(&empty_path, b"").unwrap();
+
+        let output = validate_instruction_refs(input).unwrap();
+        assert!(
+            !output.contains("chimera/instructions/nonexistent.md"),
+            "missing instructions file must be stripped: {output}"
+        );
+        assert!(
+            !output.contains("chimera/instructions/empty.md"),
+            "empty instructions file must be stripped: {output}"
+        );
+        assert!(output.contains("model = \"gpt-4o\""));
+        assert!(output.contains("[profiles.custom]"));
+    }
+
+    #[test]
+    #[serial]
+    fn validate_instruction_refs_preserves_external_and_valid_instructions() {
+        let _home = TestHome::new();
+        let valid_path =
+            crate::codex_config::get_codex_config_dir().join("chimera/instructions/valid.md");
+        std::fs::create_dir_all(valid_path.parent().unwrap()).unwrap();
+        std::fs::write(&valid_path, b"You are an assistant.").unwrap();
+
+        let ext_dir = tempfile::tempdir().unwrap();
+        let ext_path = ext_dir.path().join("instructions.md");
+        std::fs::write(&ext_path, b"External instructions").unwrap();
+        let ext_str = ext_path.to_str().unwrap().replace('\\', "/");
+
+        let input = format!(
+            r#"model = "gpt-4o"
+model_instructions_file = "chimera/instructions/valid.md"
+
+[profiles.user]
+model = "custom"
+model_instructions_file = "{ext_str}"
+"#
+        );
+        let output = validate_instruction_refs(&input).unwrap();
+        assert!(
+            output.contains("chimera/instructions/valid.md"),
+            "valid instructions file must be preserved"
+        );
+        assert!(
+            output.contains(&ext_str),
+            "user external instructions file must be preserved"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn validate_instruction_refs_fails_closed_on_broken_external_instructions() {
+        let _home = TestHome::new();
+        let input = r#"model = "gpt-4o"
+model_instructions_file = "/nonexistent/external/path.md"
+"#;
+        let err = validate_instruction_refs(input).unwrap_err();
+        assert!(err.to_string().contains("Codex 0.157 拒载该配置"));
     }
 }

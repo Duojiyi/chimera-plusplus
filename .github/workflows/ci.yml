@@ -63,6 +63,9 @@ jobs:
       - name: Build renderer and enforce bundle budgets
         run: pnpm build:renderer:check
 
+      - name: Verify single Codex config writer
+        run: node scripts/check-single-config-writer.mjs
+
       - name: Audit all npm dependencies
         run: pnpm audit --audit-level=low
 

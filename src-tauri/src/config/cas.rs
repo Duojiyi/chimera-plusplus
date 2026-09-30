@@ -369,7 +369,26 @@ impl Changeset {
         } in writes
         {
             let written = FileState::of(contents.as_deref());
-            if snapshot.state == written {
+            let skip = if snapshot.state == written {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if mode == WriteMode::Private {
+                        std::fs::metadata(&snapshot.path)
+                            .map(|m| (m.permissions().mode() & 0o777) == 0o600)
+                            .unwrap_or(false)
+                    } else {
+                        true
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    true
+                }
+            } else {
+                false
+            };
+            if skip {
                 continue;
             }
             let result = self.checkpoint(Stage::BeforeWrite).and_then(|()| {

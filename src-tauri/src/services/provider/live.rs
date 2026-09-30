@@ -1479,28 +1479,59 @@ pub fn sync_current_to_live_except(
     state: &AppState,
     skip: Option<&AppType>,
 ) -> Result<(), AppError> {
+    // M2.1: an import or restore projects only the tools the user has
+    // enabled. A hidden tool's live files are not ours to rewrite just
+    // because the imported database happens to carry rows for it.
+    let visible_apps = crate::settings::get_settings()
+        .visible_apps
+        .unwrap_or_default();
+    let apps: Vec<AppType> = AppType::all()
+        .filter(|app| crate::product_policy::is_tool_enabled(app, &visible_apps))
+        .collect();
+
     let mut failures = Vec::new();
-    for app_type in AppType::all() {
-        if skip == Some(&app_type) {
+    for app_type in &apps {
+        if skip == Some(app_type) {
             continue;
         }
-        let result = if app_type.is_additive_mode() {
-            sync_all_providers_to_live(state, &app_type)
+        let will_write = if app_type.is_additive_mode() {
+            state
+                .db
+                .get_all_providers(app_type.as_str())
+                .map(|p| !p.is_empty())
+                .unwrap_or(false)
         } else {
-            sync_current_provider_for_app_respecting_takeover(state, &app_type)
+            crate::settings::get_effective_current_provider(&state.db, app_type)
+                .map(|p| p.is_some())
+                .unwrap_or(false)
         };
+        if !will_write {
+            continue;
+        }
+
+        // First-switch protection: the first write of a tool's live config
+        // is preceded by a backup of what the user had there.
+        let result =
+            super::first_write::backup_before_first_live_write(state, app_type).and_then(|()| {
+                if app_type.is_additive_mode() {
+                    sync_all_providers_to_live(state, app_type)
+                } else {
+                    sync_current_provider_for_app_respecting_takeover(state, app_type)
+                }
+            });
         if let Err(error) = result {
             failures.push(format!("{app_type:?} provider: {error}"));
         }
     }
     // Best effort must still report partial failure after attempting every
     // projection. Otherwise restore/import callers incorrectly report success.
-    if let Err(error) = McpService::sync_all_enabled(state) {
-        failures.push(format!("MCP: {error}"));
+    for app_type in &apps {
+        if let Err(error) = McpService::sync_enabled_for_app(state, app_type) {
+            failures.push(format!("{app_type:?} MCP: {error}"));
+        }
     }
-    for app_type in AppType::all() {
-        if let Err(error) = crate::services::skill::SkillService::sync_to_app(&state.db, &app_type)
-        {
+    for app_type in &apps {
+        if let Err(error) = crate::services::skill::SkillService::sync_to_app(&state.db, app_type) {
             failures.push(format!("{app_type:?} Skill: {error}"));
         }
     }

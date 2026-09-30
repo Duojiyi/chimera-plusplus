@@ -146,7 +146,7 @@ pub struct TrayAppSection {
 /// Whether the tray shows (and acts on) `app_type`. While `multi_tool` is off
 /// the product hard-hide leaves only Codex, whatever `visibleApps` says.
 fn tray_app_enabled(app_type: &AppType, visible_apps: &crate::settings::VisibleApps) -> bool {
-    crate::product_policy::is_app_visible_by_product(app_type) && visible_apps.is_visible(app_type)
+    crate::product_policy::is_tool_enabled(app_type, visible_apps)
 }
 
 /// Auto 菜单项后缀

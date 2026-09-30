@@ -274,6 +274,13 @@ fn app_visible_when(app: &AppType, multi_tool: bool) -> bool {
     multi_tool || DEFAULT_VISIBLE_APPS.contains(app)
 }
 
+/// A tool the user has turned on: visible by product policy and shown in
+/// the user's `visibleApps`. Background projections (tray sections, the
+/// post-import live sync) only touch enabled tools.
+pub fn is_tool_enabled(app: &AppType, visible_apps: &crate::settings::VisibleApps) -> bool {
+    is_app_visible_by_product(app) && visible_apps.is_visible(app)
+}
+
 pub fn accepts_deep_link(url: &str) -> bool {
     let scheme = url.split_once("://").map(|(scheme, _)| scheme);
     matches!(

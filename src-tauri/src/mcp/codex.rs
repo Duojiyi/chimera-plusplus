@@ -409,7 +409,9 @@ pub fn sync_single_server_to_codex(
 
     // 写回文件
     let new_text = doc.to_string();
-    crate::config::write_text_file(&config_path, &new_text)?;
+    crate::codex_live_write::write_codex_live_files(
+        crate::codex_live_write::CodexLiveWrite::config_only(&new_text),
+    )?;
     ledger.record(id, new_hash);
 
     Ok(())
@@ -482,7 +484,9 @@ pub fn remove_server_from_codex(
 
     // 写回文件
     let new_text = doc.to_string();
-    crate::config::write_text_file(&config_path, &new_text)?;
+    crate::codex_live_write::write_codex_live_files(
+        crate::codex_live_write::CodexLiveWrite::config_only(&new_text),
+    )?;
 
     Ok(())
 }
