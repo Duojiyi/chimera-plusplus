@@ -1359,7 +1359,8 @@ const CODEX_PROXY_CHAT_CATALOG_KEYS: &[&str] = &[
 /// `configuration_update` items are ChatGPT-backend features (CPP-A6, W8),
 /// guardian policy and access programs are account-bound (W8), and Chat
 /// gateways reject `detail:"original"` images, so ProxyChat never advertises
-/// them (adapted from farion1231/cc-switch 83a24dfbb, MIT).
+/// them.
+// Adapted from farion1231/cc-switch 83a24dfbb (MIT).
 fn harden_codex_generated_catalog_entry(
     entry: &mut serde_json::Map<String, Value>,
     profile: CodexCatalogToolProfile,
