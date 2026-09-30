@@ -1791,7 +1791,7 @@ fn push_env_codex_cli_candidates(candidates: &mut Vec<PathBuf>, seen: &mut HashS
     }
 }
 
-fn codex_cli_candidates() -> Vec<PathBuf> {
+pub(crate) fn codex_cli_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     let mut seen = HashSet::new();
 
@@ -1835,7 +1835,7 @@ fn codex_command_path_env(candidate: &Path) -> Option<std::ffi::OsString> {
     Some(prefixed)
 }
 
-fn codex_command(candidate: &Path, args: &[&str], codex_home: Option<&Path>) -> Command {
+pub(crate) fn codex_command(candidate: &Path, args: &[&str], codex_home: Option<&Path>) -> Command {
     let mut command = Command::new(candidate);
     command.args(args).stdin(Stdio::null());
     if let Some(codex_home) = codex_home {

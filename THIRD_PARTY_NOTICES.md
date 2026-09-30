@@ -29,3 +29,14 @@ Copyright (c) 2026 Wangnov
 
 Licensed under the MIT License. Chimera++ maintains an independent fork at
 https://github.com/Duojiyi/codex-app-mirror for release distribution.
+
+## Codex-X
+
+Source: https://github.com/yynxxxxx/Codex-X
+
+Copyright (c) 2026 yynxxxxx
+
+Licensed under the MIT License. The compare-and-swap file primitives, the Codex login-type
+classifier, the account display-metadata validators and the official quota lookup are
+adapted from it; adapted files carry an attribution header. The full license text is
+available from the upstream repository.
