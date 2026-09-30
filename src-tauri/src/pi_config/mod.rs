@@ -5,7 +5,7 @@
 //! which is only ever read here. Chimera++ manages explicit provider entries
 //! in `models.json`; `auth.json` is never opened.
 
-use crate::config::{atomic_write_private, get_home_dir};
+use crate::config::get_home_dir;
 use crate::error::AppError;
 use indexmap::IndexMap;
 use serde_json::{Map, Value};
