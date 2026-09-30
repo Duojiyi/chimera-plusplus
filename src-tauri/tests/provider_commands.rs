@@ -434,11 +434,15 @@ command = "say"
         .get("config")
         .and_then(|v| v.as_str())
         .unwrap_or_default();
-    // 供应商配置应该包含在 live 文件中
-    // 注意：live 文件还会包含 MCP 同步后的内容
+    // Key ownership ③/④: a line never carries MCP servers into live; the
+    // user's own live entry stays and the DB entry is projected.
     assert!(
-        config_text.contains("mcp_servers.latest"),
-        "live file should contain provider's original config"
+        !config_text.contains("mcp_servers.latest"),
+        "a line's [mcp_servers] must not reach live"
+    );
+    assert!(
+        config_text.contains("mcp_servers.legacy"),
+        "the user's own live MCP server must survive the switch"
     );
     assert!(
         new_config_text.contains("mcp_servers.latest"),

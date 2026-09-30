@@ -33,6 +33,7 @@ function setup() {
 function mockRestore(value: string | object, fail = false) {
   invokeMock.mockImplementation(async (command) => {
     if (command === "list_db_backups") return [];
+    if (command === "get_codex_import_review") return null;
     if (command === "restore_db_backup") {
       if (fail) throw value;
       return value;
@@ -118,6 +119,15 @@ describe("backup restore outcome contract", () => {
     } finally {
       log.mockRestore();
     }
+  });
+
+  it("checks for a pending Codex import review after the DB changed", async () => {
+    mockRestore("safety-123");
+    const { result } = setup();
+    await act(async () => {
+      await result.current.restore("old.db");
+    });
+    expect(invokeMock).toHaveBeenCalledWith("get_codex_import_review");
   });
 
   it("keeps legacy transport callers rejected on partial success, with a readable message", async () => {

@@ -24,16 +24,17 @@ use crate::store::AppState;
 pub use live::{
     import_default_config, import_hermes_providers_from_live, import_openclaw_providers_from_live,
     import_opencode_providers_from_live, read_live_settings,
-    should_import_default_config_on_startup, sync_current_to_live,
+    should_import_default_config_on_startup, sync_current_to_live, sync_current_to_live_except,
     update_toml_common_config_snippet,
 };
 
 // Internal re-exports (pub(crate))
 pub(crate) use live::sanitize_claude_settings_for_live;
 pub(crate) use live::{
-    build_effective_settings_with_common_config, normalize_provider_common_config_for_storage,
-    provider_exists_in_live_config, strip_common_config_from_live_settings,
-    sync_current_provider_for_app_to_live, write_live_with_common_config, LiveSnapshot,
+    build_effective_settings_with_common_config, codex_common_snippet,
+    normalize_provider_common_config_for_storage, provider_exists_in_live_config,
+    strip_common_config_from_live_settings, sync_current_provider_for_app_to_live,
+    write_live_with_common_config, LiveSnapshot,
 };
 
 // Internal re-exports
@@ -90,8 +91,8 @@ pub fn reapply_current_codex_official_live(state: &AppState) -> Result<bool, App
     }
 
     live::write_live_with_common_config(&state.db, &AppType::Codex, provider)?;
-    // 重写 live 会整体替换 config.toml（有意设计），[mcp_servers] 随之丢失，
-    // 写完必须立刻从 DB 重新投影启用的 MCP。只投影 Codex 而非
+    // 写 live 按键所有权表投影（live 的 [mcp_servers] 保留），写完从 DB
+    // 按投影台账重新投影启用的 MCP，使其与 DB 对齐。只投影 Codex 而非
     // sync_all_enabled：后者按 AppType::all() 顺序逐应用短路，排在 Codex
     // 前面的无关应用 live 损坏（如 ~/.claude.json 坏 JSON）会阻断 Codex
     // 的重投影，让刚被清掉的 [mcp_servers] 无人补回。
@@ -2375,6 +2376,7 @@ impl ProviderService {
         let mut provider = provider;
         Self::normalize_provider_if_claude(&app_type, &mut provider);
         Self::validate_provider_settings(&app_type, &provider)?;
+        Self::sanitize_codex_provider_config(&app_type, &mut provider)?;
         normalize_provider_common_config_for_storage(state.db.as_ref(), &app_type, &mut provider)?;
         Self::normalize_usage_script_credential_overrides(&app_type, &mut provider);
         if app_type.is_additive_mode() {
@@ -2395,6 +2397,7 @@ impl ProviderService {
         // Normalize Claude model keys
         Self::normalize_provider_if_claude(&app_type, &mut provider);
         Self::validate_provider_settings(&app_type, &provider)?;
+        Self::sanitize_codex_provider_config(&app_type, &mut provider)?;
         normalize_provider_common_config_for_storage(state.db.as_ref(), &app_type, &mut provider)?;
         Self::normalize_usage_script_credential_overrides(&app_type, &mut provider);
         if app_type.is_additive_mode() {
@@ -2472,6 +2475,7 @@ impl ProviderService {
         // Normalize Claude model keys
         Self::normalize_provider_if_claude(&app_type, &mut provider);
         Self::validate_provider_settings(&app_type, &provider)?;
+        Self::sanitize_codex_provider_config(&app_type, &mut provider)?;
         normalize_provider_common_config_for_storage(state.db.as_ref(), &app_type, &mut provider)?;
         Self::normalize_usage_script_credential_overrides(&app_type, &mut provider);
 
@@ -3222,7 +3226,7 @@ impl ProviderService {
         }
 
         // 切换重写了目标应用的 live，只重投影该应用的 MCP（Codex 的
-        // [mcp_servers] 与 live 同文件，整体替换后必须补回；其余应用的
+        // [mcp_servers] 与 live 同文件，按投影台账与 DB 对齐；其余应用的
         // MCP 文件独立于 live，投影是幂等维护）。不用全量 sync_all_enabled：
         // 无关应用的 live 损坏（如 ~/.claude.json 坏 JSON）不该阻断切换。
         // 走到这里 DB is_current 与 live 都已落盘，切换事实上已成功；
@@ -3238,6 +3242,14 @@ impl ProviderService {
     /// Sync current provider to live configuration (re-export)
     pub fn sync_current_to_live(state: &AppState) -> Result<(), AppError> {
         sync_current_to_live(state)
+    }
+
+    /// Sync current providers to live, except `skip` (re-export)
+    pub fn sync_current_to_live_except(
+        state: &AppState,
+        skip: Option<&AppType>,
+    ) -> Result<(), AppError> {
+        sync_current_to_live_except(state, skip)
     }
 
     pub fn sync_current_provider_for_app(
@@ -3703,8 +3715,8 @@ impl ProviderService {
         // 启用状态被合并进所有勾选通用配置的供应商，且在通用配置编辑框里
         // 显示为一份"重复"的 MCP 配置。
         root.remove("mcp_servers");
-        // 历史错误格式 [mcp.servers] 一并剥离（与 strip_codex_mcp_servers_from_settings
-        // 一致）：sync_all_enabled 只管理 [mcp_servers.*]，legacy 形态一旦进了
+        // 历史错误格式 [mcp.servers] 一并剥离（与切换投影一致）：
+        // sync_all_enabled 只管理 [mcp_servers.*]，legacy 形态一旦进了
         // 片段就会被合并进所有供应商，且没有任何同步路径能清掉这个孤儿。
         if let Some(mcp_tbl) = root
             .get_mut("mcp")
@@ -3944,6 +3956,37 @@ impl ProviderService {
 
     pub(crate) fn write_gemini_live(provider: &Provider) -> Result<(), AppError> {
         write_gemini_live(provider)
+    }
+
+    /// MH-13b: every add/update (editor, deep link, tray) is untrusted TOML.
+    /// Strip what a Codex line must never carry. Unknown env-var names are
+    /// kept here: on this path the user typed them.
+    fn sanitize_codex_provider_config(
+        app_type: &AppType,
+        provider: &mut Provider,
+    ) -> Result<(), AppError> {
+        if !matches!(app_type, AppType::Codex) {
+            return Ok(());
+        }
+        let Some(config) = provider
+            .settings_config
+            .get("config")
+            .and_then(Value::as_str)
+        else {
+            return Ok(());
+        };
+        let official = provider.category.as_deref() == Some("official");
+        let (clean, report) =
+            crate::codex_key_ownership::sanitize_untrusted_codex_config(config, official)?;
+        if !report.stripped.is_empty() {
+            log::warn!(
+                "Removed keys a Codex line must not carry from '{}': {}",
+                provider.id,
+                report.stripped.join(", ")
+            );
+            provider.settings_config["config"] = Value::String(clean);
+        }
+        Ok(())
     }
 
     fn validate_provider_settings(app_type: &AppType, provider: &Provider) -> Result<(), AppError> {
