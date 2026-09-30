@@ -1406,3 +1406,92 @@ fn file_backed_connection_sets_bounded_busy_timeout() {
         "state.db must not use WAL under the single Mutex<Connection> model"
     );
 }
+
+#[test]
+fn codex_takeover_backup_never_stores_auth() {
+    let db = Database::memory().expect("memory db");
+    let stored = |db: &Database| -> Option<String> {
+        futures::executor::block_on(db.get_live_backup("codex"))
+            .expect("read backup")
+            .map(|backup| backup.original_config)
+    };
+
+    // New writes drop auth.json content; the proxy placeholder is not a
+    // credential and stays so restore still recognizes a taken-over backup.
+    futures::executor::block_on(
+        db.save_live_backup(
+            "codex",
+            &json!({
+                "auth": {"auth_mode": "chatgpt", "tokens": {"access_token": "oauth-secret"}},
+                "config": "model = \"gpt-5.4\"\n"
+            })
+            .to_string(),
+        ),
+    )
+    .expect("save backup");
+    let row = stored(&db).expect("backup exists");
+    assert!(!row.contains("oauth-secret"));
+    let value: serde_json::Value = serde_json::from_str(&row).unwrap();
+    assert!(value.get("auth").is_none());
+    assert_eq!(value["config"], "model = \"gpt-5.4\"\n");
+
+    futures::executor::block_on(
+        db.save_live_backup(
+            "codex",
+            &json!({"auth": {"OPENAI_API_KEY": "PROXY_MANAGED", "refresh": "x"}, "config": ""})
+                .to_string(),
+        ),
+    )
+    .expect("save placeholder backup");
+    let value: serde_json::Value = serde_json::from_str(&stored(&db).unwrap()).unwrap();
+    assert_eq!(value["auth"], json!({"OPENAI_API_KEY": "PROXY_MANAGED"}));
+
+    // Fails closed: a backup that cannot be inspected is not stored.
+    assert!(futures::executor::block_on(db.save_live_backup("codex", "not json")).is_err());
+
+    // Other tools are untouched.
+    futures::executor::block_on(db.save_live_backup("claude", r#"{"auth":1}"#))
+        .expect("save claude backup");
+    assert_eq!(
+        futures::executor::block_on(db.get_live_backup("claude"))
+            .unwrap()
+            .unwrap()
+            .original_config,
+        r#"{"auth":1}"#
+    );
+
+    // Startup migration: a row stored by an older version is stripped once.
+    {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO proxy_live_backup (app_type, original_config, backed_up_at)
+             VALUES ('codex', ?1, 'then')",
+            params![json!({
+                "auth": {"OPENAI_API_KEY": "sk-legacy-secret"},
+                "config": "model = \"old\"\n"
+            })
+            .to_string()],
+        )
+        .unwrap();
+    }
+    assert!(db.strip_auth_from_codex_live_backup().unwrap());
+    let row = stored(&db).expect("backup kept");
+    assert!(!row.contains("sk-legacy-secret"));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&row).unwrap()["config"],
+        "model = \"old\"\n"
+    );
+    assert!(!db.strip_auth_from_codex_live_backup().unwrap());
+
+    // A legacy row that is not valid JSON cannot be stripped and is removed.
+    {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE proxy_live_backup SET original_config = 'sk-legacy-secret {' WHERE app_type = 'codex'",
+            [],
+        )
+        .unwrap();
+    }
+    assert!(db.strip_auth_from_codex_live_backup().unwrap());
+    assert!(stored(&db).is_none());
+}

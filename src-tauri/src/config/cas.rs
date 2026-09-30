@@ -11,7 +11,7 @@
 //! 2. writes each file through [`crate::config::atomic_write_checked`] — the
 //!    same primitive as `atomic_write`, so symlink refusal and the Windows
 //!    `MoveFileExW` replace are unchanged — re-checking the hash once more
-//!    right before each replace;
+//!    right before each replace (a planned delete re-checks, then removes);
 //! 3. re-reads every written file and verifies its hash;
 //! 4. on any failure, restores already-written files to their prior bytes (or
 //!    deletes files that did not exist before), each restore itself guarded by
@@ -246,8 +246,29 @@ fn write_if_state(
 
 struct PlannedWrite {
     snapshot: FileSnapshot,
-    contents: Vec<u8>,
+    /// `None` plans a delete.
+    contents: Option<Vec<u8>>,
     mode: WriteMode,
+}
+
+/// Applies one planned change, CAS-guarded against `expected`.
+fn apply_if_state(
+    path: &Path,
+    contents: Option<&[u8]>,
+    mode: WriteMode,
+    expected: FileState,
+) -> Result<(), ChangesetError> {
+    match contents {
+        Some(bytes) => write_if_state(path, bytes, mode, expected),
+        None => {
+            ensure_state(path, expected)?;
+            match fs::remove_file(path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(AppError::io(path, error).into()),
+            }
+        }
+    }
 }
 
 /// Test-only fault injection points inside [`Changeset::commit`].
@@ -279,7 +300,13 @@ impl Changeset {
         snapshot: FileSnapshot,
         contents: impl Into<Vec<u8>>,
     ) -> Result<(), ChangesetError> {
-        self.plan(snapshot, contents.into(), WriteMode::Standard)
+        self.plan(snapshot, Some(contents.into()), WriteMode::Standard)
+    }
+
+    /// Plans deleting `snapshot.path()`; a file that was already missing is
+    /// left alone.
+    pub fn delete(&mut self, snapshot: FileSnapshot) -> Result<(), ChangesetError> {
+        self.plan(snapshot, None, WriteMode::Standard)
     }
 
     /// Plans `contents` for `snapshot.path()` with [`WriteMode::Private`].
@@ -288,13 +315,13 @@ impl Changeset {
         snapshot: FileSnapshot,
         contents: impl Into<Vec<u8>>,
     ) -> Result<(), ChangesetError> {
-        self.plan(snapshot, contents.into(), WriteMode::Private)
+        self.plan(snapshot, Some(contents.into()), WriteMode::Private)
     }
 
     fn plan(
         &mut self,
         snapshot: FileSnapshot,
-        contents: Vec<u8>,
+        contents: Option<Vec<u8>>,
         mode: WriteMode,
     ) -> Result<(), ChangesetError> {
         if self
@@ -341,13 +368,13 @@ impl Changeset {
             mode,
         } in writes
         {
-            let written = ContentHash::of(&contents);
-            if snapshot.state == FileState::Present(written) {
+            let written = FileState::of(contents.as_deref());
+            if snapshot.state == written {
                 continue;
             }
-            let result = self
-                .checkpoint(Stage::BeforeWrite)
-                .and_then(|()| write_if_state(&snapshot.path, &contents, mode, snapshot.state));
+            let result = self.checkpoint(Stage::BeforeWrite).and_then(|()| {
+                apply_if_state(&snapshot.path, contents.as_deref(), mode, snapshot.state)
+            });
             if let Err(cause) = result {
                 return Err(fail_with_rollback(cause, &applied));
             }
@@ -372,14 +399,14 @@ impl Changeset {
 struct AppliedWrite {
     path: PathBuf,
     prior: Option<Vec<u8>>,
-    written: ContentHash,
+    /// State we left the file in (`Missing` after a delete).
+    written: FileState,
     mode: WriteMode,
 }
 
 fn verify(applied: &[AppliedWrite]) -> Result<(), ChangesetError> {
     for write in applied {
-        if FileState::of(read_current(&write.path)?.as_deref()) != FileState::Present(write.written)
-        {
+        if FileState::of(read_current(&write.path)?.as_deref()) != write.written {
             return Err(ChangesetError::VerifyFailed {
                 path: write.path.clone(),
             });
@@ -389,18 +416,12 @@ fn verify(applied: &[AppliedWrite]) -> Result<(), ChangesetError> {
 }
 
 fn rollback_one(write: &AppliedWrite) -> Result<(), ChangesetError> {
-    let ours = FileState::Present(write.written);
-    match write.prior.as_deref() {
-        Some(bytes) => write_if_state(&write.path, bytes, write.mode, ours),
-        None => {
-            ensure_state(&write.path, ours)?;
-            match fs::remove_file(&write.path) {
-                Ok(()) => Ok(()),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-                Err(error) => Err(AppError::io(&write.path, error).into()),
-            }
-        }
-    }
+    apply_if_state(
+        &write.path,
+        write.prior.as_deref(),
+        write.mode,
+        write.written,
+    )
 }
 
 /// Restores in reverse order; returns the paths that could not be restored.
@@ -699,6 +720,51 @@ mod tests {
         assert_eq!(fs::read(&existing).unwrap(), b"old");
         assert!(!created.exists());
         assert_eq!(file_names(dir.path()), vec!["config.toml"]);
+    }
+
+    #[test]
+    fn planned_delete_is_cas_guarded_and_rolled_back() {
+        let dir = tempdir().unwrap();
+        let deleted = dir.path().join("auth.json");
+        let written = dir.path().join("config.toml");
+        fs::write(&deleted, SECRET).unwrap();
+        fs::write(&written, b"old").unwrap();
+
+        // Deleting a file that changed after it was read is a conflict.
+        let mut changeset = Changeset::new();
+        changeset
+            .delete(FileSnapshot::read(&deleted).unwrap())
+            .unwrap();
+        fs::write(&deleted, b"external").unwrap();
+        assert!(matches!(
+            changeset.commit(),
+            Err(ChangesetError::Conflict { .. })
+        ));
+        assert_eq!(fs::read(&deleted).unwrap(), b"external");
+
+        let mut changeset = Changeset::new();
+        changeset
+            .delete(FileSnapshot::read(&deleted).unwrap())
+            .unwrap();
+        changeset
+            .write(FileSnapshot::read(&written).unwrap(), "new")
+            .unwrap();
+        let applied = changeset.commit().unwrap();
+        assert!(!deleted.exists());
+        assert_eq!(fs::read(&written).unwrap(), b"new");
+
+        // The deleted bytes come back from memory.
+        applied.rollback().unwrap();
+        assert_eq!(fs::read(&deleted).unwrap(), b"external");
+        assert_eq!(fs::read(&written).unwrap(), b"old");
+
+        // Deleting an already missing file is a no-op.
+        let missing = dir.path().join("missing.json");
+        let mut changeset = Changeset::new();
+        changeset
+            .delete(FileSnapshot::read(&missing).unwrap())
+            .unwrap();
+        assert_eq!(changeset.commit().unwrap().paths().count(), 0);
     }
 
     #[test]

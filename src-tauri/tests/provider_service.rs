@@ -1688,10 +1688,9 @@ wire_api = "responses"
         .expect("backup exists");
     let backup_value: serde_json::Value =
         serde_json::from_str(&backup.original_config).expect("parse backup");
-    assert_eq!(
-        backup_value.get("auth"),
-        Some(&auth_after),
-        "restore backup should preserve the official OAuth auth"
+    assert!(
+        backup_value.get("auth").is_none(),
+        "the takeover backup stores config.toml only; auth.json stays live-only (MH-17)"
     );
     let backup_config = backup_value
         .get("config")
