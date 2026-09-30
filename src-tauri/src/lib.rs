@@ -41,6 +41,7 @@ mod services;
 mod session_manager;
 mod settings;
 mod store;
+mod tool_registry;
 
 mod tray;
 mod usage_events;
@@ -1634,6 +1635,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             product_policy::get_product_capabilities,
+            tool_registry::get_tool_registry,
             commands::get_pi_current_state,
             commands::get_providers,
             commands::get_current_provider,
