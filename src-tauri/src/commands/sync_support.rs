@@ -78,7 +78,13 @@ pub(crate) const CODEX_IMPORT_REVIEW_KEY: &str = "codex_import_review_pending";
 /// MH-13b: sanitize the Codex rows and common-config snippet of a database
 /// that was just imported, restored or downloaded, and record what needs the
 /// user's confirmation. A new import always replaces the previous review.
+/// Also drops the MCP projection ledger that came with the database: it
+/// describes some machine's `config.toml`, so it must never let an imported
+/// row claim a live entry here. Unchanged entries are re-adopted by content.
 fn review_imported_codex_config(state: &AppState) -> Result<(), AppError> {
+    state
+        .db
+        .delete_setting(crate::mcp::CODEX_MCP_PROJECTION_LEDGER_KEY)?;
     let review = state.db.sanitize_untrusted_codex_configs()?;
     if review.is_empty() {
         return state.db.delete_setting(CODEX_IMPORT_REVIEW_KEY);

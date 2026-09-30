@@ -421,6 +421,442 @@ fn sanitize_codex_config(
     Ok((doc.to_string(), report))
 }
 
+// ---------------------------------------------------------------------------
+// Projection (lane L3): how a switch builds live `config.toml` from the
+// selected line, live itself and the common snippet, and what the outgoing
+// line keeps when it is backfilled.
+// ---------------------------------------------------------------------------
+
+/// ① root keys the selected line owns. The model block is adapted from
+/// Codex-X `apps/desktop/src-tauri/src/providers/live.rs`
+/// `PROVIDER_MODEL_ROOTS` (MIT); the three 0.157 model-coupled keys come from
+/// the plan (R3A-N13). `experimental_bearer_token` is the line's own
+/// top-level credential (reserved-provider case); `base_url`, `wire_api`
+/// and `requires_openai_auth` are the top-level fallbacks our writer uses
+/// when a line has no `model_provider` (`update_codex_toml_field`), so they
+/// are the line's routing too.
+pub(crate) const LINE_OWNED_ROOT_KEYS: &[&str] = &[
+    "model_provider",
+    "model",
+    "review_model",
+    "model_reasoning_effort",
+    "model_reasoning_summary",
+    "model_verbosity",
+    "model_context_window",
+    "model_auto_compact_token_limit",
+    "model_supports_reasoning_summaries",
+    "model_catalog_json",
+    "service_tier",
+    "disable_response_storage",
+    "plan_mode_reasoning_effort",
+    "model_auto_compact_token_limit_scope",
+    "model_post_turn_compact_threshold_percent",
+    "experimental_bearer_token",
+    "base_url",
+    "wire_api",
+    "requires_openai_auth",
+];
+
+/// ① `[features]` paths a line owns: `goals` (saved per line by the editor)
+/// and, per W7, `token_budget.use_history_notes_extension`, which Codex
+/// 0.156+ rejects at session start on a model without experimental context
+/// support, so it must never be filled in from live.
+pub(crate) const LINE_OWNED_FEATURE_PATHS: &[&[&str]] = &[
+    &["features", "goals"],
+    &["features", "token_budget", "use_history_notes_extension"],
+];
+
+/// ② keys a switch never takes from live. `forced_*` are excluded: while
+/// `official_accounts` is off they are the user's own choice and stay ④
+/// (plan §2 table, ② row); L6 takes them over.
+fn is_projected_route_key(key: &str) -> bool {
+    ROUTE_CREDENTIAL_ROOT_KEYS.contains(&key) && !key.starts_with("forced_")
+}
+
+/// ② keys a stored line may supply: never the rejected `profile` selector
+/// (MH-23) nor the `otel` exporter (an execution key).
+fn line_may_supply_route_key(key: &str) -> bool {
+    is_projected_route_key(key) && key != "profile" && !EXECUTION_ROOT_KEYS.contains(&key)
+}
+
+/// Provider-table ids Chimera++ writes itself (the default custom id, the
+/// official takeover route and reserved-table migration targets).
+fn is_own_provider_table_id(id: &str) -> bool {
+    id == crate::codex_config::CC_SWITCH_CODEX_MODEL_PROVIDER_ID
+        || id == crate::codex_config::CC_SWITCH_CODEX_OFFICIAL_PROXY_PROVIDER_ID
+        || id == "cc-switch"
+        || id
+            .strip_prefix("cc-switch-")
+            .is_some_and(|suffix| suffix.parse::<u32>().is_ok())
+}
+
+/// The common-config snippet as the selected line sees it (⑤). The stored
+/// snippet text is itself the record of what the snippet writes.
+#[derive(Debug, Clone)]
+pub struct CodexCommonSnippet {
+    pub text: String,
+    pub enabled: bool,
+}
+
+fn parse_codex_doc(text: &str, what: &str) -> Result<DocumentMut, AppError> {
+    if text.trim().is_empty() {
+        return Ok(DocumentMut::new());
+    }
+    text.parse::<DocumentMut>()
+        .map_err(|e| AppError::Message(format!("Invalid {what} Codex config.toml: {e}")))
+}
+
+fn get_path<'a, S: AsRef<str>>(table: &'a dyn TableLike, path: &[S]) -> Option<&'a Item> {
+    let (first, rest) = path.split_first()?;
+    let item = table.get(first.as_ref())?;
+    if rest.is_empty() {
+        Some(item)
+    } else {
+        get_path(item.as_table_like()?, rest)
+    }
+}
+
+fn set_path<S: AsRef<str>>(table: &mut dyn TableLike, path: &[S], item: Item) {
+    match path {
+        [] => {}
+        [last] => {
+            table.insert(last.as_ref(), item);
+        }
+        [first, rest @ ..] => {
+            let key = first.as_ref();
+            if !table.get(key).is_some_and(Item::is_table_like) {
+                let mut child = toml_edit::Table::new();
+                child.set_implicit(true);
+                table.insert(key, Item::Table(child));
+            }
+            if let Some(child) = table.get_mut(key).and_then(Item::as_table_like_mut) {
+                set_path(child, rest, item);
+            }
+        }
+    }
+}
+
+/// Remove `path`, pruning parent tables it leaves empty. Returns whether
+/// anything was removed.
+fn remove_path<S: AsRef<str>>(table: &mut dyn TableLike, path: &[S]) -> bool {
+    match path {
+        [] => false,
+        [last] => table.remove(last.as_ref()).is_some(),
+        [first, rest @ ..] => {
+            let key = first.as_ref();
+            let Some(child) = table.get_mut(key).and_then(Item::as_table_like_mut) else {
+                return false;
+            };
+            let removed = remove_path(child, rest);
+            if removed && child.is_empty() {
+                table.remove(key);
+            }
+            removed
+        }
+    }
+}
+
+/// Every leaf (non-table value) of a table, with its dotted path.
+fn leaf_paths(table: &dyn TableLike, prefix: &mut Vec<String>, out: &mut Vec<(Vec<String>, Item)>) {
+    for (key, item) in table.iter() {
+        prefix.push(key.to_string());
+        match item.as_table_like() {
+            Some(child) if !child.is_empty() => leaf_paths(child, prefix, out),
+            _ => out.push((prefix.clone(), item.clone())),
+        }
+        prefix.pop();
+    }
+}
+
+fn canonical_toml_value(value: &toml::Value) -> String {
+    match value {
+        toml::Value::Table(table) => {
+            let mut keys: Vec<&String> = table.keys().collect();
+            keys.sort();
+            let entries: Vec<String> = keys
+                .into_iter()
+                .map(|key| format!("{key:?}={}", canonical_toml_value(&table[key.as_str()])))
+                .collect();
+            format!("{{{}}}", entries.join(","))
+        }
+        toml::Value::Array(items) => {
+            let items: Vec<String> = items.iter().map(canonical_toml_value).collect();
+            format!("[{}]", items.join(","))
+        }
+        other => other.to_string(),
+    }
+}
+
+/// Formatting-independent form of one TOML item (table, inline table or
+/// value, keys sorted), for "did the user change this" comparisons and the
+/// MCP projection ledger hash. `None` for an item that renders to nothing.
+pub(crate) fn canonical_toml_item(item: &Item) -> Option<String> {
+    let mut doc = DocumentMut::new();
+    doc.insert("v", item.clone());
+    let mut table = toml::from_str::<toml::Table>(&doc.to_string()).ok()?;
+    Some(canonical_toml_value(&table.remove("v")?))
+}
+
+/// Root keys a ⑤ snippet may not write: ① (the line wins; the snippet is
+/// already merged into the line text), ② and ③.
+fn snippet_root_is_projected_elsewhere(root: &str) -> bool {
+    LINE_OWNED_ROOT_KEYS.contains(&root)
+        || ROUTE_CREDENTIAL_ROOT_KEYS.contains(&root)
+        || matches!(root, "model_providers" | "mcp_servers" | "mcp")
+}
+
+/// L3: build live `config.toml` for switching to a line.
+///
+/// Starts from live (④ local shared, including every `[mcp_servers]` entry;
+/// the DB ledger re-projects its own entries right after the write, ③) and
+/// then:
+/// - ① takes every line-owned root key and feature path from `line_text`;
+///   unset means removed (`model_catalog_json` excepted: the catalog step
+///   decides it and keeps a user's own file). Provider tables we wrote
+///   (the live-active one, our fixed ids, the line's own ids) are replaced
+///   by the line's tables; user tables are kept.
+/// - ② never inherits route/credential keys from live: they come from the
+///   line only (an official line: only allowlisted OpenAI endpoints; never
+///   the rejected `profile` or the `otel` exporter), and the routing
+///   sub-keys of live `[profiles.*]` are dropped (the tables stay).
+/// - W5: `[windows].sandbox_private_desktop` (removed in Codex 0.156) is not
+///   carried.
+/// - ⑤ writes the enabled snippet's keys over live; for a line without the
+///   snippet, removes the snippet's keys whose live value the user has not
+///   changed.
+///
+/// `line_text` is the line's effective text (common snippet already merged).
+pub fn project_codex_line_onto_live(
+    line_text: &str,
+    live_text: &str,
+    official: bool,
+    snippet: Option<&CodexCommonSnippet>,
+) -> Result<String, AppError> {
+    let line = parse_codex_doc(line_text, "line")?;
+    let mut out = parse_codex_doc(live_text, "live")?;
+    let live_active = out
+        .get("model_provider")
+        .and_then(Item::as_str)
+        .map(|id| id.trim().to_string());
+
+    for key in LINE_OWNED_ROOT_KEYS {
+        match line.get(key) {
+            Some(item) => {
+                out.insert(key, item.clone());
+            }
+            None if *key == "model_catalog_json" => {}
+            None => {
+                out.remove(key);
+            }
+        }
+    }
+
+    let line_tables: Vec<(String, Item)> = line
+        .get("model_providers")
+        .and_then(Item::as_table_like)
+        .map(|tables| {
+            tables
+                .iter()
+                .map(|(id, item)| (id.to_string(), item.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(providers) = out
+        .get_mut("model_providers")
+        .and_then(Item::as_table_like_mut)
+    {
+        let owned: Vec<String> = providers
+            .iter()
+            .map(|(id, _)| id.to_string())
+            .filter(|id| {
+                live_active.as_deref() == Some(id.as_str())
+                    || is_own_provider_table_id(id)
+                    || line_tables.iter().any(|(line_id, _)| line_id == id)
+            })
+            .collect();
+        for id in owned {
+            providers.remove(&id);
+        }
+    }
+    if !line_tables.is_empty() {
+        if !out.get("model_providers").is_some_and(Item::is_table_like) {
+            let mut providers = toml_edit::Table::new();
+            providers.set_implicit(true);
+            out.insert("model_providers", Item::Table(providers));
+        }
+        if let Some(providers) = out
+            .get_mut("model_providers")
+            .and_then(Item::as_table_like_mut)
+        {
+            for (id, item) in line_tables {
+                providers.insert(&id, item);
+            }
+        }
+    }
+    if out
+        .get("model_providers")
+        .and_then(Item::as_table_like)
+        .is_some_and(|providers| providers.is_empty())
+    {
+        out.remove("model_providers");
+    }
+
+    for key in ROUTE_CREDENTIAL_ROOT_KEYS {
+        if !is_projected_route_key(key) {
+            continue;
+        }
+        out.remove(key);
+        let Some(item) = line.get(key) else {
+            continue;
+        };
+        let trusted = line_may_supply_route_key(key)
+            && (!official || item.as_str().is_some_and(is_official_codex_base_url));
+        if trusted {
+            out.insert(key, item.clone());
+        }
+    }
+    if let Some(profiles) = out.get_mut("profiles").and_then(Item::as_table_like_mut) {
+        let names: Vec<String> = profiles.iter().map(|(name, _)| name.to_string()).collect();
+        for name in names {
+            if let Some(profile) = profiles.get_mut(&name).and_then(Item::as_table_like_mut) {
+                for key in PROFILE_ROUTE_KEYS {
+                    profile.remove(key);
+                }
+            }
+        }
+    }
+
+    for &path in LINE_OWNED_FEATURE_PATHS {
+        match get_path(line.as_table(), path) {
+            Some(item) => set_path(out.as_table_mut(), path, item.clone()),
+            None => {
+                remove_path(out.as_table_mut(), path);
+            }
+        }
+    }
+
+    if let Some(windows) = out.get_mut("windows").and_then(Item::as_table_like_mut) {
+        windows.remove("sandbox_private_desktop");
+    }
+    // `[mcp.servers]` is a wrong format only old builds of ours wrote; Codex
+    // never reads it.
+    remove_path(out.as_table_mut(), &["mcp", "servers"]);
+
+    if let Some(snippet) = snippet {
+        project_common_snippet(&mut out, snippet);
+    }
+
+    Ok(out.to_string())
+}
+
+fn project_common_snippet(out: &mut DocumentMut, snippet: &CodexCommonSnippet) {
+    let snippet_doc = match parse_codex_doc(&snippet.text, "common snippet") {
+        Ok(doc) => doc,
+        Err(e) => {
+            log::warn!("Skipped the Codex common config while projecting: {e}");
+            return;
+        }
+    };
+    let mut leaves = Vec::new();
+    leaf_paths(snippet_doc.as_table(), &mut Vec::new(), &mut leaves);
+    for (path, item) in leaves {
+        if snippet_root_is_projected_elsewhere(&path[0])
+            || LINE_OWNED_FEATURE_PATHS
+                .iter()
+                .any(|owned| owned.iter().eq(path.iter()))
+        {
+            continue;
+        }
+        if snippet.enabled {
+            set_path(out.as_table_mut(), &path, item);
+        } else {
+            let unchanged = get_path(out.as_table(), &path)
+                .is_some_and(|live| canonical_toml_item(live) == canonical_toml_item(&item));
+            if unchanged {
+                remove_path(out.as_table_mut(), &path);
+            }
+        }
+    }
+}
+
+/// L3 backfill: what the outgoing line keeps when switching away. ① comes
+/// from live (including the line's own provider tables); ② root keys come
+/// from the stored line, never from live; ③ ④ ⑤ are not frozen into a line.
+pub fn codex_line_config_for_backfill(
+    live_text: &str,
+    stored_text: &str,
+) -> Result<String, AppError> {
+    let live = parse_codex_doc(live_text, "live")?;
+    // A stored text that no longer parses contributes nothing.
+    let stored = parse_codex_doc(stored_text, "stored").unwrap_or_default();
+    let mut out = DocumentMut::new();
+
+    for key in LINE_OWNED_ROOT_KEYS {
+        if let Some(item) = live.get(key) {
+            out.insert(key, item.clone());
+        }
+    }
+    let live_active = live.get("model_provider").and_then(Item::as_str);
+    let stored_tables = stored.get("model_providers").and_then(Item::as_table_like);
+    if let Some(providers) = live.get("model_providers").and_then(Item::as_table_like) {
+        for (id, item) in providers.iter() {
+            let own = live_active.map(str::trim) == Some(id)
+                || is_own_provider_table_id(id)
+                || stored_tables.is_some_and(|tables| tables.contains_key(id));
+            if own {
+                set_path(out.as_table_mut(), &["model_providers", id], item.clone());
+            }
+        }
+    }
+    for &path in LINE_OWNED_FEATURE_PATHS {
+        if let Some(item) = get_path(live.as_table(), path) {
+            set_path(out.as_table_mut(), path, item.clone());
+        }
+    }
+    for key in ROUTE_CREDENTIAL_ROOT_KEYS {
+        if line_may_supply_route_key(key) {
+            if let Some(item) = stored.get(key) {
+                out.insert(key, item.clone());
+            }
+        }
+    }
+    Ok(out.to_string())
+}
+
+/// One-time report (L3): the keys a stored line carries that the key
+/// ownership rules no longer apply from it (③ ④ ⑤ and the user-owned
+/// `forced_*`), by name. Empty when the line only carries ① ② keys.
+pub fn codex_line_keys_without_effect(line_text: &str) -> Vec<String> {
+    let Ok(doc) = parse_codex_doc(line_text, "stored") else {
+        return Vec::new();
+    };
+    let mut keys = Vec::new();
+    for (key, item) in doc.iter() {
+        if key == "features" {
+            if let Some(features) = item.as_table_like() {
+                for (feature, value) in features.iter() {
+                    let owned = feature == "goals"
+                        || (feature == "token_budget"
+                            && value.as_table_like().is_some_and(|budget| {
+                                budget
+                                    .iter()
+                                    .all(|(name, _)| name == "use_history_notes_extension")
+                            }));
+                    if !owned {
+                        keys.push(format!("features.{feature}"));
+                    }
+                }
+            }
+        } else if !LINE_OWNED_ROOT_KEYS.contains(&key)
+            && !line_may_supply_route_key(key)
+            && key != "model_providers"
+        {
+            keys.push(key.to_string());
+        }
+    }
+    keys
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -655,5 +1091,411 @@ requires_openai_auth = true
         assert!(report.is_empty());
         let (again, _) = sanitize_untrusted_codex_config("", false).unwrap();
         assert_eq!(again, "");
+    }
+
+    // ----- L3 key ownership -----
+
+    /// Copy of Codex `PROJECT_LOCAL_CONFIG_DENYLIST`
+    /// (`codex-rs/config/src/loader/mod.rs` at `rust-v0.157.0`). Re-check on
+    /// every Codex upgrade.
+    const CODEX_PROJECT_LOCAL_CONFIG_DENYLIST_RUST_V0_157_0: &[&str] = &[
+        "openai_base_url",
+        "chatgpt_base_url",
+        "apps_mcp_product_sku",
+        "responses_api_metadata",
+        "model_provider",
+        "model_providers",
+        "notify",
+        "profile",
+        "profiles",
+        "experimental_realtime_webrtc_call_base_url",
+        "experimental_realtime_ws_base_url",
+        "otel",
+    ];
+
+    #[test]
+    fn route_class_covers_codex_project_local_denylist() {
+        for key in CODEX_PROJECT_LOCAL_CONFIG_DENYLIST_RUST_V0_157_0 {
+            match *key {
+                // ① line-owned: the selected line's own routing tables.
+                "model_provider" | "model_providers" => {
+                    assert!(*key == "model_providers" || LINE_OWNED_ROOT_KEYS.contains(key))
+                }
+                // Execution key (MH-13b).
+                "notify" => assert!(EXECUTION_ROOT_KEYS.contains(key)),
+                // ④ tables whose routing sub-keys are ②.
+                "profiles" => assert!(PROFILE_ROUTE_KEYS.contains(&"model_provider")),
+                // Every routing key proper must be ②.
+                routing => assert!(
+                    ROUTE_CREDENTIAL_ROOT_KEYS.contains(&routing),
+                    "{routing} from Codex's denylist is missing from ②"
+                ),
+            }
+        }
+    }
+
+    const USER_LIVE: &str = r#"approval_policy = "on-request"
+forced_login_method = "chatgpt"
+
+[tui]
+notifications = true
+
+[windows]
+sandbox = "elevated"
+sandbox_private_desktop = true
+
+[features]
+memories = true
+
+[features.token_budget]
+use_history_notes_extension = true
+
+[profiles.work]
+model = "gpt-5.5"
+model_provider = "relay"
+
+[mcp_servers.user]
+command = "user-cmd"
+
+[mcp.servers.legacy]
+command = "legacy"
+
+[model_providers.mine]
+name = "Mine"
+base_url = "https://mine.example/v1"
+"#;
+
+    const RELAY_LINE: &str = r#"model_provider = "relay"
+model = "gpt-5.5"
+openai_base_url = "https://relay.example/v1"
+approval_policy = "never"
+
+[model_providers.relay]
+name = "Relay"
+base_url = "https://relay.example/v1"
+wire_api = "responses"
+
+[mcp_servers.line_only]
+command = "from-line"
+"#;
+
+    /// The write path after projection, as `write_codex_live_for_provider`
+    /// runs it (official: baseline for a blank result and the unified
+    /// bucket; third-party: auth normalization and the line's bearer).
+    fn write_line(
+        live: &str,
+        line: &str,
+        official: bool,
+        unified: bool,
+        snippet: Option<&CodexCommonSnippet>,
+    ) -> String {
+        let projected = project_codex_line_onto_live(line, live, official, snippet).unwrap();
+        if official {
+            let text = if projected.trim().is_empty() {
+                crate::codex_config::prepare_codex_official_live_config_baseline(live).unwrap()
+            } else {
+                projected
+            };
+            if unified {
+                crate::codex_config::inject_codex_unified_session_bucket(&text).unwrap()
+            } else {
+                text
+            }
+        } else {
+            let text =
+                crate::codex_config::normalize_codex_third_party_auth_config(&projected).unwrap();
+            crate::codex_config::prepare_codex_provider_live_config(
+                &serde_json::json!({ "OPENAI_API_KEY": "sk-line" }),
+                &text,
+            )
+            .unwrap()
+        }
+    }
+
+    /// Switch-away backfill of the outgoing line.
+    fn backfill(live: &str, stored: &str, official: bool) -> String {
+        let live = if official {
+            crate::codex_config::strip_codex_unified_session_bucket(live).unwrap()
+        } else {
+            live.to_string()
+        };
+        let kept = codex_line_config_for_backfill(&live, stored).unwrap();
+        crate::codex_config::remove_codex_experimental_bearer_token_if(&kept, |_| true).unwrap()
+    }
+
+    fn parse(text: &str) -> toml::Value {
+        toml::from_str(text).unwrap_or_else(|e| panic!("invalid TOML ({e}): {text}"))
+    }
+
+    fn assert_local_shared_kept(text: &str) {
+        let doc = parse(text);
+        assert_eq!(doc["approval_policy"].as_str(), Some("on-request"));
+        assert_eq!(doc["forced_login_method"].as_str(), Some("chatgpt"));
+        assert_eq!(doc["tui"]["notifications"].as_bool(), Some(true));
+        assert_eq!(doc["windows"]["sandbox"].as_str(), Some("elevated"));
+        assert!(
+            doc["windows"].get("sandbox_private_desktop").is_none(),
+            "W5"
+        );
+        assert_eq!(doc["features"]["memories"].as_bool(), Some(true));
+        assert_eq!(doc["profiles"]["work"]["model"].as_str(), Some("gpt-5.5"));
+        assert!(
+            doc["profiles"]["work"].get("model_provider").is_none(),
+            "② profile routing sub-keys are never kept from live"
+        );
+        assert_eq!(
+            doc["mcp_servers"]["user"]["command"].as_str(),
+            Some("user-cmd")
+        );
+        assert!(doc["mcp_servers"].get("line_only").is_none(), "③");
+        assert!(doc.get("mcp").is_none(), "legacy [mcp.servers] is ours");
+        assert!(doc["model_providers"].get("mine").is_some(), "user table");
+    }
+
+    #[test]
+    fn golden_third_party_route_and_bearer_do_not_carry_to_official() {
+        for unified in [false, true] {
+            let third_party = write_line(USER_LIVE, RELAY_LINE, false, unified, None);
+            let doc = parse(&third_party);
+            assert_eq!(doc["model_provider"].as_str(), Some("relay"));
+            assert_eq!(
+                doc["model_providers"]["relay"]["experimental_bearer_token"].as_str(),
+                Some("sk-line")
+            );
+            assert_local_shared_kept(&third_party);
+            assert!(
+                doc["features"].get("token_budget").is_none(),
+                "W7: use_history_notes_extension is never filled in from live"
+            );
+
+            let official = write_line(&third_party, "", true, unified, None);
+            assert!(
+                !official.contains("relay.example"),
+                "unified={unified}: {official}"
+            );
+            assert!(!official.contains("openai_base_url"));
+            assert!(!official.contains("experimental_bearer_token"));
+            assert!(!official.contains("sk-line"));
+            let doc = parse(&official);
+            if unified {
+                assert_eq!(doc["model_provider"].as_str(), Some("custom"));
+            } else {
+                assert!(doc.get("model_provider").is_none());
+            }
+            assert_local_shared_kept(&official);
+        }
+    }
+
+    #[test]
+    fn golden_goals_round_trip_stays_with_each_line() {
+        let official_a = "model = \"gpt-5.5\"\n\n[features]\ngoals = true\n";
+        let third_party_b = "model_provider = \"b\"\nmodel = \"gpt-5.4\"\n\n[model_providers.b]\nname = \"B\"\nbase_url = \"https://b.example/v1\"\n";
+        for unified in [false, true] {
+            let mut stored_a = official_a.to_string();
+            let mut stored_b = third_party_b.to_string();
+            let mut live = write_line(USER_LIVE, &stored_a, true, unified, None);
+            for _ in 0..2 {
+                assert_eq!(parse(&live)["features"]["goals"].as_bool(), Some(true));
+                stored_a = backfill(&live, &stored_a, true);
+                live = write_line(&live, &stored_b, false, unified, None);
+                assert!(parse(&live)["features"].get("goals").is_none(), "{live}");
+                assert_eq!(parse(&live)["model"].as_str(), Some("gpt-5.4"));
+                assert_local_shared_kept(&live);
+                stored_b = backfill(&live, &stored_b, false);
+                live = write_line(&live, &stored_a, true, unified, None);
+                assert_local_shared_kept(&live);
+            }
+            assert!(parse(&stored_b).get("features").is_none());
+            assert!(
+                !stored_a.contains("model_providers.custom"),
+                "no bucket in A"
+            );
+        }
+    }
+
+    #[test]
+    fn golden_context_window_and_service_tier_stay_with_their_line() {
+        let wide = "model_provider = \"wide\"\nmodel = \"gpt-5.5\"\nmodel_context_window = 1000000\nmodel_auto_compact_token_limit = 900000\n\n[model_providers.wide]\nname = \"Wide\"\nbase_url = \"https://wide.example/v1\"\n";
+        let official = "model = \"gpt-5.5\"\nservice_tier = \"priority\"\n";
+        for unified in [false, true] {
+            let live = write_line(USER_LIVE, wide, false, unified, None);
+            assert_eq!(
+                parse(&live)["model_context_window"].as_integer(),
+                Some(1_000_000)
+            );
+            let stored_wide = backfill(&live, wide, false);
+            let live = write_line(&live, official, true, unified, None);
+            let doc = parse(&live);
+            assert!(
+                doc.get("model_context_window").is_none(),
+                "1M stays with its line"
+            );
+            assert!(doc.get("model_auto_compact_token_limit").is_none());
+            assert_eq!(doc["service_tier"].as_str(), Some("priority"));
+            let live = write_line(&live, &stored_wide, false, unified, None);
+            let doc = parse(&live);
+            assert!(
+                doc.get("service_tier").is_none(),
+                "service_tier is not carried"
+            );
+            assert_eq!(doc["model_context_window"].as_integer(), Some(1_000_000));
+        }
+    }
+
+    #[test]
+    fn golden_common_snippet_adds_and_removes_exactly_its_keys() {
+        let on = CodexCommonSnippet {
+            text: "approval_policy = \"never\"\n\n[tui]\ntheme = \"dark\"\n".to_string(),
+            enabled: true,
+        };
+        let off = CodexCommonSnippet {
+            enabled: false,
+            ..on.clone()
+        };
+        let other = "model_provider = \"b\"\n\n[model_providers.b]\nname = \"B\"\n";
+        for unified in [false, true] {
+            let live = write_line(USER_LIVE, RELAY_LINE, false, unified, Some(&on));
+            let doc = parse(&live);
+            assert_eq!(doc["tui"]["theme"].as_str(), Some("dark"));
+            assert_eq!(doc["approval_policy"].as_str(), Some("never"), "⑤ over ④");
+            assert_eq!(doc["tui"]["notifications"].as_bool(), Some(true));
+
+            let without = write_line(&live, other, false, unified, Some(&off));
+            let doc = parse(&without);
+            assert!(doc["tui"].get("theme").is_none());
+            assert!(doc.get("approval_policy").is_none());
+            assert_eq!(doc["tui"]["notifications"].as_bool(), Some(true));
+
+            // A value the user changed is not the snippet's any more.
+            let mut changed: DocumentMut = live.parse().unwrap();
+            changed["tui"]["theme"] = toml_edit::value("light");
+            let kept = write_line(&changed.to_string(), "", true, unified, Some(&off));
+            assert_eq!(parse(&kept)["tui"]["theme"].as_str(), Some("light"));
+        }
+    }
+
+    #[test]
+    fn golden_takeover_and_exit_restore_follow_the_same_rules() {
+        const PROXY: &str = "http://127.0.0.1:15721/v1";
+        let take_over_third_party = |live: &str| {
+            let text = crate::codex_config::ensure_non_reserved_codex_model_provider(live).unwrap();
+            let text =
+                crate::codex_config::update_codex_toml_field(&text, "base_url", PROXY).unwrap();
+            crate::codex_config::update_codex_toml_field(&text, "wire_api", "responses").unwrap()
+        };
+        let other = "model_provider = \"other\"\nmodel = \"gpt-5.4\"\n\n[model_providers.other]\nname = \"Other\"\nbase_url = \"https://other.example/v1\"\n";
+        for unified in [false, true] {
+            // Direct third-party line, then takeover: the backup is live.
+            let direct = write_line(USER_LIVE, RELAY_LINE, false, unified, None);
+            let backup = direct.clone();
+            let taken = take_over_third_party(&direct);
+            assert!(taken.contains(PROXY));
+
+            // Hot switch to another third-party line while taken over: the
+            // backup and live are both projected, not replaced.
+            let backup = project_codex_line_onto_live(other, &backup, false, None).unwrap();
+            let taken = take_over_third_party(
+                &project_codex_line_onto_live(other, &taken, false, None).unwrap(),
+            );
+            assert!(!taken.contains("relay.example"));
+            assert_local_shared_kept(&taken);
+
+            // Hot switch to official while taken over.
+            let backup = project_codex_line_onto_live("", &backup, true, None).unwrap();
+            let backup = if unified {
+                crate::codex_config::inject_codex_unified_session_bucket(&backup).unwrap()
+            } else {
+                backup
+            };
+            let taken = crate::codex_config::apply_codex_official_proxy_route(
+                &project_codex_line_onto_live("", &taken, true, None).unwrap(),
+                PROXY,
+            )
+            .unwrap();
+            assert!(crate::codex_config::codex_config_has_official_proxy_route(
+                &taken
+            ));
+            assert!(!taken.contains("other.example"));
+            assert_local_shared_kept(&taken);
+
+            // Exit-restore writes the backup back.
+            let restored = backup;
+            assert!(!restored.contains(PROXY));
+            assert!(!restored.contains("other.example"));
+            assert!(!restored.contains("relay.example"));
+            assert!(!restored.contains("experimental_bearer_token"));
+            assert_eq!(
+                parse(&restored)
+                    .get("model_provider")
+                    .and_then(|v| v.as_str()),
+                unified.then_some("custom")
+            );
+            assert_local_shared_kept(&restored);
+
+            // Switching away from official after exit-restore drops the takeover route.
+            let next = write_line(&taken, other, false, unified, None);
+            assert!(!crate::codex_config::codex_config_has_official_proxy_route(
+                &next
+            ));
+            assert!(!next.contains(PROXY));
+        }
+    }
+
+    #[test]
+    fn line_owned_feature_follows_the_line_and_w7_is_never_filled_from_live() {
+        let line =
+            "model = \"gpt-5.5\"\n\n[features.token_budget]\nuse_history_notes_extension = true\n";
+        let with = project_codex_line_onto_live(line, USER_LIVE, true, None).unwrap();
+        assert_eq!(
+            parse(&with)["features"]["token_budget"]["use_history_notes_extension"].as_bool(),
+            Some(true)
+        );
+        let without = project_codex_line_onto_live("model = \"x\"\n", &with, false, None).unwrap();
+        assert!(parse(&without)["features"].get("token_budget").is_none());
+        assert_eq!(
+            parse(&without)["features"]["memories"].as_bool(),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn official_line_takes_only_allowlisted_route_keys() {
+        let line = "chatgpt_base_url = \"https://chatgpt.com/backend-api/\"\nopenai_base_url = \"https://relay.example/v1\"\notel = { exporter = \"otlp-http\" }\n";
+        let out = parse(&project_codex_line_onto_live(line, USER_LIVE, true, None).unwrap());
+        assert_eq!(
+            out["chatgpt_base_url"].as_str(),
+            Some("https://chatgpt.com/backend-api/")
+        );
+        assert!(out.get("openai_base_url").is_none());
+        assert!(out.get("otel").is_none());
+    }
+
+    #[test]
+    fn report_lists_only_keys_a_line_no_longer_applies() {
+        let mut keys = codex_line_keys_without_effect(&format!(
+            "{RELAY_LINE}\n[features]\ngoals = true\nmemories = true\n"
+        ));
+        keys.sort();
+        assert_eq!(
+            keys,
+            ["approval_policy", "features.memories", "mcp_servers"]
+        );
+        assert!(codex_line_keys_without_effect("model = \"x\"\n").is_empty());
+        assert!(codex_line_keys_without_effect("not toml [").is_empty());
+    }
+
+    #[test]
+    fn canonical_item_ignores_formatting() {
+        let a: DocumentMut = "[s]\nb = 1\na = [1, 2]\n".parse().unwrap();
+        let b: DocumentMut = "s = { a = [1,2], b = 1 }\n".parse().unwrap();
+        assert_eq!(
+            canonical_toml_item(a.get("s").unwrap()),
+            canonical_toml_item(b.get("s").unwrap())
+        );
+        let c: DocumentMut = "s = { a = [1, 2], b = 2 }\n".parse().unwrap();
+        assert_ne!(
+            canonical_toml_item(a.get("s").unwrap()),
+            canonical_toml_item(c.get("s").unwrap())
+        );
     }
 }

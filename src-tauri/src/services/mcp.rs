@@ -105,9 +105,13 @@ impl McpService {
 
         // Once the DB row is gone, projection cannot discover its old ID.
         // Remove that exact entry first, retaining unrelated client-only servers.
+        let previous_spec = snapshots
+            .get(id)
+            .and_then(|s| s.as_ref())
+            .map(|server| &server.server);
         let removal = affected_apps
             .iter()
-            .try_for_each(|app| Self::remove_server_from_app(state, id, app))
+            .try_for_each(|app| Self::remove_server_from_app(state, id, previous_spec, app))
             .and_then(|_| Self::sync_apps(state, &affected_apps));
         if let Err(primary_error) = removal {
             return Err(Self::rollback_changes(
@@ -214,16 +218,24 @@ impl McpService {
         AppError::Message(format!("MCP 操作失败并已尝试回滚: {}", errors.join("; ")))
     }
 
+    /// MH-24: run `f` with the Codex MCP projection ledger and store it
+    /// afterwards, also when `f` failed part-way (live may already differ).
+    fn with_codex_ledger(
+        state: &AppState,
+        f: impl FnOnce(&mut mcp::CodexMcpLedger) -> Result<(), AppError>,
+    ) -> Result<(), AppError> {
+        let mut ledger = mcp::CodexMcpLedger::load(&state.db)?;
+        let result = f(&mut ledger);
+        ledger.save(&state.db)?;
+        result
+    }
+
     /// 将 MCP 服务器同步到指定应用
     fn sync_server_to_app(
-        _state: &AppState,
+        state: &AppState,
         server: &McpServer,
         app: &AppType,
     ) -> Result<(), AppError> {
-        Self::sync_server_to_app_no_config(server, app)
-    }
-
-    fn sync_server_to_app_no_config(server: &McpServer, app: &AppType) -> Result<(), AppError> {
         match app {
             AppType::Claude => {
                 mcp::sync_single_server_to_claude(&Default::default(), &server.id, &server.server)?;
@@ -233,7 +245,9 @@ impl McpService {
             }
             AppType::Codex => {
                 // Codex uses TOML format, must use the correct function
-                mcp::sync_single_server_to_codex(&Default::default(), &server.id, &server.server)?;
+                Self::with_codex_ledger(state, |ledger| {
+                    mcp::sync_single_server_to_codex(ledger, &server.id, &server.server)
+                })?;
             }
             AppType::Gemini => {
                 mcp::sync_single_server_to_gemini(&Default::default(), &server.id, &server.server)?;
@@ -264,13 +278,22 @@ impl McpService {
         Ok(())
     }
 
-    fn remove_server_from_app(_state: &AppState, id: &str, app: &AppType) -> Result<(), AppError> {
+    /// `spec` is the server's last DB definition, when known; Codex uses it
+    /// to recognise an entry projected before the MH-24 ledger existed.
+    fn remove_server_from_app(
+        state: &AppState,
+        id: &str,
+        spec: Option<&serde_json::Value>,
+        app: &AppType,
+    ) -> Result<(), AppError> {
         match app {
             AppType::Claude => mcp::remove_server_from_claude(id)?,
             AppType::ClaudeDesktop => {
                 log::debug!("Claude Desktop 3P profiles do not use CC Switch MCP sync, skipping");
             }
-            AppType::Codex => mcp::remove_server_from_codex(id)?,
+            AppType::Codex => Self::with_codex_ledger(state, |ledger| {
+                mcp::remove_server_from_codex(ledger, id, spec)
+            })?,
             AppType::Gemini => mcp::remove_server_from_gemini(id)?,
             AppType::GrokBuild => mcp::remove_server_from_grokbuild(id)?,
             AppType::OpenCode => {
@@ -330,12 +353,24 @@ impl McpService {
         if matches!(app, AppType::OpenClaw | AppType::ClaudeDesktop) {
             return Ok(());
         }
+        if matches!(app, AppType::Codex) {
+            // One ledger round-trip for the whole projection.
+            return Self::with_codex_ledger(state, |ledger| {
+                servers.values().try_for_each(|server| {
+                    if server.apps.is_enabled_for(app) {
+                        mcp::sync_single_server_to_codex(ledger, &server.id, &server.server)
+                    } else {
+                        mcp::remove_server_from_codex(ledger, &server.id, Some(&server.server))
+                    }
+                })
+            });
+        }
 
         for server in servers.values() {
             if server.apps.is_enabled_for(app) {
                 Self::sync_server_to_app(state, server, app)?;
             } else {
-                Self::remove_server_from_app(state, &server.id, app)?;
+                Self::remove_server_from_app(state, &server.id, Some(&server.server), app)?;
             }
         }
 

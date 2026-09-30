@@ -31,9 +31,10 @@ pub use live::{
 // Internal re-exports (pub(crate))
 pub(crate) use live::sanitize_claude_settings_for_live;
 pub(crate) use live::{
-    build_effective_settings_with_common_config, normalize_provider_common_config_for_storage,
-    provider_exists_in_live_config, strip_common_config_from_live_settings,
-    sync_current_provider_for_app_to_live, write_live_with_common_config, LiveSnapshot,
+    build_effective_settings_with_common_config, codex_common_snippet,
+    normalize_provider_common_config_for_storage, provider_exists_in_live_config,
+    strip_common_config_from_live_settings, sync_current_provider_for_app_to_live,
+    write_live_with_common_config, LiveSnapshot,
 };
 
 // Internal re-exports
@@ -90,8 +91,8 @@ pub fn reapply_current_codex_official_live(state: &AppState) -> Result<bool, App
     }
 
     live::write_live_with_common_config(&state.db, &AppType::Codex, provider)?;
-    // 重写 live 会整体替换 config.toml（有意设计），[mcp_servers] 随之丢失，
-    // 写完必须立刻从 DB 重新投影启用的 MCP。只投影 Codex 而非
+    // 写 live 按键所有权表投影（live 的 [mcp_servers] 保留），写完从 DB
+    // 按投影台账重新投影启用的 MCP，使其与 DB 对齐。只投影 Codex 而非
     // sync_all_enabled：后者按 AppType::all() 顺序逐应用短路，排在 Codex
     // 前面的无关应用 live 损坏（如 ~/.claude.json 坏 JSON）会阻断 Codex
     // 的重投影，让刚被清掉的 [mcp_servers] 无人补回。
@@ -3225,7 +3226,7 @@ impl ProviderService {
         }
 
         // 切换重写了目标应用的 live，只重投影该应用的 MCP（Codex 的
-        // [mcp_servers] 与 live 同文件，整体替换后必须补回；其余应用的
+        // [mcp_servers] 与 live 同文件，按投影台账与 DB 对齐；其余应用的
         // MCP 文件独立于 live，投影是幂等维护）。不用全量 sync_all_enabled：
         // 无关应用的 live 损坏（如 ~/.claude.json 坏 JSON）不该阻断切换。
         // 走到这里 DB is_current 与 live 都已落盘，切换事实上已成功；
@@ -3714,8 +3715,8 @@ impl ProviderService {
         // 启用状态被合并进所有勾选通用配置的供应商，且在通用配置编辑框里
         // 显示为一份"重复"的 MCP 配置。
         root.remove("mcp_servers");
-        // 历史错误格式 [mcp.servers] 一并剥离（与 strip_codex_mcp_servers_from_settings
-        // 一致）：sync_all_enabled 只管理 [mcp_servers.*]，legacy 形态一旦进了
+        // 历史错误格式 [mcp.servers] 一并剥离（与切换投影一致）：
+        // sync_all_enabled 只管理 [mcp_servers.*]，legacy 形态一旦进了
         // 片段就会被合并进所有供应商，且没有任何同步路径能清掉这个孤儿。
         if let Some(mcp_tbl) = root
             .get_mut("mcp")

@@ -57,9 +57,9 @@ pub use grok_config::get_grok_config_path;
 pub use mcp::{
     import_from_claude, import_from_codex, import_from_gemini, import_from_grokbuild,
     remove_server_from_claude, remove_server_from_codex, remove_server_from_gemini,
-    remove_server_from_grokbuild, sync_enabled_to_claude, sync_enabled_to_codex,
-    sync_enabled_to_gemini, sync_single_server_to_claude, sync_single_server_to_codex,
-    sync_single_server_to_gemini, sync_single_server_to_grokbuild,
+    remove_server_from_grokbuild, sync_enabled_to_claude, sync_enabled_to_gemini,
+    sync_single_server_to_claude, sync_single_server_to_codex, sync_single_server_to_gemini,
+    sync_single_server_to_grokbuild, CodexMcpLedger,
 };
 pub use prompt::Prompt;
 pub use provider::{Provider, ProviderMeta};
@@ -1015,6 +1015,16 @@ pub fn run() {
                             "✓ Renamed leftover OpenAI-named provider tables in {count} Codex provider(s)"
                         ),
                         Err(e) => log::warn!("✗ Codex OpenAI-named table fix failed: {e}"),
+                    }
+
+                    // L3: one-time report of lines whose stored keys the key
+                    // ownership rules no longer apply (names only).
+                    match db_for_codex_history_migration.record_codex_key_ownership_report_once() {
+                        Ok(Some(count)) if count > 0 => log::info!(
+                            "Codex key ownership: {count} provider(s) carry keys that now stay in live"
+                        ),
+                        Ok(_) => {}
+                        Err(e) => log::warn!("✗ Codex key ownership report failed: {e}"),
                     }
 
                     match crate::codex_history_migration::maybe_migrate_codex_third_party_history_provider_bucket(

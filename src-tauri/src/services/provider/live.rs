@@ -716,7 +716,31 @@ pub(crate) fn write_live_with_common_config(
         return Ok(());
     }
 
-    write_live_snapshot(app_type, &effective_provider)
+    let codex_snippet = if matches!(app_type, AppType::Codex) {
+        codex_common_snippet(db, provider)?
+    } else {
+        None
+    };
+    write_live_snapshot(app_type, &effective_provider, codex_snippet.as_ref())
+}
+
+/// ⑤ The stored Codex common config and whether `provider` uses it, for the
+/// key-ownership projection (`project_codex_line_onto_live`).
+pub(crate) fn codex_common_snippet(
+    db: &Database,
+    provider: &Provider,
+) -> Result<Option<crate::codex_key_ownership::CodexCommonSnippet>, AppError> {
+    let Some(text) = db
+        .get_config_snippet(AppType::Codex.as_str())?
+        .filter(|text| !text.trim().is_empty())
+    else {
+        return Ok(None);
+    };
+    let enabled = provider_uses_common_config(&AppType::Codex, provider, Some(&text));
+    Ok(Some(crate::codex_key_ownership::CodexCommonSnippet {
+        text,
+        enabled,
+    }))
 }
 
 pub(crate) fn strip_common_config_from_live_settings(
@@ -886,11 +910,15 @@ fn restore_live_settings_for_provider_backfill(
         }
     }
 
-    // MCP 服务器归 DB mcp_servers 表所有，live 里的 [mcp_servers] 是同步投影；
-    // 回填时剥掉，否则已删除的服务器会随供应商快照复活（逐条 reconcile 清不掉孤儿）。
-    if let Err(err) = crate::codex_config::strip_codex_mcp_servers_from_settings(&mut settings) {
+    // L3 key ownership: the line keeps only what it owns (① from live, ②
+    // from its stored text). Local-shared keys and `[mcp_servers]` stay in
+    // live, so a deleted MCP server can never come back with the line.
+    if let Err(err) = crate::codex_config::keep_line_owned_codex_config_for_backfill(
+        &mut settings,
+        &provider.settings_config,
+    ) {
         log::warn!(
-            "Failed to strip mcp_servers while backfilling '{}': {err}",
+            "Failed to reduce the backfilled Codex config of '{}': {err}",
             provider.id
         );
     }
@@ -1170,8 +1198,13 @@ impl LiveSnapshot {
     }
 }
 
-/// Write live configuration snapshot for a provider
-pub(crate) fn write_live_snapshot(app_type: &AppType, provider: &Provider) -> Result<(), AppError> {
+/// Write live configuration snapshot for a provider. `codex_snippet` is the
+/// Codex common config (⑤) and is only read for Codex.
+pub(crate) fn write_live_snapshot(
+    app_type: &AppType,
+    provider: &Provider,
+    codex_snippet: Option<&crate::codex_key_ownership::CodexCommonSnippet>,
+) -> Result<(), AppError> {
     match app_type {
         AppType::Claude => {
             let path = get_claude_settings_path();
@@ -1206,6 +1239,7 @@ pub(crate) fn write_live_snapshot(app_type: &AppType, provider: &Provider) -> Re
                 provider.category.as_deref(),
                 auth,
                 config_str,
+                codex_snippet,
                 profile,
             )?;
         }

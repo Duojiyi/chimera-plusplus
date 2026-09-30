@@ -2699,20 +2699,26 @@ pub fn prepare_codex_live_config_text_with_optional_catalog(
     }
 }
 
+/// Write a line to live. `config_text` is the line's effective text (common
+/// snippet merged); it is projected onto live `config.toml` by the key
+/// ownership table (`codex_key_ownership::project_codex_line_onto_live`)
+/// instead of replacing the file.
 pub fn write_codex_provider_live_with_catalog(
     settings: &Value,
     category: Option<&str>,
     auth: &Value,
     config_text: Option<&str>,
+    snippet: Option<&crate::codex_key_ownership::CodexCommonSnippet>,
     profile: CodexCatalogToolProfile,
 ) -> Result<(), AppError> {
     let config_text = config_text
         .map(|text| {
-            if category == Some("official") && text.trim().is_empty() {
-                Ok(text.to_string())
-            } else {
-                preserve_codex_local_settings(text, &read_codex_config_text()?)
-            }
+            crate::codex_key_ownership::project_codex_line_onto_live(
+                text,
+                &read_codex_config_text()?,
+                category == Some("official"),
+                snippet,
+            )
         })
         .transpose()?;
     let prepared_config = config_text
@@ -2721,44 +2727,6 @@ pub fn write_codex_provider_live_with_catalog(
         .transpose()?;
 
     write_codex_live_for_provider(category, auth, prepared_config.as_deref())
-}
-
-fn preserve_codex_local_settings(config_text: &str, live_text: &str) -> Result<String, AppError> {
-    let mut target = config_text
-        .parse::<DocumentMut>()
-        .map_err(|err| AppError::Message(format!("Invalid Codex config.toml: {err}")))?;
-    let live = live_text
-        .parse::<DocumentMut>()
-        .map_err(|err| AppError::Message(format!("Invalid live Codex config.toml: {err}")))?;
-    for key in [
-        "sandbox_mode",
-        "approval_policy",
-        "sandbox_workspace_write",
-        "windows",
-    ] {
-        if let Some(value) = live.get(key) {
-            target[key] = value.clone();
-        }
-    }
-    if let Some(features) = live
-        .get("features")
-        .and_then(toml_edit::Item::as_table_like)
-    {
-        if !target.contains_key("features") {
-            target["features"] = toml_edit::table();
-        }
-        if let Some(target_features) = target
-            .get_mut("features")
-            .and_then(toml_edit::Item::as_table_like_mut)
-        {
-            for (key, value) in features.iter() {
-                if !target_features.contains_key(key) {
-                    target_features.insert(key, value.clone());
-                }
-            }
-        }
-    }
-    Ok(target.to_string())
 }
 
 /// Extract a provider-scoped `experimental_bearer_token` from Codex `config.toml`.
@@ -3287,41 +3255,26 @@ pub fn strip_codex_unified_session_bucket_from_settings(
     Ok(())
 }
 
-/// Backfill helper: strip `[mcp_servers]` from a live `{ auth, config }`
-/// settings object before it is stored back to the DB.
-///
-/// MCP 服务器的 SSOT 是 DB 的 mcp_servers 表，live `config.toml` 里的
-/// `[mcp_servers]` 只是每次写 live 之后由 MCP 同步重新投影的产物。若回填时
-/// 烙进供应商存储配置，已在应用里删除的服务器会随下次激活该供应商被写回
-/// live，而逐条 reconcile 只认识 DB 现存条目、永远清不掉这种孤儿。
-pub fn strip_codex_mcp_servers_from_settings(settings: &mut Value) -> Result<(), AppError> {
-    let Some(config_text) = settings
-        .get("config")
-        .and_then(|value| value.as_str())
-        .map(str::to_string)
-    else {
+/// Backfill helper (L3): reduce a live `{ auth, config }` settings object to
+/// what the outgoing line owns before it is stored back to the DB (see
+/// `codex_key_ownership::codex_line_config_for_backfill`). Local-shared keys,
+/// `[mcp_servers]` (DB/ledger-owned, so a deleted server can never come back
+/// with the line) and the common snippet stay in live only.
+pub fn keep_line_owned_codex_config_for_backfill(
+    settings: &mut Value,
+    stored_settings: &Value,
+) -> Result<(), AppError> {
+    let Some(config_text) = settings.get("config").and_then(Value::as_str) else {
         return Ok(());
     };
-    if !config_text.contains("mcp") {
-        return Ok(());
-    }
-    let mut doc = config_text
-        .parse::<DocumentMut>()
-        .map_err(|e| AppError::Message(format!("Invalid Codex config.toml: {e}")))?;
-    let mut changed = doc.as_table_mut().remove("mcp_servers").is_some();
-    // 历史错误格式 [mcp.servers] 一并清理（live 侧 MCP 同步也做同样迁移）
-    if let Some(mcp_tbl) = doc.get_mut("mcp").and_then(|item| item.as_table_like_mut()) {
-        if mcp_tbl.remove("servers").is_some() {
-            changed = true;
-        }
-        if mcp_tbl.is_empty() {
-            doc.as_table_mut().remove("mcp");
-        }
-    }
-    if changed {
-        if let Some(obj) = settings.as_object_mut() {
-            obj.insert("config".to_string(), Value::String(doc.to_string()));
-        }
+    let stored_text = stored_settings
+        .get("config")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let kept =
+        crate::codex_key_ownership::codex_line_config_for_backfill(config_text, stored_text)?;
+    if let Some(obj) = settings.as_object_mut() {
+        obj.insert("config".to_string(), Value::String(kept));
     }
     Ok(())
 }
@@ -4261,37 +4214,34 @@ requires_openai_auth = true
     }
 
     #[test]
-    fn strip_mcp_servers_from_settings_removes_table_and_legacy_form() {
+    fn backfill_keeps_only_line_owned_keys() {
         let mut settings = json!({
             "auth": { "OPENAI_API_KEY": "sk-test" },
-            "config": "# user comment\nmodel = \"gpt-5.5\"\n\n[mcp_servers.echo]\ntype = \"stdio\"\ncommand = \"echo\"\n\n[mcp.servers.legacy]\ncommand = \"noop\"\n",
+            "config": "model = \"gpt-5.5\"\nmodel_provider = \"relay\"\nopenai_base_url = \"https://live-only.example/v1\"\napproval_policy = \"never\"\n\n[mcp_servers.echo]\ncommand = \"echo\"\n\n[mcp.servers.legacy]\ncommand = \"noop\"\n\n[model_providers.relay]\nname = \"Relay\"\nbase_url = \"https://relay.example/v1\"\n\n[model_providers.mine]\nname = \"Mine\"\n\n[features]\ngoals = true\nmemories = true\n",
         });
-        strip_codex_mcp_servers_from_settings(&mut settings).expect("strip mcp");
-        let config = settings
-            .get("config")
-            .and_then(|v| v.as_str())
-            .expect("config text");
-        assert!(!config.contains("mcp_servers"), "got: {config}");
+        let stored = json!({ "config": "chatgpt_base_url = \"https://stored.example\"\n" });
+        keep_line_owned_codex_config_for_backfill(&mut settings, &stored).expect("backfill");
+        let config: toml::Value =
+            toml::from_str(settings["config"].as_str().unwrap()).expect("valid toml");
+        assert_eq!(config["model"].as_str(), Some("gpt-5.5"));
+        assert_eq!(config["model_provider"].as_str(), Some("relay"));
+        assert!(config["model_providers"].get("relay").is_some());
         assert!(
-            !config.contains("[mcp"),
-            "legacy [mcp.servers] gone: {config}"
+            config["model_providers"].get("mine").is_none(),
+            "a user table stays in live only"
         );
-        assert!(config.contains("# user comment"), "comments preserved");
-        assert!(config.contains("model = \"gpt-5.5\""));
-    }
-
-    #[test]
-    fn strip_mcp_servers_from_settings_is_noop_without_mcp() {
-        let original = "# comment\nmodel = \"gpt-5.5\"\n";
-        let mut settings = json!({
-            "auth": {},
-            "config": original,
-        });
-        strip_codex_mcp_servers_from_settings(&mut settings).expect("strip mcp");
+        assert_eq!(config["features"]["goals"].as_bool(), Some(true));
+        assert!(config["features"].get("memories").is_none());
+        for key in ["mcp_servers", "mcp", "approval_policy", "openai_base_url"] {
+            assert!(
+                config.get(key).is_none(),
+                "{key} must not be frozen into the line"
+            );
+        }
         assert_eq!(
-            settings.get("config").and_then(|v| v.as_str()),
-            Some(original),
-            "config text must be byte-identical when nothing is stripped"
+            config["chatgpt_base_url"].as_str(),
+            Some("https://stored.example"),
+            "route keys come from the stored line, never from live"
         );
     }
 
@@ -4985,13 +4935,17 @@ multi_agent_v2 = true
 memories = true
 "#;
         let target = "model = \"new\"\n[features]\nmemories = false\n";
-        let result = preserve_codex_local_settings(target, live).unwrap();
+        let result =
+            crate::codex_key_ownership::project_codex_line_onto_live(target, live, false, None)
+                .unwrap();
         let doc: toml::Value = result.parse().unwrap();
         assert_eq!(doc["model"].as_str(), Some("new"));
-        assert!(doc.get("model_catalog_json").is_none());
+        // The catalog step decides the pointer (it removes only our own file).
+        assert_eq!(doc["model_catalog_json"].as_str(), Some("old.json"));
         assert_eq!(doc["windows"]["sandbox"].as_str(), Some("elevated"));
         assert_eq!(doc["features"]["multi_agent_v2"].as_bool(), Some(true));
-        assert_eq!(doc["features"]["memories"].as_bool(), Some(false));
+        // `[features]` is local shared (④) except the line-owned `goals`.
+        assert_eq!(doc["features"]["memories"].as_bool(), Some(true));
     }
 
     #[test]

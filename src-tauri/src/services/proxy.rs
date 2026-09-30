@@ -372,9 +372,10 @@ impl ProxyService {
         )
         .map_err(|e| format!("构建 codex 有效配置失败: {e}"))?;
         if let Some(existing_live) = existing_live.as_ref() {
-            Self::preserve_toml_mcp_servers_from_existing_config(
+            self.project_codex_line_onto_existing(
                 &mut effective_settings,
                 existing_live,
+                provider,
             )?;
         }
         let (_, proxy_codex_base_url) = self.build_proxy_urls().await?;
@@ -2800,9 +2801,10 @@ impl ProxyService {
             // Live auth and fall back to the backup only when Live has no usable
             // login material.
             if let Some(existing_value) = existing_backup_value.as_ref().or(current_live.as_ref()) {
-                Self::preserve_toml_mcp_servers_from_existing_config(
+                self.project_codex_line_onto_existing(
                     &mut effective_settings,
                     existing_value,
+                    provider,
                 )?;
             }
 
@@ -2982,12 +2984,16 @@ impl ProxyService {
                 let config_str = effective_settings.get("config").and_then(|v| v.as_str());
                 let profile =
                     crate::proxy::providers::resolve_codex_catalog_tool_profile(&provider);
+                let snippet =
+                    crate::services::provider::codex_common_snippet(self.db.as_ref(), &provider)
+                        .map_err(|e| format!("读取 Codex 通用配置失败: {e}"))?;
 
                 crate::codex_config::write_codex_provider_live_with_catalog(
                     &effective_settings,
                     provider.category.as_deref(),
                     auth,
                     config_str,
+                    snippet.as_ref(),
                     profile,
                 )
                 .map_err(|e| format!("写入 Codex 配置失败: {e}"))?;
@@ -3143,6 +3149,37 @@ impl ProxyService {
         }
 
         target_obj.insert("config".to_string(), json!(target_doc.to_string()));
+        Ok(())
+    }
+
+    /// L3: project a Codex line's effective settings onto an existing
+    /// `{ auth, config }` (the takeover backup or live) by the key ownership
+    /// table, so local-shared keys and user MCP servers survive takeover and
+    /// exit-restore exactly as they survive a direct switch.
+    fn project_codex_line_onto_existing(
+        &self,
+        target_settings: &mut Value,
+        existing: &Value,
+        provider: &Provider,
+    ) -> Result<(), String> {
+        let snippet = crate::services::provider::codex_common_snippet(self.db.as_ref(), provider)
+            .map_err(|e| format!("读取 Codex 通用配置失败: {e}"))?;
+        let line = target_settings
+            .get("config")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let base = existing.get("config").and_then(Value::as_str).unwrap_or("");
+        let projected = crate::codex_key_ownership::project_codex_line_onto_live(
+            line,
+            base,
+            provider.category.as_deref() == Some("official"),
+            snippet.as_ref(),
+        )
+        .map_err(|e| format!("投影 Codex 配置失败: {e}"))?;
+        let target_obj = target_settings
+            .as_object_mut()
+            .ok_or_else(|| "Codex 配置必须是 JSON 对象".to_string())?;
+        target_obj.insert("config".to_string(), json!(projected));
         Ok(())
     }
 
@@ -3377,12 +3414,15 @@ impl ProxyService {
             .ok_or_else(|| "Codex 配置缺少 auth 字段".to_string())?;
         let config_str = config.get("config").and_then(|v| v.as_str());
         let profile = crate::proxy::providers::resolve_codex_catalog_tool_profile(provider);
+        let snippet = crate::services::provider::codex_common_snippet(self.db.as_ref(), provider)
+            .map_err(|e| format!("读取 Codex 通用配置失败: {e}"))?;
 
         crate::codex_config::write_codex_provider_live_with_catalog(
             config,
             provider.category.as_deref(),
             auth,
             config_str,
+            snippet.as_ref(),
             profile,
         )
         .map_err(|e| format!("写入 Codex 配置失败: {e}"))
@@ -7494,7 +7534,7 @@ requires_openai_auth = true
 
     #[tokio::test]
     #[serial]
-    async fn update_live_backup_from_provider_keeps_new_codex_mcp_entries_on_conflict() {
+    async fn update_live_backup_from_provider_never_takes_codex_mcp_entries_from_the_line() {
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("reload settings");
 
@@ -7554,6 +7594,9 @@ command = "latest-command"
             .expect("config string");
         let parsed: toml::Value = toml::from_str(config).expect("parse merged codex config");
 
+        // L3 key ownership ③/④: `[mcp_servers]` belongs to live (the DB
+        // projection ledger re-projects its own entries); a line never
+        // carries MCP servers into live or its restore backup.
         let mcp_servers = parsed
             .get("mcp_servers")
             .expect("mcp_servers should be present");
@@ -7562,8 +7605,8 @@ command = "latest-command"
                 .get("shared")
                 .and_then(|v| v.get("command"))
                 .and_then(|v| v.as_str()),
-            Some("new-command"),
-            "new provider/common-config MCP definition should win on conflict"
+            Some("old-command"),
+            "the backup's own entry is kept, not the line's"
         );
         assert_eq!(
             mcp_servers
@@ -7573,13 +7616,9 @@ command = "latest-command"
             Some("legacy-command"),
             "backup-only MCP entries should still be preserved"
         );
-        assert_eq!(
-            mcp_servers
-                .get("latest")
-                .and_then(|v| v.get("command"))
-                .and_then(|v| v.as_str()),
-            Some("latest-command"),
-            "new MCP entries should remain in the restore backup"
+        assert!(
+            mcp_servers.get("latest").is_none(),
+            "a line's MCP entry must not reach the restore backup"
         );
     }
 
