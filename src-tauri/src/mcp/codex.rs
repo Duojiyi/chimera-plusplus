@@ -895,7 +895,7 @@ mod tests {
                 "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_secretvaluea91f"},
                 "enabled": false
             }),
-            |value| format!("••••{}", &value[value.len() - 4..]),
+            |value| format!("••••{}", &value[value.len().saturating_sub(4)..]),
         )
         .unwrap();
         assert_eq!(header, "[mcp_servers.github]");

@@ -140,9 +140,9 @@ impl Database {
         let db = Self {
             conn: Mutex::new(conn),
         };
-        db.create_tables()?;
 
-        // Pre-migration backup: only when upgrading from an existing database
+        // Pre-migration backup: only when upgrading from an existing database,
+        // taken BEFORE any DDL or migration changes.
         {
             let conn = lock_conn!(db.conn);
             let version = Self::get_user_version(&conn)?;
@@ -151,19 +151,21 @@ impl Database {
                 log::info!(
                     "Creating pre-migration database backup (v{version} → v{SCHEMA_VERSION})"
                 );
-                // Crossing v17 keeps a separate, never-rotated, token-free
-                // backup: restoring it is the downgrade path to 2.7.x (M3.5).
-                let result = if version < 17 {
-                    db.backup_pre_v17_database_file().map(|_| ())
-                } else {
-                    db.backup_database_file().map(|_| ())
-                };
-                if let Err(e) = result {
+                // Crossing v17 keeps a separate downgrade backup (M3.5).
+                // Failing to create the downgrade backup aborts the upgrade to protect user data.
+                if version < 17 {
+                    db.backup_pre_v17_database_file().map_err(|e| {
+                        AppError::Database(format!(
+                            "升级至 v17 前安全备份失败，终止升级以防数据损坏: {e}"
+                        ))
+                    })?;
+                } else if let Err(e) = db.backup_database_file() {
                     log::warn!("Pre-migration backup failed, continuing migration: {e}");
                 }
             }
         }
 
+        db.create_tables()?;
         db.apply_schema_migrations()?;
         // MH-17 / L4: before any takeover recovery reads it.
         match db.strip_auth_from_codex_live_backup() {

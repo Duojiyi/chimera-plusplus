@@ -133,6 +133,7 @@ fn is_codex_auth_file(path: &Path) -> bool {
 }
 
 /// Whether any of the tool's live files exists.
+#[allow(dead_code)]
 pub fn has_live_files(app: &AppType) -> Result<bool, AppError> {
     Ok(live_files(app)?.iter().any(|path| path.exists()))
 }
@@ -262,6 +263,7 @@ pub fn create_backup(
 /// Reuses the newest backup when it holds exactly the current live files,
 /// otherwise takes a new one. Keeps repeated first-enable previews from
 /// filling the retention cap with copies.
+#[allow(dead_code)]
 pub fn ensure_current_backup(
     db: &Database,
     app: &AppType,

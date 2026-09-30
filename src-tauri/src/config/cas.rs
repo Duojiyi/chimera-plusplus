@@ -369,7 +369,7 @@ impl Changeset {
         } in writes
         {
             let written = FileState::of(contents.as_deref());
-            let skip = if snapshot.state == written {
+            let skip = snapshot.state == written && {
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
@@ -382,11 +382,7 @@ impl Changeset {
                     }
                 }
                 #[cfg(not(unix))]
-                {
-                    true
-                }
-            } else {
-                false
+                true
             };
             if skip {
                 continue;

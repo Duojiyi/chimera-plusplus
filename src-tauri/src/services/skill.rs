@@ -124,23 +124,42 @@ impl HashBudget {
 // Adapted from yynxxxxx/Codex-X apps/desktop/src-tauri/src/skills_mcp/archive.rs `safe_relative` (MIT)
 /// Extra ZIP entry-name rules on top of the size/ratio/entry limits, applied
 /// on every OS so an archive stays usable when it moves between machines:
-/// no backslash, colon or NUL; no empty, `.` or `..` segment; no segment
-/// ending in a space or dot; no Windows device name (CON, PRN, AUX, NUL,
+/// no backslash, colon, NUL, forbidden Windows characters, or ASCII control chars;
+/// no empty, `.` or `..` segment; no segment or sub-stem ending in a space or dot;
+/// no Windows reserved device names (CON, PRN, AUX, NUL, CONIN$, CONOUT$, CLOCK$,
 /// COM0-9, LPT0-9), with or without an extension.
 fn portable_archive_name_error(name: &str) -> Option<&'static str> {
-    if name.contains('\\') || name.contains(':') || name.contains('\0') {
-        return Some("Skill ZIP 条目路径含反斜杠、冒号或空字符");
+    const FORBIDDEN_CHARS: &[char] = &['<', '>', '"', '|', '?', '*', ':', '\\', '\0'];
+    if name
+        .chars()
+        .any(|c| FORBIDDEN_CHARS.contains(&c) || (c as u32) < 0x20)
+    {
+        return Some("Skill ZIP 条目路径含反斜杠、冒号、非法字符或控制字符");
     }
     for part in name.trim_end_matches('/').split('/') {
-        let stem = part.split('.').next().unwrap_or("").to_ascii_uppercase();
-        let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-            || (stem.len() == 4
-                && (stem.starts_with("COM") || stem.starts_with("LPT"))
-                && stem.as_bytes()[3].is_ascii_digit());
-        if part.is_empty() || part.ends_with(' ') || part.ends_with('.') || reserved {
-            return Some(
-                "Skill ZIP 条目路径无法跨平台使用（空段、以空格或点结尾，或是 Windows 保留名）",
-            );
+        if part.is_empty() || part.ends_with(' ') || part.ends_with('.') {
+            return Some("Skill ZIP 条目路径无法跨平台使用（空段、以空格或点结尾）");
+        }
+        if part
+            .split('.')
+            .any(|s| s.ends_with(' ') || s.ends_with('.'))
+        {
+            return Some("Skill ZIP 条目路径段在扩展名包含非法空格或点");
+        }
+        let raw_stem = part
+            .split('.')
+            .next()
+            .unwrap_or("")
+            .trim_end_matches([' ', '.']);
+        let stem = raw_stem.to_ascii_uppercase();
+        let reserved = matches!(
+            stem.as_str(),
+            "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$" | "CLOCK$"
+        ) || (stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.as_bytes()[3].is_ascii_digit());
+        if reserved {
+            return Some("Skill ZIP 条目路径包含 Windows 保留设备名");
         }
     }
     None
@@ -3519,11 +3538,11 @@ impl SkillService {
     }
 
     fn archive_path_key(path: &Path) -> String {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         {
             path.to_string_lossy().replace('\\', "/").to_lowercase()
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         {
             path.to_string_lossy().replace('\\', "/")
         }
@@ -4788,5 +4807,21 @@ mod tests {
             dest.join("SKILL.md").is_file(),
             "existing destination skill should be preserved"
         );
+    }
+
+    #[test]
+    fn portable_archive_name_error_catches_dangerous_names() {
+        assert!(portable_archive_name_error("con .txt").is_some());
+        assert!(portable_archive_name_error("aux .png").is_some());
+        assert!(portable_archive_name_error("dir/nul .json").is_some());
+        assert!(portable_archive_name_error("conin$.txt").is_some());
+        assert!(portable_archive_name_error("clock$").is_some());
+        assert!(portable_archive_name_error("file?.txt").is_some());
+        assert!(portable_archive_name_error("bad*name").is_some());
+        assert!(portable_archive_name_error("dir/name\0evil").is_some());
+        assert!(portable_archive_name_error("dir/name:stream").is_some());
+        assert!(portable_archive_name_error("dir\\backslash").is_some());
+        assert!(portable_archive_name_error("valid/path/file.txt").is_none());
+        assert!(portable_archive_name_error("skill/scripts/run.py").is_none());
     }
 }

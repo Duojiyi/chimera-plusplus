@@ -9,6 +9,7 @@ use chrono::{Local, Utc};
 use rusqlite::backup::Backup;
 use rusqlite::types::ValueRef;
 use rusqlite::Connection;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
@@ -339,6 +340,7 @@ impl Database {
         Self::validate_basic_state(&temp_conn)?;
         if let Some(local_snapshot) = local_snapshot.as_ref() {
             Self::restore_tables(local_snapshot, &temp_conn, preserve_tables)?;
+            Self::merge_local_mcp_secrets(local_snapshot, &temp_conn)?;
         }
         // Validate the final staged state for both local and cloud imports.
         // Remote Live backups may have been replaced by local-only tables,
@@ -467,6 +469,80 @@ impl Database {
         Ok(())
     }
 
+    /// When importing from a sync target (where MCP secrets were blanked by
+    /// data classification), restore local MCP secrets from the local database
+    /// snapshot so existing credentials on this machine are not wiped out.
+    fn merge_local_mcp_secrets(
+        local_conn: &Connection,
+        target_conn: &Connection,
+    ) -> Result<(), AppError> {
+        if !Self::table_exists(local_conn, "mcp_servers")?
+            || !Self::table_exists(target_conn, "mcp_servers")?
+        {
+            return Ok(());
+        }
+        let local_secrets = {
+            let mut stmt = local_conn.prepare("SELECT id, server_config FROM main.mcp_servers")?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            rows.collect::<Result<HashMap<String, String>, _>>()?
+        };
+
+        let target_rows = {
+            let mut stmt = target_conn.prepare("SELECT id, server_config FROM main.mcp_servers")?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            rows.collect::<Result<Vec<(String, String)>, _>>()?
+        };
+
+        for (id, target_raw) in target_rows {
+            let Some(local_raw) = local_secrets.get(&id) else {
+                continue;
+            };
+            let Ok(mut target_spec) = serde_json::from_str::<serde_json::Value>(&target_raw) else {
+                continue;
+            };
+            let Ok(local_spec) = serde_json::from_str::<serde_json::Value>(local_raw) else {
+                continue;
+            };
+
+            let mut modified = false;
+            for key in MCP_SECRET_MAPS {
+                if let (Some(target_map), Some(local_map)) = (
+                    target_spec
+                        .get_mut(*key)
+                        .and_then(serde_json::Value::as_object_mut),
+                    local_spec.get(*key).and_then(serde_json::Value::as_object),
+                ) {
+                    for (k, v) in target_map.iter_mut() {
+                        if v.as_str() == Some("") {
+                            if let Some(local_val) =
+                                local_map.get(k).and_then(serde_json::Value::as_str)
+                            {
+                                if !local_val.is_empty() {
+                                    *v = serde_json::Value::String(local_val.to_string());
+                                    modified = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if modified {
+                let updated_raw = serde_json::to_string(&target_spec)
+                    .map_err(|source| AppError::JsonSerialize { source })?;
+                target_conn.execute(
+                    "UPDATE main.mcp_servers SET server_config = ?1 WHERE id = ?2",
+                    rusqlite::params![updated_raw, id],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     /// Periodic backup: create a new backup if the latest one is older than the configured interval
     pub(crate) fn periodic_backup_if_needed(&self) -> Result<(), AppError> {
         let interval_hours = crate::settings::effective_backup_interval_hours();
@@ -579,11 +655,11 @@ impl Database {
 
     /// Plan M3.5: the backup taken right before the v17 migration, i.e. a
     /// v16 database 2.7.x can open. Restoring it is the downgrade path. It is
-    /// excluded from rotation and carries no tokens: copy → redact → VACUUM
-    /// → atomic rename, so no page of the finished file ever held them.
+    /// excluded from standard rotation and redacts OAuth material and the
+    /// takeover Live backup (copy → redact → VACUUM → atomic rename, so no
+    /// page of the finished file ever held them).
     /// Provider API keys and MCP env stay, as in every `.db` backup (a
-    /// same-device, full-fidelity restore point); OAuth material and the
-    /// takeover Live backup do not.
+    /// same-device, full-fidelity restore point).
     pub(crate) fn backup_pre_v17_database_file(&self) -> Result<Option<PathBuf>, AppError> {
         let db_path = get_app_config_dir().join(crate::product_policy::PRODUCT_DATABASE_FILE);
         if !db_path.exists() {
@@ -595,13 +671,37 @@ impl Database {
             .join("backups");
         fs::create_dir_all(&backup_dir).map_err(|e| AppError::io(&backup_dir, e))?;
         let backup_path = Self::unique_backup_path(&backup_dir, PRE_V17_BACKUP_PREFIX);
-        self.write_token_free_backup(&backup_path)?;
+        self.write_pre_v17_downgrade_backup(&backup_path)?;
+        Self::cleanup_pre_v17_backups(&backup_dir, 2);
         #[cfg(unix)]
         restrict_db_storage_permissions(&db_path);
         Ok(Some(backup_path))
     }
 
-    fn write_token_free_backup(&self, target: &Path) -> Result<(), AppError> {
+    fn cleanup_pre_v17_backups(dir: &Path, retain: usize) {
+        let entries = match fs::read_dir(dir) {
+            Ok(iter) => iter
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| {
+                    entry.file_name().to_str().is_some_and(|name| {
+                        name.starts_with(PRE_V17_BACKUP_PREFIX) && name.ends_with(".db")
+                    })
+                })
+                .collect::<Vec<_>>(),
+            Err(_) => return,
+        };
+        if entries.len() <= retain {
+            return;
+        }
+        let remove_count = entries.len().saturating_sub(retain);
+        let mut sorted = entries;
+        sorted.sort_by_key(|entry| entry.metadata().and_then(|m| m.modified()).ok());
+        for entry in sorted.into_iter().take(remove_count) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+
+    fn write_pre_v17_downgrade_backup(&self, target: &Path) -> Result<(), AppError> {
         // 1. Copy (in memory, so the live file is only read).
         let snapshot = self.snapshot_to_memory()?;
         // 2. Redact.

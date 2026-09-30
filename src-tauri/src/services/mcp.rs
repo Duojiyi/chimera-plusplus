@@ -134,11 +134,22 @@ impl McpService {
     ) -> Result<(), AppError> {
         let previous = state.db.get_all_mcp_servers()?.get(server_id).cloned();
 
-        let Some(mut updated) = previous.clone() else {
+        let Some(previous_server) = previous.clone() else {
             return Ok(());
         };
 
-        updated.apps.set_enabled_for(&app, enabled);
+        let updated = if app == AppType::Codex {
+            codex_toggle_target(&previous_server, enabled)
+        } else {
+            let mut u = previous_server.clone();
+            u.apps.set_enabled_for(&app, enabled);
+            if enabled {
+                if let Some(obj) = u.server.as_object_mut() {
+                    obj.remove("enabled");
+                }
+            }
+            u
+        };
 
         let mut snapshots = IndexMap::new();
         snapshots.insert(server_id.to_string(), previous.clone());
@@ -524,9 +535,15 @@ impl McpService {
                 }
                 ImportTarget::SameContent(other) => {
                     log::info!(
-                        "跳过导入 MCP 服务器 '{}'：与已有的 '{other}' 内容相同",
+                        "跳过重复创建 MCP 服务器 '{}'：与已有的 '{other}' 内容相同，关联到该应用",
                         server.id
                     );
+                    if let Some(existing_server) = existing.get_mut(&other) {
+                        if !existing_server.apps.is_enabled_for(app) {
+                            existing_server.apps.set_enabled_for(app, true);
+                            state.db.save_mcp_server(existing_server)?;
+                        }
+                    }
                     continue;
                 }
                 ImportTarget::New => {
@@ -634,26 +651,57 @@ pub(crate) fn import_target(
 
 /// Spec as compared for import dedup: the transport Codex would infer when
 /// `type` is absent, Codex's `http_headers` spelling folded into `headers`,
-/// and the per-app `enabled` override ignored.
+/// empty collections stripped, and the per-app `enabled` override ignored.
 fn canonical_import_spec(spec: &serde_json::Value) -> serde_json::Value {
     let mut spec = spec.clone();
     if let Some(obj) = spec.as_object_mut() {
-        let typed = obj
+        let has_valid_cmd = obj
+            .get("command")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|s| !s.trim().is_empty());
+        let has_valid_url = obj
+            .get("url")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|s| !s.trim().is_empty());
+
+        let typ = obj
             .get("type")
             .and_then(serde_json::Value::as_str)
-            .is_some_and(|value| !value.trim().is_empty());
-        if !typed {
-            let inferred = if !obj.contains_key("command") && obj.contains_key("url") {
-                "http"
-            } else {
-                "stdio"
-            };
-            obj.insert("type".into(), inferred.into());
-        }
+            .map(str::trim);
+        let canonical_type = match typ {
+            Some("http" | "sse" | "streamable_http") => "http",
+            Some("stdio") => "stdio",
+            _ if !has_valid_cmd && has_valid_url => "http",
+            _ => "stdio",
+        };
+        obj.insert("type".into(), canonical_type.into());
+
         if let Some(headers) = obj.remove("http_headers") {
             obj.entry("headers").or_insert(headers);
         }
         obj.remove("enabled");
+
+        if obj
+            .get("args")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|a| a.is_empty())
+        {
+            obj.remove("args");
+        }
+        if obj
+            .get("env")
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(|e| e.is_empty())
+        {
+            obj.remove("env");
+        }
+        if obj
+            .get("headers")
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(|h| h.is_empty())
+        {
+            obj.remove("headers");
+        }
     }
     spec
 }
@@ -679,18 +727,28 @@ pub(crate) fn codex_toggle_target(server: &McpServer, enabled: bool) -> McpServe
         .all(|app| *app == AppType::Codex);
     let obj = updated.server.as_object_mut();
     match (enabled, obj) {
-        (true, obj) => {
+        (true, Some(obj)) => {
             updated.apps.codex = true;
-            if let Some(obj) = obj {
-                if obj.get("enabled").and_then(serde_json::Value::as_bool) == Some(false) {
-                    obj.remove("enabled");
-                }
+            if obj.get("enabled").and_then(serde_json::Value::as_bool) == Some(false) {
+                obj.remove("enabled");
             }
+        }
+        (true, None) => {
+            updated.apps.codex = true;
         }
         (false, Some(obj)) if server.apps.codex && codex_only => {
             obj.insert("enabled".into(), serde_json::Value::Bool(false));
         }
-        (false, _) => updated.apps.codex = false,
+        (false, Some(obj)) => {
+            updated.apps.codex = false;
+            // Clean up any lingering "enabled": false so it never leaks to other apps
+            if obj.get("enabled").and_then(serde_json::Value::as_bool) == Some(false) {
+                obj.remove("enabled");
+            }
+        }
+        (false, None) => {
+            updated.apps.codex = false;
+        }
     }
     updated
 }

@@ -28,7 +28,7 @@ impl Database {
     pub fn get_notes(&self, table: NotesTable) -> Result<HashMap<String, String>, AppError> {
         let conn = lock_conn!(self.conn);
         let sql = format!(
-            "SELECT id, notes FROM {} WHERE notes IS NOT NULL AND notes <> ''",
+            "SELECT id, notes FROM {} WHERE notes IS NOT NULL AND trim(notes) <> ''",
             table.name()
         );
         let mut stmt = conn
@@ -41,8 +41,8 @@ impl Database {
             .map_err(|e| AppError::Database(e.to_string()))
     }
 
-    /// Sets (or clears, with `None`) one row's note. `false` when the row
-    /// does not exist.
+    /// Sets (or clears, with `None` or whitespace-only) one row's note.
+    /// `false` when the row does not exist.
     pub fn set_notes(
         &self,
         table: NotesTable,
@@ -50,9 +50,10 @@ impl Database {
         notes: Option<&str>,
     ) -> Result<bool, AppError> {
         let conn = lock_conn!(self.conn);
+        let normalized = notes.map(str::trim).filter(|s| !s.is_empty());
         let sql = format!("UPDATE {} SET notes = ?1 WHERE id = ?2", table.name());
         let affected = conn
-            .execute(&sql, params![notes, id])
+            .execute(&sql, params![normalized, id])
             .map_err(|e| AppError::Database(e.to_string()))?;
         Ok(affected > 0)
     }
@@ -86,6 +87,12 @@ mod tests {
             db.get_notes(NotesTable::McpServers).unwrap().get("github"),
             Some(&"读 PR 与 issue".to_string())
         );
+        // Whitespace only clears note
+        assert!(db
+            .set_notes(NotesTable::McpServers, "github", Some("   "))
+            .unwrap());
+        assert!(db.get_notes(NotesTable::McpServers).unwrap().is_empty());
+
         assert!(db.set_notes(NotesTable::Skills, "local:pdf", None).unwrap());
         assert!(db.get_notes(NotesTable::Skills).unwrap().is_empty());
     }
