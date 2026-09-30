@@ -536,6 +536,49 @@ pub fn is_codex_official_provider(provider: &Provider) -> bool {
         && provider.category.as_deref() == Some("official")
 }
 
+/// Provider table name that makes Codex treat a line as OpenAI and enable
+/// remote compaction v2 for it (openai/codex 0.157 `model-provider-info`
+/// `is_openai`, `model-provider/src/provider.rs` `capabilities`).
+const CODEX_OPENAI_PROVIDER_TABLE_NAME: &str = "OpenAI";
+
+/// Whether every request of this line reaches a native Responses upstream:
+/// no Chat/Anthropic default, no per-model conversion and no per-model
+/// upstream route.
+pub fn codex_provider_routes_only_native_responses(provider: &Provider) -> bool {
+    let model = codex_provider_upstream_model(provider);
+    !codex_provider_uses_chat_completions_for_model(provider, model.as_deref())
+        && !codex_provider_uses_anthropic_for_model(provider, model.as_deref())
+        && !codex_provider_has_model_level_routing(provider)
+}
+
+/// CPP-A1① gate. Codex runs remote compaction v2 for a provider table named
+/// "OpenAI" and treats anything other than exactly one compaction output item
+/// as a fatal error. The Chat and Anthropic bridges cannot produce that item,
+/// so a non-official line may carry the name only when it routes every
+/// request to a native Responses upstream.
+pub fn codex_remote_compaction_blocked(provider: &Provider) -> bool {
+    if is_codex_official_provider(provider) {
+        return false;
+    }
+    let Some(config_text) = provider
+        .settings_config
+        .get("config")
+        .and_then(JsonValue::as_str)
+    else {
+        return false;
+    };
+    let Ok(doc) = config_text.parse::<TomlValue>() else {
+        return false;
+    };
+    let claims_openai = doc
+        .get("model_provider")
+        .and_then(TomlValue::as_str)
+        .and_then(|id| doc.get("model_providers")?.get(id.trim()))
+        .and_then(|table| table.get("name"))
+        .and_then(TomlValue::as_str)
+        == Some(CODEX_OPENAI_PROVIDER_TABLE_NAME);
+    claims_openai && !codex_provider_routes_only_native_responses(provider)
+}
 /// Drop a `service_tier` that the line's model catalog never declared.
 ///
 /// Codex sends the user's configured `service_tier`, and since 0.156 even lets
@@ -1300,6 +1343,45 @@ mod tests {
         }));
         assert!(!normalize_codex_provider_wire_api(&mut clean));
         assert!(clean.meta.is_none());
+    }
+    #[test]
+    fn remote_compaction_name_is_only_allowed_on_native_responses_lines() {
+        let openai_named = "model_provider = \"custom\"\nmodel = \"gpt-5.5\"\n[model_providers.custom]\nname = \"OpenAI\"\nbase_url = \"https://relay.example/v1\"\nwire_api = \"responses\"\n";
+        let with_format = |api_format: &str| {
+            let mut provider = create_provider(json!({ "config": openai_named }));
+            provider.meta = Some(crate::provider::ProviderMeta {
+                api_format: Some(api_format.to_string()),
+                ..Default::default()
+            });
+            provider
+        };
+        assert!(!codex_remote_compaction_blocked(&with_format(
+            "openai_responses"
+        )));
+        assert!(codex_remote_compaction_blocked(&with_format("openai_chat")));
+        assert!(codex_remote_compaction_blocked(&with_format("anthropic")));
+
+        // A native default with one model converted over Chat is still blocked.
+        let mut mixed = with_format("openai_responses");
+        mixed
+            .meta
+            .as_mut()
+            .unwrap()
+            .codex_model_api_formats
+            .insert("deepseek-v4-flash".to_string(), "openai_chat".to_string());
+        assert!(codex_remote_compaction_blocked(&mixed));
+
+        // Any other table name is not a remote-compaction claim.
+        let mut renamed = with_format("openai_chat");
+        renamed.settings_config =
+            json!({ "config": openai_named.replace("\"OpenAI\"", "\"Relay\"") });
+        assert!(!codex_remote_compaction_blocked(&renamed));
+
+        // The official line keeps its own OpenAI identity.
+        let mut official = with_format("openai_chat");
+        official.id = crate::database::CODEX_OFFICIAL_PROVIDER_ID.to_string();
+        official.category = Some("official".to_string());
+        assert!(!codex_remote_compaction_blocked(&official));
     }
     #[test]
     fn undeclared_service_tier_is_dropped_for_third_party_lines_only() {

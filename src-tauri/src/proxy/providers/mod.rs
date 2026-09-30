@@ -73,6 +73,7 @@ pub use codex::{
     codex_provider_uses_anthropic,
     codex_provider_uses_anthropic_api_key,
     codex_provider_uses_chat_completions,
+    codex_remote_compaction_blocked,
     inject_codex_chat_prompt_cache_key,
     is_codex_official_provider,
     normalize_codex_provider_wire_api,

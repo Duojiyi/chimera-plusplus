@@ -1052,6 +1052,23 @@ export const setCodexGoalMode = (
   return finalizeTomlText(lines);
 };
 
+/**
+ * Codex runs remote compaction v2 against a provider table named "OpenAI"
+ * and fails the compaction unless the upstream returns exactly one
+ * compaction item, which the local Chat/Anthropic bridges cannot produce.
+ * The switch is only offered when every probed model of the line reaches a
+ * native Responses upstream (CPP-A1①).
+ */
+export const codexRemoteCompactionAllowed = (
+  apiFormat: CodexApiFormat | "auto",
+  probeModels: string[],
+): boolean =>
+  apiFormat === "auto"
+    ? probeModels.length > 0 &&
+      probeModels.every(
+        (model) => codexApiFormatForModel(model) === "openai_responses",
+      )
+    : apiFormat === "openai_responses";
 export const isCodexRemoteCompactionEnabled = (
   configText: string | undefined | null,
 ): boolean => {
