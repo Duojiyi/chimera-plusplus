@@ -5,6 +5,7 @@ mod builtin_templates;
 mod claude_desktop_config;
 mod claude_mcp;
 mod claude_plugin;
+mod codex_accounts;
 mod codex_cdp;
 mod codex_config;
 mod codex_history_migration;
