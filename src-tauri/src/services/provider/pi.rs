@@ -23,17 +23,23 @@ fn lock(state: &AppState) -> tokio::sync::OwnedMutexGuard<()> {
 /// read leaves the saved catalog visible instead of failing the list.
 pub(super) fn list(state: &AppState) -> Result<IndexMap<String, Provider>, AppError> {
     let _guard = lock(state);
-    match crate::pi_config::read_pi_native_providers() {
+    let native = match crate::pi_config::read_pi_native_providers() {
         Ok(native) => {
             if let Err(error) = sync_native_locked(state, &native) {
                 log::warn!("Failed to sync Pi providers from native config: {error}");
             }
+            native
         }
         Err(error) => {
             log::warn!("Failed to read Pi providers; showing saved catalog: {error}");
+            IndexMap::new()
         }
+    };
+    let mut providers = state.db.get_all_providers(PI_APP)?;
+    for (id, provider) in providers.iter_mut() {
+        ProviderService::set_provider_live_config_managed(provider, native.contains_key(id));
     }
-    state.db.get_all_providers(PI_APP)
+    Ok(providers)
 }
 
 pub(super) fn add(
@@ -130,20 +136,25 @@ pub(super) fn update(
 /// provider, later field edits do not change that intent. The latest native
 /// value is kept only for rollback.
 pub(super) fn delete_locked(state: &AppState, id: &str) -> Result<(), AppError> {
-    if state.db.get_provider_by_id(id, PI_APP)?.is_none() {
+    let in_db = state.db.get_provider_by_id(id, PI_APP)?.is_some();
+    let in_native = crate::pi_config::pi_provider_exists(id)?;
+    if !in_db && !in_native {
         return Ok(());
     }
     let removed = crate::pi_config::remove_pi_provider(id)?;
 
-    if let Err(error) = state.db.delete_provider(PI_APP, id) {
-        if let Some(removed) = removed.as_ref() {
-            if let Err(rollback) = crate::pi_config::restore_pi_provider_if_missing(id, removed) {
-                return Err(AppError::Config(format!(
-                    "failed to delete Pi provider: {error}; native rollback failed: {rollback}"
-                )));
+    if in_db {
+        if let Err(error) = state.db.delete_provider(PI_APP, id) {
+            if let Some(removed) = removed.as_ref() {
+                if let Err(rollback) = crate::pi_config::restore_pi_provider_if_missing(id, removed)
+                {
+                    return Err(AppError::Config(format!(
+                        "failed to delete Pi provider: {error}; native rollback failed: {rollback}"
+                    )));
+                }
             }
+            return Err(error);
         }
-        return Err(error);
     }
     Ok(())
 }

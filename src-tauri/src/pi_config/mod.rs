@@ -379,8 +379,9 @@ fn write_models_document(
         serde_json::to_vec_pretty(document).map_err(|source| AppError::JsonSerialize { source })?;
     bytes.push(b'\n');
     ensure_private_models_parent(path)?;
-    ensure_models_revision(path, expected_revision)?;
-    atomic_write_private(path, &bytes)
+    crate::config::atomic_write_checked(path, &bytes, true, || {
+        ensure_models_revision(path, expected_revision)
+    })
 }
 
 fn ensure_models_revision(path: &Path, expected_revision: &str) -> Result<(), AppError> {

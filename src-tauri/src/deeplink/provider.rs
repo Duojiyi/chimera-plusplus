@@ -214,13 +214,23 @@ pub async fn import_provider_from_deeplink(
 /// Pi deep links are always import-only (tool registry, D6): the entry is
 /// saved but never added to `models.json` by the link itself.
 pub(crate) fn deeplink_import_may_activate(app_type: &AppType) -> bool {
-    if matches!(app_type, AppType::Pi) {
-        return false;
+    let policy = crate::tool_registry::TOOLS
+        .iter()
+        .find(|t| &t.id == app_type)
+        .map(|t| t.deeplink)
+        .unwrap_or(crate::tool_registry::DeeplinkPolicy::Reject);
+
+    match policy {
+        crate::tool_registry::DeeplinkPolicy::ImportConfirm => {
+            crate::product_policy::is_app_visible_by_product(app_type)
+                && crate::settings::get_settings()
+                    .visible_apps
+                    .unwrap_or_default()
+                    .is_visible(app_type)
+        }
+        crate::tool_registry::DeeplinkPolicy::ImportOnly
+        | crate::tool_registry::DeeplinkPolicy::Reject => false,
     }
-    crate::settings::get_settings()
-        .visible_apps
-        .unwrap_or_default()
-        .is_visible(app_type)
 }
 
 /// Build a Provider structure from a deep link request

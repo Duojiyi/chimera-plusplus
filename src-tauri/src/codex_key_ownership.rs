@@ -40,6 +40,7 @@ pub(crate) const ROUTE_CREDENTIAL_ROOT_KEYS: &[&str] = &[
 ];
 
 /// ② sub-keys of a `[model_providers.<id>]` table we wrote.
+#[allow(dead_code)]
 pub(crate) const ROUTE_CREDENTIAL_PROVIDER_KEYS: &[&str] = &[
     "env_key",
     "env_http_headers",

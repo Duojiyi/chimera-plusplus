@@ -2450,6 +2450,7 @@ fn load_codex_model_catalog_template() -> Result<Value, AppError> {
     load_codex_model_catalog_template_uncached()
 }
 
+#[allow(dead_code)]
 fn codex_model_catalog_from_specs(
     specs: &[CodexCatalogModelSpec],
     template: &Value,

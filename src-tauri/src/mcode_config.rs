@@ -39,7 +39,14 @@ fn explicit_data_dir(minimax: Option<&str>, mavis: Option<&str>) -> Option<PathB
         .flatten()
         .map(str::trim)
         .find(|path| !path.is_empty())
-        .map(PathBuf::from)
+        .map(|path| {
+            let resolved = crate::settings::resolve_override_path(path);
+            if resolved.is_absolute() {
+                resolved
+            } else {
+                get_home_dir().join(resolved)
+            }
+        })
 }
 
 pub(crate) fn config_path() -> PathBuf {
@@ -172,8 +179,19 @@ impl ConfigLock {
                         .into(),
                 ));
             }
-            fs::remove_dir(&lock_path).map_err(|e| AppError::io(&lock_path, e))?;
-            fs::create_dir(&lock_path).map_err(|e| AppError::io(&lock_path, e))?;
+            if let Err(e) = fs::remove_dir(&lock_path) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    return Err(AppError::io(&lock_path, e));
+                }
+            }
+            if let Err(e) = fs::create_dir(&lock_path) {
+                if e.kind() == std::io::ErrorKind::AlreadyExists {
+                    return Err(AppError::Conflict(
+                        "MiniMax Code configuration lock was re-acquired by another process; please retry".into(),
+                    ));
+                }
+                return Err(AppError::io(&lock_path, e));
+            }
         }
         Ok(Self(lock_path))
     }
