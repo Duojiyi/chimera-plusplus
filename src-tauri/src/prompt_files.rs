@@ -10,7 +10,8 @@ use crate::opencode_config::get_opencode_dir;
 
 /// 返回指定应用所使用的提示词文件路径。
 pub fn prompt_file_path(app: &AppType) -> Result<PathBuf, AppError> {
-    if matches!(app, AppType::ClaudeDesktop) {
+    // Pi prompts are out of scope for this release (plan M2.2 / M3).
+    if matches!(app, AppType::ClaudeDesktop | AppType::Pi) {
         return Err(AppError::localized(
             "app.prompts_unsupported",
             "当前应用暂不支持 Prompts",
@@ -26,7 +27,7 @@ pub fn prompt_file_path(app: &AppType) -> Result<PathBuf, AppError> {
         AppType::OpenCode => get_opencode_dir(),
         AppType::OpenClaw => get_openclaw_dir(),
         AppType::Hermes => crate::hermes_config::get_hermes_dir(),
-        AppType::ClaudeDesktop => unreachable!("handled above"),
+        AppType::ClaudeDesktop | AppType::Pi => unreachable!("handled above"),
     };
 
     let filename = match app {
@@ -36,7 +37,7 @@ pub fn prompt_file_path(app: &AppType) -> Result<PathBuf, AppError> {
         // 上游 Hermes 实际读取 ~/.hermes/SOUL.md，而不是 AGENTS.md（v2.5.0 G8）。
         AppType::Hermes => "SOUL.md",
         AppType::GrokBuild | AppType::OpenCode | AppType::OpenClaw => "AGENTS.md",
-        AppType::ClaudeDesktop => unreachable!("handled above"),
+        AppType::ClaudeDesktop | AppType::Pi => unreachable!("handled above"),
     };
 
     if matches!(app, AppType::Hermes) {

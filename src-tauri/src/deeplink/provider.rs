@@ -211,7 +211,12 @@ pub async fn import_provider_from_deeplink(
 
 /// MH-4: a deep link may activate a provider — and so write that tool's live
 /// config — only while the tool is visible. Hidden tools are import-only.
+/// Pi deep links are always import-only (tool registry, D6): the entry is
+/// saved but never added to `models.json` by the link itself.
 pub(crate) fn deeplink_import_may_activate(app_type: &AppType) -> bool {
+    if matches!(app_type, AppType::Pi) {
+        return false;
+    }
     crate::settings::get_settings()
         .visible_apps
         .unwrap_or_default()
@@ -231,6 +236,7 @@ pub(crate) fn build_provider_from_request(
         AppType::OpenCode => build_opencode_settings(request),
         AppType::OpenClaw => build_additive_app_settings(request),
         AppType::Hermes => build_hermes_settings(request),
+        AppType::Pi => build_pi_settings(request),
     };
 
     // Build usage script configuration if provided
@@ -654,6 +660,18 @@ fn build_hermes_settings(request: &DeepLinkImportRequest) -> serde_json::Value {
     json!(config)
 }
 
+/// Build a Pi `models.json` provider node: `{ name, baseUrl, apiKey, api, models }`.
+fn build_pi_settings(request: &DeepLinkImportRequest) -> serde_json::Value {
+    let mut config = build_additive_app_settings(request);
+    if let (Some(object), Some(name)) = (
+        config.as_object_mut(),
+        request.name.as_deref().filter(|name| !name.is_empty()),
+    ) {
+        object.insert("name".to_string(), json!(name));
+    }
+    config
+}
+
 // =============================================================================
 // Config Merge Logic
 // =============================================================================
@@ -718,7 +736,7 @@ pub fn parse_and_merge_config(
         "gemini" => merge_gemini_config(&mut merged, &config_value)?,
         "grokbuild" => merge_grokbuild_config(&mut merged, &config_value)?,
         // Additive mode apps use JSON config directly; pass through as-is
-        "openclaw" | "opencode" | "hermes" => {
+        "openclaw" | "opencode" | "hermes" | "pi" => {
             merge_additive_config(&mut merged, &config_value)?;
         }
         "" => {
@@ -1216,6 +1234,36 @@ mod tests {
         let models = obj.get("models").unwrap().as_array().unwrap();
         assert_eq!(models.len(), 1);
         assert_eq!(models[0]["id"], "anthropic/claude-opus-4-8");
+    }
+
+    #[test]
+    #[serial]
+    fn pi_deeplink_builds_a_models_json_node_and_is_import_only() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        crate::settings::mutate_settings(|settings| {
+            settings.visible_apps = Some(crate::settings::VisibleApps {
+                pi: true,
+                ..crate::settings::VisibleApps::default()
+            });
+        })
+        .expect("show Pi");
+        // Visible or not, a Pi deep link never adds the entry to models.json.
+        assert!(!deeplink_import_may_activate(&AppType::Pi));
+
+        let mut request = hermes_request();
+        request.app = Some("pi".to_string());
+        let provider = build_provider_from_request(&AppType::Pi, &request).expect("build");
+        assert_eq!(
+            provider.settings_config,
+            json!({
+                "name": "MyHermes",
+                "baseUrl": "https://api.example.com/v1",
+                "apiKey": "sk-test",
+                "api": "openai-completions",
+                "models": [{ "id": "anthropic/claude-opus-4-8", "name": "anthropic/claude-opus-4-8" }]
+            })
+        );
     }
 
     #[test]

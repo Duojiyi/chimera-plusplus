@@ -50,6 +50,8 @@ export interface ProxyTakeoverStatus {
   opencode: boolean;
   openclaw: boolean;
   hermes: boolean;
+  /** Pi never goes through the local proxy. */
+  pi?: boolean;
 }
 
 export interface ProviderHealth {

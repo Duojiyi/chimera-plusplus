@@ -26,6 +26,7 @@ mod model_capabilities;
 mod openclaw_config;
 mod opencode_config;
 mod panic_hook;
+mod pi_config;
 mod process_utils;
 pub mod product_policy;
 mod prompt;
@@ -1632,6 +1633,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             product_policy::get_product_capabilities,
+            commands::get_pi_current_state,
             commands::get_providers,
             commands::get_current_provider,
             commands::get_codex_current_provider_resolution,
@@ -2751,6 +2753,7 @@ mod tests {
             opencode: true,
             openclaw: true,
             hermes: true,
+            pi: true,
         };
         assert_eq!(
             enabled_proxy_apps_on_startup(&db, &everything_visible).await,
