@@ -181,6 +181,16 @@ impl StreamCheckService {
             }
             AppType::OpenClaw => Self::extract_openclaw_base_url(provider),
             AppType::Hermes => Self::extract_hermes_base_url(provider),
+            AppType::Pi => crate::pi_config::provider_base_url(&provider.settings_config),
+            AppType::Mcode => provider
+                .settings_config
+                .pointer("/options/baseURL")
+                .and_then(serde_json::Value::as_str)
+                .filter(|url| !url.is_empty())
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    AppError::Message("MiniMax Code provider has no baseURL".to_string())
+                }),
             AppType::ClaudeDesktop => ClaudeAdapter::new()
                 .extract_base_url(provider)
                 .map_err(|e| AppError::Message(format!("Failed to extract base_url: {e}"))),

@@ -5,6 +5,8 @@
 mod endpoints;
 mod gemini_auth;
 mod live;
+mod mcode;
+mod pi;
 mod usage;
 
 use indexmap::IndexMap;
@@ -2380,6 +2382,12 @@ impl ProviderService {
         state: &AppState,
         app_type: AppType,
     ) -> Result<IndexMap<String, Provider>, AppError> {
+        if app_type == AppType::Pi {
+            return pi::list(state);
+        }
+        if app_type == AppType::Mcode {
+            return mcode::list(state);
+        }
         state.db.get_all_providers(app_type.as_str())
     }
 
@@ -2411,6 +2419,14 @@ impl ProviderService {
         provider: Provider,
         intended_live_enabled: bool,
     ) -> Result<bool, AppError> {
+        // Staging a Pi row never touches models.json (Pi deep links are import-only).
+        if app_type == AppType::Pi {
+            return pi::add(state, provider, false);
+        }
+        // Mcode deep links are rejected; any other staging is catalog-only too.
+        if app_type == AppType::Mcode {
+            return mcode::add(state, provider, false);
+        }
         let mut provider = provider;
         Self::normalize_provider_if_claude(&app_type, &mut provider);
         Self::normalize_codex_wire_api(&app_type, &mut provider);
@@ -2432,6 +2448,12 @@ impl ProviderService {
         provider: Provider,
         add_to_live: bool,
     ) -> Result<bool, AppError> {
+        if app_type == AppType::Pi {
+            return pi::add(state, provider, add_to_live);
+        }
+        if app_type == AppType::Mcode {
+            return mcode::add(state, provider, add_to_live);
+        }
         let mut provider = provider;
         // Normalize Claude model keys
         Self::normalize_provider_if_claude(&app_type, &mut provider);
@@ -2506,6 +2528,12 @@ impl ProviderService {
         provider: Provider,
         app_lock_held: bool,
     ) -> Result<bool, AppError> {
+        if app_type == AppType::Pi {
+            return pi::update(state, original_id, provider, app_lock_held);
+        }
+        if app_type == AppType::Mcode {
+            return mcode::update(state, original_id, provider, app_lock_held);
+        }
         let mut provider = provider;
         let original_id = original_id.unwrap_or(provider.id.as_str()).to_string();
         let provider_id_changed = original_id != provider.id;
@@ -2781,6 +2809,12 @@ impl ProviderService {
         app_type: AppType,
         id: &str,
     ) -> Result<(), AppError> {
+        if app_type == AppType::Pi {
+            return pi::delete_locked(state, id);
+        }
+        if app_type == AppType::Mcode {
+            return mcode::delete_locked(state, id);
+        }
         // Additive mode apps - no current provider concept
         if app_type.is_additive_mode() {
             // Single DB read shared across all additive-mode sub-paths below.
@@ -2843,6 +2877,12 @@ impl ProviderService {
         app_type: AppType,
         id: &str,
     ) -> Result<(), AppError> {
+        if app_type == AppType::Pi {
+            return pi::remove(state, id);
+        }
+        if app_type == AppType::Mcode {
+            return mcode::remove(state, id);
+        }
         match app_type {
             AppType::OpenCode => {
                 let provider_category = state
@@ -2937,6 +2977,14 @@ impl ProviderService {
         } else {
             None
         };
+
+        // "Switching" a Pi provider adds its models.json entry; nothing else moves.
+        if app_type == AppType::Pi {
+            return pi::enable_locked(state, id);
+        }
+        if app_type == AppType::Mcode {
+            return mcode::enable_locked(state, id);
+        }
 
         // Check if provider exists
         let providers = state.db.get_all_providers(app_type.as_str())?;
@@ -3573,6 +3621,7 @@ impl ProviderService {
             AppType::OpenCode => Self::extract_opencode_common_config(&provider.settings_config),
             AppType::OpenClaw => Self::extract_openclaw_common_config(&provider.settings_config),
             AppType::Hermes => Ok(String::new()), // Hermes doesn't use common config snippets
+            AppType::Pi | AppType::Mcode => Ok(String::new()),
         }
     }
 
@@ -3590,6 +3639,7 @@ impl ProviderService {
             AppType::OpenCode => Self::extract_opencode_common_config(settings_config),
             AppType::OpenClaw => Self::extract_openclaw_common_config(settings_config),
             AppType::Hermes => Ok(String::new()), // Hermes doesn't use common config snippets
+            AppType::Pi | AppType::Mcode => Ok(String::new()),
         }
     }
 
@@ -4146,6 +4196,12 @@ impl ProviderService {
                     ));
                 }
             }
+            AppType::Pi => {
+                crate::pi_config::validate_provider_node(&provider.id, &provider.settings_config)?;
+            }
+            AppType::Mcode => {
+                crate::mcode_config::validate_provider(&provider.id, &provider.settings_config)?;
+            }
         }
 
         // Validate and clean UsageScript configuration (common for all app types)
@@ -4324,8 +4380,8 @@ impl ProviderService {
 
                 Ok((api_key, base_url))
             }
-            AppType::OpenCode => {
-                // OpenCode uses options.apiKey and options.baseURL
+            AppType::OpenCode | AppType::Mcode => {
+                // OpenCode and MiniMax Code use options.apiKey and options.baseURL
                 let options = provider
                     .settings_config
                     .get("options")
@@ -4358,8 +4414,8 @@ impl ProviderService {
 
                 Ok((api_key, base_url))
             }
-            AppType::OpenClaw | AppType::Hermes => {
-                // OpenClaw/Hermes use apiKey and baseUrl directly on the object
+            AppType::OpenClaw | AppType::Hermes | AppType::Pi => {
+                // OpenClaw/Hermes/Pi use apiKey and baseUrl directly on the object
                 let api_key = provider
                     .settings_config
                     .get("apiKey")

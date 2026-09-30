@@ -188,6 +188,8 @@ pub(crate) fn provider_exists_in_live_config(
             .map(|providers| providers.contains_key(provider_id)),
         AppType::Hermes => crate::hermes_config::get_providers()
             .map(|providers| providers.contains_key(provider_id)),
+        AppType::Pi => crate::pi_config::pi_provider_exists(provider_id),
+        AppType::Mcode => crate::mcode_config::provider_key_exists(provider_id),
         _ => Ok(false),
     }
 }
@@ -529,6 +531,8 @@ fn settings_contain_common_config(app_type: &AppType, settings: &Value, snippet:
         | AppType::OpenCode
         | AppType::OpenClaw
         | AppType::Hermes
+        | AppType::Pi
+        | AppType::Mcode
         | AppType::ClaudeDesktop => false,
     }
 }
@@ -603,6 +607,8 @@ pub(crate) fn remove_common_config_from_settings(
         | AppType::OpenCode
         | AppType::OpenClaw
         | AppType::Hermes
+        | AppType::Pi
+        | AppType::Mcode
         | AppType::ClaudeDesktop => Ok(settings.clone()),
     }
 }
@@ -662,6 +668,8 @@ fn apply_common_config_to_settings(
         | AppType::OpenCode
         | AppType::OpenClaw
         | AppType::Hermes
+        | AppType::Pi
+        | AppType::Mcode
         | AppType::ClaudeDesktop => Ok(settings.clone()),
     }
 }
@@ -1354,6 +1362,16 @@ pub(crate) fn write_live_snapshot(
             crate::hermes_config::set_provider(&provider.id, provider.settings_config.clone())?;
             log::debug!("Hermes provider '{}' written to live config", provider.id);
         }
+        AppType::Pi => {
+            return Err(AppError::InvalidInput(
+                "Pi providers use the Pi provider service".to_string(),
+            ));
+        }
+        AppType::Mcode => {
+            return Err(AppError::InvalidInput(
+                "MiniMax Code providers use the MiniMax Code provider service".to_string(),
+            ));
+        }
     }
     Ok(())
 }
@@ -1363,6 +1381,11 @@ pub(crate) fn write_live_snapshot(
 /// Writes all providers from the database to the live configuration file.
 /// Used for OpenCode and other additive mode applications.
 fn sync_all_providers_to_live(state: &AppState, app_type: &AppType) -> Result<(), AppError> {
+    // Pi's models.json and MiniMax Code's config.yaml are the source of truth
+    // for membership: a restore/import never re-adds entries removed there.
+    if matches!(app_type, AppType::Pi | AppType::Mcode) {
+        return Ok(());
+    }
     let providers = state.db.get_all_providers(app_type.as_str())?;
     let mut synced_count = 0usize;
     let mut failures = Vec::new();
@@ -1630,6 +1653,12 @@ pub fn read_live_settings(app_type: AppType) -> Result<Value, AppError> {
             let config = crate::hermes_config::yaml_to_json(&yaml_config)?;
             Ok(config)
         }
+        AppType::Pi => Err(AppError::InvalidInput(
+            "Pi providers are read from Pi's native models file".to_string(),
+        )),
+        AppType::Mcode => Err(AppError::InvalidInput(
+            "MiniMax Code providers are read from its native config file".to_string(),
+        )),
     }
 }
 
@@ -1739,7 +1768,7 @@ pub fn import_default_config(state: &AppState, app_type: AppType) -> Result<bool
             })
         }
         // OpenCode, OpenClaw and Hermes use additive mode and are handled by early return above
-        AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
+        AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::Pi | AppType::Mcode => {
             unreachable!("additive mode apps are handled by early return")
         }
     };

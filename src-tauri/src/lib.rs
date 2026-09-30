@@ -23,11 +23,13 @@ mod init_status;
 mod lightweight;
 #[cfg(target_os = "linux")]
 mod linux_fix;
+mod mcode_config;
 mod mcp;
 mod model_capabilities;
 mod openclaw_config;
 mod opencode_config;
 mod panic_hook;
+mod pi_config;
 mod process_utils;
 pub mod product_policy;
 mod prompt;
@@ -41,6 +43,7 @@ mod services;
 mod session_manager;
 mod settings;
 mod store;
+mod tool_registry;
 
 mod tray;
 mod usage_events;
@@ -1679,6 +1682,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             product_policy::get_product_capabilities,
             builtin_templates::get_chimerahub_template,
+            tool_registry::get_tool_registry,
+            commands::get_pi_current_state,
             commands::get_providers,
             commands::get_current_provider,
             commands::get_codex_current_provider_resolution,
@@ -2799,6 +2804,8 @@ mod tests {
             opencode: true,
             openclaw: true,
             hermes: true,
+            pi: true,
+            mcode: true,
         };
         assert_eq!(
             enabled_proxy_apps_on_startup(&db, &everything_visible).await,

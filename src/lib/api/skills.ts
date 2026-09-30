@@ -22,6 +22,10 @@ export interface SkillApps {
   opencode: boolean;
   openclaw: boolean;
   hermes: boolean;
+  /** Skills are not managed for Pi; the backend never sets this. */
+  pi?: boolean;
+  /** Skills are not managed for MiniMax Code; the backend never sets this. */
+  mcode?: boolean;
 }
 
 /** 已安装的 Skill（v3.10.0+ 统一结构） */

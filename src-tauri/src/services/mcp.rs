@@ -274,6 +274,9 @@ impl McpService {
             AppType::Hermes => {
                 mcp::sync_single_server_to_hermes(&Default::default(), &server.id, &server.server)?;
             }
+            AppType::Pi | AppType::Mcode => {
+                log::debug!("{} MCP is not managed, skipping sync", app.as_str());
+            }
         }
         Ok(())
     }
@@ -305,6 +308,9 @@ impl McpService {
             }
             AppType::Hermes => {
                 mcp::remove_server_from_hermes(id)?;
+            }
+            AppType::Pi | AppType::Mcode => {
+                log::debug!("{} MCP is not managed, skipping remove", app.as_str());
             }
         }
         Ok(())
@@ -350,7 +356,11 @@ impl McpService {
         servers: &IndexMap<String, McpServer>,
         app: &AppType,
     ) -> Result<(), AppError> {
-        if matches!(app, AppType::OpenClaw | AppType::ClaudeDesktop) {
+        // Pi and MiniMax Code MCP are not managed: never project into (or remove from) them.
+        if matches!(
+            app,
+            AppType::OpenClaw | AppType::ClaudeDesktop | AppType::Pi | AppType::Mcode
+        ) {
             return Ok(());
         }
         if matches!(app, AppType::Codex) {

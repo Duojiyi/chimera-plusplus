@@ -138,6 +138,9 @@ impl ConfigService {
             AppType::Hermes => {
                 // Hermes uses additive mode, no live sync needed
             }
+            AppType::Pi | AppType::Mcode => {
+                // Membership lives in the tool's own file; no live sync needed
+            }
         }
 
         Ok(())

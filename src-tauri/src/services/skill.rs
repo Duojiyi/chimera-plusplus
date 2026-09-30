@@ -624,6 +624,7 @@ impl SkillService {
                     return Ok(custom.join("skills"));
                 }
             }
+            AppType::Pi | AppType::Mcode => {}
         }
 
         // 默认路径：回退到用户主目录下的标准位置。
@@ -640,6 +641,10 @@ impl SkillService {
             AppType::OpenCode => home.join(".config").join("opencode").join("skills"),
             AppType::OpenClaw => home.join(".openclaw").join("skills"),
             AppType::Hermes => crate::hermes_config::get_hermes_dir().join("skills"),
+            // Only ever scanned: Skills are never synced into or removed from
+            // Pi / MiniMax Code in this release (see `sync_to_app` / `remove_from_app`).
+            AppType::Pi => home.join(".pi").join("agent").join("skills"),
+            AppType::Mcode => crate::mcode_config::data_dir().join("skills"),
         })
     }
 
@@ -2272,7 +2277,7 @@ impl SkillService {
     }
 
     fn sync_to_app_dir_internal(directory: &str, app: &AppType) -> Result<()> {
-        if matches!(app, AppType::ClaudeDesktop) {
+        if matches!(app, AppType::ClaudeDesktop | AppType::Pi | AppType::Mcode) {
             return Ok(());
         }
 
@@ -2579,7 +2584,7 @@ impl SkillService {
 
     /// 从应用目录删除 Skill（仅允许删除 Chimera++ 自己创建的投影）。
     pub fn remove_from_app(directory: &str, app: &AppType) -> Result<()> {
-        if matches!(app, AppType::ClaudeDesktop) {
+        if matches!(app, AppType::ClaudeDesktop | AppType::Pi | AppType::Mcode) {
             return Ok(());
         }
 
@@ -2608,7 +2613,7 @@ impl SkillService {
 
     /// 同步所有已启用的 Skills 到指定应用
     pub fn sync_to_app(db: &Arc<Database>, app: &AppType) -> Result<()> {
-        if matches!(app, AppType::ClaudeDesktop) {
+        if matches!(app, AppType::ClaudeDesktop | AppType::Pi | AppType::Mcode) {
             return Ok(());
         }
 
