@@ -708,6 +708,7 @@ fn canonical_import_spec(spec: &serde_json::Value) -> serde_json::Value {
 
 /// Whether Codex loads this server: enabled for Codex and not switched off
 /// with the Codex `enabled = false` override.
+#[allow(dead_code)]
 pub(crate) fn is_codex_enabled(server: &McpServer) -> bool {
     server.apps.codex
         && server

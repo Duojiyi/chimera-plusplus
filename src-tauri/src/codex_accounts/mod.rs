@@ -153,8 +153,16 @@ pub(crate) fn save_current_login(
 ) -> Result<String, AppError> {
     let name = name.as_deref().map(identity::normalize_name).transpose()?;
     let (_, live) = read_live_auth(&codex_dir.join("auth.json"))?;
-    let LiveAuth::Present(auth) = live else {
-        return Err(no_live_login());
+    let auth = match live {
+        LiveAuth::Present(auth) => auth,
+        LiveAuth::Unreadable => {
+            return Err(AppError::localized(
+                "official_accounts.unreadable_live_auth",
+                "Codex 当前登录文件格式损坏或无法读取",
+                "Codex's current auth file is unreadable or malformed",
+            ))
+        }
+        LiveAuth::Missing => return Err(no_live_login()),
     };
     let LoginClass::Chatgpt(account) = classify(&auth) else {
         return Err(no_live_login());
@@ -187,17 +195,23 @@ pub(crate) fn pin_default_line_to_live(
     }) else {
         return Ok(());
     };
-    let (_, LiveAuth::Present(auth)) = read_live_auth(&codex_dir.join("auth.json"))? else {
+    let (_, live_auth) = read_live_auth(&codex_dir.join("auth.json"))?;
+    let LiveAuth::Present(auth) = live_auth else {
         return Ok(());
     };
     let LoginClass::Chatgpt(live) = classify(&auth) else {
         return Ok(());
     };
     let live_key = live.key();
-    if live_key == added_key
-        || lines
-            .iter()
-            .any(|line| line.official_account_key() == Some(live_key.as_str()))
+    if live_key == added_key {
+        vault.store_slot(&live, &auth, SlotSource::Live)?;
+        let mut default_line = default_line.clone();
+        set_pin(&mut default_line, Some(&live_key));
+        return db.save_provider(AppType::Codex.as_str(), &default_line);
+    }
+    if lines
+        .iter()
+        .any(|line| line.official_account_key() == Some(live_key.as_str()))
     {
         return Ok(());
     }

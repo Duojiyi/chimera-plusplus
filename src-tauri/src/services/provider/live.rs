@@ -907,7 +907,24 @@ fn restore_live_settings_for_provider_backfill(
     // which deliberately leaves official's own auth.json untouched. Runs
     // after the restore above so a legitimately restored bearer token
     // survives unless it's actually part of the polluted shape.
-    if provider.category.as_deref() != Some("official") {
+    if let Some(key) = provider.official_account_key() {
+        if let Some(auth) = settings.get("auth") {
+            if let crate::codex_accounts::identity::LoginClass::Chatgpt(identity) =
+                crate::codex_accounts::identity::classify(auth)
+            {
+                if identity.key() == key {
+                    if let Ok(vault) = crate::codex_accounts::vault::Vault::open_default() {
+                        let _ = vault.store_slot(
+                            &identity,
+                            auth,
+                            crate::codex_accounts::vault::SlotSource::Live,
+                        );
+                    }
+                }
+            }
+        }
+        settings["auth"] = json!({});
+    } else if provider.category.as_deref() != Some("official") {
         if let Some(auth) = settings.get_mut("auth") {
             if crate::codex_config::scrub_oauth_material_from_non_official_codex_auth(auth) {
                 log::info!(
@@ -1207,9 +1224,17 @@ pub(crate) fn write_live_snapshot(
                 .settings_config
                 .as_object()
                 .ok_or_else(|| AppError::Config("Codex 供应商配置必须是 JSON 对象".to_string()))?;
-            let auth = obj
+            let mut auth = obj
                 .get("auth")
-                .ok_or_else(|| AppError::Config("Codex 供应商配置缺少 'auth' 字段".to_string()))?;
+                .ok_or_else(|| AppError::Config("Codex 供应商配置缺少 'auth' 字段".to_string()))?
+                .clone();
+
+            if let Some(key) = provider.official_account_key() {
+                let vault = crate::codex_accounts::vault::Vault::open_default()?;
+                let slot = vault.applicable_slot(key)?;
+                auth = slot.auth;
+            }
+
             let config_str = obj.get("config").and_then(|v| v.as_str());
 
             // Native (direct) Responses and Anthropic providers must suppress Codex's
@@ -1221,7 +1246,7 @@ pub(crate) fn write_live_snapshot(
             crate::codex_config::write_codex_provider_live_with_catalog(
                 &provider.settings_config,
                 provider.category.as_deref(),
-                auth,
+                &auth,
                 config_str,
                 codex_snippet,
                 profile,

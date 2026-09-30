@@ -824,6 +824,7 @@ pub(super) fn json_server_to_toml_table(spec: &Value) -> Result<toml_edit::Table
 /// 06B write preview: the `[mcp_servers.<id>]` section a projection would
 /// write for `spec`, with every `env`/header value replaced by `mask`.
 /// Returns `(section header, TOML text)`.
+#[allow(dead_code)]
 pub fn codex_mcp_section_preview(
     id: &str,
     spec: &Value,

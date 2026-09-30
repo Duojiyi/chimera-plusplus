@@ -41,6 +41,7 @@ pub(crate) use dao::proxy::{
     PRICING_SOURCE_RESPONSE,
 };
 pub use dao::FailoverQueueItem;
+#[allow(unused_imports)]
 pub use dao::NotesTable;
 pub use dao::Profile;
 

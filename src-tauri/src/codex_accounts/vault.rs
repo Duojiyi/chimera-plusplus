@@ -242,6 +242,19 @@ fn unseal(bytes: &[u8]) -> Result<Vec<u8>, AppError> {
 }
 
 fn remove_if_present(path: &Path) -> Result<(), AppError> {
+    if !path.exists() {
+        return Ok(());
+    }
+    if let Ok(meta) = fs::symlink_metadata(path) {
+        if meta.is_file() {
+            if let Ok(mut file) = fs::OpenOptions::new().write(true).open(path) {
+                use std::io::Write;
+                let zeros = vec![0u8; meta.len().min(16 * 1024 * 1024) as usize];
+                let _ = file.write_all(&zeros);
+                let _ = file.sync_all();
+            }
+        }
+    }
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
@@ -268,7 +281,11 @@ impl Vault {
         for sub in [ACCOUNTS_DIR, PENDING_DIR, TOMBSTONES_DIR] {
             ensure_private_dir(&root.join(sub))?;
         }
-        Ok(Self { root })
+        let vault = Self { root };
+        for stale in vault.stale_login_homes() {
+            secure_remove_dir(&stale);
+        }
+        Ok(vault)
     }
 
     pub fn root(&self) -> &Path {
@@ -331,15 +348,22 @@ impl Vault {
                 "The login's refresh time is in the future; it was not saved",
             ));
         }
-        let (existing, snapshot) = Self::read_entry(path)?;
-        if let Some(existing) = existing {
-            if existing.account_key == identity.key() && !is_at_least_as_fresh(auth, &existing.auth)
-            {
-                return Ok(StoreOutcome::KeptExisting);
+        for _ in 0..5 {
+            let (existing, snapshot) = Self::read_entry(path)?;
+            if let Some(existing) = existing {
+                if existing.account_key == identity.key()
+                    && !is_at_least_as_fresh(auth, &existing.auth)
+                {
+                    return Ok(StoreOutcome::KeptExisting);
+                }
+            }
+            match Self::write_entry(snapshot, &VaultSlot::new(identity, auth, source)) {
+                Ok(()) => return Ok(StoreOutcome::Stored),
+                Err(AppError::CasConflict { .. }) => continue,
+                Err(err) => return Err(err),
             }
         }
-        Self::write_entry(snapshot, &VaultSlot::new(identity, auth, source))?;
-        Ok(StoreOutcome::Stored)
+        Err(AppError::Config("账号保险库写入冲突，请重试".to_string()))
     }
 
     /// Updates the identity's trusted slot. Only Codex's live `auth.json`
@@ -524,6 +548,19 @@ pub(crate) fn secure_remove_dir(dir: &Path) {
             let Ok(meta) = fs::symlink_metadata(&path) else {
                 continue;
             };
+            if meta.file_type().is_symlink() {
+                let _ = fs::remove_file(&path);
+                continue;
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::MetadataExt;
+                const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+                if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                    let _ = fs::remove_dir(&path);
+                    continue;
+                }
+            }
             if meta.is_dir() {
                 scrub(&path);
             } else if meta.is_file() {
@@ -584,9 +621,12 @@ pub(crate) mod win {
     }
 
     fn blob_to_vec(blob: &CRYPT_INTEGER_BLOB) -> Vec<u8> {
-        let bytes =
-            unsafe { std::slice::from_raw_parts(blob.pbData, blob.cbData as usize) }.to_vec();
-        unsafe { LocalFree(blob.pbData.cast()) };
+        let len = blob.cbData as usize;
+        let bytes = unsafe { std::slice::from_raw_parts(blob.pbData, len) }.to_vec();
+        unsafe {
+            std::ptr::write_bytes(blob.pbData, 0, len);
+            LocalFree(blob.pbData.cast());
+        }
         bytes
     }
 

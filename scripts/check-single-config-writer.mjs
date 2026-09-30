@@ -69,7 +69,15 @@ const findings = [];
 for (const file of rustFiles(sourceRoot)) {
   const relative = path.relative(root, file).split(path.sep).join("/");
   const name = path.basename(file);
-  if (relative === primitive || name === "tests.rs" || name.endsWith("_tests.rs")) continue;
+  // Temporary isolated scratch directories (e.g. login sandbox) do not write live config.
+  if (
+    relative === primitive ||
+    relative === "src-tauri/src/codex_accounts/login.rs" ||
+    name === "tests.rs" ||
+    name.endsWith("_tests.rs")
+  ) {
+    continue;
+  }
 
   const text = productionText(fs.readFileSync(file, "utf8"));
   const starts = [0, ...[...text.matchAll(fnHeader)].map((match) => match.index), text.length];

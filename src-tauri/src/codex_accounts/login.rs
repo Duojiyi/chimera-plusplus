@@ -67,6 +67,20 @@ fn is_user_code(line: &str) -> bool {
         && line.bytes().any(|byte| byte.is_ascii_alphanumeric())
 }
 
+fn is_allowed_verification_url(url: &url::Url) -> bool {
+    if url.scheme() != "https" {
+        return false;
+    }
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let host_ok = host.eq_ignore_ascii_case("auth.openai.com")
+        || host.eq_ignore_ascii_case("chat.openai.com")
+        || host.eq_ignore_ascii_case("chatgpt.com")
+        || host.ends_with(".openai.com");
+    host_ok && url.path().contains("/device")
+}
+
 /// Parses the prompt of `codex login --device-auth` (openai/codex
 /// `login/src/device_code_auth.rs`, rust-v0.157.0): an https link on its
 /// own line, then the one-time code on the next non-empty line.
@@ -75,7 +89,7 @@ pub(crate) fn parse_device_prompt(output: &str) -> Option<DevicePrompt> {
     let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
     let verification_url = lines.by_ref().find(|line| {
         !line.contains(char::is_whitespace)
-            && url::Url::parse(line).is_ok_and(|url| url.scheme() == "https")
+            && url::Url::parse(line).is_ok_and(|url| is_allowed_verification_url(&url))
     })?;
     let user_code = lines.find(|line| is_user_code(line))?;
     Some(DevicePrompt {
@@ -209,9 +223,11 @@ pub(crate) fn start(vault: &Vault) -> Result<StartedLogin, AppError> {
 }
 
 fn start_with_programs(vault: &Vault, programs: &[PathBuf]) -> Result<StartedLogin, AppError> {
-    let mut active = active_login()?;
-    if let Some(previous) = active.take() {
-        previous.finish();
+    {
+        let mut active = active_login()?;
+        if let Some(previous) = active.take() {
+            previous.finish();
+        }
     }
     for stale in vault.stale_login_homes() {
         secure_remove_dir(&stale);
@@ -236,41 +252,63 @@ fn start_with_programs(vault: &Vault, programs: &[PathBuf]) -> Result<StartedLog
         pipe_into(stderr, output.clone(), true);
     }
     let started = Utc::now();
-    let mut login = ActiveLogin {
+    let login = ActiveLogin {
         flow_id: uuid::Uuid::new_v4().to_string(),
         home,
         child,
         output,
         expires_at: started + chrono::Duration::seconds(DEVICE_CODE_LIFETIME_SECS),
     };
+    let flow_id = login.flow_id.clone();
+    let expires_at = login.expires_at;
+    {
+        let mut active = active_login()?;
+        *active = Some(login);
+    }
 
     let deadline = Instant::now() + PROMPT_WAIT;
     let prompt = loop {
-        let parsed = login
-            .output
-            .lock()
-            .ok()
-            .and_then(|output| parse_device_prompt(&output.stdout));
+        let (parsed, exited, stderr) = {
+            let mut active = active_login()?;
+            let Some(login) = active.as_mut().filter(|l| l.flow_id == flow_id) else {
+                return Err(AppError::localized(
+                    "official_accounts.login_cancelled",
+                    "登录已取消",
+                    "Login was cancelled",
+                ));
+            };
+            let parsed = login
+                .output
+                .lock()
+                .ok()
+                .and_then(|output| parse_device_prompt(&output.stdout));
+            let exited = !matches!(login.child.try_wait(), Ok(None));
+            let stderr = login.stderr();
+            (parsed, exited, stderr)
+        };
         if let Some(prompt) = parsed {
             break prompt;
         }
-        let exited = !matches!(login.child.try_wait(), Ok(None));
         if exited || Instant::now() >= deadline {
-            // Let the readers drain what the CLI printed before it exited.
             std::thread::sleep(Duration::from_millis(100));
-            let error = login_failed(&login.stderr());
-            login.finish();
-            return Err(error);
+            let mut active = active_login()?;
+            let stderr = if let Some(login) = active.take() {
+                let err = login.stderr();
+                login.finish();
+                err
+            } else {
+                stderr
+            };
+            return Err(login_failed(&stderr));
         }
         std::thread::sleep(Duration::from_millis(100));
     };
 
     let started = StartedLogin {
-        flow_id: login.flow_id.clone(),
+        flow_id,
         prompt,
-        expires_at: login.expires_at,
+        expires_at,
     };
-    *active = Some(login);
     Ok(started)
 }
 

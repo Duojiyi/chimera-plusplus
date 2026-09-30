@@ -222,11 +222,12 @@ pub(crate) struct AccountIdentity {
 }
 
 impl AccountIdentity {
-    /// Stable pseudonymous key: hex(sha256(user_id ‖ 0x00 ‖ account_id)).
+    /// Stable pseudonymous key: hex(sha256(len(user_id) ‖ user_id ‖ len(account_id) ‖ account_id)).
     pub fn key(&self) -> String {
         let mut digest = Sha256::new();
+        digest.update((self.user_id.len() as u64).to_le_bytes());
         digest.update(self.user_id.as_bytes());
-        digest.update([0u8]);
+        digest.update((self.account_id.len() as u64).to_le_bytes());
         digest.update(self.account_id.as_bytes());
         digest
             .finalize()
@@ -269,7 +270,9 @@ pub(crate) fn classify(auth: &Value) -> LoginClass {
         return LoginClass::Empty;
     }
     let mode = auth.get("auth_mode").and_then(Value::as_str);
-    let chatgpt_mode = mode.is_none_or(|mode| mode.eq_ignore_ascii_case("chatgpt"));
+    let chatgpt_mode = mode.is_none_or(|mode| {
+        mode.eq_ignore_ascii_case("chatgpt") || mode.eq_ignore_ascii_case("chatgptAuthTokens")
+    });
     if !is_chatgpt_auth(auth) || !chatgpt_mode || auth.get("tokens").is_none() {
         return LoginClass::Other;
     }
@@ -361,7 +364,20 @@ pub(crate) fn is_at_least_as_fresh(candidate: &Value, current: &Value) -> bool {
 }
 
 pub(crate) fn last_refresh_is_in_future(auth: &Value, now: DateTime<Utc>) -> bool {
-    last_refresh(auth).is_some_and(|time| time > now + Duration::seconds(MAX_CLOCK_SKEW_SECS))
+    if last_refresh(auth).is_some_and(|time| time > now + Duration::seconds(MAX_CLOCK_SKEW_SECS)) {
+        return true;
+    }
+    if let Some(exp) = access_token_expires_at(auth) {
+        if exp > (now + Duration::days(30)).timestamp() {
+            return true;
+        }
+    }
+    if let Some(iat) = jwt_time(auth, "id_token", "iat") {
+        if iat > (now + Duration::seconds(MAX_CLOCK_SKEW_SECS)).timestamp() {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]
