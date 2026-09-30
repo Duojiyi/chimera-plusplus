@@ -73,7 +73,10 @@ pub(crate) fn is_confirmed_text_only_model(model: &str) -> bool {
         "ark-code-latest",
         "deepseek-chat",
         "deepseek-reasoner",
-        "deepseek-v4-flash",
+        // `deepseek-v4-flash` is intentionally absent: the vendor still accepts
+        // the legacy name and serves it with the vision-capable Flash model
+        // (api-docs.deepseek.com pricing and guides/vision). V4 Pro stays
+        // text-only there (Vision: not supported).
         "deepseek-v4-pro",
         "glm-5.1",
         // Exact rather than prefix matching: GLM visual models use a `v`

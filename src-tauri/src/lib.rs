@@ -1003,6 +1003,13 @@ pub fn run() {
                             "✓ Scrubbed OAuth login material from {count} non-official Codex provider(s)"
                         ),
                         Err(e) => log::warn!("✗ Codex non-official OAuth scrub failed: {e}"),
+                    }                    // MH-8c 1.7: idempotent, like the scrub above.
+                    match db_for_codex_history_migration.normalize_codex_provider_wire_apis() {
+                        Ok(0) => {}
+                        Ok(count) => log::info!(
+                            "✓ Normalized wire_api to responses in {count} Codex provider(s)"
+                        ),
+                        Err(e) => log::warn!("✗ Codex wire_api normalization failed: {e}"),
                     }
 
                     match crate::codex_history_migration::maybe_migrate_codex_third_party_history_provider_bucket(

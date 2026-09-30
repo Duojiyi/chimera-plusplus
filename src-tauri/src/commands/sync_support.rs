@@ -92,6 +92,13 @@ pub(crate) fn run_post_import_sync(state: &AppState) -> Result<(), AppError> {
             "✓ Scrubbed OAuth login material from {count} non-official Codex provider(s) after import"
         ),
         Err(e) => log::warn!("✗ Post-import Codex non-official OAuth scrub failed: {e}"),
+    } // MH-8c 1.7: imported rows may still declare `wire_api = "chat"`.
+    match state.db.normalize_codex_provider_wire_apis() {
+        Ok(0) => {}
+        Ok(count) => log::info!(
+            "✓ Normalized wire_api to responses in {count} Codex provider(s) after import"
+        ),
+        Err(e) => log::warn!("✗ Post-import Codex wire_api normalization failed: {e}"),
     }
 
     ProviderService::sync_current_to_live(state)

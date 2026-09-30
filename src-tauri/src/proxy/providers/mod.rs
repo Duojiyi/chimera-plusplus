@@ -75,6 +75,7 @@ pub use codex::{
     codex_provider_uses_chat_completions,
     inject_codex_chat_prompt_cache_key,
     is_codex_official_provider,
+    normalize_codex_provider_wire_api,
     resolve_codex_catalog_tool_profile,
     resolve_codex_chat_reasoning_config,
     should_convert_codex_responses_to_anthropic_for_model,

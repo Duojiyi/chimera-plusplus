@@ -2263,6 +2263,14 @@ requires_openai_auth = true
 }
 
 impl ProviderService {
+    /// MH-8c 1.7: store only `wire_api = "responses"`; the declared protocol
+    /// moves to `meta.apiFormat` (see `normalize_codex_provider_wire_api`).
+    fn normalize_codex_wire_api(app_type: &AppType, provider: &mut Provider) {
+        if matches!(app_type, AppType::Codex) {
+            crate::proxy::providers::normalize_codex_provider_wire_api(provider);
+        }
+    }
+
     fn normalize_provider_if_claude(app_type: &AppType, provider: &mut Provider) {
         if matches!(app_type, AppType::Claude) {
             let mut v = provider.settings_config.clone();
@@ -2404,6 +2412,7 @@ impl ProviderService {
     ) -> Result<bool, AppError> {
         let mut provider = provider;
         Self::normalize_provider_if_claude(&app_type, &mut provider);
+        Self::normalize_codex_wire_api(&app_type, &mut provider);
         Self::validate_provider_settings(&app_type, &provider)?;
         normalize_provider_common_config_for_storage(state.db.as_ref(), &app_type, &mut provider)?;
         Self::normalize_usage_script_credential_overrides(&app_type, &mut provider);
@@ -2424,6 +2433,7 @@ impl ProviderService {
         let mut provider = provider;
         // Normalize Claude model keys
         Self::normalize_provider_if_claude(&app_type, &mut provider);
+        Self::normalize_codex_wire_api(&app_type, &mut provider);
         Self::validate_provider_settings(&app_type, &provider)?;
         normalize_provider_common_config_for_storage(state.db.as_ref(), &app_type, &mut provider)?;
         Self::normalize_usage_script_credential_overrides(&app_type, &mut provider);
@@ -2501,6 +2511,7 @@ impl ProviderService {
             .get_provider_by_id(&original_id, app_type.as_str())?;
         // Normalize Claude model keys
         Self::normalize_provider_if_claude(&app_type, &mut provider);
+        Self::normalize_codex_wire_api(&app_type, &mut provider);
         Self::validate_provider_settings(&app_type, &provider)?;
         normalize_provider_common_config_for_storage(state.db.as_ref(), &app_type, &mut provider)?;
         Self::normalize_usage_script_credential_overrides(&app_type, &mut provider);

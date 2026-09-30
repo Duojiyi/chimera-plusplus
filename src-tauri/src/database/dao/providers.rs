@@ -370,6 +370,21 @@ impl Database {
         Ok(scrubbed)
     }
 
+    /// MH-8c 1.7 startup/import repair: rewrite Codex rows whose stored
+    /// config.toml still declares a non-`responses` `wire_api` (Codex 0.154+
+    /// rejects the whole file), keeping the declared protocol in
+    /// `meta.apiFormat`. Idempotent; returns the number of rows changed.
+    pub fn normalize_codex_provider_wire_apis(&self) -> Result<usize, AppError> {
+        let providers = self.get_all_providers("codex")?;
+        let mut changed = 0usize;
+        for (_, mut provider) in providers {
+            if crate::proxy::providers::normalize_codex_provider_wire_api(&mut provider) {
+                self.save_provider("codex", &provider)?;
+                changed += 1;
+            }
+        }
+        Ok(changed)
+    }
     pub fn update_provider_settings_config(
         &self,
         app_type: &str,

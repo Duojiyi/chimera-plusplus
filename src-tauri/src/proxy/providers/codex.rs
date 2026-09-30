@@ -882,6 +882,82 @@ pub fn is_origin_only_url(value: &str) -> bool {
     }
 }
 
+/// MH-8c 1.7: Codex 0.154+ accepts only `wire_api = "responses"` and rejects
+/// the whole config.toml for anything else, while `chat` / `anthropic` stay
+/// meaningful routing declarations for the local router. Rewrite every
+/// `[model_providers.*].wire_api` to `responses` and, when the active table
+/// declared the upstream protocol and nothing explicit overrides it
+/// (`meta.apiFormat`, settings `apiFormat` / `api_format`), record that
+/// protocol in `meta.apiFormat` so routing is unchanged. Returns true when the
+/// provider was changed.
+pub fn normalize_codex_provider_wire_api(provider: &mut Provider) -> bool {
+    let Some(config_text) = provider
+        .settings_config
+        .get("config")
+        .and_then(JsonValue::as_str)
+    else {
+        return false;
+    };
+    let Ok(mut doc) = config_text.parse::<toml_edit::DocumentMut>() else {
+        return false;
+    };
+    let declared = extract_codex_wire_api_from_toml(config_text).and_then(|wire_api| {
+        if is_chat_wire_api(&wire_api) {
+            Some("openai_chat")
+        } else if is_anthropic_wire_api(&wire_api) {
+            Some("anthropic")
+        } else {
+            None
+        }
+    });
+    let mut rewritten = false;
+    if let Some(providers) = doc
+        .get_mut("model_providers")
+        .and_then(|item| item.as_table_like_mut())
+    {
+        for (_, table) in providers.iter_mut() {
+            let Some(table) = table.as_table_like_mut() else {
+                continue;
+            };
+            let needs_rewrite = table
+                .get("wire_api")
+                .and_then(|item| item.as_str())
+                .is_some_and(|wire_api| wire_api != "responses");
+            if needs_rewrite {
+                table.insert("wire_api", toml_edit::value("responses"));
+                rewritten = true;
+            }
+        }
+    }
+    if !rewritten {
+        return false;
+    }
+    provider.settings_config["config"] = JsonValue::String(doc.to_string());
+    let explicit = provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.api_format.as_deref())
+        .or_else(|| {
+            provider
+                .settings_config
+                .get("api_format")
+                .and_then(JsonValue::as_str)
+        })
+        .or_else(|| {
+            provider
+                .settings_config
+                .get("apiFormat")
+                .and_then(JsonValue::as_str)
+        })
+        .is_some();
+    if let (Some(api_format), false) = (declared, explicit) {
+        provider
+            .meta
+            .get_or_insert_with(Default::default)
+            .api_format = Some(api_format.to_string());
+    }
+    true
+}
 fn extract_codex_wire_api_from_toml(config_text: &str) -> Option<String> {
     let doc = config_text.parse::<TomlValue>().ok()?;
 
@@ -1166,6 +1242,65 @@ mod tests {
         }
     }
 
+    #[test]
+    fn chat_wire_api_is_rewritten_and_the_protocol_kept_for_routing() {
+        let config = "model_provider = \"custom\"\nmodel = \"m\"\n\n[model_providers.custom]\nname = \"Relay\"\nbase_url = \"https://relay.example/v1\"\nwire_api = \"chat\"\n\n[model_providers.other]\nname = \"Other\"\nwire_api = \"anthropic\"\n";
+        let mut provider = create_provider(json!({ "config": config }));
+        assert_eq!(
+            codex_api_format_for_model(&provider, Some("m")),
+            Some("openai_chat")
+        );
+        assert!(normalize_codex_provider_wire_api(&mut provider));
+        let text = provider.settings_config["config"].as_str().unwrap();
+        let doc: TomlValue = text.parse().unwrap();
+        assert_eq!(
+            doc["model_providers"]["custom"]["wire_api"].as_str(),
+            Some("responses")
+        );
+        assert_eq!(
+            doc["model_providers"]["other"]["wire_api"].as_str(),
+            Some("responses")
+        );
+        assert_eq!(
+            doc["model_providers"]["custom"]["name"].as_str(),
+            Some("Relay")
+        );
+        // Routing still resolves to Chat, now from meta.apiFormat.
+        assert_eq!(
+            provider
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.api_format.as_deref()),
+            Some("openai_chat")
+        );
+        assert_eq!(
+            codex_api_format_for_model(&provider, Some("m")),
+            Some("openai_chat")
+        );
+        // Idempotent.
+        assert!(!normalize_codex_provider_wire_api(&mut provider));
+
+        // An explicit protocol is never replaced.
+        let mut explicit = create_provider(json!({ "config": config }));
+        explicit.meta = Some(crate::provider::ProviderMeta {
+            api_format: Some("openai_responses".to_string()),
+            ..Default::default()
+        });
+        assert!(normalize_codex_provider_wire_api(&mut explicit));
+        assert_eq!(
+            explicit
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.api_format.as_deref()),
+            Some("openai_responses")
+        );
+
+        let mut clean = create_provider(json!({
+            "config": "model_provider = \"custom\"\n[model_providers.custom]\nwire_api = \"responses\"\n"
+        }));
+        assert!(!normalize_codex_provider_wire_api(&mut clean));
+        assert!(clean.meta.is_none());
+    }
     #[test]
     fn undeclared_service_tier_is_dropped_for_third_party_lines_only() {
         let third_party = create_provider(json!({}));
