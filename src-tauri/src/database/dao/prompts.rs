@@ -56,22 +56,47 @@ impl Database {
     /// 保存提示词
     pub fn save_prompt(&self, app_type: &str, prompt: &Prompt) -> Result<(), AppError> {
         let conn = lock_conn!(self.conn);
-        conn.execute(
-            "INSERT OR REPLACE INTO prompts (
-                id, app_type, name, content, description, enabled, created_at, updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                prompt.id,
-                app_type,
-                prompt.name,
-                prompt.content,
-                prompt.description,
-                prompt.enabled,
-                prompt.created_at,
-                prompt.updated_at,
-            ],
-        )
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        // Update in place so the v17 library columns (filename, category,
+        // origin, template) survive a save; REPLACE would reset them.
+        let updated = conn
+            .execute(
+                "UPDATE prompts SET name = ?3, content = ?4, description = ?5, enabled = ?6,
+                     created_at = ?7, updated_at = ?8
+                 WHERE id = ?1 AND app_type = ?2",
+                params![
+                    prompt.id,
+                    app_type,
+                    prompt.name,
+                    prompt.content,
+                    prompt.description,
+                    prompt.enabled,
+                    prompt.created_at,
+                    prompt.updated_at,
+                ],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        if updated == 0 {
+            // Rows this writer creates for Codex are whole-file AGENTS.md
+            // prompts, the same kind the v17 migration marks.
+            conn.execute(
+                "INSERT INTO prompts (
+                    id, app_type, name, content, description, enabled, created_at, updated_at, origin
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
+                          CASE WHEN ?2 = 'codex' THEN ?9 END)",
+                params![
+                    prompt.id,
+                    app_type,
+                    prompt.name,
+                    prompt.content,
+                    prompt.description,
+                    prompt.enabled,
+                    prompt.created_at,
+                    prompt.updated_at,
+                    crate::database::PROMPT_ORIGIN_LEGACY_WHOLE_FILE,
+                ],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        }
         Ok(())
     }
 

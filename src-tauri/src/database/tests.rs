@@ -1406,3 +1406,126 @@ fn file_backed_connection_sets_bounded_busy_timeout() {
         "state.db must not use WAL under the single Mutex<Connection> model"
     );
 }
+
+/// v17: saving a prompt, skill or MCP server again must keep the columns the
+/// save itself does not write (REPLACE used to delete and re-insert the row).
+#[test]
+fn resaving_rows_keeps_v17_columns() {
+    use crate::app_config::{InstalledSkill, McpApps, McpServer, SkillApps};
+    use crate::prompt::Prompt;
+
+    let db = Database::memory().expect("memory db");
+    let prompt = Prompt {
+        id: "team".into(),
+        name: "Team".into(),
+        content: "rules".into(),
+        description: None,
+        enabled: true,
+        created_at: Some(1),
+        updated_at: Some(1),
+    };
+    db.save_prompt("codex", &prompt)
+        .expect("insert codex prompt");
+    db.save_prompt("claude", &prompt)
+        .expect("insert claude prompt");
+    let skill = InstalledSkill {
+        id: "local:pdf".into(),
+        name: "pdf".into(),
+        description: None,
+        directory: "pdf".into(),
+        repo_owner: None,
+        repo_name: None,
+        repo_branch: None,
+        readme_url: None,
+        apps: SkillApps::default(),
+        installed_at: 1,
+        content_hash: None,
+        updated_at: 0,
+    };
+    db.save_skill(&skill).expect("insert skill");
+    let server = McpServer {
+        id: "github".into(),
+        name: "github".into(),
+        server: json!({"type": "stdio", "command": "npx"}),
+        apps: McpApps::default(),
+        description: None,
+        homepage: None,
+        docs: None,
+        tags: Vec::new(),
+    };
+    db.save_mcp_server(&server).expect("insert mcp");
+    {
+        let conn = db.conn.lock().expect("lock");
+        conn.execute_batch(
+            "UPDATE prompts SET category_id = 'cat', filename = 'team.md' WHERE id = 'team';
+             UPDATE skills SET notes = 'skill note';
+             UPDATE mcp_servers SET notes = 'mcp note';",
+        )
+        .expect("set v17 columns");
+    }
+
+    db.save_prompt(
+        "codex",
+        &Prompt {
+            name: "Team 2".into(),
+            ..prompt.clone()
+        },
+    )
+    .expect("update prompt");
+    db.save_skill(&InstalledSkill {
+        name: "pdf 2".into(),
+        ..skill
+    })
+    .expect("update skill");
+    db.save_mcp_server(&McpServer {
+        name: "GitHub".into(),
+        ..server
+    })
+    .expect("update mcp");
+
+    let conn = db.conn.lock().expect("lock");
+    let prompt_row: (String, Option<String>, Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT name, category_id, filename, origin FROM prompts WHERE id = 'team' AND app_type = 'codex'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("codex prompt");
+    assert_eq!(
+        prompt_row,
+        (
+            "Team 2".to_string(),
+            Some("cat".to_string()),
+            Some("team.md".to_string()),
+            Some(PROMPT_ORIGIN_LEGACY_WHOLE_FILE.to_string())
+        )
+    );
+    let claude_origin: Option<String> = conn
+        .query_row(
+            "SELECT origin FROM prompts WHERE id = 'team' AND app_type = 'claude'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("claude prompt");
+    assert_eq!(
+        claude_origin, None,
+        "only Codex rows are whole-file prompts"
+    );
+    let notes: (String, String, String, String) = conn
+        .query_row(
+            "SELECT (SELECT name FROM skills), (SELECT notes FROM skills),
+                    (SELECT name FROM mcp_servers), (SELECT notes FROM mcp_servers)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("notes");
+    assert_eq!(
+        notes,
+        (
+            "pdf 2".to_string(),
+            "skill note".to_string(),
+            "GitHub".to_string(),
+            "mcp note".to_string()
+        )
+    );
+}

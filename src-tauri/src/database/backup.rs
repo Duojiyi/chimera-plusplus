@@ -18,6 +18,24 @@ const CC_SWITCH_SQL_EXPORT_HEADER: &str = "-- CC Switch SQLite 导出";
 /// File-name prefix of the snapshots `backup_database_file` generates.
 const DB_BACKUP_PREFIX: &str = "db_backup_";
 
+/// File-name prefix of the one-time backup taken before the v17 migration.
+/// It is the 2.8.0 → 2.7.x downgrade path, so it never takes part in
+/// rotation (`is_rotated_db_backup` only matches [`DB_BACKUP_PREFIX`]).
+pub(crate) const PRE_V17_BACKUP_PREFIX: &str = "pre_v17_";
+
+/// Device-local tables whose rows never leave the device in a SQL export
+/// (plan M3.5 data classification): the takeover Live backup (full Codex
+/// `auth.json`, MH-17) and the prompt template cache.
+const EXPORT_SKIP_TABLES: &[&str] = &["proxy_live_backup", "prompt_template_cache"];
+
+/// `settings` rows that describe this device's live files (projection
+/// ledgers) and are dropped from every export.
+const EXPORT_SKIP_SETTINGS: &[&str] = &[crate::mcp::CODEX_MCP_PROJECTION_LEDGER_KEY];
+
+/// MCP spec objects whose values are credentials in practice; every value is
+/// blanked on export (key names stay, so the user knows what to refill).
+const MCP_SECRET_MAPS: &[&str] = &["env", "headers", "http_headers"];
+
 /// MH-17: the database and its `.db` snapshots hold provider credentials,
 /// yet files created by older releases (or under the default umask) are
 /// typically 0644 inside 0755 directories. Tighten the database file, its
@@ -117,12 +135,34 @@ fn quote_ident(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
+/// Blank the values of an MCP spec's credential maps (`env`, headers).
+/// Returns how many values were blanked.
+pub(crate) fn redact_mcp_spec_secrets(spec: &mut serde_json::Value) -> usize {
+    let mut blanked = 0;
+    for key in MCP_SECRET_MAPS {
+        let Some(map) = spec
+            .get_mut(*key)
+            .and_then(serde_json::Value::as_object_mut)
+        else {
+            continue;
+        };
+        for value in map.values_mut() {
+            if value.as_str() != Some("") {
+                *value = serde_json::Value::String(String::new());
+                blanked += 1;
+            }
+        }
+    }
+    blanked
+}
+
 /// Tables whose data rows are skipped when exporting for WebDAV sync.
 const SYNC_SKIP_TABLES: &[&str] = &[
     "proxy_request_logs",
     "stream_check_logs",
     "provider_health",
     "proxy_live_backup",
+    "prompt_template_cache",
     "usage_daily_rollups",
     "usage_rollup_dedup",
     "session_log_sync",
@@ -161,17 +201,62 @@ impl Database {
     /// takeover Live backup is dropped from both.
     pub fn export_sql_string(&self) -> Result<String, AppError> {
         let snapshot = self.snapshot_to_memory()?;
-        Self::redact_codex_provider_auth(&snapshot)?;
+        Self::apply_export_classification(&snapshot)?;
         // The takeover Live backup (full Codex auth.json) never leaves the
         // device, and an import would refuse it anyway (MH-17).
-        Self::dump_sql(&snapshot, &["proxy_live_backup"])
+        Self::dump_sql(&snapshot, EXPORT_SKIP_TABLES)
     }
 
     /// Export SQL for sync (WebDAV), skipping local-only tables' data
     pub fn export_sql_string_for_sync(&self) -> Result<String, AppError> {
         let snapshot = self.snapshot_to_memory()?;
-        Self::redact_codex_provider_auth(&snapshot)?;
+        Self::apply_export_classification(&snapshot)?;
         Self::dump_sql(&snapshot, SYNC_SKIP_TABLES)
+    }
+
+    /// Plan M3.5 data classification for everything that leaves the device:
+    /// OAuth material stripped by content (MH-17), MCP secrets blanked,
+    /// projection ledgers dropped. Table-level skips are the caller's
+    /// `dump_sql` list.
+    fn apply_export_classification(conn: &Connection) -> Result<(), AppError> {
+        Self::redact_codex_provider_auth(conn)?;
+        Self::redact_mcp_server_secrets(conn)?;
+        for key in EXPORT_SKIP_SETTINGS {
+            conn.execute("DELETE FROM main.settings WHERE key = ?1", [*key])?;
+        }
+        Ok(())
+    }
+
+    /// Blank every value of the MCP credential maps in each server spec.
+    /// Same boundary rules as [`Self::redact_codex_provider_auth`]: parse and
+    /// reserialize every row, abort on anything that cannot be rewritten.
+    fn redact_mcp_server_secrets(conn: &Connection) -> Result<(), AppError> {
+        Self::validate_backup_schema(conn)?;
+        let rows = {
+            let mut stmt = conn.prepare("SELECT id, server_config FROM main.mcp_servers")?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        for (id, raw) in rows {
+            let mut spec: serde_json::Value = serde_json::from_str(&raw).map_err(|_| {
+                AppError::InvalidInput("MCP 服务器配置不是有效 JSON，无法安全脱敏".into())
+            })?;
+            redact_mcp_spec_secrets(&mut spec);
+            let sanitized = serde_json::to_string(&spec)
+                .map_err(|source| AppError::JsonSerialize { source })?;
+            let affected = conn.execute(
+                "UPDATE OR ABORT main.mcp_servers SET server_config = ?1 WHERE id = ?2",
+                rusqlite::params![sanitized, id],
+            )?;
+            if affected != 1 {
+                return Err(AppError::InvalidInput(
+                    "MCP 服务器记录不唯一，无法安全脱敏".into(),
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// 导出为 SQLite 兼容的 SQL 文本
@@ -458,15 +543,7 @@ impl Database {
 
         fs::create_dir_all(&backup_dir).map_err(|e| AppError::io(&backup_dir, e))?;
 
-        let base_id = format!("{DB_BACKUP_PREFIX}{}", Local::now().format("%Y%m%d_%H%M%S"));
-        let mut backup_id = base_id.clone();
-        let mut backup_path = backup_dir.join(format!("{backup_id}.db"));
-        let mut counter = 1;
-        while backup_path.exists() {
-            backup_id = format!("{base_id}_{counter}");
-            backup_path = backup_dir.join(format!("{backup_id}.db"));
-            counter += 1;
-        }
+        let backup_path = Self::unique_backup_path(&backup_dir, DB_BACKUP_PREFIX);
 
         {
             // Stage through an in-memory snapshot so the takeover Live backup
@@ -486,6 +563,74 @@ impl Database {
         restrict_db_storage_permissions(&db_path);
         Self::cleanup_db_backups(&backup_dir)?;
         Ok(Some(backup_path))
+    }
+
+    /// `<prefix><timestamp>[_n].db` that does not exist yet in `dir`.
+    fn unique_backup_path(dir: &Path, prefix: &str) -> PathBuf {
+        let base_id = format!("{prefix}{}", Local::now().format("%Y%m%d_%H%M%S"));
+        let mut backup_path = dir.join(format!("{base_id}.db"));
+        let mut counter = 1;
+        while backup_path.exists() {
+            backup_path = dir.join(format!("{base_id}_{counter}.db"));
+            counter += 1;
+        }
+        backup_path
+    }
+
+    /// Plan M3.5: the backup taken right before the v17 migration, i.e. a
+    /// v16 database 2.7.x can open. Restoring it is the downgrade path. It is
+    /// excluded from rotation and carries no tokens: copy → redact → VACUUM
+    /// → atomic rename, so no page of the finished file ever held them.
+    /// Provider API keys and MCP env stay, as in every `.db` backup (a
+    /// same-device, full-fidelity restore point); OAuth material and the
+    /// takeover Live backup do not.
+    pub(crate) fn backup_pre_v17_database_file(&self) -> Result<Option<PathBuf>, AppError> {
+        let db_path = get_app_config_dir().join(crate::product_policy::PRODUCT_DATABASE_FILE);
+        if !db_path.exists() {
+            return Ok(None);
+        }
+        let backup_dir = db_path
+            .parent()
+            .ok_or_else(|| AppError::Config("无效的数据库路径".to_string()))?
+            .join("backups");
+        fs::create_dir_all(&backup_dir).map_err(|e| AppError::io(&backup_dir, e))?;
+        let backup_path = Self::unique_backup_path(&backup_dir, PRE_V17_BACKUP_PREFIX);
+        self.write_token_free_backup(&backup_path)?;
+        #[cfg(unix)]
+        restrict_db_storage_permissions(&db_path);
+        Ok(Some(backup_path))
+    }
+
+    fn write_token_free_backup(&self, target: &Path) -> Result<(), AppError> {
+        // 1. Copy (in memory, so the live file is only read).
+        let snapshot = self.snapshot_to_memory()?;
+        // 2. Redact.
+        Self::strip_proxy_live_backup(&snapshot)?;
+        Self::redact_codex_provider_auth(&snapshot)?;
+        // 3. VACUUM into a partial file next to the target (same volume), so
+        //    the result has no free pages left from the redaction.
+        let mut partial_name = target.as_os_str().to_owned();
+        partial_name.push(".partial");
+        let partial = PathBuf::from(partial_name);
+        match fs::remove_file(&partial) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(AppError::io(&partial, error)),
+        }
+        let result = (|| -> Result<(), AppError> {
+            let partial_str = partial
+                .to_str()
+                .ok_or_else(|| AppError::Config("备份路径不是有效的 UTF-8".to_string()))?;
+            snapshot
+                .execute("VACUUM main INTO ?1", [partial_str])
+                .map_err(|e| AppError::Database(format!("写入迁移前备份失败: {e}")))?;
+            // 4. Atomic rename into place.
+            fs::rename(&partial, target).map_err(|e| AppError::io(target, e))
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&partial);
+        }
+        result
     }
 
     /// `proxy_live_backup` holds the whole pre-takeover Live state — for
@@ -2126,6 +2271,7 @@ mod tests {
             for name in [
                 "db_backup_20260101_000000.db",
                 "db_backup_20260102_000000.db",
+                "pre_v17_20251231_000000.db",
                 "db_backup_20260103_000000.db",
                 "before-upgrade.db",
                 "other-tool.db",
@@ -2150,6 +2296,7 @@ mod tests {
                     "db_backup_20260103_000000.db",
                     "db_backup_notes.txt",
                     "other-tool.db",
+                    "pre_v17_20251231_000000.db",
                 ],
                 "rotation must only prune its own db_backup_*.db snapshots"
             );
@@ -2238,6 +2385,176 @@ mod tests {
             None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
         }
         result
+    }
+
+    fn contains(haystack: &[u8], needle: &str) -> bool {
+        haystack
+            .windows(needle.len())
+            .any(|window| window == needle.as_bytes())
+    }
+
+    /// Seeds a database that looks like a v16 install mid-takeover: an
+    /// official line with OAuth tokens, a relay line with an API key, a
+    /// takeover Live backup and an MCP server with a token in `env`.
+    fn seed_tokens(db: &Database) -> Result<(), AppError> {
+        let conn = crate::database::lock_conn!(db.conn);
+        conn.execute_batch(
+            r#"INSERT INTO providers (id, app_type, name, settings_config, category, meta)
+               VALUES ('official', 'codex', 'OpenAI',
+                       '{"auth":{"tokens":{"access_token":"oauth-access-secret"}}}', 'official', '{}'),
+                      ('relay', 'codex', 'Relay',
+                       '{"auth":{"OPENAI_API_KEY":"sk-relay-kept"}}', 'custom', '{}');
+               INSERT INTO proxy_live_backup (app_type, original_config, backed_up_at)
+               VALUES ('codex', '{"auth":{"tokens":{"access_token":"takeover-live-oauth"}},"config":""}', 'now');
+               INSERT INTO mcp_servers (id, name, server_config, enabled_codex)
+               VALUES ('github', 'github',
+                       '{"type":"stdio","command":"npx","env":{"GITHUB_PERSONAL_ACCESS_TOKEN":"ghp-mcp-secret"}}', 1);
+               INSERT INTO settings (key, value) VALUES ('codex_mcp_projection_ledger', '{"servers":{"github":"abc"}}');
+               INSERT INTO prompt_template_cache (template_id, content, content_sha256)
+               VALUES ('code-review', 'cached-template-body', 'hash');"#,
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn pre_v17_backup_is_token_free_unrotated_and_restores_as_the_downgrade_path(
+    ) -> Result<(), AppError> {
+        let old_test_home = std::env::var_os("CC_SWITCH_TEST_HOME");
+        let test_home = tempfile::tempdir().unwrap();
+        std::env::set_var("CC_SWITCH_TEST_HOME", test_home.path());
+
+        let result = (|| -> Result<(), AppError> {
+            let app_dir = crate::config::get_app_config_dir();
+            std::fs::create_dir_all(&app_dir).unwrap();
+            std::fs::write(
+                app_dir.join(crate::product_policy::PRODUCT_DATABASE_FILE),
+                b"placeholder",
+            )
+            .unwrap();
+
+            let db = Database::memory()?;
+            seed_tokens(&db)?;
+            {
+                // Pre-migration state as 2.7.x left it.
+                let conn = crate::database::lock_conn!(db.conn);
+                Database::set_user_version(&conn, 16)?;
+            }
+
+            let path = db.backup_pre_v17_database_file()?.expect("backup created");
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            assert!(name.starts_with(super::PRE_V17_BACKUP_PREFIX), "{name}");
+            assert!(!Database::is_rotated_db_backup(&path));
+            let leftovers: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().to_string())
+                .filter(|name| name.ends_with(".partial"))
+                .collect();
+            assert!(leftovers.is_empty(), "{leftovers:?}");
+
+            let raw = std::fs::read(&path).unwrap();
+            for secret in ["oauth-access-secret", "takeover-live-oauth"] {
+                assert!(
+                    !contains(&raw, secret),
+                    "{secret} must not survive in any page"
+                );
+            }
+            assert!(
+                contains(&raw, "sk-relay-kept"),
+                "API keys stay for a local restore"
+            );
+            assert!(
+                contains(&raw, "ghp-mcp-secret"),
+                "MCP env stays for a local restore"
+            );
+
+            // 2.7.x (schema 16) can open it as-is.
+            let backup = rusqlite::Connection::open(&path)?;
+            assert_eq!(Database::get_user_version(&backup)?, 16);
+            drop(backup);
+
+            // Restoring it brings the rows back and migrates them again.
+            {
+                let conn = crate::database::lock_conn!(db.conn);
+                conn.execute("DELETE FROM providers WHERE id = 'relay'", [])?;
+                conn.execute("DELETE FROM proxy_live_backup", [])?;
+            }
+            db.restore_from_backup(&name)?;
+            let conn = crate::database::lock_conn!(db.conn);
+            let relay: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM providers WHERE id = 'relay'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(relay, 1);
+            assert_eq!(
+                Database::get_user_version(&conn)?,
+                crate::database::SCHEMA_VERSION
+            );
+            Ok(())
+        })();
+
+        match old_test_home {
+            Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
+            None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+        }
+        result
+    }
+
+    #[test]
+    fn exports_apply_the_v17_data_classification() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        seed_tokens(&db)?;
+
+        for exported in [db.export_sql_string()?, db.export_sql_string_for_sync()?] {
+            assert!(!exported.contains("ghp-mcp-secret"), "MCP env is blanked");
+            assert!(
+                exported.contains("GITHUB_PERSONAL_ACCESS_TOKEN"),
+                "the env key name stays so the user knows what to refill"
+            );
+            assert!(!exported.contains("oauth-access-secret"));
+            assert!(!exported.contains("takeover-live-oauth"));
+            assert!(
+                !exported.contains("codex_mcp_projection_ledger"),
+                "projection ledgers describe this device's live files"
+            );
+            assert!(
+                !exported.contains("cached-template-body"),
+                "cache is skipped"
+            );
+            assert!(
+                exported.contains("prompt_template_cache ("),
+                "the schema itself still round-trips"
+            );
+        }
+
+        let conn = crate::database::lock_conn!(db.conn);
+        let live: String = conn.query_row(
+            "SELECT server_config FROM mcp_servers WHERE id = 'github'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(
+            live.contains("ghp-mcp-secret"),
+            "only the export is redacted"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn mcp_secret_maps_are_blanked_by_value() {
+        let mut spec = serde_json::json!({
+            "type": "http",
+            "url": "https://mcp.example.com",
+            "headers": {"Authorization": "Bearer abc", "X-Empty": ""},
+            "env": {"TOKEN": "t"},
+            "args": ["--token", "stays-an-arg"]
+        });
+        assert_eq!(super::redact_mcp_spec_secrets(&mut spec), 2);
+        assert_eq!(spec["headers"]["Authorization"], "");
+        assert_eq!(spec["env"]["TOKEN"], "");
+        assert_eq!(spec["url"], "https://mcp.example.com");
+        assert_eq!(super::redact_mcp_spec_secrets(&mut spec), 0);
     }
 
     #[cfg(unix)]

@@ -109,8 +109,42 @@ impl Database {
     /// 保存 Skill（添加或更新）
     pub fn save_skill(&self, skill: &InstalledSkill) -> Result<(), AppError> {
         let conn = lock_conn!(self.conn);
+        // Update in place so the v17 `notes` column survives a save; REPLACE
+        // would delete the row and reset it.
+        let updated = conn
+            .execute(
+                "UPDATE skills SET name = ?2, description = ?3, directory = ?4, repo_owner = ?5,
+                     repo_name = ?6, repo_branch = ?7, readme_url = ?8, enabled_claude = ?9,
+                     enabled_codex = ?10, enabled_gemini = ?11, enabled_grokbuild = ?12,
+                     enabled_opencode = ?13, enabled_hermes = ?14, installed_at = ?15,
+                     content_hash = ?16, updated_at = ?17
+                 WHERE id = ?1",
+                params![
+                    skill.id,
+                    skill.name,
+                    skill.description,
+                    skill.directory,
+                    skill.repo_owner,
+                    skill.repo_name,
+                    skill.repo_branch,
+                    skill.readme_url,
+                    skill.apps.claude,
+                    skill.apps.codex,
+                    skill.apps.gemini,
+                    skill.apps.grokbuild,
+                    skill.apps.opencode,
+                    skill.apps.hermes,
+                    skill.installed_at,
+                    skill.content_hash,
+                    skill.updated_at,
+                ],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        if updated > 0 {
+            return Ok(());
+        }
         conn.execute(
-            "INSERT OR REPLACE INTO skills
+            "INSERT INTO skills
              (id, name, description, directory, repo_owner, repo_name, repo_branch,
               readme_url, enabled_claude, enabled_codex, enabled_gemini, enabled_grokbuild, enabled_opencode, enabled_hermes,
               installed_at, content_hash, updated_at)

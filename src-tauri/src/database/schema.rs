@@ -2,7 +2,7 @@
 //!
 //! 负责数据库表结构的创建和版本迁移。
 
-use super::{lock_conn, Database, SCHEMA_VERSION};
+use super::{lock_conn, Database, PROMPT_ORIGIN_LEGACY_WHOLE_FILE, SCHEMA_VERSION};
 use crate::error::AppError;
 use chrono::{Datelike, NaiveDate};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -136,7 +136,8 @@ impl Database {
             enabled_claude BOOLEAN NOT NULL DEFAULT 0, enabled_codex BOOLEAN NOT NULL DEFAULT 0,
             enabled_gemini BOOLEAN NOT NULL DEFAULT 0, enabled_grokbuild BOOLEAN NOT NULL DEFAULT 0,
             enabled_opencode BOOLEAN NOT NULL DEFAULT 0,
-            enabled_hermes BOOLEAN NOT NULL DEFAULT 0
+            enabled_hermes BOOLEAN NOT NULL DEFAULT 0,
+            notes TEXT
         )",
             [],
         )
@@ -146,8 +147,10 @@ impl Database {
         conn.execute("CREATE TABLE IF NOT EXISTS prompts (
             id TEXT NOT NULL, app_type TEXT NOT NULL, name TEXT NOT NULL, content TEXT NOT NULL,
             description TEXT, enabled BOOLEAN NOT NULL DEFAULT 1, created_at INTEGER, updated_at INTEGER,
+            filename TEXT, category_id TEXT, origin TEXT, template_id TEXT,
             PRIMARY KEY (id, app_type)
         )", []).map_err(|e| AppError::Database(e.to_string()))?;
+        Self::create_prompt_library_tables(conn)?;
 
         // 5. Skills 表（v3.10.0+ 统一结构）
         conn.execute(
@@ -168,7 +171,8 @@ impl Database {
             enabled_hermes BOOLEAN NOT NULL DEFAULT 0,
             installed_at INTEGER NOT NULL DEFAULT 0,
             content_hash TEXT,
-            updated_at INTEGER NOT NULL DEFAULT 0
+            updated_at INTEGER NOT NULL DEFAULT 0,
+            notes TEXT
         )",
             [],
         )
@@ -594,6 +598,11 @@ impl Database {
                         log::info!("迁移数据库从 v15 到 v16（重建 Codex 会话用量）");
                         Self::migrate_v15_to_v16(conn)?;
                         Self::set_user_version(conn, 16)?;
+                    }
+                    16 => {
+                        log::info!("迁移数据库从 v16 到 v17（提示词库与 Skills/MCP 备注）");
+                        Self::migrate_v16_to_v17(conn)?;
+                        Self::set_user_version(conn, 17)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -1605,6 +1614,63 @@ impl Database {
     fn migrate_v15_to_v16(conn: &Connection) -> Result<(), AppError> {
         let codex_dir = crate::codex_config::get_codex_config_dir();
         crate::services::session_usage_codex::reset_codex_usage_on_conn(conn, &codex_dir)
+    }
+
+    /// v16 -> v17 (plan M3.5): prompt library columns and tables, plus
+    /// Skills/MCP notes. Existing Codex prompt rows were written by the
+    /// whole-file AGENTS.md writer, so they are marked as such; live
+    /// `AGENTS.md` is not touched here. Projection ledgers stay in `settings`.
+    fn migrate_v16_to_v17(conn: &Connection) -> Result<(), AppError> {
+        if Self::table_exists(conn, "prompts")? {
+            for column in ["filename", "category_id", "origin", "template_id"] {
+                Self::add_column_if_missing(conn, "prompts", column, "TEXT")?;
+            }
+            conn.execute(
+                "UPDATE prompts SET origin = ?1 WHERE app_type = 'codex' AND origin IS NULL",
+                [PROMPT_ORIGIN_LEGACY_WHOLE_FILE],
+            )
+            .map_err(|e| AppError::Database(format!("标记旧版 Codex 提示词失败: {e}")))?;
+        }
+        for table in ["skills", "mcp_servers"] {
+            if Self::table_exists(conn, table)? {
+                Self::add_column_if_missing(conn, table, "notes", "TEXT")?;
+            }
+        }
+        Self::create_prompt_library_tables(conn)
+    }
+
+    /// v17 prompt library tables. `prompt_template_cache` is a local cache
+    /// and never leaves the device (see the export classification).
+    fn create_prompt_library_tables(conn: &Connection) -> Result<(), AppError> {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS prompt_categories (
+                id TEXT NOT NULL,
+                app_type TEXT NOT NULL,
+                name TEXT NOT NULL,
+                sort_index INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER,
+                updated_at INTEGER,
+                PRIMARY KEY (id, app_type)
+            );
+            CREATE TABLE IF NOT EXISTS prompt_template_overrides (
+                template_id TEXT NOT NULL,
+                app_type TEXT NOT NULL,
+                name TEXT,
+                content TEXT,
+                enabled BOOLEAN,
+                updated_at INTEGER,
+                PRIMARY KEY (template_id, app_type)
+            );
+            CREATE TABLE IF NOT EXISTS prompt_template_cache (
+                template_id TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT '',
+                content TEXT NOT NULL,
+                content_sha256 TEXT NOT NULL,
+                fetched_at INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (template_id, source)
+            );",
+        )
+        .map_err(|e| AppError::Database(format!("创建提示词库表失败: {e}")))
     }
 
     /// 插入默认模型定价数据（按今天的 UTC 日期叠加限时价）
@@ -3958,7 +4024,7 @@ mod tests {
 
         Database::apply_schema_migrations_on_conn(&conn)?;
 
-        assert_eq!(Database::get_user_version(&conn)?, 16);
+        assert_eq!(Database::get_user_version(&conn)?, SCHEMA_VERSION);
         let counts: (i64, i64, i64, i64) = conn.query_row(
             "SELECT
                 (SELECT COUNT(*) FROM proxy_request_logs WHERE data_source = 'codex_session'),
@@ -3969,6 +4035,69 @@ mod tests {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )?;
         assert_eq!(counts, (0, 1, 0, 1));
+        Ok(())
+    }
+
+    #[test]
+    fn migrate_v16_to_v17_adds_prompt_library_and_notes() -> Result<(), AppError> {
+        let conn = Connection::open_in_memory()?;
+        // The v16 shapes of the three tables v17 touches.
+        conn.execute_batch(
+            "CREATE TABLE prompts (
+                id TEXT NOT NULL, app_type TEXT NOT NULL, name TEXT NOT NULL, content TEXT NOT NULL,
+                description TEXT, enabled BOOLEAN NOT NULL DEFAULT 1, created_at INTEGER, updated_at INTEGER,
+                PRIMARY KEY (id, app_type)
+            );
+            CREATE TABLE skills (id TEXT PRIMARY KEY, name TEXT NOT NULL);
+            CREATE TABLE mcp_servers (id TEXT PRIMARY KEY, name TEXT NOT NULL);
+            INSERT INTO prompts (id, app_type, name, content) VALUES
+                ('p1', 'codex', 'Team rules', 'body'),
+                ('p1', 'claude', 'Team rules', 'body');
+            INSERT INTO skills (id, name) VALUES ('local:pdf', 'pdf');
+            INSERT INTO mcp_servers (id, name) VALUES ('github', 'github');",
+        )?;
+        Database::set_user_version(&conn, 16)?;
+
+        Database::apply_schema_migrations_on_conn(&conn)?;
+
+        assert_eq!(Database::get_user_version(&conn)?, 17);
+        for column in ["filename", "category_id", "origin", "template_id"] {
+            assert!(Database::has_column(&conn, "prompts", column)?, "{column}");
+        }
+        assert!(Database::has_column(&conn, "skills", "notes")?);
+        assert!(Database::has_column(&conn, "mcp_servers", "notes")?);
+        for table in [
+            "prompt_categories",
+            "prompt_template_overrides",
+            "prompt_template_cache",
+        ] {
+            assert!(Database::table_exists(&conn, table)?, "{table}");
+        }
+        assert!(Database::has_column(
+            &conn,
+            "prompt_template_cache",
+            "content_sha256"
+        )?);
+        let origins: Vec<(String, Option<String>)> = conn
+            .prepare("SELECT app_type, origin FROM prompts ORDER BY app_type")?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        assert_eq!(
+            origins,
+            vec![
+                ("claude".to_string(), None),
+                (
+                    "codex".to_string(),
+                    Some(PROMPT_ORIGIN_LEGACY_WHOLE_FILE.to_string())
+                ),
+            ]
+        );
+        let kept: (String, String) = conn.query_row(
+            "SELECT (SELECT name FROM skills), (SELECT name FROM mcp_servers)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(kept, ("pdf".to_string(), "github".to_string()));
         Ok(())
     }
 }

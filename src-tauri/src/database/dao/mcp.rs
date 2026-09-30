@@ -70,32 +70,48 @@ impl Database {
 
     /// 保存 MCP 服务器
     pub fn save_mcp_server(&self, server: &McpServer) -> Result<(), AppError> {
+        let server_config = serde_json::to_string(&server.server)
+            .map_err(|e| AppError::Database(format!("Failed to serialize server config: {e}")))?;
+        let tags = serde_json::to_string(&server.tags)
+            .map_err(|e| AppError::Database(format!("Failed to serialize tags: {e}")))?;
+        let values = params![
+            server.id,
+            server.name,
+            server_config,
+            server.description,
+            server.homepage,
+            server.docs,
+            tags,
+            server.apps.claude,
+            server.apps.codex,
+            server.apps.gemini,
+            server.apps.grokbuild,
+            server.apps.opencode,
+            server.apps.hermes,
+        ];
         let conn = lock_conn!(self.conn);
-        conn.execute(
-            "INSERT OR REPLACE INTO mcp_servers (
-                id, name, server_config, description, homepage, docs, tags,
-                enabled_claude, enabled_codex, enabled_gemini, enabled_grokbuild, enabled_opencode, enabled_hermes
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-            params![
-                server.id,
-                server.name,
-                serde_json::to_string(&server.server).map_err(|e| AppError::Database(format!(
-                    "Failed to serialize server config: {e}"
-                )))?,
-                server.description,
-                server.homepage,
-                server.docs,
-                serde_json::to_string(&server.tags)
-                    .map_err(|e| AppError::Database(format!("Failed to serialize tags: {e}")))?,
-                server.apps.claude,
-                server.apps.codex,
-                server.apps.gemini,
-                server.apps.grokbuild,
-                server.apps.opencode,
-                server.apps.hermes,
-            ],
-        )
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        // Update in place so the v17 `notes` column survives a save; REPLACE
+        // would delete the row and reset it.
+        let updated = conn
+            .execute(
+                "UPDATE mcp_servers SET name = ?2, server_config = ?3, description = ?4,
+                     homepage = ?5, docs = ?6, tags = ?7, enabled_claude = ?8, enabled_codex = ?9,
+                     enabled_gemini = ?10, enabled_grokbuild = ?11, enabled_opencode = ?12,
+                     enabled_hermes = ?13
+                 WHERE id = ?1",
+                values,
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        if updated == 0 {
+            conn.execute(
+                "INSERT INTO mcp_servers (
+                    id, name, server_config, description, homepage, docs, tags,
+                    enabled_claude, enabled_codex, enabled_gemini, enabled_grokbuild, enabled_opencode, enabled_hermes
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                values,
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        }
         Ok(())
     }
 
