@@ -1394,7 +1394,9 @@ fn harden_codex_generated_catalog_entry(
 /// reasoning levels instead of gpt-5.5's. Exact slug first, then
 /// case-insensitive. The profile rules and hardening still apply on top.
 fn codex_official_slug_template(runtime_models: &[Value], model: &str) -> Option<Value> {
-    let slug_of = |entry: &&Value| entry.get("slug").and_then(Value::as_str);
+    fn slug_of(entry: &Value) -> Option<&str> {
+        entry.get("slug").and_then(Value::as_str)
+    }
     let found = runtime_models
         .iter()
         .find(|entry| slug_of(entry) == Some(model))
