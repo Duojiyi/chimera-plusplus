@@ -1746,6 +1746,17 @@ impl RequestForwarder {
             );
         }
 
+        // Third-party native Responses upstream: never forward a service tier
+        // the line's catalog did not declare (the Chat bridge never copies it).
+        if codex_protocol == Some(super::codex_url::CodexUpstreamProtocol::Native)
+            && super::providers::strip_undeclared_codex_service_tier(provider, &mut request_body)
+        {
+            log::debug!(
+                "[Codex] Dropped undeclared service_tier for native Responses upstream (provider={})",
+                provider.id
+            );
+        }
+
         if codex_responses_to_chat
             && super::providers::transform_codex_chat_moonshot_schema::upstream_requires_ref_sibling_all_of(&base_url)
         {
@@ -3614,89 +3625,15 @@ fn apply_local_proxy_header_overrides(
         return;
     }
 
-    let Some(header_overrides) = overrides.map(|overrides| &overrides.headers) else {
+    let Some(overrides) = overrides else {
         return;
     };
 
-    for (raw_name, raw_value) in header_overrides {
-        let header_name = raw_name.trim().to_ascii_lowercase();
-        if header_name.is_empty() {
-            log::warn!("[LocalProxyOverrides] Ignoring header override with empty name");
-            continue;
-        }
-
-        let Ok(name) = http::HeaderName::from_bytes(header_name.as_bytes()) else {
-            log::warn!("[LocalProxyOverrides] Ignoring invalid header override name: {raw_name}");
-            continue;
-        };
-
-        if is_protected_local_proxy_override_header(&name) {
-            log::debug!(
-                "[LocalProxyOverrides] Ignoring protected header override: {}",
-                name.as_str()
-            );
-            continue;
-        }
-
-        let Ok(value) = http::HeaderValue::from_str(raw_value) else {
-            log::warn!(
-                "[LocalProxyOverrides] Ignoring invalid header override value for {}",
-                name.as_str()
-            );
-            continue;
-        };
-
+    // Same filter as model discovery and the protocol probe: protected,
+    // invalid and duplicate names never reach the upstream.
+    for (name, value) in overrides.upstream_headers() {
         headers.insert(name, value);
     }
-}
-
-fn is_protected_local_proxy_override_header(name: &http::HeaderName) -> bool {
-    matches!(
-        name.as_str(),
-        "host"
-            | "content-length"
-            | "transfer-encoding"
-            | "connection"
-            | "proxy-authorization"
-            | "proxy-authenticate"
-            | "te"
-            | "trailer"
-            | "upgrade"
-            | "accept-encoding"
-            | "content-type"
-            | "authorization"
-            | "x-api-key"
-            | "x-goog-api-key"
-            | "chatgpt-account-id"
-            | "session_id"
-            | "x-client-request-id"
-            | "x-codex-window-id"
-            | "x-forwarded-host"
-            | "x-forwarded-port"
-            | "x-forwarded-proto"
-            | "forwarded"
-            | "cf-connecting-ip"
-            | "cf-ipcountry"
-            | "cf-ray"
-            | "cf-visitor"
-            | "true-client-ip"
-            | "fastly-client-ip"
-            | "x-azure-clientip"
-            | "x-azure-fdid"
-            | "x-azure-ref"
-            | "akamai-origin-hop"
-            | "x-akamai-config-log-detail"
-            | "x-request-id"
-            | "x-correlation-id"
-            | "x-trace-id"
-            | "x-amzn-trace-id"
-            | "x-b3-traceid"
-            | "x-b3-spanid"
-            | "x-b3-parentspanid"
-            | "x-b3-sampled"
-            | "traceparent"
-            | "tracestate"
-    )
 }
 
 fn prepare_upstream_request_body(request_body: Value) -> Value {

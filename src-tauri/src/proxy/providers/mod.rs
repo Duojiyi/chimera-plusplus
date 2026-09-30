@@ -79,6 +79,7 @@ pub use codex::{
     resolve_codex_chat_reasoning_config,
     should_convert_codex_responses_to_anthropic_for_model,
     should_convert_codex_responses_to_chat_for_model,
+    strip_undeclared_codex_service_tier,
 };
 pub use gemini::GeminiAdapter;
 

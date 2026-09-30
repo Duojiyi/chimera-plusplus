@@ -43,6 +43,19 @@ use live::{
 };
 use usage::validate_usage_script;
 
+/// Save-time check for a line's custom request headers (CPP-A7), only while
+/// the `custom_request_headers` capability is `enabled`: rows written before
+/// the feature existed keep saving unchanged.
+fn validate_request_header_overrides(
+    overrides: &crate::provider::LocalProxyRequestOverrides,
+    enabled: bool,
+) -> Result<(), AppError> {
+    if !enabled {
+        return Ok(());
+    }
+    overrides.validate_headers()
+}
+
 /// The built-in Codex official provider is safe to select during takeover:
 /// Codex keeps ownership of its ChatGPT login and the proxy only forwards the
 /// authenticated request. Other official providers retain the existing block.
@@ -925,6 +938,23 @@ mod tests {
         });
     }
 
+    #[test]
+    fn custom_request_header_save_check_follows_the_capability() {
+        let overrides = crate::provider::LocalProxyRequestOverrides {
+            headers: std::collections::HashMap::from([(
+                "Authorization".to_string(),
+                "Bearer x".to_string(),
+            )]),
+            body: None,
+        };
+        // Off: rows written before the feature existed keep saving.
+        assert!(super::validate_request_header_overrides(&overrides, false).is_ok());
+        // On: a protected header is rejected by name.
+        let error = super::validate_request_header_overrides(&overrides, true)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("authorization"), "{error}");
+    }
     #[test]
     fn validate_provider_settings_rejects_missing_auth() {
         let provider = Provider::with_id(
@@ -4074,6 +4104,14 @@ impl ProviderService {
             }
             if let Some(usage_script) = &meta.usage_script {
                 validate_usage_script(usage_script)?;
+            }
+            // CPP-A7: custom request headers are validated at save while the
+            // feature is on; the proxy filters them again either way.
+            if let Some(overrides) = &meta.local_proxy_request_overrides {
+                validate_request_header_overrides(
+                    overrides,
+                    crate::product_policy::Capability::CustomRequestHeaders.enabled(),
+                )?;
             }
         }
 

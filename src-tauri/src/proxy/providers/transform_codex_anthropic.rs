@@ -12,7 +12,7 @@
 
 use super::transform_codex_chat::{
     build_codex_tool_context_from_request, response_tool_call_item_from_chat_name,
-    response_tool_call_item_id_from_chat_name, CodexToolContext,
+    response_tool_call_item_id_from_chat_name, CodexToolContext, RAW_TOOL_ARGUMENTS_FIELD,
 };
 use super::transform_responses::{sanitize_anthropic_tool_use_input, TOOL_RESULT_ERROR_MARKER};
 use crate::proxy::error::ProxyError;
@@ -549,13 +549,13 @@ fn convert_input_to_messages(
                         log::warn!(
                             "[Codex/Anthropic] function_call '{name}' arguments are not a JSON object; wrapping"
                         );
-                        json!({ "__raw_arguments": other })
+                        json!({ RAW_TOOL_ARGUMENTS_FIELD: other })
                     }
                     Err(error) => {
                         log::warn!(
                             "[Codex/Anthropic] function_call '{name}' arguments are not valid JSON ({error}); wrapping raw text"
                         );
-                        json!({ "__raw_arguments": args_str })
+                        json!({ RAW_TOOL_ARGUMENTS_FIELD: args_str })
                     }
                 };
                 let input = sanitize_anthropic_tool_use_input(name, input);

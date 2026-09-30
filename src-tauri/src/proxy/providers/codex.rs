@@ -536,6 +536,24 @@ pub fn is_codex_official_provider(provider: &Provider) -> bool {
         && provider.category.as_deref() == Some("official")
 }
 
+/// Drop a `service_tier` that the line's model catalog never declared.
+///
+/// Codex sends the user's configured `service_tier`, and since 0.156 even lets
+/// `flex` through when a catalog entry lists no tiers. Every catalog generated
+/// for a third-party line declares `service_tiers: []`
+/// (`codex_catalog_model_entry`), so a tier on such a request was never offered
+/// for that model, and unknown tiers are rejected by many gateways. Only the
+/// official ChatGPT route and managed Codex OAuth lines keep it. Returns true
+/// when the field was removed.
+pub fn strip_undeclared_codex_service_tier(provider: &Provider, body: &mut JsonValue) -> bool {
+    if is_codex_official_provider(provider) || provider.is_codex_oauth() {
+        return false;
+    }
+    body.as_object_mut()
+        .and_then(|object| object.remove("service_tier"))
+        .is_some()
+}
+
 /// Resolve the model-catalog tool profile for a Codex provider using the SAME
 /// Anthropic detection as the proxy router ([`codex_provider_uses_anthropic`]), so the
 /// generated catalog never disagrees with the routed transform. A provider whose
@@ -1146,6 +1164,34 @@ mod tests {
             icon_color: None,
             in_failover_queue: false,
         }
+    }
+
+    #[test]
+    fn undeclared_service_tier_is_dropped_for_third_party_lines_only() {
+        let third_party = create_provider(json!({}));
+        let mut body = json!({"model": "m", "service_tier": "flex"});
+        assert!(strip_undeclared_codex_service_tier(&third_party, &mut body));
+        assert!(body.get("service_tier").is_none());
+        assert!(!strip_undeclared_codex_service_tier(
+            &third_party,
+            &mut body
+        ));
+
+        let mut official = create_provider(json!({}));
+        official.id = crate::database::CODEX_OFFICIAL_PROVIDER_ID.to_string();
+        official.category = Some("official".to_string());
+        let mut body = json!({"model": "m", "service_tier": "priority"});
+        assert!(!strip_undeclared_codex_service_tier(&official, &mut body));
+        assert_eq!(body["service_tier"], "priority");
+
+        let mut oauth = create_provider(json!({}));
+        oauth.meta = Some(crate::provider::ProviderMeta {
+            provider_type: Some("codex_oauth".to_string()),
+            ..Default::default()
+        });
+        let mut body = json!({"model": "m", "service_tier": "priority"});
+        assert!(!strip_undeclared_codex_service_tier(&oauth, &mut body));
+        assert_eq!(body["service_tier"], "priority");
     }
 
     #[test]
