@@ -16,8 +16,9 @@ use crate::error::AppError;
 // The CAS changeset lives beside `atomic_write` because it is built on the
 // same temp-file + replace primitive (`atomic_write_checked`), and keeping it
 // in this module preserves a single implementation of symlink refusal and
-// the Windows `MoveFileExW` replace. Production write paths adopt it in
-// write lane L4; until then it is only exercised by its own tests.
+// the Windows `MoveFileExW` replace. Per-tool live backups (M2.1 ②) use it
+// today; provider write paths adopt it in write lane L4. Parts of the API
+// (explicit rollback) are still unused outside tests.
 #[allow(dead_code)]
 pub mod cas;
 

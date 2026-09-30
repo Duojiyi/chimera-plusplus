@@ -161,6 +161,21 @@ pub(crate) fn capture_live_snapshot() -> Result<Option<ClaudeDesktopLiveSnapshot
     }))
 }
 
+/// The files a Claude Desktop switch may write, for per-tool live backups
+/// (M2.1 ②). Empty where Claude Desktop 3P is not supported.
+pub(crate) fn live_file_paths() -> Result<Vec<PathBuf>, AppError> {
+    if !is_supported_platform() {
+        return Ok(Vec::new());
+    }
+    let paths = current_platform_paths()?;
+    Ok(vec![
+        paths.normal_config_path,
+        paths.threep_config_path,
+        paths.profile_path,
+        paths.meta_path,
+    ])
+}
+
 pub fn get_status(db: &Database, proxy_running: bool) -> Result<ClaudeDesktopStatus, AppError> {
     if !is_supported_platform() {
         return Ok(ClaudeDesktopStatus {

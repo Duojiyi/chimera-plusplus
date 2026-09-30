@@ -751,6 +751,29 @@ fn codex_auth_chatgpt_identity(auth: &Value) -> CodexChatgptIdentity {
     }
 }
 
+/// Live backups (M2.1 ②) record which ChatGPT login a Codex config was
+/// paired with without ever copying `auth.json`: a short, non-reversible
+/// digest of the MH-14 identity. `None` when neither id is known.
+pub(crate) fn codex_auth_identity_fingerprint(auth: &Value) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let identity = codex_auth_chatgpt_identity(auth);
+    if identity.user_id.is_none() && identity.account_id.is_none() {
+        return None;
+    }
+    let digest = Sha256::digest(format!(
+        "{}\u{0}{}",
+        identity.user_id.as_deref().unwrap_or_default(),
+        identity.account_id.as_deref().unwrap_or_default()
+    ));
+    Some(
+        digest
+            .iter()
+            .take(8)
+            .map(|byte| format!("{byte:02x}"))
+            .collect(),
+    )
+}
+
 /// Two identities are the same only when every component known on both
 /// sides agrees and at least one component was compared.
 fn compare_codex_chatgpt_identities(
