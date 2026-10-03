@@ -1,6 +1,7 @@
 use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+#[cfg(any(windows, test))]
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
