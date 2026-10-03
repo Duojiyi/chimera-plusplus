@@ -1186,8 +1186,11 @@ fn custom_claude_dir_read_only_mcp_queries_do_not_create_profile() {
     );
 }
 
+/// Ownership contract: a live entry is only ever removed once Chimera++ has
+/// projected it. A DB row that is merely disabled grants no ownership, so an
+/// identical entry that already existed in the client config is left alone.
 #[test]
-fn sync_all_enabled_removes_known_disabled_but_preserves_unknown_live_entries() {
+fn sync_all_enabled_only_removes_entries_it_projected_itself() {
     let _guard = test_mutex().lock().expect("acquire test mutex");
     reset_test_fs();
     let _home = ensure_test_home();
@@ -1270,8 +1273,8 @@ fn sync_all_enabled_removes_known_disabled_but_preserves_unknown_live_entries() 
         .expect("mcpServers object");
 
     assert!(
-        !servers.contains_key("managed-disabled"),
-        "DB-known disabled server should be removed from live config"
+        servers.contains_key("managed-disabled"),
+        "an entry Chimera++ never projected must survive a disabled DB row"
     );
     assert!(
         servers.contains_key("managed-enabled"),
@@ -1281,6 +1284,26 @@ fn sync_all_enabled_removes_known_disabled_but_preserves_unknown_live_entries() 
         servers.contains_key("external-only"),
         "live entries unknown to DB should be preserved"
     );
+
+    // Once Chimera++ projects the entry itself (an identical live entry is
+    // adopted by content), disabling it removes it again; others stay.
+    McpService::toggle_app(&state, "managed-disabled", AppType::Claude, true)
+        .expect("enable adopts the identical live entry");
+    McpService::toggle_app(&state, "managed-disabled", AppType::Claude, false)
+        .expect("disable removes the entry Chimera++ owns");
+    let value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&mcp_path).expect("read claude mcp"))
+            .expect("parse claude mcp");
+    let servers = value
+        .get("mcpServers")
+        .and_then(|entry| entry.as_object())
+        .expect("mcpServers object");
+    assert!(
+        !servers.contains_key("managed-disabled"),
+        "an owned entry is removed once it is disabled"
+    );
+    assert!(servers.contains_key("managed-enabled"));
+    assert!(servers.contains_key("external-only"));
 }
 
 #[test]
@@ -1363,8 +1386,10 @@ fn failed_mcp_removal_restores_database_record() {
 }
 
 /// MH-24 golden: the projection ledger decides which live entries are ours.
+/// A same-name entry we did not write is refused with an explicit error and
+/// everything is rolled back; it is never overwritten or removed.
 #[test]
-fn codex_mcp_projection_reports_same_name_conflicts_and_only_removes_its_own_entries() {
+fn codex_mcp_projection_refuses_same_name_conflicts_and_only_removes_its_own_entries() {
     let _guard = test_mutex().lock().unwrap();
     reset_test_fs();
     let home = ensure_test_home();
@@ -1393,19 +1418,26 @@ fn codex_mcp_projection_reports_same_name_conflicts_and_only_removes_its_own_ent
     };
 
     McpService::upsert_server(&state, managed("managed", "db-cmd")).unwrap();
-    McpService::upsert_server(&state, managed("shared", "db-version")).unwrap();
-    let live = fs::read_to_string(&path).unwrap();
-    assert!(live.contains("db-cmd"));
-    assert!(
-        live.contains("user-version") && !live.contains("db-version"),
-        "a same-name entry we did not write is reported, not overwritten: {live}"
-    );
+    let projected = fs::read_to_string(&path).unwrap();
+    assert!(projected.contains("db-cmd"));
+
+    // A same-name entry we did not write is refused, never overwritten, and
+    // the whole operation is rolled back (file, DB and ledger unchanged).
+    let error = McpService::upsert_server(&state, managed("shared", "db-version"))
+        .expect_err("a foreign same-name entry must be refused")
+        .to_string();
+    assert!(error.contains("ownership conflict for 'shared'"), "{error}");
+    assert_eq!(fs::read_to_string(&path).unwrap(), projected);
+    assert!(!state
+        .db
+        .get_all_mcp_servers()
+        .unwrap()
+        .contains_key("shared"));
     let ledger = CodexMcpLedger::load(&state.db).unwrap();
-    assert!(ledger.conflicts.contains("shared"));
     assert!(ledger.servers.contains_key("managed"));
     assert!(!ledger.servers.contains_key("shared"));
 
-    // Editing our entry in live makes it the user's: an update is a conflict.
+    // Editing our entry in live makes it the user's: an update is refused too.
     fs::write(
         &path,
         fs::read_to_string(&path)
@@ -1413,18 +1445,34 @@ fn codex_mcp_projection_reports_same_name_conflicts_and_only_removes_its_own_ent
             .replace("db-cmd", "hand-edited"),
     )
     .unwrap();
-    McpService::upsert_server(&state, managed("managed", "db-cmd-2")).unwrap();
+    let error = McpService::upsert_server(&state, managed("managed", "db-cmd-2"))
+        .expect_err("a hand-edited entry is no longer ours")
+        .to_string();
+    assert!(
+        error.contains("ownership conflict for 'managed'"),
+        "{error}"
+    );
     let live = fs::read_to_string(&path).unwrap();
     assert!(live.contains("hand-edited") && !live.contains("db-cmd-2"));
-    assert!(CodexMcpLedger::load(&state.db)
-        .unwrap()
-        .conflicts
-        .contains("managed"));
 
-    // Deleting DB servers never removes entries that are not ours.
-    assert!(McpService::delete_server(&state, "managed").unwrap());
-    assert!(McpService::delete_server(&state, "shared").unwrap());
-    McpService::sync_enabled_for_app(&state, &AppType::Codex).unwrap();
+    // Deleting never removes entries that are not ours: refused, nothing moves.
+    let error = McpService::delete_server(&state, "managed")
+        .expect_err("a hand-edited entry must not be deleted")
+        .to_string();
+    assert!(
+        error.contains("ownership conflict for 'managed'"),
+        "{error}"
+    );
+    assert!(state
+        .db
+        .get_all_mcp_servers()
+        .unwrap()
+        .contains_key("managed"));
+    // A batch re-projection keeps going per server and reports the conflict.
+    let error = McpService::sync_enabled_for_app(&state, &AppType::Codex)
+        .expect_err("the batch reports the hand-edited entry")
+        .to_string();
+    assert!(error.contains("managed"), "{error}");
     let live = fs::read_to_string(&path).unwrap();
     for id in ["cli_added", "shared", "managed"] {
         assert!(live.contains(&format!("mcp_servers.{id}")), "{id}: {live}");

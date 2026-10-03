@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use chimera_plus_plus_lib::{update_settings, AppSettings, AppState, Database, MultiAppConfig};
 
@@ -82,10 +82,26 @@ pub fn disable_codex_official_auth_preservation() {
 /// 分别判定的：改用 `#[serial]` 串行化的测试（profile_roundtrip、deeplink_import）
 /// 不再需要它，但其余九个仍在用。`#[serial]` 是异步测试的正确做法——把
 /// `std::sync::MutexGuard` 持过 `.await` 会阻塞整个 runtime 线程。
+///
+/// 锁不会被毒化：一个测试失败时，同一二进制里的其余测试不应因 `PoisonError`
+/// 连带失败，否则真正的失败原因会被淹没在连锁错误里。
 #[allow(dead_code)]
-pub fn test_mutex() -> &'static Mutex<()> {
-    static MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
-    MUTEX.get_or_init(|| Mutex::new(()))
+pub struct TestMutex(Mutex<()>);
+
+#[allow(dead_code)]
+impl TestMutex {
+    pub fn lock(&self) -> Result<MutexGuard<'_, ()>, std::convert::Infallible> {
+        Ok(self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()))
+    }
+}
+
+#[allow(dead_code)]
+pub fn test_mutex() -> &'static TestMutex {
+    static MUTEX: OnceLock<TestMutex> = OnceLock::new();
+    MUTEX.get_or_init(|| TestMutex(Mutex::new(())))
 }
 
 /// 创建测试用的 AppState，包含一个空的数据库
