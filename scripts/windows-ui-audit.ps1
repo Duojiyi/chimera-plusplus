@@ -105,17 +105,8 @@ try {
     if ($directory) {
         [System.IO.Directory]::CreateDirectory($directory) | Out-Null
     }
-    $target = [System.Drawing.Bitmap]::new(1440, 960)
-    $targetGraphics = [System.Drawing.Graphics]::FromImage($target)
-    try {
-        $targetGraphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
-        $targetGraphics.DrawImage($bitmap, 0, 0, 1440, 960)
-        $target.Save($OutputPath, [System.Drawing.Imaging.ImageFormat]::Png)
-    }
-    finally {
-        $targetGraphics.Dispose()
-        $target.Dispose()
-    }
+    # Preserve native dimensions so visual audits do not stretch the interface.
+    $bitmap.Save($OutputPath, [System.Drawing.Imaging.ImageFormat]::Png)
 }
 finally {
     $graphics.Dispose()

@@ -46,7 +46,7 @@ jobs:
         run: node scripts/verify-release-version.mjs
 
       - name: Test release safety guards
-        run: node --test scripts/promote-latest-release.test.mjs scripts/release-workflow-guards.test.mjs
+        run: node --test scripts/promote-latest-release.test.mjs scripts/release-workflow-guards.test.mjs scripts/check-single-config-writer.test.mjs
 
       - name: Check frontend formatting
         run: pnpm format:check

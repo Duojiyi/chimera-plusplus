@@ -10,6 +10,7 @@ const limits = {
   startupBytes: 1500 * 1024,
   chunkBytes: 850 * 1024,
   cssBytes: 200 * 1024,
+  fontBytes: 12 * 1024 * 1024,
 };
 
 if (!fs.existsSync(indexPath)) {
@@ -17,9 +18,9 @@ if (!fs.existsSync(indexPath)) {
 }
 
 const html = fs.readFileSync(indexPath, "utf8");
-const referenced = [
-  ...html.matchAll(/(?:src|href)="\.\/([^"]+)"/g),
-].map((match) => match[1]);
+const referenced = [...html.matchAll(/(?:src|href)="\.\/([^"]+)"/g)].map(
+  (match) => match[1],
+);
 const startupAssets = [...new Set(referenced)].filter((asset) =>
   /\.(?:js|css)$/.test(asset),
 );
@@ -34,7 +35,9 @@ function sizeOf(relativePath) {
 
 const entryScript = startupAssets.find((asset) => asset.endsWith(".js"));
 if (!entryScript) {
-  throw new Error("unable to locate the renderer entry script in dist/index.html");
+  throw new Error(
+    "unable to locate the renderer entry script in dist/index.html",
+  );
 }
 
 const assetsDir = path.join(dist, "assets");
@@ -49,6 +52,11 @@ const css = fs
   .map((name) => ({ name: `assets/${name}`, bytes: sizeOf(`assets/${name}`) }))
   .sort((a, b) => b.bytes - a.bytes);
 
+const fonts = fs
+  .readdirSync(assetsDir)
+  .filter((name) => /\.(?:woff2?|ttf|otf)$/.test(name))
+  .map((name) => ({ name: `assets/${name}`, bytes: sizeOf(`assets/${name}`) }));
+const fontBytes = fonts.reduce((total, font) => total + font.bytes, 0);
 const entryBytes = sizeOf(entryScript);
 const startupBytes = startupAssets.reduce(
   (total, asset) => total + sizeOf(asset),
@@ -56,6 +64,19 @@ const startupBytes = startupAssets.reduce(
 );
 const failures = [];
 
+if (fontBytes > limits.fontBytes) {
+  failures.push(`fonts total ${fontBytes} bytes (limit ${limits.fontBytes})`);
+}
+for (const family of ["Overpass", "OverpassMono", "NotoSansSC"]) {
+  if (
+    !fonts.some((font) => path.basename(font.name).startsWith(`${family}-`))
+  ) {
+    failures.push(`bundled font missing: ${family}`);
+  }
+  if (!fs.existsSync(path.join(dist, "licenses", `${family}-OFL.txt`))) {
+    failures.push(`font license missing: ${family}`);
+  }
+}
 if (entryBytes > limits.entryBytes) {
   failures.push(
     `entry ${entryScript} is ${entryBytes} bytes (limit ${limits.entryBytes})`,
@@ -86,6 +107,8 @@ console.log(
     {
       entry: { name: entryScript, bytes: entryBytes },
       startupBytes,
+      fontBytes,
+      fonts,
       largestChunks: chunks.slice(0, 8),
       stylesheets: css,
       limits,
