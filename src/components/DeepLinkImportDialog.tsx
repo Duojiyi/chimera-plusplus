@@ -1,5 +1,10 @@
 import { useState, useEffect, useMemo, useRef } from "react";
-import { DeepLinkImportRequest, deeplinkApi } from "@/lib/api/deeplink";
+import {
+  DeepLinkImportPreview,
+  DeepLinkImportRequest,
+  EnvKeyStatus,
+  deeplinkApi,
+} from "@/lib/api/deeplink";
 import {
   Dialog,
   DialogContent,
@@ -16,12 +21,7 @@ import { PromptConfirmation } from "./deeplink/PromptConfirmation";
 import { McpConfirmation } from "./deeplink/McpConfirmation";
 import { SkillConfirmation } from "./deeplink/SkillConfirmation";
 import { ProviderIcon } from "./ProviderIcon";
-import {
-  classifyEndpoint,
-  classifyEnvKey,
-  maskValue,
-  riskI18nKey,
-} from "@/utils/deeplinkRisk";
+import { classifyEndpoint, maskValue, riskI18nKey } from "@/utils/deeplinkRisk";
 
 function safeDisplayUrl(value?: string): string {
   if (!value) return "—";
@@ -45,10 +45,12 @@ export function DeepLinkImportDialog({
   request: incomingRequest,
   onHandled,
   onProviderImported,
+  onImported,
 }: {
   request: DeepLinkImportRequest;
   onHandled: () => Promise<void>;
-  onProviderImported: (app?: DeepLinkImportRequest["app"]) => void;
+  onImported?: () => void;
+  onProviderImported?: (app?: DeepLinkImportRequest["app"]) => void;
 }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -58,6 +60,10 @@ export function DeepLinkImportDialog({
     !!(incomingRequest.config || incomingRequest.configUrl),
   );
   const [mergeFailed, setMergeFailed] = useState(false);
+  // MH-4: what the backend will store and write; import waits for it.
+  const [preview, setPreview] = useState<DeepLinkImportPreview | null>(null);
+  const [previewFailed, setPreviewFailed] = useState(false);
+  const [confirmedEnvKeys, setConfirmedEnvKeys] = useState<string[]>([]);
   const [imported, setImported] = useState(false);
   const inFlightRef = useRef(false);
   const importedRef = useRef(false);
@@ -101,8 +107,46 @@ export function DeepLinkImportDialog({
     };
   }, [incomingRequest]);
 
+  useEffect(() => {
+    let active = true;
+    void deeplinkApi
+      .previewDeeplinkImport(incomingRequest)
+      .then((result) => {
+        if (active) setPreview(result);
+      })
+      .catch(() => {
+        if (active) setPreviewFailed(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, [incomingRequest]);
+
+  const envStatus = useMemo(
+    () =>
+      new Map<string, EnvKeyStatus>(
+        (preview?.env ?? []).map((entry) => [entry.key, entry.status]),
+      ),
+    [preview],
+  );
+  const deniedEnvKeys = useMemo(
+    () =>
+      new Set(
+        (preview?.env ?? [])
+          .filter((entry) => entry.status === "denied")
+          .map((entry) => entry.key),
+      ),
+    [preview],
+  );
+  const toggleEnvKey = (key: string, confirmed: boolean) =>
+    setConfirmedEnvKeys((current) =>
+      confirmed
+        ? [...current.filter((k) => k !== key), key]
+        : current.filter((k) => k !== key),
+    );
+
   const handleImport = async () => {
-    if (inFlightRef.current || isPreparing || mergeFailed) return;
+    if (inFlightRef.current || isPreparing || mergeFailed || !preview) return;
     inFlightRef.current = true;
     setIsImporting(true);
 
@@ -112,11 +156,15 @@ export function DeepLinkImportDialog({
         await onHandled();
         return;
       }
-      const result = await deeplinkApi.importFromDeeplink(request);
+      const result = await deeplinkApi.importFromDeeplink({
+        ...request,
+        confirmedEnvKeys,
+      });
       importedRef.current = true;
       setImported(true);
+      onImported?.();
       if (typeof result === "string" || result.type === "provider") {
-        onProviderImported(request.app);
+        onProviderImported?.(request.app);
       }
       const refreshMcp = async (summary: {
         importedCount: number;
@@ -323,20 +371,46 @@ export function DeepLinkImportDialog({
    * `break-all` 而非 `truncate`——被截断的值等于没展示。
    */
   const EnvRow = ({ envKey, value }: { envKey: string; value: string }) => {
-    const risk = classifyEnvKey(envKey);
+    // Verdict comes from the backend allowlist (MH-4); keys without one
+    // (e.g. Codex auth fields) are not env and are shown plainly.
+    const status = envStatus.get(envKey);
+    const flagged = status === "denied" || status === "needsConfirmation";
     return (
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        <span
-          className={`font-mono break-all ${
-            risk
-              ? "text-yellow-700 dark:text-yellow-500 font-semibold"
-              : "text-muted-foreground"
-          }`}
-        >
-          {risk && <span aria-hidden="true">⚠ </span>}
-          {envKey}
-        </span>
-        <span className="font-mono break-all">{maskValue(envKey, value)}</span>
+      <div className="space-y-0.5">
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <span
+            className={`font-mono break-all ${
+              flagged
+                ? "text-yellow-700 dark:text-yellow-500 font-semibold"
+                : "text-muted-foreground"
+            }`}
+          >
+            {flagged && <span aria-hidden="true">⚠ </span>}
+            {envKey}
+          </span>
+          <span className="font-mono break-all">
+            {maskValue(envKey, value)}
+          </span>
+        </div>
+        {status === "denied" && (
+          <div className="text-xs text-yellow-700 dark:text-yellow-500">
+            {t("deeplink.envDenied", {
+              defaultValue: "出于安全原因，此变量不会导入",
+            })}
+          </div>
+        )}
+        {status === "needsConfirmation" && (
+          <label className="flex items-center gap-2 text-xs">
+            <input
+              type="checkbox"
+              checked={confirmedEnvKeys.includes(envKey)}
+              onChange={(event) => toggleEnvKey(envKey, event.target.checked)}
+            />
+            {t("deeplink.envConfirm", {
+              defaultValue: "此变量不在该工具的允许清单中，勾选后才会导入",
+            })}
+          </label>
+        )}
       </div>
     );
   };
@@ -391,7 +465,10 @@ export function DeepLinkImportDialog({
                 <PromptConfirmation request={request} />
               )}
               {request.resource === "mcp" && (
-                <McpConfirmation request={request} />
+                <McpConfirmation
+                  request={request}
+                  deniedEnvKeys={deniedEnvKeys}
+                />
               )}
               {request.resource === "skill" && (
                 <SkillConfirmation request={request} />
@@ -762,6 +839,46 @@ export function DeepLinkImportDialog({
                   </div>
                 </>
               )}
+
+              {/* MH-4: exactly what will be stored, and where it lands. */}
+              {preview && (
+                <div className="space-y-2 pt-2 border-t border-border-default">
+                  {preview.targetPaths.length > 0 && (
+                    <div className="space-y-1">
+                      <div className="text-sm font-medium text-muted-foreground">
+                        {t("deeplink.targetPaths", {
+                          defaultValue: "目标文件",
+                        })}
+                      </div>
+                      {preview.targetPaths.map((path) => (
+                        <div key={path} className="text-xs font-mono break-all">
+                          {path}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <p className="text-xs text-muted-foreground">
+                    {preview.writesLive
+                      ? t("deeplink.writesLive", {
+                          defaultValue: "确认后会立即写入上述文件。",
+                        })
+                      : t("deeplink.importOnly", {
+                          defaultValue:
+                            "仅导入：确认后不会写入任何配置文件，需要时再手动启用。",
+                        })}
+                  </p>
+                  <details>
+                    <summary className="text-sm font-medium text-muted-foreground cursor-pointer">
+                      {t("deeplink.fullContent", {
+                        defaultValue: "完整内容",
+                      })}
+                    </summary>
+                    <pre className="mt-1 max-h-64 overflow-auto bg-muted/50 p-2 rounded text-xs whitespace-pre-wrap break-all border">
+                      {preview.content}
+                    </pre>
+                  </details>
+                </div>
+              )}
             </div>
 
             {isPreparing && (
@@ -771,6 +888,13 @@ export function DeepLinkImportDialog({
             )}
             {mergeFailed && (
               <p role="alert">{t("deeplink.configMergeError")}</p>
+            )}
+            {previewFailed && (
+              <p role="alert">
+                {t("deeplink.previewError", {
+                  defaultValue: "无法生成导入预览，已阻止导入。",
+                })}
+              </p>
             )}
             <DialogFooter>
               <Button
@@ -784,7 +908,7 @@ export function DeepLinkImportDialog({
               </Button>
               <Button
                 onClick={handleImport}
-                disabled={isImporting || isPreparing || mergeFailed}
+                disabled={isImporting || isPreparing || mergeFailed || !preview}
               >
                 {isImporting
                   ? t("deeplink.importing")

@@ -64,6 +64,7 @@ pub use codex::{
     apply_codex_chat_upstream_model_for_model,
     apply_codex_upstream_model,
     codex_eligible_for_chat_auto_detect,
+    codex_model_default_api_format,
     codex_model_protocol_mapping_is_missing,
     codex_model_route_for_model,
     codex_provider_has_model_level_routing,
@@ -72,12 +73,15 @@ pub use codex::{
     codex_provider_uses_anthropic,
     codex_provider_uses_anthropic_api_key,
     codex_provider_uses_chat_completions,
+    codex_remote_compaction_blocked,
     inject_codex_chat_prompt_cache_key,
     is_codex_official_provider,
+    normalize_codex_provider_wire_api,
     resolve_codex_catalog_tool_profile,
     resolve_codex_chat_reasoning_config,
     should_convert_codex_responses_to_anthropic_for_model,
     should_convert_codex_responses_to_chat_for_model,
+    strip_undeclared_codex_service_tier,
 };
 pub use gemini::GeminiAdapter;
 
@@ -221,7 +225,13 @@ impl ProviderType {
                 ProviderType::Gemini
             }
             AppType::GrokBuild => ProviderType::Codex,
-            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => ProviderType::Codex,
+            // Additive tools never go through the local proxy; keep the
+            // existing Codex-shaped fallback for them.
+            AppType::OpenCode
+            | AppType::OpenClaw
+            | AppType::Hermes
+            | AppType::Pi
+            | AppType::Mcode => ProviderType::Codex,
         }
     }
 
@@ -275,7 +285,9 @@ pub fn get_adapter(app_type: &AppType) -> Box<dyn ProviderAdapter> {
         AppType::Codex => Box::new(CodexAdapter::new()),
         AppType::Gemini => Box::new(GeminiAdapter::new()),
         AppType::GrokBuild => Box::new(CodexAdapter::new()),
-        AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => Box::new(CodexAdapter::new()),
+        AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::Pi | AppType::Mcode => {
+            Box::new(CodexAdapter::new())
+        }
     }
 }
 

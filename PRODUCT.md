@@ -1,5 +1,7 @@
 # Product
 
+This document describes the **v2.8 development target**, not the feature set of the latest published release. The version fields in the package and release metadata remain authoritative for release numbering. The current visual baseline is `designs/v2.8.0/designer-notes.md` and its exported frames; later explicit user feedback takes precedence over the historical wireframes.
+
 ## Register
 
 product
@@ -26,26 +28,28 @@ Quietly capable, exact, and reassuring. Chimera++ should feel like a refined des
 
 ## Anti-references
 
-- Marketplace-style provider promotion, affiliate links, sponsored templates, or upstream project attribution in customer-facing product surfaces.
+- Marketplace-style provider promotion, affiliate links, sponsored templates, or promotional upstream branding. License notices and accurate template provenance are permitted and must be retained.
 - A crowded admin dashboard made from equally weighted cards, small gray text, and decorative metrics.
-- Fake macOS traffic lights, novelty window chrome, and visual effects that conflict with Windows conventions.
-- Security-product cliches such as flat world maps with threat markers, animated scanning rings, neon gradients, or fear-based warning language. The 供应商 route globe added in v2.3.0 is a deliberate, bounded exception, recorded under Visual Research Reference.
+- Decorative window controls that do not operate the real window. Use platform-appropriate controls: macOS at the top left, Windows at the top right, with working minimize, maximize/restore, and close actions.
+- Security-product cliches such as flat world maps with threat markers, animated scanning rings, neon gradients, or fear-based warning language. The historical v2.3 globe is not part of the v2.8 route design.
 - Motion that delays use, repeats on every page load, or makes state unclear.
 
 ## Navigation and Product Scope
 
-Provider configuration is Codex-only: no other tool gets a connection, model, or runtime screen, and the dormant multi-tool backend stays internal. The one deliberate exception is 会话, which reads session logs written by whatever CLIs are installed locally — its provider filter therefore names Claude Code, Gemini CLI, Grok Build, and OpenCode alongside Codex. That surface manages local session history, including confirmed single and batch deletion, not provider configuration, and it is the only regular navigation surface for non-Codex tools. Explicit deep-link requests retain the inherited confirmation-only import flow for compatibility; they do not add multi-tool management screens.
+The v2.8 development app is Codex-first, with a capability-based sidebar. It must distinguish a tool that uses one current provider from tools that enable multiple entries. Other tools do not inherit Codex-only account, maintenance, or skin controls. Backend capability policy and the explicit tool-enablement flow remain authoritative; making a page visible must not silently import credentials or modify live configuration.
 
-The shipped navigation is a six-item bottom bar, not a sidebar:
+The current navigation is:
 
-1. **供应商**: the primary route. Active provider, active model, connection state, quick switching, a single path into provider editing, and the Codex start/restart action.
-2. **更新**: Codex runtime install discovery, stable or portable distribution choice, update source, version comparison, repair, rollback, and uninstall with explicit confirmation.
-3. **词元**: request counts, token consumption, per-model distribution, and history.
-4. **外观**: browse, preview, install, apply, and restore Codex client skins.
-5. **会话**: browse local session logs across installed CLIs with search and a provider filter; copy a resume command or the project directory, resume directly in a terminal on macOS, and delete single or selected sessions after confirmation.
-6. **设置**: application update behavior, startup behavior, application data directory, and non-destructive preferences.
+1. **Codex**: 线路, 官方账号, 提示词, Skills 与 MCP, 用量, Codex 管理, 外观, 配置体检.
+2. **Other tools**: enabled tools get their supported provider/entry management page. The tool manager exposes real support and installation state; unimplemented tools must not receive empty working-looking screens. Customer-facing names are complete, including MiniMax Code.
+3. **会话**: local session history across supported installed CLIs, with search, filtering, export where supported, and confirmation before deletion.
+4. **设置**: tool management, explicit imports, local backup/recovery, general preferences, Codex preferences, and application updates.
 
-The 控制台 and 工具箱 destinations named in earlier drafts of this document were never shipped under those names; connection test, health scan, backup, and config transfer live inside the screens above rather than in a separate tools page.
+The current delivery scope is Simplified Chinese and local data management. Multilingual completion and WebDAV/S3 cloud synchronization are excluded. The main UI does not expose language switching or cloud sync; backend cloud commands reject calls and cloud workers remain disabled. Existing translation resources and stored sync configuration are retained for compatibility, not activated or erased. Local backup/recovery, provider connections, outbound proxy configuration, and application updates remain in scope; local data management does not mean all network access is disabled.
+
+The middle tool navigation scrolls independently; 会话 and 设置 remain reachable at the bottom. The settings content also has a bounded scroll region so every section is reachable at the minimum supported window size. “Codex 管理” is the customer-facing label; internal identifiers may continue to use “runtime”.
+
+The previous six-item bottom navigation and Codex-only provider scope describe older releases and are not implementation requirements for v2.8. Deep-link imports still require explicit confirmation. Browser previews and design fixtures must be labelled and must not claim live local state or successful native operations.
 
 The ChimeraHub template is the only customer-facing default template. Its URL remains editable. Users can create additional providers, but the product never promotes a provider catalog.
 
@@ -63,6 +67,6 @@ Meet WCAG 2.2 AA contrast for text and controls. All critical actions require ke
 
 ## Visual Research Reference
 
-The selected structural reference is Dribbble's [Internet Security and Privacy App - VPN v2](https://dribbble.com/shots/26489451-Internet-Security-and-Privacy-App-VPN-v2). Borrow only its focused connection-state composition, destination selector, and clear primary action hierarchy. Do not copy its gradients, palette, security branding, or assets.
+The v2.8 direction is the transit-inspired route signboard with a restrained desktop shell and clear operation receipts, as documented in `designs/v2.8.0/designer-notes.md`. Color identifies routes and status; typography, spacing, dialogs, forms, and tables share the same semantic theme tokens. A successful compile does not constitute visual acceptance: the real populated, empty, loading, failure, disabled, and small-window states must be reviewed.
 
-The original instruction here was also "do not copy its globe". v2.3.0 reverses that one deliberately, and the reversal is bounded: the 供应商 route shows a dotted sphere generated at runtime from a public-domain Natural Earth 110m land mask, tinted entirely from the active palette, spinning slowly and honouring `prefers-reduced-motion` (default: slow, not freeze). It carries no routes, arcs, threat markers, scanning rings, or geographic claims — it is an idle-state ornament for the connection route, not a data visualization, and nothing about the user's provider is encoded in it. A flat map with markers remains banned. The secondary material reference is [Imgo](https://dribbble.com/shots/27225909-Imgo-a-file-tool-I-built-because-Windows-deserved-better): borrow its restrained native-window material and result-list clarity, not its dark palette or file-tool-specific visuals.
+The former VPN/globe reference is historical only. The secondary material reference remains [Imgo](https://dribbble.com/shots/27225909-Imgo-a-file-tool-I-built-because-Windows-deserved-better): borrow restrained native-window material and result-list clarity, not its palette or file-tool-specific visuals.

@@ -167,6 +167,8 @@ export interface LocalProxyRequestOverrides {
 
 // 供应商元数据（字段名与后端一致，保持 snake_case）
 export interface ProviderMeta {
+  // Additive tools expose whether this provider is currently present in live config.
+  liveConfigManaged?: boolean;
   // 自定义端点：以 URL 为键，值为端点信息
   custom_endpoints?: Record<string, CustomEndpoint>;
   // 是否在切换/同步到 live 时应用通用配置片段
@@ -310,6 +312,8 @@ export interface VisibleApps {
   opencode: boolean;
   openclaw: boolean;
   hermes: boolean;
+  pi: boolean;
+  mcode: boolean;
 }
 
 // WebDAV 同步状态
@@ -534,6 +538,10 @@ export interface McpApps {
   opencode: boolean;
   openclaw: boolean;
   hermes: boolean;
+  /** Pi has no MCP registry; the backend never sets this. */
+  pi?: boolean;
+  /** MiniMax Code MCP is not managed; the backend never sets this. */
+  mcode?: boolean;
 }
 
 // MCP 服务器条目（v3.7.0 统一结构）

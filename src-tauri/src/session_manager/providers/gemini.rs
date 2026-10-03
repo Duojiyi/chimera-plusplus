@@ -3,7 +3,7 @@ use std::path::Path;
 use serde_json::Value;
 
 use crate::security_limits::{
-    read_dir_without_links, read_to_string_limited, MAX_CONFIG_FILE_BYTES, MAX_SESSION_FILE_BYTES,
+    read_dir_without_links, read_to_string_limited, MAX_CONFIG_FILE_BYTES,
 };
 use crate::session_manager::{SessionMessage, SessionMeta};
 
@@ -42,7 +42,7 @@ pub fn scan_sessions() -> Vec<SessionMeta> {
 
         for file_entry in chat_files {
             let path = file_entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            if !crate::gemini_session::is_session_file(&path) {
                 continue;
             }
             if let Some(meta) = parse_session(&path) {
@@ -58,10 +58,7 @@ pub fn scan_sessions() -> Vec<SessionMeta> {
 }
 
 pub fn load_messages(path: &Path) -> Result<Vec<SessionMessage>, String> {
-    let data = read_to_string_limited(path, MAX_SESSION_FILE_BYTES)
-        .map_err(|e| format!("Failed to read session: {e}"))?;
-    let value: Value =
-        serde_json::from_str(&data).map_err(|e| format!("Failed to parse session JSON: {e}"))?;
+    let value = crate::gemini_session::read_session(path)?;
 
     let messages = value
         .get("messages")
@@ -142,8 +139,7 @@ pub fn delete_session(_root: &Path, path: &Path, session_id: &str) -> Result<boo
 }
 
 fn parse_session(path: &Path) -> Option<SessionMeta> {
-    let data = read_to_string_limited(path, MAX_SESSION_FILE_BYTES).ok()?;
-    let value: Value = serde_json::from_str(&data).ok()?;
+    let value = crate::gemini_session::read_session(path).ok()?;
 
     let session_id = value.get("sessionId").and_then(Value::as_str)?.to_string();
 

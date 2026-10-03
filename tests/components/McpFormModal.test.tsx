@@ -168,6 +168,35 @@ describe("McpFormModal", () => {
     return { onSave, onClose };
   };
 
+  it("associates labels with inputs and exposes disclosure state", () => {
+    renderForm();
+    expect(screen.getByLabelText(/mcp.form.title/)).toHaveAttribute(
+      "type",
+      "text",
+    );
+    expect(screen.getByLabelText("mcp.form.name")).toBeInTheDocument();
+    const disclosure = screen.getByRole("button", {
+      name: "mcp.form.additionalInfo",
+    });
+    expect(disclosure).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(disclosure);
+    expect(disclosure).toHaveAttribute("aria-expanded", "true");
+    for (const name of ["description", "tags", "homepage", "docs"]) {
+      expect(screen.getByLabelText("mcp.form." + name)).toBeInTheDocument();
+    }
+  });
+
+  it("restricts new Codex-page controls without changing legacy defaults", () => {
+    renderForm({ visibleApps: ["codex"], defaultEnabledApps: ["codex"] });
+    expect(screen.getByLabelText("mcp.unifiedPanel.apps.codex")).toBeChecked();
+    expect(
+      screen.queryByLabelText("mcp.unifiedPanel.apps.claude"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByLabelText("mcp.unifiedPanel.apps.gemini"),
+    ).not.toBeInTheDocument();
+  });
+
   it("应用预设后填充 ID 与配置内容", async () => {
     renderForm();
     await waitFor(() =>
@@ -348,6 +377,39 @@ type = "stdio"
       }),
     );
     expect(upsertMock).not.toHaveBeenCalled();
+  });
+
+  it("saves a URL-only Codex MCP unchanged without losing HTTP extensions", async () => {
+    const server = {
+      url: "https://example.invalid/mcp",
+      http_headers: { "X-Test": "synthetic" },
+      startup_timeout_sec: 30,
+      bearer_token_env_var: "MCP_TEST_TOKEN",
+    };
+    renderForm({
+      defaultFormat: "toml",
+      editingId: "native-http",
+      initialData: {
+        id: "native-http",
+        name: "Native HTTP",
+        server,
+        apps: {
+          claude: false,
+          codex: true,
+          gemini: false,
+          opencode: false,
+          openclaw: false,
+          hermes: false,
+        },
+      } as McpServer,
+    });
+    fireEvent.click(screen.getByText("common.save"));
+    await waitFor(() => expect(upsertMock).toHaveBeenCalledTimes(1));
+    expect(upsertMock.mock.calls[0][0].server).toEqual({
+      ...server,
+      type: "http",
+    });
+    expect(toastErrorMock).not.toHaveBeenCalled();
   });
 
   it("编辑模式下保持 ID 并更新配置", async () => {

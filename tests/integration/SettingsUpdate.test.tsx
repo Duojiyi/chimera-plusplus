@@ -1,6 +1,16 @@
+import { ThemeProvider } from "@/components/theme-provider";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NewSettingsView } from "@/views/NewSettingsView";
+import { liveBackupsApi } from "@/lib/api/liveBackups";
+vi.mock("@/lib/api/liveBackups", () => ({
+  liveBackupsApi: {
+    list: vi.fn(),
+    create: vi.fn(),
+    restore: vi.fn(),
+    delete: vi.fn(),
+  },
+}));
 
 const { checkUpdateMock, installUpdateMock, toastInfoMock, useUpdateMock } =
   vi.hoisted(() => ({
@@ -24,6 +34,16 @@ vi.mock("sonner", () => ({
 
 describe("settings application update", () => {
   beforeEach(() => {
+    window.localStorage.removeItem("cc-switch-theme");
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => ({
+        matches: false,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      })),
+    );
+
     useUpdateMock.mockReturnValue({
       hasUpdate: true,
       updateInfo: {
@@ -45,7 +65,11 @@ describe("settings application update", () => {
 
   it("starts the download and install flow directly from the update button", async () => {
     installUpdateMock.mockResolvedValueOnce(false);
-    render(<NewSettingsView />);
+    render(
+      <ThemeProvider>
+        <NewSettingsView />
+      </ThemeProvider>,
+    );
 
     expect(screen.getByText(/First fix/)).toHaveTextContent(
       "First fix Second fix",
@@ -83,7 +107,11 @@ describe("settings application update", () => {
       isInstalling: false,
       downloadProgress: null,
     });
-    render(<NewSettingsView />);
+    render(
+      <ThemeProvider>
+        <NewSettingsView />
+      </ThemeProvider>,
+    );
 
     expect(
       screen.getByRole("button", { name: /\u5b89\u88c5\u5e76\u91cd\u542f/ }),
@@ -113,7 +141,11 @@ describe("settings application update", () => {
       isInstalling: true,
       downloadProgress: { downloaded: 50, total: 100 },
     });
-    render(<NewSettingsView />);
+    render(
+      <ThemeProvider>
+        <NewSettingsView />
+      </ThemeProvider>,
+    );
 
     expect(screen.getByRole("progressbar")).toHaveAttribute(
       "aria-valuenow",
@@ -125,5 +157,26 @@ describe("settings application update", () => {
     expect(
       screen.getByRole("button", { name: /\u6b63\u5728\u66f4\u65b0\u2026/ }),
     ).toBeDisabled();
+  });
+  it("does not load backups while the capability is disabled", () => {
+    render(
+      <ThemeProvider>
+        <NewSettingsView />
+      </ThemeProvider>,
+    );
+    expect(
+      screen.queryByRole("region", { name: "Codex Live 备份" }),
+    ).not.toBeInTheDocument();
+    expect(liveBackupsApi.list).not.toHaveBeenCalled();
+  });
+  it("connects the backup panel when the capability is enabled", async () => {
+    vi.mocked(liveBackupsApi.list).mockResolvedValue([]);
+    render(
+      <ThemeProvider>
+        <NewSettingsView liveBackupsEnabled />
+      </ThemeProvider>,
+    );
+    expect(await screen.findByText("暂无 Live 备份。")).toBeInTheDocument();
+    expect(liveBackupsApi.list).toHaveBeenCalledWith("codex");
   });
 });

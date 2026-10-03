@@ -47,6 +47,23 @@ export interface DeepLinkImportRequest {
   usageAccessToken?: string;
   usageUserId?: string;
   usageAutoInterval?: number;
+
+  // Set by the confirm dialog: env keys outside the tool's allowlist that the
+  // user confirmed one by one. Denied keys are dropped by the backend anyway.
+  confirmedEnvKeys?: string[];
+}
+
+/** Backend verdict for one env key (see `deeplink/env_allowlist.rs`). */
+export type EnvKeyStatus = "allowed" | "needsConfirmation" | "denied";
+
+export interface DeepLinkImportPreview {
+  /** Absolute paths of the live files this resource is written to once active. */
+  targetPaths: string[];
+  /** Whether confirming writes `targetPaths` right away. */
+  writesLive: boolean;
+  /** Full content carried by the link, as it will be stored. */
+  content: string;
+  env: Array<{ key: string; status: EnvKeyStatus }>;
 }
 
 export interface McpImportResult {
@@ -70,6 +87,10 @@ export type ImportResult =
   | { type: "skill"; key: string };
 
 export const deeplinkApi = {
+  /** Queue a pasted link for the existing confirmation UI; never import here. */
+  submitImport: async (url: string): Promise<void> => {
+    return invoke("submit_deeplink_import", { url });
+  },
   /**
    * Parse a deep link URL
    * @param url The ccswitch:// URL to parse
@@ -89,6 +110,16 @@ export const deeplinkApi = {
     request: DeepLinkImportRequest,
   ): Promise<DeepLinkImportRequest> => {
     return invoke("merge_deeplink_config", { request });
+  },
+
+  /**
+   * What confirming this request stores and writes (full content, absolute
+   * target paths, env-key verdicts). Merges inline config on the backend.
+   */
+  previewDeeplinkImport: async (
+    request: DeepLinkImportRequest,
+  ): Promise<DeepLinkImportPreview> => {
+    return invoke("preview_deeplink_import", { request });
   },
 
   /**

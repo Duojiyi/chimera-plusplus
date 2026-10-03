@@ -13,12 +13,12 @@ import type { SessionMessage } from "@/types";
 import {
   formatTimestamp,
   getRoleLabel,
-  getRoleTone,
+  shouldHideCodexMessageFromToc,
   highlightText,
 } from "./utils";
 
-const COLLAPSE_THRESHOLD = 3000;
-const COLLAPSED_LENGTH = 1500;
+const COLLAPSE_THRESHOLD = 1800;
+const COLLAPSED_LENGTH = 600;
 
 interface SessionMessageItemProps {
   message: SessionMessage;
@@ -36,7 +36,12 @@ export const SessionMessageItem = memo(function SessionMessageItem({
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
 
-  const isLong = message.content.length > COLLAPSE_THRESHOLD;
+  const role = message.role.toLowerCase();
+  const isContext =
+    role === "developer" ||
+    role === "system" ||
+    shouldHideCodexMessageFromToc(message.content);
+  const isLong = isContext || message.content.length > COLLAPSE_THRESHOLD;
   const hasSearchMatch =
     isLong &&
     !expanded &&
@@ -44,19 +49,21 @@ export const SessionMessageItem = memo(function SessionMessageItem({
     message.content.toLowerCase().includes(searchQuery.toLowerCase());
   const collapsed = isLong && !expanded && !hasSearchMatch;
   const displayContent = collapsed
-    ? message.content.slice(0, COLLAPSED_LENGTH) + "…"
+    ? isContext
+      ? "会话的系统指令与环境信息已折叠，可展开查看完整记录。"
+      : message.content.slice(0, COLLAPSED_LENGTH) + "…"
     : message.content;
 
   return (
     <div
       className={cn(
-        "rounded-lg border px-3 py-2.5 relative group transition-shadow min-w-0",
-        message.role.toLowerCase() === "user"
-          ? "bg-primary/5 border-primary/20 ml-8"
-          : message.role.toLowerCase() === "assistant"
-            ? "bg-blue-500/5 border-blue-500/20 mr-8"
-            : "bg-muted/40 border-border/60",
-        isActive && "ring-2 ring-primary ring-offset-2",
+        "session-message relative group min-w-0",
+        isContext
+          ? "session-message-context"
+          : role === "user"
+            ? "session-message-user"
+            : "session-message-assistant",
+        isActive && "session-message-active",
       )}
     >
       <Tooltip>
@@ -64,7 +71,8 @@ export const SessionMessageItem = memo(function SessionMessageItem({
           <Button
             variant="ghost"
             size="icon"
-            className="absolute top-2 right-2 size-6 opacity-0 group-hover:opacity-100 transition-opacity"
+            className="absolute top-2 right-2 size-7 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
+            aria-label="复制内容"
             onClick={() => onCopy(message.content)}
           >
             <Copy className="size-3" />
@@ -77,8 +85,8 @@ export const SessionMessageItem = memo(function SessionMessageItem({
         </TooltipContent>
       </Tooltip>
       <div className="flex items-center justify-between text-xs mb-1.5 pr-6">
-        <span className={cn("font-semibold", getRoleTone(message.role))}>
-          {getRoleLabel(message.role, t)}
+        <span className="session-message-role">
+          {isContext ? "系统与环境" : getRoleLabel(message.role, t)}
         </span>
         {message.ts && (
           <span className="text-muted-foreground">
@@ -112,7 +120,7 @@ export const SessionMessageItem = memo(function SessionMessageItem({
                 defaultValue: "展开完整内容",
               })}
               <span className="text-muted-foreground/60">
-                ({Math.round(message.content.length / 1000)}k)
+                ({message.content.length.toLocaleString()} 字符)
               </span>
             </>
           )}

@@ -57,6 +57,7 @@ fn mcp_server(id: &str, claude_enabled: bool) -> McpServer {
 
 fn prompt(id: &str, enabled: bool) -> Prompt {
     Prompt {
+        template_id: Some("writing-technical-docs".into()),
         id: id.to_string(),
         name: id.to_uppercase(),
         content: format!("# prompt {id}\n"),
@@ -762,6 +763,21 @@ async fn profile_switch_preserves_takeover_and_hot_switches_provider() {
             .and_then(|value| value.as_str()),
         Some("custom-key-2"),
         "backup should track the profile-selected provider"
+    );
+}
+
+/// Claude Desktop resolves its Windows directory from `LOCALAPPDATA`, so the
+/// test home must redirect it too, or these tests write the real user's
+/// `%LOCALAPPDATA%\Claude*`.
+#[cfg(windows)]
+#[test]
+#[serial]
+fn test_home_isolates_local_app_data() {
+    let home = ensure_test_home();
+    let local = std::env::var_os("LOCALAPPDATA").expect("test support sets LOCALAPPDATA");
+    assert!(
+        std::path::Path::new(&local).starts_with(home),
+        "LOCALAPPDATA must point inside the test home, got {local:?}"
     );
 }
 

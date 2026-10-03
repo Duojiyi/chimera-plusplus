@@ -177,6 +177,42 @@ pub(crate) fn sanitize_claude_settings_for_live(settings: &Value) -> Value {
     v
 }
 
+// Switching a route must not erase unrelated settings added by Claude itself
+// (plugins, permissions, hooks, etc.). Routing/auth fields must come solely from
+// the target provider, especially when returning to the official empty-env row.
+fn preserve_claude_local_settings(mut target: Value, existing: Value) -> Result<Value, AppError> {
+    let target_object = target.as_object_mut().ok_or_else(|| {
+        AppError::Config("Claude provider settings must be a JSON object".to_string())
+    })?;
+    let existing_object = existing.as_object().ok_or_else(|| {
+        AppError::Config("Claude settings.json must be a JSON object".to_string())
+    })?;
+    for (key, value) in existing_object {
+        if matches!(
+            key.as_str(),
+            "env" | "model" | "apiKeyHelper" | "apiBaseUrl" | "primaryModel" | "smallFastModel"
+        ) || super::ProviderService::is_sensitive_config_key(key)
+        {
+            continue;
+        }
+        target_object
+            .entry(key.clone())
+            .or_insert_with(|| value.clone());
+    }
+    Ok(sanitize_claude_settings_for_live(&target))
+}
+
+pub(crate) fn write_claude_provider_settings(target: &Value) -> Result<(), AppError> {
+    let path = get_claude_settings_path();
+    let existing = if path.exists() {
+        read_json_file::<Value>(&path)?
+    } else {
+        json!({})
+    };
+    let settings = preserve_claude_local_settings(target.clone(), existing)?;
+    write_json_file(&path, &settings)
+}
+
 pub(crate) fn provider_exists_in_live_config(
     app_type: &AppType,
     provider_id: &str,
@@ -188,6 +224,8 @@ pub(crate) fn provider_exists_in_live_config(
             .map(|providers| providers.contains_key(provider_id)),
         AppType::Hermes => crate::hermes_config::get_providers()
             .map(|providers| providers.contains_key(provider_id)),
+        AppType::Pi => crate::pi_config::pi_provider_exists(provider_id),
+        AppType::Mcode => crate::mcode_config::provider_key_exists(provider_id),
         _ => Ok(false),
     }
 }
@@ -529,6 +567,8 @@ fn settings_contain_common_config(app_type: &AppType, settings: &Value, snippet:
         | AppType::OpenCode
         | AppType::OpenClaw
         | AppType::Hermes
+        | AppType::Pi
+        | AppType::Mcode
         | AppType::ClaudeDesktop => false,
     }
 }
@@ -603,6 +643,8 @@ pub(crate) fn remove_common_config_from_settings(
         | AppType::OpenCode
         | AppType::OpenClaw
         | AppType::Hermes
+        | AppType::Pi
+        | AppType::Mcode
         | AppType::ClaudeDesktop => Ok(settings.clone()),
     }
 }
@@ -662,6 +704,8 @@ fn apply_common_config_to_settings(
         | AppType::OpenCode
         | AppType::OpenClaw
         | AppType::Hermes
+        | AppType::Pi
+        | AppType::Mcode
         | AppType::ClaudeDesktop => Ok(settings.clone()),
     }
 }
@@ -716,7 +760,31 @@ pub(crate) fn write_live_with_common_config(
         return Ok(());
     }
 
-    write_live_snapshot(app_type, &effective_provider)
+    let codex_snippet = if matches!(app_type, AppType::Codex) {
+        codex_common_snippet(db, provider)?
+    } else {
+        None
+    };
+    write_live_snapshot(app_type, &effective_provider, codex_snippet.as_ref())
+}
+
+/// ⑤ The stored Codex common config and whether `provider` uses it, for the
+/// key-ownership projection (`project_codex_line_onto_live`).
+pub(crate) fn codex_common_snippet(
+    db: &Database,
+    provider: &Provider,
+) -> Result<Option<crate::codex_key_ownership::CodexCommonSnippet>, AppError> {
+    let Some(text) = db
+        .get_config_snippet(AppType::Codex.as_str())?
+        .filter(|text| !text.trim().is_empty())
+    else {
+        return Ok(None);
+    };
+    let enabled = provider_uses_common_config(&AppType::Codex, provider, Some(&text));
+    Ok(Some(crate::codex_key_ownership::CodexCommonSnippet {
+        text,
+        enabled,
+    }))
 }
 
 pub(crate) fn strip_common_config_from_live_settings(
@@ -866,11 +934,48 @@ fn restore_live_settings_for_provider_backfill(
         );
     }
 
-    // MCP 服务器归 DB mcp_servers 表所有，live 里的 [mcp_servers] 是同步投影；
-    // 回填时剥掉，否则已删除的服务器会随供应商快照复活（逐条 reconcile 清不掉孤儿）。
-    if let Err(err) = crate::codex_config::strip_codex_mcp_servers_from_settings(&mut settings) {
+    // MH-19: `settings` above started as a clone of the *entire* live
+    // settings.json/auth.json. That's fine for the official row (its stored
+    // auth is supposed to track live), but a non-official row must never
+    // keep OAuth login material that happened to still be sitting in live
+    // auth.json at this exact moment — most commonly right after switching
+    // away from official with preserve_codex_official_auth_on_switch on,
+    // which deliberately leaves official's own auth.json untouched. Runs
+    // after the restore above so a legitimately restored bearer token
+    // survives unless it's actually part of the polluted shape.
+    if let Some(key) = provider.official_account_key() {
+        if let Some(auth) = settings.get("auth") {
+            if let crate::codex_accounts::identity::LoginClass::Chatgpt(identity) =
+                crate::codex_accounts::identity::classify(auth)
+            {
+                if identity.key() == key {
+                    if let Ok(vault) = crate::codex_accounts::vault::Vault::open_default() {
+                        let _ = vault.refresh_existing_slot(&identity, auth);
+                    }
+                }
+            }
+        }
+        settings["auth"] = json!({});
+    } else if provider.category.as_deref() != Some("official") {
+        if let Some(auth) = settings.get_mut("auth") {
+            if crate::codex_config::scrub_oauth_material_from_non_official_codex_auth(auth) {
+                log::info!(
+                    "Scrubbed OAuth login material from non-official provider '{}' during backfill",
+                    provider.id
+                );
+            }
+        }
+    }
+
+    // L3 key ownership: the line keeps only what it owns (① from live, ②
+    // from its stored text). Local-shared keys and `[mcp_servers]` stay in
+    // live, so a deleted MCP server can never come back with the line.
+    if let Err(err) = crate::codex_config::keep_line_owned_codex_config_for_backfill(
+        &mut settings,
+        &provider.settings_config,
+    ) {
         log::warn!(
-            "Failed to strip mcp_servers while backfilling '{}': {err}",
+            "Failed to reduce the backfilled Codex config of '{}': {err}",
             provider.id
         );
     }
@@ -1046,6 +1151,26 @@ impl LiveSnapshot {
         }
     }
 
+    /// The CAS write that puts a Codex snapshot back; `None` for other apps.
+    pub(crate) fn codex_restore_write(
+        &self,
+    ) -> Option<crate::codex_live_write::CodexLiveWrite<'_>> {
+        use crate::codex_live_write::{CodexLiveWrite, LiveFile};
+        let Self::Codex {
+            auth,
+            config,
+            model_catalog,
+        } = self
+        else {
+            return None;
+        };
+        Some(CodexLiveWrite {
+            auth: LiveFile::restore(auth.as_ref()),
+            config: LiveFile::restore(config.as_deref()),
+            model_catalog: LiveFile::restore(model_catalog.as_deref()),
+        })
+    }
+
     #[allow(dead_code)]
     pub(crate) fn restore(&self) -> Result<(), AppError> {
         match self {
@@ -1060,57 +1185,13 @@ impl LiveSnapshot {
             LiveSnapshot::ClaudeDesktop { snapshot } => {
                 snapshot.restore()?;
             }
-            LiveSnapshot::Codex {
-                auth,
-                config,
-                model_catalog,
-            } => {
-                let auth_path = get_codex_auth_path();
-                let config_path = get_codex_config_path();
-                let model_catalog_path = get_codex_model_catalog_path();
-                // Restore every component independently. The catalog is
-                // written before config.toml during provider projection, so a
-                // failure restoring auth/config must not prevent us from at
-                // least restoring the old catalog and reducing split-brain.
-                let mut errors = Vec::new();
-                let auth_result = if let Some(value) = auth {
-                    write_json_file(&auth_path, value)
-                } else if auth_path.exists() {
-                    delete_file(&auth_path)
-                } else {
-                    Ok(())
-                };
-                if let Err(error) = auth_result {
-                    errors.push(format!("auth.json: {error}"));
-                }
-
-                let config_result = if let Some(text) = config {
-                    crate::config::write_text_file(&config_path, text)
-                } else if config_path.exists() {
-                    delete_file(&config_path)
-                } else {
-                    Ok(())
-                };
-                if let Err(error) = config_result {
-                    errors.push(format!("config.toml: {error}"));
-                }
-
-                let catalog_result = if let Some(text) = model_catalog {
-                    crate::config::write_text_file(&model_catalog_path, text)
-                } else if model_catalog_path.exists() {
-                    delete_file(&model_catalog_path)
-                } else {
-                    Ok(())
-                };
-                if let Err(error) = catalog_result {
-                    errors.push(format!("cc-switch-model-catalog.json: {error}"));
-                }
-
-                if !errors.is_empty() {
-                    return Err(AppError::Message(format!(
-                        "恢复 Codex Live 快照失败: {}",
-                        errors.join("；")
-                    )));
+            LiveSnapshot::Codex { .. } => {
+                // One CAS changeset: all three files come back or none do,
+                // and auth.json is restored from the bytes held in memory.
+                if let Some(write) = self.codex_restore_write() {
+                    crate::codex_live_write::write_codex_live_files(write).map_err(|error| {
+                        AppError::Message(format!("恢复 Codex Live 快照失败: {error}"))
+                    })?;
                 }
             }
             LiveSnapshot::Gemini { env, .. } => {
@@ -1150,13 +1231,16 @@ impl LiveSnapshot {
     }
 }
 
-/// Write live configuration snapshot for a provider
-pub(crate) fn write_live_snapshot(app_type: &AppType, provider: &Provider) -> Result<(), AppError> {
+/// Write live configuration snapshot for a provider. `codex_snippet` is the
+/// Codex common config (⑤) and is only read for Codex.
+pub(crate) fn write_live_snapshot(
+    app_type: &AppType,
+    provider: &Provider,
+    codex_snippet: Option<&crate::codex_key_ownership::CodexCommonSnippet>,
+) -> Result<(), AppError> {
     match app_type {
         AppType::Claude => {
-            let path = get_claude_settings_path();
-            let settings = sanitize_claude_settings_for_live(&provider.settings_config);
-            write_json_file(&path, &settings)?;
+            write_claude_provider_settings(&provider.settings_config)?;
         }
         AppType::ClaudeDesktop => {
             return Err(AppError::localized(
@@ -1170,9 +1254,17 @@ pub(crate) fn write_live_snapshot(app_type: &AppType, provider: &Provider) -> Re
                 .settings_config
                 .as_object()
                 .ok_or_else(|| AppError::Config("Codex 供应商配置必须是 JSON 对象".to_string()))?;
-            let auth = obj
+            let mut auth = obj
                 .get("auth")
-                .ok_or_else(|| AppError::Config("Codex 供应商配置缺少 'auth' 字段".to_string()))?;
+                .ok_or_else(|| AppError::Config("Codex 供应商配置缺少 'auth' 字段".to_string()))?
+                .clone();
+
+            if let Some(key) = provider.official_account_key() {
+                let vault = crate::codex_accounts::vault::Vault::open_default()?;
+                let slot = vault.applicable_slot(key)?;
+                auth = slot.auth;
+            }
+
             let config_str = obj.get("config").and_then(|v| v.as_str());
 
             // Native (direct) Responses and Anthropic providers must suppress Codex's
@@ -1184,8 +1276,9 @@ pub(crate) fn write_live_snapshot(app_type: &AppType, provider: &Provider) -> Re
             crate::codex_config::write_codex_provider_live_with_catalog(
                 &provider.settings_config,
                 provider.category.as_deref(),
-                auth,
+                &auth,
                 config_str,
+                codex_snippet,
                 profile,
             )?;
         }
@@ -1300,6 +1393,16 @@ pub(crate) fn write_live_snapshot(app_type: &AppType, provider: &Provider) -> Re
             crate::hermes_config::set_provider(&provider.id, provider.settings_config.clone())?;
             log::debug!("Hermes provider '{}' written to live config", provider.id);
         }
+        AppType::Pi => {
+            return Err(AppError::InvalidInput(
+                "Pi providers use the Pi provider service".to_string(),
+            ));
+        }
+        AppType::Mcode => {
+            return Err(AppError::InvalidInput(
+                "MiniMax Code providers use the MiniMax Code provider service".to_string(),
+            ));
+        }
     }
     Ok(())
 }
@@ -1309,6 +1412,11 @@ pub(crate) fn write_live_snapshot(app_type: &AppType, provider: &Provider) -> Re
 /// Writes all providers from the database to the live configuration file.
 /// Used for OpenCode and other additive mode applications.
 fn sync_all_providers_to_live(state: &AppState, app_type: &AppType) -> Result<(), AppError> {
+    // Pi's models.json and MiniMax Code's config.yaml are the source of truth
+    // for membership: a restore/import never re-adds entries removed there.
+    if matches!(app_type, AppType::Pi | AppType::Mcode) {
+        return Ok(());
+    }
     let providers = state.db.get_all_providers(app_type.as_str())?;
     let mut synced_count = 0usize;
     let mut failures = Vec::new();
@@ -1416,25 +1524,69 @@ fn sync_current_provider_for_app_respecting_takeover(
 ///
 /// For additive mode apps (OpenCode), all providers are synced instead of just the current one.
 pub fn sync_current_to_live(state: &AppState) -> Result<(), AppError> {
+    sync_current_to_live_except(state, None)
+}
+
+/// `sync_current_to_live`, leaving the provider live config of `skip`
+/// untouched. MH-13b: while an imported Codex config waits for the user's
+/// confirmation, the post-import sync must not write it to live.
+pub fn sync_current_to_live_except(
+    state: &AppState,
+    skip: Option<&AppType>,
+) -> Result<(), AppError> {
+    // M2.1: an import or restore projects only the tools the user has
+    // enabled. A hidden tool's live files are not ours to rewrite just
+    // because the imported database happens to carry rows for it.
+    let visible_apps = crate::settings::get_settings()
+        .visible_apps
+        .unwrap_or_default();
+    let apps: Vec<AppType> = AppType::all()
+        .filter(|app| crate::product_policy::is_tool_enabled(app, &visible_apps))
+        .collect();
+
     let mut failures = Vec::new();
-    for app_type in AppType::all() {
-        let result = if app_type.is_additive_mode() {
-            sync_all_providers_to_live(state, &app_type)
+    for app_type in &apps {
+        if skip == Some(app_type) {
+            continue;
+        }
+        let will_write = if app_type.is_additive_mode() {
+            state
+                .db
+                .get_all_providers(app_type.as_str())
+                .map(|p| !p.is_empty())
+                .unwrap_or(false)
         } else {
-            sync_current_provider_for_app_respecting_takeover(state, &app_type)
+            crate::settings::get_effective_current_provider(&state.db, app_type)
+                .map(|p| p.is_some())
+                .unwrap_or(false)
         };
+        if !will_write {
+            continue;
+        }
+
+        // First-switch protection: the first write of a tool's live config
+        // is preceded by a backup of what the user had there.
+        let result =
+            super::first_write::backup_before_first_live_write(state, app_type).and_then(|()| {
+                if app_type.is_additive_mode() {
+                    sync_all_providers_to_live(state, app_type)
+                } else {
+                    sync_current_provider_for_app_respecting_takeover(state, app_type)
+                }
+            });
         if let Err(error) = result {
             failures.push(format!("{app_type:?} provider: {error}"));
         }
     }
     // Best effort must still report partial failure after attempting every
     // projection. Otherwise restore/import callers incorrectly report success.
-    if let Err(error) = McpService::sync_all_enabled(state) {
-        failures.push(format!("MCP: {error}"));
+    for app_type in &apps {
+        if let Err(error) = McpService::sync_enabled_for_app(state, app_type) {
+            failures.push(format!("{app_type:?} MCP: {error}"));
+        }
     }
-    for app_type in AppType::all() {
-        if let Err(error) = crate::services::skill::SkillService::sync_to_app(&state.db, &app_type)
-        {
+    for app_type in &apps {
+        if let Err(error) = crate::services::skill::SkillService::sync_to_app(&state.db, app_type) {
             failures.push(format!("{app_type:?} Skill: {error}"));
         }
     }
@@ -1563,6 +1715,12 @@ pub fn read_live_settings(app_type: AppType) -> Result<Value, AppError> {
             let config = crate::hermes_config::yaml_to_json(&yaml_config)?;
             Ok(config)
         }
+        AppType::Pi => Err(AppError::InvalidInput(
+            "Pi providers are read from Pi's native models file".to_string(),
+        )),
+        AppType::Mcode => Err(AppError::InvalidInput(
+            "MiniMax Code providers are read from its native config file".to_string(),
+        )),
     }
 }
 
@@ -1672,7 +1830,7 @@ pub fn import_default_config(state: &AppState, app_type: AppType) -> Result<bool
             })
         }
         // OpenCode, OpenClaw and Hermes use additive mode and are handled by early return above
-        AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
+        AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::Pi | AppType::Mcode => {
             unreachable!("additive mode apps are handled by early return")
         }
     };
@@ -1772,10 +1930,16 @@ pub(crate) fn write_gemini_live(provider: &Provider) -> Result<(), AppError> {
         if config_value.is_object() {
             // Merge with existing settings to preserve mcpServers and other fields
             let mut merged = if settings_path.exists() {
-                read_json_file::<Value>(&settings_path).unwrap_or_else(|_| json!({}))
+                read_json_file::<Value>(&settings_path)?
             } else {
                 json!({})
             };
+
+            if !merged.is_object() {
+                return Err(AppError::Config(
+                    "Gemini settings.json must be a JSON object".to_string(),
+                ));
+            }
 
             // Merge provider config into existing settings
             if let (Some(merged_obj), Some(config_obj)) =
@@ -2140,6 +2304,39 @@ mod tests {
     }
 
     #[test]
+    fn claude_switch_preserves_local_settings_without_previous_route_or_secrets() {
+        let existing = json!({
+            "enabledPlugins": { "test-plugin": true },
+            "permissions": { "allow": ["Read"] },
+            "hooks": { "Stop": [] },
+            "env": { "ANTHROPIC_BASE_URL": "https://old.invalid", "ANTHROPIC_AUTH_TOKEN": "old" },
+            "model": "old-model", "apiKeyHelper": "old-helper", "apiKey": "old-secret",
+            "api_format": "openai_chat"
+        });
+        let result = preserve_claude_local_settings(json!({"env": {}}), existing.clone()).unwrap();
+        for field in ["enabledPlugins", "permissions", "hooks"] {
+            assert_eq!(result[field], existing[field]);
+        }
+        assert_eq!(result["env"], json!({}));
+        for field in ["model", "apiKeyHelper", "apiKey", "api_format"] {
+            assert!(result.get(field).is_none(), "{field}");
+        }
+    }
+
+    #[test]
+    fn claude_switch_honors_explicit_target_settings_and_rejects_invalid_live() {
+        let target = json!({"env": {"ANTHROPIC_MODEL": "new"}, "enabledPlugins": {}});
+        let result = preserve_claude_local_settings(
+            target.clone(),
+            json!({"enabledPlugins": {"old": true}}),
+        )
+        .unwrap();
+        assert_eq!(result, target);
+        assert!(preserve_claude_local_settings(target, json!([])).is_err());
+        assert!(preserve_claude_local_settings(json!(null), json!({})).is_err());
+    }
+
+    #[test]
     fn live_sync_reports_all_failed_projections() {
         assert!(live_sync_outcome(Vec::new()).is_ok());
         let error = live_sync_outcome(vec![
@@ -2156,7 +2353,7 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    fn codex_snapshot_restore_attempts_catalog_after_auth_failure() {
+    fn codex_snapshot_restore_is_all_or_nothing_when_auth_is_unwritable() {
         let original = std::env::var_os("CC_SWITCH_TEST_HOME");
         let home = tempfile::tempdir().expect("create test home");
         std::env::set_var("CC_SWITCH_TEST_HOME", home.path());
@@ -2172,10 +2369,67 @@ mod tests {
         std::fs::create_dir_all(&auth_path).expect("block auth write");
         let error = snapshot.restore().expect_err("auth restore fails");
         assert!(error.to_string().contains("auth.json"));
+        // Nothing is half-restored: the catalog keeps the newer state that
+        // matches the rest of live.
         assert_eq!(
             std::fs::read_to_string(&catalog_path).expect("catalog"),
-            "catalog-a"
+            "catalog-b"
         );
+        match original {
+            Some(v) => std::env::set_var("CC_SWITCH_TEST_HOME", v),
+            None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn codex_snapshot_restore_aborts_cleanly_on_conflict_and_rolls_auth_back_from_memory() {
+        let original = std::env::var_os("CC_SWITCH_TEST_HOME");
+        let home = tempfile::tempdir().expect("create test home");
+        std::env::set_var("CC_SWITCH_TEST_HOME", home.path());
+        let auth_path = get_codex_auth_path();
+        let config_path = get_codex_config_path();
+        let old_auth = json!({"auth_mode": "chatgpt", "tokens": {"access_token": "old"}});
+        write_json_file(&auth_path, &old_auth).expect("seed auth");
+        crate::config::write_text_file(&config_path, "model = \"old\"\n").expect("seed config");
+        let snapshot = LiveSnapshot::capture(&AppType::Codex)
+            .expect("capture")
+            .expect("supported");
+
+        // A switch writes new files; auth.json is not copied anywhere.
+        write_json_file(&auth_path, &json!({"OPENAI_API_KEY": "new"})).expect("new auth");
+        crate::config::write_text_file(&config_path, "model = \"new\"\n").expect("new config");
+        let entries = std::fs::read_dir(auth_path.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(entries
+            .iter()
+            .all(|name| !name.contains("auth") || name == "auth.json"));
+
+        // Another program changes config.toml between plan and commit: the
+        // restore aborts before touching anything.
+        let planned = crate::codex_live_write::plan(snapshot.codex_restore_write().unwrap())
+            .expect("plan restore");
+        std::fs::write(&config_path, "model = \"external\"\n").expect("external write");
+        assert!(planned.commit().is_err());
+        assert_eq!(
+            read_json_file::<Value>(&auth_path).expect("auth"),
+            json!({"OPENAI_API_KEY": "new"})
+        );
+        assert_eq!(
+            std::fs::read_to_string(&config_path).unwrap(),
+            "model = \"external\"\n"
+        );
+
+        // Without interference the rollback restores auth.json from memory.
+        snapshot.restore().expect("restore");
+        assert_eq!(read_json_file::<Value>(&auth_path).expect("auth"), old_auth);
+        assert_eq!(
+            std::fs::read_to_string(&config_path).unwrap(),
+            "model = \"old\"\n"
+        );
+
         match original {
             Some(v) => std::env::set_var("CC_SWITCH_TEST_HOME", v),
             None => std::env::remove_var("CC_SWITCH_TEST_HOME"),

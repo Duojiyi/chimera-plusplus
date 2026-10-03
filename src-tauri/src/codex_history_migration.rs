@@ -19,7 +19,7 @@ use crate::settings::{
     CodexThirdPartyHistoryProviderBucketMigration,
 };
 use chrono::{Local, Utc};
-use rusqlite::{backup::Backup, params_from_iter, Connection};
+use rusqlite::{params_from_iter, Connection};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashSet};
@@ -1684,14 +1684,8 @@ fn backup_codex_state_db(
     }
 
     write_backup_generation_meta(backup_root, &canonical_dir_string(codex_dir))?;
-    let mut backup_conn = Connection::open(&backup_path)
-        .map_err(|e| AppError::Database(format!("创建 Codex state DB 备份失败: {e}")))?;
-    let backup = Backup::new(source_conn, &mut backup_conn)
-        .map_err(|e| AppError::Database(format!("初始化 Codex state DB 备份失败: {e}")))?;
-    backup
-        .run_to_completion(5, Duration::from_millis(25), None)
-        .map_err(|e| AppError::Database(format!("写入 Codex state DB 备份失败: {e}")))?;
-    Ok(())
+    crate::codex_state_db::backup_sqlite_online(source_conn, &backup_path)
+        .map_err(|e| AppError::Database(format!("写入 Codex state DB 备份失败: {e}")))
 }
 
 fn backup_provider_settings_config(

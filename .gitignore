@@ -34,3 +34,20 @@ copilot-api
 .history
 CODEBUDDY.md
 mainWindow.js
+
+# Local tool output and scratch space; never part of the product
+/%SystemDrive%/
+/err.txt
+/out.txt
+/.codex-diff.txt
+/index.html
+/pencil-*
+/codex-proto/
+/.playwright-mcp/
+/artifacts/
+/designs/*.png
+/designs/*.jpg
+/designs/*.pdf
+/designs/guide-images/
+/designs/provider-editor-*
+/designs/providers-redesign.html

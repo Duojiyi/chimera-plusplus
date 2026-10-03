@@ -1,73 +1,108 @@
+import { useEffect, useState } from "react";
+import { Minus, Square, Copy, X } from "lucide-react";
+import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Minus, X } from "lucide-react";
+import { toast } from "sonner";
 import { isMac } from "@/lib/platform";
+import "./WindowControls.css";
 
-/**
- * 标题栏窗口按钮。
- *
- * macOS 与 Windows 的窗口按钮惯例完全相反，所以这里按平台分两套：
- * - macOS：左上角红黄绿「交通灯」，顺序为关闭、最小化、缩放，图标只在悬停时
- *   显现。窗口不可缩放（`resizable: false`），因此第三颗灯按系统对不可缩放窗口
- *   的表现渲染为禁用态，而不是直接抹掉——只有两颗灯的 macOS 窗口更像是坏了。
- * - Windows：保持现状（右上角，最小化在前、关闭在后）。
- *
- * 平台判定用 `is-mac` body class 驱动 CSS 定位（见 main.tsx），DOM 顺序在这里
- * 决定，两者必须一致：CSS 按 DOM 顺序从左到右排列，顺序错了会把关闭按钮放到
- * 用户以为是最小化的位置，键盘 Tab 顺序也会与视觉顺序不符。
- */
 export function WindowControls({
   closeDisabled = false,
 }: {
   closeDisabled?: boolean;
 }) {
   const mac = isMac();
-
-  const minimizeButton = (
-    <button
-      key="minimize"
-      className="is-minimize"
-      aria-label="最小化 Chimera++"
-      title="最小化"
-      onClick={() => void getCurrentWindow().minimize()}
-    >
-      <Minus size={mac ? 10 : 17} strokeWidth={mac ? 2.5 : 2} />
-    </button>
-  );
-
-  const closeButton = (
-    <button
-      key="close"
-      className="is-close"
-      aria-label="关闭 Chimera++"
-      title={closeDisabled ? "请先保存或返回线路页面" : "关闭"}
-      disabled={closeDisabled}
-      onClick={() => void getCurrentWindow().close()}
-    >
-      <X size={mac ? 10 : 16} strokeWidth={mac ? 2.5 : 2} />
-    </button>
-  );
-
-  if (!mac) {
-    return (
-      <div className="window-dots">
-        {minimizeButton}
-        {closeButton}
-      </div>
-    );
-  }
-
+  const native = isTauri();
+  const [maximizable, setMaximizable] = useState(false);
+  const [maximized, setMaximized] = useState(false);
+  useEffect(() => {
+    if (!native) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    const win = getCurrentWindow();
+    const sync = async () => {
+      try {
+        const [canMaximize, isMaximized] = await Promise.all([
+          win.isMaximizable(),
+          win.isMaximized(),
+        ]);
+        if (!disposed) {
+          setMaximizable(canMaximize);
+          setMaximized(isMaximized);
+        }
+      } catch {
+        /* Old desktop builds may not expose window capabilities. */
+      }
+    };
+    void sync();
+    void win
+      .onResized(() => void sync())
+      .then((off) => {
+        if (disposed) off();
+        else unlisten = off;
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [native]);
+  const act = async (action: "minimize" | "toggleMaximize" | "close") => {
+    try {
+      await getCurrentWindow()[action]();
+    } catch {
+      toast.error("窗口操作未完成，请重试");
+    }
+  };
+  const controls = {
+    close: { label: "关闭窗口", action: "close", icon: <X size={14} /> },
+    minimize: {
+      label: "最小化窗口",
+      action: "minimize",
+      icon: <Minus size={14} />,
+    },
+    maximize: {
+      label: maximized ? "还原窗口" : "最大化窗口",
+      action: "toggleMaximize",
+      icon: maximized ? <Copy size={12} /> : <Square size={12} />,
+    },
+  } as const;
+  const order = mac
+    ? (["close", "minimize", "maximize"] as const)
+    : (["minimize", "maximize", "close"] as const);
   return (
-    <div className="window-dots is-traffic-lights">
-      {closeButton}
-      {minimizeButton}
-      {/* 窗口固定尺寸，对应系统里不可缩放窗口的置灰绿灯。 */}
-      <button
-        className="is-zoom"
-        aria-label="缩放不可用（窗口尺寸固定）"
-        title="此窗口尺寸固定"
-        disabled
-        aria-disabled="true"
-      />
+    <div
+      className={
+        "window-controls " +
+        (mac ? "window-controls-mac" : "window-controls-windows")
+      }
+      data-tauri-no-drag
+    >
+      {order.map((key) => (
+        <button
+          type="button"
+          key={key}
+          className={"window-control-" + key}
+          aria-label={controls[key].label}
+          title={
+            key === "close" && closeDisabled
+              ? "请先保存或返回线路页面"
+              : !native
+                ? "仅桌面应用可用"
+                : key === "maximize" && !maximizable
+                  ? "当前调试包固定窗口尺寸，更新原生程序后可用"
+                  : controls[key].label
+          }
+          disabled={
+            !native ||
+            (key === "close" && closeDisabled) ||
+            (key === "maximize" && !maximizable)
+          }
+          onClick={() => void act(controls[key].action)}
+        >
+          {controls[key].icon}
+        </button>
+      ))}
     </div>
   );
 }

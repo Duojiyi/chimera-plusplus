@@ -1,0 +1,89 @@
+[
+  {
+    "id": "codex",
+    "mode": "switch",
+    "liveFiles": [
+      "~/.codex/config.toml",
+      "~/.codex/auth.json",
+      "~/.codex/cc-switch-model-catalog.json"
+    ],
+    "tray": true,
+    "deeplink": "importConfirm",
+    "proxy": true
+  },
+  {
+    "id": "claude",
+    "mode": "switch",
+    "liveFiles": ["~/.claude/settings.json", "~/.claude.json"],
+    "tray": true,
+    "deeplink": "importOnly",
+    "proxy": false
+  },
+  {
+    "id": "claude-desktop",
+    "mode": "switch",
+    "liveFiles": ["<app data>/Claude-3p"],
+    "tray": false,
+    "deeplink": "importOnly",
+    "proxy": false
+  },
+  {
+    "id": "gemini",
+    "mode": "switch",
+    "liveFiles": ["~/.gemini/.env", "~/.gemini/settings.json"],
+    "tray": true,
+    "deeplink": "importOnly",
+    "proxy": false
+  },
+  {
+    "id": "grokbuild",
+    "mode": "switch",
+    "liveFiles": ["~/.grok/config.toml"],
+    "tray": true,
+    "deeplink": "importOnly",
+    "proxy": true
+  },
+  {
+    "id": "opencode",
+    "mode": "additive",
+    "liveFiles": [
+      "~/.config/opencode/opencode.json",
+      "~/.config/opencode/.env"
+    ],
+    "tray": false,
+    "deeplink": "importOnly",
+    "proxy": false
+  },
+  {
+    "id": "openclaw",
+    "mode": "additive",
+    "liveFiles": ["~/.openclaw/openclaw.json"],
+    "tray": false,
+    "deeplink": "importOnly",
+    "proxy": false
+  },
+  {
+    "id": "hermes",
+    "mode": "additive",
+    "liveFiles": ["~/.hermes/config.yaml"],
+    "tray": false,
+    "deeplink": "importOnly",
+    "proxy": false
+  },
+  {
+    "id": "pi",
+    "mode": "additive",
+    "liveFiles": ["~/.pi/agent/models.json"],
+    "tray": false,
+    "deeplink": "importOnly",
+    "proxy": false
+  },
+  {
+    "id": "mcode",
+    "mode": "additive",
+    "liveFiles": ["~/.minimax/config.yaml"],
+    "tray": false,
+    "deeplink": "reject",
+    "proxy": false
+  }
+]

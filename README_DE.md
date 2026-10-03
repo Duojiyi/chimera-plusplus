@@ -22,7 +22,7 @@
 
 ## ❤️Sponsoren
 
-> [Möchten Sie hier erscheinen?](mailto:farion1231@gmail.com)
+> [Möchten Sie hier erscheinen?](https://github.com/Duojiyi/chimera-plusplus/issues/new)
 
 <details open>
 <summary>Zum Einklappen klicken</summary>

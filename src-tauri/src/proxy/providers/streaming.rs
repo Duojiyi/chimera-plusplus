@@ -166,6 +166,7 @@ pub fn create_anthropic_sse_stream<E: std::error::Error + Send + 'static>(
         let mut has_sent_message_stop = false;
         let mut stream_ended_with_error = false;
         let mut latest_usage: Option<Value> = None;
+        let mut inline_think = super::codex_chat_common::InlineThinkParser::default();
         let mut current_non_tool_block_type: Option<&'static str> = None;
         let mut current_non_tool_block_index: Option<u32> = None;
         let mut tool_blocks_by_index: HashMap<usize, ToolBlockState> = HashMap::new();
@@ -187,6 +188,16 @@ pub fn create_anthropic_sse_stream<E: std::error::Error + Send + 'static>(
                             if let Some(data) = strip_sse_field(l, "data") {
                                 if data.trim() == "[DONE]" {
                                     log::debug!("[Claude/OpenRouter] <<< OpenAI SSE: [DONE]");
+
+                                    for event in emit_inline_parts(inline_think.finish(), &mut current_non_tool_block_type,
+                                        &mut current_non_tool_block_index, &mut next_content_index)
+                                    {
+                                        yield Ok(event);
+                                    }
+                                    if let Some(index) = current_non_tool_block_index.take() {
+                                        yield Ok(anthropic_sse(json!({"type": "content_block_stop", "index": index})));
+                                        current_non_tool_block_type = None;
+                                    }
 
                                     // 流正常结束，发出缓存的 message_delta（含完整 usage）。
                                     if let Some((stop_reason, usage_json)) = pending_message_delta.take() {
@@ -266,100 +277,22 @@ pub fn create_anthropic_sse_stream<E: std::error::Error + Send + 'static>(
                                             has_sent_message_start = true;
                                         }
 
-                                        // 处理 reasoning（thinking）
-                                        if let Some(reasoning) = choice
-                                            .delta
-                                            .reasoning
-                                            .as_ref()
-                                            .filter(|r| !r.is_empty())
-                                        {
-                                            if current_non_tool_block_type != Some("thinking") {
-                                                if let Some(index) = current_non_tool_block_index.take() {
-                                                    let event = json!({
-                                                        "type": "content_block_stop",
-                                                        "index": index
-                                                    });
-                                                    let sse_data = format!("event: content_block_stop\ndata: {}\n\n",
-                                                        serde_json::to_string(&event).unwrap_or_default());
-                                                    yield Ok(Bytes::from(sse_data));
-                                                }
-                                                let index = next_content_index;
-                                                next_content_index += 1;
-                                                let event = json!({
-                                                    "type": "content_block_start",
-                                                    "index": index,
-                                                    "content_block": {
-                                                        "type": "thinking",
-                                                        "thinking": ""
-                                                    }
-                                                });
-                                                let sse_data = format!("event: content_block_start\ndata: {}\n\n",
-                                                    serde_json::to_string(&event).unwrap_or_default());
-                                                yield Ok(Bytes::from(sse_data));
-                                                current_non_tool_block_type = Some("thinking");
-                                                current_non_tool_block_index = Some(index);
-                                            }
-
-                                            if let Some(index) = current_non_tool_block_index {
-                                                let event = json!({
-                                                    "type": "content_block_delta",
-                                                    "index": index,
-                                                    "delta": {
-                                                        "type": "thinking_delta",
-                                                        "thinking": reasoning
-                                                    }
-                                                });
-                                                let sse_data = format!("event: content_block_delta\ndata: {}\n\n",
-                                                    serde_json::to_string(&event).unwrap_or_default());
-                                                yield Ok(Bytes::from(sse_data));
-                                            }
+                                        let mut parts = Vec::new();
+                                        if let Some(reasoning) = choice.delta.reasoning.as_ref().filter(|r| !r.is_empty()) {
+                                            parts.push((true, reasoning.clone()));
                                         }
-
-                                        // 处理文本内容
                                         if let Some(content) = &choice.delta.content {
-                                            if !content.is_empty() {
-                                                if current_non_tool_block_type != Some("text") {
-                                                    if let Some(index) = current_non_tool_block_index.take() {
-                                                        let event = json!({
-                                                            "type": "content_block_stop",
-                                                            "index": index
-                                                        });
-                                                        let sse_data = format!("event: content_block_stop\ndata: {}\n\n",
-                                                            serde_json::to_string(&event).unwrap_or_default());
-                                                        yield Ok(Bytes::from(sse_data));
-                                                    }
-
-                                                    let index = next_content_index;
-                                                    next_content_index += 1;
-                                                    let event = json!({
-                                                        "type": "content_block_start",
-                                                        "index": index,
-                                                        "content_block": {
-                                                            "type": "text",
-                                                            "text": ""
-                                                        }
-                                                    });
-                                                    let sse_data = format!("event: content_block_start\ndata: {}\n\n",
-                                                        serde_json::to_string(&event).unwrap_or_default());
-                                                    yield Ok(Bytes::from(sse_data));
-                                                    current_non_tool_block_type = Some("text");
-                                                    current_non_tool_block_index = Some(index);
-                                                }
-
-                                                if let Some(index) = current_non_tool_block_index {
-                                                    let event = json!({
-                                                        "type": "content_block_delta",
-                                                        "index": index,
-                                                        "delta": {
-                                                            "type": "text_delta",
-                                                            "text": content
-                                                        }
-                                                    });
-                                                    let sse_data = format!("event: content_block_delta\ndata: {}\n\n",
-                                                        serde_json::to_string(&event).unwrap_or_default());
-                                                    yield Ok(Bytes::from(sse_data));
-                                                }
-                                            }
+                                            parts.extend(inline_think.push(content));
+                                        }
+                                        if choice.finish_reason.is_some()
+                                            || choice.delta.tool_calls.as_ref().is_some_and(|calls| !calls.is_empty())
+                                        {
+                                            parts.extend(inline_think.finish());
+                                        }
+                                        for event in emit_inline_parts(parts, &mut current_non_tool_block_type,
+                                            &mut current_non_tool_block_index, &mut next_content_index)
+                                        {
+                                            yield Ok(event);
                                         }
 
                                         // 处理工具调用
@@ -652,6 +585,13 @@ pub fn create_anthropic_sse_stream<E: std::error::Error + Send + 'static>(
         // 流自然结束但未收到 [DONE] 时，确保发送缓存的 message_delta 和 message_stop。
         // 若上游已显式报错，则只保留 error 事件，避免把失败伪装成成功完成。
         if !stream_ended_with_error {
+            if !has_sent_message_stop {
+                for event in emit_inline_parts(inline_think.finish(), &mut current_non_tool_block_type,
+                    &mut current_non_tool_block_index, &mut next_content_index)
+                {
+                    yield Ok(event);
+                }
+            }
             let emitted_pending_message_delta = if let Some((stop_reason, usage_json)) =
                 pending_message_delta.take()
             {
@@ -674,6 +614,53 @@ pub fn create_anthropic_sse_stream<E: std::error::Error + Send + 'static>(
             }
         }
     }
+}
+
+// Shared by ordinary deltas and terminal flushes so a split tag never escapes
+// as text, and each change of kind closes the previous Anthropic block.
+fn emit_inline_parts(
+    parts: Vec<super::codex_chat_common::InlineThinkPart>,
+    current_type: &mut Option<&'static str>,
+    current_index: &mut Option<u32>,
+    next_index: &mut u32,
+) -> Vec<Bytes> {
+    let mut events = Vec::new();
+    for (reasoning, text) in parts {
+        if text.is_empty() {
+            continue;
+        }
+        let kind = if reasoning { "thinking" } else { "text" };
+        if *current_type != Some(kind) {
+            if let Some(index) = current_index.take() {
+                events.push(anthropic_sse(
+                    json!({"type": "content_block_stop", "index": index}),
+                ));
+            }
+            let index = *next_index;
+            *next_index += 1;
+            let mut block = json!({"type": kind});
+            block[kind] = json!("");
+            events.push(anthropic_sse(
+                json!({"type": "content_block_start", "index": index, "content_block": block}),
+            ));
+            *current_type = Some(kind);
+            *current_index = Some(index);
+        }
+        let mut delta = json!({"type": if reasoning { "thinking_delta" } else { "text_delta" }});
+        delta[kind] = json!(text);
+        events.push(anthropic_sse(
+            json!({"type": "content_block_delta", "index": *current_index, "delta": delta}),
+        ));
+    }
+    events
+}
+
+fn anthropic_sse(event: Value) -> Bytes {
+    Bytes::from(format!(
+        "event: {}\ndata: {}\n\n",
+        event["type"].as_str().unwrap_or(""),
+        event
+    ))
 }
 
 /// Extract cache_read tokens from Usage, checking both direct field and nested details
@@ -768,6 +755,65 @@ mod tests {
                     .to_string()
             })
             .collect()
+    }
+
+    #[tokio::test]
+    async fn inline_think_streaming_separates_text_and_reasoning() {
+        for (input, expected_reasoning, expected_text) in [
+            (
+                "before<thinking>一</thinking>middle<think>二</think>after",
+                "一二",
+                "beforemiddleafter",
+            ),
+            ("text<thinking>unfinished </thi", "unfinished </thi", "text"),
+            ("text <thi", "", "text <thi"),
+            ("`<think>literal</think>`", "", "`<think>literal</think>`"),
+        ] {
+            for terminal in ["finish", "done", "eof"] {
+                let mut wire = String::new();
+                for ch in input.chars() {
+                    wire.push_str(&format!("data: {}\n\n", json!({
+                        "id": "chatcmpl_inline", "model": "test", "choices": [{"delta": {"content": ch.to_string()}}]
+                    })));
+                }
+                if terminal != "done" {
+                    wire.push_str(
+                        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+                    );
+                }
+                if terminal != "eof" {
+                    wire.push_str("data: [DONE]\n\n");
+                }
+                let events = collect_anthropic_events(&wire).await;
+                assert_eq!(
+                    collect_delta_text(&events, "thinking_delta", "/delta/thinking"),
+                    expected_reasoning
+                );
+                assert_eq!(
+                    collect_delta_text(&events, "text_delta", "/delta/text"),
+                    expected_text
+                );
+                let mut open = std::collections::HashSet::new();
+                for event in &events {
+                    match event_type(event).unwrap_or_default() {
+                        "content_block_start" => {
+                            assert!(open.insert(event["index"].as_u64().unwrap()));
+                        }
+                        "content_block_delta" => {
+                            assert!(open.contains(&event["index"].as_u64().unwrap()));
+                        }
+                        "content_block_stop" => {
+                            assert!(open.remove(&event["index"].as_u64().unwrap()));
+                        }
+                        "message_stop" => {
+                            assert!(open.is_empty());
+                        }
+                        _ => {}
+                    }
+                }
+                assert!(open.is_empty());
+            }
+        }
     }
 
     #[test]

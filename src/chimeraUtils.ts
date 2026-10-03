@@ -8,16 +8,15 @@ import type {
   DetectedCodexApiFormat,
   FetchedModel,
 } from "@/lib/api/model-fetch";
-import {
-  extractCodexBaseUrl,
-  extractCodexExperimentalBearerToken,
-  extractCodexModelName,
-} from "@/utils/providerConfigUtils";
-
 export type ConnectionState =
   | { kind: "unknown"; message: string }
   | { kind: "checking"; message: string }
-  | { kind: "connected"; message: string; modelCount: number }
+  | {
+      kind: "connected";
+      message: string;
+      modelCount: number;
+      latencyMs?: number;
+    }
   | { kind: "error"; message: string };
 
 export interface OperationRecord {
@@ -28,11 +27,6 @@ export interface OperationRecord {
   result: "success" | "error" | "skipped";
   durationMs?: number;
   detail?: string;
-}
-
-export interface CurrentProviderResolution {
-  provider: Provider | null;
-  source: "live" | "stored" | "external" | "none";
 }
 
 const ACTIVITY_KEY_PREFIX = "chimera-plus-plus:activity:v3";
@@ -51,113 +45,6 @@ export function activityStorageKey(appConfigPath: string): string {
     hash = Math.imul(hash, 16777619);
   }
   return `${ACTIVITY_KEY_PREFIX}:${(hash >>> 0).toString(36)}`;
-}
-
-function normalizeEndpoint(value: string | null | undefined): string {
-  return (value ?? "").trim().replace(/\/+$/, "").toLocaleLowerCase("en-US");
-}
-
-function liveConfigText(live: unknown): string {
-  if (!live || typeof live !== "object") return "";
-  const config = (live as Record<string, unknown>).config;
-  return typeof config === "string" ? config : "";
-}
-
-function liveAuthObject(live: unknown): Record<string, unknown> {
-  if (!live || typeof live !== "object") return {};
-  const auth = (live as Record<string, unknown>).auth;
-  return auth && typeof auth === "object"
-    ? (auth as Record<string, unknown>)
-    : {};
-}
-
-function authCredential(auth: Record<string, unknown>): string {
-  for (const field of [
-    "OPENAI_API_KEY",
-    "ANTHROPIC_AUTH_TOKEN",
-    "ANTHROPIC_API_KEY",
-    "api_key",
-  ] as const) {
-    const value = auth[field];
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return "";
-}
-
-function storedCredential(settings: unknown): string {
-  if (!settings || typeof settings !== "object") return "";
-  const record = settings as Record<string, unknown>;
-  const configToken = extractCodexExperimentalBearerToken(
-    typeof record.config === "string" ? record.config : "",
-  );
-  if (configToken) return configToken;
-  const auth =
-    record.auth && typeof record.auth === "object"
-      ? (record.auth as Record<string, unknown>)
-      : {};
-  return authCredential(auth);
-}
-
-function liveCredential(settings: unknown): string {
-  const config = liveConfigText(settings);
-  return (
-    extractCodexExperimentalBearerToken(config) ||
-    authCredential(liveAuthObject(settings))
-  );
-}
-
-export function resolveCurrentProvider(
-  providers: Provider[],
-  storedId: string,
-  live: unknown,
-  liveReadSucceeded: boolean,
-): CurrentProviderResolution {
-  if (!providers.length) return { provider: null, source: "none" };
-
-  const stored = providers.find((provider) => provider.id === storedId) ?? null;
-  if (!liveReadSucceeded) {
-    return stored
-      ? { provider: stored, source: "stored" }
-      : { provider: null, source: "external" };
-  }
-
-  const config = liveConfigText(live);
-  const liveEndpoint = normalizeEndpoint(extractCodexBaseUrl(config));
-  const liveModel = extractCodexModelName(config) ?? "";
-
-  // When Chimera has taken proxy takeover, the live endpoint is 127.0.0.1:PORT.
-  // No saved provider will ever match that address, so fall back to the stored
-  // selection rather than returning { provider: null, source: "external" }.
-  // The endpoint may carry a protocol prefix (e.g. "http://127.0.0.1:12345")
-  // so we check both the bare-host and URL forms.
-  const isLocalProxy =
-    liveEndpoint.startsWith("127.0.0.1") ||
-    liveEndpoint.startsWith("localhost") ||
-    liveEndpoint.includes("://127.0.0.1") ||
-    liveEndpoint.includes("://localhost");
-  if (isLocalProxy && stored) {
-    return { provider: stored, source: "stored" };
-  }
-
-  const liveKey = liveCredential(live);
-  const exact = providers.find((provider) => {
-    const candidate = String(provider.settingsConfig?.config ?? "");
-    const endpoint = normalizeEndpoint(extractCodexBaseUrl(candidate));
-    const model = extractCodexModelName(candidate) ?? "";
-    if (endpoint !== liveEndpoint) return false;
-    if (liveModel && model && liveModel !== model) return false;
-    return !liveKey || storedCredential(provider.settingsConfig) === liveKey;
-  });
-  if (exact) return { provider: exact, source: "live" };
-
-  if (!liveEndpoint && stored) {
-    const storedEndpoint = normalizeEndpoint(
-      extractCodexBaseUrl(String(stored.settingsConfig?.config ?? "")),
-    );
-    if (!storedEndpoint) return { provider: stored, source: "stored" };
-  }
-
-  return { provider: null, source: "external" };
 }
 
 function isOperationRecord(value: unknown): value is OperationRecord {
@@ -211,6 +98,21 @@ export function formatDuration(durationMs?: number): string {
 
 export function formatVersion(value: string | null | undefined): string {
   return value?.trim() || "未检测到";
+}
+
+/** Whether an edit removes the key the row was shown with. The backend reads
+ * an empty key as "unchanged" (rows arrive with secrets withheld), so only an
+ * explicit clear removes it; a row shown without a key never clears one. */
+export function codexApiKeyCleared(
+  original: Provider | null | undefined,
+  apiKey: string,
+): boolean {
+  const auth = original?.settingsConfig?.auth;
+  const shown =
+    auth && typeof auth === "object"
+      ? (auth as Record<string, unknown>).OPENAI_API_KEY
+      : undefined;
+  return typeof shown === "string" && shown.trim() !== "" && !apiKey.trim();
 }
 
 /** Keeps Codex credentials in the auth.json field used by the runtime adapter. */

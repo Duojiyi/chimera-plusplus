@@ -87,10 +87,7 @@ export default function App() {
               );
               await refreshPendingRef.current();
             }}
-            onProviderImported={(app) => {
-              if (app === "codex")
-                setProviderRefreshVersion((value) => value + 1);
-            }}
+            onImported={() => setProviderRefreshVersion((value) => value + 1)}
           />
         </Suspense>
       )}

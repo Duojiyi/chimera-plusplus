@@ -1,0 +1,306 @@
+[
+  {
+    "viewport": {
+      "width": 1140,
+      "height": 816
+    },
+    "dark": false,
+    "boxes": [
+      {
+        "selector": "provider-page-heading",
+        "rect": {
+          "x": 240,
+          "y": 48,
+          "width": 876,
+          "height": 56,
+          "top": 48,
+          "right": 1116,
+          "bottom": 104,
+          "left": 240
+        }
+      },
+      {
+        "selector": "provider-page-signboard",
+        "rect": {
+          "x": 240,
+          "y": 104,
+          "width": 876,
+          "height": 217,
+          "top": 104,
+          "right": 1116,
+          "bottom": 321,
+          "left": 240
+        }
+      },
+      {
+        "selector": "provider-table-row provider-table-head",
+        "rect": {
+          "x": 240,
+          "y": 337,
+          "width": 876,
+          "height": 28,
+          "top": 337,
+          "right": 1116,
+          "bottom": 365,
+          "left": 240
+        }
+      },
+      {
+        "selector": "provider-table-row is-current",
+        "rect": {
+          "x": 240,
+          "y": 397,
+          "width": 876,
+          "height": 42,
+          "top": 397,
+          "right": 1116,
+          "bottom": 439,
+          "left": 240
+        }
+      }
+    ],
+    "fonts": [
+      {
+        "name": "Noto Sans SC",
+        "loaded": true
+      },
+      {
+        "name": "Overpass",
+        "loaded": true
+      },
+      {
+        "name": "Overpass Mono",
+        "loaded": true
+      }
+    ],
+    "horizontalOverflow": false
+  },
+  {
+    "viewport": {
+      "width": 1140,
+      "height": 816
+    },
+    "dark": true,
+    "boxes": [
+      {
+        "selector": "provider-page-heading",
+        "rect": {
+          "x": 240,
+          "y": 48,
+          "width": 876,
+          "height": 56,
+          "top": 48,
+          "right": 1116,
+          "bottom": 104,
+          "left": 240
+        }
+      },
+      {
+        "selector": "provider-page-signboard",
+        "rect": {
+          "x": 240,
+          "y": 104,
+          "width": 876,
+          "height": 217,
+          "top": 104,
+          "right": 1116,
+          "bottom": 321,
+          "left": 240
+        }
+      },
+      {
+        "selector": "provider-table-row provider-table-head",
+        "rect": {
+          "x": 240,
+          "y": 337,
+          "width": 876,
+          "height": 28,
+          "top": 337,
+          "right": 1116,
+          "bottom": 365,
+          "left": 240
+        }
+      },
+      {
+        "selector": "provider-table-row is-current",
+        "rect": {
+          "x": 240,
+          "y": 397,
+          "width": 876,
+          "height": 42,
+          "top": 397,
+          "right": 1116,
+          "bottom": 439,
+          "left": 240
+        }
+      }
+    ],
+    "fonts": [
+      {
+        "name": "Noto Sans SC",
+        "loaded": true
+      },
+      {
+        "name": "Overpass",
+        "loaded": true
+      },
+      {
+        "name": "Overpass Mono",
+        "loaded": true
+      }
+    ],
+    "horizontalOverflow": false
+  },
+  {
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    },
+    "dark": false,
+    "boxes": [
+      {
+        "selector": "provider-page-heading",
+        "rect": {
+          "x": 240,
+          "y": 48,
+          "width": 1176,
+          "height": 56,
+          "top": 48,
+          "right": 1416,
+          "bottom": 104,
+          "left": 240
+        }
+      },
+      {
+        "selector": "provider-page-signboard",
+        "rect": {
+          "x": 240,
+          "y": 104,
+          "width": 1176,
+          "height": 217,
+          "top": 104,
+          "right": 1416,
+          "bottom": 321,
+          "left": 240
+        }
+      },
+      {
+        "selector": "provider-table-row provider-table-head",
+        "rect": {
+          "x": 240,
+          "y": 337,
+          "width": 1176,
+          "height": 28,
+          "top": 337,
+          "right": 1416,
+          "bottom": 365,
+          "left": 240
+        }
+      },
+      {
+        "selector": "provider-table-row is-current",
+        "rect": {
+          "x": 240,
+          "y": 397,
+          "width": 1176,
+          "height": 42,
+          "top": 397,
+          "right": 1416,
+          "bottom": 439,
+          "left": 240
+        }
+      }
+    ],
+    "fonts": [
+      {
+        "name": "Noto Sans SC",
+        "loaded": true
+      },
+      {
+        "name": "Overpass",
+        "loaded": true
+      },
+      {
+        "name": "Overpass Mono",
+        "loaded": true
+      }
+    ],
+    "horizontalOverflow": false
+  },
+  {
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    },
+    "dark": true,
+    "boxes": [
+      {
+        "selector": "provider-page-heading",
+        "rect": {
+          "x": 240,
+          "y": 48,
+          "width": 1176,
+          "height": 56,
+          "top": 48,
+          "right": 1416,
+          "bottom": 104,
+          "left": 240
+        }
+      },
+      {
+        "selector": "provider-page-signboard",
+        "rect": {
+          "x": 240,
+          "y": 104,
+          "width": 1176,
+          "height": 217,
+          "top": 104,
+          "right": 1416,
+          "bottom": 321,
+          "left": 240
+        }
+      },
+      {
+        "selector": "provider-table-row provider-table-head",
+        "rect": {
+          "x": 240,
+          "y": 337,
+          "width": 1176,
+          "height": 28,
+          "top": 337,
+          "right": 1416,
+          "bottom": 365,
+          "left": 240
+        }
+      },
+      {
+        "selector": "provider-table-row is-current",
+        "rect": {
+          "x": 240,
+          "y": 397,
+          "width": 1176,
+          "height": 42,
+          "top": 397,
+          "right": 1416,
+          "bottom": 439,
+          "left": 240
+        }
+      }
+    ],
+    "fonts": [
+      {
+        "name": "Noto Sans SC",
+        "loaded": true
+      },
+      {
+        "name": "Overpass",
+        "loaded": true
+      },
+      {
+        "name": "Overpass Mono",
+        "loaded": true
+      }
+    ],
+    "horizontalOverflow": false
+  }
+]

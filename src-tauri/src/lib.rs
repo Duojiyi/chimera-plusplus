@@ -1,43 +1,54 @@
 mod app_config;
 mod app_store;
 mod auto_launch;
+mod builtin_templates;
 mod claude_desktop_config;
 mod claude_mcp;
 mod claude_plugin;
+mod codex_accounts;
 mod codex_cdp;
 mod codex_config;
 mod codex_history_migration;
+mod codex_key_ownership;
+mod codex_live_write;
 mod codex_state_db;
 mod commands;
 mod config;
+mod config_health;
 mod database;
 mod deeplink;
 mod error;
 mod gemini_config;
 mod gemini_mcp;
+mod gemini_session;
 mod grok_config;
 pub mod hermes_config;
 mod init_status;
 mod lightweight;
 #[cfg(target_os = "linux")]
 mod linux_fix;
+mod managed_prompts;
+mod mcode_config;
 mod mcp;
 mod model_capabilities;
 mod openclaw_config;
 mod opencode_config;
 mod panic_hook;
+mod pi_config;
 mod process_utils;
 pub mod product_policy;
 mod prompt;
 mod prompt_files;
 mod provider;
 mod provider_defaults;
+mod provider_dto;
 mod proxy;
 mod security_limits;
 mod services;
 mod session_manager;
 mod settings;
 mod store;
+mod tool_registry;
 
 mod tray;
 mod usage_events;
@@ -55,9 +66,9 @@ pub use grok_config::get_grok_config_path;
 pub use mcp::{
     import_from_claude, import_from_codex, import_from_gemini, import_from_grokbuild,
     remove_server_from_claude, remove_server_from_codex, remove_server_from_gemini,
-    remove_server_from_grokbuild, sync_enabled_to_claude, sync_enabled_to_codex,
-    sync_enabled_to_gemini, sync_single_server_to_claude, sync_single_server_to_codex,
-    sync_single_server_to_gemini, sync_single_server_to_grokbuild,
+    remove_server_from_grokbuild, sync_enabled_to_claude, sync_enabled_to_gemini,
+    sync_single_server_to_claude, sync_single_server_to_codex, sync_single_server_to_gemini,
+    sync_single_server_to_grokbuild, CodexMcpLedger,
 };
 pub use prompt::Prompt;
 pub use provider::{Provider, ProviderMeta};
@@ -88,11 +99,6 @@ fn apply_windows_rounded_corners(window: &tauri::WebviewWindow) {
         DWMWA_NCRENDERING_POLICY, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
     };
     use windows_sys::Win32::Graphics::Gdi::{CreateRoundRectRgn, DeleteObject, SetWindowRgn};
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_STYLE, SWP_FRAMECHANGED,
-        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_BORDER, WS_CAPTION, WS_DLGFRAME,
-        WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
-    };
 
     let Ok(hwnd) = window.hwnd() else {
         log::warn!("无法取得主窗口句柄，未应用 Windows 圆角");
@@ -141,44 +147,11 @@ fn apply_windows_rounded_corners(window: &tauri::WebviewWindow) {
         log::warn!("关闭 Windows DWM 强调边框失败: HRESULT={result}");
     }
 
-    // Tauri/WebView2 can retain a resize frame on a borderless fixed-size
-    // window. That frame consumes several physical pixels on every edge and
-    // looks like an extra shadow around the transparent shell.
-    let desired_client_size = window.inner_size().ok();
-    let style = unsafe { GetWindowLongPtrW(hwnd.0 as _, GWL_STYLE) };
-    let non_client_frame = (WS_CAPTION
-        | WS_THICKFRAME
-        | WS_BORDER
-        | WS_DLGFRAME
-        | WS_SYSMENU
-        | WS_MINIMIZEBOX
-        | WS_MAXIMIZEBOX) as isize;
-    let borderless_style = (style & !non_client_frame) | WS_POPUP as isize;
-    if borderless_style != style {
-        unsafe {
-            SetWindowLongPtrW(hwnd.0 as _, GWL_STYLE, borderless_style);
-            if let Some(size) = desired_client_size {
-                SetWindowPos(
-                    hwnd.0 as _,
-                    std::ptr::null_mut(),
-                    0,
-                    0,
-                    size.width as i32,
-                    size.height as i32,
-                    SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOZORDER,
-                );
-            } else {
-                SetWindowPos(
-                    hwnd.0 as _,
-                    std::ptr::null_mut(),
-                    0,
-                    0,
-                    0,
-                    0,
-                    SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
-                );
-            }
-        }
+    // Let Tauri keep the native resize/minimize/maximize capabilities.
+    // A maximized window must fill its work area without rounded clipping.
+    if window.is_maximized().unwrap_or(false) {
+        unsafe { SetWindowRgn(hwnd.0 as _, std::ptr::null_mut(), 1) };
+        return;
     }
 
     // Windows 10 and some borderless/transparent window configurations ignore
@@ -227,14 +200,6 @@ fn set_windows_app_user_model_id(app: &tauri::AppHandle) {
         log::warn!("设置 Windows AppUserModelID 失败: 0x{result:08X}");
     } else {
         log::debug!("Windows AppUserModelID 已设置为 {app_id}");
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn enforce_fixed_main_window_size(window: &tauri::WebviewWindow) {
-    let _ = window.unmaximize();
-    if let Err(error) = window.set_size(tauri::LogicalSize::new(1140.0, 816.0)) {
-        log::warn!("设置固定主窗口尺寸失败: {error}");
     }
 }
 
@@ -393,6 +358,14 @@ fn handle_deeplink_url(
                 request.name
             );
 
+            if let Err(error) = crate::deeplink::ensure_targets_allowed(&request) {
+                log::warn!("Deep link for a tool that is not enabled was ignored: {error}");
+                let _ = app.emit(
+                    "deeplink-error",
+                    serde_json::json!({ "error": error.to_string() }),
+                );
+                return true;
+            }
             if let Err(error) = commands::queue_deeplink(app, url_str, request) {
                 log::error!("Failed to queue deep link: {error}");
                 let _ = app.emit("deeplink-error", serde_json::json!({ "error": error }));
@@ -406,6 +379,10 @@ fn handle_deeplink_url(
 
             if focus_main_window {
                 if let Some(window) = app.get_webview_window("main") {
+                    #[cfg(target_os = "windows")]
+                    {
+                        let _ = window.set_skip_taskbar(false);
+                    }
                     let _ = window.unminimize();
                     let _ = window.show();
                     let _ = window.set_focus();
@@ -511,6 +488,14 @@ pub fn run() {
 
             // Show and focus window regardless
             if let Some(window) = app.get_webview_window("main") {
+                // A silent start or close-to-tray leaves the running instance
+                // with skip_taskbar(true); show() alone keeps it off the
+                // taskbar, and minimizing it then makes it vanish.
+                // Adapted from farion1231/cc-switch 6f6087cdb (MIT).
+                #[cfg(target_os = "windows")]
+                {
+                    let _ = window.set_skip_taskbar(false);
+                }
                 let _ = window.unminimize();
                 let _ = window.show();
                 let _ = window.set_focus();
@@ -530,7 +515,9 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             if matches!(
                 event,
-                tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. }
+                tauri::WindowEvent::Resized(_)
+                    | tauri::WindowEvent::ScaleFactorChanged { .. }
+                    | tauri::WindowEvent::Focused(true)
             ) {
                 if let Some(webview_window) = window.app_handle().get_webview_window(window.label()) {
                     apply_windows_rounded_corners(&webview_window);
@@ -720,6 +707,10 @@ pub fn run() {
                     });
                     // 主窗口默认 visible:false，恢复界面必须强制显示
                     if let Some(window) = app.get_webview_window("main") {
+                        #[cfg(target_os = "windows")]
+                        {
+                            let _ = window.set_skip_taskbar(false);
+                        }
                         let _ = window.show();
                         let _ = window.set_focus();
                     }
@@ -791,6 +782,14 @@ pub fn run() {
 
             let app_state = AppState::new(db);
 
+            // M2.0b: pin a missing `visibleApps` to Codex-only once, before the
+            // tray and the proxy restore read it.
+            match crate::settings::migrate_visible_apps_to_codex_only() {
+                Ok(true) => log::info!("✓ visibleApps visibility migration recorded"),
+                Ok(false) => {}
+                Err(e) => log::warn!("✗ Failed to migrate visibleApps: {e}"),
+            }
+
             // 设置 AppHandle 用于代理故障转移时的 UI 更新
             app_state.proxy_service.set_app_handle(app.handle().clone());
 
@@ -860,7 +859,7 @@ pub fn run() {
             let fresh_install_at_startup =
                 app_state.db.is_providers_empty().unwrap_or(false);
 
-            for app_type in product_policy::startup_managed_apps()
+            for app_type in product_policy::startup_import_apps()
                 .filter(|t| !t.is_additive_mode())
             {
                 if !crate::services::provider::should_import_default_config_on_startup(
@@ -973,6 +972,47 @@ pub fn run() {
                         Ok(true) => log::info!("✓ Removed rejected settings from Codex config.toml"),
                         Ok(false) => {}
                         Err(e) => log::warn!("✗ Codex config.toml self-repair failed: {e}"),
+                    }
+
+                    // MH-19②: idempotent — see the DB method's own doc comment
+                    // for why this is safe to run unconditionally every startup
+                    // rather than only once.
+                    match db_for_codex_history_migration
+                        .scrub_oauth_material_from_non_official_codex_providers()
+                    {
+                        Ok(0) => {}
+                        Ok(count) => log::info!(
+                            "✓ Scrubbed OAuth login material from {count} non-official Codex provider(s)"
+                        ),
+                        Err(e) => log::warn!("✗ Codex non-official OAuth scrub failed: {e}"),
+                    }                    // MH-8c 1.7: idempotent, like the scrub above.
+                    match db_for_codex_history_migration.normalize_codex_provider_wire_apis() {
+                        Ok(0) => {}
+                        Ok(count) => log::info!(
+                            "✓ Normalized wire_api to responses in {count} Codex provider(s)"
+                        ),
+                        Err(e) => log::warn!("✗ Codex wire_api normalization failed: {e}"),
+                    }
+
+                    // CPP-A1①: idempotent, see the DB method.
+                    match db_for_codex_history_migration
+                        .rename_non_official_openai_named_codex_provider_tables()
+                    {
+                        Ok(0) => {}
+                        Ok(count) => log::info!(
+                            "✓ Renamed leftover OpenAI-named provider tables in {count} Codex provider(s)"
+                        ),
+                        Err(e) => log::warn!("✗ Codex OpenAI-named table fix failed: {e}"),
+                    }
+
+                    // L3: one-time report of lines whose stored keys the key
+                    // ownership rules no longer apply (names only).
+                    match db_for_codex_history_migration.record_codex_key_ownership_report_once() {
+                        Ok(Some(count)) if count > 0 => log::info!(
+                            "Codex key ownership: {count} provider(s) carry keys that now stay in live"
+                        ),
+                        Ok(_) => {}
+                        Err(e) => log::warn!("✗ Codex key ownership report failed: {e}"),
                     }
 
                     match crate::codex_history_migration::maybe_migrate_codex_third_party_history_provider_bucket(
@@ -1558,13 +1598,14 @@ pub fn run() {
             // 静默启动：根据设置决定是否显示主窗口
             let settings = crate::settings::get_settings();
             if let Some(window) = app.get_webview_window("main") {
-                #[cfg(target_os = "windows")]
-                enforce_fixed_main_window_size(&window);
                 // 在窗口首次显示前同步装饰状态，避免前端加载后再切换导致标题栏闪烁
                 // 仅 Linux 生效：解决 Wayland 下系统窗口按钮不可用的问题
                 #[cfg(target_os = "linux")]
                 let _ = window.set_decorations(!settings.use_app_window_controls);
-                if settings.silent_startup {
+                if settings.silent_startup && !settings.show_in_tray {
+                    log::warn!("静默启动需要托盘图标，当前已关闭托盘，改为显示主窗口");
+                }
+                if settings.starts_hidden() {
                     // 静默启动模式：保持窗口隐藏
                     let _ = window.hide();
                     #[cfg(target_os = "windows")]
@@ -1602,8 +1643,12 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             product_policy::get_product_capabilities,
+            builtin_templates::get_chimerahub_template,
+            tool_registry::get_tool_registry,
+            commands::get_pi_current_state,
             commands::get_providers,
             commands::get_current_provider,
+            commands::get_codex_current_provider_resolution,
             commands::add_provider,
             commands::add_and_activate_provider,
             commands::update_provider,
@@ -1611,6 +1656,16 @@ pub fn run() {
             commands::delete_provider,
             commands::remove_provider_from_live_config,
             commands::switch_provider,
+            commands::list_official_accounts,
+            commands::get_official_account_quota,
+            commands::save_current_official_login,
+            commands::start_official_device_login,
+            commands::poll_official_device_login,
+            commands::cancel_official_device_login,
+            commands::remove_official_account,
+            commands::get_notes,
+            commands::set_notes,
+            commands::get_codex_mcp_section_preview,
             commands::import_default_config,
             commands::get_claude_desktop_status,
             commands::get_claude_desktop_default_routes,
@@ -1640,6 +1695,7 @@ pub fn run() {
             commands::get_settings,
             commands::save_settings,
             commands::patch_preferences,
+            commands::patch_config_directory,
             commands::get_codex_runtime_status,
             commands::get_codex_process_status,
             commands::probe_codex_renderer_unlock,
@@ -1649,6 +1705,8 @@ pub fn run() {
             commands::open_codex_runtime_directory,
             commands::check_codex_runtime_update,
             commands::diagnose_codex_runtime,
+            commands::check_codex_config_health,
+            commands::repair_codex_owned_instruction_refs,
             commands::apply_codex_runtime_update,
             commands::repair_codex_runtime,
             commands::rollback_codex_runtime,
@@ -1723,6 +1781,7 @@ pub fn run() {
             commands::enable_prompt,
             commands::import_prompt_from_file,
             commands::get_current_prompt_file_content,
+            commands::adopt_foreign_codex_prompt,
             // Profile management (项目配置方案)
             commands::list_profiles,
             commands::create_profile,
@@ -1769,11 +1828,23 @@ pub fn run() {
             commands::rename_db_backup,
             commands::delete_db_backup,
             commands::sync_current_providers_live,
+            commands::get_codex_import_review,
+            commands::confirm_codex_import_sync,
+            // Per-tool live backups (M2.1 ②, `live_backups`)
+            commands::list_live_backups,
+            commands::open_live_backup_directory,
+            commands::create_live_backup,
+            commands::restore_live_backup,
+            commands::delete_live_backup,
             // Deep link import
             commands::get_pending_deeplink,
             commands::dismiss_pending_deeplink,
             commands::parse_deeplink,
+            commands::submit_deeplink_import,
+            commands::preview_cc_switch_file,
+            commands::commit_cc_switch_import,
             commands::merge_deeplink_config,
+            commands::preview_deeplink_import,
             commands::import_from_deeplink,
             commands::import_from_deeplink_unified,
             update_tray_menu,
@@ -1795,7 +1866,6 @@ pub fn run() {
             commands::check_skill_updates,
             commands::update_skill,
             commands::migrate_skill_storage,
-            commands::search_skills_sh,
             // Skill management (legacy API compatibility)
             commands::get_skills,
             commands::get_skills_for_app,
@@ -1939,8 +2009,6 @@ pub fn run() {
             commands::copilot_get_auth_status,
             commands::copilot_logout,
             commands::copilot_is_authenticated,
-            commands::copilot_get_token,
-            commands::copilot_get_token_for_account,
             commands::copilot_get_models,
             commands::copilot_get_models_for_account,
             commands::copilot_get_usage,
@@ -2102,7 +2170,7 @@ pub async fn cleanup_before_exit(app_handle: &tauri::AppHandle) {
         let proxy_service = &state.proxy_service;
         let mut apps_to_restore = Vec::new();
 
-        for app_type in product_policy::startup_managed_apps() {
+        for app_type in product_policy::recovery_apps() {
             let app_name = app_type.as_str();
             let has_backup = match state.db.get_live_backup(app_name).await {
                 Ok(backup) => backup.is_some(),
@@ -2170,14 +2238,12 @@ pub(crate) fn remove_tray_icon_before_exit(app_handle: &tauri::AppHandle) {
 // 启动时恢复代理状态
 // ============================================================
 
-/// 启动时根据 proxy_config 表中的代理状态自动恢复代理服务
+/// 启动时恢复 `RECOVERY_APPS` 中残留的代理接管或 Live 备份（崩溃恢复）。
 ///
-/// 检查 `proxy_config.enabled` 字段，如果有任一应用的状态为 `true`，
-/// 则自动启动代理服务并接管对应应用的 Live 配置。
-const PROXY_STARTUP_APP_TYPES: [&str; 4] = ["claude", "codex", "gemini", "grokbuild"];
-
+/// 代理接管状态本身由 [`restore_proxy_state_on_startup`] 按
+/// `PROXY_AUTOSTART_APPS`（可见 + 用户曾显式接管）恢复。
 async fn recover_product_managed_live_configs(state: &store::AppState) {
-    for app_type in product_policy::startup_managed_apps() {
+    for app_type in product_policy::recovery_apps() {
         let app_name = app_type.as_str();
         let has_backup = match state.db.get_live_backup(app_name).await {
             Ok(backup) => backup.is_some(),
@@ -2207,18 +2273,26 @@ async fn recover_product_managed_live_configs(state: &store::AppState) {
     }
 }
 
-async fn enabled_proxy_apps_on_startup(db: &database::Database) -> Vec<&'static str> {
+/// Apps whose recorded takeover (`proxy_config.enabled`, only ever set by an
+/// explicit user action) may resume at startup: the app must be in the D5
+/// autostart set and visible both to the product and in `visibleApps`.
+async fn enabled_proxy_apps_on_startup(
+    db: &database::Database,
+    visible_apps: &crate::settings::VisibleApps,
+) -> Vec<&'static str> {
     let mut apps = Vec::new();
-    for app_type in PROXY_STARTUP_APP_TYPES {
-        if !product_policy::is_startup_managed_app_name(app_type) {
-            continue;
-        }
-        if db
-            .get_proxy_config_for_app(app_type)
+    for app_type in product_policy::proxy_autostart_candidates() {
+        let app_name = app_type.as_str();
+        let taken_over = db
+            .get_proxy_config_for_app(app_name)
             .await
-            .is_ok_and(|config| config.enabled)
-        {
-            apps.push(app_type);
+            .is_ok_and(|config| config.enabled);
+        if product_policy::should_autostart_proxy(
+            app_type,
+            visible_apps.is_visible(app_type),
+            taken_over,
+        ) {
+            apps.push(app_name);
         }
     }
     apps
@@ -2226,7 +2300,10 @@ async fn enabled_proxy_apps_on_startup(db: &database::Database) -> Vec<&'static 
 
 async fn restore_proxy_state_on_startup(state: &store::AppState) {
     // 收集需要恢复接管的应用列表（从 proxy_config.enabled 读取）
-    let apps_to_restore = enabled_proxy_apps_on_startup(&state.db).await;
+    let visible_apps = crate::settings::get_settings()
+        .visible_apps
+        .unwrap_or_default();
+    let apps_to_restore = enabled_proxy_apps_on_startup(&state.db, &visible_apps).await;
 
     if apps_to_restore.is_empty() {
         log::debug!("启动时无需恢复代理状态");
@@ -2264,7 +2341,7 @@ fn initialize_common_config_snippets(state: &store::AppState) {
     // Auto-extract common config snippets from clean live files when snippet is missing.
     // This must run before proxy takeover is restored on startup, otherwise we'd read
     // proxy-placeholder configs instead of the user's actual live settings.
-    for app_type in product_policy::startup_managed_apps() {
+    for app_type in product_policy::startup_import_apps() {
         if !state
             .db
             .should_auto_extract_config_snippet(app_type.as_str())
@@ -2317,7 +2394,7 @@ fn initialize_common_config_snippets(state: &store::AppState) {
         .unwrap_or(true);
 
     if should_run_legacy_migration {
-        for app_type in product_policy::startup_managed_apps() {
+        for app_type in product_policy::startup_import_apps() {
             if let Err(e) = crate::services::provider::ProviderService::migrate_legacy_common_config_usage_if_needed(
                 state,
                 app_type.clone(),
@@ -2546,6 +2623,7 @@ mod tests {
         strip_bare_userinfo, ExitRequestAction,
     };
     use crate::database::Database;
+    use crate::settings::VisibleApps;
 
     #[test]
     fn log_url_redaction_strips_credentials_and_query_keeps_path() {
@@ -2671,29 +2749,59 @@ mod tests {
         );
     }
 
+    async fn enable_takeover(db: &Database, app: &str) {
+        let mut config = db
+            .get_proxy_config_for_app(app)
+            .await
+            .expect("read proxy config");
+        config.enabled = true;
+        db.update_proxy_config_for_app(config)
+            .await
+            .expect("enable proxy config");
+    }
+
     #[tokio::test]
-    async fn startup_restore_only_includes_product_managed_apps() {
+    async fn startup_proxy_restore_needs_autostart_set_visibility_and_takeover() {
         let db = Database::memory().expect("initialize database");
-        let mut codex = db
-            .get_proxy_config_for_app("codex")
-            .await
-            .expect("read Codex proxy config");
-        codex.enabled = true;
-        db.update_proxy_config_for_app(codex)
-            .await
-            .expect("enable Codex proxy config");
+        let codex_only = VisibleApps::default();
 
-        let mut grokbuild = db
-            .get_proxy_config_for_app("grokbuild")
+        // Nothing was taken over: nothing resumes.
+        assert!(enabled_proxy_apps_on_startup(&db, &codex_only)
             .await
-            .expect("read Grok Build proxy config");
-        grokbuild.enabled = true;
-        db.update_proxy_config_for_app(grokbuild)
+            .is_empty());
+
+        for app in ["codex", "grokbuild", "claude", "gemini"] {
+            enable_takeover(&db, app).await;
+        }
+        assert_eq!(
+            enabled_proxy_apps_on_startup(&db, &codex_only).await,
+            vec!["codex"]
+        );
+
+        let everything_visible = VisibleApps {
+            claude: true,
+            claude_desktop: true,
+            codex: true,
+            gemini: true,
+            grokbuild: true,
+            opencode: true,
+            openclaw: true,
+            hermes: true,
+            pi: true,
+            mcode: true,
+        };
+        assert_eq!(
+            enabled_proxy_apps_on_startup(&db, &everything_visible).await,
+            vec!["codex", "grokbuild"]
+        );
+
+        // A hidden Codex does not auto-start either.
+        let codex_hidden = VisibleApps {
+            codex: false,
+            ..VisibleApps::default()
+        };
+        assert!(enabled_proxy_apps_on_startup(&db, &codex_hidden)
             .await
-            .expect("enable Grok Build proxy config");
-
-        let apps = enabled_proxy_apps_on_startup(&db).await;
-
-        assert_eq!(apps, vec!["codex"]);
+            .is_empty());
     }
 }

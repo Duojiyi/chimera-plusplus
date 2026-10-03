@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  classifyCommand,
-  classifyEndpoint,
-  classifyEnvKey,
-  maskValue,
-} from "./deeplinkRisk";
+import { classifyCommand, classifyEndpoint, maskValue } from "./deeplinkRisk";
 
 describe("classifyEndpoint", () => {
   it("flags loopback, RFC 1918 and cloud metadata addresses", () => {
@@ -67,37 +62,6 @@ describe("classifyEndpoint", () => {
     );
     // 映射的公网地址不该误报：8.8.8.8 → ::ffff:808:808
     expect(classifyEndpoint("http://[::ffff:8.8.8.8]/")).toBeNull();
-  });
-});
-
-describe("classifyEnvKey", () => {
-  it("flags variables that change how a process loads code", () => {
-    for (const key of [
-      "LD_PRELOAD",
-      "LD_LIBRARY_PATH",
-      "DYLD_INSERT_LIBRARIES",
-      "NODE_OPTIONS",
-      "NODE_EXTRA_CA_CERTS",
-      "PYTHONPATH",
-      "PATH",
-      "HTTPS_PROXY",
-      "https_proxy", // 大小写不敏感
-    ]) {
-      expect(classifyEnvKey(key), key).toBe("envHijack");
-    }
-  });
-
-  it("leaves ordinary provider config alone", () => {
-    // 这几个是供应商预设的日常字段，误报会让整个提示失去意义
-    for (const key of [
-      "ANTHROPIC_AUTH_TOKEN",
-      "ANTHROPIC_BASE_URL",
-      "GEMINI_API_KEY",
-      "API_TIMEOUT_MS",
-      "ANTHROPIC_MODEL",
-    ]) {
-      expect(classifyEnvKey(key), key).toBeNull();
-    }
   });
 });
 

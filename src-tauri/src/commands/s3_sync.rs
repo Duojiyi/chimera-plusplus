@@ -8,6 +8,7 @@ use crate::commands::sync_support::{
     run_post_import_sync,
 };
 use crate::error::AppError;
+use crate::product_policy::{require, Capability};
 use crate::services::s3_sync as s3_sync_service;
 use crate::settings::{self, S3SyncSettings};
 use crate::store::AppState;
@@ -32,6 +33,7 @@ fn s3_sync_disabled_error() -> String {
 }
 
 fn require_enabled_s3_settings() -> Result<S3SyncSettings, String> {
+    require(Capability::S3Sync).map_err(|error| error.to_string())?;
     let settings = settings::get_s3_sync_settings().ok_or_else(s3_not_configured_error)?;
     if !settings.enabled {
         return Err(s3_sync_disabled_error());
@@ -83,6 +85,7 @@ pub async fn s3_test_connection(
     #[allow(non_snake_case)] preserveEmptyPassword: Option<bool>,
 ) -> Result<Value, String> {
     let preserve_empty = preserveEmptyPassword.unwrap_or(true);
+    require(Capability::S3Sync).map_err(|error| error.to_string())?;
     let resolved =
         resolve_secret_for_request(settings, settings::get_s3_sync_settings(), preserve_empty);
     s3_sync_service::check_connection(&resolved)
@@ -165,6 +168,7 @@ pub async fn s3_sync_save_settings(
     #[allow(non_snake_case)] passwordTouched: Option<bool>,
 ) -> Result<Value, String> {
     let password_touched = passwordTouched.unwrap_or(false);
+    require(Capability::S3Sync).map_err(|error| error.to_string())?;
     let existing = settings::get_s3_sync_settings();
     let mut sync_settings =
         resolve_secret_for_request(settings, existing.clone(), !password_touched);
@@ -349,15 +353,12 @@ mod tests {
         .expect("seed disabled s3 settings");
 
         let err = require_enabled_s3_settings().expect_err("disabled settings should fail");
-        assert!(
-            err.contains("disabled") || err.contains("未启用"),
-            "unexpected error: {err}"
-        );
+        assert!(err.contains("s3_sync"), "unexpected error: {err}");
     }
 
     #[test]
     #[serial]
-    fn require_enabled_s3_settings_returns_settings_when_enabled() {
+    fn require_enabled_s3_settings_rejects_legacy_enabled_config() {
         let test_home = std::env::temp_dir().join("cc-switch-s3-sync-enabled-ok-test");
         let _ = std::fs::remove_dir_all(&test_home);
         std::fs::create_dir_all(&test_home).expect("create test home");
@@ -374,8 +375,20 @@ mod tests {
         }))
         .expect("seed enabled s3 settings");
 
-        let settings = require_enabled_s3_settings().expect("enabled settings should be accepted");
-        assert!(settings.enabled);
-        assert_eq!(settings.region, "us-east-1");
+        let error = require_enabled_s3_settings().expect_err("cloud sync is outside scope");
+        assert!(error.contains("s3_sync"));
+    }
+
+    #[tokio::test]
+    async fn cloud_commands_reject_before_settings_or_network_access() {
+        for result in [
+            super::s3_test_connection(S3SyncSettings::default(), None).await,
+            super::s3_sync_save_settings(S3SyncSettings::default(), None).await,
+            super::s3_sync_fetch_remote_info().await,
+        ] {
+            assert!(result
+                .expect_err("cloud sync is outside scope")
+                .contains("s3_sync"));
+        }
     }
 }

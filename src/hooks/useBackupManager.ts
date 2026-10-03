@@ -1,12 +1,15 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import { backupsApi } from "@/lib/api";
 import {
   PartialBackupRestoreError,
   restoreDatabaseBackup,
 } from "@/lib/api/config";
+import { promptCodexImportReview } from "@/utils/codexImportReview";
 
 export function useBackupManager() {
   const queryClient = useQueryClient();
+  const { t } = useTranslation();
 
   const {
     data: backups = [],
@@ -38,6 +41,7 @@ export function useBackupManager() {
             refreshError,
           );
         }
+        await promptCodexImportReview(t);
       }
     },
   });

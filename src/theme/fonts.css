@@ -1,0 +1,24 @@
+/* Bundled for offline desktop rendering. SIL OFL licenses accompany the fonts. */
+@font-face {
+  font-family: "Overpass";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("../assets/fonts/Overpass-Variable.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "Overpass Mono";
+  font-style: normal;
+  font-weight: 300 700;
+  font-display: swap;
+  src: url("../assets/fonts/OverpassMono-Variable.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "Noto Sans SC";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("../assets/fonts/NotoSansSC-Variable.woff2") format("woff2");
+}

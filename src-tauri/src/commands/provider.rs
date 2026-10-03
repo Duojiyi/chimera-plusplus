@@ -5,6 +5,7 @@ use crate::app_config::AppType;
 use crate::commands::copilot::CopilotAuthState;
 use crate::error::AppError;
 use crate::provider::{ClaudeDesktopMode, Provider};
+use crate::provider_dto::{self, CurrentProviderResolution, LiveSettingsDto, ProviderDto};
 use crate::services::provider::LiveSnapshot;
 use crate::services::{
     EndpointLatency, ProviderService, ProviderSortUpdate, SpeedtestService, SwitchResult,
@@ -20,19 +21,72 @@ const TEMPLATE_TYPE_OFFICIAL_SUBSCRIPTION: &str = "official_subscription";
 const COPILOT_UNIT_PREMIUM: &str = "requests";
 
 /// 获取所有供应商
+///
+/// Rows cross into the renderer as `ProviderDto`, without OAuth material.
 #[tauri::command]
 pub fn get_providers(
     state: State<'_, AppState>,
     app: String,
-) -> Result<IndexMap<String, Provider>, String> {
+) -> Result<IndexMap<String, ProviderDto>, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
-    ProviderService::list(state.inner(), app_type).map_err(|e| e.to_string())
+    ProviderService::list(state.inner(), app_type)
+        .map(provider_dto::provider_dtos)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn get_current_provider(state: State<'_, AppState>, app: String) -> Result<String, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
     ProviderService::current(state.inner(), app_type).map_err(|e| e.to_string())
+}
+
+/// The Codex line live config actually runs, as `{id, source}`. Matching
+/// needs raw credentials, so it runs here instead of in the renderer.
+#[tauri::command]
+pub fn get_codex_current_provider_resolution(
+    state: State<'_, AppState>,
+) -> Result<CurrentProviderResolution, String> {
+    let providers =
+        ProviderService::list(state.inner(), AppType::Codex).map_err(|e| e.to_string())?;
+    let stored =
+        ProviderService::current(state.inner(), AppType::Codex).map_err(|e| e.to_string())?;
+    // An unreadable live config (Codex not set up yet) falls back to the
+    // stored selection, same as before this moved out of the renderer.
+    let live = ProviderService::read_live_settings(AppType::Codex).ok();
+    Ok(provider_dto::resolve_current_provider(
+        &providers,
+        &stored,
+        live.as_ref(),
+    ))
+}
+
+/// Renderer writes carry `ProviderDto` rows: a withheld secret comes back
+/// missing, masked or empty. Restore it from the stored row before saving.
+fn merge_renderer_provider_write(
+    state: &AppState,
+    app_type: &AppType,
+    stored_id: &str,
+    provider: &mut Provider,
+    clear_api_key: bool,
+) -> Result<(), String> {
+    let stored = state
+        .db
+        .get_provider_by_id(stored_id, app_type.as_str())
+        .map_err(|e| format!("读取 {} 原供应商失败: {e}", app_type.as_str()))?;
+    provider_dto::merge_withheld_secrets(provider, stored.as_ref(), clear_api_key);
+    // CPP-A1①: remote compaction (a provider table named "OpenAI") only on
+    // lines that reach a native Responses upstream for every request.
+    if matches!(app_type, AppType::Codex)
+        && crate::proxy::providers::codex_remote_compaction_blocked(provider)
+    {
+        return Err(AppError::localized(
+            "provider.codex.remote_compaction.conversion_route",
+            "远程上下文压缩只支持原生 Responses 上游；经 Chat 或 Anthropic 转换的线路请关闭该开关",
+            "Remote compaction needs a native Responses upstream; turn it off for lines converted to Chat or Anthropic",
+        )
+        .to_string());
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -43,6 +97,9 @@ pub async fn add_provider(
     #[allow(non_snake_case)] addToLive: Option<bool>,
 ) -> Result<bool, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    let mut provider = provider;
+    let stored_id = provider.id.clone();
+    merge_renderer_provider_write(state.inner(), &app_type, &stored_id, &mut provider, false)?;
     add_provider_with_automatic_routing_state(
         state.inner().clone(),
         app_type,
@@ -66,6 +123,9 @@ pub async fn add_and_activate_provider(
     #[allow(non_snake_case)] addToLive: Option<bool>,
 ) -> Result<bool, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    let mut provider = provider;
+    let stored_id = provider.id.clone();
+    merge_renderer_provider_write(state.inner(), &app_type, &stored_id, &mut provider, false)?;
     add_and_activate_provider_with_automatic_routing_state(
         state.inner().clone(),
         app_type,
@@ -75,14 +135,26 @@ pub async fn add_and_activate_provider(
     .await
 }
 
+/// `clearApiKey` is the only way to remove a stored API key: an empty or
+/// masked key field means "unchanged" (see `merge_renderer_provider_write`).
 #[tauri::command]
 pub async fn update_provider(
     state: State<'_, AppState>,
     app: String,
     provider: Provider,
     #[allow(non_snake_case)] originalId: Option<String>,
+    #[allow(non_snake_case)] clearApiKey: Option<bool>,
 ) -> Result<bool, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    let mut provider = provider;
+    let stored_id = originalId.clone().unwrap_or_else(|| provider.id.clone());
+    merge_renderer_provider_write(
+        state.inner(),
+        &app_type,
+        &stored_id,
+        &mut provider,
+        clearApiKey.unwrap_or(false),
+    )?;
     update_provider_with_automatic_routing_state(
         state.inner().clone(),
         app_type,
@@ -102,8 +174,18 @@ pub async fn update_and_activate_provider(
     app: String,
     provider: Provider,
     #[allow(non_snake_case)] originalId: Option<String>,
+    #[allow(non_snake_case)] clearApiKey: Option<bool>,
 ) -> Result<bool, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    let mut provider = provider;
+    let stored_id = originalId.clone().unwrap_or_else(|| provider.id.clone());
+    merge_renderer_provider_write(
+        state.inner(),
+        &app_type,
+        &stored_id,
+        &mut provider,
+        clearApiKey.unwrap_or(false),
+    )?;
     update_provider_with_automatic_routing_mode(
         state.inner().clone(),
         app_type,
@@ -1211,10 +1293,55 @@ pub fn import_default_config_test_hook(
     import_default_config_internal(state, app_type)
 }
 
+/// Renderer entry point for importing an app's live config as its first
+/// provider. Importing a non-Codex tool is a `multi_tool` entry point.
+fn import_default_config_command(state: &AppState, app_type: AppType) -> Result<bool, AppError> {
+    crate::product_policy::require_app(&app_type)?;
+    import_default_config_internal(state, app_type)
+}
+
 #[tauri::command]
 pub fn import_default_config(state: State<'_, AppState>, app: String) -> Result<bool, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
-    import_default_config_internal(&state, app_type).map_err(Into::into)
+    import_default_config_command(&state, app_type).map_err(Into::into)
+}
+
+#[cfg(test)]
+mod first_enable_import_gate_tests {
+    use super::import_default_config_command;
+    use crate::app_config::AppType;
+    use crate::database::Database;
+    use crate::store::AppState;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn supported_tool_first_enable_import_reads_only_its_isolated_live_config() {
+        let home = crate::services::live_backup::tests::TempHome::new();
+        crate::settings::reload_settings().expect("reload isolated settings");
+        let db = Arc::new(Database::memory().expect("init db"));
+        let state = AppState::new(db.clone());
+        let path = crate::config::get_claude_settings_path();
+        crate::config::write_json_file(
+            &path,
+            &serde_json::json!({"env":{"ANTHROPIC_AUTH_TOKEN":"test-only-key"}}),
+        )
+        .unwrap();
+        let before = std::fs::read(&path).unwrap();
+        assert!(import_default_config_command(&state, AppType::Claude).unwrap());
+        let providers = db.get_all_providers("claude").unwrap();
+        assert_eq!(providers.len(), 1);
+        assert_eq!(
+            providers.values().next().unwrap().settings_config["env"]["ANTHROPIC_AUTH_TOKEN"],
+            "test-only-key"
+        );
+        assert!(!import_default_config_command(&state, AppType::Claude).unwrap());
+        assert_eq!(db.get_all_providers("claude").unwrap().len(), 1);
+        assert!(db.get_all_providers("codex").unwrap().is_empty());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        drop(home);
+        crate::settings::reload_settings().expect("restore settings");
+    }
 }
 
 #[tauri::command]
@@ -1687,6 +1814,7 @@ async fn query_provider_usage_inner(
 
         return crate::services::balance::get_balance(&base_url, &api_key)
             .await
+            .map(crate::services::balance::BalanceResult::into_usage_result)
             .map_err(|e| format!("Failed to query balance: {e}"));
     }
 
@@ -1772,10 +1900,13 @@ pub async fn testUsageScript(
     .map_err(|e| e.to_string())
 }
 
+/// Live settings as `LiveSettingsDto`: for Codex, `auth` is reduced to
+/// `auth_mode` and a masked API-key-mode key.
 #[tauri::command]
-pub fn read_live_provider_settings(app: String) -> Result<serde_json::Value, String> {
+pub fn read_live_provider_settings(app: String) -> Result<LiveSettingsDto, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
-    ProviderService::read_live_settings(app_type).map_err(|e| e.to_string())
+    let live = ProviderService::read_live_settings(app_type.clone()).map_err(|e| e.to_string())?;
+    Ok(LiveSettingsDto::new(&app_type, live))
 }
 
 #[tauri::command]

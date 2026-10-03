@@ -2,6 +2,7 @@
 //!
 //! Handles importing provider configurations via ccswitch:// URLs.
 
+use super::env_allowlist::retain_permitted_env;
 use super::utils::{decode_base64_param, infer_homepage_from_endpoint};
 use super::DeepLinkImportRequest;
 use crate::error::AppError;
@@ -99,25 +100,59 @@ pub async fn import_provider_from_deeplink(
 
     // Build provider configuration based on app type.
     let mut provider = build_provider_from_request(&app_type, &merged_request)?;
-    let enabled = merged_request.enabled.unwrap_or(false);
 
-    // An enabled Codex-family deep link must persist the resolved upstream
-    // protocol before the provider is added. Otherwise the generated Codex
-    // config says Responses for every endpoint and the automatic switch path
-    // cannot know that Chat Completions/Anthropic translation is required.
+    // MH-8a: this used to call detect_codex_api_format() here, a network
+    // round-trip to the (untrusted, deep-link-supplied) endpoint that could
+    // fail, hang, or be used to probe an internal address before the
+    // provider was ever added. Since c452dc59, the manual add/edit path no
+    // longer probes either: it computes `codexApiFormatForModel(draft.model)`
+    // locally from the model name and persists it into `meta.apiFormat`
+    // up front. Mirror that here rather than leaving `meta.api_format`
+    // unset: `build_codex_settings` below always writes a Codex-side
+    // `wire_api = "responses"` declaration regardless of the upstream's
+    // real protocol, and that declaration wins in
+    // `codex_api_format_for_model`'s fallback chain ahead of the
+    // model-family default this is meant to rely on — leaving the field
+    // unset would silently resolve every deep-linked import to Native
+    // Responses instead. `api_key_field` is left unset (deep links carry
+    // no explicit auth-header-field override); requests default to the
+    // standard `x-api-key` header, same as the manual path's "auto" mode.
     if matches!(app_type, AppType::Codex | AppType::GrokBuild) {
-        let detected = crate::services::model_fetch::detect_codex_api_format(
-            primary_endpoint,
-            api_key,
-            false,
-            merged_request.model.as_deref(),
-            None,
-        )
-        .await
-        .map_err(|e| AppError::Message(format!("自动识别上游 API 协议失败: {e}")))?;
-        let meta = provider.meta.get_or_insert_with(ProviderMeta::default);
-        meta.api_format = Some(detected.api_format);
-        meta.api_key_field = detected.anthropic_auth_field;
+        if let Some(model) = merged_request.model.as_deref() {
+            let meta = provider.meta.get_or_insert_with(ProviderMeta::default);
+            meta.api_format =
+                Some(crate::proxy::providers::codex_model_default_api_format(model).to_string());
+        }
+    }
+
+    // MH-4: only allowlisted env keys, plus keys the user confirmed one by
+    // one in the dialog, are stored. Denied keys never are.
+    let confirmed_env_keys = merged_request
+        .confirmed_env_keys
+        .clone()
+        .unwrap_or_default();
+    if let Some(env) = provider
+        .settings_config
+        .get_mut("env")
+        .and_then(|env| env.as_object_mut())
+    {
+        let removed = retain_permitted_env(&app_type, env, &confirmed_env_keys);
+        if !removed.is_empty() {
+            log::warn!(
+                "Deep link import for {} dropped env keys that are not allowed: {}",
+                app_type.as_str(),
+                removed.join(", ")
+            );
+        }
+    }
+
+    let requested_enabled = merged_request.enabled.unwrap_or(false);
+    let enabled = requested_enabled && deeplink_import_may_activate(&app_type);
+    if requested_enabled && !enabled {
+        log::info!(
+            "{} is hidden; deep link imports the provider without activating it",
+            app_type.as_str()
+        );
     }
 
     // Generate a unique ID for the provider using timestamp + sanitized name
@@ -174,6 +209,30 @@ pub async fn import_provider_from_deeplink(
     Ok(provider_id)
 }
 
+/// MH-4: a deep link may activate a provider — and so write that tool's live
+/// config — only while the tool is visible. Hidden tools are import-only.
+/// Pi deep links are always import-only (tool registry, D6): the entry is
+/// saved but never added to `models.json` by the link itself.
+pub(crate) fn deeplink_import_may_activate(app_type: &AppType) -> bool {
+    let policy = crate::tool_registry::TOOLS
+        .iter()
+        .find(|t| &t.id == app_type)
+        .map(|t| t.deeplink)
+        .unwrap_or(crate::tool_registry::DeeplinkPolicy::Reject);
+
+    match policy {
+        crate::tool_registry::DeeplinkPolicy::ImportConfirm => {
+            crate::product_policy::is_app_visible_by_product(app_type)
+                && crate::settings::get_settings()
+                    .visible_apps
+                    .unwrap_or_default()
+                    .is_visible(app_type)
+        }
+        crate::tool_registry::DeeplinkPolicy::ImportOnly
+        | crate::tool_registry::DeeplinkPolicy::Reject => false,
+    }
+}
+
 /// Build a Provider structure from a deep link request
 pub(crate) fn build_provider_from_request(
     app_type: &AppType,
@@ -187,6 +246,13 @@ pub(crate) fn build_provider_from_request(
         AppType::OpenCode => build_opencode_settings(request),
         AppType::OpenClaw => build_additive_app_settings(request),
         AppType::Hermes => build_hermes_settings(request),
+        AppType::Pi => build_pi_settings(request),
+        // D4: MiniMax Code providers are never imported from a deep link.
+        AppType::Mcode => {
+            return Err(AppError::InvalidInput(
+                "Mcode provider deep links are not supported".to_string(),
+            ))
+        }
     };
 
     // Build usage script configuration if provided
@@ -610,6 +676,18 @@ fn build_hermes_settings(request: &DeepLinkImportRequest) -> serde_json::Value {
     json!(config)
 }
 
+/// Build a Pi `models.json` provider node: `{ name, baseUrl, apiKey, api, models }`.
+fn build_pi_settings(request: &DeepLinkImportRequest) -> serde_json::Value {
+    let mut config = build_additive_app_settings(request);
+    if let (Some(object), Some(name)) = (
+        config.as_object_mut(),
+        request.name.as_deref().filter(|name| !name.is_empty()),
+    ) {
+        object.insert("name".to_string(), json!(name));
+    }
+    config
+}
+
 // =============================================================================
 // Config Merge Logic
 // =============================================================================
@@ -674,7 +752,7 @@ pub fn parse_and_merge_config(
         "gemini" => merge_gemini_config(&mut merged, &config_value)?,
         "grokbuild" => merge_grokbuild_config(&mut merged, &config_value)?,
         // Additive mode apps use JSON config directly; pass through as-is
-        "openclaw" | "opencode" | "hermes" => {
+        "openclaw" | "opencode" | "hermes" | "pi" => {
             merge_additive_config(&mut merged, &config_value)?;
         }
         "" => {
@@ -975,7 +1053,6 @@ fn extract_codex_base_url(toml_value: &toml::Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{http::StatusCode, response::IntoResponse, routing::post, Json, Router};
     use serial_test::serial;
     use std::env;
     use std::sync::Arc;
@@ -1036,6 +1113,113 @@ mod tests {
         }
     }
 
+    /// MH-4: a deep link only activates visible tools. Tests of the
+    /// activation path for Claude / Claude Desktop (hidden by default) must
+    /// show them first.
+    fn show_claude_family() {
+        crate::settings::mutate_settings(|settings| {
+            settings.visible_apps = Some(crate::settings::VisibleApps {
+                claude: true,
+                claude_desktop: true,
+                ..crate::settings::VisibleApps::default()
+            });
+        })
+        .expect("show Claude apps");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn enabled_deeplink_for_hidden_tool_is_import_only() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        assert!(!deeplink_import_may_activate(&AppType::Claude));
+        let db = Arc::new(crate::database::Database::memory().expect("create memory db"));
+        let state = crate::store::AppState::new(db.clone());
+
+        let provider_id = import_provider_from_deeplink(
+            &state,
+            DeepLinkImportRequest {
+                resource: "provider".to_string(),
+                app: Some("claude".to_string()),
+                name: Some("Hidden Claude".to_string()),
+                enabled: Some(true),
+                homepage: Some("https://example.com".to_string()),
+                endpoint: Some("https://api.example.invalid".to_string()),
+                api_key: Some("test-hidden".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("hidden-tool import is staged");
+
+        assert!(db
+            .get_all_providers("claude")
+            .expect("read providers")
+            .contains_key(&provider_id));
+        assert_eq!(db.get_current_provider("claude").expect("db current"), None);
+        assert!(
+            !crate::config::get_claude_settings_path().exists(),
+            "a hidden tool's live config must never be written"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn deeplink_env_keeps_allowlisted_and_confirmed_keys_only() {
+        use base64::prelude::*;
+
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        let db = Arc::new(crate::database::Database::memory().expect("create memory db"));
+        let state = crate::store::AppState::new(db.clone());
+        let config = json!({"env": {
+            "ANTHROPIC_AUTH_TOKEN": "test-token",
+            "API_TIMEOUT_MS": "3000000",
+            "VENDOR_FLAG": "1",
+            "UNCONFIRMED_FLAG": "1",
+            "NODE_OPTIONS": "--require /tmp/x.js"
+        }});
+
+        let provider_id = import_provider_from_deeplink(
+            &state,
+            DeepLinkImportRequest {
+                resource: "provider".to_string(),
+                app: Some("claude".to_string()),
+                name: Some("Env Claude".to_string()),
+                homepage: Some("https://example.com".to_string()),
+                endpoint: Some("https://api.example.invalid".to_string()),
+                api_key: Some("test-token".to_string()),
+                config: Some(BASE64_STANDARD.encode(config.to_string())),
+                config_format: Some("json".to_string()),
+                // A confirmed denied key still must not survive.
+                confirmed_env_keys: Some(vec![
+                    "VENDOR_FLAG".to_string(),
+                    "NODE_OPTIONS".to_string(),
+                ]),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("import provider");
+
+        let stored = db
+            .get_provider_by_id(&provider_id, "claude")
+            .expect("read provider")
+            .expect("provider exists");
+        let env = stored.settings_config["env"].as_object().expect("env");
+        let mut keys = env.keys().cloned().collect::<Vec<_>>();
+        keys.sort();
+        assert_eq!(
+            keys,
+            [
+                "ANTHROPIC_AUTH_TOKEN",
+                "ANTHROPIC_BASE_URL",
+                "API_TIMEOUT_MS",
+                "VENDOR_FLAG"
+            ]
+        );
+    }
+
     fn hermes_request() -> DeepLinkImportRequest {
         DeepLinkImportRequest {
             resource: "provider".to_string(),
@@ -1066,6 +1250,43 @@ mod tests {
         let models = obj.get("models").unwrap().as_array().unwrap();
         assert_eq!(models.len(), 1);
         assert_eq!(models[0]["id"], "anthropic/claude-opus-4-8");
+    }
+
+    #[test]
+    #[serial]
+    fn pi_deeplink_builds_a_models_json_node_and_is_import_only() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        crate::settings::mutate_settings(|settings| {
+            settings.visible_apps = Some(crate::settings::VisibleApps {
+                pi: true,
+                ..crate::settings::VisibleApps::default()
+            });
+        })
+        .expect("show Pi");
+        // Visible or not, a Pi deep link never adds the entry to models.json.
+        assert!(!deeplink_import_may_activate(&AppType::Pi));
+
+        let mut request = hermes_request();
+        request.app = Some("pi".to_string());
+        let provider = build_provider_from_request(&AppType::Pi, &request).expect("build");
+        assert_eq!(
+            provider.settings_config,
+            json!({
+                "name": "MyHermes",
+                "baseUrl": "https://api.example.com/v1",
+                "apiKey": "sk-test",
+                "api": "openai-completions",
+                "models": [{ "id": "anthropic/claude-opus-4-8", "name": "anthropic/claude-opus-4-8" }]
+            })
+        );
+    }
+
+    #[test]
+    fn mcode_deeplink_never_builds_a_provider() {
+        let mut request = hermes_request();
+        request.app = Some("mcode".to_string());
+        assert!(build_provider_from_request(&AppType::Mcode, &request).is_err());
     }
 
     #[test]
@@ -1164,37 +1385,15 @@ mod tests {
         .expect("set proxy port");
         let state = crate::store::AppState::new(db.clone());
 
-        async fn unsupported() -> impl IntoResponse {
-            (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "not found"})),
-            )
-        }
-        async fn chat_validation() -> impl IntoResponse {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": {"message": "max_tokens must be an integer for chat/completions"}
-                })),
-            )
-        }
-        let probe_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind probe server");
-        let probe_addr = probe_listener.local_addr().expect("probe addr");
-        let probe_server = tokio::spawn(async move {
-            axum::serve(
-                probe_listener,
-                Router::new()
-                    .route("/v1/responses", post(unsupported))
-                    .route("/v1/chat/completions", post(chat_validation))
-                    .route("/v1/messages", post(unsupported)),
-            )
-            .await
-            .expect("serve probe routes");
-        });
-
-        let endpoint = format!("http://{probe_addr}/v1");
+        // MH-8a: importing a Codex deep link no longer probes the endpoint
+        // (see import_provider_from_deeplink), so unlike before, nothing
+        // here ever connects to it — a reserved, guaranteed-unbound loopback
+        // port is enough to exercise takeover/direct config round-tripping.
+        let endpoint_listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("reserve endpoint port");
+        let endpoint_addr = endpoint_listener.local_addr().expect("endpoint addr");
+        drop(endpoint_listener);
+        let endpoint = format!("http://{endpoint_addr}/v1");
         let request = DeepLinkImportRequest {
             resource: "provider".to_string(),
             app: Some("codex".to_string()),
@@ -1235,54 +1434,28 @@ mod tests {
             std::fs::read_to_string(crate::get_codex_config_path()).expect("read direct config");
         assert!(direct.contains(&endpoint));
         assert!(!direct.contains(&format!("127.0.0.1:{proxy_port}")));
-        probe_server.abort();
     }
 
     #[tokio::test]
     #[serial]
-    async fn disabled_codex_deeplink_stays_inactive_and_persists_detected_protocol() {
+    async fn disabled_codex_deeplink_stays_inactive_and_defers_protocol_to_model_family() {
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("reload settings");
         let db = Arc::new(crate::database::Database::memory().expect("create memory db"));
         let state = crate::store::AppState::new(db.clone());
 
-        async fn unsupported() -> impl IntoResponse {
-            (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "not found"})),
-            )
-        }
-        async fn chat_validation() -> impl IntoResponse {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": {"message": "max_tokens must be an integer for chat/completions"}
-                })),
-            )
-        }
-        let probe_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind probe server");
-        let probe_addr = probe_listener.local_addr().expect("probe addr");
-        let probe_server = tokio::spawn(async move {
-            axum::serve(
-                probe_listener,
-                Router::new()
-                    .route("/v1/responses", post(unsupported))
-                    .route("/v1/chat/completions", post(chat_validation))
-                    .route("/v1/messages", post(unsupported)),
-            )
-            .await
-            .expect("serve probe routes");
-        });
-
-        let endpoint = format!("http://{probe_addr}/v1");
+        // MH-8a: no probe, so no live server needed — see the sibling test
+        // above for why a reserved, unbound port is sufficient here too.
+        let endpoint_listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("reserve endpoint port");
+        let endpoint_addr = endpoint_listener.local_addr().expect("endpoint addr");
+        drop(endpoint_listener);
         let request = DeepLinkImportRequest {
             resource: "provider".to_string(),
             app: Some("codex".to_string()),
             name: Some("Disabled Chat Import".to_string()),
             enabled: Some(false),
-            endpoint: Some(endpoint),
+            endpoint: Some(format!("http://{endpoint_addr}/v1")),
             api_key: Some("test-only-key".to_string()),
             model: Some("claude-disabled".to_string()),
             ..Default::default()
@@ -1295,12 +1468,33 @@ mod tests {
             .get_provider_by_id(&provider_id, "codex")
             .expect("read imported provider")
             .expect("provider exists");
+        // No protocol is *probed* at import time (there is no server shape
+        // to simulate a wrong answer from any more), but it is still
+        // computed and persisted from the model-family default, matching
+        // "claude-*" to Anthropic — not left unset (see the MH-8a
+        // correction note in the implementation tracker for why leaving it
+        // unset would actually resolve to Native Responses instead, via
+        // build_codex_settings's hardcoded wire_api = "responses").
         assert_eq!(
             stored
                 .meta
                 .as_ref()
                 .and_then(|meta| meta.api_format.as_deref()),
-            Some("openai_chat")
+            Some("anthropic")
+        );
+        assert!(
+            crate::proxy::providers::should_convert_codex_responses_to_anthropic_for_model(
+                &stored,
+                "/v1/responses",
+                Some("claude-disabled"),
+            )
+        );
+        assert!(
+            !crate::proxy::providers::should_convert_codex_responses_to_chat_for_model(
+                &stored,
+                "/v1/responses",
+                Some("claude-disabled"),
+            )
         );
         assert_eq!(db.get_current_provider("codex").expect("db current"), None);
         assert_eq!(crate::settings::get_current_provider(&AppType::Codex), None);
@@ -1315,7 +1509,6 @@ mod tests {
         );
         assert!(!state.proxy_service.is_running().await);
         assert!(db.get_live_backup("codex").await.expect("backup").is_none());
-        probe_server.abort();
     }
 
     #[tokio::test]
@@ -1359,37 +1552,12 @@ mod tests {
         .await
         .expect("activate existing provider");
 
-        async fn unsupported() -> impl IntoResponse {
-            (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "not found"})),
-            )
-        }
-        async fn chat_validation() -> impl IntoResponse {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": {"message": "max_tokens must be an integer for chat/completions"}
-                })),
-            )
-        }
-        let probe_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind probe server");
-        let probe_addr = probe_listener.local_addr().expect("probe addr");
-        let probe_server = tokio::spawn(async move {
-            axum::serve(
-                probe_listener,
-                Router::new()
-                    .route("/v1/responses", post(unsupported))
-                    .route("/v1/chat/completions", post(chat_validation))
-                    .route("/v1/messages", post(unsupported)),
-            )
-            .await
-            .expect("serve probe routes");
-        });
-
-        let endpoint = format!("http://{probe_addr}/v1");
+        // MH-8a: no probe, so no live server needed here either.
+        let endpoint_listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("reserve endpoint port");
+        let endpoint_addr = endpoint_listener.local_addr().expect("endpoint addr");
+        drop(endpoint_listener);
+        let endpoint = format!("http://{endpoint_addr}/v1");
         let request = DeepLinkImportRequest {
             resource: "provider".to_string(),
             app: Some("codex".to_string()),
@@ -1434,14 +1602,14 @@ mod tests {
         assert!(restored.contains(&endpoint));
         assert!(!restored.contains("https://existing.example.invalid/v1"));
         assert!(!restored.contains(&format!("127.0.0.1:{proxy_port}")));
-        probe_server.abort();
     }
 
     #[tokio::test]
     #[serial]
-    async fn enabled_non_codex_import_waits_for_profile_and_rolls_back_to_latest_live() {
+    async fn non_codex_import_ignores_enabled_flag_per_tool_policy() {
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("reload settings");
+        show_claude_family();
         let db = Arc::new(crate::database::Database::memory().expect("create memory db"));
         let state = crate::store::AppState::new(db.clone());
 
@@ -1456,26 +1624,84 @@ mod tests {
             }),
             None,
         );
-        let provider_b = Provider::with_id(
-            "claude-b".to_string(),
-            "Claude B".to_string(),
+        db.save_provider("claude", &provider_a)
+            .expect("save provider A");
+        ProviderService::switch(&state, AppType::Claude, "claude-a").expect("activate provider A");
+
+        // Non-Codex tools (Claude) have ImportOnly deep link policy (M3).
+        // Even if enabled = true is requested, it must never auto-activate.
+        let result = import_provider_from_deeplink(
+            &state,
+            DeepLinkImportRequest {
+                resource: "provider".to_string(),
+                app: Some("claude".to_string()),
+                name: Some("Transactional Import".to_string()),
+                enabled: Some(true),
+                homepage: Some("https://example.com".to_string()),
+                endpoint: Some("https://c.example.invalid".to_string()),
+                api_key: Some("test-c".to_string()),
+                model: Some("claude-test".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("import succeeds as import-only");
+
+        assert_eq!(
+            db.get_current_provider("claude")
+                .expect("read current")
+                .as_deref(),
+            Some("claude-a")
+        );
+        assert_eq!(
+            crate::settings::get_current_provider(&AppType::Claude).as_deref(),
+            Some("claude-a")
+        );
+        let imported = db
+            .get_provider_by_id(&result, "claude")
+            .expect("read imported provider")
+            .expect("imported exists");
+        assert_eq!(imported.id, result);
+        assert_ne!(
+            db.get_current_provider("claude")
+                .expect("read current")
+                .as_deref(),
+            Some(result.as_str())
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn enabled_codex_import_waits_for_profile_and_rolls_back_to_latest_live() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        let db = Arc::new(crate::database::Database::memory().expect("create memory db"));
+        let state = crate::store::AppState::new(db.clone());
+
+        let provider_a = Provider::with_id(
+            "codex-a".to_string(),
+            "Codex A".to_string(),
             json!({
-                "env": {
-                    "ANTHROPIC_AUTH_TOKEN": "test-b",
-                    "ANTHROPIC_BASE_URL": "https://b.example.invalid"
-                }
+                "auth": {"OPENAI_API_KEY": "sk-a"},
+                "config": "model = \"model-a\"\n"
             }),
             None,
         );
-        db.save_provider("claude", &provider_a)
+        let provider_b = Provider::with_id(
+            "codex-b".to_string(),
+            "Codex B".to_string(),
+            json!({
+                "auth": {"OPENAI_API_KEY": "sk-b"},
+                "config": "model = \"model-b\"\n"
+            }),
+            None,
+        );
+        db.save_provider("codex", &provider_a)
             .expect("save provider A");
-        db.save_provider("claude", &provider_b)
+        db.save_provider("codex", &provider_b)
             .expect("save provider B");
-        ProviderService::switch(&state, AppType::Claude, "claude-a").expect("activate provider A");
+        ProviderService::switch(&state, AppType::Codex, "codex-a").expect("activate provider A");
 
-        // Model the complete Profile Apply transaction. The enabled Deep Link
-        // may parse/build its provider concurrently, but it must not snapshot or
-        // stage anything until the Profile transaction has committed provider B.
         let profile_lock = state.profile_apply_lock.clone();
         let profile_guard = profile_lock.lock().await;
         let import_state = state.clone();
@@ -1484,13 +1710,13 @@ mod tests {
                 &import_state,
                 DeepLinkImportRequest {
                     resource: "provider".to_string(),
-                    app: Some("claude".to_string()),
+                    app: Some("codex".to_string()),
                     name: Some("Transactional Import".to_string()),
                     enabled: Some(true),
                     homepage: Some("https://example.com".to_string()),
                     endpoint: Some("https://c.example.invalid".to_string()),
-                    api_key: Some("test-c".to_string()),
-                    model: Some("claude-test".to_string()),
+                    api_key: Some("sk-c".to_string()),
+                    model: Some("model-c".to_string()),
                     ..Default::default()
                 },
             )
@@ -1499,7 +1725,7 @@ mod tests {
 
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert_eq!(
-            db.get_all_providers("claude")
+            db.get_all_providers("codex")
                 .expect("read providers while profile lock held")
                 .len(),
             2,
@@ -1508,8 +1734,8 @@ mod tests {
 
         crate::switch_provider_with_automatic_routing_profile_lock_held_state(
             state.clone(),
-            AppType::Claude,
-            "claude-b".to_string(),
+            AppType::Codex,
+            "codex-b".to_string(),
         )
         .await
         .expect("commit Profile provider B");
@@ -1517,9 +1743,9 @@ mod tests {
         {
             let conn = db.conn.lock().expect("lock database");
             conn.execute_batch(
-                "CREATE TRIGGER reject_imported_claude_current_update
+                "CREATE TRIGGER reject_imported_codex_current_update
                  BEFORE UPDATE OF is_current ON providers
-                 WHEN NEW.app_type = 'claude'
+                 WHEN NEW.app_type = 'codex'
                    AND NEW.id LIKE 'transactionalimport-%'
                    AND NEW.is_current = 1
                  BEGIN
@@ -1539,44 +1765,45 @@ mod tests {
             .contains("forced concurrent enabled-import failure"));
 
         let providers = db
-            .get_all_providers("claude")
+            .get_all_providers("codex")
             .expect("read providers after rollback");
         assert_eq!(providers.len(), 2);
         assert!(!providers
             .keys()
             .any(|id| id.starts_with("transactionalimport-")));
         assert_eq!(
-            db.get_current_provider("claude")
+            db.get_current_provider("codex")
                 .expect("read db current after rollback")
                 .as_deref(),
-            Some("claude-b")
+            Some("codex-b")
         );
         assert_eq!(
-            crate::settings::get_current_provider(&AppType::Claude).as_deref(),
-            Some("claude-b")
+            crate::settings::get_current_provider(&AppType::Codex).as_deref(),
+            Some("codex-b")
         );
-        let live = std::fs::read_to_string(crate::config::get_claude_settings_path())
-            .expect("read Claude Live after rollback");
-        assert!(live.contains("https://b.example.invalid"));
-        assert!(!live.contains("https://a.example.invalid"));
-        assert!(!live.contains("https://c.example.invalid"));
+        let live = std::fs::read_to_string(crate::codex_config::get_codex_config_path())
+            .expect("read Codex Live after rollback");
+        assert!(live.contains("model-b"));
+        assert!(!live.contains("model-c"));
     }
 
     #[tokio::test]
     #[serial]
-    async fn enabled_claude_desktop_import_failure_restores_all_live_files() {
+    async fn enabled_claude_desktop_import_remains_import_only() {
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("reload settings");
-        if crate::claude_desktop_config::capture_live_snapshot()
-            .expect("probe Claude Desktop snapshot support")
-            .is_none()
-        {
+        show_claude_family();
+        assert!(!deeplink_import_may_activate(&AppType::ClaudeDesktop));
+
+        let before = crate::claude_desktop_config::capture_live_snapshot()
+            .expect("probe Claude Desktop snapshot support");
+        let Some(before) = before else {
             return;
-        }
+        };
 
         let db = Arc::new(crate::database::Database::memory().expect("create memory db"));
         let state = crate::store::AppState::new(db.clone());
-        let current_id = import_provider_from_deeplink(
+        let imported_id = import_provider_from_deeplink(
             &state,
             DeepLinkImportRequest {
                 resource: "provider".to_string(),
@@ -1590,70 +1817,31 @@ mod tests {
             },
         )
         .await
-        .expect("activate initial Claude Desktop provider");
-
-        let before = crate::claude_desktop_config::capture_live_snapshot()
-            .expect("capture initial Claude Desktop Live")
-            .expect("supported platform snapshot");
-        assert!(before.has_live_data());
-
-        {
-            let conn = db.conn.lock().expect("lock database");
-            conn.execute_batch(
-                "CREATE TRIGGER reject_imported_claude_desktop_current_update
-                 BEFORE UPDATE OF is_current ON providers
-                 WHEN NEW.app_type = 'claude-desktop'
-                   AND NEW.id LIKE 'desktopc-%'
-                   AND NEW.is_current = 1
-                 BEGIN
-                   SELECT RAISE(ABORT, 'forced Claude Desktop enabled-import failure');
-                 END;",
-            )
-            .expect("install Claude Desktop failure trigger");
-        }
-
-        let error = import_provider_from_deeplink(
-            &state,
-            DeepLinkImportRequest {
-                resource: "provider".to_string(),
-                app: Some("claude-desktop".to_string()),
-                name: Some("Desktop C".to_string()),
-                enabled: Some(true),
-                endpoint: Some("https://desktop-c.example.invalid/v1".to_string()),
-                api_key: Some("desktop-c-test-key".to_string()),
-                model: Some("claude-c".to_string()),
-                ..Default::default()
-            },
-        )
-        .await
-        .expect_err("forced current commit failure must abort import");
-        assert!(error
-            .to_string()
-            .contains("forced Claude Desktop enabled-import failure"));
+        .expect("import Claude Desktop provider without activation");
 
         let providers = db
             .get_all_providers("claude-desktop")
-            .expect("read Claude Desktop providers after rollback");
-        assert_eq!(providers.len(), 1);
-        assert!(providers.contains_key(&current_id));
-        assert!(!providers.keys().any(|id| id.starts_with("desktopc-")));
-        assert_eq!(
-            db.get_current_provider("claude-desktop")
-                .expect("read DB current after rollback")
-                .as_deref(),
-            Some(current_id.as_str())
-        );
-        assert_eq!(
-            crate::settings::get_current_provider(&AppType::ClaudeDesktop).as_deref(),
-            Some(current_id.as_str())
-        );
+            .expect("read imported Claude Desktop provider");
+        assert!(providers.contains_key(&imported_id));
+        let flags: (bool, bool) = db
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT is_current, in_failover_queue FROM providers WHERE id = ?1",
+                [&imported_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read imported provider flags");
+        assert_eq!(flags, (false, false));
+        assert_eq!(db.get_current_provider("claude-desktop").unwrap(), None);
 
         let after = crate::claude_desktop_config::capture_live_snapshot()
-            .expect("capture rolled-back Claude Desktop Live")
+            .expect("capture Claude Desktop Live after import")
             .expect("supported platform snapshot");
         assert_eq!(
             after, before,
-            "deployment configs, generated profile, and metadata must all roll back"
+            "import-only deeplink must not write Live files"
         );
     }
 
@@ -1668,9 +1856,9 @@ mod tests {
         {
             let conn = db.conn.lock().expect("lock database");
             conn.execute_batch(
-                "CREATE TRIGGER reject_claude_current_update
+                "CREATE TRIGGER reject_codex_current_update
                  BEFORE UPDATE OF is_current ON providers
-                 WHEN NEW.app_type = 'claude'
+                 WHEN NEW.app_type = 'codex'
                  BEGIN
                    SELECT RAISE(ABORT, 'forced enabled-import switch failure');
                  END;",
@@ -1680,13 +1868,13 @@ mod tests {
 
         let request = DeepLinkImportRequest {
             resource: "provider".to_string(),
-            app: Some("claude".to_string()),
+            app: Some("codex".to_string()),
             name: Some("Transactional Import".to_string()),
             enabled: Some(true),
             homepage: Some("https://example.com".to_string()),
             endpoint: Some("https://api.example.com/v1".to_string()),
             api_key: Some("test-key".to_string()),
-            model: Some("claude-test".to_string()),
+            model: Some("codex-test".to_string()),
             ..Default::default()
         };
 
@@ -1697,22 +1885,19 @@ mod tests {
             .to_string()
             .contains("forced enabled-import switch failure"));
         assert!(
-            db.get_all_providers("claude")
+            db.get_all_providers("codex")
                 .expect("read providers after rollback")
                 .is_empty(),
             "failed enabled import must not leave the staged provider"
         );
         assert_eq!(
-            db.get_current_provider("claude")
+            db.get_current_provider("codex")
                 .expect("read db current after rollback"),
             None
         );
-        assert_eq!(
-            crate::settings::get_current_provider(&AppType::Claude),
-            None
-        );
+        assert_eq!(crate::settings::get_current_provider(&AppType::Codex), None);
         assert!(
-            !crate::config::get_claude_settings_path().exists(),
+            !crate::codex_config::get_codex_config_path().exists(),
             "failed enabled import must restore the missing Live config"
         );
     }

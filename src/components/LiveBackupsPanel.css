@@ -1,0 +1,68 @@
+.live-backups-panel {
+  margin-top: 24px;
+  display: grid;
+  gap: 8px;
+  color: var(--ink);
+}
+.live-backups-heading {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+.live-backups-description {
+  margin: 0;
+  color: var(--ch-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.live-backups-table {
+  width: 100%;
+  min-width: 520px;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 12px;
+}
+.live-backups-table th {
+  height: 28px;
+  padding: 0 8px;
+  color: var(--ch-muted);
+  font-size: 11px;
+  font-weight: 400;
+}
+.live-backups-table td {
+  height: 44px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--line);
+}
+.live-backups-table td:first-child {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.live-backups-table td:last-child {
+  width: 1%;
+  white-space: nowrap;
+}
+.live-backups-table button {
+  height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.live-backup-id {
+  display: block;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-3);
+  font-size: 11px;
+}
+.live-backup-size {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.live-backups-table .live-backups-empty {
+  height: 112px;
+  text-align: center;
+  color: var(--text-2);
+  white-space: normal;
+}

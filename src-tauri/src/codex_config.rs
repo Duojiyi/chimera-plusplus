@@ -2,8 +2,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::config::{
-    atomic_write, delete_file, get_home_dir, read_json_file, sanitize_provider_name,
-    write_json_file, write_text_file,
+    delete_file, get_home_dir, read_json_file, sanitize_provider_name, write_json_file,
 };
 use crate::error::AppError;
 use crate::model_capabilities::{image_input_capability_from_modalities, ImageInputCapability};
@@ -21,7 +20,7 @@ pub const CC_SWITCH_CODEX_MODEL_PROVIDER_ID: &str = "custom";
 /// cleaned up without mistaking a user's own local provider for takeover.
 pub const CC_SWITCH_CODEX_OFFICIAL_PROXY_PROVIDER_ID: &str = "cc-switch-official";
 pub const CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME: &str = "cc-switch-model-catalog.json";
-const CODEX_PROXY_AUTH_PLACEHOLDER: &str = "PROXY_MANAGED";
+pub(crate) const CODEX_PROXY_AUTH_PLACEHOLDER: &str = "PROXY_MANAGED";
 
 /// A model identity returned by Codex's own `debug models` command.
 ///
@@ -43,6 +42,8 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 // CODEX_HOME and seed different model templates.
 #[cfg(not(test))]
 static CODEX_MODEL_CATALOG_TEMPLATE_CACHE: OnceCell<Value> = OnceCell::new();
+#[cfg(not(test))]
+static CODEX_RUNTIME_CATALOG_CACHE: OnceCell<Option<Value>> = OnceCell::new();
 
 /// Top-level `config.toml` key that controls Codex's built-in web-search tool.
 pub(crate) const CODEX_WEB_SEARCH_FIELD: &str = "web_search";
@@ -272,62 +273,130 @@ fn is_accepted_codex_approval_policy(item: &toml_edit::Item) -> bool {
         .is_some_and(|table| table.contains_key("granular"))
 }
 
-/// Remove `approval_policy` assignments Codex no longer accepts, in place, so
+/// MH-23: `GranularApprovalConfig` fields with no `#[serde(default)]` in
+/// Codex's own struct (verified against `protocol/src/protocol.rs`,
+/// `rust-v0.156.0`-era source; `skill_approval`/`request_permissions` do
+/// have one and are not listed here). A granular table missing any of
+/// these fails to deserialize, which — like the string-form rejections
+/// above — takes the whole config.toml down with it, not just this key.
+const CODEX_GRANULAR_APPROVAL_REQUIRED_BOOL_FIELDS: &[&str] =
+    &["sandbox_approval", "rules", "mcp_elicitations"];
+
+/// Backfill missing required boolean fields on an `approval_policy = {
+/// granular = { ... } }` table with `false` (deny that category, the
+/// conservative reading of the user's intent to use granular mode at all —
+/// never silently allow something they never opted into). No-op for any
+/// other shape (string policy, absent, or already-complete granular table).
+/// Returns the names backfilled, for the same one-time log line the
+/// string-rejection path already writes.
+fn backfill_granular_approval_required_fields(
+    item: &mut toml_edit::Item,
+    location: &str,
+    filled: &mut Vec<String>,
+) {
+    let Some(table) = item.as_table_like_mut() else {
+        return;
+    };
+    if !table.contains_key("granular") {
+        return;
+    }
+    let Some(granular) = table
+        .get_mut("granular")
+        .and_then(|item| item.as_table_like_mut())
+    else {
+        return;
+    };
+    for field in CODEX_GRANULAR_APPROVAL_REQUIRED_BOOL_FIELDS {
+        if !granular.contains_key(field) {
+            granular.insert(field, toml_edit::value(false));
+            filled.push(format!("{location}.granular.{field}"));
+        }
+    }
+}
+
+/// Remove `approval_policy`/top-level `profile` assignments Codex no longer
+/// accepts, and backfill an incomplete granular approval table, in place, so
 /// every other byte of the user's config.toml survives. Returns the text
-/// unchanged (same allocation) when there is nothing to strip.
+/// unchanged (same allocation) when there is nothing to fix.
 pub fn strip_rejected_codex_settings(config_text: &str) -> Result<String, AppError> {
-    if !config_text.contains("approval_policy") {
+    if !config_text.contains("approval_policy") && !config_text.contains("profile") {
         return Ok(config_text.to_string());
     }
     let mut doc = config_text
         .parse::<toml_edit::DocumentMut>()
         .map_err(|e| AppError::Config(format!("Codex 配置无法解析: {e}")))?;
     let mut removed = Vec::new();
+    let mut filled = Vec::new();
 
     let is_rejected = |item: &toml_edit::Item| !is_accepted_codex_approval_policy(item);
+
+    // MH-23: any top-level `profile = "x"` makes current Codex refuse the
+    // whole config ("legacy `profile = "..."` config is no longer
+    // supported; use `--profile ...` with `<name>.config.toml` instead"),
+    // unconditionally and regardless of value — verified against
+    // `core/src/config/mod.rs`. `[profiles.*]` tables themselves are a
+    // separate, still-supported mechanism and are untouched here.
+    if doc.remove("profile").is_some() {
+        removed.push("profile".to_string());
+    }
 
     if doc.get("approval_policy").is_some_and(is_rejected) {
         removed.push("approval_policy".to_string());
         doc.remove("approval_policy");
+    } else if let Some(item) = doc.get_mut("approval_policy") {
+        backfill_granular_approval_required_fields(item, "approval_policy", &mut filled);
     }
     if let Some(profiles) = doc
         .get_mut("profiles")
         .and_then(|item| item.as_table_like_mut())
     {
-        let names: Vec<String> = profiles
-            .iter()
-            .filter(|(_, profile)| {
-                profile
-                    .as_table_like()
-                    .and_then(|table| table.get("approval_policy"))
-                    .is_some_and(is_rejected)
-            })
-            .map(|(name, _)| name.to_string())
-            .collect();
+        let names: Vec<String> = profiles.iter().map(|(name, _)| name.to_string()).collect();
         for name in names {
-            if let Some(profile) = profiles
+            let Some(profile) = profiles
                 .get_mut(&name)
                 .and_then(|item| item.as_table_like_mut())
-            {
+            else {
+                continue;
+            };
+            let rejected = profile.get("approval_policy").is_some_and(&is_rejected);
+            if rejected {
                 profile.remove("approval_policy");
                 removed.push(format!("profiles.{name}.approval_policy"));
+            } else if let Some(item) = profile.get_mut("approval_policy") {
+                backfill_granular_approval_required_fields(
+                    item,
+                    &format!("profiles.{name}.approval_policy"),
+                    &mut filled,
+                );
             }
         }
     }
 
-    if removed.is_empty() {
+    if removed.is_empty() && filled.is_empty() {
         return Ok(config_text.to_string());
     }
-    log::warn!(
-        "已从 Codex 配置移除 Codex 0.153+ 不再接受的 approval_policy 取值（{}），否则整份 config.toml 会被拒绝加载",
-        removed.join(", ")
-    );
+    if !removed.is_empty() {
+        log::warn!(
+            "已从 Codex 配置移除 Codex 0.153+ 不再接受的取值（{}），否则整份 config.toml 会被拒绝加载",
+            removed.join(", ")
+        );
+    }
+    if !filled.is_empty() {
+        log::warn!(
+            "已为 Codex granular 审批表补齐缺失的必填字段（{}，默认 false），否则整份 config.toml 会被拒绝加载",
+            filled.join(", ")
+        );
+    }
     Ok(doc.to_string())
 }
 
-/// Startup self-repair: if the live config.toml carries an `approval_policy`
-/// Codex rejects, back it up next to itself and rewrite it without the key.
-/// Nothing else is touched; a config that already loads is left byte-identical.
+/// Startup self-repair: if the live config.toml carries a setting Codex
+/// rejects wholesale (an old `approval_policy` value, a top-level `profile`,
+/// an incomplete granular approval table — see `strip_rejected_codex_settings`),
+/// or a leftover non-official provider table named `"OpenAI"` (CPP-A1①, see
+/// `rename_non_official_openai_named_provider_tables`), back it up next to
+/// itself and rewrite it repaired. Nothing else is touched; a config that
+/// needs neither fix is left byte-identical.
 pub fn repair_rejected_codex_settings_at_startup() -> Result<bool, AppError> {
     let config_path = get_codex_config_path();
     if !config_path.exists() {
@@ -335,6 +404,7 @@ pub fn repair_rejected_codex_settings_at_startup() -> Result<bool, AppError> {
     }
     let text = fs::read_to_string(&config_path).map_err(|e| AppError::io(&config_path, e))?;
     let repaired = strip_rejected_codex_settings(&text)?;
+    let repaired = rename_non_official_openai_named_provider_tables(&repaired)?.unwrap_or(repaired);
     if repaired == text {
         return Ok(false);
     }
@@ -343,7 +413,9 @@ pub fn repair_rejected_codex_settings_at_startup() -> Result<bool, AppError> {
         chrono::Local::now().format("%Y%m%d%H%M%S")
     ));
     fs::write(&backup_path, text.as_bytes()).map_err(|e| AppError::io(&backup_path, e))?;
-    write_text_file(&config_path, &repaired)?;
+    crate::codex_live_write::write_codex_live_files(
+        crate::codex_live_write::CodexLiveWrite::config_only(&repaired),
+    )?;
     log::info!(
         "✓ Repaired Codex config.toml (backup: {})",
         backup_path.display()
@@ -356,48 +428,14 @@ pub fn write_codex_live_atomic(
     auth: &Value,
     config_text_opt: Option<&str>,
 ) -> Result<(), AppError> {
-    let auth_path = get_codex_auth_path();
-    let config_path = get_codex_config_path();
-
-    if let Some(parent) = auth_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
-    }
-
-    // 读取旧内容用于回滚
-    let old_auth = if auth_path.exists() {
-        Some(fs::read(&auth_path).map_err(|e| AppError::io(&auth_path, e))?)
-    } else {
-        None
-    };
-    let _old_config = if config_path.exists() {
-        Some(fs::read(&config_path).map_err(|e| AppError::io(&config_path, e))?)
-    } else {
-        None
-    };
-
-    // 准备写入内容
-    let cfg_text = match config_text_opt {
-        Some(s) => strip_rejected_codex_settings(s)?,
-        None => String::new(),
-    };
-    if !cfg_text.trim().is_empty() {
-        toml::from_str::<toml::Table>(&cfg_text).map_err(|e| AppError::toml(&config_path, e))?;
-    }
-
-    // 第一步：写 auth.json
-    write_json_file(&auth_path, auth)?;
-
-    // 第二步：写 config.toml（失败则回滚 auth.json）
-    if let Err(e) = write_text_file(&config_path, &cfg_text) {
-        // 回滚 auth.json
-        if let Some(bytes) = old_auth {
-            let _ = atomic_write(&auth_path, &bytes);
-        } else {
-            let _ = delete_file(&auth_path);
-        }
-        return Err(e);
-    }
-
+    crate::codex_live_write::write_codex_live_files(crate::codex_live_write::CodexLiveWrite {
+        auth: crate::codex_live_write::LiveFile::Write(auth),
+        config: match config_text_opt {
+            Some(s) => crate::codex_live_write::LiveFile::Write(s),
+            None => crate::codex_live_write::LiveFile::Write(""),
+        },
+        model_catalog: crate::codex_live_write::LiveFile::Keep,
+    })?;
     Ok(())
 }
 
@@ -512,12 +550,14 @@ pub fn normalize_codex_third_party_auth_config(config_text: &str) -> Result<Stri
             .get_mut("model_providers")
             .and_then(|item| item.as_table_mut())
         {
-            if let Some(provider) = model_providers.get_mut(&provider_id) {
-                if let Some(table) = provider.as_table_mut() {
-                    table.remove("requires_openai_auth");
-                } else if let Some(table) = provider.as_inline_table_mut() {
-                    table.remove("requires_openai_auth");
-                }
+            if let Some(table) = model_providers
+                .get_mut(&provider_id)
+                .and_then(|item| item.as_table_like_mut())
+            {
+                table.remove("requires_openai_auth");
+                // CPP-A1①: a third-party route must not present itself as
+                // Codex's built-in OpenAI provider either.
+                rename_openai_named_non_official_table(&provider_id, table);
             }
         }
     }
@@ -531,17 +571,11 @@ pub fn normalize_codex_third_party_auth_config(config_text: &str) -> Result<Stri
 /// and provider-scoped bearer tokens live in `config.toml`. Provider switches
 /// should not overwrite the user's ChatGPT login cache.
 pub fn write_codex_live_config_atomic(config_text_opt: Option<&str>) -> Result<(), AppError> {
-    let config_path = get_codex_config_path();
-    let cfg_text = match config_text_opt {
-        Some(config_text) => strip_rejected_codex_settings(config_text)?,
-        None => String::new(),
-    };
-
-    if !cfg_text.trim().is_empty() {
-        toml::from_str::<toml::Table>(&cfg_text).map_err(|e| AppError::toml(&config_path, e))?;
-    }
-
-    write_text_file(&config_path, &cfg_text)
+    let cfg = config_text_opt.unwrap_or("");
+    crate::codex_live_write::write_codex_live_files(
+        crate::codex_live_write::CodexLiveWrite::config_only(cfg),
+    )?;
+    Ok(())
 }
 
 pub fn extract_codex_auth_api_key(auth: &Value) -> Option<String> {
@@ -629,6 +663,103 @@ fn codex_auth_last_refresh(auth: &Value) -> Option<chrono::DateTime<chrono::Fixe
         .and_then(|text| chrono::DateTime::parse_from_rfc3339(text).ok())
 }
 
+/// MH-14: the ChatGPT identity behind an auth.json value, as
+/// (`chatgpt_user_id`, `chatgpt_account_id`). Both come from the `id_token`
+/// claims under `https://api.openai.com/auth` (user id falls back to
+/// `user_id`, as Codex's own `parse_chatgpt_jwt_claims` does at
+/// `rust-v0.157.0`); the account id falls back to `tokens.account_id`.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct CodexChatgptIdentity {
+    user_id: Option<String>,
+    account_id: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum CodexIdentityMatch {
+    Same,
+    Different,
+    Unknown,
+}
+
+fn codex_id_token_auth_claims(id_token: &str) -> Option<Value> {
+    use base64::Engine;
+    let mut parts = id_token.split('.');
+    let (_header, payload, _signature) = (parts.next()?, parts.next()?, parts.next()?);
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload.trim_end_matches('='))
+        .ok()?;
+    let claims: Value = serde_json::from_slice(&bytes).ok()?;
+    claims.get("https://api.openai.com/auth").cloned()
+}
+
+fn codex_auth_chatgpt_identity(auth: &Value) -> CodexChatgptIdentity {
+    let non_empty = |value: Option<&Value>| {
+        value
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_string)
+    };
+    let claims = auth
+        .pointer("/tokens/id_token")
+        .and_then(Value::as_str)
+        .and_then(codex_id_token_auth_claims);
+    let claim = |key: &str| non_empty(claims.as_ref().and_then(|claims| claims.get(key)));
+    CodexChatgptIdentity {
+        user_id: claim("chatgpt_user_id").or_else(|| claim("user_id")),
+        account_id: claim("chatgpt_account_id")
+            .or_else(|| non_empty(auth.pointer("/tokens/account_id"))),
+    }
+}
+
+/// Live backups (M2.1 ②) record which ChatGPT login a Codex config was
+/// paired with without ever copying `auth.json`: a short, non-reversible
+/// digest of the MH-14 identity. `None` when neither id is known.
+pub(crate) fn codex_auth_identity_fingerprint(auth: &Value) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let identity = codex_auth_chatgpt_identity(auth);
+    if identity.user_id.is_none() && identity.account_id.is_none() {
+        return None;
+    }
+    let digest = Sha256::digest(format!(
+        "{}\u{0}{}",
+        identity.user_id.as_deref().unwrap_or_default(),
+        identity.account_id.as_deref().unwrap_or_default()
+    ));
+    Some(
+        digest
+            .iter()
+            .take(8)
+            .map(|byte| format!("{byte:02x}"))
+            .collect(),
+    )
+}
+
+/// Two identities are the same only when every component known on both
+/// sides agrees and at least one component was compared.
+fn compare_codex_chatgpt_identities(
+    left: &CodexChatgptIdentity,
+    right: &CodexChatgptIdentity,
+) -> CodexIdentityMatch {
+    let mut compared = false;
+    for (left, right) in [
+        (&left.user_id, &right.user_id),
+        (&left.account_id, &right.account_id),
+    ] {
+        if let (Some(left), Some(right)) = (left, right) {
+            if left != right {
+                return CodexIdentityMatch::Different;
+            }
+            compared = true;
+        }
+    }
+    if compared {
+        CodexIdentityMatch::Same
+    } else {
+        CodexIdentityMatch::Unknown
+    }
+}
+
 fn prepare_codex_official_auth(stored_auth: &Value, live_auth: &Value) -> Value {
     let stored_has_oauth = codex_auth_has_oauth_login_material(stored_auth);
     // While a third-party provider was active, Codex itself kept refreshing
@@ -642,19 +773,30 @@ fn prepare_codex_official_auth(stored_auth: &Value, live_auth: &Value) -> Value 
     // the ChatGPT auth server already rotated past — each refresh
     // invalidates the previous one — forcing a surprise re-login. Prefer
     // `live_auth` in exactly that situation: both sides have real oauth
-    // material, and live's `last_refresh` is strictly newer. Any other
-    // combination (missing/unparseable timestamps, live has no oauth
-    // material, live was never refreshed) keeps the historical
-    // stored-wins-when-present default below unchanged.
+    // material, and live's `last_refresh` is strictly newer.
+    //
+    // MH-14: freshness is only comparable within one ChatGPT identity. When
+    // both sides are the same identity the newer live login wins; when they
+    // are known to be different identities, the selected official line's own
+    // account wins (switching between official accounts); when the identity
+    // cannot be established on both sides, live wins — it is the login Codex
+    // is actually using, and the stored snapshot may belong to anyone.
     let prefer_live_over_stored = stored_has_oauth
         && codex_auth_has_oauth_login_material(live_auth)
-        && matches!(
-            (
-                codex_auth_last_refresh(stored_auth),
-                codex_auth_last_refresh(live_auth),
+        && match compare_codex_chatgpt_identities(
+            &codex_auth_chatgpt_identity(stored_auth),
+            &codex_auth_chatgpt_identity(live_auth),
+        ) {
+            CodexIdentityMatch::Same => matches!(
+                (
+                    codex_auth_last_refresh(stored_auth),
+                    codex_auth_last_refresh(live_auth),
+                ),
+                (Some(stored_refresh), Some(live_refresh)) if live_refresh > stored_refresh
             ),
-            (Some(stored_refresh), Some(live_refresh)) if live_refresh > stored_refresh
-        );
+            CodexIdentityMatch::Different => false,
+            CodexIdentityMatch::Unknown => true,
+        };
     let mut official_auth = if stored_has_oauth && !prefer_live_over_stored {
         stored_auth.clone()
     } else {
@@ -663,6 +805,42 @@ fn prepare_codex_official_auth(stored_auth: &Value, live_auth: &Value) -> Value 
     if !official_auth.is_object() {
         official_auth = json!({});
     }
+
+    // MH-15: Codex's official identity supports logging in with a plain API
+    // key instead of ChatGPT OAuth (`codex login --api-key`) — a real,
+    // supported mode alongside `chatgpt`, not a stale mistake. The
+    // unconditional strip-and-relabel below used to also fire on that
+    // legitimate case, silently deleting a working API key and forcing an
+    // `auth_mode: "chatgpt"` with no actual tokens behind it — logging the
+    // user out and demanding a fresh ChatGPT login they never asked for.
+    //
+    // Distinguish "genuinely has usable OAuth tokens" from "auth_mode says
+    // chatgpt/apikey but there's nothing real behind it" directly — not via
+    // `codex_auth_has_oauth_login_material`, which itself requires
+    // `auth_mode == "chatgpt"` and would (correctly, for that function's own
+    // purpose) call a mislabeled-but-real oauth session "not oauth".
+    let has_real_oauth_tokens = official_auth
+        .pointer("/tokens/access_token")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|token| !token.is_empty());
+    let has_own_non_oauth_credential = extract_codex_auth_api_key(&official_auth).is_some()
+        || official_auth
+            .get("personal_access_token")
+            .and_then(Value::as_str)
+            .is_some_and(|token| !token.trim().is_empty());
+    if has_own_non_oauth_credential && !has_real_oauth_tokens {
+        // Leave a legitimate non-ChatGPT official login byte-identical.
+        // Coverage note: this recognizes `OPENAI_API_KEY` and
+        // `personal_access_token` specifically. Codex 0.157 is reported to
+        // also accept a `headers`-based login mode; that field's exact
+        // shape is not independently confirmed against upstream source in
+        // this codebase (no current caller references it), so it is not
+        // yet recognized here — a headers-only official login would still
+        // be incorrectly relabeled to chatgpt by the fallthrough below.
+        return official_auth;
+    }
+
     if let Some(object) = official_auth.as_object_mut() {
         object.remove("OPENAI_API_KEY");
         object.insert(
@@ -684,6 +862,77 @@ pub fn codex_auth_has_oauth_login_material(auth: &Value) -> bool {
             .and_then(Value::as_str)
             .map(str::trim)
             .is_some_and(|token| !token.is_empty())
+}
+
+/// MH-19: scrub OAuth login material out of a **non-official** Codex
+/// provider's stored `auth`, in place. Returns whether anything changed
+/// (for logging a count only — never the removed values).
+///
+/// Backfill (`restore_live_settings_for_provider_backfill`) starts a
+/// non-official row's stored `settings` from a clone of the *entire* live
+/// `settings.json`/`auth.json`, so that a third-party row can pick up the
+/// one field it may legitimately need restored: a bearer token Codex
+/// materialized from `env_key`/header-based auth
+/// (`restore_codex_provider_token_for_backfill`). But whenever live
+/// `auth.json` still holds real ChatGPT OAuth material at that moment —
+/// most commonly right after switching away from official with
+/// `preserve_codex_official_auth_on_switch` on, which deliberately leaves
+/// official's own auth.json untouched — that OAuth material rides along
+/// into the third-party row's stored `auth` too, unless something strips
+/// it back out. Nothing did.
+///
+/// `auth_mode` is a generic label a non-official row can legitimately carry
+/// with a non-`"chatgpt"` value (e.g. `"apikey"`) — it is only removed, along
+/// with `tokens` (nested `access_token`/`refresh_token`/`id_token`), when
+/// its value is exactly `"chatgpt"`. `agent_identity`/`personal_access_token`/
+/// `bedrock_*` are unconditional: unlike `auth_mode`, these are Codex's own
+/// official-identity-specific concepts with no third-party meaning in this
+/// app's schema, so their mere presence on a non-official row is itself the
+/// pollution, regardless of `auth_mode`.
+///
+/// `OPENAI_API_KEY` is handled separately and is **not** touched unless
+/// [`codex_auth_has_oauth_login_material`] is true for this exact `auth`
+/// value, checked *before* the removals above run (a value-equality check
+/// against the live/official key would delete a legitimate third-party key
+/// that happens to match — e.g. a relay user whose apikey login uses the
+/// relay's own key, or any row that legitimately shares a key with another
+/// row — R3A-N1). A `personal_access_token`-only row (no `tokens`/`auth_mode`
+/// chatgpt marker) is not currently detected as a second pollution shape
+/// this function recognizes; call sites should not assume this is
+/// exhaustive against every future Codex auth shape.
+pub fn scrub_oauth_material_from_non_official_codex_auth(auth: &mut Value) -> bool {
+    let should_remove_api_key = codex_auth_has_oauth_login_material(auth);
+    let is_chatgpt_mode = auth.get("auth_mode").and_then(Value::as_str) == Some("chatgpt");
+    let Some(map) = auth.as_object_mut() else {
+        return false;
+    };
+
+    let mut changed = false;
+    if is_chatgpt_mode {
+        for key in ["auth_mode", "tokens"] {
+            if map.remove(key).is_some() {
+                changed = true;
+            }
+        }
+    }
+    for key in ["agent_identity", "personal_access_token"] {
+        if map.remove(key).is_some() {
+            changed = true;
+        }
+    }
+    let bedrock_keys: Vec<String> = map
+        .keys()
+        .filter(|key| key.starts_with("bedrock_"))
+        .cloned()
+        .collect();
+    for key in bedrock_keys {
+        map.remove(&key);
+        changed = true;
+    }
+    if should_remove_api_key && map.remove("OPENAI_API_KEY").is_some() {
+        changed = true;
+    }
+    changed
 }
 
 pub fn should_restore_codex_provider_token_for_backfill(
@@ -835,16 +1084,18 @@ fn codex_inferred_reasoning_levels(
     }
 
     // gpt-5.6 and gpt-6 (Codex 0.153+) add the `max` and `ultra` tiers above
-    // xhigh; older gpt-5 releases stop at xhigh.
+    // xhigh; older gpt-5 releases stop at xhigh. `ultra` is a Codex client
+    // tier the `*-luna` models do not offer (openai/codex 0.157
+    // `models-manager/models.json`: gpt-6-luna and gpt-5.6-luna stop at max).
     if profile == CodexCatalogToolProfile::NativeResponses
         && (model.starts_with("gpt-5.6") || model.starts_with("gpt-6"))
     {
-        return Some(
-            ["low", "medium", "high", "xhigh", "max", "ultra"]
-                .into_iter()
-                .map(str::to_string)
-                .collect(),
-        );
+        let levels: &[&str] = if model.contains("-luna") {
+            &["low", "medium", "high", "xhigh", "max"]
+        } else {
+            &["low", "medium", "high", "xhigh", "max", "ultra"]
+        };
+        return Some(levels.iter().copied().map(str::to_string).collect());
     }
     if profile == CodexCatalogToolProfile::NativeResponses
         && (model.starts_with("gpt-5") || model.starts_with("grok-4.5"))
@@ -947,6 +1198,7 @@ fn codex_catalog_model_entry(
     let Some(entry_obj) = entry.as_object_mut() else {
         return json!({});
     };
+    harden_codex_generated_catalog_entry(entry_obj, profile);
 
     let display_name = spec.display_name.as_deref().unwrap_or(&spec.model);
     let context_window = spec.context_window.unwrap_or(default_context_window);
@@ -1028,6 +1280,119 @@ fn codex_catalog_model_entry(
     apply_codex_reasoning_level_override(entry_obj, template_default, &effective_spec);
 
     entry
+}
+
+/// Keys a ProxyChat catalog entry keeps from the Codex entry it clones
+/// (MH-8c 1.5). The template comes from `models_cache.json`, the bundled
+/// catalog or the static copy, and its field set follows whichever Codex build
+/// wrote it, so only fields a third-party Chat route can honor survive:
+/// every field 0.157 `ModelInfo` requires without a serde default (`slug`,
+/// `display_name`, `supported_reasoning_levels`, `shell_type`, `visibility`,
+/// `supported_in_api`, `priority`, `support_verbosity`, `truncation_policy`,
+/// `experimental_supported_tools`), the legacy parser-required backfill
+/// ([`CODEX_CATALOG_PARSER_REQUIRED_FIELDS`]), and the tool/instruction,
+/// context and reasoning contract of the model. Dropped: account- or
+/// ChatGPT-backend-bound metadata (guardian policy, access programs, plans,
+/// compaction hash, auto-review overrides, default service tier, websocket
+/// preference) and anything a newer build adds until it is reviewed here.
+const CODEX_PROXY_CHAT_CATALOG_KEYS: &[&str] = &[
+    "slug",
+    "display_name",
+    "description",
+    "priority",
+    "visibility",
+    "supported_in_api",
+    "default_reasoning_level",
+    "supported_reasoning_levels",
+    "default_reasoning_summary",
+    "supports_reasoning_summary_parameter",
+    "support_verbosity",
+    "default_verbosity",
+    "base_instructions",
+    "model_messages",
+    "include_skills_usage_instructions",
+    "include_plugin_usage_instructions",
+    "include_apps_usage_instructions",
+    "shell_type",
+    "apply_patch_tool_type",
+    "web_search_tool_type",
+    "supports_search_tool",
+    "tool_mode",
+    "multi_agent_version",
+    "multi_agent_reasoning_effort",
+    "node_repl_disabled",
+    "experimental_supported_tools",
+    "supports_experimental_context",
+    "truncation_policy",
+    "context_window",
+    "max_context_window",
+    "auto_compact_token_limit",
+    "effective_context_window_percent",
+    "input_modalities",
+    "supports_image_detail_original",
+    "service_tiers",
+    "additional_speed_tiers",
+    "availability_nux",
+    "upgrade",
+    "use_responses_lite",
+    "supports_reasoning_effort_updates",
+];
+
+/// Values a generated catalog entry (always a non-official route) must never
+/// inherit from a cloned Codex entry. Responses Lite and reasoning-effort
+/// `configuration_update` items are ChatGPT-backend features (CPP-A6, W8),
+/// guardian policy and access programs are account-bound (W8), and Chat
+/// gateways reject `detail:"original"` images, so ProxyChat never advertises
+/// them.
+// Adapted from farion1231/cc-switch 83a24dfbb (MIT).
+fn harden_codex_generated_catalog_entry(
+    entry: &mut serde_json::Map<String, Value>,
+    profile: CodexCatalogToolProfile,
+) {
+    if profile == CodexCatalogToolProfile::ProxyChat {
+        let dropped: Vec<String> = entry
+            .keys()
+            .filter(|key| {
+                !CODEX_PROXY_CHAT_CATALOG_KEYS.contains(&key.as_str())
+                    && !CODEX_CATALOG_PARSER_REQUIRED_FIELDS.contains(&key.as_str())
+            })
+            .cloned()
+            .collect();
+        for key in dropped {
+            entry.remove(&key);
+        }
+        entry.insert("supports_image_detail_original".to_string(), json!(false));
+    }
+    entry.remove("guardian");
+    entry.remove("available_access_programs");
+    entry.insert("use_responses_lite".to_string(), json!(false));
+    entry.insert(
+        "supports_reasoning_effort_updates".to_string(),
+        json!(false),
+    );
+}
+
+/// The configured model's own entry in the local Codex catalog, as its
+/// ProxyChat template (CPP-A6): a relay serving an official slug (for
+/// example gpt-6-luna) gets that model's instructions, tool mode and
+/// reasoning levels instead of gpt-5.5's. Exact slug first, then
+/// case-insensitive. The profile rules and hardening still apply on top.
+fn codex_official_slug_template(runtime_models: &[Value], model: &str) -> Option<Value> {
+    fn slug_of(entry: &Value) -> Option<&str> {
+        entry.get("slug").and_then(Value::as_str)
+    }
+    let found = runtime_models
+        .iter()
+        .find(|entry| slug_of(entry) == Some(model))
+        .or_else(|| {
+            runtime_models
+                .iter()
+                .find(|entry| slug_of(entry).is_some_and(|slug| slug.eq_ignore_ascii_case(model)))
+        })?;
+    let mut template = found.clone();
+    inline_retired_personality_placeholder(&mut template);
+    fill_template_fields_from_static(&mut template);
+    Some(template)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1168,7 +1533,7 @@ fn codex_catalog_model_specs(settings: &Value) -> Vec<CodexCatalogModelSpec> {
 }
 
 fn find_codex_model_template(catalog: &Value) -> Option<Value> {
-    catalog
+    let mut template = catalog
         .get("models")
         .and_then(|models| models.as_array())
         .and_then(|models| {
@@ -1177,10 +1542,50 @@ fn find_codex_model_template(catalog: &Value) -> Option<Value> {
                     == Some(CODEX_MODEL_CATALOG_TEMPLATE_SLUG)
             })
         })
-        .cloned()
+        .cloned()?;
+    inline_retired_personality_placeholder(&mut template);
+    Some(template)
 }
 
-fn load_codex_model_template_from_cache() -> Result<Option<Value>, AppError> {
+const RETIRED_PERSONALITY_PLACEHOLDER: &str = "{{ personality }}";
+
+/// Codex 0.156 retired personality selection (openai/codex `132c739171`):
+/// `model_messages.instructions_template` is literal text since then, and
+/// `instructions_variables` is only decoded for old catalogs, never rendered
+/// (`protocol/src/openai_models.rs`, `prompts/src/model_instructions.rs`
+/// @ rust-v0.157.0). A template captured from an older build
+/// (`models_cache.json`, `codex debug models --bundled`) would therefore send
+/// a literal `{{ personality }}` to the model. Inline the Friendly section —
+/// byte-for-byte what 0.157's own bundled gpt-5.5 entry ships — and drop the
+/// retired variables (MH-20).
+fn inline_retired_personality_placeholder(template: &mut Value) {
+    let Some(messages) = template
+        .get_mut("model_messages")
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    let section = ["personality_friendly", "personality_default"]
+        .iter()
+        .find_map(|key| {
+            messages
+                .get("instructions_variables")
+                .and_then(|variables| variables.get(*key))
+                .and_then(Value::as_str)
+        })
+        .unwrap_or("")
+        .trim_end_matches('\n')
+        .to_string();
+    if let Some(Value::String(text)) = messages.get_mut("instructions_template") {
+        if text.contains(RETIRED_PERSONALITY_PLACEHOLDER) {
+            *text = text.replace(RETIRED_PERSONALITY_PLACEHOLDER, &section);
+        }
+    }
+    messages.remove("instructions_variables");
+}
+
+/// ① `models_cache.json`, when it carries the template entry.
+fn load_codex_runtime_catalog_from_cache() -> Result<Option<Value>, AppError> {
     let path = get_codex_config_dir().join("models_cache.json");
     if !path.exists() {
         return Ok(None);
@@ -1188,7 +1593,7 @@ fn load_codex_model_template_from_cache() -> Result<Option<Value>, AppError> {
 
     let text = fs::read_to_string(&path).map_err(|e| AppError::io(&path, e))?;
     let catalog: Value = serde_json::from_str(&text).map_err(|e| AppError::json(&path, e))?;
-    Ok(find_codex_model_template(&catalog))
+    Ok(find_codex_model_template(&catalog).map(|_| catalog))
 }
 
 /// Fixed candidates for locating the `codex` CLI when it is not on the process
@@ -1386,7 +1791,7 @@ fn push_env_codex_cli_candidates(candidates: &mut Vec<PathBuf>, seen: &mut HashS
     }
 }
 
-fn codex_cli_candidates() -> Vec<PathBuf> {
+pub(crate) fn codex_cli_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     let mut seen = HashSet::new();
 
@@ -1430,7 +1835,7 @@ fn codex_command_path_env(candidate: &Path) -> Option<std::ffi::OsString> {
     Some(prefixed)
 }
 
-fn codex_command(candidate: &Path, args: &[&str], codex_home: Option<&Path>) -> Command {
+pub(crate) fn codex_command(candidate: &Path, args: &[&str], codex_home: Option<&Path>) -> Command {
     let mut command = Command::new(candidate);
     command.args(args).stdin(Stdio::null());
     if let Some(codex_home) = codex_home {
@@ -1460,7 +1865,9 @@ fn codex_runtime_models_command(candidate: &Path, codex_home: &Path) -> Command 
     codex_command(candidate, &["debug", "models"], Some(codex_home))
 }
 
-fn load_codex_model_template_from_bundled() -> Result<Option<Value>, AppError> {
+/// ② `codex debug models --bundled`: the first CLI whose catalog carries the
+/// template entry.
+fn load_codex_runtime_catalog_from_bundled() -> Result<Option<Value>, AppError> {
     for candidate in codex_cli_candidates() {
         let candidate_label = candidate.to_string_lossy();
         let output = match crate::process_utils::output_with_timeout(
@@ -1497,8 +1904,8 @@ fn load_codex_model_template_from_bundled() -> Result<Option<Value>, AppError> {
                 continue;
             }
         };
-        if let Some(template) = find_codex_model_template(&catalog) {
-            return Ok(Some(template));
+        if find_codex_model_template(&catalog).is_some() {
+            return Ok(Some(catalog));
         }
     }
 
@@ -1853,6 +2260,8 @@ fn codex_vendor_catalog_model_entry(
     // The vendor file is the base (its own levels stay when no override is
     // declared); its default_reasoning_level is the fallback.
     apply_codex_reasoning_level_override(entry_obj, vendor_default.as_deref(), spec);
+    // A vendor mirror serves a non-official route: never Responses Lite.
+    entry_obj.insert("use_responses_lite".to_string(), json!(false));
 
     // Defensive: if a future codex parser requires a field the vendor file
     // predates, backfill only whitelisted parser-required keys.
@@ -1943,14 +2352,52 @@ fn fill_template_fields_from_static(template: &mut Value) {
     }
 }
 
-fn load_codex_model_catalog_template_uncached() -> Result<Value, AppError> {
-    // ① models_cache.json (created by Codex when it connects to OpenAI)
-    if let Some(mut template) = load_codex_model_template_from_cache()? {
-        fill_template_fields_from_static(&mut template);
-        return Ok(template);
+/// The model catalog the local Codex itself uses, read-only: ①
+/// `models_cache.json` (created by Codex when it connects to OpenAI), else ②
+/// the codex CLI's bundled catalog (PATH + platform-specific common paths).
+/// A source only counts when it carries the gpt-5.5 template entry.
+fn load_codex_runtime_catalog_uncached() -> Result<Option<Value>, AppError> {
+    if let Some(catalog) = load_codex_runtime_catalog_from_cache()? {
+        return Ok(Some(catalog));
     }
-    // ② codex CLI (PATH + platform-specific common paths)
-    if let Some(mut template) = load_codex_model_template_from_bundled()? {
+    load_codex_runtime_catalog_from_bundled()
+}
+
+#[cfg(not(test))]
+fn load_codex_runtime_catalog() -> Result<Option<Value>, AppError> {
+    CODEX_RUNTIME_CATALOG_CACHE
+        .get_or_try_init(load_codex_runtime_catalog_uncached)
+        .cloned()
+}
+
+#[cfg(test)]
+fn load_codex_runtime_catalog() -> Result<Option<Value>, AppError> {
+    load_codex_runtime_catalog_uncached()
+}
+
+/// Entries of the local Codex catalog, for official-slug templates. A missing
+/// or unreadable source only means no slug gets its own template.
+fn load_codex_runtime_catalog_models() -> Vec<Value> {
+    match load_codex_runtime_catalog() {
+        Ok(Some(catalog)) => catalog
+            .get("models")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default(),
+        Ok(None) => Vec::new(),
+        Err(error) => {
+            log::debug!("Codex runtime catalog unavailable for slug templates: {error}");
+            Vec::new()
+        }
+    }
+}
+
+fn load_codex_model_catalog_template_uncached() -> Result<Value, AppError> {
+    // ①/② the local Codex catalog's own gpt-5.5 entry
+    if let Some(mut template) = load_codex_runtime_catalog()?
+        .as_ref()
+        .and_then(find_codex_model_template)
+    {
         fill_template_fields_from_static(&mut template);
         return Ok(template);
     }
@@ -1987,9 +2434,28 @@ fn load_codex_model_catalog_template() -> Result<Value, AppError> {
     load_codex_model_catalog_template_uncached()
 }
 
+#[allow(dead_code)]
 fn codex_model_catalog_from_specs(
     specs: &[CodexCatalogModelSpec],
     template: &Value,
+    profile: CodexCatalogToolProfile,
+    default_context_window: u64,
+) -> Value {
+    codex_model_catalog_from_specs_with_runtime(
+        specs,
+        template,
+        &[],
+        profile,
+        default_context_window,
+    )
+}
+
+/// Like [`codex_model_catalog_from_specs`], but a ProxyChat spec whose model
+/// is an official slug in `runtime_models` uses that entry as its template.
+fn codex_model_catalog_from_specs_with_runtime(
+    specs: &[CodexCatalogModelSpec],
+    template: &Value,
+    runtime_models: &[Value],
     profile: CodexCatalogToolProfile,
     default_context_window: u64,
 ) -> Value {
@@ -1997,7 +2463,18 @@ fn codex_model_catalog_from_specs(
         .iter()
         .enumerate()
         .map(|(index, spec)| {
-            codex_catalog_model_entry(template, spec, index, profile, default_context_window)
+            let official = if profile == CodexCatalogToolProfile::ProxyChat {
+                codex_official_slug_template(runtime_models, &spec.model)
+            } else {
+                None
+            };
+            codex_catalog_model_entry(
+                official.as_ref().unwrap_or(template),
+                spec,
+                index,
+                profile,
+                default_context_window,
+            )
         })
         .collect();
 
@@ -2034,15 +2511,21 @@ fn codex_model_catalog_from_settings(
     // Native providers use the bundled clean template (no freeform apply_patch,
     // no cache dependency); proxy-chat providers keep cloning Codex's gpt-5.5
     // entry so the proxy can rewrite custom<->function tools as before.
-    let template = match profile {
+    // Native and Anthropic lines keep the neutral template even for official
+    // slugs: an official harness names tools those profiles strip.
+    let (template, runtime_models) = match profile {
         CodexCatalogToolProfile::NativeResponses | CodexCatalogToolProfile::Anthropic => {
-            load_codex_native_responses_template()
+            (load_codex_native_responses_template(), Vec::new())
         }
-        CodexCatalogToolProfile::ProxyChat => load_codex_model_catalog_template()?,
+        CodexCatalogToolProfile::ProxyChat => (
+            load_codex_model_catalog_template()?,
+            load_codex_runtime_catalog_models(),
+        ),
     };
-    Ok(Some(codex_model_catalog_from_specs(
+    Ok(Some(codex_model_catalog_from_specs_with_runtime(
         &specs,
         &template,
+        &runtime_models,
         profile,
         default_context_window,
     )))
@@ -2093,10 +2576,18 @@ fn set_codex_model_catalog_json_field(
         .unwrap_or(true);
 
     match catalog_path {
-        Some(_) => {
+        Some(path) => {
             if owned_or_absent {
-                doc["model_catalog_json"] =
-                    toml_edit::value(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME);
+                // Strict permission-profile readers require native absolute paths.
+                // WSL/UNC configurations keep a portable filename for Linux consumers.
+                let native = path.is_absolute()
+                    && !(cfg!(windows) && path.to_string_lossy().starts_with(r"\\"));
+                let pointer = if native {
+                    path.to_string_lossy().into_owned()
+                } else {
+                    CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME.to_string()
+                };
+                doc["model_catalog_json"] = toml_edit::value(pointer);
             } else {
                 log::warn!(
                     "model_catalog_json 已被用户指向自定义文件，跳过写入 Chimera++ 生成的模型目录；\
@@ -2397,20 +2888,26 @@ pub fn prepare_codex_live_config_text_with_optional_catalog(
     }
 }
 
+/// Write a line to live. `config_text` is the line's effective text (common
+/// snippet merged); it is projected onto live `config.toml` by the key
+/// ownership table (`codex_key_ownership::project_codex_line_onto_live`)
+/// instead of replacing the file.
 pub fn write_codex_provider_live_with_catalog(
     settings: &Value,
     category: Option<&str>,
     auth: &Value,
     config_text: Option<&str>,
+    snippet: Option<&crate::codex_key_ownership::CodexCommonSnippet>,
     profile: CodexCatalogToolProfile,
 ) -> Result<(), AppError> {
     let config_text = config_text
         .map(|text| {
-            if category == Some("official") && text.trim().is_empty() {
-                Ok(text.to_string())
-            } else {
-                preserve_codex_local_settings(text, &read_codex_config_text()?)
-            }
+            crate::codex_key_ownership::project_codex_line_onto_live(
+                text,
+                &read_codex_config_text()?,
+                category == Some("official"),
+                snippet,
+            )
         })
         .transpose()?;
     let prepared_config = config_text
@@ -2419,44 +2916,6 @@ pub fn write_codex_provider_live_with_catalog(
         .transpose()?;
 
     write_codex_live_for_provider(category, auth, prepared_config.as_deref())
-}
-
-fn preserve_codex_local_settings(config_text: &str, live_text: &str) -> Result<String, AppError> {
-    let mut target = config_text
-        .parse::<DocumentMut>()
-        .map_err(|err| AppError::Message(format!("Invalid Codex config.toml: {err}")))?;
-    let live = live_text
-        .parse::<DocumentMut>()
-        .map_err(|err| AppError::Message(format!("Invalid live Codex config.toml: {err}")))?;
-    for key in [
-        "sandbox_mode",
-        "approval_policy",
-        "sandbox_workspace_write",
-        "windows",
-    ] {
-        if let Some(value) = live.get(key) {
-            target[key] = value.clone();
-        }
-    }
-    if let Some(features) = live
-        .get("features")
-        .and_then(toml_edit::Item::as_table_like)
-    {
-        if !target.contains_key("features") {
-            target["features"] = toml_edit::table();
-        }
-        if let Some(target_features) = target
-            .get_mut("features")
-            .and_then(toml_edit::Item::as_table_like_mut)
-        {
-            for (key, value) in features.iter() {
-                if !target_features.contains_key(key) {
-                    target_features.insert(key, value.clone());
-                }
-            }
-        }
-    }
-    Ok(target.to_string())
 }
 
 /// Extract a provider-scoped `experimental_bearer_token` from Codex `config.toml`.
@@ -2757,12 +3216,29 @@ pub fn codex_config_has_owned_official_proxy_route(
         })
 }
 
+/// Top-level route/credential keys (key-ownership class ②, v2.8.0 plan §2):
+/// never inherited across a line/identity change — the whole reason each of
+/// MH-13a and MH-21 exists. The list itself lives in the key-ownership table
+/// so it cannot drift between those two and the MH-13b import sanitizer.
+const CODEX_TOP_LEVEL_ROUTE_CREDENTIAL_KEYS: &[&str] =
+    crate::codex_key_ownership::ROUTE_CREDENTIAL_ROOT_KEYS;
+
 /// Build a safe official Codex config baseline from the current live text.
 ///
 /// The built-in official seed intentionally stores an empty config. When the
 /// user switches to it, that empty seed must not erase their sandbox, feature,
 /// profile, TUI, or notification settings. Only provider-routing and generated
 /// catalog fields are removed; unrelated user settings survive.
+///
+/// MH-13a: this used to strip only 6 keys, which left every route/credential
+/// key a third-party line could have written — most importantly
+/// `openai_base_url`/`chatgpt_base_url` — sitting on live. With the unified
+/// session bucket off, switching back to official then wrote a valid
+/// ChatGPT OAuth `auth.json` next to a `config.toml` that still pointed
+/// Codex's `openai_base_url`/`chatgpt_base_url` at that third party, so the
+/// official bearer token would be sent there on the next request. This must
+/// strip every key a non-official line could route through, not just the
+/// ones that also happen to break the model catalog.
 pub fn prepare_codex_official_live_config_baseline(config_text: &str) -> Result<String, AppError> {
     if config_text.trim().is_empty() {
         return Ok(String::new());
@@ -2779,7 +3255,10 @@ pub fn prepare_codex_official_live_config_baseline(config_text: &str) -> Result<
         "model_catalog_json",
         "model_reasoning_effort",
         "experimental_bearer_token",
-    ] {
+    ]
+    .into_iter()
+    .chain(CODEX_TOP_LEVEL_ROUTE_CREDENTIAL_KEYS.iter().copied())
+    {
         doc.as_table_mut().remove(key);
     }
     Ok(doc.to_string())
@@ -2965,41 +3444,26 @@ pub fn strip_codex_unified_session_bucket_from_settings(
     Ok(())
 }
 
-/// Backfill helper: strip `[mcp_servers]` from a live `{ auth, config }`
-/// settings object before it is stored back to the DB.
-///
-/// MCP 服务器的 SSOT 是 DB 的 mcp_servers 表，live `config.toml` 里的
-/// `[mcp_servers]` 只是每次写 live 之后由 MCP 同步重新投影的产物。若回填时
-/// 烙进供应商存储配置，已在应用里删除的服务器会随下次激活该供应商被写回
-/// live，而逐条 reconcile 只认识 DB 现存条目、永远清不掉这种孤儿。
-pub fn strip_codex_mcp_servers_from_settings(settings: &mut Value) -> Result<(), AppError> {
-    let Some(config_text) = settings
-        .get("config")
-        .and_then(|value| value.as_str())
-        .map(str::to_string)
-    else {
+/// Backfill helper (L3): reduce a live `{ auth, config }` settings object to
+/// what the outgoing line owns before it is stored back to the DB (see
+/// `codex_key_ownership::codex_line_config_for_backfill`). Local-shared keys,
+/// `[mcp_servers]` (DB/ledger-owned, so a deleted server can never come back
+/// with the line) and the common snippet stay in live only.
+pub fn keep_line_owned_codex_config_for_backfill(
+    settings: &mut Value,
+    stored_settings: &Value,
+) -> Result<(), AppError> {
+    let Some(config_text) = settings.get("config").and_then(Value::as_str) else {
         return Ok(());
     };
-    if !config_text.contains("mcp") {
-        return Ok(());
-    }
-    let mut doc = config_text
-        .parse::<DocumentMut>()
-        .map_err(|e| AppError::Message(format!("Invalid Codex config.toml: {e}")))?;
-    let mut changed = doc.as_table_mut().remove("mcp_servers").is_some();
-    // 历史错误格式 [mcp.servers] 一并清理（live 侧 MCP 同步也做同样迁移）
-    if let Some(mcp_tbl) = doc.get_mut("mcp").and_then(|item| item.as_table_like_mut()) {
-        if mcp_tbl.remove("servers").is_some() {
-            changed = true;
-        }
-        if mcp_tbl.is_empty() {
-            doc.as_table_mut().remove("mcp");
-        }
-    }
-    if changed {
-        if let Some(obj) = settings.as_object_mut() {
-            obj.insert("config".to_string(), Value::String(doc.to_string()));
-        }
+    let stored_text = stored_settings
+        .get("config")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let kept =
+        crate::codex_key_ownership::codex_line_config_for_backfill(config_text, stored_text)?;
+    if let Some(obj) = settings.as_object_mut() {
+        obj.insert("config".to_string(), Value::String(kept));
     }
     Ok(())
 }
@@ -3091,6 +3555,75 @@ pub fn prepare_codex_provider_live_config(
     })
 }
 
+/// The name of Codex's built-in provider. `ModelProviderInfo::is_openai()`
+/// (`model-provider-info/src/lib.rs`, `rust-v0.157.0`) is an exact match on
+/// it and gates OpenAI-only behaviour such as remote compaction.
+const CODEX_OPENAI_PROVIDER_NAME: &str = "OpenAI";
+
+/// Naming rule for a provider table moved off the built-in OpenAI identity
+/// (the MH-21 reserved-table migration and CPP-A1①): it must not keep
+/// `name = "OpenAI"`, and takes its own table id instead, which is unique in
+/// the file and stable across repeated runs. Returns whether it renamed.
+fn rename_openai_named_provider_table(id: &str, table: &mut dyn toml_edit::TableLike) -> bool {
+    if table.get("name").and_then(|item| item.as_str()) != Some(CODEX_OPENAI_PROVIDER_NAME) {
+        return false;
+    }
+    table.insert("name", toml_edit::value(id));
+    true
+}
+
+/// Whether a provider table still routes to OpenAI's own backend: our
+/// official takeover route, or a table whose endpoint is Codex's default or
+/// on the official base-URL allowlist.
+fn codex_provider_table_routes_to_official(id: &str, table: &dyn toml_edit::TableLike) -> bool {
+    id == CC_SWITCH_CODEX_OFFICIAL_PROXY_PROVIDER_ID
+        || table
+            .get("base_url")
+            .and_then(|item| item.as_str())
+            .is_none_or(crate::codex_key_ownership::is_official_codex_base_url)
+}
+
+/// Apply the CPP-A1① naming rule to one table unless it still routes to the
+/// official backend.
+fn rename_openai_named_non_official_table(id: &str, table: &mut dyn toml_edit::TableLike) -> bool {
+    !codex_provider_table_routes_to_official(id, table)
+        && rename_openai_named_provider_table(id, table)
+}
+
+/// CPP-A1①: idempotent fix for leftover non-official provider tables named
+/// `"OpenAI"`. Such a table makes Codex treat a third-party endpoint as the
+/// built-in OpenAI provider (remote compaction and other OpenAI-only paths
+/// are sent to it). Tables that still route to the official backend keep the
+/// name. Returns `None` when nothing needed renaming.
+pub fn rename_non_official_openai_named_provider_tables(
+    config_text: &str,
+) -> Result<Option<String>, AppError> {
+    if !config_text.contains(CODEX_OPENAI_PROVIDER_NAME) {
+        return Ok(None);
+    }
+    let mut doc = config_text
+        .parse::<DocumentMut>()
+        .map_err(|e| AppError::Message(format!("Invalid Codex config.toml: {e}")))?;
+    let Some(providers) = doc
+        .get_mut("model_providers")
+        .and_then(|item| item.as_table_like_mut())
+    else {
+        return Ok(None);
+    };
+    let ids: Vec<String> = providers.iter().map(|(id, _)| id.to_string()).collect();
+    let mut changed = false;
+    for id in ids {
+        let Some(table) = providers
+            .get_mut(&id)
+            .and_then(|item| item.as_table_like_mut())
+        else {
+            continue;
+        };
+        changed |= rename_openai_named_non_official_table(&id, table);
+    }
+    Ok(changed.then(|| doc.to_string()))
+}
+
 fn migrate_codex_reserved_provider_tables(
     config_text: &str,
     has_token: bool,
@@ -3128,6 +3661,7 @@ fn migrate_codex_reserved_provider_tables(
         if !table.contains_key("wire_api") {
             table.insert("wire_api", toml_edit::value("responses"));
         }
+        rename_openai_named_non_official_table(&migrated_id, table);
         let has_own_auth = ["env_key", "experimental_bearer_token"].iter().any(|key| {
             table
                 .get(key)
@@ -3221,6 +3755,55 @@ pub fn restore_codex_settings_for_backfill(
 /// - `"model"` / `"model_catalog_json"`: writes to top-level field.
 ///
 /// Empty value removes the field.
+/// MH-21: force a non-reserved `model_provider` before establishing a
+/// third-party route, so `update_codex_toml_field("base_url", …)` cannot
+/// silently redirect the built-in `openai` provider's endpoint instead of
+/// creating a real `[model_providers.custom]` table.
+///
+/// Codex's built-in `openai` provider carries `requires_openai_auth = true`,
+/// so any config with `model_provider` absent or `"openai"` sends Codex's
+/// official ChatGPT/API-key bearer to whatever `base_url` ends up attached
+/// to it. `update_codex_toml_field` treats "no `model_provider` key" as
+/// "the built-in `openai` provider is active" and, deliberately, still
+/// writes there in that case (other callers rely on that to simulate a
+/// stale takeover `openai_base_url`) — so the fix belongs here, at the one
+/// call site that is about to establish a *third-party* route, not in that
+/// shared utility. This exact "absent `model_provider`" state is the live
+/// baseline immediately after switching away from the official line (see
+/// `prepare_codex_official_live_config_baseline`, which removes it).
+///
+/// A no-op when `model_provider` already names a non-reserved id — the
+/// common case, since every route we write ourselves already sets one.
+pub(crate) fn ensure_non_reserved_codex_model_provider(toml_str: &str) -> Result<String, AppError> {
+    // Deliberately no early return for blank input: an empty/whitespace-only
+    // config is exactly the state right after switching away from official
+    // (an empty document still has no `model_provider`, so it still needs
+    // one injected), unlike the strip-only helpers above where "nothing to
+    // remove" is a legitimate no-op.
+    let mut doc = toml_str
+        .parse::<DocumentMut>()
+        .map_err(|e| AppError::Message(format!("Invalid Codex config.toml: {e}")))?;
+
+    let needs_custom_id = match doc.get("model_provider").and_then(|item| item.as_str()) {
+        Some(id) => CODEX_RESERVED_MODEL_PROVIDER_IDS.contains(&id.trim()),
+        None => true,
+    };
+    if !needs_custom_id {
+        return Ok(toml_str.to_string());
+    }
+
+    doc["model_provider"] = toml_edit::value("custom");
+    // A stale openai_base_url/chatgpt_base_url/etc. left over from a prior
+    // official or reserved-id state would otherwise sit inert-but-present
+    // once model_provider no longer names that identity — harmless only
+    // for as long as nothing re-attaches that identity without also
+    // clearing them. Strip them here too rather than relying on that.
+    for key in CODEX_TOP_LEVEL_ROUTE_CREDENTIAL_KEYS {
+        doc.as_table_mut().remove(key);
+    }
+    Ok(doc.to_string())
+}
+
 pub fn update_codex_toml_field(toml_str: &str, field: &str, value: &str) -> Result<String, String> {
     let mut doc = toml_str
         .parse::<DocumentMut>()
@@ -3378,15 +3961,47 @@ mod tests {
         assert!(prepared.get("OPENAI_API_KEY").is_none());
     }
 
+    // MH-15 regression: this used to be
+    // official_auth_without_oauth_forces_login_instead_of_reusing_api_key,
+    // asserting that a real, working `codex login --api-key` official login
+    // got silently wiped and replaced with a chatgpt auth_mode carrying no
+    // actual tokens — logging the user out of a login they never asked to
+    // change. A legitimate non-ChatGPT official login must survive
+    // byte-identical instead.
     #[test]
-    fn official_auth_without_oauth_forces_login_instead_of_reusing_api_key() {
-        let prepared = prepare_codex_official_auth(
-            &json!({}),
-            &json!({ "auth_mode": "apikey", "OPENAI_API_KEY": "stale-key" }),
-        );
+    fn official_auth_preserves_legitimate_api_key_login_without_oauth() {
+        let live = json!({ "auth_mode": "apikey", "OPENAI_API_KEY": "stale-key" });
+        let prepared = prepare_codex_official_auth(&json!({}), &live);
 
-        assert_eq!(prepared, json!({ "auth_mode": "chatgpt" }));
-        assert!(!codex_auth_has_oauth_login_material(&prepared));
+        assert_eq!(prepared, live, "a working apikey login must not be touched");
+    }
+
+    #[test]
+    fn official_auth_preserves_legitimate_personal_access_token_login() {
+        let live = json!({ "personal_access_token": "pat-real-token" });
+        let prepared = prepare_codex_official_auth(&json!({}), &live);
+
+        assert_eq!(prepared, live);
+    }
+
+    #[test]
+    fn official_auth_still_promotes_mislabeled_row_with_real_oauth_tokens() {
+        // Same shape as official_auth_keeps_oauth_and_removes_api_login_mode
+        // above, restated to make the apikey-vs-real-tokens distinction
+        // explicit: auth_mode says "apikey", but real oauth tokens are
+        // actually present, so this is not the legitimate-non-oauth-login
+        // case MH-15 protects — promoting it to chatgpt and dropping the
+        // stale key alongside real oauth tokens is still correct.
+        let live = json!({
+            "auth_mode": "apikey",
+            "OPENAI_API_KEY": "stale-alongside-real-oauth",
+            "tokens": { "access_token": "real-oauth-access" },
+        });
+        let prepared = prepare_codex_official_auth(&json!({}), &live);
+
+        assert_eq!(prepared["auth_mode"], "chatgpt");
+        assert!(prepared.get("OPENAI_API_KEY").is_none());
+        assert_eq!(prepared["tokens"]["access_token"], "real-oauth-access");
     }
 
     #[test]
@@ -3409,6 +4024,131 @@ mod tests {
         assert_eq!(prepared["tokens"]["access_token"], "live-access");
         assert_eq!(prepared["tokens"]["refresh_token"], "live-refresh");
         assert!(!codex_auth_has_oauth_login_material(&stored));
+    }
+
+    fn chatgpt_auth(access: &str, claims: Option<Value>, last_refresh: Option<&str>) -> Value {
+        use base64::Engine;
+        let mut tokens = json!({ "access_token": access, "refresh_token": "refresh" });
+        if let Some(claims) = claims {
+            let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+                serde_json::to_vec(&json!({ "https://api.openai.com/auth": claims })).unwrap(),
+            );
+            tokens["id_token"] = json!(format!("e30.{payload}.sig"));
+        }
+        let mut auth = json!({ "auth_mode": "chatgpt", "tokens": tokens });
+        if let Some(last_refresh) = last_refresh {
+            auth["last_refresh"] = json!(last_refresh);
+        }
+        auth
+    }
+
+    #[test]
+    fn official_auth_freshness_is_only_compared_within_one_identity() {
+        let user_a = json!({ "chatgpt_user_id": "user-a", "chatgpt_account_id": "acct-a" });
+        let user_b = json!({ "chatgpt_user_id": "user-b", "chatgpt_account_id": "acct-a" });
+        let older = Some("2026-07-01T00:00:00Z");
+        let newer = Some("2026-07-02T00:00:00Z");
+
+        // Same identity: the newer live login wins, an older one does not.
+        let stored = chatgpt_auth("stored", Some(user_a.clone()), older);
+        let live = chatgpt_auth("live", Some(user_a.clone()), newer);
+        assert_eq!(
+            prepare_codex_official_auth(&stored, &live)["tokens"]["access_token"],
+            "live"
+        );
+        let stored = chatgpt_auth("stored", Some(user_a.clone()), newer);
+        let live = chatgpt_auth("live", Some(user_a.clone()), older);
+        assert_eq!(
+            prepare_codex_official_auth(&stored, &live)["tokens"]["access_token"],
+            "stored"
+        );
+
+        // Different identity (same workspace, other user): the selected line's
+        // own account wins even when live is newer.
+        let stored = chatgpt_auth("stored", Some(user_a), older);
+        let live = chatgpt_auth("live", Some(user_b), newer);
+        assert_eq!(
+            prepare_codex_official_auth(&stored, &live)["tokens"]["access_token"],
+            "stored"
+        );
+    }
+
+    #[test]
+    fn official_auth_prefers_live_when_identity_is_unknown() {
+        // No id_token and no account id on the stored side: live wins even
+        // though it is not newer.
+        let stored = chatgpt_auth("stored", None, Some("2026-07-02T00:00:00Z"));
+        let live = chatgpt_auth(
+            "live",
+            Some(json!({ "chatgpt_user_id": "user-a" })),
+            Some("2026-07-01T00:00:00Z"),
+        );
+        assert_eq!(
+            prepare_codex_official_auth(&stored, &live)["tokens"]["access_token"],
+            "live"
+        );
+
+        // `tokens.account_id` alone identifies the account.
+        let mut stored = chatgpt_auth("stored", None, None);
+        stored["tokens"]["account_id"] = json!("acct-b");
+        let mut live = chatgpt_auth("live", None, None);
+        live["tokens"]["account_id"] = json!("acct-a");
+        assert_eq!(
+            prepare_codex_official_auth(&stored, &live)["tokens"]["access_token"],
+            "stored"
+        );
+    }
+
+    #[test]
+    fn leftover_openai_named_non_official_tables_are_renamed_idempotently() {
+        let input = r#"model_provider = "relay"
+
+[model_providers.relay]
+name = "OpenAI"
+base_url = "https://relay.example/v1"
+
+[model_providers.official-shape]
+name = "OpenAI"
+base_url = "https://api.openai.com/v1"
+
+[model_providers.default-endpoint]
+name = "OpenAI"
+requires_openai_auth = true
+
+[model_providers.cc-switch-official]
+name = "OpenAI"
+base_url = "http://127.0.0.1:15721/v1"
+
+[model_providers.other]
+name = "Other"
+base_url = "https://other.example/v1"
+"#;
+        let output = rename_non_official_openai_named_provider_tables(input)
+            .unwrap()
+            .expect("the relay table must be renamed");
+        let parsed: toml::Value = toml::from_str(&output).unwrap();
+        let providers = &parsed["model_providers"];
+        assert_eq!(providers["relay"]["name"].as_str(), Some("relay"));
+        for id in ["official-shape", "default-endpoint", "cc-switch-official"] {
+            assert_eq!(providers[id]["name"].as_str(), Some("OpenAI"), "{id}");
+        }
+        assert_eq!(providers["other"]["name"].as_str(), Some("Other"));
+        assert!(rename_non_official_openai_named_provider_tables(&output)
+            .unwrap()
+            .is_none());
+        assert!(
+            rename_non_official_openai_named_provider_tables("model = \"x\"\n")
+                .unwrap()
+                .is_none()
+        );
+
+        // The third-party write path applies the same rule to its active table.
+        let normalized = normalize_codex_third_party_auth_config(input).unwrap();
+        let normalized: toml::Value = toml::from_str(&normalized).unwrap();
+        assert_eq!(
+            normalized["model_providers"]["relay"]["name"].as_str(),
+            Some("relay")
+        );
     }
 
     #[test]
@@ -3663,37 +4403,34 @@ requires_openai_auth = true
     }
 
     #[test]
-    fn strip_mcp_servers_from_settings_removes_table_and_legacy_form() {
+    fn backfill_keeps_only_line_owned_keys() {
         let mut settings = json!({
             "auth": { "OPENAI_API_KEY": "sk-test" },
-            "config": "# user comment\nmodel = \"gpt-5.5\"\n\n[mcp_servers.echo]\ntype = \"stdio\"\ncommand = \"echo\"\n\n[mcp.servers.legacy]\ncommand = \"noop\"\n",
+            "config": "model = \"gpt-5.5\"\nmodel_provider = \"relay\"\nopenai_base_url = \"https://live-only.example/v1\"\napproval_policy = \"never\"\n\n[mcp_servers.echo]\ncommand = \"echo\"\n\n[mcp.servers.legacy]\ncommand = \"noop\"\n\n[model_providers.relay]\nname = \"Relay\"\nbase_url = \"https://relay.example/v1\"\n\n[model_providers.mine]\nname = \"Mine\"\n\n[features]\ngoals = true\nmemories = true\n",
         });
-        strip_codex_mcp_servers_from_settings(&mut settings).expect("strip mcp");
-        let config = settings
-            .get("config")
-            .and_then(|v| v.as_str())
-            .expect("config text");
-        assert!(!config.contains("mcp_servers"), "got: {config}");
+        let stored = json!({ "config": "chatgpt_base_url = \"https://stored.example\"\n" });
+        keep_line_owned_codex_config_for_backfill(&mut settings, &stored).expect("backfill");
+        let config: toml::Value =
+            toml::from_str(settings["config"].as_str().unwrap()).expect("valid toml");
+        assert_eq!(config["model"].as_str(), Some("gpt-5.5"));
+        assert_eq!(config["model_provider"].as_str(), Some("relay"));
+        assert!(config["model_providers"].get("relay").is_some());
         assert!(
-            !config.contains("[mcp"),
-            "legacy [mcp.servers] gone: {config}"
+            config["model_providers"].get("mine").is_none(),
+            "a user table stays in live only"
         );
-        assert!(config.contains("# user comment"), "comments preserved");
-        assert!(config.contains("model = \"gpt-5.5\""));
-    }
-
-    #[test]
-    fn strip_mcp_servers_from_settings_is_noop_without_mcp() {
-        let original = "# comment\nmodel = \"gpt-5.5\"\n";
-        let mut settings = json!({
-            "auth": {},
-            "config": original,
-        });
-        strip_codex_mcp_servers_from_settings(&mut settings).expect("strip mcp");
+        assert_eq!(config["features"]["goals"].as_bool(), Some(true));
+        assert!(config["features"].get("memories").is_none());
+        for key in ["mcp_servers", "mcp", "approval_policy", "openai_base_url"] {
+            assert!(
+                config.get(key).is_none(),
+                "{key} must not be frozen into the line"
+            );
+        }
         assert_eq!(
-            settings.get("config").and_then(|v| v.as_str()),
-            Some(original),
-            "config text must be byte-identical when nothing is stripped"
+            config["chatgpt_base_url"].as_str(),
+            Some("https://stored.example"),
+            "route keys come from the stored line, never from live"
         );
     }
 
@@ -3931,6 +4668,113 @@ wire_api = "responses"
                 .and_then(|v| v.get("vendor_beta"))
                 .is_some(),
             "backfill should not rewrite user-selected provider tables"
+        );
+    }
+
+    // MH-19 regression: scrub_oauth_material_from_non_official_codex_auth
+    // must remove genuine OAuth pollution but never touch a legitimate
+    // third-party API key just because it happens to have no oauth marker.
+
+    #[test]
+    fn scrub_removes_oauth_material_and_the_key_it_pollutes() {
+        let mut auth = json!({
+            "OPENAI_API_KEY": "sk-leaked-official-key",
+            "auth_mode": "chatgpt",
+            "tokens": {
+                "access_token": "live-access-token",
+                "refresh_token": "live-refresh-token",
+                "id_token": "live-id-token",
+            },
+            "agent_identity": "some-identity",
+            "personal_access_token": "pat-leaked",
+            "bedrock_credential_source": "leaked",
+            "last_refresh": 1234567890,
+        });
+
+        let changed = scrub_oauth_material_from_non_official_codex_auth(&mut auth);
+        assert!(changed);
+
+        for gone in [
+            "OPENAI_API_KEY",
+            "auth_mode",
+            "tokens",
+            "agent_identity",
+            "personal_access_token",
+            "bedrock_credential_source",
+        ] {
+            assert!(
+                auth.get(gone).is_none(),
+                "{gone} must be removed from a polluted row"
+            );
+        }
+    }
+
+    #[test]
+    fn scrub_leaves_plain_apikey_row_untouched() {
+        // R3A-N1 false positive 1: preserve_codex_official_auth_on_switch off
+        // writes the third-party row's own key into live; that key must
+        // survive backfill even if it happens to match some other key.
+        let mut auth = json!({ "OPENAI_API_KEY": "sk-legitimate-third-party-key" });
+        let changed = scrub_oauth_material_from_non_official_codex_auth(&mut auth);
+        assert!(!changed);
+        assert_eq!(
+            auth.get("OPENAI_API_KEY").and_then(Value::as_str),
+            Some("sk-legitimate-third-party-key")
+        );
+    }
+
+    #[test]
+    fn scrub_leaves_relay_key_untouched_even_without_chatgpt_marker() {
+        // R3A-N1 false positive 2: a relay user's Codex apikey login uses the
+        // relay's own key, and the official row's backfill always keeps live
+        // auth — so official key == relay key is a legitimate coincidence,
+        // not pollution, when there is no oauth marker alongside it.
+        let mut auth = json!({
+            "OPENAI_API_KEY": "shared-relay-key",
+            "auth_mode": "apikey",
+        });
+        let changed = scrub_oauth_material_from_non_official_codex_auth(&mut auth);
+        assert!(!changed);
+        assert_eq!(
+            auth.get("OPENAI_API_KEY").and_then(Value::as_str),
+            Some("shared-relay-key")
+        );
+        assert_eq!(
+            auth.get("auth_mode").and_then(Value::as_str),
+            Some("apikey")
+        );
+    }
+
+    #[test]
+    fn scrub_removes_oauth_material_even_without_own_api_key() {
+        let mut auth = json!({
+            "auth_mode": "chatgpt",
+            "tokens": { "access_token": "live-access-token" },
+        });
+        let changed = scrub_oauth_material_from_non_official_codex_auth(&mut auth);
+        assert!(changed);
+        assert!(auth.get("auth_mode").is_none());
+        assert!(auth.get("tokens").is_none());
+    }
+
+    #[test]
+    fn scrub_ignores_empty_access_token_as_not_yet_polluted() {
+        // codex_auth_has_oauth_login_material requires a non-empty access
+        // token; an auth_mode="chatgpt" row with no real token yet is not
+        // the pollution shape this targets.
+        let mut auth = json!({
+            "OPENAI_API_KEY": "sk-third-party",
+            "auth_mode": "chatgpt",
+            "tokens": { "access_token": "" },
+        });
+        let changed = scrub_oauth_material_from_non_official_codex_auth(&mut auth);
+        // auth_mode is still exactly "chatgpt" here, so it (and tokens) are
+        // still removed regardless of the empty access_token; only the API
+        // key's fate depends on the fuller pollution signature.
+        assert!(changed);
+        assert_eq!(
+            auth.get("OPENAI_API_KEY").and_then(Value::as_str),
+            Some("sk-third-party")
         );
     }
 
@@ -4280,13 +5124,17 @@ multi_agent_v2 = true
 memories = true
 "#;
         let target = "model = \"new\"\n[features]\nmemories = false\n";
-        let result = preserve_codex_local_settings(target, live).unwrap();
+        let result =
+            crate::codex_key_ownership::project_codex_line_onto_live(target, live, false, None)
+                .unwrap();
         let doc: toml::Value = result.parse().unwrap();
         assert_eq!(doc["model"].as_str(), Some("new"));
-        assert!(doc.get("model_catalog_json").is_none());
+        // The catalog step decides the pointer (it removes only our own file).
+        assert_eq!(doc["model_catalog_json"].as_str(), Some("old.json"));
         assert_eq!(doc["windows"]["sandbox"].as_str(), Some("elevated"));
         assert_eq!(doc["features"]["multi_agent_v2"].as_bool(), Some(true));
-        assert_eq!(doc["features"]["memories"].as_bool(), Some(false));
+        // `[features]` is local shared (④) except the line-owned `goals`.
+        assert_eq!(doc["features"]["memories"].as_bool(), Some(true));
     }
 
     #[test]
@@ -4459,6 +5307,100 @@ base_url = "https://production.api/v1"
                 .get("openai_base_url")
                 .and_then(|value| value.as_str()),
             Some("https://api.openai.com/v1")
+        );
+    }
+
+    // MH-13a regression: switching to the official line must never leave a
+    // third-party line's route/credential keys on live — otherwise the
+    // ChatGPT OAuth bearer this same switch installs gets sent to whatever
+    // address a prior third-party line left behind.
+    #[test]
+    fn official_baseline_strips_third_party_route_and_credential_keys() {
+        let third_party_live = r#"model_provider = "acme"
+model = "gpt-acme"
+model_catalog_json = "/tmp/catalog.json"
+model_reasoning_effort = "high"
+experimental_bearer_token = "leftover-third-party-bearer"
+openai_base_url = "https://acme.example/v1"
+chatgpt_base_url = "https://acme.example/chatgpt"
+experimental_realtime_ws_base_url = "wss://acme.example/rt"
+experimental_realtime_webrtc_call_base_url = "https://acme.example/rtc"
+forced_login_method = "apikey"
+forced_chatgpt_workspace_id = "acme-workspace"
+otel = "acme-otel"
+apps_mcp_product_sku = "acme-sku"
+responses_api_metadata = "acme-metadata"
+sandbox_mode = "workspace-write"
+
+[model_providers.acme]
+name = "Acme"
+base_url = "https://acme.example/v1"
+wire_api = "responses"
+"#;
+
+        let baseline = prepare_codex_official_live_config_baseline(third_party_live)
+            .expect("valid toml in, valid toml out");
+        let parsed: toml::Value = toml::from_str(&baseline).expect("baseline must parse");
+
+        for stripped_key in [
+            "model_provider",
+            "model_providers",
+            "model",
+            "model_catalog_json",
+            "model_reasoning_effort",
+            "experimental_bearer_token",
+            "openai_base_url",
+            "chatgpt_base_url",
+            "experimental_realtime_ws_base_url",
+            "experimental_realtime_webrtc_call_base_url",
+            "forced_login_method",
+            "forced_chatgpt_workspace_id",
+            "otel",
+            "apps_mcp_product_sku",
+            "responses_api_metadata",
+        ] {
+            assert!(
+                parsed.get(stripped_key).is_none(),
+                "{stripped_key} must not survive the official baseline"
+            );
+        }
+
+        // Unrelated user settings (sandbox/features/profile/TUI/notify) are
+        // exactly what this function exists to preserve — must not be
+        // collateral damage from widening the strip list.
+        assert_eq!(
+            parsed.get("sandbox_mode").and_then(|v| v.as_str()),
+            Some("workspace-write")
+        );
+    }
+
+    #[test]
+    fn official_baseline_is_idempotent_on_already_clean_config() {
+        let clean = r#"sandbox_mode = "workspace-write"
+approval_policy = "on-request"
+"#;
+        let baseline =
+            prepare_codex_official_live_config_baseline(clean).expect("valid toml in, valid out");
+        let parsed: toml::Value = toml::from_str(&baseline).expect("baseline must parse");
+        assert_eq!(
+            parsed.get("sandbox_mode").and_then(|v| v.as_str()),
+            Some("workspace-write")
+        );
+        assert_eq!(
+            parsed.get("approval_policy").and_then(|v| v.as_str()),
+            Some("on-request")
+        );
+    }
+
+    #[test]
+    fn official_baseline_of_empty_config_is_empty() {
+        assert_eq!(
+            prepare_codex_official_live_config_baseline("").expect("empty in, empty out"),
+            ""
+        );
+        assert_eq!(
+            prepare_codex_official_live_config_baseline("   \n\t  ").expect("blank in, empty out"),
+            ""
         );
     }
 
@@ -5116,7 +6058,16 @@ wire_api = "responses"
             flash.get("supports_reasoning_summaries"),
             Some(&json!(true))
         );
-        assert_eq!(flash.get("input_modalities"), Some(&json!(["text"])));
+        // The vendor serves the legacy V4 Flash name with the vision-capable
+        // Flash model (api-docs.deepseek.com); V4 Pro stays text-only.
+        assert_eq!(
+            flash.get("input_modalities"),
+            Some(&json!(["text", "image"]))
+        );
+        assert_eq!(
+            catalog["models"][1].get("input_modalities"),
+            Some(&json!(["text"]))
+        );
         assert!(
             flash.get("model_messages").is_some(),
             "official entries are mirrored verbatim, incl. model_messages"
@@ -5322,13 +6273,31 @@ wire_api = "responses"
     }
 
     #[test]
-    fn model_catalog_json_field_writes_relative_filename() {
+    fn model_catalog_pointer_keeps_non_native_paths_portable() {
+        for path in [
+            "relative/cc-switch-model-catalog.json",
+            r"\\wsl.localhost\Ubuntu\home\test\.codex\cc-switch-model-catalog.json",
+        ] {
+            let result = set_codex_model_catalog_json_field("", Some(Path::new(path))).unwrap();
+            let parsed: toml::Value = toml::from_str(&result).unwrap();
+            assert_eq!(
+                parsed["model_catalog_json"].as_str(),
+                Some(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)
+            );
+        }
+    }
+
+    #[test]
+    fn model_catalog_json_field_writes_native_absolute_path() {
         let input = r#"model_provider = "any"
 
 [model_providers.any]
 name = "any"
 "#;
+        #[cfg(not(windows))]
         let catalog_path = Path::new("/tmp/cc-switch-model-catalog.json");
+        #[cfg(windows)]
+        let catalog_path = Path::new(r"C:\Users\test\.codex\cc-switch-model-catalog.json");
 
         let result = set_codex_model_catalog_json_field(input, Some(catalog_path)).unwrap();
         let parsed: toml::Value = toml::from_str(&result).unwrap();
@@ -5336,7 +6305,7 @@ name = "any"
             parsed
                 .get("model_catalog_json")
                 .and_then(|value| value.as_str()),
-            Some(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)
+            catalog_path.to_str()
         );
         assert!(
             parsed
@@ -5647,6 +6616,72 @@ base_url = "https://relay.example/v1"
         }
     }
 
+    // MH-23 regression: a top-level `profile = "x"` makes Codex refuse the
+    // whole config unconditionally (verified against `core/src/config/
+    // mod.rs`'s `cfg.profile` check), regardless of value.
+    #[test]
+    fn strip_rejected_settings_removes_top_level_profile() {
+        let text =
+            "profile = \"work\"\nmodel = \"gpt-5.6\"\n\n[profiles.work]\nmodel = \"gpt-5.6\"\n";
+        let stripped = strip_rejected_codex_settings(text).expect("valid toml");
+        let parsed: toml::Value = toml::from_str(&stripped).expect("still valid toml");
+
+        assert!(parsed.get("profile").is_none());
+        assert_eq!(parsed["model"].as_str(), Some("gpt-5.6"));
+        assert!(
+            parsed["profiles"]["work"].get("model").is_some(),
+            "the [profiles.*] table itself is a separate, still-supported mechanism"
+        );
+    }
+
+    #[test]
+    fn strip_rejected_settings_removes_profile_even_with_no_approval_policy_present() {
+        // Exercises the early-return guard directly: this input has no
+        // "approval_policy" substring at all, so the fix must key its
+        // early return on "profile" too, not only "approval_policy".
+        let text = "profile = \"work\"\nmodel = \"gpt-5.6\"\n";
+        let stripped = strip_rejected_codex_settings(text).expect("valid toml");
+        let parsed: toml::Value = toml::from_str(&stripped).expect("still valid toml");
+        assert!(parsed.get("profile").is_none());
+    }
+
+    // MH-23 regression: `GranularApprovalConfig::{sandbox_approval, rules,
+    // mcp_elicitations}` have no `#[serde(default)]` in Codex's own struct —
+    // missing any of them fails deserialization and takes the whole config
+    // down, just like the string-form rejections above.
+    #[test]
+    fn strip_rejected_settings_backfills_missing_granular_required_fields() {
+        let text = "approval_policy = { granular = { hints = [] } }\n\n[profiles.a]\napproval_policy = { granular = { sandbox_approval = true } }\n";
+        let stripped = strip_rejected_codex_settings(text).expect("valid toml");
+        let parsed: toml::Value = toml::from_str(&stripped).expect("still valid toml");
+
+        let root_granular = &parsed["approval_policy"]["granular"];
+        assert_eq!(root_granular["sandbox_approval"].as_bool(), Some(false));
+        assert_eq!(root_granular["rules"].as_bool(), Some(false));
+        assert_eq!(root_granular["mcp_elicitations"].as_bool(), Some(false));
+        // Fields Codex already defaults itself must not be force-inserted.
+        assert!(root_granular.get("skill_approval").is_none());
+        assert!(root_granular.get("request_permissions").is_none());
+
+        let profile_granular = &parsed["profiles"]["a"]["approval_policy"]["granular"];
+        assert_eq!(
+            profile_granular["sandbox_approval"].as_bool(),
+            Some(true),
+            "an explicitly set required field must survive untouched"
+        );
+        assert_eq!(profile_granular["rules"].as_bool(), Some(false));
+        assert_eq!(profile_granular["mcp_elicitations"].as_bool(), Some(false));
+    }
+
+    #[test]
+    fn strip_rejected_settings_leaves_complete_granular_table_byte_identical() {
+        let text = "approval_policy = { granular = { sandbox_approval = false, rules = true, mcp_elicitations = false } }\n";
+        assert_eq!(
+            strip_rejected_codex_settings(text).expect("valid toml"),
+            text
+        );
+    }
+
     #[test]
     fn resolve_catalog_path_returns_none_when_config_missing_field() {
         let generated = PathBuf::from("/tmp/.codex/cc-switch-model-catalog.json");
@@ -5778,7 +6813,7 @@ base_url = "https://relay.example/v1"
                 { "slug": "gpt-5.4", "input_modalities": ["text", "image"] },
                 { "slug": "deepseek-v4-pro", "input_modalities": ["text"] },
                 { "slug": "gpt-text-override", "input_modalities": ["text"] },
-                { "slug": "deepseek-v4-flash", "input_modalities": ["text", "image"] }
+                { "slug": "deepseek-chat", "input_modalities": ["text", "image"] }
             ]
         }"#;
 
@@ -6024,6 +7059,61 @@ base_url = "https://relay.example/v1"
     }
 
     #[test]
+    fn bundled_templates_carry_no_template_placeholders() {
+        // Codex >= 0.156 sends `instructions_template` verbatim, so any
+        // `{{ ... }}` left in a bundled template reaches the model literally.
+        for (name, text) in [
+            (
+                "gpt5_5_template.json",
+                include_str!("resources/gpt5_5_template.json"),
+            ),
+            (
+                "codex_native_responses_template.json",
+                include_str!("resources/codex_native_responses_template.json"),
+            ),
+            (
+                "codex_deepseek_catalog_template.json",
+                include_str!("resources/codex_deepseek_catalog_template.json"),
+            ),
+        ] {
+            assert!(!text.contains("{{"), "{name} must not contain `{{{{`");
+        }
+        let template = load_codex_model_template_static().expect("static template parses");
+        assert!(
+            template
+                .pointer("/model_messages/instructions_variables")
+                .is_none(),
+            "retired instructions_variables must not ship in the gpt-5.5 template"
+        );
+    }
+
+    #[test]
+    fn captured_template_inlines_retired_personality_placeholder() {
+        let catalog = json!({
+            "models": [{
+                "slug": CODEX_MODEL_CATALOG_TEMPLATE_SLUG,
+                "model_messages": {
+                    "instructions_template": "Intro.\n\n{{ personality }}\n\n# General\nBody",
+                    "instructions_variables": {
+                        "personality_default": "",
+                        "personality_friendly": "# Personality\n\nFriendly.\n",
+                        "personality_pragmatic": "# Personality\n\nPragmatic.\n"
+                    }
+                }
+            }]
+        });
+        let template = find_codex_model_template(&catalog).expect("template found");
+        let messages = template.get("model_messages").expect("model_messages kept");
+        assert_eq!(
+            messages
+                .get("instructions_template")
+                .and_then(Value::as_str),
+            Some("Intro.\n\n# Personality\n\nFriendly.\n\n# General\nBody")
+        );
+        assert!(messages.get("instructions_variables").is_none());
+    }
+
+    #[test]
     fn static_template_has_required_keys() {
         let template =
             load_codex_model_template_static().expect("static template must parse as valid JSON");
@@ -6065,7 +7155,7 @@ model = "glm-5"
     }
 
     #[test]
-    fn set_catalog_json_field_writes_filename_for_any_path() {
+    fn set_catalog_json_field_respects_platform_path_semantics() {
         let input = r#"model_provider = "custom"
 model = "glm-5"
 "#;
@@ -6076,8 +7166,12 @@ model = "glm-5"
 
         assert_eq!(
             parsed.get("model_catalog_json").and_then(|v| v.as_str()),
-            Some(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME),
-            "should write only the relative filename, not the full path"
+            if regular_path.is_absolute() {
+                regular_path.to_str()
+            } else {
+                Some(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)
+            },
+            "native absolute paths are required by strict permission readers"
         );
     }
 
@@ -6256,5 +7350,200 @@ approval_policy = "never"
                 "required field {key} has no fallback value"
             );
         }
+    }
+
+    fn catalog_spec(model: &str) -> CodexCatalogModelSpec {
+        CodexCatalogModelSpec {
+            model: model.to_string(),
+            display_name: None,
+            context_window: None,
+            supports_parallel_tool_calls: None,
+            input_modalities: None,
+            base_instructions: None,
+            reasoning_levels: None,
+            default_reasoning_level: None,
+        }
+    }
+
+    fn catalog_efforts(entry: &Value) -> Vec<String> {
+        entry["supported_reasoning_levels"]
+            .as_array()
+            .map(|levels| {
+                levels
+                    .iter()
+                    .filter_map(|level| level.get("effort").and_then(Value::as_str))
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn luna_models_never_offer_the_ultra_tier() {
+        let native = CodexCatalogToolProfile::NativeResponses;
+        for model in ["gpt-6-luna", "gpt-5.6-luna", "openai/GPT-6-Luna"] {
+            let levels = codex_inferred_reasoning_levels(model, native).unwrap();
+            assert_eq!(levels.last().map(String::as_str), Some("max"), "{model}");
+            assert!(!levels.iter().any(|level| level == "ultra"), "{model}");
+        }
+        for model in ["gpt-6-sol", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra"] {
+            let levels = codex_inferred_reasoning_levels(model, native).unwrap();
+            assert_eq!(levels.last().map(String::as_str), Some("ultra"), "{model}");
+        }
+    }
+
+    #[test]
+    fn proxy_chat_clones_keep_only_reviewed_fields_and_never_backend_features() {
+        // A captured Codex entry carrying ChatGPT-backend and account metadata.
+        let template = json!({
+            "slug": "gpt-5.5",
+            "display_name": "GPT-5.5",
+            "shell_type": "shell_command",
+            "visibility": "list",
+            "supported_in_api": true,
+            "priority": 1,
+            "support_verbosity": true,
+            "truncation_policy": {"mode": "tokens", "limit": 10000},
+            "experimental_supported_tools": [],
+            "supported_reasoning_levels": [{"effort": "high", "description": "h"}],
+            "model_messages": {"instructions_template": "agent"},
+            "tool_mode": "code_mode_only",
+            "use_responses_lite": true,
+            "supports_reasoning_effort_updates": true,
+            "supports_image_detail_original": true,
+            "guardian": {"shell": "review"},
+            "available_access_programs": {"programs": ["x"]},
+            "prefer_websockets": true,
+            "comp_hash": "3000",
+            "available_in_plans": ["plus"],
+            "auto_review_model_override": "codex-auto-review",
+            "default_service_tier": "priority",
+            "some_future_field": true
+        });
+        let catalog = codex_model_catalog_from_specs(
+            &[catalog_spec("relay-model")],
+            &template,
+            CodexCatalogToolProfile::ProxyChat,
+            128_000,
+        );
+        let entry = catalog["models"][0].as_object().unwrap();
+        for key in entry.keys() {
+            assert!(
+                CODEX_PROXY_CHAT_CATALOG_KEYS.contains(&key.as_str())
+                    || CODEX_CATALOG_PARSER_REQUIRED_FIELDS.contains(&key.as_str()),
+                "unreviewed key {key} leaked into a ProxyChat entry"
+            );
+        }
+        assert_eq!(entry["use_responses_lite"], json!(false));
+        assert_eq!(entry["supports_reasoning_effort_updates"], json!(false));
+        assert_eq!(entry["supports_image_detail_original"], json!(false));
+        assert_eq!(entry["model_messages"], template["model_messages"]);
+        assert_eq!(entry["tool_mode"], json!("code_mode_only"));
+        // Every field 0.157 `ModelInfo` requires survives the whitelist.
+        for key in [
+            "slug",
+            "display_name",
+            "supported_reasoning_levels",
+            "shell_type",
+            "visibility",
+            "supported_in_api",
+            "priority",
+            "support_verbosity",
+            "truncation_policy",
+            "experimental_supported_tools",
+        ] {
+            assert!(entry.contains_key(key), "required key {key} was dropped");
+        }
+    }
+
+    #[test]
+    fn proxy_chat_official_slug_uses_its_own_codex_entry() {
+        let default_template = json!({
+            "slug": "gpt-5.5",
+            "model_messages": {"instructions_template": "gpt-5.5 agent"},
+            "supported_reasoning_levels": [{"effort": "xhigh", "description": "x"}],
+            "default_reasoning_level": "xhigh"
+        });
+        let runtime = vec![
+            default_template.clone(),
+            json!({
+                "slug": "gpt-6-luna",
+                "model_messages": {"instructions_template": "luna agent {{ personality }}",
+                    "instructions_variables": {"personality_default": "Be kind."}},
+                "tool_mode": "code_mode_only",
+                "supported_reasoning_levels": [
+                    {"effort": "low", "description": "l"},
+                    {"effort": "max", "description": "m"}
+                ],
+                "default_reasoning_level": "low",
+                "use_responses_lite": true,
+                "guardian": {"shell": "review"}
+            }),
+        ];
+        let catalog = codex_model_catalog_from_specs_with_runtime(
+            &[
+                catalog_spec("gpt-6-luna"),
+                catalog_spec("GPT-6-LUNA"),
+                catalog_spec("kimi-k3"),
+            ],
+            &default_template,
+            &runtime,
+            CodexCatalogToolProfile::ProxyChat,
+            128_000,
+        );
+        let models = catalog["models"].as_array().unwrap();
+        for luna in &models[..2] {
+            assert_eq!(
+                luna["model_messages"]["instructions_template"],
+                json!("luna agent Be kind.")
+            );
+            assert!(luna["model_messages"]
+                .get("instructions_variables")
+                .is_none());
+            assert_eq!(luna["tool_mode"], json!("code_mode_only"));
+            assert_eq!(catalog_efforts(luna), vec!["low", "max"]);
+            assert_eq!(luna["default_reasoning_level"], json!("low"));
+            assert_eq!(luna["use_responses_lite"], json!(false));
+            assert!(luna.get("guardian").is_none());
+        }
+        assert_eq!(models[1]["slug"], json!("GPT-6-LUNA"));
+        // A model the local Codex does not know keeps the gpt-5.5 template.
+        assert_eq!(
+            models[2]["model_messages"]["instructions_template"],
+            json!("gpt-5.5 agent")
+        );
+        assert_eq!(catalog_efforts(&models[2]), vec!["xhigh"]);
+
+        // Native lines keep the neutral template even for official slugs.
+        let native = codex_model_catalog_from_specs_with_runtime(
+            &[catalog_spec("gpt-6-luna")],
+            &load_codex_native_responses_template(),
+            &runtime,
+            CodexCatalogToolProfile::NativeResponses,
+            128_000,
+        );
+        assert!(native["models"][0].get("model_messages").is_none());
+    }
+
+    #[test]
+    fn generated_catalogs_never_enable_responses_lite() {
+        let lite_template = json!({"slug": "gpt-5.5", "use_responses_lite": true});
+        for profile in [
+            CodexCatalogToolProfile::ProxyChat,
+            CodexCatalogToolProfile::NativeResponses,
+            CodexCatalogToolProfile::Anthropic,
+        ] {
+            let catalog = codex_model_catalog_from_specs(
+                &[catalog_spec("m")],
+                &lite_template,
+                profile,
+                128_000,
+            );
+            assert_eq!(catalog["models"][0]["use_responses_lite"], json!(false));
+        }
+        let vendor = vec![json!({"slug": "deepseek-v4-flash", "use_responses_lite": true})];
+        let entry =
+            codex_vendor_catalog_model_entry(&vendor, &catalog_spec("deepseek-v4-flash"), 0);
+        assert_eq!(entry["use_responses_lite"], json!(false));
     }
 }

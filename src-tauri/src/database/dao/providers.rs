@@ -2,7 +2,7 @@ use crate::database::{lock_conn, Database};
 use crate::error::AppError;
 use crate::provider::{Provider, ProviderMeta};
 use indexmap::IndexMap;
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use std::collections::{HashMap, HashSet};
 
 type OmoProviderRow = (
@@ -22,6 +22,13 @@ impl Database {
         app_type: &str,
     ) -> Result<IndexMap<String, Provider>, AppError> {
         let conn = lock_conn!(self.conn);
+        Self::get_all_providers_on_connection(&conn, app_type)
+    }
+
+    pub(crate) fn get_all_providers_on_connection(
+        conn: &rusqlite::Connection,
+        app_type: &str,
+    ) -> Result<IndexMap<String, Provider>, AppError> {
         let mut stmt = conn.prepare(
             "SELECT id, name, settings_config, website_url, category, created_at, sort_index, notes, icon, icon_color, meta, in_failover_queue
              FROM providers WHERE app_type = ?1
@@ -178,25 +185,82 @@ impl Database {
     }
 
     pub fn save_provider(&self, app_type: &str, provider: &Provider) -> Result<(), AppError> {
+        self.save_provider_internal(app_type, provider, false)
+    }
+
+    /// Only account transactions may create/change a Codex account binding.
+    /// Lock order: optional provider switch lock -> account mutation -> DB.
+    /// Normal provider writes never acquire the account lock under the DB lock.
+    pub(crate) fn save_provider_with_account_pin(
+        &self,
+        _transaction: &std::sync::MutexGuard<'_, ()>,
+        provider: &Provider,
+    ) -> Result<(), AppError> {
+        self.save_provider_internal("codex", provider, true)
+    }
+
+    fn save_provider_internal(
+        &self,
+        app_type: &str,
+        provider: &Provider,
+        write_account_pin: bool,
+    ) -> Result<(), AppError> {
         let mut conn = lock_conn!(self.conn);
         let tx = conn
             .transaction()
             .map_err(|e| AppError::Database(e.to_string()))?;
 
+        Self::save_provider_on_connection_internal(&tx, app_type, provider, write_account_pin)?;
+        tx.commit().map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Reuse the normal provider encoding inside a caller-owned transaction.
+    pub(crate) fn save_provider_on_connection(
+        tx: &rusqlite::Connection,
+        app_type: &str,
+        provider: &Provider,
+    ) -> Result<(), AppError> {
+        Self::save_provider_on_connection_internal(tx, app_type, provider, false)
+    }
+
+    fn save_provider_on_connection_internal(
+        tx: &rusqlite::Connection,
+        app_type: &str,
+        provider: &Provider,
+        write_account_pin: bool,
+    ) -> Result<(), AppError> {
         let mut meta_clone = provider.meta.clone().unwrap_or_default();
         let endpoints = std::mem::take(&mut meta_clone.custom_endpoints);
 
-        let existing: Option<(bool, bool)> = tx
+        let existing: Option<(bool, bool, Option<String>)> = tx
             .query_row(
-                "SELECT is_current, in_failover_queue FROM providers WHERE id = ?1 AND app_type = ?2",
+                "SELECT is_current, in_failover_queue, meta FROM providers WHERE id = ?1 AND app_type = ?2",
                 params![provider.id, app_type],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
-            .ok();
+            .optional()
+            .map_err(|e| AppError::Database(e.to_string()))?;
 
         let is_update = existing.is_some();
-        let (is_current, in_failover_queue) =
-            existing.unwrap_or((false, provider.in_failover_queue));
+        let (is_current, in_failover_queue, stored_meta) =
+            existing.unwrap_or((false, provider.in_failover_queue, None));
+
+        if app_type == "codex" && !write_account_pin {
+            // Read at commit time, not from a renderer/backfill/rollback snapshot.
+            // Inserts cannot import a machine-local binding; changing category
+            // away from official detaches it so account deletion cannot miss it.
+            meta_clone.official_account = if provider.category.as_deref() == Some("official") {
+                stored_meta
+                    .as_deref()
+                    .map(serde_json::from_str::<ProviderMeta>)
+                    .transpose()
+                    .map_err(|e| AppError::Database(format!("invalid provider meta: {e}")))?
+                    .and_then(|meta| meta.official_account)
+            } else {
+                None
+            };
+        }
 
         if is_update {
             tx.execute(
@@ -273,7 +337,70 @@ impl Database {
             }
         }
 
-        tx.commit().map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Snapshot replacement must not import machine-local account bindings.
+    /// The caller holds the main DB lock through reconciliation AND replacement;
+    /// this needs no account lock and cannot invert provider/account lock order.
+    pub(crate) fn preserve_local_account_pins_on_connection(
+        local: &rusqlite::Connection,
+        staged: &rusqlite::Connection,
+    ) -> Result<(), AppError> {
+        // A damaged local catalog must not prevent restoring a healthy backup.
+        // In that case fail closed on pins: detach, never trust snapshot bindings.
+        let local_lines = Self::get_all_providers_on_connection(local, "codex").unwrap_or_default();
+        let staged_rows = {
+            let mut statement = staged
+                .prepare("SELECT id, category, meta FROM providers WHERE app_type = 'codex'")
+                .map_err(|e| AppError::Database(e.to_string()))?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })
+                .map_err(|e| AppError::Database(e.to_string()))?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|e| AppError::Database(e.to_string()))?
+        };
+        for (id, category, raw_meta) in staged_rows {
+            let pin = local_lines
+                .get(&id)
+                .filter(|line| line.category.as_deref() == Some("official"))
+                .and_then(|line| line.meta.as_ref())
+                .and_then(|meta| meta.official_account.as_ref());
+            // Preserve unrelated and forward-compatible metadata verbatim as JSON.
+            let mut meta: serde_json::Value = serde_json::from_str(&raw_meta)
+                .map_err(|e| AppError::Database(format!("invalid staged provider meta: {e}")))?;
+            let object = meta
+                .as_object_mut()
+                .ok_or_else(|| AppError::Database("invalid staged provider meta".into()))?;
+            object.remove("officialAccount");
+            if category.as_deref() == Some("official") {
+                if let Some(pin) = pin {
+                    object.insert(
+                        "officialAccount".into(),
+                        serde_json::to_value(pin).map_err(|e| AppError::Database(e.to_string()))?,
+                    );
+                }
+            }
+            let encoded =
+                serde_json::to_string(&meta).map_err(|e| AppError::Database(e.to_string()))?;
+            let changed = staged
+                .execute(
+                    "UPDATE OR ABORT providers SET meta = ?1 WHERE id = ?2 AND app_type = 'codex'",
+                    params![encoded, id],
+                )
+                .map_err(|e| AppError::Database(e.to_string()))?;
+            if changed != 1 {
+                return Err(AppError::Database(
+                    "Account binding reconciliation failed".into(),
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -303,11 +430,15 @@ impl Database {
                 "无法删除当前正在使用的供应商".to_string(),
             ));
         }
-        conn.execute(
-            "DELETE FROM providers WHERE id = ?1 AND app_type = ?2 AND is_current = 0",
-            params![id, app_type],
-        )
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        let deleted = conn
+            .execute(
+                "DELETE FROM providers WHERE id = ?1 AND app_type = ?2 AND is_current = 0",
+                params![id, app_type],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        if deleted == 0 {
+            return Err(AppError::Message("供应商不存在或已被删除".to_string()));
+        }
         Ok(())
     }
 
@@ -339,6 +470,168 @@ impl Database {
         Ok(())
     }
 
+    /// MH-19②: one-time (but safely re-runnable) cleanup for Codex rows that
+    /// were already backfilled with OAuth login material before the forward
+    /// fix (`scrub_oauth_material_from_non_official_codex_auth`, applied at
+    /// backfill time) existed. Idempotent — a clean row is read, found
+    /// unchanged, and never written back — so call sites can re-run it after
+    /// every import/restore rather than tracking a "have we migrated yet"
+    /// flag (R3A-N5).
+    ///
+    /// Returns the number of rows actually changed, for a log line only —
+    /// never which rows or what was in them.
+    pub fn scrub_oauth_material_from_non_official_codex_providers(
+        &self,
+    ) -> Result<usize, AppError> {
+        let providers = self.get_all_providers("codex")?;
+        let mut scrubbed = 0usize;
+        for (id, provider) in providers {
+            if provider.category.as_deref() == Some("official") {
+                continue;
+            }
+            let mut settings_config = provider.settings_config;
+            let Some(auth) = settings_config.get_mut("auth") else {
+                continue;
+            };
+            if crate::codex_config::scrub_oauth_material_from_non_official_codex_auth(auth) {
+                self.update_provider_settings_config("codex", &id, &settings_config)?;
+                scrubbed += 1;
+            }
+        }
+        Ok(scrubbed)
+    }
+
+    /// CPP-A1①: DB half of the idempotent fix for leftover non-official
+    /// provider tables named `"OpenAI"` (the live half runs in
+    /// `repair_rejected_codex_settings_at_startup`). Rows whose config does
+    /// not parse are left alone; the live write path rejects them anyway.
+    /// Returns the number of rows changed.
+    pub fn rename_non_official_openai_named_codex_provider_tables(
+        &self,
+    ) -> Result<usize, AppError> {
+        let mut renamed = 0usize;
+        for (id, provider) in self.get_all_providers("codex")? {
+            let mut settings_config = provider.settings_config;
+            let Some(config) = settings_config.get("config").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let fixed =
+                match crate::codex_config::rename_non_official_openai_named_provider_tables(config)
+                {
+                    Ok(Some(fixed)) => fixed,
+                    Ok(None) => continue,
+                    Err(e) => {
+                        log::warn!("Skipped CPP-A1 rename for unreadable Codex row '{id}': {e}");
+                        continue;
+                    }
+                };
+            settings_config["config"] = serde_json::Value::String(fixed);
+            self.update_provider_settings_config("codex", &id, &settings_config)?;
+            renamed += 1;
+        }
+        Ok(renamed)
+    }
+
+    /// L3 one-time report (settings key `codex_key_ownership_report_v1`):
+    /// the Codex lines whose stored config carries keys the key-ownership
+    /// rules no longer apply from a line, by line name and key name only.
+    /// Generated once, before any switch reduces the stored lines; returns
+    /// the number of lines listed when it was generated by this call.
+    pub fn record_codex_key_ownership_report_once(&self) -> Result<Option<usize>, AppError> {
+        const KEY: &str = "codex_key_ownership_report_v1";
+        if self.get_setting(KEY)?.is_some() {
+            return Ok(None);
+        }
+        let mut lines = Vec::new();
+        for (id, provider) in self.get_all_providers("codex")? {
+            let Some(config) = provider
+                .settings_config
+                .get("config")
+                .and_then(|v| v.as_str())
+            else {
+                continue;
+            };
+            let keys = crate::codex_key_ownership::codex_line_keys_without_effect(config);
+            if !keys.is_empty() {
+                lines.push(serde_json::json!({ "id": id, "name": provider.name, "keys": keys }));
+            }
+        }
+        let count = lines.len();
+        let report = serde_json::json!({ "lines": lines });
+        self.set_setting(KEY, &report.to_string())?;
+        Ok(Some(count))
+    }
+
+    /// MH-13b: treat every Codex row and the stored Codex common-config
+    /// snippet as untrusted TOML (called after SQL import, `.db` restore and
+    /// cloud-sync download). Stripped keys are removed from the stored text;
+    /// the returned review lists, by name only, what was removed and which
+    /// unknown environment variables still need the user's confirmation.
+    pub fn sanitize_untrusted_codex_configs(
+        &self,
+    ) -> Result<crate::codex_key_ownership::CodexImportReview, AppError> {
+        use crate::codex_key_ownership::{
+            sanitize_untrusted_codex_config, CodexImportReview, CodexImportReviewLine,
+        };
+
+        let mut review = CodexImportReview::default();
+        for (id, provider) in self.get_all_providers("codex")? {
+            let official = provider.category.as_deref() == Some("official");
+            let mut settings_config = provider.settings_config;
+            let Some(config) = settings_config.get("config").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let (clean, report) = match sanitize_untrusted_codex_config(config, official) {
+                Ok(result) => result,
+                Err(e) => {
+                    log::warn!("Skipped MH-13b sanitize for unreadable Codex row '{id}': {e}");
+                    continue;
+                }
+            };
+            if report.is_empty() {
+                continue;
+            }
+            if !report.stripped.is_empty() {
+                settings_config["config"] = serde_json::Value::String(clean);
+                self.update_provider_settings_config("codex", &id, &settings_config)?;
+            }
+            review.providers.push(CodexImportReviewLine {
+                id,
+                name: provider.name,
+                report,
+            });
+        }
+
+        if let Some(snippet) = self.get_config_snippet("codex")? {
+            match sanitize_untrusted_codex_config(&snippet, false) {
+                Ok((clean, report)) if !report.is_empty() => {
+                    if !report.stripped.is_empty() {
+                        self.set_config_snippet("codex", Some(clean))?;
+                    }
+                    review.common_config = Some(report);
+                }
+                Ok(_) => {}
+                Err(e) => log::warn!("Skipped MH-13b sanitize for the Codex common config: {e}"),
+            }
+        }
+        Ok(review)
+    }
+
+    /// MH-8c 1.7 startup/import repair: rewrite Codex rows whose stored
+    /// config.toml still declares a non-`responses` `wire_api` (Codex 0.154+
+    /// rejects the whole file), keeping the declared protocol in
+    /// `meta.apiFormat`. Idempotent; returns the number of rows changed.
+    pub fn normalize_codex_provider_wire_apis(&self) -> Result<usize, AppError> {
+        let providers = self.get_all_providers("codex")?;
+        let mut changed = 0usize;
+        for (_, mut provider) in providers {
+            if crate::proxy::providers::normalize_codex_provider_wire_api(&mut provider) {
+                self.save_provider("codex", &provider)?;
+                changed += 1;
+            }
+        }
+        Ok(changed)
+    }
     pub fn update_provider_settings_config(
         &self,
         app_type: &str,
@@ -874,6 +1167,11 @@ mod ensure_official_seed_tests {
             )
             .unwrap();
         }
+        db.save_provider(
+            "claude",
+            &Provider::with_id("b".into(), "other-tool".into(), json!({}), None),
+        )
+        .unwrap();
         db.set_current_provider("codex", "a").unwrap();
         assert!(db.delete_non_current_provider("codex", "a").is_err());
         db.delete_non_current_provider("codex", "b").unwrap();
@@ -884,7 +1182,8 @@ mod ensure_official_seed_tests {
         );
         assert!(db.get_provider_by_id("a", "codex").unwrap().is_some());
         assert!(db.get_provider_by_id("b", "codex").unwrap().is_none());
-        db.delete_non_current_provider("codex", "b").unwrap();
+        assert!(db.delete_non_current_provider("codex", "b").is_err());
+        assert!(db.get_provider_by_id("b", "claude").unwrap().is_some());
         // Compensation deliberately retains raw current-row removal semantics.
         db.delete_provider("codex", "a").unwrap();
         assert!(db.get_provider_by_id("a", "codex").unwrap().is_none());

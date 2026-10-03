@@ -13,6 +13,15 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 
+// The CAS changeset lives beside `atomic_write` because it is built on the
+// same temp-file + replace primitive (`atomic_write_checked`), and keeping it
+// in this module preserves a single implementation of symlink refusal and
+// the Windows `MoveFileExW` replace. Codex live files and per-tool live backups
+// use it; parts of the API (inspection accessors, explicit rollback) are for callers
+// pairing a commit with a DB transaction.
+#[allow(dead_code)]
+pub mod cas;
+
 /// 获取用户主目录，带回退和日志
 ///
 /// ## Windows 注意事项
@@ -265,12 +274,14 @@ pub fn write_json_file<T: Serialize>(path: &Path, data: &T) -> Result<(), AppErr
         fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
     }
 
-    let value = serde_json::to_value(data).map_err(|e| AppError::JsonSerialize { source: e })?;
-    let sorted_value = sort_json_keys(&value);
-    let json = serde_json::to_string_pretty(&sorted_value)
-        .map_err(|e| AppError::JsonSerialize { source: e })?;
+    atomic_write(path, json_file_text(data)?.as_bytes())
+}
 
-    atomic_write(path, json.as_bytes())
+/// The exact text [`write_json_file`] writes (sorted keys, pretty-printed).
+pub(crate) fn json_file_text<T: Serialize>(data: &T) -> Result<String, AppError> {
+    let value = serde_json::to_value(data).map_err(|e| AppError::JsonSerialize { source: e })?;
+    serde_json::to_string_pretty(&sort_json_keys(&value))
+        .map_err(|e| AppError::JsonSerialize { source: e })
 }
 
 /// 原子写入文本文件（用于 TOML/纯文本）
@@ -288,6 +299,32 @@ pub fn write_text_file(path: &Path, data: &str) -> Result<(), AppError> {
 /// `MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)`，不先删除目标，避免目标文件
 /// 出现可见空窗。
 pub fn atomic_write(path: &Path, data: &[u8]) -> Result<(), AppError> {
+    atomic_write_checked(path, data, false, || Ok::<(), AppError>(()))
+}
+
+/// [`atomic_write`] that also forces the result to 0600 on Unix, for files
+/// that hold credentials (Pi `models.json`, MiniMax Code `config.yaml`).
+pub(crate) fn atomic_write_private(path: &Path, data: &[u8]) -> Result<(), AppError> {
+    atomic_write_checked(path, data, true, || Ok::<(), AppError>(()))
+}
+
+/// [`atomic_write`] 的底层实现，供 CAS 变更集（[`cas`]）复用。
+///
+/// - `private`：Unix 上把结果文件强制设为 0600（否则沿用已有文件的权限，
+///   新文件默认 0600）；其它平台忽略。
+/// - `pre_commit`：临时文件写完并刷盘后、替换目标之前调用；返回错误时放弃
+///   替换并删除临时文件，目标文件保持原样。CAS 用它在替换前的最后一刻
+///   复查目标内容，把"读取后被外部改写"的竞态窗口收窄到一次替换调用。
+pub(crate) fn atomic_write_checked<E, F>(
+    path: &Path,
+    data: &[u8],
+    private: bool,
+    pre_commit: F,
+) -> Result<(), E>
+where
+    E: From<AppError>,
+    F: FnOnce() -> Result<(), E>,
+{
     let parent = path
         .parent()
         .ok_or_else(|| AppError::Config("无效的路径".to_string()))?;
@@ -297,29 +334,32 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> Result<(), AppError> {
     let existing_mode: Option<u32> = match fs::symlink_metadata(path) {
         Ok(meta) => {
             if meta.file_type().is_symlink() {
-                return Err(AppError::Config(format!(
-                    "拒绝写入符号链接目标: {}",
-                    path.display()
-                )));
+                return Err(
+                    AppError::Config(format!("拒绝写入符号链接目标: {}", path.display())).into(),
+                );
             }
             use std::os::unix::fs::PermissionsExt;
             Some(meta.permissions().mode() & 0o7777)
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => return Err(AppError::io(path, error)),
+        Err(error) => return Err(AppError::io(path, error).into()),
     };
+    #[cfg(unix)]
+    let target_mode: Option<u32> = if private { Some(0o600) } else { existing_mode };
+
+    #[cfg(not(unix))]
+    let _ = private;
 
     #[cfg(not(unix))]
     match fs::symlink_metadata(path) {
         Ok(meta) if meta.file_type().is_symlink() => {
-            return Err(AppError::Config(format!(
-                "拒绝写入符号链接目标: {}",
-                path.display()
-            )));
+            return Err(
+                AppError::Config(format!("拒绝写入符号链接目标: {}", path.display())).into(),
+            );
         }
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(AppError::io(path, error)),
+        Err(error) => return Err(AppError::io(path, error).into()),
     }
 
     let file_name = path
@@ -328,11 +368,11 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> Result<(), AppError> {
         .to_string_lossy();
     let tmp = parent.join(format!(".{file_name}.tmp-{}", Uuid::new_v4()));
 
-    let result = (|| {
+    let result = (|| -> Result<(), E> {
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
-        options.mode(existing_mode.unwrap_or(0o600));
+        options.mode(target_mode.unwrap_or(0o600));
 
         let mut file = options.open(&tmp).map_err(|e| AppError::io(&tmp, e))?;
         file.write_all(data).map_err(|e| AppError::io(&tmp, e))?;
@@ -341,11 +381,13 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> Result<(), AppError> {
         drop(file);
 
         #[cfg(unix)]
-        if let Some(mode) = existing_mode {
+        if let Some(mode) = target_mode {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&tmp, fs::Permissions::from_mode(mode))
                 .map_err(|e| AppError::io(&tmp, e))?;
         }
+
+        pre_commit()?;
 
         #[cfg(windows)]
         {
@@ -368,7 +410,8 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> Result<(), AppError> {
                 return Err(AppError::IoContext {
                     context: format!("原子替换失败: {} -> {}", tmp.display(), path.display()),
                     source: std::io::Error::last_os_error(),
-                });
+                }
+                .into());
             }
         }
 

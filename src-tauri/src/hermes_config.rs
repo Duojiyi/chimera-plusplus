@@ -30,7 +30,7 @@
 //!     args: ["-y", "@modelcontextprotocol/server-filesystem"]
 //! ```
 
-use crate::config::{atomic_write, get_app_config_dir};
+use crate::config::{atomic_write, atomic_write_private, get_app_config_dir};
 use crate::error::AppError;
 use crate::settings::{effective_backup_retain_count, get_hermes_override_dir};
 use chrono::Local;
@@ -322,7 +322,7 @@ fn remove_all_sections(raw: &str, section_key: &str) -> String {
 }
 
 /// Replace a YAML section in raw text, or append it if not found.
-fn replace_yaml_section(
+pub(crate) fn replace_yaml_section(
     raw: &str,
     section_key: &str,
     value: &serde_yaml::Value,
@@ -360,11 +360,14 @@ fn replace_yaml_section(
 // Backup & Cleanup
 // ============================================================================
 
-fn create_hermes_backup(source: &str) -> Result<PathBuf, AppError> {
-    let backup_dir = get_app_config_dir().join("backups").join("hermes");
+/// Back up a YAML tool config to `<app config>/backups/<kind>/` before an
+/// edit, keeping the configured number of copies. The copy holds the tool's
+/// API keys, so it is written owner-only.
+pub(crate) fn create_yaml_backup(kind: &str, source: &str) -> Result<PathBuf, AppError> {
+    let backup_dir = get_app_config_dir().join("backups").join(kind);
     fs::create_dir_all(&backup_dir).map_err(|e| AppError::io(&backup_dir, e))?;
 
-    let base_id = format!("hermes_{}", Local::now().format("%Y%m%d_%H%M%S"));
+    let base_id = format!("{kind}_{}", Local::now().format("%Y%m%d_%H%M%S"));
     let mut filename = format!("{base_id}.yaml");
     let mut backup_path = backup_dir.join(&filename);
     let mut counter = 1;
@@ -375,12 +378,12 @@ fn create_hermes_backup(source: &str) -> Result<PathBuf, AppError> {
         counter += 1;
     }
 
-    atomic_write(&backup_path, source.as_bytes())?;
-    cleanup_hermes_backups(&backup_dir)?;
+    atomic_write_private(&backup_path, source.as_bytes())?;
+    cleanup_yaml_backups(&backup_dir)?;
     Ok(backup_path)
 }
 
-fn cleanup_hermes_backups(dir: &Path) -> Result<(), AppError> {
+fn cleanup_yaml_backups(dir: &Path) -> Result<(), AppError> {
     let retain = effective_backup_retain_count();
     let mut entries = fs::read_dir(dir)
         .map_err(|e| AppError::io(dir, e))?
@@ -403,7 +406,7 @@ fn cleanup_hermes_backups(dir: &Path) -> Result<(), AppError> {
     for entry in entries.into_iter().take(remove_count) {
         if let Err(err) = fs::remove_file(entry.path()) {
             log::warn!(
-                "Failed to remove old Hermes config backup {}: {err}",
+                "Failed to remove old config backup {}: {err}",
                 entry.path().display()
             );
         }
@@ -447,7 +450,7 @@ fn write_yaml_section_to_config_locked(
     }
 
     let backup_path = if !raw.is_empty() {
-        Some(create_hermes_backup(&raw)?)
+        Some(create_yaml_backup("hermes", &raw)?)
     } else {
         None
     };

@@ -1,9 +1,11 @@
 //! Deep link module tests
 
+use super::env_allowlist::EnvKeyStatus;
 use super::mcp::parse_mcp_apps;
 use super::parser::parse_deeplink_url;
 use super::prompt::import_prompt_from_deeplink;
 use super::provider::parse_and_merge_config;
+use super::skill::import_skill_from_deeplink;
 use super::utils::{infer_homepage_from_endpoint, validate_url};
 use super::DeepLinkImportRequest;
 use crate::AppType;
@@ -232,6 +234,7 @@ fn test_build_gemini_provider_with_model() {
         usage_access_token: None,
         usage_user_id: None,
         usage_auto_interval: None,
+        confirmed_env_keys: None,
     };
 
     let provider = build_provider_from_request(&AppType::Gemini, &request).unwrap();
@@ -285,6 +288,7 @@ fn test_build_gemini_provider_without_model() {
         usage_access_token: None,
         usage_user_id: None,
         usage_auto_interval: None,
+        confirmed_env_keys: None,
     };
 
     let provider = build_provider_from_request(&AppType::Gemini, &request).unwrap();
@@ -331,6 +335,7 @@ fn test_deeplink_usage_script_does_not_copy_provider_credentials() {
         usage_access_token: None,
         usage_user_id: None,
         usage_auto_interval: None,
+        confirmed_env_keys: None,
     };
 
     let provider = build_provider_from_request(&AppType::Claude, &request).unwrap();
@@ -380,6 +385,7 @@ fn test_deeplink_usage_script_omits_explicit_credentials_that_match_provider() {
         usage_access_token: None,
         usage_user_id: None,
         usage_auto_interval: None,
+        confirmed_env_keys: None,
     };
 
     let provider = build_provider_from_request(&AppType::Claude, &request).unwrap();
@@ -428,6 +434,7 @@ fn test_deeplink_usage_script_preserves_distinct_usage_credentials() {
         usage_access_token: None,
         usage_user_id: None,
         usage_auto_interval: None,
+        confirmed_env_keys: None,
     };
 
     let provider = build_provider_from_request(&AppType::Claude, &request).unwrap();
@@ -481,6 +488,7 @@ fn test_parse_and_merge_config_claude() {
         usage_access_token: None,
         usage_user_id: None,
         usage_auto_interval: None,
+        confirmed_env_keys: None,
     };
 
     let merged = parse_and_merge_config(&request).unwrap();
@@ -604,6 +612,7 @@ fn test_parse_and_merge_config_url_override() {
         usage_access_token: None,
         usage_user_id: None,
         usage_auto_interval: None,
+        confirmed_env_keys: None,
     };
 
     let merged = parse_and_merge_config(&request).unwrap();
@@ -667,6 +676,7 @@ fn test_build_claude_provider_preserves_custom_env_fields() {
         usage_access_token: None,
         usage_user_id: None,
         usage_auto_interval: None,
+        confirmed_env_keys: None,
     };
 
     let provider = build_provider_from_request(&AppType::Claude, &request).unwrap();
@@ -722,6 +732,7 @@ fn test_build_claude_provider_without_config_unchanged() {
         usage_access_token: None,
         usage_user_id: None,
         usage_auto_interval: None,
+        confirmed_env_keys: None,
     };
 
     let provider = build_provider_from_request(&AppType::Claude, &request).unwrap();
@@ -743,7 +754,7 @@ fn test_build_claude_provider_without_config_unchanged() {
 #[serial_test::serial]
 fn test_import_prompt_allows_space_in_base64_content() {
     let _test_home = TestHomeGuard::new();
-    let url = "ccswitch://v1/import?resource=prompt&app=codex&name=PromptPlus&content=Pj4+";
+    let url = "chimera://v1/import?resource=prompt&app=codex&name=PromptPlus&content=Pj4+";
     let request = parse_deeplink_url(url).unwrap();
 
     // URL decoded content may have "+" become space
@@ -791,7 +802,7 @@ fn test_parse_prompt_deeplink() {
     let content = "Hello World";
     let content_b64 = BASE64_STANDARD.encode(content);
     let url = format!(
-        "ccswitch://v1/import?resource=prompt&app=claude&name=test&content={}&description=desc&enabled=true",
+        "chimera://v1/import?resource=prompt&app=claude&name=test&content={}&description=desc&enabled=true",
         content_b64
     );
 
@@ -808,7 +819,7 @@ fn test_parse_prompt_deeplink() {
 fn test_parse_grokbuild_prompt_deeplink() {
     let content_b64 = BASE64_STANDARD.encode("Grok instructions");
     let url = format!(
-        "ccswitch://v1/import?resource=prompt&app=grokbuild&name=test&content={content_b64}"
+        "chimera://v1/import?resource=prompt&app=grokbuild&name=test&content={content_b64}"
     );
 
     let request = parse_deeplink_url(&url).expect("parse Grok Build prompt deeplink");
@@ -821,7 +832,7 @@ fn test_parse_mcp_deeplink() {
     let config = r#"{"mcpServers":{"test":{"command":"echo"}}}"#;
     let config_b64 = BASE64_STANDARD.encode(config);
     let url = format!(
-        "ccswitch://v1/import?resource=mcp&apps=claude,codex&config={}&enabled=true",
+        "chimera://v1/import?resource=mcp&apps=claude,codex&config={}&enabled=true",
         config_b64
     );
 
@@ -836,9 +847,8 @@ fn test_parse_mcp_deeplink() {
 fn test_parse_grokbuild_mcp_deeplink() {
     let config = r#"{"mcpServers":{"test":{"command":"echo"}}}"#;
     let config_b64 = BASE64_STANDARD.encode(config);
-    let url = format!(
-        "ccswitch://v1/import?resource=mcp&apps=grokbuild&config={config_b64}&enabled=true"
-    );
+    let url =
+        format!("chimera://v1/import?resource=mcp&apps=grokbuild&config={config_b64}&enabled=true");
 
     let request = parse_deeplink_url(&url).expect("parse Grok Build MCP deeplink");
 
@@ -847,7 +857,7 @@ fn test_parse_grokbuild_mcp_deeplink() {
 
 #[test]
 fn test_parse_skill_deeplink() {
-    let url = "ccswitch://v1/import?resource=skill&repo=owner/repo&directory=skills&branch=dev";
+    let url = "chimera://v1/import?resource=skill&repo=owner/repo&directory=skills&branch=dev";
     let request = parse_deeplink_url(url).unwrap();
 
     assert_eq!(request.resource, "skill");
@@ -908,4 +918,207 @@ fn test_infer_homepage_from_endpoint_without_homepage() {
         infer_homepage_from_endpoint("https://cubence.com"),
         Some("https://cubence.com".to_string())
     );
+}
+
+// =============================================================================
+// MH-4 lockdown
+// =============================================================================
+
+#[test]
+fn legacy_scheme_is_provider_only() {
+    let content_b64 = BASE64_STANDARD.encode("x");
+    let mcp_b64 = BASE64_STANDARD.encode(r#"{"mcpServers":{"t":{"command":"echo"}}}"#);
+    for query in [
+        format!("resource=prompt&app=claude&name=p&content={content_b64}"),
+        format!("resource=mcp&apps=claude&config={mcp_b64}"),
+        "resource=skill&repo=owner/repo".to_string(),
+    ] {
+        let error = parse_deeplink_url(&format!("ccswitch://v1/import?{query}")).unwrap_err();
+        assert!(
+            error.to_string().contains("can only import providers"),
+            "{query}: {error}"
+        );
+        parse_deeplink_url(&format!("chimera://v1/import?{query}"))
+            .unwrap_or_else(|error| panic!("{query}: {error}"));
+    }
+    let provider =
+        "resource=provider&app=claude&name=P&endpoint=https%3A%2F%2Fapi.example.com&apiKey=k";
+    for scheme in ["ccswitch", "chimera"] {
+        parse_deeplink_url(&format!("{scheme}://v1/import?{provider}")).unwrap();
+    }
+}
+
+#[test]
+fn mcode_provider_deeplinks_are_rejected_by_app_string() {
+    for app in ["mcode", "MCode"] {
+        let error = parse_deeplink_url(&format!(
+            "chimera://v1/import?resource=provider&app={app}&name=M&endpoint=https%3A%2F%2Fapi.example.com&apiKey=k"
+        ))
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Mcode provider deep links are not supported"),
+            "{app}: {error}"
+        );
+    }
+}
+
+#[test]
+#[serial_test::serial]
+fn prompt_deeplink_imports_disabled_and_leaves_live_file_alone() {
+    let _test_home = TestHomeGuard::new();
+    let live = crate::prompt_files::prompt_file_path(&AppType::Codex).expect("prompt path");
+    std::fs::create_dir_all(live.parent().expect("prompt dir")).expect("create prompt dir");
+    std::fs::write(&live, "hand-written instructions").expect("seed live prompt");
+
+    let content_b64 = BASE64_STANDARD.encode("imported prompt");
+    let request = parse_deeplink_url(&format!(
+        "chimera://v1/import?resource=prompt&app=codex&name=Linked&content={content_b64}&enabled=true"
+    ))
+    .unwrap();
+    let db = Arc::new(Database::memory().expect("create memory db"));
+    let state = AppState::new(db.clone());
+    let id = import_prompt_from_deeplink(&state, request).expect("import prompt");
+
+    let prompts = db.get_prompts("codex").expect("get prompts");
+    let prompt = prompts.get(&id).expect("prompt saved");
+    assert!(!prompt.enabled, "enabled=true on a prompt link is ignored");
+    assert_eq!(prompt.content, "imported prompt");
+    assert_eq!(
+        std::fs::read_to_string(&live).expect("read live prompt"),
+        "hand-written instructions",
+        "a prompt link must not write or truncate the live prompt file"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn skill_deeplink_repo_is_added_disabled() {
+    let _test_home = TestHomeGuard::new();
+    let db = Arc::new(Database::memory().expect("create memory db"));
+    let state = AppState::new(db.clone());
+    let mut request =
+        parse_deeplink_url("chimera://v1/import?resource=skill&repo=owner/linked-repo").unwrap();
+    request.enabled = Some(true);
+
+    import_skill_from_deeplink(&state, request).expect("import skill repo");
+
+    let repo = db
+        .get_skill_repos()
+        .expect("read skill repos")
+        .into_iter()
+        .find(|repo| repo.owner == "owner" && repo.name == "linked-repo")
+        .expect("repo saved");
+    assert!(!repo.enabled);
+}
+
+#[test]
+#[serial_test::serial]
+fn preview_reports_full_content_absolute_targets_and_env_verdicts() {
+    let _test_home = TestHomeGuard::new();
+    crate::settings::reload_settings().expect("reload settings");
+
+    let content_b64 = BASE64_STANDARD.encode("# Linked\nfull body");
+    let prompt = parse_deeplink_url(&format!(
+        "chimera://v1/import?resource=prompt&app=codex&name=P&content={content_b64}&enabled=true"
+    ))
+    .unwrap();
+    let preview = super::preview_deeplink_import(&prompt).expect("prompt preview");
+    assert_eq!(preview.content, "# Linked\nfull body");
+    assert!(!preview.writes_live);
+    assert_eq!(preview.target_paths.len(), 1);
+    let target = std::path::Path::new(&preview.target_paths[0]);
+    assert!(target.is_absolute(), "{target:?}");
+    assert!(target.ends_with("AGENTS.md"), "{target:?}");
+
+    let mut provider = parse_deeplink_url(
+        "chimera://v1/import?resource=provider&app=claude&name=P&endpoint=https%3A%2F%2Fapi.example.com&apiKey=k&enabled=true",
+    )
+    .unwrap();
+    provider.config =
+        Some(BASE64_STANDARD.encode(
+            r#"{"env":{"ANTHROPIC_AUTH_TOKEN":"t","VENDOR_FLAG":"1","LD_PRELOAD":"/x.so"}}"#,
+        ));
+    provider.config_format = Some("json".to_string());
+    let preview = super::preview_deeplink_import(&provider).expect("provider preview");
+    assert!(!preview.writes_live, "Claude is hidden by default");
+    assert!(preview.target_paths[0].ends_with("settings.json"));
+    assert!(preview.content.contains("VENDOR_FLAG"));
+    let status = |key: &str| {
+        preview
+            .env
+            .iter()
+            .find(|review| review.key == key)
+            .map(|review| review.status)
+    };
+    assert_eq!(status("ANTHROPIC_AUTH_TOKEN"), Some(EnvKeyStatus::Allowed));
+    assert_eq!(status("VENDOR_FLAG"), Some(EnvKeyStatus::NeedsConfirmation));
+    assert_eq!(status("LD_PRELOAD"), Some(EnvKeyStatus::Denied));
+
+    let codex = parse_deeplink_url(
+        "chimera://v1/import?resource=provider&app=codex&name=C&endpoint=https%3A%2F%2Fapi.example.com%2Fv1&apiKey=k&enabled=true",
+    )
+    .unwrap();
+    let preview = super::preview_deeplink_import(&codex).expect("codex preview");
+    assert!(
+        preview.writes_live,
+        "visible Codex with enabled=true activates"
+    );
+    assert!(preview
+        .target_paths
+        .iter()
+        .any(|path| path.ends_with("config.toml")));
+}
+
+#[test]
+fn supported_deeplink_targets_are_allowed_but_unknown_targets_are_rejected() {
+    use super::ensure_targets_allowed;
+
+    let codex_provider = DeepLinkImportRequest {
+        resource: "provider".to_string(),
+        app: Some("codex".to_string()),
+        ..Default::default()
+    };
+    assert!(ensure_targets_allowed(&codex_provider).is_ok());
+    // A link without any target (e.g. a skill repo) is not an app-scoped import.
+    assert!(ensure_targets_allowed(&DeepLinkImportRequest::default()).is_ok());
+
+    for app in crate::app_config::AppType::all() {
+        let request = DeepLinkImportRequest {
+            resource: "provider".to_string(),
+            app: Some(app.as_str().to_string()),
+            ..Default::default()
+        };
+        assert!(ensure_targets_allowed(&request).is_ok(), "{}", app.as_str());
+    }
+
+    for apps in ["codex,claude", " gemini "] {
+        let request = DeepLinkImportRequest {
+            resource: "mcp".to_string(),
+            apps: Some(apps.to_string()),
+            ..Default::default()
+        };
+        assert!(ensure_targets_allowed(&request).is_ok(), "{apps}");
+    }
+    for target in ["not-a-tool", "codex,not-a-tool"] {
+        for request in [
+            DeepLinkImportRequest {
+                app: Some(target.into()),
+                ..Default::default()
+            },
+            DeepLinkImportRequest {
+                apps: Some(target.into()),
+                ..Default::default()
+            },
+        ] {
+            assert!(ensure_targets_allowed(&request).is_err(), "{target}");
+        }
+    }
+    let codex_mcp = DeepLinkImportRequest {
+        resource: "mcp".to_string(),
+        apps: Some("codex".to_string()),
+        ..Default::default()
+    };
+    assert!(ensure_targets_allowed(&codex_mcp).is_ok());
 }

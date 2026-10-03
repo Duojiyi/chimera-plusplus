@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Prompt {
     pub id: String,
     pub name: String,
@@ -9,6 +9,13 @@ pub struct Prompt {
     pub description: Option<String>,
     #[serde(default)]
     pub enabled: bool,
+    /// Template provenance only; never used to resolve a path or fetch content.
+    #[serde(
+        default,
+        rename = "templateId",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub template_id: Option<String>,
     #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
     pub created_at: Option<i64>,
     #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]

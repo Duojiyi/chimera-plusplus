@@ -1,0 +1,26 @@
+[
+  {
+    "id": "software-development-code-review",
+    "sha256": "b6f7475f1675fb616f5cc699fad40e58d9aa9d31e1a8b0cf3160972bd8a05cf0"
+  },
+  {
+    "id": "software-development-debugging",
+    "sha256": "c14174a2a373c5ad301f1df62f76e906826d2f66abcff8e9eb525cf280598150"
+  },
+  {
+    "id": "software-development-maintainer",
+    "sha256": "b59a30a0b0f8981c8285921ce6cc455d267ca7a7a17a21c12f128e8c3a87853b"
+  },
+  {
+    "id": "writing-clarity-editor",
+    "sha256": "7690297603df4a2fb99e3ed88d3e5398a69788eaaf2f90d4b02aabcefc66ae03"
+  },
+  {
+    "id": "writing-structured-draft",
+    "sha256": "2316aa59888b57e4728c0289569c565e0b4fcbe9cc518d0cf70c61d8df1f46f5"
+  },
+  {
+    "id": "writing-technical-docs",
+    "sha256": "883a1c025633f2c390920617a33a30f0798be5d7874d1fb88eeccc48affc8bf2"
+  }
+]

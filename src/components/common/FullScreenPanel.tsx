@@ -1,4 +1,5 @@
 import React from "react";
+import { useTranslation } from "react-i18next";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { ArrowLeft } from "lucide-react";
@@ -41,12 +42,13 @@ export const FullScreenPanel: React.FC<FullScreenPanelProps> = ({
   footer,
   contentClassName,
 }) => {
+  const { t } = useTranslation();
   React.useEffect(() => {
-    if (isOpen) {
-      document.body.style.overflow = "hidden";
-    }
+    if (!isOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
     return () => {
-      document.body.style.overflow = "";
+      document.body.style.overflow = previousOverflow;
     };
   }, [isOpen]);
 
@@ -129,6 +131,7 @@ export const FullScreenPanel: React.FC<FullScreenPanelProps> = ({
                 type="button"
                 variant="outline"
                 size="icon"
+                aria-label={t("common.back", { defaultValue: "返回" })}
                 onClick={onClose}
                 className="rounded-lg select-none"
                 style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}

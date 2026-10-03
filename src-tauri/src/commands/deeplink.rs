@@ -5,7 +5,7 @@ use crate::deeplink::{
 use crate::store::AppState;
 use std::collections::VecDeque;
 use std::sync::Mutex;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 /// Kept in memory until the confirmation UI acknowledges the request. Events
 /// only wake the reader; they never transfer ownership or trigger an import.
@@ -21,6 +21,14 @@ pub struct PendingDeepLink {
 pub struct PendingDeepLinks(Mutex<VecDeque<PendingDeepLink>>);
 
 impl PendingDeepLinks {
+    fn submit_url(&self, url: &str) -> Result<(), String> {
+        let url = url.trim();
+        let request = parse_deeplink_url(url).map_err(|_| "INVALID_IMPORT_LINK".to_string())?;
+        crate::deeplink::ensure_targets_allowed(&request)
+            .map_err(|_| "IMPORT_TARGET_UNAVAILABLE".to_string())?;
+        self.enqueue(url, request)
+    }
+
     fn enqueue(&self, source_url: &str, request: DeepLinkImportRequest) -> Result<(), String> {
         let mut queue = self.0.lock().map_err(|_| "DEEP_LINK_QUEUE_UNAVAILABLE")?;
         // macOS can deliver one open through both plugin and RunEvent paths.
@@ -73,6 +81,15 @@ pub fn dismiss_pending_deeplink(
     state.dismiss(&id)
 }
 
+/// Manual paste follows the same durable-in-memory confirmation queue as OS links.
+/// This command never imports or activates a resource.
+#[tauri::command]
+pub fn submit_deeplink_import(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    app.state::<PendingDeepLinks>().submit_url(&url)?;
+    app.emit("deeplink-import", ())
+        .map_err(|_| "IMPORT_NOTIFICATION_FAILED".to_string())
+}
+
 /// Parse a deep link URL and return the parsed request for frontend confirmation
 #[tauri::command]
 pub fn parse_deeplink(url: String) -> Result<DeepLinkImportRequest, String> {
@@ -90,6 +107,15 @@ pub fn merge_deeplink_config(
     crate::deeplink::parse_and_merge_config(&request).map_err(|e| e.to_string())
 }
 
+/// What confirming this request stores and writes: full content, absolute
+/// target paths, whether live files change now, and env-key verdicts (MH-4).
+#[tauri::command]
+pub fn preview_deeplink_import(
+    request: DeepLinkImportRequest,
+) -> Result<crate::deeplink::DeepLinkImportPreview, String> {
+    crate::deeplink::preview_deeplink_import(&request).map_err(|e| e.to_string())
+}
+
 /// Import a provider from a deep link request (legacy, kept for compatibility)
 #[tauri::command]
 pub async fn import_from_deeplink(
@@ -101,6 +127,7 @@ pub async fn import_from_deeplink(
         request.name,
         request.app
     );
+    crate::deeplink::ensure_targets_allowed(&request).map_err(|e| e.to_string())?;
 
     let state = state.inner().clone();
     let provider_id = import_provider_from_deeplink(&state, request)
@@ -119,6 +146,7 @@ pub async fn import_from_deeplink_unified(
     request: DeepLinkImportRequest,
 ) -> Result<serde_json::Value, String> {
     log::info!("Importing {} resource from deep link", request.resource);
+    crate::deeplink::ensure_targets_allowed(&request).map_err(|e| e.to_string())?;
 
     match request.resource.as_str() {
         "provider" => {
@@ -170,6 +198,32 @@ mod pending_tests {
             resource: "provider".to_string(),
             name: Some(name.to_string()),
             ..Default::default()
+        }
+    }
+
+    #[test]
+    fn manual_submission_validates_and_queues_without_importing() {
+        let queue = PendingDeepLinks::default();
+        let url = "chimera://v1/import?resource=provider&app=codex&name=Manual&apiKey=secret";
+        queue.submit_url(&format!("  {url}  ")).unwrap();
+        queue.submit_url(url).unwrap();
+        assert_eq!(queue.0.lock().unwrap().len(), 1);
+        let pending = queue.peek().unwrap().unwrap();
+        assert_eq!(pending.request.name.as_deref(), Some("Manual"));
+        assert_eq!(pending.request.api_key.as_deref(), Some("secret"));
+        assert_eq!(pending.source_url, url);
+    }
+
+    #[test]
+    fn manual_submission_rejects_invalid_links_without_echoing_them() {
+        let queue = PendingDeepLinks::default();
+        for url in [
+            "https://example.com/?apiKey=secret",
+            "ccswitch://v1/import?resource=prompt&app=codex&name=Secret&content=secret",
+            "chimera://v1/import?resource=provider&app=mcode&name=Secret",
+        ] {
+            assert_eq!(queue.submit_url(url).unwrap_err(), "INVALID_IMPORT_LINK");
+            assert!(queue.peek().unwrap().is_none());
         }
     }
 

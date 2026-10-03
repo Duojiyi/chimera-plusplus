@@ -21,7 +21,9 @@ describe("route manager direct deletion", () => {
     expect(button).toContain("onClick={() => void onDelete(provider)}");
     expect(button).not.toContain("setManagerOpen(false)");
     expect(button).not.toContain("onEdit(provider)");
-    expect(app).toContain("onDelete={deleteProvider}");
+    expect(app).toContain(
+      'onDelete={(provider) => deleteProvider(provider, "codex")}',
+    );
     expect(app).toMatch(
       /isOfficialLine\(provider\)\s*\?\s*\([\s\S]*?由 Codex 管理[\s\S]*?:\s*\(\s*<div className="route-line-actions">/,
     );
@@ -47,7 +49,10 @@ describe("route manager direct deletion", () => {
       app.indexOf("  const deleteProvider ="),
       app.indexOf("  const fetchModels ="),
     );
-    expect(handler).toContain('providersApi.delete(provider.id, "codex")');
+    expect(handler).toContain("providersApi.delete(provider.id, appId)");
+    expect(handler).not.toContain(
+      "providersApi.delete(provider.id, editorAppId)",
+    );
     expect(handler).toContain(
       'if (!deleted) throw new Error("线路未删除，请重试")',
     );
@@ -56,7 +61,9 @@ describe("route manager direct deletion", () => {
     expect(handler).toMatch(
       /finally\s*\{\s*providerDeleteInFlightRef.current = false;\s*setDeletingProviderId\(null\);/,
     );
-    expect(app).toContain("if (await deleteProvider(pendingProviderDelete))");
+    expect(app).toContain(
+      "if (await deleteProvider(pendingProviderDelete, editorAppId))",
+    );
   });
 
   it("keeps the edit and delete actions together with distinct danger styling", () => {

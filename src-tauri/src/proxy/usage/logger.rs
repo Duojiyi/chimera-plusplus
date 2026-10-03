@@ -101,6 +101,18 @@ impl<'a> UsageLogger<'a> {
 
     /// 记录成功的请求
     pub fn log_request(&self, log: &RequestLog) -> Result<(), AppError> {
+        for delay_ms in [25, 100] {
+            match self.try_log_request(log) {
+                Err(AppError::Database(_)) => {
+                    std::thread::sleep(std::time::Duration::from_millis(delay_ms))
+                }
+                result => return result,
+            }
+        }
+        self.try_log_request(log)
+    }
+
+    fn try_log_request(&self, log: &RequestLog) -> Result<(), AppError> {
         let conn = crate::database::lock_conn!(self.db.conn);
 
         let (input_cost, output_cost, cache_read_cost, cache_creation_cost, total_cost) =

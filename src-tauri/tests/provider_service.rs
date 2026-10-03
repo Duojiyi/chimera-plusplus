@@ -2,7 +2,7 @@ use serde_json::json;
 
 use chimera_plus_plus_lib::{
     get_claude_settings_path, read_json_file, write_codex_live_atomic, AppError, AppType, McpApps,
-    McpServer, MultiAppConfig, Provider, ProviderMeta, ProviderService,
+    McpServer, McpService, MultiAppConfig, Provider, ProviderMeta, ProviderService,
 };
 
 #[path = "support.rs"]
@@ -1435,14 +1435,17 @@ requires_openai_auth = true
             .is_some(),
         "provider b should keep its own model_providers table after backfill"
     );
-    assert_eq!(
-        parsed
-            .get("profiles")
-            .and_then(|v| v.get("work"))
-            .and_then(|v| v.get("model_provider"))
-            .and_then(|v| v.as_str()),
-        Some("aihubmix"),
-        "profile overrides should be restored to provider b's storage-specific id"
+    // Key ownership: `[profiles.*]` are local shared (④) and their routing
+    // sub-keys are ②, so a line never freezes them into its stored config.
+    assert!(
+        parsed.get("profiles").is_none(),
+        "profiles must not be frozen into provider b on backfill"
+    );
+    let live_text = std::fs::read_to_string(chimera_plus_plus_lib::get_codex_config_path())
+        .expect("read live config");
+    assert!(
+        !live_text.contains("aihubmix"),
+        "provider b's routing must not linger in live after switching to c"
     );
 }
 
@@ -1685,10 +1688,9 @@ wire_api = "responses"
         .expect("backup exists");
     let backup_value: serde_json::Value =
         serde_json::from_str(&backup.original_config).expect("parse backup");
-    assert_eq!(
-        backup_value.get("auth"),
-        Some(&auth_after),
-        "restore backup should preserve the official OAuth auth"
+    assert!(
+        backup_value.get("auth").is_none(),
+        "the takeover backup stores config.toml only; auth.json stays live-only (MH-17)"
     );
     let backup_config = backup_value
         .get("config")
@@ -2397,9 +2399,11 @@ command = "ghost-cmd"
         !live_after.contains("sk-a-live-secret"),
         "provider A's bearer token must not leak into B's live, got: {live_after}"
     );
+    // Key ownership ④: an MCP server the DB does not manage (added with
+    // `codex mcp add` or by hand) belongs to live and survives the switch.
     assert!(
-        !live_after.contains("mcp_servers"),
-        "no DB-enabled MCP servers, so live must not resurrect stale entries, got: {live_after}"
+        live_after.contains("[mcp_servers.echo]"),
+        "a user-added MCP server must survive the switch, got: {live_after}"
     );
     assert!(
         !live_after.contains("ghost-legacy"),
@@ -2959,5 +2963,109 @@ fn recover_from_crash_without_backup_cleans_placeholder_instead_of_writing_it_ba
             .map(|url| !url.starts_with("http://127.0.0.1"))
             .unwrap_or(true),
         "recovery must drop the local proxy base URL"
+    );
+}
+
+/// L3 golden (MH-24): A→B→A keeps a server added with `codex mcp add`,
+/// never lets a line carry MCP servers, and a deleted managed server does
+/// not come back.
+#[test]
+fn golden_codex_switch_keeps_cli_mcp_servers_and_never_resurrects_deleted_ones() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    enable_codex_official_auth_preservation();
+    let _home = ensure_test_home();
+
+    let line = |id: &str| {
+        format!(
+            "model_provider = \"{id}\"\nmodel = \"gpt-5.5\"\n\n[model_providers.{id}]\nname = \"{id}\"\nbase_url = \"https://{id}.example/v1\"\nwire_api = \"responses\"\n"
+        )
+    };
+    let seeded = format!(
+        "{}\n[mcp_servers.cli_added]\ncommand = \"cli\"\n\n[tui]\nnotifications = true\n",
+        line("a")
+    );
+    write_codex_live_atomic(&json!({ "OPENAI_API_KEY": "sk-a" }), Some(&seeded))
+        .expect("seed codex live config");
+
+    let mut config = MultiAppConfig::default();
+    {
+        let manager = config
+            .get_manager_mut(&AppType::Codex)
+            .expect("codex manager");
+        manager.current = "a".to_string();
+        for id in ["a", "b"] {
+            manager.providers.insert(
+                id.to_string(),
+                Provider::with_id(
+                    id.to_string(),
+                    id.to_uppercase(),
+                    json!({
+                        "auth": { "OPENAI_API_KEY": format!("sk-{id}") },
+                        "config": format!("{}\n[mcp_servers.line_only]\ncommand = \"line\"\n", line(id))
+                    }),
+                    None,
+                ),
+            );
+        }
+    }
+    config
+        .mcp
+        .servers
+        .get_or_insert_with(Default::default)
+        .insert(
+            "managed".into(),
+            McpServer {
+                id: "managed".into(),
+                name: "Managed".into(),
+                server: json!({ "command": "managed-cmd" }),
+                apps: McpApps {
+                    codex: true,
+                    ..Default::default()
+                },
+                description: None,
+                homepage: None,
+                docs: None,
+                tags: Vec::new(),
+            },
+        );
+    let state = create_test_state_with_config(&config).expect("create test state");
+    let read_live = || {
+        std::fs::read_to_string(chimera_plus_plus_lib::get_codex_config_path())
+            .expect("read config.toml")
+    };
+
+    ProviderService::switch(&state, AppType::Codex, "b").expect("switch A -> B");
+    let live = read_live();
+    assert!(live.contains("mcp_servers.cli_added"), "{live}");
+    assert!(live.contains("mcp_servers.managed"), "{live}");
+    assert!(!live.contains("mcp_servers.line_only"), "{live}");
+    assert!(
+        live.contains("notifications = true"),
+        "local shared key kept"
+    );
+    assert!(!live.contains("a.example"), "{live}");
+
+    assert!(McpService::delete_server(&state, "managed").expect("delete managed server"));
+    ProviderService::switch(&state, AppType::Codex, "a").expect("switch B -> A");
+    let live = read_live();
+    assert!(live.contains("mcp_servers.cli_added"), "{live}");
+    assert!(
+        !live.contains("mcp_servers.managed"),
+        "a deleted managed server must not come back: {live}"
+    );
+    assert!(!live.contains("b.example"), "{live}");
+    assert!(live.contains("notifications = true"));
+
+    let providers = state
+        .db
+        .get_all_providers(AppType::Codex.as_str())
+        .expect("read providers");
+    let stored_b = providers["b"].settings_config["config"]
+        .as_str()
+        .expect("stored config");
+    assert!(
+        !stored_b.contains("mcp_servers") && !stored_b.contains("[tui]"),
+        "backfill keeps only line-owned keys: {stored_b}"
     );
 }

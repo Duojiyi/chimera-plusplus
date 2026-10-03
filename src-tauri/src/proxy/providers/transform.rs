@@ -59,6 +59,10 @@ pub fn is_openai_o_series(model: &str) -> bool {
 /// Supported families:
 /// - o-series: o1, o3, o4-mini, etc.
 /// - GPT-5+: gpt-5, gpt-5.1, gpt-5.4, gpt-5-codex, etc.
+/// - xAI Grok 4.5+ (`grok-4.x` with numeric minor version x >= 5, so future
+///   releases like grok-4.10 need no whitelist update); retain the previous
+///   `grok-build-*` family for saved providers.
+///   (Adapted from farion1231/cc-switch 8e478b2b9, MIT.)
 pub fn supports_reasoning_effort(model: &str) -> bool {
     let normalized = model.to_lowercase();
     is_openai_o_series(&normalized)
@@ -66,10 +70,11 @@ pub fn supports_reasoning_effort(model: &str) -> bool {
             .strip_prefix("gpt-")
             .and_then(|rest| rest.chars().next())
             .is_some_and(|c| c.is_ascii_digit() && c >= '5')
-        || normalized == "grok-4.5"
-        || normalized.starts_with("grok-4.5-")
-        || normalized == "grok-4.6"
-        || normalized.starts_with("grok-4.6-")
+        || normalized
+            .strip_prefix("grok-4.")
+            .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
+            .and_then(|minor| minor.parse::<u32>().ok())
+            .is_some_and(|minor| minor >= 5)
         || normalized.starts_with("grok-build-")
 }
 
@@ -497,6 +502,8 @@ pub fn openai_to_anthropic(body: Value) -> Result<Value, ProxyError> {
         .get("message")
         .ok_or_else(|| ProxyError::TransformError("No message in choice".to_string()))?;
 
+    let message = super::codex_chat_common::normalize_inline_think(message);
+
     let mut content = Vec::new();
     let mut has_tool_use = false;
 
@@ -683,6 +690,50 @@ pub fn openai_to_anthropic(body: Value) -> Result<Value, ProxyError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inline_think_non_streaming_separates_reasoning() {
+        for (content, expected_reasoning, expected_text) in [
+            (
+                json!("before<thinking>hidden</thinking>after<think>unfinished"),
+                "hiddenunfinished",
+                "beforeafter",
+            ),
+            (json!("<thinking>hidden"), "hidden", ""),
+            (
+                json!("Use `<think>literal</think>`"),
+                "",
+                "Use `<think>literal</think>`",
+            ),
+            (json!("text <thi"), "", "text <thi"),
+            (
+                json!([{"type": "text", "text": "<thin"}, {"type": "output_text", "text": "king>hidden</thinking>answer"}]),
+                "hidden",
+                "answer",
+            ),
+        ] {
+            let result = openai_to_anthropic(json!({
+                "id": "chatcmpl_inline", "model": "test", "choices": [{
+                    "message": {"role": "assistant", "content": content}, "finish_reason": "stop"
+                }], "usage": {"prompt_tokens": 1, "completion_tokens": 2}
+            }))
+            .unwrap();
+            let text = result["content"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|part| part["text"].as_str())
+                .collect::<String>();
+            let reasoning = result["content"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|part| part["thinking"].as_str())
+                .collect::<String>();
+            assert_eq!(text, expected_text);
+            assert_eq!(reasoning, expected_reasoning);
+        }
+    }
 
     #[test]
     fn test_anthropic_to_openai_simple() {
@@ -1584,6 +1635,16 @@ mod tests {
         assert!(supports_reasoning_effort("grok-4.6"));
         assert!(supports_reasoning_effort("grok-4.6-build"));
         assert!(supports_reasoning_effort("grok-build-0.1"));
+        // The rule covers the whole grok-4.x (x >= 5) family, so future
+        // releases need no whitelist update.
+        assert!(supports_reasoning_effort("grok-4.7"));
+        assert!(supports_reasoning_effort("grok-4.7-build"));
+        assert!(supports_reasoning_effort("grok-4.10"));
+        assert!(supports_reasoning_effort("grok-4.10-build"));
+        assert!(supports_reasoning_effort("GROK-4.10-BUILD"));
+        assert!(!supports_reasoning_effort("grok-4."));
+        assert!(!supports_reasoning_effort("grok-4.build"));
+        assert!(!supports_reasoning_effort("grok-4.4"));
         assert!(!supports_reasoning_effort("gpt-4o"));
         assert!(!supports_reasoning_effort("claude-sonnet-4-6"));
         assert!(!supports_reasoning_effort("grok-4"));

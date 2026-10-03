@@ -34,12 +34,13 @@ pub fn import_skill_from_deeplink(
     let owner = parts[0].to_string();
     let name = parts[1].to_string();
 
-    // Create SkillRepo
+    // MH-4: a deep-linked skill repository is always added disabled; the
+    // user enables it from the skills page. The link's `enabled` is ignored.
     let repo = SkillRepo {
         owner: owner.clone(),
         name: name.clone(),
         branch: request.branch.unwrap_or_else(|| "main".to_string()),
-        enabled: request.enabled.unwrap_or(true),
+        enabled: false,
     };
 
     // Save using Database

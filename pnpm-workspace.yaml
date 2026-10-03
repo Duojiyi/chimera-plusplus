@@ -8,3 +8,14 @@ onlyBuiltDependencies:
   - '@tailwindcss/oxide'
   - esbuild
   - msw
+
+# Audit exceptions. Keep each entry narrow and dated; remove it once a patched
+# release exists.
+# GHSA-vfj7-8cjw-p6xm (braces <= 3.0.3, stack exhaustion on deeply nested
+# glob patterns, published 2026-09-18): no patched version exists upstream
+# (npm latest is 3.0.3). braces is only reached through tailwindcss'
+# build-time file watching and glob expansion over our own source tree, never
+# over untrusted input, and it is not part of the shipped application.
+auditConfig:
+  ignoreGhsas:
+    - GHSA-vfj7-8cjw-p6xm

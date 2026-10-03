@@ -97,7 +97,19 @@ fn codex_api_format_for_model<'a>(provider: &'a Provider, model: Option<&str>) -
 /// provider has not supplied a protocol declaration. This avoids network
 /// probing for the common case while keeping explicit provider settings in
 /// charge. The local Codex endpoint remains Responses in every case.
-fn codex_model_default_api_format(model: &str) -> &'static str {
+///
+/// `pub`, not `pub(crate)`: also called directly (not just as this module's
+/// internal fallback) by deep-link import, which must persist an explicit
+/// `meta.api_format` up front — a freshly built Codex provider's
+/// `config.toml` always declares `wire_api = "responses"` regardless of the
+/// upstream's real protocol (see `deeplink::provider::build_codex_settings`),
+/// so the fallback chain in `codex_api_format_for_model` would otherwise
+/// resolve every deep-linked import to Native Responses before ever
+/// reaching this function. Re-exported through `pub use codex::{..}` below,
+/// which requires full `pub` (E0364: a `pub(crate)` item cannot be
+/// re-exported through a `pub use`, even when the containing module is
+/// itself only crate-visible).
+pub fn codex_model_default_api_format(model: &str) -> &'static str {
     let model = model
         .rsplit_once('/')
         .map_or(model, |(_, model)| model)
@@ -524,6 +536,67 @@ pub fn is_codex_official_provider(provider: &Provider) -> bool {
         && provider.category.as_deref() == Some("official")
 }
 
+/// Provider table name that makes Codex treat a line as OpenAI and enable
+/// remote compaction v2 for it (openai/codex 0.157 `model-provider-info`
+/// `is_openai`, `model-provider/src/provider.rs` `capabilities`).
+const CODEX_OPENAI_PROVIDER_TABLE_NAME: &str = "OpenAI";
+
+/// Whether every request of this line reaches a native Responses upstream:
+/// no Chat/Anthropic default, no per-model conversion and no per-model
+/// upstream route.
+pub fn codex_provider_routes_only_native_responses(provider: &Provider) -> bool {
+    let model = codex_provider_upstream_model(provider);
+    !codex_provider_uses_chat_completions_for_model(provider, model.as_deref())
+        && !codex_provider_uses_anthropic_for_model(provider, model.as_deref())
+        && !codex_provider_has_model_level_routing(provider)
+}
+
+/// CPP-A1① gate. Codex runs remote compaction v2 for a provider table named
+/// "OpenAI" and treats anything other than exactly one compaction output item
+/// as a fatal error. The Chat and Anthropic bridges cannot produce that item,
+/// so a non-official line may carry the name only when it routes every
+/// request to a native Responses upstream.
+pub fn codex_remote_compaction_blocked(provider: &Provider) -> bool {
+    if is_codex_official_provider(provider) {
+        return false;
+    }
+    let Some(config_text) = provider
+        .settings_config
+        .get("config")
+        .and_then(JsonValue::as_str)
+    else {
+        return false;
+    };
+    let Ok(doc) = config_text.parse::<TomlValue>() else {
+        return false;
+    };
+    let claims_openai = doc
+        .get("model_provider")
+        .and_then(TomlValue::as_str)
+        .and_then(|id| doc.get("model_providers")?.get(id.trim()))
+        .and_then(|table| table.get("name"))
+        .and_then(TomlValue::as_str)
+        == Some(CODEX_OPENAI_PROVIDER_TABLE_NAME);
+    claims_openai && !codex_provider_routes_only_native_responses(provider)
+}
+/// Drop a `service_tier` that the line's model catalog never declared.
+///
+/// Codex sends the user's configured `service_tier`, and since 0.156 even lets
+/// `flex` through when a catalog entry lists no tiers. Every catalog generated
+/// for a third-party line declares `service_tiers: []`
+/// (`codex_catalog_model_entry`), so a tier on such a request was never offered
+/// for that model, and unknown tiers are rejected by many gateways. Only the
+/// official ChatGPT route and managed Codex OAuth lines keep it. Returns true
+/// when the field was removed.
+pub fn strip_undeclared_codex_service_tier(provider: &Provider, body: &mut JsonValue) -> bool {
+    if is_codex_official_provider(provider) || provider.is_codex_oauth() {
+        return false;
+    }
+    body.as_object_mut()
+        .and_then(|object| object.remove("service_tier"))
+        .is_some()
+}
+
 /// Resolve the model-catalog tool profile for a Codex provider using the SAME
 /// Anthropic detection as the proxy router ([`codex_provider_uses_anthropic`]), so the
 /// generated catalog never disagrees with the routed transform. A provider whose
@@ -852,6 +925,82 @@ pub fn is_origin_only_url(value: &str) -> bool {
     }
 }
 
+/// MH-8c 1.7: Codex 0.154+ accepts only `wire_api = "responses"` and rejects
+/// the whole config.toml for anything else, while `chat` / `anthropic` stay
+/// meaningful routing declarations for the local router. Rewrite every
+/// `[model_providers.*].wire_api` to `responses` and, when the active table
+/// declared the upstream protocol and nothing explicit overrides it
+/// (`meta.apiFormat`, settings `apiFormat` / `api_format`), record that
+/// protocol in `meta.apiFormat` so routing is unchanged. Returns true when the
+/// provider was changed.
+pub fn normalize_codex_provider_wire_api(provider: &mut Provider) -> bool {
+    let Some(config_text) = provider
+        .settings_config
+        .get("config")
+        .and_then(JsonValue::as_str)
+    else {
+        return false;
+    };
+    let Ok(mut doc) = config_text.parse::<toml_edit::DocumentMut>() else {
+        return false;
+    };
+    let declared = extract_codex_wire_api_from_toml(config_text).and_then(|wire_api| {
+        if is_chat_wire_api(&wire_api) {
+            Some("openai_chat")
+        } else if is_anthropic_wire_api(&wire_api) {
+            Some("anthropic")
+        } else {
+            None
+        }
+    });
+    let mut rewritten = false;
+    if let Some(providers) = doc
+        .get_mut("model_providers")
+        .and_then(|item| item.as_table_like_mut())
+    {
+        for (_, table) in providers.iter_mut() {
+            let Some(table) = table.as_table_like_mut() else {
+                continue;
+            };
+            let needs_rewrite = table
+                .get("wire_api")
+                .and_then(|item| item.as_str())
+                .is_some_and(|wire_api| wire_api != "responses");
+            if needs_rewrite {
+                table.insert("wire_api", toml_edit::value("responses"));
+                rewritten = true;
+            }
+        }
+    }
+    if !rewritten {
+        return false;
+    }
+    provider.settings_config["config"] = JsonValue::String(doc.to_string());
+    let explicit = provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.api_format.as_deref())
+        .or_else(|| {
+            provider
+                .settings_config
+                .get("api_format")
+                .and_then(JsonValue::as_str)
+        })
+        .or_else(|| {
+            provider
+                .settings_config
+                .get("apiFormat")
+                .and_then(JsonValue::as_str)
+        })
+        .is_some();
+    if let (Some(api_format), false) = (declared, explicit) {
+        provider
+            .meta
+            .get_or_insert_with(Default::default)
+            .api_format = Some(api_format.to_string());
+    }
+    true
+}
 fn extract_codex_wire_api_from_toml(config_text: &str) -> Option<String> {
     let doc = config_text.parse::<TomlValue>().ok()?;
 
@@ -1134,6 +1283,132 @@ mod tests {
             icon_color: None,
             in_failover_queue: false,
         }
+    }
+
+    #[test]
+    fn chat_wire_api_is_rewritten_and_the_protocol_kept_for_routing() {
+        let config = "model_provider = \"custom\"\nmodel = \"m\"\n\n[model_providers.custom]\nname = \"Relay\"\nbase_url = \"https://relay.example/v1\"\nwire_api = \"chat\"\n\n[model_providers.other]\nname = \"Other\"\nwire_api = \"anthropic\"\n";
+        let mut provider = create_provider(json!({ "config": config }));
+        assert_eq!(
+            codex_api_format_for_model(&provider, Some("m")),
+            Some("openai_chat")
+        );
+        assert!(normalize_codex_provider_wire_api(&mut provider));
+        let text = provider.settings_config["config"].as_str().unwrap();
+        let doc: TomlValue = text.parse().unwrap();
+        assert_eq!(
+            doc["model_providers"]["custom"]["wire_api"].as_str(),
+            Some("responses")
+        );
+        assert_eq!(
+            doc["model_providers"]["other"]["wire_api"].as_str(),
+            Some("responses")
+        );
+        assert_eq!(
+            doc["model_providers"]["custom"]["name"].as_str(),
+            Some("Relay")
+        );
+        // Routing still resolves to Chat, now from meta.apiFormat.
+        assert_eq!(
+            provider
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.api_format.as_deref()),
+            Some("openai_chat")
+        );
+        assert_eq!(
+            codex_api_format_for_model(&provider, Some("m")),
+            Some("openai_chat")
+        );
+        // Idempotent.
+        assert!(!normalize_codex_provider_wire_api(&mut provider));
+
+        // An explicit protocol is never replaced.
+        let mut explicit = create_provider(json!({ "config": config }));
+        explicit.meta = Some(crate::provider::ProviderMeta {
+            api_format: Some("openai_responses".to_string()),
+            ..Default::default()
+        });
+        assert!(normalize_codex_provider_wire_api(&mut explicit));
+        assert_eq!(
+            explicit
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.api_format.as_deref()),
+            Some("openai_responses")
+        );
+
+        let mut clean = create_provider(json!({
+            "config": "model_provider = \"custom\"\n[model_providers.custom]\nwire_api = \"responses\"\n"
+        }));
+        assert!(!normalize_codex_provider_wire_api(&mut clean));
+        assert!(clean.meta.is_none());
+    }
+    #[test]
+    fn remote_compaction_name_is_only_allowed_on_native_responses_lines() {
+        let openai_named = "model_provider = \"custom\"\nmodel = \"gpt-5.5\"\n[model_providers.custom]\nname = \"OpenAI\"\nbase_url = \"https://relay.example/v1\"\nwire_api = \"responses\"\n";
+        let with_format = |api_format: &str| {
+            let mut provider = create_provider(json!({ "config": openai_named }));
+            provider.meta = Some(crate::provider::ProviderMeta {
+                api_format: Some(api_format.to_string()),
+                ..Default::default()
+            });
+            provider
+        };
+        assert!(!codex_remote_compaction_blocked(&with_format(
+            "openai_responses"
+        )));
+        assert!(codex_remote_compaction_blocked(&with_format("openai_chat")));
+        assert!(codex_remote_compaction_blocked(&with_format("anthropic")));
+
+        // A native default with one model converted over Chat is still blocked.
+        let mut mixed = with_format("openai_responses");
+        mixed
+            .meta
+            .as_mut()
+            .unwrap()
+            .codex_model_api_formats
+            .insert("deepseek-v4-flash".to_string(), "openai_chat".to_string());
+        assert!(codex_remote_compaction_blocked(&mixed));
+
+        // Any other table name is not a remote-compaction claim.
+        let mut renamed = with_format("openai_chat");
+        renamed.settings_config =
+            json!({ "config": openai_named.replace("\"OpenAI\"", "\"Relay\"") });
+        assert!(!codex_remote_compaction_blocked(&renamed));
+
+        // The official line keeps its own OpenAI identity.
+        let mut official = with_format("openai_chat");
+        official.id = crate::database::CODEX_OFFICIAL_PROVIDER_ID.to_string();
+        official.category = Some("official".to_string());
+        assert!(!codex_remote_compaction_blocked(&official));
+    }
+    #[test]
+    fn undeclared_service_tier_is_dropped_for_third_party_lines_only() {
+        let third_party = create_provider(json!({}));
+        let mut body = json!({"model": "m", "service_tier": "flex"});
+        assert!(strip_undeclared_codex_service_tier(&third_party, &mut body));
+        assert!(body.get("service_tier").is_none());
+        assert!(!strip_undeclared_codex_service_tier(
+            &third_party,
+            &mut body
+        ));
+
+        let mut official = create_provider(json!({}));
+        official.id = crate::database::CODEX_OFFICIAL_PROVIDER_ID.to_string();
+        official.category = Some("official".to_string());
+        let mut body = json!({"model": "m", "service_tier": "priority"});
+        assert!(!strip_undeclared_codex_service_tier(&official, &mut body));
+        assert_eq!(body["service_tier"], "priority");
+
+        let mut oauth = create_provider(json!({}));
+        oauth.meta = Some(crate::provider::ProviderMeta {
+            provider_type: Some("codex_oauth".to_string()),
+            ..Default::default()
+        });
+        let mut body = json!({"model": "m", "service_tier": "priority"});
+        assert!(!strip_undeclared_codex_service_tier(&oauth, &mut body));
+        assert_eq!(body["service_tier"], "priority");
     }
 
     #[test]

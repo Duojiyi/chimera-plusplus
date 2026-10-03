@@ -71,6 +71,15 @@ impl Provider {
         self.provider_type() == Some("codex_oauth")
     }
 
+    /// Vault account this official Codex line is pinned to, if any.
+    pub fn official_account_key(&self) -> Option<&str> {
+        self.meta
+            .as_ref()?
+            .official_account
+            .as_ref()
+            .map(|pin| pin.account_key.as_str())
+    }
+
     pub fn is_xai_oauth(&self) -> bool {
         self.provider_type() == Some("xai_oauth")
     }
@@ -184,8 +193,13 @@ impl Provider {
                 str_at(settings.get("baseUrl")),
                 str_at(settings.get("apiKey")),
             ),
-            // OpenCode (OMO) nests credentials under `options` (the SDK options object).
-            AppType::OpenCode => {
+            // Pi custom providers use the native models.json field names.
+            AppType::Pi => (
+                crate::pi_config::provider_base_url(settings).unwrap_or_default(),
+                str_at(settings.get("apiKey")),
+            ),
+            // OpenCode (OMO) and MiniMax Code nest credentials under `options`.
+            AppType::OpenCode | AppType::Mcode => {
                 let options = settings.get("options");
                 (
                     str_at(options.and_then(|o| o.get("baseURL"))),
@@ -381,7 +395,11 @@ pub struct CodexChatReasoningConfig {
 }
 
 /// Local proxy request overrides applied after route/protocol transforms.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+///
+/// `headers` doubles as the line's custom request headers (CPP-A7): the
+/// proxy always applies them, and model discovery and protocol probes apply
+/// them too while the `custom_request_headers` capability is on.
+#[derive(Clone, Serialize, Deserialize, Default)]
 pub struct LocalProxyRequestOverrides {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub headers: HashMap<String, String>,
@@ -389,9 +407,215 @@ pub struct LocalProxyRequestOverrides {
     pub body: Option<serde_json::Value>,
 }
 
+/// Upper bound on custom request headers per line.
+pub const MAX_REQUEST_HEADER_OVERRIDES: usize = 64;
+
+/// Header names an override may never set (lowercase): transport and
+/// hop-by-hop headers, credentials (the line's API key is the only
+/// authentication source, so an override can never replace or redirect it),
+/// Codex session identity, and client-IP / tracing headers.
+pub fn is_protected_request_override_header(name: &str) -> bool {
+    matches!(
+        name,
+        "host"
+            | "content-length"
+            | "transfer-encoding"
+            | "connection"
+            | "keep-alive"
+            | "proxy-connection"
+            | "proxy-authorization"
+            | "proxy-authenticate"
+            | "te"
+            | "trailer"
+            | "upgrade"
+            | "accept-encoding"
+            | "content-type"
+            | "authorization"
+            | "x-api-key"
+            | "x-goog-api-key"
+            | "chatgpt-account-id"
+            | "session_id"
+            | "x-client-request-id"
+            | "x-codex-window-id"
+            | "x-forwarded-for"
+            | "x-forwarded-host"
+            | "x-forwarded-port"
+            | "x-forwarded-proto"
+            | "x-real-ip"
+            | "forwarded"
+            | "cf-connecting-ip"
+            | "cf-ipcountry"
+            | "cf-ray"
+            | "cf-visitor"
+            | "true-client-ip"
+            | "fastly-client-ip"
+            | "x-azure-clientip"
+            | "x-azure-fdid"
+            | "x-azure-ref"
+            | "akamai-origin-hop"
+            | "x-akamai-config-log-detail"
+            | "x-request-id"
+            | "x-correlation-id"
+            | "x-trace-id"
+            | "x-amzn-trace-id"
+            | "x-b3-traceid"
+            | "x-b3-spanid"
+            | "x-b3-parentspanid"
+            | "x-b3-sampled"
+            | "traceparent"
+            | "tracestate"
+    )
+}
+
+/// Whether a header's value is a secret that must be masked in logs and in
+/// error text shown to the user.
+pub fn is_sensitive_request_header(name: &str) -> bool {
+    let name = name.trim().to_ascii_lowercase();
+    [
+        "auth",
+        "token",
+        "key",
+        "secret",
+        "cookie",
+        "session",
+        "signature",
+        "password",
+        "credential",
+    ]
+    .iter()
+    .any(|marker| name.contains(marker))
+}
+
+fn request_header_error(zh: String, en: String) -> crate::error::AppError {
+    crate::error::AppError::localized("provider.request_headers.invalid", zh, en)
+}
+
+impl std::fmt::Debug for LocalProxyRequestOverrides {
+    // Header values can be credentials: print sensitive ones masked.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let headers: std::collections::BTreeMap<&str, &str> = self
+            .headers
+            .iter()
+            .map(|(name, value)| {
+                let shown = if is_sensitive_request_header(name) {
+                    "***"
+                } else {
+                    value.as_str()
+                };
+                (name.as_str(), shown)
+            })
+            .collect();
+        f.debug_struct("LocalProxyRequestOverrides")
+            .field("headers", &headers)
+            .field("body", &self.body)
+            .finish()
+    }
+}
+
 impl LocalProxyRequestOverrides {
     pub fn is_empty(&self) -> bool {
         self.headers.is_empty() && self.body.is_none()
+    }
+
+    /// Header overrides that may be sent upstream: lowercase names, one per
+    /// name, deterministic order, at most [`MAX_REQUEST_HEADER_OVERRIDES`].
+    /// Empty, invalid and protected entries are skipped here (the proxy has
+    /// always ignored them); [`Self::validate_headers`] rejects them at save.
+    pub fn upstream_headers(&self) -> Vec<(http::HeaderName, HeaderValue)> {
+        let mut entries: Vec<(http::HeaderName, HeaderValue)> = self
+            .headers
+            .iter()
+            .filter_map(|(raw_name, raw_value)| {
+                let name = raw_name.trim().to_ascii_lowercase();
+                if name.is_empty() {
+                    log::warn!("[RequestHeaders] Ignoring header override with empty name");
+                    return None;
+                }
+                let Ok(header_name) = http::HeaderName::from_bytes(name.as_bytes()) else {
+                    log::warn!("[RequestHeaders] Ignoring invalid header override name: {name}");
+                    return None;
+                };
+                if is_protected_request_override_header(header_name.as_str()) {
+                    log::debug!("[RequestHeaders] Ignoring protected header override: {name}");
+                    return None;
+                }
+                let Ok(value) = HeaderValue::from_str(raw_value.trim()) else {
+                    log::warn!(
+                        "[RequestHeaders] Ignoring invalid header override value for {name}"
+                    );
+                    return None;
+                };
+                Some((header_name, value))
+            })
+            .collect();
+        entries.sort_by(|left, right| {
+            left.0
+                .as_str()
+                .cmp(right.0.as_str())
+                .then_with(|| left.1.as_bytes().cmp(right.1.as_bytes()))
+        });
+        entries.dedup_by(|later, earlier| later.0 == earlier.0);
+        entries.truncate(MAX_REQUEST_HEADER_OVERRIDES);
+        entries
+    }
+
+    /// Values of sensitive custom headers, for redacting error and log text.
+    pub fn secret_header_values(&self) -> Vec<String> {
+        self.headers
+            .iter()
+            .filter(|(name, _)| is_sensitive_request_header(name))
+            .map(|(_, value)| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .collect()
+    }
+
+    /// Save-time validation of custom request headers (CPP-A7). Errors name
+    /// the offending header only and never echo a value.
+    pub fn validate_headers(&self) -> Result<(), crate::error::AppError> {
+        if self.headers.len() > MAX_REQUEST_HEADER_OVERRIDES {
+            return Err(request_header_error(
+                format!("自定义请求头最多 {MAX_REQUEST_HEADER_OVERRIDES} 个"),
+                format!(
+                    "At most {MAX_REQUEST_HEADER_OVERRIDES} custom request headers are allowed"
+                ),
+            ));
+        }
+        let mut seen = std::collections::HashSet::new();
+        for (raw_name, raw_value) in &self.headers {
+            let name = raw_name.trim().to_ascii_lowercase();
+            if name.is_empty() {
+                return Err(request_header_error(
+                    "自定义请求头名称不能为空".to_string(),
+                    "A custom request header name is empty".to_string(),
+                ));
+            }
+            if http::HeaderName::from_bytes(name.as_bytes()).is_err() {
+                // An invalid name is not echoed verbatim: it may be a pasted value.
+                return Err(request_header_error(
+                    "自定义请求头名称包含非法字符".to_string(),
+                    "A custom request header name contains invalid characters".to_string(),
+                ));
+            }
+            if is_protected_request_override_header(&name) {
+                return Err(request_header_error(
+                    format!("请求头 {name} 由代理管理，不能自定义"),
+                    format!("Header {name} is managed by the proxy and cannot be customized"),
+                ));
+            }
+            if HeaderValue::from_str(raw_value.trim()).is_err() {
+                return Err(request_header_error(
+                    format!("请求头 {name} 的值包含非法字符"),
+                    format!("The value of header {name} contains invalid characters"),
+                ));
+            }
+            if !seen.insert(name.clone()) {
+                return Err(request_header_error(
+                    format!("请求头 {name} 重复"),
+                    format!("Header {name} is listed more than once"),
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -597,6 +821,18 @@ pub struct ProviderMeta {
     /// 用于多账号支持，关联到特定的 GitHub 账号
     #[serde(rename = "githubAccountId", skip_serializing_if = "Option::is_none")]
     pub github_account_id: Option<String>,
+    /// Official Codex line pinned to a vault account (`codex_accounts`). The
+    /// pin is a pseudonymous key; the credential itself never lives in a row.
+    #[serde(rename = "officialAccount", skip_serializing_if = "Option::is_none")]
+    pub official_account: Option<OfficialAccountPin>,
+}
+
+/// `meta.officialAccount` of an official Codex line.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OfficialAccountPin {
+    pub v: u32,
+    #[serde(rename = "accountKey")]
+    pub account_key: String,
 }
 
 /// 解析 Provider 级自定义 User-Agent 字符串（单一真理来源）。
@@ -1052,7 +1288,7 @@ mod tests {
     use super::{
         ClaudeModelConfig, CodexModelConfig, CodexModelRoute, GeminiModelConfig,
         LocalProxyRequestOverrides, OpenCodeProviderConfig, Provider, ProviderManager,
-        ProviderMeta, UniversalProvider,
+        ProviderMeta, UniversalProvider, MAX_REQUEST_HEADER_OVERRIDES,
     };
     use serde_json::json;
     use std::collections::HashMap;
@@ -1247,6 +1483,92 @@ mod tests {
         let overrides = decoded.local_proxy_request_overrides.unwrap();
         assert_eq!(overrides.headers.get("X-Test"), Some(&"yes".to_string()));
         assert_eq!(overrides.body.unwrap()["temperature"], 0.2);
+    }
+
+    fn header_overrides(pairs: &[(&str, &str)]) -> LocalProxyRequestOverrides {
+        LocalProxyRequestOverrides {
+            headers: pairs
+                .iter()
+                .map(|(name, value)| (name.to_string(), value.to_string()))
+                .collect(),
+            body: None,
+        }
+    }
+
+    #[test]
+    fn request_header_validation_names_the_header_but_never_the_value() {
+        assert!(header_overrides(&[("X-Gateway-Team", "team-a")])
+            .validate_headers()
+            .is_ok());
+
+        for (name, value) in [
+            ("Authorization", "Bearer sk-secret-value"),
+            ("Connection", "close"),
+            ("Host", "evil.example"),
+            ("X-Forwarded-For", "1.2.3.4"),
+        ] {
+            let error = header_overrides(&[(name, value)])
+                .validate_headers()
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(&name.to_ascii_lowercase()), "{error}");
+            assert!(!error.contains(value), "{error}");
+        }
+
+        let bad_value = header_overrides(&[("X-Api-Token", "sk-secret\nvalue")])
+            .validate_headers()
+            .unwrap_err()
+            .to_string();
+        assert!(bad_value.contains("x-api-token"));
+        assert!(!bad_value.contains("sk-secret"));
+
+        let bad_name = header_overrides(&[("sk secret value", "x")])
+            .validate_headers()
+            .unwrap_err()
+            .to_string();
+        assert!(!bad_name.contains("sk secret"));
+
+        assert!(header_overrides(&[("X-A", "1"), ("x-a", "2")])
+            .validate_headers()
+            .is_err());
+        assert!(header_overrides(&[(" ", "1")]).validate_headers().is_err());
+
+        let too_many: Vec<(String, String)> = (0..=MAX_REQUEST_HEADER_OVERRIDES)
+            .map(|index| (format!("x-h{index}"), "v".to_string()))
+            .collect();
+        let too_many = LocalProxyRequestOverrides {
+            headers: too_many.into_iter().collect(),
+            body: None,
+        };
+        assert!(too_many.validate_headers().is_err());
+    }
+
+    #[test]
+    fn upstream_headers_are_normalized_filtered_and_deduplicated() {
+        let overrides = header_overrides(&[
+            ("X-Gateway-Team", " team-a "),
+            ("x-gateway-team", "team-a"),
+            ("Authorization", "Bearer override"),
+            ("Transfer-Encoding", "chunked"),
+            ("X-Bad", "line\nbreak"),
+            ("", "empty"),
+        ]);
+        let headers = overrides.upstream_headers();
+        assert_eq!(headers.len(), 1);
+        assert_eq!(headers[0].0.as_str(), "x-gateway-team");
+        assert_eq!(headers[0].1, "team-a");
+    }
+
+    #[test]
+    fn sensitive_header_values_are_masked_in_debug_output() {
+        let overrides = header_overrides(&[("X-Api-Key-Extra", "sk-hidden"), ("X-Team", "a")]);
+        let debug = format!("{overrides:?}");
+        assert!(!debug.contains("sk-hidden"), "{debug}");
+        assert!(debug.contains("X-Team"));
+        assert_eq!(
+            overrides.secret_header_values(),
+            vec!["sk-hidden".to_string()]
+        );
     }
 
     #[test]

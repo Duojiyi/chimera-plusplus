@@ -46,7 +46,6 @@ use super::{
     ProxyError,
 };
 use crate::app_config::AppType;
-use crate::database::PRICING_SOURCE_REQUEST;
 use crate::provider::Provider;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use bytes::Bytes;
@@ -214,7 +213,7 @@ async fn handle_messages_for_app(
             if let Some(provider) = err.provider.take() {
                 ctx.provider = provider;
             }
-            log_forward_error(&state, &ctx, is_stream, &err.error);
+            log_forward_error(&state, &ctx, is_stream, &err.error).await;
             return Err(err.error);
         }
     };
@@ -795,7 +794,7 @@ async fn handle_codex_passthrough(
             if let Some(provider) = err.provider.take() {
                 ctx.provider = provider;
             }
-            log_forward_error(&state, &ctx, is_stream, &err.error);
+            log_forward_error(&state, &ctx, is_stream, &err.error).await;
             return build_codex_proxy_error_response(&ctx, &endpoint, &err.error);
         }
     };
@@ -938,6 +937,18 @@ fn codex_auto_fallback_matches_provider(
     )
 }
 
+/// A successful Chat auto-fallback retry only proves the line speaks Chat when
+/// the detected line itself answered, over the Chat bridge. The retry forces
+/// the line default to Chat, but a per-model mapping can still route the model
+/// over Anthropic or native Responses, and failover can answer from another line.
+fn codex_chat_fallback_confirms_chat(
+    succeeded_provider_id: &str,
+    detected_provider: &Provider,
+    bridge: Option<CodexUpstreamProtocol>,
+) -> bool {
+    succeeded_provider_id == detected_provider.id && bridge == Some(CodexUpstreamProtocol::Chat)
+}
+
 fn codex_auto_fallback_error_class(error: &ProxyError) -> String {
     match error {
         ProxyError::UpstreamError { status, .. } => format!("upstream_http_{status}"),
@@ -962,6 +973,41 @@ enum CodexModelRequestOutcome {
     Succeeded(CodexUpstreamProtocol),
     /// The request failed; the protocol is unknown and worth probing.
     Failed,
+}
+
+/// One background protocol probe per (line, model) per window. A model the
+/// probe can never classify used to be re-probed after every failed request.
+const LAZY_PROBE_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+type LazyProbeLedger = std::collections::HashMap<(String, String), std::time::Instant>;
+
+fn lazy_probe_cooldown_allows(provider_id: &str, model: &str, now: std::time::Instant) -> bool {
+    static LEDGER: std::sync::OnceLock<std::sync::Mutex<LazyProbeLedger>> =
+        std::sync::OnceLock::new();
+    let mut ledger = LEDGER
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    lazy_probe_ledger_allows(&mut ledger, provider_id, model, now, LAZY_PROBE_COOLDOWN)
+}
+
+fn lazy_probe_ledger_allows(
+    ledger: &mut LazyProbeLedger,
+    provider_id: &str,
+    model: &str,
+    now: std::time::Instant,
+    window: std::time::Duration,
+) -> bool {
+    // Expired entries are dropped on every check, so the ledger only holds
+    // probes from the last window.
+    ledger.retain(|_, probed_at| now.saturating_duration_since(*probed_at) < window);
+    match ledger.entry((provider_id.to_string(), model.to_string())) {
+        std::collections::hash_map::Entry::Occupied(_) => false,
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            entry.insert(now);
+            true
+        }
+    }
 }
 
 fn learn_codex_model_protocol(
@@ -1024,6 +1070,19 @@ fn learn_codex_model_protocol(
                 .ok()
                 .flatten()
         });
+    let probe_headers =
+        crate::services::model_fetch::UpstreamRequestHeaders::with_user_agent(user_agent)
+            .with_overrides(
+                provider
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| meta.local_proxy_request_overrides.as_ref()),
+                crate::product_policy::Capability::CustomRequestHeaders.enabled(),
+            );
+    if !lazy_probe_cooldown_allows(&provider_id, &model, std::time::Instant::now()) {
+        log::debug!("[Codex] 模型「{model}」的懒探测处于冷却期，跳过（provider={provider_id}）");
+        return;
+    }
     let api_key = auth.api_key;
     tokio::spawn(async move {
         let report = match crate::services::model_fetch::detect_codex_api_formats(
@@ -1031,7 +1090,7 @@ fn learn_codex_model_protocol(
             &api_key,
             is_full_url,
             vec![model.clone()],
-            user_agent,
+            probe_headers,
         )
         .await
         {
@@ -1295,8 +1354,14 @@ async fn handle_responses_for_app(
                             {
                                 Ok(mut result2) => {
                                     // Only persist when the provider we classified is
-                                    // the provider that actually succeeded on retry.
-                                    if result2.provider.id == detected_provider.id {
+                                    // the provider that actually succeeded on retry,
+                                    // over the Chat bridge.
+                                    let bridge2 = result2.codex_bridge;
+                                    if codex_chat_fallback_confirms_chat(
+                                        &result2.provider.id,
+                                        detected_provider,
+                                        bridge2,
+                                    ) {
                                         persist_codex_auto_detected_api_format(
                                             &state,
                                             app_type_str,
@@ -1308,14 +1373,16 @@ async fn handle_responses_for_app(
                                     let connection_guard2 = result2.connection_guard.take();
                                     ctx.outbound_model = result2.outbound_model.take();
                                     ctx.provider = result2.provider;
-                                    let response2 = result2.response;
-                                    return handle_codex_chat_to_responses_transform(
-                                        response2,
+                                    return respond_on_codex_bridge(
+                                        result2.response,
                                         &ctx,
                                         &state,
                                         is_stream,
                                         connection_guard2,
+                                        bridge2,
+                                        result2.xai_native_responses,
                                         tool_ctx2,
+                                        namespace_restore_map,
                                     )
                                     .await;
                                 }
@@ -1347,7 +1414,7 @@ async fn handle_responses_for_app(
                 Some(ctx.request_model.as_str()),
                 CodexModelRequestOutcome::Failed,
             );
-            log_forward_error(&state, &ctx, is_stream, &err.error);
+            log_forward_error(&state, &ctx, is_stream, &err.error).await;
             return build_codex_proxy_error_response(&ctx, &endpoint, &err.error);
         }
     };
@@ -1383,29 +1450,60 @@ async fn handle_responses_for_app(
         }
     }
 
-    // Dispatch on the bridge the forwarder actually used for this request, not
-    // on the provider's default protocol: in a mixed catalog the two differ for
-    // every model mapped away from the default.
-    match codex_bridge {
+    respond_on_codex_bridge(
+        response,
+        &ctx,
+        &state,
+        is_stream,
+        connection_guard,
+        codex_bridge,
+        result.xai_native_responses,
+        codex_tool_context,
+        namespace_restore_map,
+    )
+    .await
+}
+
+/// Build the client response on the bridge the forwarder actually used for
+/// this request, not on the provider's default protocol: in a mixed catalog
+/// the two differ for every model mapped away from the default. Shared by the
+/// normal path and the Chat auto-fallback retry, whose forced Chat default can
+/// still be overridden by a per-model mapping or a failover line.
+#[allow(clippy::too_many_arguments)]
+async fn respond_on_codex_bridge(
+    response: super::hyper_client::ProxyResponse,
+    ctx: &RequestContext,
+    state: &ProxyState,
+    is_stream: bool,
+    connection_guard: Option<ActiveConnectionGuard>,
+    bridge: Option<CodexUpstreamProtocol>,
+    xai_native_responses: bool,
+    tool_context: transform_codex_chat::CodexToolContext,
+    namespace_restore_map: std::collections::HashMap<
+        String,
+        transform_codex_responses_namespace::NamespacedName,
+    >,
+) -> Result<axum::response::Response, ProxyError> {
+    match bridge {
         Some(CodexUpstreamProtocol::Anthropic) => {
             return handle_codex_anthropic_to_responses_transform(
                 response,
-                &ctx,
-                &state,
+                ctx,
+                state,
                 is_stream,
                 connection_guard,
-                codex_tool_context,
+                tool_context,
             )
             .await;
         }
         Some(CodexUpstreamProtocol::Chat) => {
             return handle_codex_chat_to_responses_transform(
                 response,
-                &ctx,
-                &state,
+                ctx,
+                state,
                 is_stream,
                 connection_guard,
-                codex_tool_context,
+                tool_context,
             )
             .await;
         }
@@ -1417,25 +1515,18 @@ async fn handle_responses_for_app(
     // function tools, so the upstream returns flat function-call names. Restore
     // them to `{name, namespace}` so the Codex client matches them against its
     // namespaced tool registry.
-    if result.xai_native_responses {
+    if xai_native_responses {
         return handle_codex_responses_namespace_restore(
             response,
-            &ctx,
-            &state,
+            ctx,
+            state,
             connection_guard,
             namespace_restore_map,
         )
         .await;
     }
 
-    process_response(
-        response,
-        &ctx,
-        &state,
-        &CODEX_PARSER_CONFIG,
-        connection_guard,
-    )
-    .await
+    process_response(response, ctx, state, &CODEX_PARSER_CONFIG, connection_guard).await
 }
 
 /// 处理 /v1/responses/compact 请求（OpenAI Responses Compact API - Codex CLI 透传）
@@ -1576,7 +1667,12 @@ async fn handle_responses_compact_for_app(
                                 .await
                             {
                                 Ok(mut result2) => {
-                                    if result2.provider.id == detected_provider.id {
+                                    let bridge2 = result2.codex_bridge;
+                                    if codex_chat_fallback_confirms_chat(
+                                        &result2.provider.id,
+                                        detected_provider,
+                                        bridge2,
+                                    ) {
                                         persist_codex_auto_detected_api_format(
                                             &state,
                                             app_type_str,
@@ -1587,14 +1683,16 @@ async fn handle_responses_compact_for_app(
                                     let connection_guard2 = result2.connection_guard.take();
                                     ctx.outbound_model = result2.outbound_model.take();
                                     ctx.provider = result2.provider;
-                                    let response2 = result2.response;
-                                    return handle_codex_chat_to_responses_transform(
-                                        response2,
+                                    return respond_on_codex_bridge(
+                                        result2.response,
                                         &ctx,
                                         &state,
                                         is_stream,
                                         connection_guard2,
+                                        bridge2,
+                                        result2.xai_native_responses,
                                         tool_ctx2,
+                                        namespace_restore_map,
                                     )
                                     .await;
                                 }
@@ -1624,7 +1722,7 @@ async fn handle_responses_compact_for_app(
                 Some(ctx.request_model.as_str()),
                 CodexModelRequestOutcome::Failed,
             );
-            log_forward_error(&state, &ctx, is_stream, &err.error);
+            log_forward_error(&state, &ctx, is_stream, &err.error).await;
             return build_codex_proxy_error_response(&ctx, &endpoint, &err.error);
         }
     };
@@ -1657,49 +1755,16 @@ async fn handle_responses_compact_for_app(
         }
     }
 
-    match codex_bridge {
-        Some(CodexUpstreamProtocol::Anthropic) => {
-            return handle_codex_anthropic_to_responses_transform(
-                response,
-                &ctx,
-                &state,
-                is_stream,
-                connection_guard,
-                codex_tool_context,
-            )
-            .await;
-        }
-        Some(CodexUpstreamProtocol::Chat) => {
-            return handle_codex_chat_to_responses_transform(
-                response,
-                &ctx,
-                &state,
-                is_stream,
-                connection_guard,
-                codex_tool_context,
-            )
-            .await;
-        }
-        Some(CodexUpstreamProtocol::Native) | None => {}
-    }
-
-    if result.xai_native_responses {
-        return handle_codex_responses_namespace_restore(
-            response,
-            &ctx,
-            &state,
-            connection_guard,
-            namespace_restore_map,
-        )
-        .await;
-    }
-
-    process_response(
+    respond_on_codex_bridge(
         response,
         &ctx,
         &state,
-        &CODEX_PARSER_CONFIG,
+        is_stream,
         connection_guard,
+        codex_bridge,
+        result.xai_native_responses,
+        codex_tool_context,
+        namespace_restore_map,
     )
     .await
 }
@@ -2668,7 +2733,7 @@ pub async fn handle_gemini(
             if let Some(provider) = err.provider.take() {
                 ctx.provider = provider;
             }
-            log_forward_error(&state, &ctx, is_stream, &err.error);
+            log_forward_error(&state, &ctx, is_stream, &err.error).await;
             return Err(err.error);
         }
     };
@@ -3257,7 +3322,7 @@ fn merge_tool_call_delta(
 // 使用量记录（保留用于 Claude 转换逻辑）
 // ============================================================================
 
-fn log_forward_error(
+async fn log_forward_error(
     state: &ProxyState,
     ctx: &RequestContext,
     is_streaming: bool,
@@ -3265,24 +3330,37 @@ fn log_forward_error(
 ) {
     use super::usage::logger::UsageLogger;
 
-    let logger = UsageLogger::new(&state.db);
+    if !usage_logging_enabled(state) {
+        return;
+    }
+    let db = state.db.clone();
     let status_code = map_proxy_error_to_status(error);
     let error_message = get_error_message(error);
     let request_id = uuid::Uuid::new_v4().to_string();
-
-    if let Err(e) = logger.log_error_with_context(
-        request_id,
-        ctx.provider.id.clone(),
-        ctx.app_type_str.to_string(),
-        ctx.request_model.clone(),
-        status_code,
-        error_message,
-        ctx.latency_ms(),
-        is_streaming,
-        ctx.usage_session_id(),
-        None,
-    ) {
-        log::warn!("记录失败请求日志失败: {e}");
+    let provider_id = ctx.provider.id.clone();
+    let app_type = ctx.app_type_str.to_string();
+    let request_model = ctx.request_model.clone();
+    let latency_ms = ctx.latency_ms();
+    let session_id = ctx.usage_session_id();
+    match tokio::task::spawn_blocking(move || {
+        UsageLogger::new(&db).log_error_with_context(
+            request_id,
+            provider_id,
+            app_type,
+            request_model,
+            status_code,
+            error_message,
+            latency_ms,
+            is_streaming,
+            session_id,
+            None,
+        )
+    })
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => log::warn!("[USG-001] Failed to record request error: {error}"),
+        Err(error) => log::error!("[USG-001] Usage worker failed: {error}"),
     }
 }
 
@@ -3305,43 +3383,24 @@ async fn log_usage(
     status_code: u16,
     session_id: Option<String>,
 ) {
-    use super::usage::logger::UsageLogger;
-
     if !usage_logging_enabled(state) {
         return;
     }
-
-    let logger = UsageLogger::new(&state.db);
-
-    let (multiplier, pricing_model_source) =
-        logger.resolve_pricing_config(provider_id, app_type).await;
-    let pricing_model = if pricing_model_source == PRICING_SOURCE_REQUEST {
-        outbound_model
-    } else {
-        model
-    };
-
-    let dedup_scope = (app_type != "claude").then_some((app_type, provider_id));
-    let request_id = usage.dedup_request_id(dedup_scope);
-
-    if let Err(e) = logger.log_with_calculation(
-        request_id,
-        provider_id.to_string(),
-        app_type.to_string(),
-        model.to_string(),
-        request_model.to_string(),
-        pricing_model.to_string(),
+    super::response_processor::log_usage_internal(
+        state,
+        provider_id,
+        app_type,
+        model,
+        request_model,
+        outbound_model,
         usage,
-        multiplier,
         latency_ms,
         first_token_ms,
+        is_streaming,
         status_code,
         session_id,
-        None, // provider_type
-        is_streaming,
-    ) {
-        log::warn!("[USG-001] 记录使用量失败: {e}");
-    }
+    )
+    .await;
 }
 
 #[cfg(test)]
@@ -3371,8 +3430,9 @@ mod tests {
 
     use super::{
         body_looks_like_sse, chat_sse_to_response_value, classify_body_for_diagnostics,
-        codex_auto_fallback_matches_provider, codex_provider_detection_fingerprint,
-        codex_proxy_error_json, codex_wire_api_cache_entry_applies, images_media_type_error,
+        codex_auto_fallback_matches_provider, codex_chat_fallback_confirms_chat,
+        codex_provider_detection_fingerprint, codex_proxy_error_json,
+        codex_wire_api_cache_entry_applies, images_media_type_error,
         providers_with_codex_api_format, responses_sse_to_response_value,
         should_try_codex_chat_auto_fallback, should_use_claude_transform_streaming, transform,
         upstream_body_parse_error,
@@ -3490,7 +3550,8 @@ mod tests {
                         &ctx,
                         streaming,
                         &ProxyError::Internal("test error".into()),
-                    );
+                    )
+                    .await;
                     assert_usage_log(&db, &ctx, streaming, 500, false).await;
                 }
             }
@@ -3590,6 +3651,76 @@ mod tests {
         ));
         assert!(!codex_auto_fallback_matches_provider(None, Some(&detected)));
         assert!(!codex_auto_fallback_matches_provider(Some(&same), None));
+    }
+
+    #[test]
+    fn lazy_probe_fires_once_per_line_and_model_per_window() {
+        use std::time::{Duration, Instant};
+        let window = Duration::from_secs(600);
+        let start = Instant::now();
+        let mut ledger = Default::default();
+        assert!(super::lazy_probe_ledger_allows(
+            &mut ledger,
+            "p1",
+            "m",
+            start,
+            window
+        ));
+        assert!(!super::lazy_probe_ledger_allows(
+            &mut ledger,
+            "p1",
+            "m",
+            start + Duration::from_secs(5),
+            window
+        ));
+        // Other models and lines are independent.
+        assert!(super::lazy_probe_ledger_allows(
+            &mut ledger,
+            "p1",
+            "other",
+            start,
+            window
+        ));
+        assert!(super::lazy_probe_ledger_allows(
+            &mut ledger,
+            "p2",
+            "m",
+            start,
+            window
+        ));
+        // After the window the model may be probed again.
+        assert!(super::lazy_probe_ledger_allows(
+            &mut ledger,
+            "p1",
+            "m",
+            start + window,
+            window
+        ));
+    }
+    #[test]
+    fn chat_fallback_records_chat_only_when_the_chat_bridge_answered() {
+        use crate::proxy::codex_url::CodexUpstreamProtocol;
+        let detected = codex_test_provider("p1", "https://one.example/v1", "sk-one");
+        assert!(codex_chat_fallback_confirms_chat(
+            "p1",
+            &detected,
+            Some(CodexUpstreamProtocol::Chat)
+        ));
+        // A per-model mapping routed the retry over another bridge: the line's
+        // default protocol is still unknown.
+        for bridge in [
+            Some(CodexUpstreamProtocol::Anthropic),
+            Some(CodexUpstreamProtocol::Native),
+            None,
+        ] {
+            assert!(!codex_chat_fallback_confirms_chat("p1", &detected, bridge));
+        }
+        // A failover line answered.
+        assert!(!codex_chat_fallback_confirms_chat(
+            "p2",
+            &detected,
+            Some(CodexUpstreamProtocol::Chat)
+        ));
     }
 
     #[test]

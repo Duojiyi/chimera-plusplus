@@ -1,0 +1,2281 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script>
+      tailwind = { config: { corePlugins: { preflight: false } } };
+    </script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC%3Awght%40100..900&family=Overpass%3Awght%40100..900&family=Overpass+Mono%3Awght%40300..700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      *, ::before, ::after {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      data-pencil-name="04A 切换类工具 · Claude Code"
+      class="box-border w-[1140px] h-[816px] flex flex-col gap-0 justify-start items-start rounded-[8px] overflow-hidden"
+    >
+      <div
+        data-pencil-name="外壳"
+        class="box-border w-full [flex:1_1_0] flex flex-row gap-0 justify-start items-start bg-[#171C21] [outline:1px_solid_#12161C4D] [outline-offset:-0.5px] rounded-[8px] overflow-hidden"
+      >
+        <div
+          data-pencil-name="侧栏"
+          class="box-border w-[216px] shrink-0 h-full flex flex-col gap-[2px] p-[0px_8px_12px_8px] justify-start items-start bg-[#13181C]"
+        >
+          <div
+            data-pencil-name="字标区"
+            class="box-border w-full h-[40px] shrink-0 flex flex-row gap-0 p-[0px_8px] justify-start items-center"
+          >
+            <div
+              data-pencil-name="字标"
+              class="text-[14px]/[20px] box-border text-[#EEF0F3] font-[Overpass,system-ui,sans-serif] font-bold text-left [white-space:nowrap]"
+            >
+              Chimera++
+            </div>
+          </div>
+          <div
+            data-pencil-name="干线"
+            class="box-border w-full h-fit shrink-0 flex flex-col gap-0 justify-start items-start"
+          >
+            <div
+              data-pencil-name="工具 · Codex"
+              class="box-border w-full h-[36px] shrink-0 flex flex-row gap-[10px] p-[0px_8px_0px_10px] justify-start items-center rounded-[4px] relative"
+            >
+              <div
+                data-pencil-name="指示"
+                class="box-border w-[3px] h-[16px] opacity-[0] absolute left-0 top-[10px] bg-[#EEF0F3] rounded-[2px] [z-index:0]"
+              ></div>
+              <div
+                data-pencil-name="徽标"
+                class="box-border w-[24px] shrink-0 h-[24px] flex flex-row gap-0 justify-center items-center bg-[#00000000] [outline:1px_solid_#8D9398] [outline-offset:-0.5px] rounded-[4px] relative [z-index:1]"
+              >
+                <div
+                  data-pencil-name="简称"
+                  class="text-[12px]/[17px] box-border text-[#BABEC3] font-[Overpass,system-ui,sans-serif] font-bold text-left [white-space:nowrap]"
+                >
+                  Cx
+                </div>
+              </div>
+              <div
+                data-pencil-name="名称"
+                class="text-[14px]/[20px] box-border [flex:1_1_0] text-[#EEF0F3] font-[Overpass,system-ui,sans-serif] font-normal text-left relative [z-index:2]"
+              >
+                Codex
+              </div>
+              <div
+                data-pencil-name="尾部"
+                class="box-border w-fit shrink-0 h-fit flex flex-row gap-[4px] justify-start items-center relative [z-index:3]"
+              >
+                <div
+                  data-pencil-name="当前线路"
+                  class="box-border w-[20px] shrink-0 h-[20px] flex flex-row gap-0 justify-center items-center bg-[#7B9BC3] rounded-[4px]"
+                >
+                  <div
+                    data-pencil-name="简称"
+                    class="text-[12px]/[17px] box-border text-[#12161C] font-[Overpass,system-ui,sans-serif] font-bold text-left [white-space:nowrap]"
+                  >
+                    DS
+                  </div>
+                </div>
+              </div>
+              <div
+                data-pencil-name="干线起点"
+                class="box-border w-[2px] h-[6px] absolute left-[21px] top-[30px] bg-[#7B9BC3] [z-index:4]"
+              ></div>
+            </div>
+            <div
+              data-pencil-name="能力 · 线路"
+              class="box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px]"
+            >
+              <div
+                data-pencil-name="站"
+                class="box-border w-[12px] shrink-0 h-fit flex flex-col gap-0 justify-start items-center"
+              >
+                <div
+                  data-pencil-name="上"
+                  class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3]"
+                ></div>
+                <div
+                  data-pencil-name="点"
+                  class="box-border w-[8px] h-[8px] shrink-0 bg-[#13181C] [border:2px_solid_#7B9BC3] rounded-full"
+                ></div>
+                <div
+                  data-pencil-name="下"
+                  class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3]"
+                ></div>
+              </div>
+              <div
+                data-pencil-name="文字"
+                class="text-[14px]/[20px] box-border [flex:1_1_0] text-[#BABEC3] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left"
+              >
+                线路
+              </div>
+            </div>
+            <div
+              data-pencil-name="能力 · 官方账号"
+              class="box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px]"
+            >
+              <div
+                data-pencil-name="站"
+                class="box-border w-[12px] shrink-0 h-fit flex flex-col gap-0 justify-start items-center"
+              >
+                <div
+                  data-pencil-name="上"
+                  class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3]"
+                ></div>
+                <div
+                  data-pencil-name="点"
+                  class="box-border w-[8px] h-[8px] shrink-0 bg-[#13181C] [border:2px_solid_#7B9BC3] rounded-full"
+                ></div>
+                <div
+                  data-pencil-name="下"
+                  class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3]"
+                ></div>
+              </div>
+              <div
+                data-pencil-name="文字"
+                class="text-[14px]/[20px] box-border [flex:1_1_0] text-[#BABEC3] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left"
+              >
+                官方账号
+              </div>
+            </div>
+            <div
+              data-pencil-name="能力 · 提示词"
+              class="box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px]"
+            >
+              <div
+                data-pencil-name="站"
+                class="box-border w-[12px] shrink-0 h-fit flex flex-col gap-0 justify-start items-center"
+              >
+                <div
+                  data-pencil-name="上"
+                  class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3]"
+                ></div>
+                <div
+                  data-pencil-name="点"
+                  class="box-border w-[8px] h-[8px] shrink-0 bg-[#13181C] [border:2px_solid_#7B9BC3] rounded-full"
+                ></div>
+                <div
+                  data-pencil-name="下"
+                  class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3]"
+                ></div>
+              </div>
+              <div
+                data-pencil-name="文字"
+                class="text-[14px]/[20px] box-border [flex:1_1_0] text-[#BABEC3] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left"
+              >
+                提示词
+              </div>
+            </div>
+            <div
+              data-pencil-name="能力 · Skills 与 MCP"
+              class="box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px]"
+            >
+              <div
+                data-pencil-name="站"
+                class="box-border w-[12px] shrink-0 h-fit flex flex-col gap-0 justify-start items-center"
+              >
+                <div
+                  data-pencil-name="上"
+                  class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3]"
+                ></div>
+                <div
+                  data-pencil-name="点"
+                  class="box-border w-[8px] h-[8px] shrink-0 bg-[#13181C] [border:2px_solid_#7B9BC3] rounded-full"
+                ></div>
+                <div
+                  data-pencil-name="下"
+                  class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3]"
+                ></div>
+              </div>
+              <div
+                data-pencil-name="文字"
+                class="text-[14px]/[20px] box-border [flex:1_1_0] text-[#BABEC3] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left"
+              >
+                Skills 与 MCP
+              </div>
+            </div>
+            <div
+              data-pencil-name="能力 · 用量"
+              class="box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px]"
+            >
+              <div
+                data-pencil-name="站"
+                class="box-border w-[12px] shrink-0 h-fit flex flex-col gap-0 justify-start items-center"
+              >
+                <div
+                  data-pencil-name="上"
+                  class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3]"
+                ></div>
+                <div
+                  data-pencil-name="点"
+                  class="box-border w-[8px] h-[8px] shrink-0 bg-[#13181C] [border:2px_solid_#7B9BC3] rounded-full"
+                ></div>
+                <div
+                  data-pencil-name="下"
+                  class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3]"
+                ></div>
+              </div>
+              <div
+                data-pencil-name="文字"
+                class="text-[14px]/[20px] box-border [flex:1_1_0] text-[#BABEC3] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left"
+              >
+                用量
+              </div>
+            </div>
+            <div
+              data-pencil-name="能力 · 运行时"
+              class="box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px]"
+            >
+              <div
+                data-pencil-name="站"
+                class="box-border w-[12px] shrink-0 h-fit flex flex-col gap-0 justify-start items-center"
+              >
+                <div
+                  data-pencil-name="上"
+                  class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3]"
+                ></div>
+                <div
+                  data-pencil-name="点"
+                  class="box-border w-[8px] h-[8px] shrink-0 bg-[#13181C] [border:2px_solid_#7B9BC3] rounded-full"
+                ></div>
+                <div
+                  data-pencil-name="下"
+                  class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3]"
+                ></div>
+              </div>
+              <div
+                data-pencil-name="文字"
+                class="text-[14px]/[20px] box-border [flex:1_1_0] text-[#BABEC3] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left"
+              >
+                运行时
+              </div>
+            </div>
+            <div
+              data-pencil-name="能力 · 外观"
+              class="box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px]"
+            >
+              <div
+                data-pencil-name="站"
+                class="box-border w-[12px] shrink-0 h-fit flex flex-col gap-0 justify-start items-center"
+              >
+                <div
+                  data-pencil-name="上"
+                  class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3]"
+                ></div>
+                <div
+                  data-pencil-name="点"
+                  class="box-border w-[8px] h-[8px] shrink-0 bg-[#13181C] [border:2px_solid_#7B9BC3] rounded-full"
+                ></div>
+                <div
+                  data-pencil-name="下"
+                  class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3]"
+                ></div>
+              </div>
+              <div
+                data-pencil-name="文字"
+                class="text-[14px]/[20px] box-border [flex:1_1_0] text-[#BABEC3] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left"
+              >
+                外观
+              </div>
+            </div>
+            <div
+              data-pencil-name="能力 · 配置体检"
+              class="box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px]"
+            >
+              <div
+                data-pencil-name="站"
+                class="box-border w-[12px] shrink-0 h-fit flex flex-col gap-0 justify-start items-center"
+              >
+                <div
+                  data-pencil-name="上"
+                  class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3]"
+                ></div>
+                <div
+                  data-pencil-name="点"
+                  class="box-border w-[8px] h-[8px] shrink-0 bg-[#13181C] [border:2px_solid_#7B9BC3] rounded-full"
+                ></div>
+                <div
+                  data-pencil-name="下"
+                  class="box-border w-[2px] h-[12px] shrink-0 opacity-[0] bg-[#7B9BC3]"
+                ></div>
+              </div>
+              <div
+                data-pencil-name="文字"
+                class="text-[14px]/[20px] box-border [flex:1_1_0] text-[#BABEC3] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left"
+              >
+                配置体检
+              </div>
+            </div>
+          </div>
+          <div
+            data-pencil-name="组标签"
+            class="box-border w-full h-fit shrink-0 flex flex-row gap-0 p-[16px_10px_6px_10px] justify-start items-start"
+          >
+            <div
+              data-pencil-name="文字"
+              class="text-[13px]/[18px] box-border text-[#8D9398] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+            >
+              其他工具
+            </div>
+          </div>
+          <div
+            data-pencil-name="工具 · Claude Code"
+            class="box-border w-full h-[36px] shrink-0 flex flex-row gap-[10px] p-[0px_8px_0px_10px] justify-start items-center bg-[#23282D] rounded-[4px] relative"
+          >
+            <div
+              data-pencil-name="指示"
+              class="box-border w-[3px] h-[16px] absolute left-0 top-[10px] bg-[#EEF0F3] rounded-[2px] [z-index:0]"
+            ></div>
+            <div
+              data-pencil-name="徽标"
+              class="box-border w-[24px] shrink-0 h-[24px] flex flex-row gap-0 justify-center items-center bg-[#00000000] [outline:1px_solid_#8D9398] [outline-offset:-0.5px] rounded-[4px] relative [z-index:1]"
+            >
+              <div
+                data-pencil-name="简称"
+                class="text-[12px]/[17px] box-border text-[#BABEC3] font-[Overpass,system-ui,sans-serif] font-bold text-left [white-space:nowrap]"
+              >
+                CC
+              </div>
+            </div>
+            <div
+              data-pencil-name="名称"
+              class="text-[14px]/[20px] box-border [flex:1_1_0] text-[#EEF0F3] font-[Overpass,system-ui,sans-serif] font-bold text-left relative [z-index:2]"
+            >
+              Claude Code
+            </div>
+            <div
+              data-pencil-name="尾部"
+              class="box-border w-fit shrink-0 h-fit flex flex-row gap-[4px] justify-start items-center relative [z-index:3]"
+            >
+              <div
+                data-pencil-name="当前线路"
+                class="box-border w-[20px] shrink-0 h-[20px] flex flex-row gap-0 justify-center items-center bg-[#61A6AA] rounded-[4px]"
+              >
+                <div
+                  data-pencil-name="简称"
+                  class="text-[12px]/[17px] box-border text-[#12161C] font-['Noto_Sans_SC',system-ui,sans-serif] font-bold text-left [white-space:nowrap]"
+                >
+                  智
+                </div>
+              </div>
+            </div>
+          </div>
+          <div
+            data-pencil-name="工具 · Gemini CLI"
+            class="box-border w-full h-[36px] shrink-0 flex flex-row gap-[10px] p-[0px_8px_0px_10px] justify-start items-center rounded-[4px] relative"
+          >
+            <div
+              data-pencil-name="指示"
+              class="box-border w-[3px] h-[16px] opacity-[0] absolute left-0 top-[10px] bg-[#EEF0F3] rounded-[2px] [z-index:0]"
+            ></div>
+            <div
+              data-pencil-name="徽标"
+              class="box-border w-[24px] shrink-0 h-[24px] flex flex-row gap-0 justify-center items-center bg-[#00000000] [outline:1px_solid_#8D9398] [outline-offset:-0.5px] rounded-[4px] relative [z-index:1]"
+            >
+              <div
+                data-pencil-name="简称"
+                class="text-[12px]/[17px] box-border text-[#BABEC3] font-[Overpass,system-ui,sans-serif] font-bold text-left [white-space:nowrap]"
+              >
+                Gm
+              </div>
+            </div>
+            <div
+              data-pencil-name="名称"
+              class="text-[14px]/[20px] box-border [flex:1_1_0] text-[#EEF0F3] font-[Overpass,system-ui,sans-serif] font-normal text-left relative [z-index:2]"
+            >
+              Gemini CLI
+            </div>
+            <div
+              data-pencil-name="尾部"
+              class="box-border w-fit shrink-0 h-fit flex flex-row gap-[4px] justify-start items-center relative [z-index:3]"
+            >
+              <div
+                data-pencil-name="当前线路"
+                class="box-border w-[20px] shrink-0 h-[20px] flex flex-row gap-0 justify-center items-center bg-[#BABEC3] rounded-[999px]"
+              >
+                <div
+                  data-pencil-name="简称"
+                  class="text-[12px]/[17px] box-border text-[#13181C] font-['Noto_Sans_SC',system-ui,sans-serif] font-bold text-left [white-space:nowrap]"
+                >
+                  官
+                </div>
+              </div>
+            </div>
+          </div>
+          <div
+            data-pencil-name="工具 · OpenCode"
+            class="box-border w-full h-[36px] shrink-0 flex flex-row gap-[10px] p-[0px_8px_0px_10px] justify-start items-center rounded-[4px] relative"
+          >
+            <div
+              data-pencil-name="指示"
+              class="box-border w-[3px] h-[16px] opacity-[0] absolute left-0 top-[10px] bg-[#EEF0F3] rounded-[2px] [z-index:0]"
+            ></div>
+            <div
+              data-pencil-name="徽标"
+              class="box-border w-[24px] shrink-0 h-[24px] flex flex-row gap-0 justify-center items-center bg-[#00000000] [outline:1px_solid_#8D9398] [outline-offset:-0.5px] rounded-[4px] relative [z-index:1]"
+            >
+              <div
+                data-pencil-name="简称"
+                class="text-[12px]/[17px] box-border text-[#BABEC3] font-[Overpass,system-ui,sans-serif] font-bold text-left [white-space:nowrap]"
+              >
+                OC
+              </div>
+            </div>
+            <div
+              data-pencil-name="名称"
+              class="text-[14px]/[20px] box-border [flex:1_1_0] text-[#EEF0F3] font-[Overpass,system-ui,sans-serif] font-normal text-left relative [z-index:2]"
+            >
+              OpenCode
+            </div>
+            <div
+              data-pencil-name="尾部"
+              class="box-border w-fit shrink-0 h-fit flex flex-row gap-[4px] justify-start items-center relative [z-index:3]"
+            >
+              <div
+                data-pencil-name="计数"
+                class="box-border w-fit shrink-0 h-[20px] flex flex-row gap-[4px] p-[0px_8px] justify-start items-center bg-[#23282D] rounded-[999px]"
+              >
+                <div
+                  data-pencil-name="值"
+                  class="text-[12px]/[17px] box-border text-[#BABEC3] font-[Overpass,system-ui,sans-serif] font-bold text-left [white-space:nowrap]"
+                >
+                  3/5
+                </div>
+              </div>
+            </div>
+          </div>
+          <div
+            data-pencil-name="工具 · Pi"
+            class="box-border w-full h-[36px] shrink-0 flex flex-row gap-[10px] p-[0px_8px_0px_10px] justify-start items-center rounded-[4px] relative"
+          >
+            <div
+              data-pencil-name="指示"
+              class="box-border w-[3px] h-[16px] opacity-[0] absolute left-0 top-[10px] bg-[#EEF0F3] rounded-[2px] [z-index:0]"
+            ></div>
+            <div
+              data-pencil-name="徽标"
+              class="box-border w-[24px] shrink-0 h-[24px] flex flex-row gap-0 justify-center items-center bg-[#00000000] [outline:1px_solid_#8D9398] [outline-offset:-0.5px] rounded-[4px] relative [z-index:1]"
+            >
+              <div
+                data-pencil-name="简称"
+                class="text-[12px]/[17px] box-border text-[#BABEC3] font-[Overpass,system-ui,sans-serif] font-bold text-left [white-space:nowrap]"
+              >
+                Pi
+              </div>
+            </div>
+            <div
+              data-pencil-name="名称"
+              class="text-[14px]/[20px] box-border [flex:1_1_0] text-[#EEF0F3] font-[Overpass,system-ui,sans-serif] font-normal text-left relative [z-index:2]"
+            >
+              Pi
+            </div>
+            <div
+              data-pencil-name="尾部"
+              class="box-border w-fit shrink-0 h-fit flex flex-row gap-[4px] justify-start items-center relative [z-index:3]"
+            >
+              <div
+                data-pencil-name="计数"
+                class="box-border w-fit shrink-0 h-[20px] flex flex-row gap-[4px] p-[0px_8px] justify-start items-center bg-[#23282D] rounded-[999px]"
+              >
+                <div
+                  data-pencil-name="值"
+                  class="text-[12px]/[17px] box-border text-[#BABEC3] font-[Overpass,system-ui,sans-serif] font-bold text-left [white-space:nowrap]"
+                >
+                  2/3
+                </div>
+              </div>
+            </div>
+          </div>
+          <div
+            data-pencil-name="添加工具"
+            class="box-border w-full h-[36px] shrink-0 flex flex-row gap-[10px] p-[0px_8px_0px_10px] justify-start items-center rounded-[4px]"
+          >
+            <div
+              data-pencil-name="空位"
+              class="box-border w-[24px] shrink-0 h-[24px] flex flex-row gap-0 justify-center items-center [outline:1px_solid_#8D9398] [outline-offset:-0.5px] rounded-[4px]"
+            >
+              <svg
+                data-pencil-name="图标"
+                data-icon-name="plus"
+                data-icon-set="phosphor"
+                viewBox="0 0 14 14"
+                preserveAspectRatio="xMidYMid meet"
+                xmlns="http://www.w3.org/2000/svg"
+                class="box-border w-[14px] shrink-0 h-[14px]"
+              >
+                <path
+                  d="M12.25 7q0 0.16406-0.13672 0.30078-0.13672 0.13672-0.30078 0.13672l-4.375 0 0 4.375q0 0.16406-0.13672 0.30078-0.13672 0.13672-0.30078 0.13672-0.16406 0-0.30078-0.13672-0.13672-0.13672-0.13672-0.30078l0-4.375-4.375 0q-0.16406 0-0.30078-0.13672-0.13672-0.13672-0.13672-0.30078 0-0.16406 0.13672-0.30078 0.13672-0.13672 0.30078-0.13672l4.375 0 0-4.375q0-0.16406 0.13672-0.30078 0.13672-0.13672 0.30078-0.13672 0.16406 0 0.30078 0.13672 0.13672 0.13672 0.13672 0.30078l0 4.375 4.375 0q0.16406 0 0.30078 0.13672 0.13672 0.13672 0.13672 0.30078z"
+                  fill="#BABEC3"
+                ></path>
+              </svg>
+            </div>
+            <div
+              data-pencil-name="文字"
+              class="text-[14px]/[20px] box-border [flex:1_1_0] text-[#BABEC3] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left"
+            >
+              添加工具
+            </div>
+          </div>
+          <div
+            data-pencil-name="弹性"
+            class="box-border w-full [flex:1_1_0] flex flex-row gap-0 justify-start items-start"
+          ></div>
+          <div
+            data-pencil-name="分隔"
+            class="box-border w-full h-[1px] shrink-0 bg-[#23282D]"
+          ></div>
+          <div
+            data-pencil-name="会话"
+            class="box-border w-full h-[32px] shrink-0 flex flex-row gap-[12px] p-[0px_8px_0px_12px] justify-start items-center rounded-[4px] relative"
+          >
+            <div
+              data-pencil-name="指示"
+              class="box-border w-[3px] h-[16px] opacity-[0] absolute left-0 top-[8px] bg-[#EEF0F3] rounded-[2px] [z-index:0]"
+            ></div>
+            <svg
+              data-pencil-name="图标"
+              data-icon-name="chat-circle-text"
+              data-icon-set="phosphor"
+              viewBox="0 0 14 14"
+              preserveAspectRatio="xMidYMid meet"
+              xmlns="http://www.w3.org/2000/svg"
+              class="box-border w-[20px] shrink-0 h-[20px] relative [z-index:1]"
+            >
+              <path
+                d="M7 1.3125q-1.53125 0-2.81641 0.73828-1.28516 0.73828-2.07812 2.05078-0.79297 1.3125-0.79297 2.81641 0 1.50391 0.71094 2.81641l-0.49219 1.64062q-0.05469 0.21875 0 0.46484 0.05469 0.24609 0.21875 0.41016 0.16406 0.16406 0.41016 0.21875 0.24609 0.05469 0.46484 0l1.64063-0.49219q1.58594 0.875 3.33593 0.6836 1.75-0.19141 3.11719-1.36719 1.36719-1.17578 1.80469-2.89844 0.4375-1.72266-0.19141-3.39062-0.62891-1.66797-2.07812-2.67969-1.44922-1.01172-3.25391-1.01172z m0 10.5q-1.3125 0-2.46094-0.65625-0.10938-0.05469-0.21875-0.05469l-1.91406 0.49219 0.49219-1.80469q0.05469-0.16406-0.05469-0.32812-0.82031-1.42188-0.62891-3.03516 0.19141-1.61328 1.33985-2.78906 1.14844-1.17578 2.78906-1.39453 1.64063-0.21875 3.0625 0.57422 1.42188 0.79297 2.05078 2.32422 0.62891 1.53125 0.19141 3.08984-0.4375 1.55859-1.72266 2.57031-1.28516 1.01172-2.92578 1.01172z m2.1875-5.6875q0 0.16406-0.13672 0.30078-0.13672 0.13672-0.30078 0.13672l-3.5 0q-0.16406 0-0.30078-0.13672-0.13672-0.13672-0.13672-0.30078 0-0.16406 0.13672-0.30078 0.13672-0.13672 0.30078-0.13672l3.5 0q0.16406 0 0.30078 0.13672 0.13672 0.13672 0.13672 0.30078z m0 1.75q0 0.16406-0.13672 0.30078-0.13672 0.13672-0.30078 0.13672l-3.5 0q-0.16406 0-0.30078-0.13672-0.13672-0.13672-0.13672-0.30078 0-0.16406 0.13672-0.30078 0.13672-0.13672 0.30078-0.13672l3.5 0q0.16406 0 0.30078 0.13672 0.13672 0.13672 0.13672 0.30078z"
+                fill="#BABEC3"
+              ></path>
+            </svg>
+            <div
+              data-pencil-name="文字"
+              class="text-[14px]/[20px] box-border [flex:1_1_0] text-[#BABEC3] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left relative [z-index:2]"
+            >
+              会话
+            </div>
+          </div>
+          <div
+            data-pencil-name="设置"
+            class="box-border w-full h-[32px] shrink-0 flex flex-row gap-[12px] p-[0px_8px_0px_12px] justify-start items-center rounded-[4px] relative"
+          >
+            <div
+              data-pencil-name="指示"
+              class="box-border w-[3px] h-[16px] opacity-[0] absolute left-0 top-[8px] bg-[#EEF0F3] rounded-[2px] [z-index:0]"
+            ></div>
+            <svg
+              data-pencil-name="图标"
+              data-icon-name="gear-six"
+              data-icon-set="phosphor"
+              viewBox="0 0 14 14"
+              preserveAspectRatio="xMidYMid meet"
+              xmlns="http://www.w3.org/2000/svg"
+              class="box-border w-[20px] shrink-0 h-[20px] relative [z-index:1]"
+            >
+              <path
+                d="M13.01563 5.6875q-0.05469-0.16406-0.21875-0.27344l-1.3125-0.71093-0.27344-0.43751 0.05469-1.47656q0-0.21875-0.16407-0.32812-0.98437-0.875-2.24218-1.3125-0.16406-0.05469-0.32813 0.05469l-1.3125 0.76562-0.4375 0-1.3125-0.76562q-0.16406-0.10938-0.32812-0.05469-1.25781 0.4375-2.24219 1.3125-0.16406 0.16406-0.16406 0.32812l0.05468 1.47657-0.27343 0.4375-1.3125 0.71093q-0.16406 0.10938-0.16407 0.27344-0.32813 1.3125-0.05468 2.625 0.05469 0.16406 0.27343 0.27344l1.25782 0.71093 0.27343 0.43751-0.05468 1.47656q0 0.21875 0.16406 0.32812 0.98438 0.875 2.24219 1.3125 0.16406 0.05469 0.32812-0.05469l1.3125-0.76562 0.4375 0 1.3125 0.76562q0.10938 0.05469 0.21875 0.05469l0.10938 0q1.25781-0.4375 2.24218-1.3125 0.16406-0.16406 0.16407-0.32812l-0.05469-1.47657 0.27344-0.4375 1.3125-0.71093q0.16406-0.10938 0.21875-0.27344 0.27344-1.3125-0.05469-2.625l0.05469 0z m-0.82032 2.24219l-1.25781 0.65625q-0.10938 0.10938-0.16406 0.21875-0.16406 0.27344-0.32813 0.54687-0.10937 0.10938-0.10937 0.21875l0.05469 1.42188q-0.71094 0.60156-1.58594 0.92969l-1.25781-0.71094q-0.10938-0.05469-0.21875-0.05469-0.32813 0-0.65625 0-0.10938 0-0.21875 0.05469l-1.25782 0.71094q-0.875-0.27344-1.58593-0.92969l0.05468-1.42188q0-0.10938-0.10937-0.21875-0.16406-0.27344-0.27344-0.54687-0.10938-0.10938-0.21875-0.21875l-1.20312-0.65625q-0.21875-0.92969 0-1.85938l1.20312-0.65625q0.10938-0.10938 0.21875-0.21875 0.10938-0.27344 0.27344-0.54687 0.10938-0.10938 0.10937-0.27344l-0.05468-1.36719q0.71094-0.60156 1.58593-0.92969l1.25782 0.71094q0.10938 0.05469 0.21875 0.05469 0.32813 0 0.65625 0 0.10938 0 0.21875-0.05469l1.25781-0.71094q0.875 0.27344 1.58594 0.875l-0.05469 1.42188q0 0.16406 0.10937 0.27344 0.16406 0.27344 0.32813 0.54687 0.05469 0.10938 0.16406 0.21875l1.25781 0.65625q0.16406 0.92969-0.05468 1.85938l0.05468 0z m-5.19531-3.99219q-0.82031 0-1.53125 0.41016-0.71094 0.41016-1.12109 1.12109-0.41016 0.71094-0.41016 1.53125 0 0.82031 0.41016 1.53125 0.41016 0.71094 1.12109 1.12109 0.71094 0.41016 1.53125 0.41016 0.82031 0 1.53125-0.41016 0.71094-0.41016 1.12109-1.12109 0.41016-0.71094 0.41016-1.53125 0-0.82031-0.41016-1.53125-0.41016-0.71094-1.12109-1.12109-0.71094-0.41016-1.53125-0.41016z m0 5.25q-0.92969 0-1.55859-0.62891-0.62891-0.62891-0.62891-1.55859 0-0.92969 0.62891-1.55859 0.62891-0.62891 1.55859-0.62891 0.92969 0 1.55859 0.62891 0.62891 0.62891 0.62891 1.55859 0 0.92969-0.62891 1.55859-0.62891 0.62891-1.55859 0.62891z"
+                fill="#BABEC3"
+              ></path>
+            </svg>
+            <div
+              data-pencil-name="文字"
+              class="text-[14px]/[20px] box-border [flex:1_1_0] text-[#BABEC3] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left relative [z-index:2]"
+            >
+              设置
+            </div>
+          </div>
+        </div>
+        <div
+          data-pencil-name="主体"
+          class="[box-sizing:content-box] [flex:1_1_0] h-[816px] flex flex-col gap-0 justify-start items-start bg-[#FDFDFE] [border-width:0px_0px_0px_1px] [border-style:solid] [border-color:#00000000] [margin:0px_0px_0px_-0.5px] w-[923.5px] rounded-[8px_0px_0px_0px] overflow-hidden"
+        >
+          <div
+            data-pencil-name="标题栏"
+            class="[box-sizing:content-box] w-[924px] h-[39.5px] shrink-0 flex flex-row gap-0 justify-start items-center bg-[#FDFDFE] [border-width:0px_0px_1px_0px] [border-style:solid] [border-color:#DDE0E3] [margin:0px_0px_-0.5px_0px]"
+          >
+            <div
+              data-pencil-name="左"
+              class="box-border [flex:1_1_0] h-[40px] flex flex-row gap-[10px] p-[0px_12px] justify-start items-center"
+            >
+              <div
+                data-pencil-name="迷你站牌"
+                class="box-border w-fit shrink-0 h-[28px] flex flex-row gap-[8px] p-[0px_10px_0px_12px] justify-start items-center bg-[#1A1E24] [outline:1px_solid_#1A1E24] [outline-offset:-0.5px] rounded-[4px] overflow-hidden relative"
+              >
+                <div
+                  data-pencil-name="色带"
+                  class="box-border w-[3px] h-[28px] absolute left-0 top-0 bg-[#357B7F] [z-index:0]"
+                ></div>
+                <div
+                  data-pencil-name="工具"
+                  class="text-[13px]/[18px] box-border text-[#B4B8BC] font-[Overpass,system-ui,sans-serif] font-normal text-left [white-space:nowrap] relative [z-index:1]"
+                >
+                  Claude Code
+                </div>
+                <div
+                  data-pencil-name="轨 · 一"
+                  class="box-border w-[12px] shrink-0 h-[2px] bg-[#94999E] rounded-[2px] relative [z-index:2]"
+                ></div>
+                <div
+                  data-pencil-name="线路"
+                  class="box-border w-fit shrink-0 h-fit flex flex-row gap-[6px] justify-start items-center relative [z-index:3]"
+                >
+                  <div
+                    data-pencil-name="徽标"
+                    class="box-border w-[20px] shrink-0 h-[20px] flex flex-row gap-0 justify-center items-center bg-[#357B7F] rounded-[4px]"
+                  >
+                    <div
+                      data-pencil-name="简称"
+                      class="text-[12px]/[17px] box-border text-[#FDFDFE] font-['Noto_Sans_SC',system-ui,sans-serif] font-bold text-left [white-space:nowrap]"
+                    >
+                      智
+                    </div>
+                  </div>
+                  <div
+                    data-pencil-name="名称"
+                    class="text-[13px]/[18px] box-border text-[#F5F7F9] font-['Noto_Sans_SC',system-ui,sans-serif] font-bold text-left [white-space:nowrap]"
+                  >
+                    智谱 GLM
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="轨 · 二"
+                  class="box-border w-[12px] shrink-0 h-[2px] bg-[#94999E] rounded-[2px] relative [z-index:4]"
+                ></div>
+                <div
+                  data-pencil-name="状态"
+                  class="box-border w-fit shrink-0 h-fit flex flex-row gap-[6px] justify-start items-center relative [z-index:5]"
+                >
+                  <div
+                    data-pencil-name="状态点"
+                    class="box-border w-[8px] shrink-0 h-[8px] bg-[#71D790] rounded-full"
+                  ></div>
+                  <div
+                    data-pencil-name="读数"
+                    class="text-[13px]/[18px] box-border text-[#B4B8BC] font-[Overpass,system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                  >
+                    210 ms
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              data-pencil-name="搜索"
+              class="box-border w-[360px] shrink-0 h-[28px] flex flex-row gap-[8px] p-[0px_6px_0px_10px] justify-start items-center bg-[#F2F4F6] [outline:1px_solid_#00000000] [outline-offset:-0.5px] rounded-[4px]"
+            >
+              <svg
+                data-pencil-name="图标"
+                data-icon-name="magnifying-glass"
+                data-icon-set="phosphor"
+                viewBox="0 0 14 14"
+                preserveAspectRatio="xMidYMid meet"
+                xmlns="http://www.w3.org/2000/svg"
+                class="box-border w-[14px] shrink-0 h-[14px]"
+              >
+                <path
+                  d="M12.57813 11.92188l-2.40625-2.35157q0.875-1.03906 1.12109-2.29687 0.24609-1.25781-0.16406-2.51563-0.41016-1.25781-1.39453-2.16015-0.98438-0.90234-2.24219-1.17578-1.25781-0.27344-2.51563 0.05468-1.25781 0.32813-2.21484 1.28516-0.95703 0.95703-1.28516 2.21484-0.32813 1.25781-0.05468 2.51563 0.27344 1.25781 1.17578 2.24219 0.90234 0.98438 2.16015 1.39453 1.25781 0.41016 2.51563 0.16406 1.25781-0.24609 2.29687-1.12109l2.35157 2.40625q0.16406 0.10938 0.32812 0.10937 0.16406 0 0.30078-0.13672 0.13672-0.13672 0.13672-0.30078 0-0.16406-0.10937-0.32812z m-10.39063-5.57813q0-1.14844 0.54688-2.10547 0.54688-0.95703 1.5039-1.50391 0.95703-0.54688 2.10547-0.54687 1.14844 0 2.10547 0.54688 0.95703 0.54688 1.50391 1.5039 0.54688 0.95703 0.54687 2.10547 0 1.14844-0.54688 2.10547-0.54688 0.95703-1.5039 1.50391-0.95703 0.54688-2.10547 0.54687-1.14844 0-2.10547-0.54688-0.95703-0.54688-1.50391-1.5039-0.54688-0.95703-0.54687-2.10547z"
+                  fill="#646970"
+                ></path>
+              </svg>
+              <div
+                data-pencil-name="占位"
+                class="text-[13px]/[18px] box-border [flex:1_1_0] text-[#646970] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left"
+              >
+                搜索线路、页面或命令
+              </div>
+              <div
+                data-pencil-name="键帽"
+                class="box-border w-fit shrink-0 h-[20px] flex flex-row gap-0 p-[0px_6px] justify-start items-center bg-[#FDFDFE] [outline:1px_solid_#DDE0E3] [outline-offset:-0.5px] rounded-[4px]"
+              >
+                <div
+                  data-pencil-name="值"
+                  class="text-[12px]/[17px] box-border text-[#646970] font-[Overpass,system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                >
+                  Ctrl K
+                </div>
+              </div>
+            </div>
+            <div
+              data-pencil-name="右"
+              class="box-border w-fit shrink-0 h-[40px] flex flex-row gap-0 justify-end items-start"
+            >
+              <div
+                data-pencil-name="最小化"
+                class="box-border w-[46px] shrink-0 h-[40px] flex flex-row gap-0 justify-center items-center"
+              >
+                <svg
+                  data-pencil-name="图标"
+                  data-icon-name="minus"
+                  data-icon-set="phosphor"
+                  viewBox="0 0 14 14"
+                  preserveAspectRatio="xMidYMid meet"
+                  xmlns="http://www.w3.org/2000/svg"
+                  class="box-border w-[16px] shrink-0 h-[16px]"
+                >
+                  <path
+                    d="M11.8125 7.4375l-9.625 0q-0.16406 0-0.30078-0.13672-0.13672-0.13672-0.13672-0.30078 0-0.16406 0.13672-0.30078 0.13672-0.13672 0.30078-0.13672l9.625 0q0.16406 0 0.30078 0.13672 0.13672 0.13672 0.13672 0.30078 0 0.16406-0.13672 0.30078-0.13672 0.13672-0.30078 0.13672z"
+                    fill="#12161C"
+                  ></path>
+                </svg>
+              </div>
+              <div
+                data-pencil-name="最大化"
+                class="box-border w-[46px] shrink-0 h-[40px] flex flex-row gap-0 justify-center items-center"
+              >
+                <svg
+                  data-pencil-name="图标"
+                  data-icon-name="square"
+                  data-icon-set="phosphor"
+                  viewBox="0 0 14 14"
+                  preserveAspectRatio="xMidYMid meet"
+                  xmlns="http://www.w3.org/2000/svg"
+                  class="box-border w-[13px] shrink-0 h-[13px]"
+                >
+                  <path
+                    d="M11.375 12.25l-8.75 0q-0.38281 0-0.62891-0.24609-0.24609-0.24609-0.24609-0.62891l0-8.75q0-0.38281 0.24609-0.62891 0.24609-0.24609 0.62891-0.24609l8.75 0q0.38281 0 0.62891 0.24609 0.24609 0.24609 0.24609 0.62891l0 8.75q0 0.38281-0.24609 0.62891-0.24609 0.24609-0.62891 0.24609z m-8.75-9.625l0 8.75 8.75 0 0-8.75-8.75 0z"
+                    fill="#12161C"
+                  ></path>
+                </svg>
+              </div>
+              <div
+                data-pencil-name="关闭"
+                class="box-border w-[46px] shrink-0 h-[40px] flex flex-row gap-0 justify-center items-center"
+              >
+                <svg
+                  data-pencil-name="图标"
+                  data-icon-name="x"
+                  data-icon-set="phosphor"
+                  viewBox="0 0 14 14"
+                  preserveAspectRatio="xMidYMid meet"
+                  xmlns="http://www.w3.org/2000/svg"
+                  class="box-border w-[16px] shrink-0 h-[16px]"
+                >
+                  <path
+                    d="M11.26563 10.60938q0.10938 0.16406 0.10937 0.32812 0 0.16406-0.13672 0.30078-0.13672 0.13672-0.30078 0.13672-0.16406 0-0.32812-0.10937l-3.60938-3.66407-3.60938 3.66407q-0.16406 0.10938-0.32812 0.10937-0.16406 0-0.30078-0.13672-0.13672-0.13672-0.13672-0.30078 0-0.16406 0.10937-0.32812l3.66407-3.60938-3.66407-3.60938q-0.10938-0.16406-0.08203-0.32812 0.02734-0.16406 0.13672-0.27344 0.10938-0.10938 0.27344-0.13672 0.16406-0.02734 0.32812 0.08203l3.60938 3.66407 3.60938-3.66407q0.16406-0.10938 0.32812-0.08203 0.16406 0.02734 0.27344 0.13672 0.10937 0.10938 0.13672 0.27344 0.02734 0.16406-0.08203 0.32812l-3.66407 3.60938 3.66407 3.60938z"
+                    fill="#12161C"
+                  ></path>
+                </svg>
+              </div>
+            </div>
+          </div>
+          <div
+            data-pencil-name="内容"
+            class="[box-sizing:content-box] w-[923.5px] [flex:1_1_0] flex flex-col gap-[12px] p-[12px_24px] justify-start items-start bg-[#FDFDFE] [border-width:1px_0px_0px_1px] [border-style:solid] [border-color:#00000000] [margin:-0.5px_0px_0px_-0.5px] h-[775.5px] overflow-hidden"
+          >
+            <div
+              data-pencil-name="页头"
+              class="box-border w-full h-fit shrink-0 flex flex-row gap-[12px] justify-start items-center"
+            >
+              <div
+                data-pencil-name="标识"
+                class="box-border w-[40px] shrink-0 h-[40px] flex flex-row gap-0 justify-center items-center bg-[#FDFDFE] [outline:1px_solid_#484E55] [outline-offset:-0.5px] rounded-[8px]"
+              >
+                <div
+                  data-pencil-name="简称"
+                  class="text-[15px]/[21px] box-border text-[#484E55] font-[Overpass,system-ui,sans-serif] font-bold text-left [white-space:nowrap]"
+                >
+                  CC
+                </div>
+              </div>
+              <div
+                data-pencil-name="标题区"
+                class="box-border [flex:1_1_0] h-fit flex flex-col gap-[2px] justify-start items-start"
+              >
+                <div
+                  data-pencil-name="标题行"
+                  class="box-border w-fit h-fit shrink-0 flex flex-row gap-[10px] justify-start items-center"
+                >
+                  <div
+                    data-pencil-name="标题"
+                    class="text-[28px]/[36px] box-border text-[#12161C] font-[Overpass,system-ui,sans-serif] font-bold text-left [white-space:nowrap]"
+                  >
+                    Claude Code
+                  </div>
+                  <div
+                    data-pencil-name="模式"
+                    class="box-border w-fit shrink-0 h-[20px] flex flex-row gap-0 p-[0px_8px] justify-start items-center [outline:1px_solid_#DDE0E3] [outline-offset:-0.5px] rounded-[999px]"
+                  >
+                    <div
+                      data-pencil-name="文字"
+                      class="text-[12px]/[17px] box-border text-[#484E55] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                    >
+                      切换类
+                    </div>
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="说明"
+                  class="text-[13px]/[18px] box-border text-[#646970] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                >
+                  同一时间只走一条线路 · 共 4 条 · 写入 C:\Users\lin\.claude\settings.json
+                </div>
+              </div>
+              <div
+                data-pencil-name="操作"
+                class="box-border w-fit shrink-0 h-fit flex flex-row gap-[8px] justify-start items-center"
+              >
+                <div
+                  data-pencil-name="次要二"
+                  class="box-border w-fit shrink-0 h-[32px] flex flex-row gap-[6px] p-[0px_12px] justify-center items-center bg-[#FDFDFE] [outline:1px_solid_#81878D] [outline-offset:-0.5px] rounded-[4px]"
+                >
+                  <svg
+                    data-pencil-name="图标"
+                    data-icon-name="gauge"
+                    data-icon-set="phosphor"
+                    viewBox="0 0 14 14"
+                    preserveAspectRatio="xMidYMid meet"
+                    xmlns="http://www.w3.org/2000/svg"
+                    class="box-border w-[16px] shrink-0 h-[16px]"
+                  >
+                    <path
+                      d="M11.32031 4.42969q-0.875-0.875-1.99609-1.33985-1.12109-0.46484-2.32422-0.46484-1.36719 0-2.57031 0.57422-1.20313 0.57422-2.07813 1.58594-0.875 1.01172-1.20312 2.26953l-0.05469 0.21875q-0.21875 0.76563-0.21875 1.53125l0 1.25781q0 0.38281 0.24609 0.62891 0.24609 0.24609 0.62891 0.24609l10.5 0q0.38281 0 0.62891-0.24609 0.24609-0.24609 0.24609-0.62891l0-1.3125q0-1.20313-0.46484-2.35156-0.46484-1.14844-1.33985-1.96875z m0.92969 5.63281l-5.6875 0 3.17188-4.15625q0.10938-0.16406 0.08203-0.32813-0.02734-0.16406-0.16407-0.27343-0.13672-0.10938-0.30078-0.08203-0.16406 0.02734-0.32812 0.13671l-3.55469 4.70313-3.71875 0 0-1.25781q0-0.49219 0.10938-0.98438l1.36718 0.32813q0.16406 0 0.27344-0.10938 0.10938-0.10938 0.13672-0.27343 0.02734-0.16406-0.05469-0.30079-0.08203-0.13672-0.24609-0.13671l-1.25781-0.32813q0.54688-1.47656 1.75-2.40625 1.20313-0.92969 2.73437-1.09375l0 1.3125q0 0.16406 0.13672 0.30078 0.13672 0.13672 0.30078 0.13672 0.16406 0 0.30078-0.13672 0.13672-0.13672 0.13672-0.30078l0-1.3125q0.92969 0.10938 1.77734 0.49219 0.84766 0.38281 1.50391 1.03906 0.82031 0.82031 1.20313 1.96875l-1.20313 0.32813q-0.21875 0-0.30078 0.13671-0.08203 0.13672-0.05469 0.30079 0.02734 0.16406 0.13672 0.27343 0.10938 0.10938 0.32813 0.10938l1.36718-0.32813q0.05469 0.4375 0.05469 0.92969l0 1.3125z"
+                      fill="#12161C"
+                    ></path>
+                  </svg>
+                  <div
+                    data-pencil-name="文字"
+                    class="text-[14px]/[20px] box-border text-[#12161C] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                  >
+                    全部测速
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="主要"
+                  class="box-border w-fit shrink-0 h-[32px] flex flex-row gap-[6px] p-[0px_12px] justify-center items-center bg-[#006AA0] rounded-[4px]"
+                >
+                  <svg
+                    data-pencil-name="图标"
+                    data-icon-name="plus"
+                    data-icon-set="phosphor"
+                    viewBox="0 0 14 14"
+                    preserveAspectRatio="xMidYMid meet"
+                    xmlns="http://www.w3.org/2000/svg"
+                    class="box-border w-[16px] shrink-0 h-[16px]"
+                  >
+                    <path
+                      d="M12.25 7q0 0.16406-0.13672 0.30078-0.13672 0.13672-0.30078 0.13672l-4.375 0 0 4.375q0 0.16406-0.13672 0.30078-0.13672 0.13672-0.30078 0.13672-0.16406 0-0.30078-0.13672-0.13672-0.13672-0.13672-0.30078l0-4.375-4.375 0q-0.16406 0-0.30078-0.13672-0.13672-0.13672-0.13672-0.30078 0-0.16406 0.13672-0.30078 0.13672-0.13672 0.30078-0.13672l4.375 0 0-4.375q0-0.16406 0.13672-0.30078 0.13672-0.13672 0.30078-0.13672 0.16406 0 0.30078 0.13672 0.13672 0.13672 0.13672 0.30078l0 4.375 4.375 0q0.16406 0 0.30078 0.13672 0.13672 0.13672 0.13672 0.30078z"
+                      fill="#FDFDFE"
+                    ></path>
+                  </svg>
+                  <div
+                    data-pencil-name="文字"
+                    class="text-[14px]/[20px] box-border text-[#FDFDFE] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                  >
+                    添加线路
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              data-pencil-name="能力条"
+              class="box-border w-full h-fit shrink-0 flex flex-col gap-[8px] justify-start items-start"
+            >
+              <div
+                data-pencil-name="行 · 本工具"
+                class="box-border w-fit h-fit shrink-0 flex flex-row gap-[24px] justify-start items-center"
+              >
+                <div
+                  data-pencil-name="能力 · 线路与测速"
+                  class="box-border w-fit shrink-0 h-[20px] flex flex-row gap-[4px] justify-start items-center"
+                >
+                  <svg
+                    data-pencil-name="图标"
+                    data-icon-name="check"
+                    data-icon-set="phosphor"
+                    viewBox="0 0 14 14"
+                    preserveAspectRatio="xMidYMid meet"
+                    xmlns="http://www.w3.org/2000/svg"
+                    class="box-border w-[14px] shrink-0 h-[14px]"
+                  >
+                    <path
+                      d="M5.6875 10.5q-0.16406 0-0.32813-0.10938l-3.0625-3.0625q-0.10938-0.16406-0.08203-0.32812 0.02734-0.16406 0.13672-0.27344 0.10938-0.10938 0.27344-0.13672 0.16406-0.02734 0.32812 0.08203l2.73438 2.78907 5.79688-5.85157q0.16406-0.10938 0.32812-0.08203 0.16406 0.02734 0.27344 0.13672 0.10937 0.10938 0.13672 0.27344 0.02734 0.16406-0.08203 0.32812l-6.125 6.125q-0.16406 0.10938-0.32813 0.10938z"
+                      fill="#05773B"
+                    ></path>
+                  </svg>
+                  <div
+                    data-pencil-name="文字"
+                    class="text-[13px]/[18px] box-border text-[#484E55] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                  >
+                    线路与测速
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="能力 · 模型映射"
+                  class="box-border w-fit shrink-0 h-[20px] flex flex-row gap-[4px] justify-start items-center"
+                >
+                  <svg
+                    data-pencil-name="图标"
+                    data-icon-name="check"
+                    data-icon-set="phosphor"
+                    viewBox="0 0 14 14"
+                    preserveAspectRatio="xMidYMid meet"
+                    xmlns="http://www.w3.org/2000/svg"
+                    class="box-border w-[14px] shrink-0 h-[14px]"
+                  >
+                    <path
+                      d="M5.6875 10.5q-0.16406 0-0.32813-0.10938l-3.0625-3.0625q-0.10938-0.16406-0.08203-0.32812 0.02734-0.16406 0.13672-0.27344 0.10938-0.10938 0.27344-0.13672 0.16406-0.02734 0.32812 0.08203l2.73438 2.78907 5.79688-5.85157q0.16406-0.10938 0.32812-0.08203 0.16406 0.02734 0.27344 0.13672 0.10937 0.10938 0.13672 0.27344 0.02734 0.16406-0.08203 0.32812l-6.125 6.125q-0.16406 0.10938-0.32813 0.10938z"
+                      fill="#05773B"
+                    ></path>
+                  </svg>
+                  <div
+                    data-pencil-name="文字"
+                    class="text-[13px]/[18px] box-border text-[#484E55] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                  >
+                    模型映射
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="能力 · 托盘切换"
+                  class="box-border w-fit shrink-0 h-[20px] flex flex-row gap-[4px] justify-start items-center"
+                >
+                  <svg
+                    data-pencil-name="图标"
+                    data-icon-name="check"
+                    data-icon-set="phosphor"
+                    viewBox="0 0 14 14"
+                    preserveAspectRatio="xMidYMid meet"
+                    xmlns="http://www.w3.org/2000/svg"
+                    class="box-border w-[14px] shrink-0 h-[14px]"
+                  >
+                    <path
+                      d="M5.6875 10.5q-0.16406 0-0.32813-0.10938l-3.0625-3.0625q-0.10938-0.16406-0.08203-0.32812 0.02734-0.16406 0.13672-0.27344 0.10938-0.10938 0.27344-0.13672 0.16406-0.02734 0.32812 0.08203l2.73438 2.78907 5.79688-5.85157q0.16406-0.10938 0.32812-0.08203 0.16406 0.02734 0.27344 0.13672 0.10937 0.10938 0.13672 0.27344 0.02734 0.16406-0.08203 0.32812l-6.125 6.125q-0.16406 0.10938-0.32813 0.10938z"
+                      fill="#05773B"
+                    ></path>
+                  </svg>
+                  <div
+                    data-pencil-name="文字"
+                    class="text-[13px]/[18px] box-border text-[#484E55] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                  >
+                    托盘切换
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="能力 · 深链：仅导入"
+                  class="box-border w-fit shrink-0 h-[20px] flex flex-row gap-[4px] justify-start items-center"
+                >
+                  <svg
+                    data-pencil-name="图标"
+                    data-icon-name="arrow-right"
+                    data-icon-set="phosphor"
+                    viewBox="0 0 14 14"
+                    preserveAspectRatio="xMidYMid meet"
+                    xmlns="http://www.w3.org/2000/svg"
+                    class="box-border w-[14px] shrink-0 h-[14px]"
+                  >
+                    <path
+                      d="M12.14063 7.32813l-3.9375 3.9375q-0.16406 0.10938-0.32813 0.10937-0.16406 0-0.30078-0.13672-0.13672-0.13672-0.13672-0.30078 0-0.16406 0.10938-0.32812l3.22656-3.17188-8.58594 0q-0.16406 0-0.30078-0.13672-0.13672-0.13672-0.13672-0.30078 0-0.16406 0.13672-0.30078 0.13672-0.13672 0.30078-0.13672l8.58594 0-3.22657-3.17188q-0.10938-0.16406-0.08203-0.32812 0.02734-0.16406 0.13672-0.27344 0.10938-0.10938 0.27344-0.13672 0.16406-0.02734 0.32812 0.08203l3.9375 3.9375q0.10938 0.16406 0.10938 0.32813 0 0.16406-0.10938 0.32812z"
+                      fill="#646970"
+                    ></path>
+                  </svg>
+                  <div
+                    data-pencil-name="文字"
+                    class="text-[13px]/[18px] box-border text-[#484E55] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                  >
+                    深链：仅导入
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="能力 · 本地代理"
+                  class="box-border w-fit shrink-0 h-[20px] flex flex-row gap-[4px] justify-start items-center"
+                >
+                  <svg
+                    data-pencil-name="图标"
+                    data-icon-name="minus"
+                    data-icon-set="phosphor"
+                    viewBox="0 0 14 14"
+                    preserveAspectRatio="xMidYMid meet"
+                    xmlns="http://www.w3.org/2000/svg"
+                    class="box-border w-[14px] shrink-0 h-[14px]"
+                  >
+                    <path
+                      d="M11.8125 7.4375l-9.625 0q-0.16406 0-0.30078-0.13672-0.13672-0.13672-0.13672-0.30078 0-0.16406 0.13672-0.30078 0.13672-0.13672 0.30078-0.13672l9.625 0q0.16406 0 0.30078 0.13672 0.13672 0.13672 0.13672 0.30078 0 0.16406-0.13672 0.30078-0.13672 0.13672-0.30078 0.13672z"
+                      fill="#646970"
+                    ></path>
+                  </svg>
+                  <div
+                    data-pencil-name="文字"
+                    class="text-[13px]/[18px] box-border text-[#646970] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                  >
+                    本地代理
+                  </div>
+                </div>
+              </div>
+              <div
+                data-pencil-name="行 · 在别处"
+                class="box-border w-fit h-fit shrink-0 flex flex-row gap-[24px] justify-start items-center"
+              >
+                <div
+                  data-pencil-name="能力 · 提示词、Skills、会话、用量（Codex 专属）"
+                  class="box-border w-fit shrink-0 h-[20px] flex flex-row gap-[4px] justify-start items-center"
+                >
+                  <svg
+                    data-pencil-name="图标"
+                    data-icon-name="minus"
+                    data-icon-set="phosphor"
+                    viewBox="0 0 14 14"
+                    preserveAspectRatio="xMidYMid meet"
+                    xmlns="http://www.w3.org/2000/svg"
+                    class="box-border w-[14px] shrink-0 h-[14px]"
+                  >
+                    <path
+                      d="M11.8125 7.4375l-9.625 0q-0.16406 0-0.30078-0.13672-0.13672-0.13672-0.13672-0.30078 0-0.16406 0.13672-0.30078 0.13672-0.13672 0.30078-0.13672l9.625 0q0.16406 0 0.30078 0.13672 0.13672 0.13672 0.13672 0.30078 0 0.16406-0.13672 0.30078-0.13672 0.13672-0.30078 0.13672z"
+                      fill="#646970"
+                    ></path>
+                  </svg>
+                  <div
+                    data-pencil-name="文字"
+                    class="text-[13px]/[18px] box-border text-[#646970] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                  >
+                    提示词、Skills、用量（Codex 专属）
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="能力 · 会话"
+                  class="box-border w-fit shrink-0 h-[20px] flex flex-row gap-[4px] justify-start items-center"
+                >
+                  <svg
+                    data-pencil-name="图标"
+                    data-icon-name="arrow-right"
+                    data-icon-set="phosphor"
+                    viewBox="0 0 14 14"
+                    preserveAspectRatio="xMidYMid meet"
+                    xmlns="http://www.w3.org/2000/svg"
+                    class="box-border w-[14px] shrink-0 h-[14px]"
+                  >
+                    <path
+                      d="M12.14063 7.32813l-3.9375 3.9375q-0.16406 0.10938-0.32813 0.10937-0.16406 0-0.30078-0.13672-0.13672-0.13672-0.13672-0.30078 0-0.16406 0.10938-0.32812l3.22656-3.17188-8.58594 0q-0.16406 0-0.30078-0.13672-0.13672-0.13672-0.13672-0.30078 0-0.16406 0.13672-0.30078 0.13672-0.13672 0.30078-0.13672l8.58594 0-3.22657-3.17188q-0.10938-0.16406-0.08203-0.32812 0.02734-0.16406 0.13672-0.27344 0.10938-0.10938 0.27344-0.13672 0.16406-0.02734 0.32812 0.08203l3.9375 3.9375q0.10938 0.16406 0.10938 0.32813 0 0.16406-0.10938 0.32812z"
+                      fill="#484E55"
+                    ></path>
+                  </svg>
+                  <div
+                    data-pencil-name="文字"
+                    class="text-[13px]/[18px] box-border text-[#484E55] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                  >
+                    会话：在全局「会话」里按工具筛选
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              data-pencil-name="站牌"
+              class="box-border w-full h-fit shrink-0 flex flex-col gap-0 justify-start items-start bg-[#1A1E24] [outline:1px_solid_#1A1E24] [outline-offset:-0.5px] rounded-[8px] overflow-hidden"
+            >
+              <div
+                data-pencil-name="色带"
+                class="box-border w-full h-[4px] shrink-0 bg-[#357B7F]"
+              ></div>
+              <div
+                data-pencil-name="主体"
+                class="box-border w-full h-fit shrink-0 flex flex-col gap-[16px] p-[16px_24px] justify-start items-start"
+              >
+                <div
+                  data-pencil-name="顶行"
+                  class="box-border w-full h-fit shrink-0 flex flex-row gap-[16px] justify-start items-center"
+                >
+                  <div
+                    data-pencil-name="徽标"
+                    class="box-border w-[40px] shrink-0 h-[40px] flex flex-row gap-0 justify-center items-center bg-[#357B7F] rounded-[8px]"
+                  >
+                    <div
+                      data-pencil-name="简称"
+                      class="text-[15px]/[21px] box-border text-[#FDFDFE] font-['Noto_Sans_SC',system-ui,sans-serif] font-bold text-left [white-space:nowrap]"
+                    >
+                      智
+                    </div>
+                  </div>
+                  <div
+                    data-pencil-name="名称区"
+                    class="box-border [flex:1_1_0] h-fit flex flex-col gap-[2px] justify-start items-start"
+                  >
+                    <div
+                      data-pencil-name="标签"
+                      class="text-[13px]/[18px] box-border text-[#94999E] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                    >
+                      当前线路
+                    </div>
+                    <div
+                      data-pencil-name="名称行"
+                      class="box-border w-fit h-fit shrink-0 flex flex-row gap-[10px] justify-start items-center"
+                    >
+                      <div
+                        data-pencil-name="名称"
+                        class="text-[32px]/[37px] box-border text-[#F5F7F9] font-['Noto_Sans_SC',system-ui,sans-serif] font-bold text-left [white-space:nowrap]"
+                      >
+                        智谱 GLM
+                      </div>
+                      <div
+                        data-pencil-name="类型"
+                        class="box-border w-fit shrink-0 h-[22px] flex flex-row gap-0 p-[0px_8px] justify-start items-center [outline:1px_solid_#6F757B] [outline-offset:-0.5px] rounded-[999px]"
+                      >
+                        <div
+                          data-pencil-name="类型字"
+                          class="text-[13px]/[18px] box-border text-[#B4B8BC] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                        >
+                          第三方 · API 密钥
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div
+                    data-pencil-name="读数区"
+                    class="box-border w-fit shrink-0 h-fit flex flex-col gap-[2px] justify-start items-end"
+                  >
+                    <div
+                      data-pencil-name="读数"
+                      class="text-[22px]/[25px] box-border text-[#F5F7F9] font-[Overpass,system-ui,sans-serif] font-bold text-left [white-space:nowrap]"
+                    >
+                      210 ms
+                    </div>
+                    <div
+                      data-pencil-name="状态行"
+                      class="box-border w-fit h-fit shrink-0 flex flex-row gap-[6px] justify-start items-center"
+                    >
+                      <svg
+                        data-pencil-name="状态图标"
+                        data-icon-name="check-circle"
+                        data-icon-set="phosphor"
+                        viewBox="0 0 14 14"
+                        preserveAspectRatio="xMidYMid meet"
+                        xmlns="http://www.w3.org/2000/svg"
+                        class="box-border w-[14px] shrink-0 h-[14px]"
+                      >
+                        <path
+                          d="M9.73438 5.35938q0.10938 0.16406 0.10937 0.35546 0 0.19141-0.10937 0.30079l-3.22657 3.0625q-0.10938 0.10938-0.30078 0.10937-0.19141 0-0.30078-0.10937l-1.58594-1.53125q-0.21875-0.16406-0.16406-0.4375 0.05469-0.27344 0.30078-0.32813 0.24609-0.05469 0.41016 0.10938l1.3125 1.25781 2.95312-2.78906q0.10938-0.10938 0.30078-0.10938 0.19141 0 0.30078 0.16406l0-0.05468z m2.95312 1.64062q0 1.53125-0.76563 2.84375-0.76563 1.3125-2.07812 2.07813-1.3125 0.76563-2.84375 0.76562-1.53125 0-2.84375-0.76562-1.3125-0.76563-2.07813-2.07813-0.76563-1.3125-0.76562-2.84375 0-1.53125 0.76562-2.84375 0.76563-1.3125 2.07813-2.07813 1.3125-0.76563 2.84375-0.76562 1.53125 0 2.84375 0.76562 1.3125 0.76563 2.07813 2.07813 0.76563 1.3125 0.76562 2.84375z m-0.875 0q0-1.3125-0.65625-2.40625-0.65625-1.09375-1.75-1.75-1.09375-0.65625-2.40625-0.65625-1.3125 0-2.40625 0.65625-1.09375 0.65625-1.75 1.75-0.65625 1.09375-0.65625 2.40625 0 1.3125 0.65625 2.40625 0.65625 1.09375 1.75 1.75 1.09375 0.65625 2.40625 0.65625 1.3125 0 2.40625-0.65625 1.09375-0.65625 1.75-1.75 0.65625-1.09375 0.65625-2.40625z"
+                          fill="#71D790"
+                        ></path>
+                      </svg>
+                      <div
+                        data-pencil-name="状态字"
+                        class="text-[13px]/[18px] box-border text-[#71D790] font-['Noto_Sans_SC',system-ui,sans-serif] font-bold text-left [white-space:nowrap]"
+                      >
+                        正常
+                      </div>
+                      <div
+                        data-pencil-name="时间"
+                        class="text-[13px]/[18px] box-border text-[#94999E] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                      >
+                        5 分钟前测速
+                      </div>
+                    </div>
+                  </div>
+                  <div
+                    data-pencil-name="操作"
+                    class="box-border w-fit shrink-0 h-fit flex flex-row gap-[8px] p-[0px_0px_0px_8px] justify-start items-center"
+                  >
+                    <div
+                      data-pencil-name="测速"
+                      class="box-border w-fit shrink-0 h-[32px] flex flex-row gap-[6px] p-[0px_12px] justify-center items-center bg-[#1A1E24] [outline:1px_solid_#6F757B] [outline-offset:-0.5px] rounded-[4px]"
+                    >
+                      <svg
+                        data-pencil-name="图标"
+                        data-icon-name="gauge"
+                        data-icon-set="phosphor"
+                        viewBox="0 0 14 14"
+                        preserveAspectRatio="xMidYMid meet"
+                        xmlns="http://www.w3.org/2000/svg"
+                        class="box-border w-[16px] shrink-0 h-[16px]"
+                      >
+                        <path
+                          d="M11.32031 4.42969q-0.875-0.875-1.99609-1.33985-1.12109-0.46484-2.32422-0.46484-1.36719 0-2.57031 0.57422-1.20313 0.57422-2.07813 1.58594-0.875 1.01172-1.20312 2.26953l-0.05469 0.21875q-0.21875 0.76563-0.21875 1.53125l0 1.25781q0 0.38281 0.24609 0.62891 0.24609 0.24609 0.62891 0.24609l10.5 0q0.38281 0 0.62891-0.24609 0.24609-0.24609 0.24609-0.62891l0-1.3125q0-1.20313-0.46484-2.35156-0.46484-1.14844-1.33985-1.96875z m0.92969 5.63281l-5.6875 0 3.17188-4.15625q0.10938-0.16406 0.08203-0.32813-0.02734-0.16406-0.16407-0.27343-0.13672-0.10938-0.30078-0.08203-0.16406 0.02734-0.32812 0.13671l-3.55469 4.70313-3.71875 0 0-1.25781q0-0.49219 0.10938-0.98438l1.36718 0.32813q0.16406 0 0.27344-0.10938 0.10938-0.10938 0.13672-0.27343 0.02734-0.16406-0.05469-0.30079-0.08203-0.13672-0.24609-0.13671l-1.25781-0.32813q0.54688-1.47656 1.75-2.40625 1.20313-0.92969 2.73437-1.09375l0 1.3125q0 0.16406 0.13672 0.30078 0.13672 0.13672 0.30078 0.13672 0.16406 0 0.30078-0.13672 0.13672-0.13672 0.13672-0.30078l0-1.3125q0.92969 0.10938 1.77734 0.49219 0.84766 0.38281 1.50391 1.03906 0.82031 0.82031 1.20313 1.96875l-1.20313 0.32813q-0.21875 0-0.30078 0.13671-0.08203 0.13672-0.05469 0.30079 0.02734 0.16406 0.13672 0.27343 0.10938 0.10938 0.32813 0.10938l1.36718-0.32813q0.05469 0.4375 0.05469 0.92969l0 1.3125z"
+                          fill="#F5F7F9"
+                        ></path>
+                      </svg>
+                      <div
+                        data-pencil-name="文字"
+                        class="text-[14px]/[20px] box-border text-[#F5F7F9] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                      >
+                        测速
+                      </div>
+                    </div>
+                    <div
+                      data-pencil-name="编辑"
+                      class="box-border w-fit shrink-0 h-[32px] flex flex-row gap-[6px] p-[0px_12px] justify-center items-center bg-[#1A1E24] [outline:1px_solid_#6F757B] [outline-offset:-0.5px] rounded-[4px]"
+                    >
+                      <svg
+                        data-pencil-name="图标"
+                        data-icon-name="pencil-simple"
+                        data-icon-set="phosphor"
+                        viewBox="0 0 14 14"
+                        preserveAspectRatio="xMidYMid meet"
+                        xmlns="http://www.w3.org/2000/svg"
+                        class="box-border w-[16px] shrink-0 h-[16px]"
+                      >
+                        <path
+                          d="M12.25 4.21094l-2.46094-2.46094q-0.21875-0.27344-0.60156-0.27344-0.38281 0-0.60156 0.27344l-6.5625 6.5625q-0.27344 0.27344-0.27344 0.60156l0 2.46094q0 0.38281 0.24609 0.62891 0.24609 0.24609 0.62891 0.24609l2.46094 0q0.32813 0 0.60156-0.27344l6.5625-6.5625q0.27344-0.21875 0.27344-0.60156 0-0.38281-0.27344-0.60156z m-7.16406 7.16406l-2.46094 0 0-2.46094 4.8125-4.8125 2.46094 2.46094-4.8125 4.8125z m5.41406-5.41406l-2.46094-2.46094 1.14844-1.14844 2.46094 2.46094-1.14844 1.14844z"
+                          fill="#F5F7F9"
+                        ></path>
+                      </svg>
+                      <div
+                        data-pencil-name="文字"
+                        class="text-[14px]/[20px] box-border text-[#F5F7F9] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                      >
+                        编辑
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="路径条"
+                  class="box-border w-full h-fit shrink-0 flex flex-row gap-0 justify-start items-start"
+                >
+                  <div
+                    data-pencil-name="站 · Claude Code"
+                    class="box-border [flex:1_1_0] h-fit flex flex-col gap-[10px] justify-start items-start"
+                  >
+                    <div
+                      data-pencil-name="轨"
+                      class="box-border w-full h-[12px] shrink-0 flex flex-row gap-0 justify-start items-center"
+                    >
+                      <div
+                        data-pencil-name="点"
+                        class="box-border w-[12px] shrink-0 h-[12px] bg-[#1A1E24] [border:2px_solid_#357B7F] rounded-full"
+                      ></div>
+                      <div
+                        data-pencil-name="线"
+                        class="box-border [flex:1_1_0] h-[2px] bg-[#357B7F]"
+                      ></div>
+                    </div>
+                    <div
+                      data-pencil-name="标注"
+                      class="box-border w-full h-fit shrink-0 flex flex-col gap-[2px] p-[0px_12px_0px_0px] justify-start items-start"
+                    >
+                      <div
+                        data-pencil-name="站名"
+                        class="text-[13px]/[18px] box-border text-[#F5F7F9] font-[Overpass,system-ui,sans-serif] font-bold text-left [white-space:nowrap]"
+                      >
+                        Claude Code
+                      </div>
+                      <div
+                        data-pencil-name="站注"
+                        class="text-[13px]/[18px] box-border w-full text-[#94999E] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left"
+                      >
+                        2.1.9 · 直连，无本地代理
+                      </div>
+                    </div>
+                  </div>
+                  <div
+                    data-pencil-name="站 · open.bigmodel.cn"
+                    class="box-border [flex:1_1_0] h-fit flex flex-col gap-[10px] justify-start items-start"
+                  >
+                    <div
+                      data-pencil-name="轨"
+                      class="box-border w-full h-[12px] shrink-0 flex flex-row gap-0 justify-start items-center"
+                    >
+                      <div
+                        data-pencil-name="点"
+                        class="box-border w-[12px] shrink-0 h-[12px] bg-[#1A1E24] [border:2px_solid_#357B7F] rounded-full"
+                      ></div>
+                      <div
+                        data-pencil-name="线"
+                        class="box-border [flex:1_1_0] h-[2px] bg-[#357B7F]"
+                      ></div>
+                    </div>
+                    <div
+                      data-pencil-name="标注"
+                      class="box-border w-full h-fit shrink-0 flex flex-col gap-[2px] p-[0px_12px_0px_0px] justify-start items-start"
+                    >
+                      <div
+                        data-pencil-name="站名"
+                        class="text-[13px]/[18px] box-border text-[#F5F7F9] font-['Overpass_Mono',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                      >
+                        open.bigmodel.cn
+                      </div>
+                      <div
+                        data-pencil-name="站注"
+                        class="text-[13px]/[18px] box-border w-full text-[#94999E] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left"
+                      >
+                        Anthropic 协议 · HTTP 200
+                      </div>
+                    </div>
+                  </div>
+                  <div
+                    data-pencil-name="站 · glm-4.6"
+                    class="box-border [flex:1_1_0] h-fit flex flex-col gap-[10px] justify-start items-start"
+                  >
+                    <div
+                      data-pencil-name="轨"
+                      class="box-border w-full h-[12px] shrink-0 flex flex-row gap-0 justify-start items-center"
+                    >
+                      <div
+                        data-pencil-name="点"
+                        class="box-border w-[12px] shrink-0 h-[12px] bg-[#357B7F] [border:2px_solid_#357B7F] rounded-full"
+                      ></div>
+                    </div>
+                    <div
+                      data-pencil-name="标注"
+                      class="box-border w-full h-fit shrink-0 flex flex-col gap-[2px] p-[0px_12px_0px_0px] justify-start items-start"
+                    >
+                      <div
+                        data-pencil-name="站名"
+                        class="text-[13px]/[18px] box-border text-[#F5F7F9] font-['Overpass_Mono',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                      >
+                        glm-4.6
+                      </div>
+                      <div
+                        data-pencil-name="站注"
+                        class="text-[13px]/[18px] box-border w-full text-[#94999E] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left"
+                      >
+                        默认模型 · 200K 上下文
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              data-pencil-name="线路列表"
+              class="box-border w-full h-fit shrink-0 flex flex-col gap-0 justify-start items-start"
+            >
+              <div
+                data-pencil-name="表头"
+                class="box-border w-full h-[28px] shrink-0 flex flex-row gap-[12px] p-[0px_12px_0px_8px] justify-start items-center"
+              >
+                <div
+                  data-pencil-name="占位"
+                  class="box-border w-[3px] shrink-0 h-[1px] flex flex-row gap-0 justify-start items-start"
+                ></div>
+                <div
+                  data-pencil-name="占位 · 徽标"
+                  class="box-border w-[24px] shrink-0 h-[1px] flex flex-row gap-0 justify-start items-start"
+                ></div>
+                <div
+                  data-pencil-name="线路"
+                  class="box-border [flex:1_1_0] h-fit flex flex-row gap-0 justify-start items-start"
+                >
+                  <div
+                    data-pencil-name="文字"
+                    class="text-[12px]/[17px] box-border text-[#646970] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                  >
+                    线路
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="认证"
+                  class="box-border w-[96px] shrink-0 h-fit flex flex-row gap-0 justify-start items-start"
+                >
+                  <div
+                    data-pencil-name="文字"
+                    class="text-[12px]/[17px] box-border text-[#646970] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                  >
+                    认证
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="协议"
+                  class="box-border w-[108px] shrink-0 h-fit flex flex-row gap-0 justify-start items-start"
+                >
+                  <div
+                    data-pencil-name="文字"
+                    class="text-[12px]/[17px] box-border text-[#646970] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                  >
+                    协议
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="模型"
+                  class="box-border w-[138px] shrink-0 h-fit flex flex-row gap-0 justify-start items-start"
+                >
+                  <div
+                    data-pencil-name="文字"
+                    class="text-[12px]/[17px] box-border text-[#646970] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                  >
+                    模型
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="延迟"
+                  class="box-border w-[90px] shrink-0 h-fit flex flex-row gap-0 justify-end items-start"
+                >
+                  <div
+                    data-pencil-name="文字"
+                    class="text-[12px]/[17px] box-border text-[#646970] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                  >
+                    延迟
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="占位 · 操作"
+                  class="box-border w-[136px] shrink-0 h-[1px] flex flex-row gap-0 justify-start items-start"
+                ></div>
+              </div>
+              <div
+                data-pencil-name="分组 · 官方登录"
+                class="box-border w-full h-[28px] shrink-0 flex flex-row gap-[8px] p-[0px_4px_0px_12px] justify-start items-center"
+              >
+                <div
+                  data-pencil-name="组名"
+                  class="text-[13px]/[18px] box-border text-[#484E55] font-['Noto_Sans_SC',system-ui,sans-serif] font-bold text-left [white-space:nowrap]"
+                >
+                  官方登录
+                </div>
+                <div
+                  data-pencil-name="数量"
+                  class="text-[13px]/[18px] box-border text-[#646970] font-[Overpass,system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                >
+                  1
+                </div>
+                <div
+                  data-pencil-name="弹性"
+                  class="box-border [flex:1_1_0] h-[1px] flex flex-row gap-0 justify-start items-start"
+                ></div>
+              </div>
+              <div
+                data-pencil-name="线路 · Claude 官方"
+                class="box-border w-full h-[42px] shrink-0 flex flex-row gap-[12px] p-[0px_12px_0px_8px] justify-start items-center rounded-[4px]"
+              >
+                <div
+                  data-pencil-name="标记"
+                  class="box-border w-[3px] shrink-0 h-[20px] opacity-[0] bg-[#537197] rounded-[2px]"
+                ></div>
+                <div
+                  data-pencil-name="徽标"
+                  class="box-border w-[24px] shrink-0 h-[24px] flex flex-row gap-0 justify-center items-center bg-[#1A1E24] rounded-[999px]"
+                >
+                  <div
+                    data-pencil-name="简称"
+                    class="text-[12px]/[17px] box-border text-[#FDFDFE] font-['Noto_Sans_SC',system-ui,sans-serif] font-bold text-left [white-space:nowrap]"
+                  >
+                    官
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="名称区"
+                  class="box-border [flex:1_1_0] h-fit flex flex-col gap-[2px] justify-start items-start overflow-hidden"
+                >
+                  <div
+                    data-pencil-name="名称"
+                    class="text-[15px]/[21px] box-border text-[#12161C] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                  >
+                    Claude 官方 · 订阅
+                  </div>
+                  <div
+                    data-pencil-name="副行"
+                    class="text-[13px]/[18px] box-border text-[#646970] font-[Overpass,system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                  >
+                    li***@gmail.com · Max
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="认证"
+                  class="box-border w-[96px] shrink-0 h-fit flex flex-row gap-0 justify-start items-start overflow-hidden"
+                >
+                  <div
+                    data-pencil-name="认证值"
+                    class="text-[13px]/[18px] box-border text-[#484E55] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                  >
+                    Claude 登录
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="协议"
+                  class="box-border w-[108px] shrink-0 h-fit flex flex-row gap-0 justify-start items-start overflow-hidden"
+                >
+                  <div
+                    data-pencil-name="协议值"
+                    class="text-[13px]/[18px] box-border text-[#484E55] font-[Overpass,system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                  >
+                    Anthropic
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="模型"
+                  class="box-border w-[138px] shrink-0 h-fit flex flex-row gap-0 p-[4px_0px_0px_0px] justify-start items-start overflow-hidden"
+                >
+                  <div
+                    data-pencil-name="模型值"
+                    class="text-[13px]/[18px] box-border text-[#484E55] font-['Overpass_Mono',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                  >
+                    claude-sonnet-4-6
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="延迟格"
+                  class="box-border w-[90px] shrink-0 h-fit flex flex-row gap-[4px] justify-end items-center"
+                >
+                  <div
+                    data-pencil-name="延迟"
+                    class="box-border w-fit shrink-0 h-[20px] flex flex-row gap-[6px] justify-start items-center"
+                  >
+                    <div
+                      data-pencil-name="值"
+                      class="text-[13px]/[18px] box-border text-[#12161C] font-[Overpass,system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                    >
+                      180 ms
+                    </div>
+                    <div
+                      data-pencil-name="等级"
+                      class="text-[13px]/[18px] box-border text-[#05773B] font-['Noto_Sans_SC',system-ui,sans-serif] font-bold text-left [white-space:nowrap]"
+                    >
+                      快
+                    </div>
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="操作"
+                  class="box-border w-[136px] shrink-0 h-fit flex flex-row gap-[4px] justify-end items-center"
+                >
+                  <div
+                    data-pencil-name="切换"
+                    class="box-border w-fit shrink-0 h-[28px] flex flex-row gap-[6px] p-[0px_8px] justify-center items-center bg-[#00000000] rounded-[4px]"
+                  >
+                    <div
+                      data-pencil-name="文字"
+                      class="text-[13px]/[18px] box-border text-[#12161C] font-['Noto_Sans_SC',system-ui,sans-serif] font-bold text-left [white-space:nowrap]"
+                    >
+                      切换
+                    </div>
+                  </div>
+                  <div
+                    data-pencil-name="编辑"
+                    class="box-border w-[28px] shrink-0 h-[28px] flex flex-row gap-0 justify-center items-center rounded-[4px]"
+                  >
+                    <svg
+                      data-pencil-name="图标"
+                      data-icon-name="pencil-simple"
+                      data-icon-set="phosphor"
+                      viewBox="0 0 14 14"
+                      preserveAspectRatio="xMidYMid meet"
+                      xmlns="http://www.w3.org/2000/svg"
+                      class="box-border w-[16px] shrink-0 h-[16px]"
+                    >
+                      <path
+                        d="M12.25 4.21094l-2.46094-2.46094q-0.21875-0.27344-0.60156-0.27344-0.38281 0-0.60156 0.27344l-6.5625 6.5625q-0.27344 0.27344-0.27344 0.60156l0 2.46094q0 0.38281 0.24609 0.62891 0.24609 0.24609 0.62891 0.24609l2.46094 0q0.32813 0 0.60156-0.27344l6.5625-6.5625q0.27344-0.21875 0.27344-0.60156 0-0.38281-0.27344-0.60156z m-7.16406 7.16406l-2.46094 0 0-2.46094 4.8125-4.8125 2.46094 2.46094-4.8125 4.8125z m5.41406-5.41406l-2.46094-2.46094 1.14844-1.14844 2.46094 2.46094-1.14844 1.14844z"
+                        fill="#484E55"
+                      ></path>
+                    </svg>
+                  </div>
+                  <div
+                    data-pencil-name="更多"
+                    class="box-border w-[28px] shrink-0 h-[28px] flex flex-row gap-0 justify-center items-center rounded-[4px]"
+                  >
+                    <svg
+                      data-pencil-name="图标"
+                      data-icon-name="dots-three"
+                      data-icon-set="phosphor"
+                      viewBox="0 0 14 14"
+                      preserveAspectRatio="xMidYMid meet"
+                      xmlns="http://www.w3.org/2000/svg"
+                      class="box-border w-[18px] shrink-0 h-[18px]"
+                    >
+                      <path
+                        d="M4.15625 7q0 0.27344-0.19141 0.46484-0.19141 0.19141-0.46484 0.19141-0.27344 0-0.46484-0.19141-0.19141-0.19141-0.19141-0.46484 0-0.27344 0.19141-0.46484 0.19141-0.19141 0.46484-0.19141 0.27344 0 0.46484 0.19141 0.19141 0.19141 0.19141 0.46484z m6.34375-0.65625q-0.27344 0-0.46484 0.19141-0.19141 0.19141-0.19141 0.46484 0 0.27344 0.19141 0.46484 0.19141 0.19141 0.46484 0.19141 0.27344 0 0.46484-0.19141 0.19141-0.19141 0.19141-0.46484 0-0.27344-0.19141-0.46484-0.19141-0.19141-0.46484-0.19141z m-3.5 0q-0.27344 0-0.46484 0.19141-0.19141 0.19141-0.19141 0.46484 0 0.27344 0.19141 0.46484 0.19141 0.19141 0.46484 0.19141 0.27344 0 0.46484-0.19141 0.19141-0.19141 0.19141-0.46484 0-0.27344-0.19141-0.46484-0.19141-0.19141-0.46484-0.19141z"
+                        fill="#484E55"
+                      ></path>
+                    </svg>
+                  </div>
+                </div>
+              </div>
+              <div
+                data-pencil-name="分组 · 第三方线路"
+                class="box-border w-full h-[36px] shrink-0 flex flex-row gap-[8px] p-[8px_4px_0px_12px] justify-start items-center"
+              >
+                <div
+                  data-pencil-name="组名"
+                  class="text-[13px]/[18px] box-border text-[#484E55] font-['Noto_Sans_SC',system-ui,sans-serif] font-bold text-left [white-space:nowrap]"
+                >
+                  第三方线路
+                </div>
+                <div
+                  data-pencil-name="数量"
+                  class="text-[13px]/[18px] box-border text-[#646970] font-[Overpass,system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                >
+                  3
+                </div>
+                <div
+                  data-pencil-name="弹性"
+                  class="box-border [flex:1_1_0] h-[1px] flex flex-row gap-0 justify-start items-start"
+                ></div>
+              </div>
+              <div
+                data-pencil-name="线路 · 智谱 GLM"
+                class="box-border w-full h-[42px] shrink-0 flex flex-row gap-[12px] p-[0px_12px_0px_8px] justify-start items-center bg-[#F2F4F6] rounded-[4px]"
+              >
+                <div
+                  data-pencil-name="标记"
+                  class="box-border w-[3px] shrink-0 h-[20px] bg-[#357B7F] rounded-[2px]"
+                ></div>
+                <div
+                  data-pencil-name="徽标"
+                  class="box-border w-[24px] shrink-0 h-[24px] flex flex-row gap-0 justify-center items-center bg-[#357B7F] rounded-[4px]"
+                >
+                  <div
+                    data-pencil-name="简称"
+                    class="text-[12px]/[17px] box-border text-[#FDFDFE] font-['Noto_Sans_SC',system-ui,sans-serif] font-bold text-left [white-space:nowrap]"
+                  >
+                    智
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="名称区"
+                  class="box-border [flex:1_1_0] h-fit flex flex-col gap-[2px] justify-start items-start overflow-hidden"
+                >
+                  <div
+                    data-pencil-name="名称"
+                    class="text-[15px]/[21px] box-border text-[#12161C] font-['Noto_Sans_SC',system-ui,sans-serif] font-bold text-left [white-space:nowrap]"
+                  >
+                    智谱 GLM
+                  </div>
+                  <div
+                    data-pencil-name="副行"
+                    class="text-[13px]/[18px] box-border text-[#646970] font-['Overpass_Mono',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                  >
+                    open.bigmodel.cn
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="认证"
+                  class="box-border w-[96px] shrink-0 h-fit flex flex-row gap-0 justify-start items-start overflow-hidden"
+                >
+                  <div
+                    data-pencil-name="认证值"
+                    class="text-[13px]/[18px] box-border text-[#484E55] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                  >
+                    API 密钥
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="协议"
+                  class="box-border w-[108px] shrink-0 h-fit flex flex-row gap-0 justify-start items-start overflow-hidden"
+                >
+                  <div
+                    data-pencil-name="协议值"
+                    class="text-[13px]/[18px] box-border text-[#484E55] font-[Overpass,system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                  >
+                    Anthropic
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="模型"
+                  class="box-border w-[138px] shrink-0 h-fit flex flex-row gap-0 p-[4px_0px_0px_0px] justify-start items-start overflow-hidden"
+                >
+                  <div
+                    data-pencil-name="模型值"
+                    class="text-[13px]/[18px] box-border text-[#484E55] font-['Overpass_Mono',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                  >
+                    glm-4.6
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="延迟格"
+                  class="box-border w-[90px] shrink-0 h-fit flex flex-row gap-[4px] justify-end items-center"
+                >
+                  <div
+                    data-pencil-name="延迟"
+                    class="box-border w-fit shrink-0 h-[20px] flex flex-row gap-[6px] justify-start items-center"
+                  >
+                    <div
+                      data-pencil-name="值"
+                      class="text-[13px]/[18px] box-border text-[#12161C] font-[Overpass,system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                    >
+                      210 ms
+                    </div>
+                    <div
+                      data-pencil-name="等级"
+                      class="text-[13px]/[18px] box-border text-[#05773B] font-['Noto_Sans_SC',system-ui,sans-serif] font-bold text-left [white-space:nowrap]"
+                    >
+                      快
+                    </div>
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="操作"
+                  class="box-border w-[136px] shrink-0 h-fit flex flex-row gap-[4px] justify-end items-center"
+                >
+                  <div
+                    data-pencil-name="当前"
+                    class="box-border w-fit shrink-0 h-[20px] flex flex-row gap-[4px] p-[0px_8px] justify-start items-center bg-[#12161C] rounded-[999px]"
+                  >
+                    <div
+                      data-pencil-name="文字"
+                      class="text-[12px]/[17px] box-border text-[#FDFDFE] font-['Noto_Sans_SC',system-ui,sans-serif] font-bold text-left [white-space:nowrap]"
+                    >
+                      当前
+                    </div>
+                  </div>
+                  <div
+                    data-pencil-name="编辑"
+                    class="box-border w-[28px] shrink-0 h-[28px] flex flex-row gap-0 justify-center items-center rounded-[4px]"
+                  >
+                    <svg
+                      data-pencil-name="图标"
+                      data-icon-name="pencil-simple"
+                      data-icon-set="phosphor"
+                      viewBox="0 0 14 14"
+                      preserveAspectRatio="xMidYMid meet"
+                      xmlns="http://www.w3.org/2000/svg"
+                      class="box-border w-[16px] shrink-0 h-[16px]"
+                    >
+                      <path
+                        d="M12.25 4.21094l-2.46094-2.46094q-0.21875-0.27344-0.60156-0.27344-0.38281 0-0.60156 0.27344l-6.5625 6.5625q-0.27344 0.27344-0.27344 0.60156l0 2.46094q0 0.38281 0.24609 0.62891 0.24609 0.24609 0.62891 0.24609l2.46094 0q0.32813 0 0.60156-0.27344l6.5625-6.5625q0.27344-0.21875 0.27344-0.60156 0-0.38281-0.27344-0.60156z m-7.16406 7.16406l-2.46094 0 0-2.46094 4.8125-4.8125 2.46094 2.46094-4.8125 4.8125z m5.41406-5.41406l-2.46094-2.46094 1.14844-1.14844 2.46094 2.46094-1.14844 1.14844z"
+                        fill="#484E55"
+                      ></path>
+                    </svg>
+                  </div>
+                  <div
+                    data-pencil-name="更多"
+                    class="box-border w-[28px] shrink-0 h-[28px] flex flex-row gap-0 justify-center items-center rounded-[4px]"
+                  >
+                    <svg
+                      data-pencil-name="图标"
+                      data-icon-name="dots-three"
+                      data-icon-set="phosphor"
+                      viewBox="0 0 14 14"
+                      preserveAspectRatio="xMidYMid meet"
+                      xmlns="http://www.w3.org/2000/svg"
+                      class="box-border w-[18px] shrink-0 h-[18px]"
+                    >
+                      <path
+                        d="M4.15625 7q0 0.27344-0.19141 0.46484-0.19141 0.19141-0.46484 0.19141-0.27344 0-0.46484-0.19141-0.19141-0.19141-0.19141-0.46484 0-0.27344 0.19141-0.46484 0.19141-0.19141 0.46484-0.19141 0.27344 0 0.46484 0.19141 0.19141 0.19141 0.19141 0.46484z m6.34375-0.65625q-0.27344 0-0.46484 0.19141-0.19141 0.19141-0.19141 0.46484 0 0.27344 0.19141 0.46484 0.19141 0.19141 0.46484 0.19141 0.27344 0 0.46484-0.19141 0.19141-0.19141 0.19141-0.46484 0-0.27344-0.19141-0.46484-0.19141-0.19141-0.46484-0.19141z m-3.5 0q-0.27344 0-0.46484 0.19141-0.19141 0.19141-0.19141 0.46484 0 0.27344 0.19141 0.46484 0.19141 0.19141 0.46484 0.19141 0.27344 0 0.46484-0.19141 0.19141-0.19141 0.19141-0.46484 0-0.27344-0.19141-0.46484-0.19141-0.19141-0.46484-0.19141z"
+                        fill="#484E55"
+                      ></path>
+                    </svg>
+                  </div>
+                </div>
+              </div>
+              <div
+                data-pencil-name="线路 · DeepSeek"
+                class="box-border w-full h-[42px] shrink-0 flex flex-row gap-[12px] p-[0px_12px_0px_8px] justify-start items-center rounded-[4px]"
+              >
+                <div
+                  data-pencil-name="标记"
+                  class="box-border w-[3px] shrink-0 h-[20px] opacity-[0] bg-[#537197] rounded-[2px]"
+                ></div>
+                <div
+                  data-pencil-name="徽标"
+                  class="box-border w-[24px] shrink-0 h-[24px] flex flex-row gap-0 justify-center items-center bg-[#537197] rounded-[4px]"
+                >
+                  <div
+                    data-pencil-name="简称"
+                    class="text-[12px]/[17px] box-border text-[#FDFDFE] font-[Overpass,system-ui,sans-serif] font-bold text-left [white-space:nowrap]"
+                  >
+                    DS
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="名称区"
+                  class="box-border [flex:1_1_0] h-fit flex flex-col gap-[2px] justify-start items-start overflow-hidden"
+                >
+                  <div
+                    data-pencil-name="名称"
+                    class="text-[15px]/[21px] box-border text-[#12161C] font-[Overpass,system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                  >
+                    DeepSeek
+                  </div>
+                  <div
+                    data-pencil-name="副行"
+                    class="text-[13px]/[18px] box-border text-[#646970] font-['Overpass_Mono',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                  >
+                    api.deepseek.com
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="认证"
+                  class="box-border w-[96px] shrink-0 h-fit flex flex-row gap-0 justify-start items-start overflow-hidden"
+                >
+                  <div
+                    data-pencil-name="认证值"
+                    class="text-[13px]/[18px] box-border text-[#484E55] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                  >
+                    API 密钥
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="协议"
+                  class="box-border w-[108px] shrink-0 h-fit flex flex-row gap-0 justify-start items-start overflow-hidden"
+                >
+                  <div
+                    data-pencil-name="协议值"
+                    class="text-[13px]/[18px] box-border text-[#484E55] font-[Overpass,system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                  >
+                    Anthropic
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="模型"
+                  class="box-border w-[138px] shrink-0 h-fit flex flex-row gap-0 p-[4px_0px_0px_0px] justify-start items-start overflow-hidden"
+                >
+                  <div
+                    data-pencil-name="模型值"
+                    class="text-[13px]/[18px] box-border text-[#484E55] font-['Overpass_Mono',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                  >
+                    deepseek-v4-pro
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="延迟格"
+                  class="box-border w-[90px] shrink-0 h-fit flex flex-row gap-[4px] justify-end items-center"
+                >
+                  <div
+                    data-pencil-name="延迟"
+                    class="box-border w-fit shrink-0 h-[20px] flex flex-row gap-[6px] justify-start items-center"
+                  >
+                    <div
+                      data-pencil-name="值"
+                      class="text-[13px]/[18px] box-border text-[#12161C] font-[Overpass,system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                    >
+                      260 ms
+                    </div>
+                    <div
+                      data-pencil-name="等级"
+                      class="text-[13px]/[18px] box-border text-[#05773B] font-['Noto_Sans_SC',system-ui,sans-serif] font-bold text-left [white-space:nowrap]"
+                    >
+                      快
+                    </div>
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="操作"
+                  class="box-border w-[136px] shrink-0 h-fit flex flex-row gap-[4px] justify-end items-center"
+                >
+                  <div
+                    data-pencil-name="切换"
+                    class="box-border w-fit shrink-0 h-[28px] flex flex-row gap-[6px] p-[0px_8px] justify-center items-center bg-[#00000000] rounded-[4px]"
+                  >
+                    <div
+                      data-pencil-name="文字"
+                      class="text-[13px]/[18px] box-border text-[#12161C] font-['Noto_Sans_SC',system-ui,sans-serif] font-bold text-left [white-space:nowrap]"
+                    >
+                      切换
+                    </div>
+                  </div>
+                  <div
+                    data-pencil-name="编辑"
+                    class="box-border w-[28px] shrink-0 h-[28px] flex flex-row gap-0 justify-center items-center rounded-[4px]"
+                  >
+                    <svg
+                      data-pencil-name="图标"
+                      data-icon-name="pencil-simple"
+                      data-icon-set="phosphor"
+                      viewBox="0 0 14 14"
+                      preserveAspectRatio="xMidYMid meet"
+                      xmlns="http://www.w3.org/2000/svg"
+                      class="box-border w-[16px] shrink-0 h-[16px]"
+                    >
+                      <path
+                        d="M12.25 4.21094l-2.46094-2.46094q-0.21875-0.27344-0.60156-0.27344-0.38281 0-0.60156 0.27344l-6.5625 6.5625q-0.27344 0.27344-0.27344 0.60156l0 2.46094q0 0.38281 0.24609 0.62891 0.24609 0.24609 0.62891 0.24609l2.46094 0q0.32813 0 0.60156-0.27344l6.5625-6.5625q0.27344-0.21875 0.27344-0.60156 0-0.38281-0.27344-0.60156z m-7.16406 7.16406l-2.46094 0 0-2.46094 4.8125-4.8125 2.46094 2.46094-4.8125 4.8125z m5.41406-5.41406l-2.46094-2.46094 1.14844-1.14844 2.46094 2.46094-1.14844 1.14844z"
+                        fill="#484E55"
+                      ></path>
+                    </svg>
+                  </div>
+                  <div
+                    data-pencil-name="更多"
+                    class="box-border w-[28px] shrink-0 h-[28px] flex flex-row gap-0 justify-center items-center rounded-[4px]"
+                  >
+                    <svg
+                      data-pencil-name="图标"
+                      data-icon-name="dots-three"
+                      data-icon-set="phosphor"
+                      viewBox="0 0 14 14"
+                      preserveAspectRatio="xMidYMid meet"
+                      xmlns="http://www.w3.org/2000/svg"
+                      class="box-border w-[18px] shrink-0 h-[18px]"
+                    >
+                      <path
+                        d="M4.15625 7q0 0.27344-0.19141 0.46484-0.19141 0.19141-0.46484 0.19141-0.27344 0-0.46484-0.19141-0.19141-0.19141-0.19141-0.46484 0-0.27344 0.19141-0.46484 0.19141-0.19141 0.46484-0.19141 0.27344 0 0.46484 0.19141 0.19141 0.19141 0.19141 0.46484z m6.34375-0.65625q-0.27344 0-0.46484 0.19141-0.19141 0.19141-0.19141 0.46484 0 0.27344 0.19141 0.46484 0.19141 0.19141 0.46484 0.19141 0.27344 0 0.46484-0.19141 0.19141-0.19141 0.19141-0.46484 0-0.27344-0.19141-0.46484-0.19141-0.19141-0.46484-0.19141z m-3.5 0q-0.27344 0-0.46484 0.19141-0.19141 0.19141-0.19141 0.46484 0 0.27344 0.19141 0.46484 0.19141 0.19141 0.46484 0.19141 0.27344 0 0.46484-0.19141 0.19141-0.19141 0.19141-0.46484 0-0.27344-0.19141-0.46484-0.19141-0.19141-0.46484-0.19141z"
+                        fill="#484E55"
+                      ></path>
+                    </svg>
+                  </div>
+                </div>
+              </div>
+              <div
+                data-pencil-name="线路 · Kimi"
+                class="box-border w-full h-[42px] shrink-0 flex flex-row gap-[12px] p-[0px_12px_0px_8px] justify-start items-center rounded-[4px]"
+              >
+                <div
+                  data-pencil-name="标记"
+                  class="box-border w-[3px] shrink-0 h-[20px] opacity-[0] bg-[#537197] rounded-[2px]"
+                ></div>
+                <div
+                  data-pencil-name="徽标"
+                  class="box-border w-[24px] shrink-0 h-[24px] flex flex-row gap-0 justify-center items-center bg-[#776894] rounded-[4px]"
+                >
+                  <div
+                    data-pencil-name="简称"
+                    class="text-[12px]/[17px] box-border text-[#FDFDFE] font-[Overpass,system-ui,sans-serif] font-bold text-left [white-space:nowrap]"
+                  >
+                    Ki
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="名称区"
+                  class="box-border [flex:1_1_0] h-fit flex flex-col gap-[2px] justify-start items-start overflow-hidden"
+                >
+                  <div
+                    data-pencil-name="名称"
+                    class="text-[15px]/[21px] box-border text-[#12161C] font-[Overpass,system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                  >
+                    Kimi
+                  </div>
+                  <div
+                    data-pencil-name="副行"
+                    class="text-[13px]/[18px] box-border text-[#646970] font-['Overpass_Mono',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                  >
+                    api.moonshot.cn
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="认证"
+                  class="box-border w-[96px] shrink-0 h-fit flex flex-row gap-0 justify-start items-start overflow-hidden"
+                >
+                  <div
+                    data-pencil-name="认证值"
+                    class="text-[13px]/[18px] box-border text-[#484E55] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                  >
+                    API 密钥
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="协议"
+                  class="box-border w-[108px] shrink-0 h-fit flex flex-row gap-0 justify-start items-start overflow-hidden"
+                >
+                  <div
+                    data-pencil-name="协议值"
+                    class="text-[13px]/[18px] box-border text-[#484E55] font-[Overpass,system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                  >
+                    Anthropic
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="模型"
+                  class="box-border w-[138px] shrink-0 h-fit flex flex-row gap-0 p-[4px_0px_0px_0px] justify-start items-start overflow-hidden"
+                >
+                  <div
+                    data-pencil-name="模型值"
+                    class="text-[13px]/[18px] box-border text-[#484E55] font-['Overpass_Mono',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                  >
+                    kimi-k2.5
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="延迟格"
+                  class="box-border w-[90px] shrink-0 h-fit flex flex-row gap-[4px] justify-end items-center"
+                >
+                  <div
+                    data-pencil-name="延迟"
+                    class="box-border w-fit shrink-0 h-[20px] flex flex-row gap-[6px] justify-start items-center"
+                  >
+                    <div
+                      data-pencil-name="值"
+                      class="text-[13px]/[18px] box-border text-[#12161C] font-[Overpass,system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                    >
+                      340 ms
+                    </div>
+                    <div
+                      data-pencil-name="等级"
+                      class="text-[13px]/[18px] box-border text-[#646970] font-['Noto_Sans_SC',system-ui,sans-serif] font-bold text-left [white-space:nowrap]"
+                    >
+                      中
+                    </div>
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="操作"
+                  class="box-border w-[136px] shrink-0 h-fit flex flex-row gap-[4px] justify-end items-center"
+                >
+                  <div
+                    data-pencil-name="切换"
+                    class="box-border w-fit shrink-0 h-[28px] flex flex-row gap-[6px] p-[0px_8px] justify-center items-center bg-[#00000000] rounded-[4px]"
+                  >
+                    <div
+                      data-pencil-name="文字"
+                      class="text-[13px]/[18px] box-border text-[#12161C] font-['Noto_Sans_SC',system-ui,sans-serif] font-bold text-left [white-space:nowrap]"
+                    >
+                      切换
+                    </div>
+                  </div>
+                  <div
+                    data-pencil-name="编辑"
+                    class="box-border w-[28px] shrink-0 h-[28px] flex flex-row gap-0 justify-center items-center rounded-[4px]"
+                  >
+                    <svg
+                      data-pencil-name="图标"
+                      data-icon-name="pencil-simple"
+                      data-icon-set="phosphor"
+                      viewBox="0 0 14 14"
+                      preserveAspectRatio="xMidYMid meet"
+                      xmlns="http://www.w3.org/2000/svg"
+                      class="box-border w-[16px] shrink-0 h-[16px]"
+                    >
+                      <path
+                        d="M12.25 4.21094l-2.46094-2.46094q-0.21875-0.27344-0.60156-0.27344-0.38281 0-0.60156 0.27344l-6.5625 6.5625q-0.27344 0.27344-0.27344 0.60156l0 2.46094q0 0.38281 0.24609 0.62891 0.24609 0.24609 0.62891 0.24609l2.46094 0q0.32813 0 0.60156-0.27344l6.5625-6.5625q0.27344-0.21875 0.27344-0.60156 0-0.38281-0.27344-0.60156z m-7.16406 7.16406l-2.46094 0 0-2.46094 4.8125-4.8125 2.46094 2.46094-4.8125 4.8125z m5.41406-5.41406l-2.46094-2.46094 1.14844-1.14844 2.46094 2.46094-1.14844 1.14844z"
+                        fill="#484E55"
+                      ></path>
+                    </svg>
+                  </div>
+                  <div
+                    data-pencil-name="更多"
+                    class="box-border w-[28px] shrink-0 h-[28px] flex flex-row gap-0 justify-center items-center rounded-[4px]"
+                  >
+                    <svg
+                      data-pencil-name="图标"
+                      data-icon-name="dots-three"
+                      data-icon-set="phosphor"
+                      viewBox="0 0 14 14"
+                      preserveAspectRatio="xMidYMid meet"
+                      xmlns="http://www.w3.org/2000/svg"
+                      class="box-border w-[18px] shrink-0 h-[18px]"
+                    >
+                      <path
+                        d="M4.15625 7q0 0.27344-0.19141 0.46484-0.19141 0.19141-0.46484 0.19141-0.27344 0-0.46484-0.19141-0.19141-0.19141-0.19141-0.46484 0-0.27344 0.19141-0.46484 0.19141-0.19141 0.46484-0.19141 0.27344 0 0.46484 0.19141 0.19141 0.19141 0.19141 0.46484z m6.34375-0.65625q-0.27344 0-0.46484 0.19141-0.19141 0.19141-0.19141 0.46484 0 0.27344 0.19141 0.46484 0.19141 0.19141 0.46484 0.19141 0.27344 0 0.46484-0.19141 0.19141-0.19141 0.19141-0.46484 0-0.27344-0.19141-0.46484-0.19141-0.19141-0.46484-0.19141z m-3.5 0q-0.27344 0-0.46484 0.19141-0.19141 0.19141-0.19141 0.46484 0 0.27344 0.19141 0.46484 0.19141 0.19141 0.46484 0.19141 0.27344 0 0.46484-0.19141 0.19141-0.19141 0.19141-0.46484 0-0.27344-0.19141-0.46484-0.19141-0.19141-0.46484-0.19141z"
+                        fill="#484E55"
+                      ></path>
+                    </svg>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              data-pencil-name="模型映射"
+              class="box-border w-full h-fit shrink-0 flex flex-col gap-[6px] p-[4px_0px_0px_0px] justify-start items-start"
+            >
+              <div
+                data-pencil-name="标题行"
+                class="box-border w-full h-fit shrink-0 flex flex-row gap-[8px] justify-start items-center"
+              >
+                <div
+                  data-pencil-name="标题"
+                  class="text-[15px]/[21px] box-border text-[#12161C] font-['Noto_Sans_SC',system-ui,sans-serif] font-bold text-left [white-space:nowrap]"
+                >
+                  模型映射
+                </div>
+                <div
+                  data-pencil-name="说明"
+                  class="text-[13px]/[18px] box-border [flex:1_1_0] text-[#646970] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left"
+                >
+                  当前线路 智谱 GLM · 写入 settings.json 的 env
+                </div>
+                <div
+                  data-pencil-name="编辑映射"
+                  class="box-border w-fit shrink-0 h-[28px] flex flex-row gap-[6px] p-[0px_8px] justify-center items-center rounded-[4px]"
+                >
+                  <svg
+                    data-pencil-name="图标"
+                    data-icon-name="pencil-simple"
+                    data-icon-set="phosphor"
+                    viewBox="0 0 14 14"
+                    preserveAspectRatio="xMidYMid meet"
+                    xmlns="http://www.w3.org/2000/svg"
+                    class="box-border w-[16px] shrink-0 h-[16px]"
+                  >
+                    <path
+                      d="M12.25 4.21094l-2.46094-2.46094q-0.21875-0.27344-0.60156-0.27344-0.38281 0-0.60156 0.27344l-6.5625 6.5625q-0.27344 0.27344-0.27344 0.60156l0 2.46094q0 0.38281 0.24609 0.62891 0.24609 0.24609 0.62891 0.24609l2.46094 0q0.32813 0 0.60156-0.27344l6.5625-6.5625q0.27344-0.21875 0.27344-0.60156 0-0.38281-0.27344-0.60156z m-7.16406 7.16406l-2.46094 0 0-2.46094 4.8125-4.8125 2.46094 2.46094-4.8125 4.8125z m5.41406-5.41406l-2.46094-2.46094 1.14844-1.14844 2.46094 2.46094-1.14844 1.14844z"
+                      fill="#12161C"
+                    ></path>
+                  </svg>
+                  <div
+                    data-pencil-name="文字"
+                    class="text-[13px]/[18px] box-border text-[#12161C] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                  >
+                    编辑
+                  </div>
+                </div>
+              </div>
+              <div
+                data-pencil-name="映射"
+                class="box-border w-full h-fit shrink-0 flex flex-row gap-[24px] p-[8px_12px] justify-start items-start [outline:1px_solid_#DDE0E3] [outline-offset:-0.5px] rounded-[8px]"
+              >
+                <div
+                  data-pencil-name="列"
+                  class="box-border [flex:1_1_0] h-fit flex flex-col gap-0 justify-start items-start"
+                >
+                  <div
+                    data-pencil-name="映射 · Opus"
+                    class="box-border w-full h-[32px] shrink-0 flex flex-row gap-[12px] justify-start items-center"
+                  >
+                    <div
+                      data-pencil-name="档位格"
+                      class="box-border w-[72px] shrink-0 h-fit flex flex-row gap-0 justify-start items-start"
+                    >
+                      <div
+                        data-pencil-name="档位"
+                        class="text-[13px]/[18px] box-border text-[#484E55] font-[Overpass,system-ui,sans-serif] font-bold text-left [white-space:nowrap]"
+                      >
+                        Opus
+                      </div>
+                    </div>
+                    <svg
+                      data-pencil-name="箭头"
+                      data-icon-name="arrow-right"
+                      data-icon-set="phosphor"
+                      viewBox="0 0 14 14"
+                      preserveAspectRatio="xMidYMid meet"
+                      xmlns="http://www.w3.org/2000/svg"
+                      class="box-border w-[14px] shrink-0 h-[14px]"
+                    >
+                      <path
+                        d="M12.14063 7.32813l-3.9375 3.9375q-0.16406 0.10938-0.32813 0.10937-0.16406 0-0.30078-0.13672-0.13672-0.13672-0.13672-0.30078 0-0.16406 0.10938-0.32812l3.22656-3.17188-8.58594 0q-0.16406 0-0.30078-0.13672-0.13672-0.13672-0.13672-0.30078 0-0.16406 0.13672-0.30078 0.13672-0.13672 0.30078-0.13672l8.58594 0-3.22657-3.17188q-0.10938-0.16406-0.08203-0.32812 0.02734-0.16406 0.13672-0.27344 0.10938-0.10938 0.27344-0.13672 0.16406-0.02734 0.32812 0.08203l3.9375 3.9375q0.10938 0.16406 0.10938 0.32813 0 0.16406-0.10938 0.32812z"
+                        fill="#646970"
+                      ></path>
+                    </svg>
+                    <div
+                      data-pencil-name="模型格"
+                      class="box-border [flex:1_1_0] h-fit flex flex-row gap-0 justify-start items-start overflow-hidden"
+                    >
+                      <div
+                        data-pencil-name="模型"
+                        class="text-[13px]/[18px] box-border text-[#12161C] font-['Overpass_Mono',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                      >
+                        glm-4.6
+                      </div>
+                    </div>
+                    <div
+                      data-pencil-name="注"
+                      class="text-[13px]/[18px] box-border text-[#646970] font-[Overpass,system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                    >
+                      200K
+                    </div>
+                  </div>
+                  <div
+                    data-pencil-name="映射 · Sonnet"
+                    class="box-border w-full h-[32px] shrink-0 flex flex-row gap-[12px] justify-start items-center"
+                  >
+                    <div
+                      data-pencil-name="档位格"
+                      class="box-border w-[72px] shrink-0 h-fit flex flex-row gap-0 justify-start items-start"
+                    >
+                      <div
+                        data-pencil-name="档位"
+                        class="text-[13px]/[18px] box-border text-[#484E55] font-[Overpass,system-ui,sans-serif] font-bold text-left [white-space:nowrap]"
+                      >
+                        Sonnet
+                      </div>
+                    </div>
+                    <svg
+                      data-pencil-name="箭头"
+                      data-icon-name="arrow-right"
+                      data-icon-set="phosphor"
+                      viewBox="0 0 14 14"
+                      preserveAspectRatio="xMidYMid meet"
+                      xmlns="http://www.w3.org/2000/svg"
+                      class="box-border w-[14px] shrink-0 h-[14px]"
+                    >
+                      <path
+                        d="M12.14063 7.32813l-3.9375 3.9375q-0.16406 0.10938-0.32813 0.10937-0.16406 0-0.30078-0.13672-0.13672-0.13672-0.13672-0.30078 0-0.16406 0.10938-0.32812l3.22656-3.17188-8.58594 0q-0.16406 0-0.30078-0.13672-0.13672-0.13672-0.13672-0.30078 0-0.16406 0.13672-0.30078 0.13672-0.13672 0.30078-0.13672l8.58594 0-3.22657-3.17188q-0.10938-0.16406-0.08203-0.32812 0.02734-0.16406 0.13672-0.27344 0.10938-0.10938 0.27344-0.13672 0.16406-0.02734 0.32812 0.08203l3.9375 3.9375q0.10938 0.16406 0.10938 0.32813 0 0.16406-0.10938 0.32812z"
+                        fill="#646970"
+                      ></path>
+                    </svg>
+                    <div
+                      data-pencil-name="模型格"
+                      class="box-border [flex:1_1_0] h-fit flex flex-row gap-0 justify-start items-start overflow-hidden"
+                    >
+                      <div
+                        data-pencil-name="模型"
+                        class="text-[13px]/[18px] box-border text-[#12161C] font-['Overpass_Mono',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                      >
+                        glm-4.6
+                      </div>
+                    </div>
+                    <div
+                      data-pencil-name="注"
+                      class="text-[13px]/[18px] box-border text-[#646970] font-[Overpass,system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                    >
+                      200K
+                    </div>
+                  </div>
+                  <div
+                    data-pencil-name="映射 · Haiku"
+                    class="box-border w-full h-[32px] shrink-0 flex flex-row gap-[12px] justify-start items-center"
+                  >
+                    <div
+                      data-pencil-name="档位格"
+                      class="box-border w-[72px] shrink-0 h-fit flex flex-row gap-0 justify-start items-start"
+                    >
+                      <div
+                        data-pencil-name="档位"
+                        class="text-[13px]/[18px] box-border text-[#484E55] font-[Overpass,system-ui,sans-serif] font-bold text-left [white-space:nowrap]"
+                      >
+                        Haiku
+                      </div>
+                    </div>
+                    <svg
+                      data-pencil-name="箭头"
+                      data-icon-name="arrow-right"
+                      data-icon-set="phosphor"
+                      viewBox="0 0 14 14"
+                      preserveAspectRatio="xMidYMid meet"
+                      xmlns="http://www.w3.org/2000/svg"
+                      class="box-border w-[14px] shrink-0 h-[14px]"
+                    >
+                      <path
+                        d="M12.14063 7.32813l-3.9375 3.9375q-0.16406 0.10938-0.32813 0.10937-0.16406 0-0.30078-0.13672-0.13672-0.13672-0.13672-0.30078 0-0.16406 0.10938-0.32812l3.22656-3.17188-8.58594 0q-0.16406 0-0.30078-0.13672-0.13672-0.13672-0.13672-0.30078 0-0.16406 0.13672-0.30078 0.13672-0.13672 0.30078-0.13672l8.58594 0-3.22657-3.17188q-0.10938-0.16406-0.08203-0.32812 0.02734-0.16406 0.13672-0.27344 0.10938-0.10938 0.27344-0.13672 0.16406-0.02734 0.32812 0.08203l3.9375 3.9375q0.10938 0.16406 0.10938 0.32813 0 0.16406-0.10938 0.32812z"
+                        fill="#646970"
+                      ></path>
+                    </svg>
+                    <div
+                      data-pencil-name="模型格"
+                      class="box-border [flex:1_1_0] h-fit flex flex-row gap-0 justify-start items-start overflow-hidden"
+                    >
+                      <div
+                        data-pencil-name="模型"
+                        class="text-[13px]/[18px] box-border text-[#12161C] font-['Overpass_Mono',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                      >
+                        glm-4.5-air
+                      </div>
+                    </div>
+                    <div
+                      data-pencil-name="注"
+                      class="text-[13px]/[18px] box-border text-[#646970] font-[Overpass,system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                    >
+                      128K
+                    </div>
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="列 · 变量"
+                  class="box-border [flex:1_1_0] h-fit flex flex-col gap-0 justify-start items-start"
+                >
+                  <div
+                    data-pencil-name="变量 · Opus"
+                    class="box-border w-full h-[32px] shrink-0 flex flex-row gap-0 justify-end items-center"
+                  >
+                    <div
+                      data-pencil-name="变量"
+                      class="text-[13px]/[18px] box-border text-[#646970] font-['Overpass_Mono',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                    >
+                      env ANTHROPIC_DEFAULT_OPUS_MODEL
+                    </div>
+                  </div>
+                  <div
+                    data-pencil-name="变量 · Sonnet"
+                    class="box-border w-full h-[32px] shrink-0 flex flex-row gap-0 justify-end items-center"
+                  >
+                    <div
+                      data-pencil-name="变量"
+                      class="text-[13px]/[18px] box-border text-[#646970] font-['Overpass_Mono',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                    >
+                      env ANTHROPIC_DEFAULT_SONNET_MODEL
+                    </div>
+                  </div>
+                  <div
+                    data-pencil-name="变量 · Haiku"
+                    class="box-border w-full h-[32px] shrink-0 flex flex-row gap-0 justify-end items-center"
+                  >
+                    <div
+                      data-pencil-name="变量"
+                      class="text-[13px]/[18px] box-border text-[#646970] font-['Overpass_Mono',system-ui,sans-serif] font-normal text-left [white-space:nowrap]"
+                    >
+                      env ANTHROPIC_DEFAULT_HAIKU_MODEL
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

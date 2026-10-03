@@ -354,8 +354,29 @@ pub async fn apply_skin_package(skin_id: String, confirm: bool) -> Result<(), St
             .ok_or_else(|| "Install Codex before applying a skin.".to_string())?;
         close_codex(&installed, &portable_root)?;
         if let Some(block) = loaded.codex_theme.as_ref() {
-            codex_theme_engine::native::apply_native_theme_value(&native, block)
-                .map_err(|error| error.to_string())?;
+            if block.is_object() {
+                let parsed = codex_theme_engine::codex_theme::parse_codex_theme(
+                    block,
+                    codex_theme_engine::codex_theme::ValidateOptions {
+                        require_code_theme_ids: false,
+                        ..Default::default()
+                    },
+                )
+                .map_err(|e| format!("codexTheme 校验失败: {e}"))?;
+                codex_theme_engine::native::backup_native_theme(&native)
+                    .map_err(|e| e.to_string())?;
+                let current =
+                    crate::codex_config::read_codex_config_text().map_err(|e| e.to_string())?;
+                let planned = codex_theme_engine::native::plan_native_config(
+                    &current,
+                    &codex_theme_engine::native::apply_plan(&parsed),
+                )
+                .map_err(|e| e.to_string())?;
+                crate::codex_live_write::write_codex_live_files(
+                    crate::codex_live_write::CodexLiveWrite::config_only(&planned),
+                )
+                .map_err(|e| e.to_string())?;
+            }
         }
         super::codex_runtime::launch_codex_with_config(
             &installed,
@@ -424,8 +445,16 @@ pub async fn restore_skin_package(confirm: bool) -> Result<(), String> {
             .ok_or_else(|| "Codex is not installed.".to_string())?;
         close_codex(&installed, &portable_root)
             .map_err(|_| "Could not close Codex for restore.".to_string())?;
-        codex_theme_engine::native::restore_native_theme(&native)
+        let current = crate::codex_config::read_codex_config_text().map_err(|e| e.to_string())?;
+        if let Some(planned) = codex_theme_engine::native::planned_restore_text(&native, &current)
+            .map_err(|error| error.to_string())?
+        {
+            crate::codex_live_write::write_codex_live_files(
+                crate::codex_live_write::CodexLiveWrite::config_only(&planned),
+            )
             .map_err(|error| error.to_string())?;
+            codex_theme_engine::native::drop_backup(&native).map_err(|error| error.to_string())?;
+        }
         super::codex_runtime::launch_codex_with_config(
             &installed,
             codex_win_engine::LaunchOptions::default(),

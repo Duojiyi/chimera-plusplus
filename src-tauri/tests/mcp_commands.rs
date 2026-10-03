@@ -6,7 +6,8 @@ use serde_json::json;
 use chimera_plus_plus_lib::{
     get_claude_mcp_path, get_claude_mcp_status, get_claude_settings_path, get_grok_config_path,
     import_default_config_test_hook, read_claude_mcp_config, update_settings, AppError,
-    AppSettings, AppType, McpApps, McpServer, McpService, MultiAppConfig, ProviderService,
+    AppSettings, AppType, CodexMcpLedger, McpApps, McpServer, McpService, MultiAppConfig,
+    ProviderService,
 };
 
 #[path = "support.rs"]
@@ -1185,8 +1186,11 @@ fn custom_claude_dir_read_only_mcp_queries_do_not_create_profile() {
     );
 }
 
+/// Ownership contract: a live entry is only ever removed once Chimera++ has
+/// projected it. A DB row that is merely disabled grants no ownership, so an
+/// identical entry that already existed in the client config is left alone.
 #[test]
-fn sync_all_enabled_removes_known_disabled_but_preserves_unknown_live_entries() {
+fn sync_all_enabled_only_removes_entries_it_projected_itself() {
     let _guard = test_mutex().lock().expect("acquire test mutex");
     reset_test_fs();
     let _home = ensure_test_home();
@@ -1269,8 +1273,8 @@ fn sync_all_enabled_removes_known_disabled_but_preserves_unknown_live_entries() 
         .expect("mcpServers object");
 
     assert!(
-        !servers.contains_key("managed-disabled"),
-        "DB-known disabled server should be removed from live config"
+        servers.contains_key("managed-disabled"),
+        "an entry Chimera++ never projected must survive a disabled DB row"
     );
     assert!(
         servers.contains_key("managed-enabled"),
@@ -1280,6 +1284,26 @@ fn sync_all_enabled_removes_known_disabled_but_preserves_unknown_live_entries() 
         servers.contains_key("external-only"),
         "live entries unknown to DB should be preserved"
     );
+
+    // Once Chimera++ projects the entry itself (an identical live entry is
+    // adopted by content), disabling it removes it again; others stay.
+    McpService::toggle_app(&state, "managed-disabled", AppType::Claude, true)
+        .expect("enable adopts the identical live entry");
+    McpService::toggle_app(&state, "managed-disabled", AppType::Claude, false)
+        .expect("disable removes the entry Chimera++ owns");
+    let value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&mcp_path).expect("read claude mcp"))
+            .expect("parse claude mcp");
+    let servers = value
+        .get("mcpServers")
+        .and_then(|entry| entry.as_object())
+        .expect("mcpServers object");
+    assert!(
+        !servers.contains_key("managed-disabled"),
+        "an owned entry is removed once it is disabled"
+    );
+    assert!(servers.contains_key("managed-enabled"));
+    assert!(servers.contains_key("external-only"));
 }
 
 #[test]
@@ -1359,4 +1383,136 @@ fn failed_mcp_removal_restores_database_record() {
             .contains_key("managed"));
         assert_eq!(fs::read_to_string(&path).unwrap(), "[invalid TOML");
     }
+}
+
+/// MH-24 golden: the projection ledger decides which live entries are ours.
+/// A same-name entry we did not write is refused with an explicit error and
+/// everything is rolled back; it is never overwritten or removed.
+#[test]
+fn codex_mcp_projection_refuses_same_name_conflicts_and_only_removes_its_own_entries() {
+    let _guard = test_mutex().lock().unwrap();
+    reset_test_fs();
+    let home = ensure_test_home();
+    let dir = home.join(".codex");
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.toml");
+    // Written by `codex mcp add`: one unrelated server, one with a DB id.
+    fs::write(
+        &path,
+        "[mcp_servers.cli_added]\ncommand = \"cli\"\n\n[mcp_servers.shared]\ncommand = \"user-version\"\n",
+    )
+    .unwrap();
+    let state = create_test_state().unwrap();
+    let managed = |id: &str, command: &str| McpServer {
+        id: id.into(),
+        name: id.into(),
+        server: json!({ "command": command }),
+        apps: McpApps {
+            codex: true,
+            ..Default::default()
+        },
+        description: None,
+        homepage: None,
+        docs: None,
+        tags: vec![],
+    };
+
+    McpService::upsert_server(&state, managed("managed", "db-cmd")).unwrap();
+    let projected = fs::read_to_string(&path).unwrap();
+    assert!(projected.contains("db-cmd"));
+
+    // A same-name entry we did not write is refused, never overwritten, and
+    // the whole operation is rolled back (file, DB and ledger unchanged).
+    let error = McpService::upsert_server(&state, managed("shared", "db-version"))
+        .expect_err("a foreign same-name entry must be refused")
+        .to_string();
+    assert!(error.contains("ownership conflict for 'shared'"), "{error}");
+    assert_eq!(fs::read_to_string(&path).unwrap(), projected);
+    assert!(!state
+        .db
+        .get_all_mcp_servers()
+        .unwrap()
+        .contains_key("shared"));
+    let ledger = CodexMcpLedger::load(&state.db).unwrap();
+    assert!(ledger.servers.contains_key("managed"));
+    assert!(!ledger.servers.contains_key("shared"));
+
+    // Editing our entry in live makes it the user's: an update is refused too.
+    fs::write(
+        &path,
+        fs::read_to_string(&path)
+            .unwrap()
+            .replace("db-cmd", "hand-edited"),
+    )
+    .unwrap();
+    let error = McpService::upsert_server(&state, managed("managed", "db-cmd-2"))
+        .expect_err("a hand-edited entry is no longer ours")
+        .to_string();
+    assert!(
+        error.contains("ownership conflict for 'managed'"),
+        "{error}"
+    );
+    let live = fs::read_to_string(&path).unwrap();
+    assert!(live.contains("hand-edited") && !live.contains("db-cmd-2"));
+
+    // Deleting never removes entries that are not ours: refused, nothing moves.
+    let error = McpService::delete_server(&state, "managed")
+        .expect_err("a hand-edited entry must not be deleted")
+        .to_string();
+    assert!(
+        error.contains("ownership conflict for 'managed'"),
+        "{error}"
+    );
+    assert!(state
+        .db
+        .get_all_mcp_servers()
+        .unwrap()
+        .contains_key("managed"));
+    // A batch re-projection keeps going per server and reports the conflict.
+    let error = McpService::sync_enabled_for_app(&state, &AppType::Codex)
+        .expect_err("the batch reports the hand-edited entry")
+        .to_string();
+    assert!(error.contains("managed"), "{error}");
+    let live = fs::read_to_string(&path).unwrap();
+    for id in ["cli_added", "shared", "managed"] {
+        assert!(live.contains(&format!("mcp_servers.{id}")), "{id}: {live}");
+    }
+}
+
+/// MH-24: an entry projected before the ledger existed is recognised by
+/// content, so disabling it still removes it.
+#[test]
+fn codex_mcp_entry_projected_before_the_ledger_is_adopted_by_content() {
+    let _guard = test_mutex().lock().unwrap();
+    reset_test_fs();
+    let home = ensure_test_home();
+    let dir = home.join(".codex");
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.toml");
+    fs::write(&path, "[mcp_servers.old]\ncommand = \"old-cmd\"\n").unwrap();
+    let state = create_test_state().unwrap();
+    let mut server = McpServer {
+        id: "old".into(),
+        name: "Old".into(),
+        server: json!({ "command": "old-cmd" }),
+        apps: McpApps {
+            codex: true,
+            ..Default::default()
+        },
+        description: None,
+        homepage: None,
+        docs: None,
+        tags: vec![],
+    };
+    McpService::upsert_server(&state, server.clone()).unwrap();
+    assert!(CodexMcpLedger::load(&state.db)
+        .unwrap()
+        .servers
+        .contains_key("old"));
+
+    server.apps.codex = false;
+    McpService::upsert_server(&state, server).unwrap();
+    assert!(!fs::read_to_string(&path)
+        .unwrap()
+        .contains("mcp_servers.old"));
 }

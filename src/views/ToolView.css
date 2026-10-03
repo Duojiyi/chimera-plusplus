@@ -1,0 +1,42 @@
+.tool-view > header {
+  flex-wrap: wrap;
+}
+.tool-official-guide {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--bg-subtle);
+  font-size: 13px;
+  line-height: 1.7;
+}
+.tool-official-guide > div {
+  flex: 1;
+  min-width: 0;
+}
+.tool-official-guide p {
+  margin: 4px 0 0;
+  color: var(--text-2);
+}
+.tool-official-guide code {
+  color: var(--text-1);
+  user-select: all;
+}
+.tool-official-guide > button {
+  flex-shrink: 0;
+}
+.tool-provider-table {
+  flex-shrink: 0;
+}
+.tool-provider-table > div {
+  min-width: 690px;
+}
+.tool-provider-table > div > div {
+  flex-shrink: 0;
+}
+.tool-provider-table > div > div:nth-child(3) {
+  min-width: 100px;
+  flex-shrink: 1;
+}

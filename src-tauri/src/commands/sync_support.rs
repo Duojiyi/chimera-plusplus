@@ -72,12 +72,95 @@ pub(crate) fn replace_database(
     // Drop app/session guards before post-import sync, which may acquire app locks.
 }
 
+/// Settings key holding the pending MH-13b review (JSON `CodexImportReview`).
+pub(crate) const CODEX_IMPORT_REVIEW_KEY: &str = "codex_import_review_pending";
+
+/// MH-13b: sanitize the Codex rows and common-config snippet of a database
+/// that was just imported, restored or downloaded, and record what needs the
+/// user's confirmation. A new import always replaces the previous review.
+/// Also drops the MCP projection ledger that came with the database: it
+/// describes some machine's `config.toml`, so it must never let an imported
+/// row claim a live entry here. Unchanged entries are re-adopted by content.
+fn review_imported_codex_config(state: &AppState) -> Result<(), AppError> {
+    state
+        .db
+        .delete_setting(crate::mcp::CODEX_MCP_PROJECTION_LEDGER_KEY)?;
+    let review = state.db.sanitize_untrusted_codex_configs()?;
+    if review.is_empty() {
+        return state.db.delete_setting(CODEX_IMPORT_REVIEW_KEY);
+    }
+    log::warn!(
+        "Imported Codex config needs confirmation before it reaches live: {} line(s), common config: {}",
+        review.providers.len(),
+        review.common_config.is_some()
+    );
+    let json =
+        serde_json::to_string(&review).map_err(|source| AppError::JsonSerialize { source })?;
+    state.db.set_setting(CODEX_IMPORT_REVIEW_KEY, &json)
+}
+
+/// The pending MH-13b review, if any.
+pub(crate) fn pending_codex_import_review(
+    state: &AppState,
+) -> Result<Option<crate::codex_key_ownership::CodexImportReview>, AppError> {
+    match state.db.get_setting(CODEX_IMPORT_REVIEW_KEY)? {
+        None => Ok(None),
+        Some(json) => serde_json::from_str(&json)
+            .map(Some)
+            .map_err(|e| AppError::Config(format!("待确认的 Codex 导入记录无效: {e}"))),
+    }
+}
+
 pub(crate) fn run_post_import_sync(state: &AppState) -> Result<(), AppError> {
+    // MH-13b: nothing imported reaches live before this pass. Fail closed: if
+    // it cannot run, the imported config is not synced either.
+    review_imported_codex_config(state)?;
+    run_live_sync(state)
+}
+
+/// Live sync after an import or on request. Leaves Codex alone while an
+/// MH-13b review is pending (`confirm_codex_import_sync` clears it).
+pub(crate) fn run_live_sync(state: &AppState) -> Result<(), AppError> {
     // Same post-import path, but never construct an isolated AppState. Reload
     // settings even when the imported DB contains takeover data we cannot apply.
     crate::settings::reload_settings()?;
     ensure_no_takeover(state)?;
-    ProviderService::sync_current_to_live(state)
+
+    // CPP-A1①: idempotent, see the DB method.
+    if let Err(e) = state
+        .db
+        .rename_non_official_openai_named_codex_provider_tables()
+    {
+        log::warn!("✗ Post-import Codex OpenAI-named table fix failed: {e}");
+    }
+
+    // MH-19②: an imported/restored DB (SQL import, .db backup restore) can
+    // carry rows polluted by the same defect this scrubs at backfill time —
+    // run it before syncing to live so a polluted row is never even
+    // momentarily written back out. Idempotent; failure here must not block
+    // the rest of the sync (see the DB method's own doc comment).
+    match state
+        .db
+        .scrub_oauth_material_from_non_official_codex_providers()
+    {
+        Ok(0) => {}
+        Ok(count) => log::info!(
+            "✓ Scrubbed OAuth login material from {count} non-official Codex provider(s) after import"
+        ),
+        Err(e) => log::warn!("✗ Post-import Codex non-official OAuth scrub failed: {e}"),
+    } // MH-8c 1.7: imported rows may still declare `wire_api = "chat"`.
+    match state.db.normalize_codex_provider_wire_apis() {
+        Ok(0) => {}
+        Ok(count) => log::info!(
+            "✓ Normalized wire_api to responses in {count} Codex provider(s) after import"
+        ),
+        Err(e) => log::warn!("✗ Post-import Codex wire_api normalization failed: {e}"),
+    }
+
+    let skip = pending_codex_import_review(state)?
+        .is_some()
+        .then_some(AppType::Codex);
+    ProviderService::sync_current_to_live_except(state, skip.as_ref())
 }
 
 pub(crate) fn post_import_warning(state: &AppState) -> Option<String> {

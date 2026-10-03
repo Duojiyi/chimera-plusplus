@@ -30,16 +30,22 @@ const PromptFormModal: React.FC<PromptFormModalProps> = ({
 }) => {
   const { t } = useTranslation();
   const appName = t(`apps.${appId}`);
-  const filenameMap: Record<Exclude<AppId, "openclaw">, string> = {
+  const filenameMap: Record<
+    Exclude<AppId, "openclaw" | "pi" | "mcode">,
+    string
+  > = {
     claude: "CLAUDE.md",
     "claude-desktop": "CLAUDE.md",
     codex: "AGENTS.md",
     gemini: "GEMINI.md",
     grokbuild: "AGENTS.md",
     opencode: "AGENTS.md",
-    hermes: "AGENTS.md",
+    hermes: "SOUL.md",
   };
-  const filename = filenameMap[appId as Exclude<AppId, "openclaw">];
+  const filename =
+    appId === "openclaw"
+      ? "AGENTS.md"
+      : filenameMap[appId as Exclude<AppId, "openclaw" | "pi" | "mcode">];
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [content, setContent] = useState("");
@@ -78,10 +84,11 @@ const PromptFormModal: React.FC<PromptFormModalProps> = ({
 
     setSaving(true);
     try {
-      const id = editingId || `prompt-${Date.now()}`;
+      const id = editingId || `prompt-${crypto.randomUUID()}`;
       const timestamp = Math.floor(Date.now() / 1000);
       const prompt: Prompt = {
         id,
+        templateId: initialData?.templateId,
         name: name.trim(),
         description: description.trim() || undefined,
         content: content.trim(),

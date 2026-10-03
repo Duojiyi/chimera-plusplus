@@ -11,7 +11,7 @@ const config = JSON.parse(read("src-tauri/tauri.conf.json"));
 
 describe("window corner clipping", () => {
   it("clips both portal and application surfaces to the same window radius", () => {
-    expect(globalCss).toContain("--window-radius: 16px;");
+    expect(globalCss).toContain("--window-radius: 8px;");
     for (const selector of ["body", "#root"]) {
       const block = [
         ...globalCss.matchAll(

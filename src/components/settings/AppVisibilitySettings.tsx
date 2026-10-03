@@ -47,6 +47,8 @@ export function AppVisibilitySettings({
     opencode: false,
     openclaw: false,
     hermes: false,
+    pi: false,
+    mcode: false,
   };
 
   // Count how many apps are currently visible

@@ -442,9 +442,16 @@ impl ProfileService {
                     )),
                     Some(p) if p.enabled => {}
                     Some(_) => {
-                        if let Err(e) =
-                            PromptService::enable_prompt(state, app.clone(), target_prompt)
-                        {
+                        let prompt_state = state.clone();
+                        let prompt_app = app.clone();
+                        let prompt_id = target_prompt.clone();
+                        let result = tokio::task::spawn_blocking(move || {
+                            PromptService::enable_prompt(&prompt_state, prompt_app, &prompt_id)
+                        })
+                        .await
+                        .map_err(|_| AppError::Message("提示词后台任务执行失败。".into()))
+                        .and_then(|result| result);
+                        if let Err(e) = result {
                             warnings.push(format!(
                                 "[{app_str}] enable prompt '{target_prompt}' failed: {e}"
                             ));

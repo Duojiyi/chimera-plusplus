@@ -424,6 +424,20 @@ fn codex_is_running(installed: &codex_win_engine::InstalledWindowsCodex) -> Resu
         .map_err(|error| format!("无法读取 Codex 进程状态: {error}"))
 }
 
+/// Whether the detected Codex desktop installation currently owns a process,
+/// with the same path-pinned discovery as `get_codex_process_status`. Only
+/// Windows has a managed desktop install; elsewhere this reports `false`.
+pub(crate) fn codex_desktop_is_running() -> Result<bool, String> {
+    if !cfg!(target_os = "windows") {
+        return Ok(false);
+    }
+    let portable_root = portable_root()?;
+    match codex_win_engine::detect_installed_codex(&portable_root) {
+        Some(installed) => codex_is_running(&installed),
+        None => Ok(false),
+    }
+}
+
 fn launch_action(was_running: bool) -> &'static str {
     if was_running {
         "restarted"

@@ -3,8 +3,11 @@
 //! Handles provider CRUD operations, switching, and configuration management.
 
 mod endpoints;
+pub(crate) mod first_write;
 mod gemini_auth;
 mod live;
+mod mcode;
+mod pi;
 mod usage;
 
 use indexmap::IndexMap;
@@ -24,17 +27,18 @@ use crate::store::AppState;
 pub use live::{
     import_default_config, import_hermes_providers_from_live, import_openclaw_providers_from_live,
     import_opencode_providers_from_live, read_live_settings,
-    should_import_default_config_on_startup, sync_current_to_live,
+    should_import_default_config_on_startup, sync_current_to_live, sync_current_to_live_except,
     update_toml_common_config_snippet,
 };
 
 // Internal re-exports (pub(crate))
-pub(crate) use live::sanitize_claude_settings_for_live;
 pub(crate) use live::{
-    build_effective_settings_with_common_config, normalize_provider_common_config_for_storage,
-    provider_exists_in_live_config, strip_common_config_from_live_settings,
-    sync_current_provider_for_app_to_live, write_live_with_common_config, LiveSnapshot,
+    build_effective_settings_with_common_config, codex_common_snippet,
+    normalize_provider_common_config_for_storage, provider_exists_in_live_config,
+    strip_common_config_from_live_settings, sync_current_provider_for_app_to_live,
+    write_live_with_common_config, LiveSnapshot,
 };
+pub(crate) use live::{sanitize_claude_settings_for_live, write_claude_provider_settings};
 
 // Internal re-exports
 use live::{
@@ -42,6 +46,19 @@ use live::{
     remove_opencode_provider_from_live, write_gemini_live,
 };
 use usage::validate_usage_script;
+
+/// Save-time check for a line's custom request headers (CPP-A7), only while
+/// the `custom_request_headers` capability is `enabled`: rows written before
+/// the feature existed keep saving unchanged.
+fn validate_request_header_overrides(
+    overrides: &crate::provider::LocalProxyRequestOverrides,
+    enabled: bool,
+) -> Result<(), AppError> {
+    if !enabled {
+        return Ok(());
+    }
+    overrides.validate_headers()
+}
 
 /// The built-in Codex official provider is safe to select during takeover:
 /// Codex keeps ownership of its ChatGPT login and the proxy only forwards the
@@ -90,8 +107,8 @@ pub fn reapply_current_codex_official_live(state: &AppState) -> Result<bool, App
     }
 
     live::write_live_with_common_config(&state.db, &AppType::Codex, provider)?;
-    // 重写 live 会整体替换 config.toml（有意设计），[mcp_servers] 随之丢失，
-    // 写完必须立刻从 DB 重新投影启用的 MCP。只投影 Codex 而非
+    // 写 live 按键所有权表投影（live 的 [mcp_servers] 保留），写完从 DB
+    // 按投影台账重新投影启用的 MCP，使其与 DB 对齐。只投影 Codex 而非
     // sync_all_enabled：后者按 AppType::all() 顺序逐应用短路，排在 Codex
     // 前面的无关应用 live 损坏（如 ~/.claude.json 坏 JSON）会阻断 Codex
     // 的重投影，让刚被清掉的 [mcp_servers] 无人补回。
@@ -301,7 +318,7 @@ mod tests {
                 state.db.save_provider(app.as_str(), &provider).unwrap();
                 let guards = futures::executor::block_on(ProviderService::lock_deletion(
                     state,
-                    &[app.clone()],
+                    std::slice::from_ref(&app),
                 ));
                 let switch_state = state.clone();
                 let switch_app = app.clone();
@@ -426,6 +443,40 @@ mod tests {
                 .get_provider_by_id(&child.id, "codex")
                 .unwrap()
                 .is_none());
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn universal_sync_and_deletion_allow_missing_disabled_children() {
+        with_test_home(|state, _| {
+            crate::settings::reload_settings().unwrap();
+            let mut parent = UniversalProvider::new(
+                "empty".into(),
+                "Empty".into(),
+                "openai".into(),
+                "https://example.invalid".into(),
+                "test-only-key".into(),
+            );
+            parent.apps.claude = false;
+            parent.apps.codex = false;
+            parent.apps.gemini = false;
+            state.db.save_universal_provider(&parent).unwrap();
+            assert!(ProviderService::sync_universal_to_apps(state, &parent.id).unwrap());
+            for app in ["claude", "codex", "gemini"] {
+                assert!(state
+                    .db
+                    .get_provider_by_id(&format!("universal-{app}-empty"), app)
+                    .unwrap()
+                    .is_none());
+            }
+            assert!(ProviderService::delete_universal(state, &parent.id).unwrap());
+            assert!(state
+                .db
+                .get_universal_provider(&parent.id)
+                .unwrap()
+                .is_none());
+            assert!(ProviderService::delete(state, AppType::Codex, "missing-line").is_err());
         });
     }
 
@@ -925,6 +976,23 @@ mod tests {
         });
     }
 
+    #[test]
+    fn custom_request_header_save_check_follows_the_capability() {
+        let overrides = crate::provider::LocalProxyRequestOverrides {
+            headers: std::collections::HashMap::from([(
+                "Authorization".to_string(),
+                "Bearer x".to_string(),
+            )]),
+            body: None,
+        };
+        // Off: rows written before the feature existed keep saving.
+        assert!(super::validate_request_header_overrides(&overrides, false).is_ok());
+        // On: a protected header is rejected by name.
+        let error = super::validate_request_header_overrides(&overrides, true)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("authorization"), "{error}");
+    }
     #[test]
     fn validate_provider_settings_rejects_missing_auth() {
         let provider = Provider::with_id(
@@ -2233,6 +2301,14 @@ requires_openai_auth = true
 }
 
 impl ProviderService {
+    /// MH-8c 1.7: store only `wire_api = "responses"`; the declared protocol
+    /// moves to `meta.apiFormat` (see `normalize_codex_provider_wire_api`).
+    fn normalize_codex_wire_api(app_type: &AppType, provider: &mut Provider) {
+        if matches!(app_type, AppType::Codex) {
+            crate::proxy::providers::normalize_codex_provider_wire_api(provider);
+        }
+    }
+
     fn normalize_provider_if_claude(app_type: &AppType, provider: &mut Provider) {
         if matches!(app_type, AppType::Claude) {
             let mut v = provider.settings_config.clone();
@@ -2341,6 +2417,12 @@ impl ProviderService {
         state: &AppState,
         app_type: AppType,
     ) -> Result<IndexMap<String, Provider>, AppError> {
+        if app_type == AppType::Pi {
+            return pi::list(state);
+        }
+        if app_type == AppType::Mcode {
+            return mcode::list(state);
+        }
         state.db.get_all_providers(app_type.as_str())
     }
 
@@ -2372,9 +2454,19 @@ impl ProviderService {
         provider: Provider,
         intended_live_enabled: bool,
     ) -> Result<bool, AppError> {
+        // Staging a Pi row never touches models.json (Pi deep links are import-only).
+        if app_type == AppType::Pi {
+            return pi::add(state, provider, false);
+        }
+        // Mcode deep links are rejected; any other staging is catalog-only too.
+        if app_type == AppType::Mcode {
+            return mcode::add(state, provider, false);
+        }
         let mut provider = provider;
         Self::normalize_provider_if_claude(&app_type, &mut provider);
+        Self::normalize_codex_wire_api(&app_type, &mut provider);
         Self::validate_provider_settings(&app_type, &provider)?;
+        Self::sanitize_codex_provider_config(&app_type, &mut provider)?;
         normalize_provider_common_config_for_storage(state.db.as_ref(), &app_type, &mut provider)?;
         Self::normalize_usage_script_credential_overrides(&app_type, &mut provider);
         if app_type.is_additive_mode() {
@@ -2391,10 +2483,18 @@ impl ProviderService {
         provider: Provider,
         add_to_live: bool,
     ) -> Result<bool, AppError> {
+        if app_type == AppType::Pi {
+            return pi::add(state, provider, add_to_live);
+        }
+        if app_type == AppType::Mcode {
+            return mcode::add(state, provider, add_to_live);
+        }
         let mut provider = provider;
         // Normalize Claude model keys
         Self::normalize_provider_if_claude(&app_type, &mut provider);
+        Self::normalize_codex_wire_api(&app_type, &mut provider);
         Self::validate_provider_settings(&app_type, &provider)?;
+        Self::sanitize_codex_provider_config(&app_type, &mut provider)?;
         normalize_provider_common_config_for_storage(state.db.as_ref(), &app_type, &mut provider)?;
         Self::normalize_usage_script_credential_overrides(&app_type, &mut provider);
         if app_type.is_additive_mode() {
@@ -2463,6 +2563,12 @@ impl ProviderService {
         provider: Provider,
         app_lock_held: bool,
     ) -> Result<bool, AppError> {
+        if app_type == AppType::Pi {
+            return pi::update(state, original_id, provider, app_lock_held);
+        }
+        if app_type == AppType::Mcode {
+            return mcode::update(state, original_id, provider, app_lock_held);
+        }
         let mut provider = provider;
         let original_id = original_id.unwrap_or(provider.id.as_str()).to_string();
         let provider_id_changed = original_id != provider.id;
@@ -2471,7 +2577,9 @@ impl ProviderService {
             .get_provider_by_id(&original_id, app_type.as_str())?;
         // Normalize Claude model keys
         Self::normalize_provider_if_claude(&app_type, &mut provider);
+        Self::normalize_codex_wire_api(&app_type, &mut provider);
         Self::validate_provider_settings(&app_type, &provider)?;
+        Self::sanitize_codex_provider_config(&app_type, &mut provider)?;
         normalize_provider_common_config_for_storage(state.db.as_ref(), &app_type, &mut provider)?;
         Self::normalize_usage_script_credential_overrides(&app_type, &mut provider);
 
@@ -2736,6 +2844,12 @@ impl ProviderService {
         app_type: AppType,
         id: &str,
     ) -> Result<(), AppError> {
+        if app_type == AppType::Pi {
+            return pi::delete_locked(state, id);
+        }
+        if app_type == AppType::Mcode {
+            return mcode::delete_locked(state, id);
+        }
         // Additive mode apps - no current provider concept
         if app_type.is_additive_mode() {
             // Single DB read shared across all additive-mode sub-paths below.
@@ -2788,6 +2902,18 @@ impl ProviderService {
         state.db.delete_non_current_provider(app_type.as_str(), id)
     }
 
+    fn delete_universal_child(state: &AppState, app: &AppType, id: &str) -> Result<(), AppError> {
+        let child_id = format!("universal-{}-{id}", app.as_str());
+        if state
+            .db
+            .get_provider_by_id(&child_id, app.as_str())?
+            .is_some()
+        {
+            Self::delete_with_locks_held(state, app.clone(), &child_id)?;
+        }
+        Ok(())
+    }
+
     /// Remove provider from live config only (for additive mode apps like OpenCode, OpenClaw)
     ///
     /// Does NOT delete from database - provider remains in the list.
@@ -2798,6 +2924,12 @@ impl ProviderService {
         app_type: AppType,
         id: &str,
     ) -> Result<(), AppError> {
+        if app_type == AppType::Pi {
+            return pi::remove(state, id);
+        }
+        if app_type == AppType::Mcode {
+            return mcode::remove(state, id);
+        }
         match app_type {
             AppType::OpenCode => {
                 let provider_category = state
@@ -2892,6 +3024,14 @@ impl ProviderService {
         } else {
             None
         };
+
+        // "Switching" a Pi provider adds its models.json entry; nothing else moves.
+        if app_type == AppType::Pi {
+            return pi::enable_locked(state, id);
+        }
+        if app_type == AppType::Mcode {
+            return mcode::enable_locked(state, id);
+        }
 
         // Check if provider exists
         let providers = state.db.get_all_providers(app_type.as_str())?;
@@ -3102,8 +3242,10 @@ impl ProviderService {
                 }
             }
 
+            let provider_to_write =
+                first_write::protect_first_live_write(state, &app_type, provider)?;
             if let Err(error) =
-                write_live_with_common_config(state.db.as_ref(), &app_type, provider)
+                write_live_with_common_config(state.db.as_ref(), &app_type, &provider_to_write)
             {
                 let rollback = live_snapshot
                     .as_ref()
@@ -3222,7 +3364,7 @@ impl ProviderService {
         }
 
         // 切换重写了目标应用的 live，只重投影该应用的 MCP（Codex 的
-        // [mcp_servers] 与 live 同文件，整体替换后必须补回；其余应用的
+        // [mcp_servers] 与 live 同文件，按投影台账与 DB 对齐；其余应用的
         // MCP 文件独立于 live，投影是幂等维护）。不用全量 sync_all_enabled：
         // 无关应用的 live 损坏（如 ~/.claude.json 坏 JSON）不该阻断切换。
         // 走到这里 DB is_current 与 live 都已落盘，切换事实上已成功；
@@ -3238,6 +3380,14 @@ impl ProviderService {
     /// Sync current provider to live configuration (re-export)
     pub fn sync_current_to_live(state: &AppState) -> Result<(), AppError> {
         sync_current_to_live(state)
+    }
+
+    /// Sync current providers to live, except `skip` (re-export)
+    pub fn sync_current_to_live_except(
+        state: &AppState,
+        skip: Option<&AppType>,
+    ) -> Result<(), AppError> {
+        sync_current_to_live_except(state, skip)
     }
 
     pub fn sync_current_provider_for_app(
@@ -3520,6 +3670,7 @@ impl ProviderService {
             AppType::OpenCode => Self::extract_opencode_common_config(&provider.settings_config),
             AppType::OpenClaw => Self::extract_openclaw_common_config(&provider.settings_config),
             AppType::Hermes => Ok(String::new()), // Hermes doesn't use common config snippets
+            AppType::Pi | AppType::Mcode => Ok(String::new()),
         }
     }
 
@@ -3537,6 +3688,7 @@ impl ProviderService {
             AppType::OpenCode => Self::extract_opencode_common_config(settings_config),
             AppType::OpenClaw => Self::extract_openclaw_common_config(settings_config),
             AppType::Hermes => Ok(String::new()), // Hermes doesn't use common config snippets
+            AppType::Pi | AppType::Mcode => Ok(String::new()),
         }
     }
 
@@ -3703,8 +3855,8 @@ impl ProviderService {
         // 启用状态被合并进所有勾选通用配置的供应商，且在通用配置编辑框里
         // 显示为一份"重复"的 MCP 配置。
         root.remove("mcp_servers");
-        // 历史错误格式 [mcp.servers] 一并剥离（与 strip_codex_mcp_servers_from_settings
-        // 一致）：sync_all_enabled 只管理 [mcp_servers.*]，legacy 形态一旦进了
+        // 历史错误格式 [mcp.servers] 一并剥离（与切换投影一致）：
+        // sync_all_enabled 只管理 [mcp_servers.*]，legacy 形态一旦进了
         // 片段就会被合并进所有供应商，且没有任何同步路径能清掉这个孤儿。
         if let Some(mcp_tbl) = root
             .get_mut("mcp")
@@ -3946,7 +4098,41 @@ impl ProviderService {
         write_gemini_live(provider)
     }
 
-    fn validate_provider_settings(app_type: &AppType, provider: &Provider) -> Result<(), AppError> {
+    /// MH-13b: every add/update (editor, deep link, tray) is untrusted TOML.
+    /// Strip what a Codex line must never carry. Unknown env-var names are
+    /// kept here: on this path the user typed them.
+    fn sanitize_codex_provider_config(
+        app_type: &AppType,
+        provider: &mut Provider,
+    ) -> Result<(), AppError> {
+        if !matches!(app_type, AppType::Codex) {
+            return Ok(());
+        }
+        let Some(config) = provider
+            .settings_config
+            .get("config")
+            .and_then(Value::as_str)
+        else {
+            return Ok(());
+        };
+        let official = provider.category.as_deref() == Some("official");
+        let (clean, report) =
+            crate::codex_key_ownership::sanitize_untrusted_codex_config(config, official)?;
+        if !report.stripped.is_empty() {
+            log::warn!(
+                "Removed keys a Codex line must not carry from '{}': {}",
+                provider.id,
+                report.stripped.join(", ")
+            );
+            provider.settings_config["config"] = Value::String(clean);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_provider_settings(
+        app_type: &AppType,
+        provider: &Provider,
+    ) -> Result<(), AppError> {
         match app_type {
             AppType::Claude => {
                 if !provider.settings_config.is_object() {
@@ -4062,6 +4248,12 @@ impl ProviderService {
                     ));
                 }
             }
+            AppType::Pi => {
+                crate::pi_config::validate_provider_node(&provider.id, &provider.settings_config)?;
+            }
+            AppType::Mcode => {
+                crate::mcode_config::validate_provider(&provider.id, &provider.settings_config)?;
+            }
         }
 
         // Validate and clean UsageScript configuration (common for all app types)
@@ -4074,6 +4266,14 @@ impl ProviderService {
             }
             if let Some(usage_script) = &meta.usage_script {
                 validate_usage_script(usage_script)?;
+            }
+            // CPP-A7: custom request headers are validated at save while the
+            // feature is on; the proxy filters them again either way.
+            if let Some(overrides) = &meta.local_proxy_request_overrides {
+                validate_request_header_overrides(
+                    overrides,
+                    crate::product_policy::Capability::CustomRequestHeaders.enabled(),
+                )?;
             }
         }
 
@@ -4232,8 +4432,8 @@ impl ProviderService {
 
                 Ok((api_key, base_url))
             }
-            AppType::OpenCode => {
-                // OpenCode uses options.apiKey and options.baseURL
+            AppType::OpenCode | AppType::Mcode => {
+                // OpenCode and MiniMax Code use options.apiKey and options.baseURL
                 let options = provider
                     .settings_config
                     .get("options")
@@ -4266,8 +4466,8 @@ impl ProviderService {
 
                 Ok((api_key, base_url))
             }
-            AppType::OpenClaw | AppType::Hermes => {
-                // OpenClaw/Hermes use apiKey and baseUrl directly on the object
+            AppType::OpenClaw | AppType::Hermes | AppType::Pi => {
+                // OpenClaw/Hermes/Pi use apiKey and baseUrl directly on the object
                 let api_key = provider
                     .settings_config
                     .get("apiKey")
@@ -4419,11 +4619,7 @@ impl ProviderService {
             Self::ensure_not_current(state, app, &format!("universal-{}-{id}", app.as_str()))?;
         }
         for app in &apps {
-            Self::delete_with_locks_held(
-                state,
-                app.clone(),
-                &format!("universal-{}-{id}", app.as_str()),
-            )?;
+            Self::delete_universal_child(state, app, id)?;
         }
         state.db.delete_universal_provider(id)?;
 
@@ -4463,8 +4659,7 @@ impl ProviderService {
             state.db.save_provider("claude", &claude_provider)?;
         } else {
             // 如果禁用了 Claude，删除对应的子供应商
-            let claude_id = format!("universal-claude-{id}");
-            Self::delete_with_locks_held(state, AppType::Claude, &claude_id)?;
+            Self::delete_universal_child(state, &AppType::Claude, id)?;
         }
 
         // 同步到 Codex
@@ -4480,8 +4675,7 @@ impl ProviderService {
             }
             state.db.save_provider("codex", &codex_provider)?;
         } else {
-            let codex_id = format!("universal-codex-{id}");
-            Self::delete_with_locks_held(state, AppType::Codex, &codex_id)?;
+            Self::delete_universal_child(state, &AppType::Codex, id)?;
         }
 
         // 同步到 Gemini
@@ -4497,8 +4691,7 @@ impl ProviderService {
             }
             state.db.save_provider("gemini", &gemini_provider)?;
         } else {
-            let gemini_id = format!("universal-gemini-{id}");
-            Self::delete_with_locks_held(state, AppType::Gemini, &gemini_id)?;
+            Self::delete_universal_child(state, &AppType::Gemini, id)?;
         }
 
         Ok(true)

@@ -5,41 +5,37 @@
 //! - 同步到 ~/.codex/config.toml
 //! - JSON 到 TOML 的转换逻辑
 
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use crate::app_config::{McpApps, McpConfig, McpServer, MultiAppConfig};
+use crate::app_config::{McpApps, McpServer, MultiAppConfig};
+use crate::database::Database;
 use crate::error::AppError;
 
-use super::validation::{extract_server_spec, validate_server_spec};
+use super::validation::validate_server_spec;
 
-fn should_sync_codex_mcp() -> bool {
-    // Codex 未安装/未初始化时：~/.codex 目录不存在。
-    // 按用户偏好：目录缺失时跳过写入/删除，不创建任何文件或目录。
-    crate::codex_config::get_codex_config_dir().exists()
+fn codex_mcp_target() -> Option<std::path::PathBuf> {
+    #[cfg(test)]
+    if let Some(target) = super::projection::TEST_TARGETS.with(|paths| {
+        paths
+            .borrow()
+            .as_ref()
+            .map(|paths| paths.get(&crate::app_config::AppType::Codex).cloned())
+    }) {
+        return target;
+    }
+    // Do not create configuration for an uninitialized client.
+    crate::codex_config::get_codex_config_dir()
+        .exists()
+        .then(crate::codex_config::get_codex_config_path)
 }
 
-/// 返回已启用的 MCP 服务器（过滤 enabled==true）
-fn collect_enabled_servers(cfg: &McpConfig) -> HashMap<String, Value> {
-    let mut out = HashMap::new();
-    for (id, entry) in cfg.servers.iter() {
-        let enabled = entry
-            .get("enabled")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        if !enabled {
-            continue;
-        }
-        match extract_server_spec(entry) {
-            Ok(spec) => {
-                out.insert(id.clone(), spec);
-            }
-            Err(err) => {
-                log::warn!("跳过无效的 MCP 条目 '{id}': {err}");
-            }
-        }
-    }
-    out
+fn ownership_conflict(id: &str) -> AppError {
+    AppError::McpValidation(format!(
+        "Codex MCP ownership conflict for '{id}': external configuration was preserved"
+    ))
 }
 
 /// Convert one live `[mcp_servers.<id>]` table into the unified JSON spec.
@@ -293,95 +289,105 @@ pub fn import_from_codex(config: &mut MultiAppConfig) -> Result<usize, AppError>
     Ok(changed_total)
 }
 
-/// 将 config.json 中 Codex 的 enabled==true 项以 TOML 形式写入 ~/.codex/config.toml
-///
-/// 格式策略：
-/// - 唯一正确格式：[mcp_servers] 顶层表（Codex 官方标准）
-/// - 自动清理错误格式：[mcp.servers]（如果存在）
-/// - 读取现有 config.toml；若语法无效则报错，不尝试覆盖
-/// - 仅更新 `mcp_servers` 表，保留其它键
-/// - 仅写入启用项；无启用项时清理 mcp_servers 表
-pub fn sync_enabled_to_codex(config: &MultiAppConfig) -> Result<(), AppError> {
-    if !should_sync_codex_mcp() {
-        return Ok(());
-    }
-    use toml_edit::{Item, Table};
+/// Settings key of the Codex MCP projection ledger (MH-24).
+pub const CODEX_MCP_PROJECTION_LEDGER_KEY: &str = "codex_mcp_projection_ledger";
 
-    // 1) 收集启用项（Codex 维度）
-    let enabled = collect_enabled_servers(&config.mcp.codex);
+/// MH-24 / key-ownership ③: which `[mcp_servers.<id>]` entries in live
+/// `config.toml` Chimera++ wrote, as id → sha256 of the table it wrote
+/// (formatting-independent, see `canonical_toml_item`). Only ledger entries
+/// are ever overwritten or removed; a live entry with a DB id that is not in
+/// the ledger (added with `codex mcp add` or by hand) is a conflict: it is
+/// reported in `conflicts` and left alone. Stored in the `settings` table.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodexMcpLedger {
+    #[serde(default)]
+    pub servers: BTreeMap<String, String>,
+    #[serde(default)]
+    pub conflicts: BTreeSet<String>,
+}
 
-    // 2) 读取现有 config.toml 文本；保持无效 TOML 的错误返回（不覆盖文件）
-    let base_text = crate::codex_config::read_and_validate_codex_config_text()?;
-
-    // 3) 使用 toml_edit 解析（允许空文件）
-    let mut doc = if base_text.trim().is_empty() {
-        toml_edit::DocumentMut::default()
-    } else {
-        base_text
-            .parse::<toml_edit::DocumentMut>()
-            .map_err(|e| AppError::McpValidation(format!("解析 config.toml 失败: {e}")))?
-    };
-
-    // 4) 清理可能存在的错误格式 [mcp.servers]
-    if let Some(mcp_item) = doc.get_mut("mcp") {
-        if let Some(tbl) = mcp_item.as_table_like_mut() {
-            if tbl.contains_key("servers") {
-                log::warn!("检测到错误的 MCP 格式 [mcp.servers]，正在清理并迁移到 [mcp_servers]");
-                tbl.remove("servers");
-            }
-        }
+impl CodexMcpLedger {
+    /// An unreadable ledger claims nothing.
+    pub fn load(db: &Database) -> Result<Self, AppError> {
+        let Some(json) = db.get_setting(CODEX_MCP_PROJECTION_LEDGER_KEY)? else {
+            return Ok(Self::default());
+        };
+        Ok(serde_json::from_str(&json).unwrap_or_else(|e| {
+            log::warn!("Ignoring an unreadable Codex MCP projection ledger: {e}");
+            Self::default()
+        }))
     }
 
-    // 5) 构造目标 servers 表（稳定的键顺序）
-    if enabled.is_empty() {
-        // 无启用项：移除 mcp_servers 表
-        doc.as_table_mut().remove("mcp_servers");
-    } else {
-        // 构建 servers 表
-        let mut servers_tbl = Table::new();
-        let mut ids: Vec<_> = enabled.keys().cloned().collect();
-        ids.sort();
-        for id in ids {
-            let spec = enabled.get(&id).expect("spec must exist");
-            // 复用通用转换函数（已包含扩展字段支持）
-            match json_server_to_toml_table(spec) {
-                Ok(table) => {
-                    servers_tbl[&id[..]] = Item::Table(table);
-                }
-                Err(err) => {
-                    log::error!("跳过无效的 MCP 服务器 '{id}': {err}");
-                }
-            }
-        }
-        // 使用唯一正确的格式：[mcp_servers]
-        doc["mcp_servers"] = Item::Table(servers_tbl);
+    pub fn save(&self, db: &Database) -> Result<(), AppError> {
+        let json =
+            serde_json::to_string(self).map_err(|source| AppError::JsonSerialize { source })?;
+        db.set_setting(CODEX_MCP_PROJECTION_LEDGER_KEY, &json)
     }
 
-    // 6) 写回（仅改 TOML，不触碰 auth.json）；toml_edit 会尽量保留未改区域的注释/空白/顺序
-    let new_text = doc.to_string();
-    let path = crate::codex_config::get_codex_config_path();
-    crate::config::write_text_file(&path, &new_text)?;
-    Ok(())
+    fn record(&mut self, id: &str, hash: String) {
+        self.servers.insert(id.to_string(), hash);
+        self.conflicts.remove(id);
+    }
+
+    fn conflict(&mut self, id: &str) {
+        log::warn!(
+            "Codex config.toml already has an MCP server '{id}' that Chimera++ did not write; it is left unchanged"
+        );
+        self.servers.remove(id);
+        self.conflicts.insert(id.to_string());
+    }
+}
+
+fn codex_mcp_table_hash(item: &toml_edit::Item) -> Option<String> {
+    let canonical = crate::codex_key_ownership::canonical_toml_item(item)?;
+    Some(
+        Sha256::digest(canonical.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect(),
+    )
+}
+
+fn live_codex_mcp_server<'a>(
+    doc: &'a toml_edit::DocumentMut,
+    id: &str,
+) -> Option<&'a toml_edit::Item> {
+    doc.get("mcp_servers")
+        .and_then(toml_edit::Item::as_table_like)
+        .and_then(|servers| servers.get(id))
 }
 
 /// 将单个 MCP 服务器同步到 Codex live 配置
-/// 始终使用 Codex 官方格式 [mcp_servers]，并清理可能存在的错误格式 [mcp.servers]
+/// 只更新 Codex 官方格式 [mcp_servers]；未纳管的旧格式条目保持不变。
+///
+/// MH-24: an existing live entry with this id is only overwritten when the
+/// ledger records it (same hash) or it already equals what would be
+/// written; otherwise it is a conflict and stays untouched.
 pub fn sync_single_server_to_codex(
-    _config: &MultiAppConfig,
+    ledger: &mut CodexMcpLedger,
     id: &str,
     server_spec: &Value,
 ) -> Result<(), AppError> {
-    if !should_sync_codex_mcp() {
+    sync_single_server_to_codex_journal(ledger, id, server_spec, &mut Vec::new())
+}
+
+pub(crate) fn sync_single_server_to_codex_journal(
+    ledger: &mut CodexMcpLedger,
+    id: &str,
+    server_spec: &Value,
+    journal: &mut Vec<crate::config::cas::AppliedChangeset>,
+) -> Result<(), AppError> {
+    let Some(config_path) = codex_mcp_target() else {
         return Ok(());
-    }
+    };
     use toml_edit::Item;
 
     // 读取现有的 config.toml
-    let config_path = crate::codex_config::get_codex_config_path();
 
-    let mut doc = if config_path.exists() {
-        let content =
-            std::fs::read_to_string(&config_path).map_err(|e| AppError::io(&config_path, e))?;
+    let snapshot = crate::config::cas::FileSnapshot::read(&config_path)?;
+    let mut doc = if let Some(bytes) = snapshot.contents() {
+        let content = std::str::from_utf8(bytes)
+            .map_err(|_| AppError::McpValidation("Codex config is not UTF-8".into()))?;
         // 解析失败必须报错而不是用空文档顶替：写回空文档会把用户
         // config.toml 里的其它段落（model/model_providers/注释等）整体清空
         content
@@ -391,71 +397,115 @@ pub fn sync_single_server_to_codex(
         toml_edit::DocumentMut::new()
     };
 
-    // 清理可能存在的错误格式 [mcp.servers]
-    if let Some(mcp_item) = doc.get_mut("mcp") {
-        if let Some(tbl) = mcp_item.as_table_like_mut() {
-            if tbl.contains_key("servers") {
-                log::warn!("检测到错误的 MCP 格式 [mcp.servers]，正在清理并迁移到 [mcp_servers]");
-                tbl.remove("servers");
-            }
-        }
-    }
-
     // 确保 [mcp_servers] 表存在
     if !doc.contains_key("mcp_servers") {
         doc["mcp_servers"] = toml_edit::table();
     }
 
     // 将 JSON 服务器规范转换为 TOML 表
-    let toml_table = json_server_to_toml_table(server_spec)?;
+    let new_item = Item::Table(json_server_to_toml_table(server_spec)?);
+    let new_hash = codex_mcp_table_hash(&new_item)
+        .ok_or_else(|| AppError::McpValidation(format!("MCP 服务器 '{id}' 无法序列化")))?;
+
+    if let Some(live_item) = live_codex_mcp_server(&doc, id) {
+        let live_hash = codex_mcp_table_hash(live_item);
+        let owned = ledger
+            .servers
+            .get(id)
+            .is_some_and(|recorded| live_hash.as_ref() == Some(recorded));
+        if !owned && live_hash.as_deref() != Some(new_hash.as_str()) {
+            ledger.conflict(id);
+            return Err(ownership_conflict(id));
+        }
+    }
 
     // 使用唯一正确的格式：[mcp_servers]
-    doc["mcp_servers"][id] = Item::Table(toml_table);
+    doc["mcp_servers"][id] = new_item;
 
     // 写回文件
     let new_text = doc.to_string();
-    crate::config::write_text_file(&config_path, &new_text)?;
+    journal.push(crate::codex_live_write::plan_observed_config(snapshot, &new_text)?.commit()?);
+    ledger.record(id, new_hash);
 
     Ok(())
 }
 
 /// 从 Codex live 配置中移除单个 MCP 服务器
-/// 从正确的 [mcp_servers] 表中删除，同时清理可能存在于错误位置 [mcp.servers] 的数据
-pub fn remove_server_from_codex(id: &str) -> Result<(), AppError> {
-    if !should_sync_codex_mcp() {
+/// 从正确的 [mcp_servers] 表中删除已纳管条目，不触碰外来旧格式数据。
+///
+/// MH-24: only an entry the ledger records (unchanged since written), or
+/// one identical to what `server_spec` would write (entries projected
+/// before the ledger existed), is removed. A user-added or user-edited
+/// entry stays; an edited one is reported as a conflict.
+pub fn remove_server_from_codex(
+    ledger: &mut CodexMcpLedger,
+    id: &str,
+    server_spec: Option<&Value>,
+) -> Result<(), AppError> {
+    remove_server_from_codex_journal(ledger, id, server_spec, &mut Vec::new())
+}
+
+pub(crate) fn remove_server_from_codex_journal(
+    ledger: &mut CodexMcpLedger,
+    id: &str,
+    server_spec: Option<&Value>,
+    journal: &mut Vec<crate::config::cas::AppliedChangeset>,
+) -> Result<(), AppError> {
+    let Some(config_path) = codex_mcp_target() else {
         return Ok(());
-    }
-    let config_path = crate::codex_config::get_codex_config_path();
+    };
 
     if !config_path.exists() {
+        ledger.servers.remove(id);
+        ledger.conflicts.remove(id);
         return Ok(()); // 文件不存在，无需删除
     }
 
-    let content =
-        std::fs::read_to_string(&config_path).map_err(|e| AppError::io(&config_path, e))?;
+    let snapshot = crate::config::cas::FileSnapshot::read(&config_path)?;
+    let content = std::str::from_utf8(snapshot.contents().unwrap_or_default())
+        .map_err(|_| AppError::McpValidation("Codex config is not UTF-8".into()))?;
 
     // Invalid live config must fail so the service can restore its database record.
     let mut doc = content
         .parse::<toml_edit::DocumentMut>()
         .map_err(|e| AppError::McpValidation(format!("解析 Codex config.toml 失败: {e}")))?;
+    let recorded = ledger.servers.remove(id);
+    ledger.conflicts.remove(id);
 
-    // 从正确的位置删除：[mcp_servers]
-    if let Some(mcp_servers) = doc.get_mut("mcp_servers").and_then(|s| s.as_table_mut()) {
-        mcp_servers.remove(id);
+    let live_hash = live_codex_mcp_server(&doc, id).map(codex_mcp_table_hash);
+    let owned = match (&recorded, &live_hash) {
+        (_, None) => false,
+        (Some(recorded), Some(live)) => live.as_ref() == Some(recorded),
+        (None, Some(live)) => server_spec
+            .and_then(|spec| json_server_to_toml_table(spec).ok())
+            .and_then(|table| codex_mcp_table_hash(&toml_edit::Item::Table(table)))
+            .is_some_and(|expected| live.as_ref() == Some(&expected)),
+    };
+    // A requested removal must not silently succeed when the prior managed
+    // projection (including legacy ownership) no longer matches live content.
+    // Unmanaged same-name entries encountered during repair remain untouched.
+    if live_hash.is_some() && !owned && (recorded.is_some() || server_spec.is_some()) {
+        ledger.conflict(id);
+        return Err(ownership_conflict(id));
     }
 
-    // 同时清理可能存在于错误位置的数据：[mcp.servers]（如果存在）
-    if let Some(mcp_table) = doc.get_mut("mcp").and_then(|t| t.as_table_mut()) {
-        if let Some(servers) = mcp_table.get_mut("servers").and_then(|s| s.as_table_mut()) {
-            if servers.remove(id).is_some() {
-                log::warn!("从错误的 MCP 格式 [mcp.servers] 中清理了服务器 '{id}'");
-            }
+    // 从正确的位置删除：[mcp_servers]
+    if owned {
+        if let Some(mcp_servers) = doc
+            .get_mut("mcp_servers")
+            .and_then(|s| s.as_table_like_mut())
+        {
+            mcp_servers.remove(id);
         }
+    }
+
+    if !owned {
+        return Ok(());
     }
 
     // 写回文件
     let new_text = doc.to_string();
-    crate::config::write_text_file(&config_path, &new_text)?;
+    journal.push(crate::codex_live_write::plan_observed_config(snapshot, &new_text)?.commit()?);
 
     Ok(())
 }
@@ -766,12 +816,152 @@ pub(super) fn json_server_to_toml_table(spec: &Value) -> Result<toml_edit::Table
         }
     }
 
+    // W4: Codex 0.156+ rejects the whole config.toml when
+    // `oauth.authorization_server_issuer` is set without `auth = "ema_auth"`
+    // (`config/src/mcp_types.rs`, rust-v0.157.0).
+    if t.get("auth").and_then(toml_edit::Item::as_str) != Some("ema_auth") {
+        let mut oauth_now_empty = false;
+        if let Some(oauth) = t
+            .get_mut("oauth")
+            .and_then(toml_edit::Item::as_table_like_mut)
+        {
+            if oauth.remove("authorization_server_issuer").is_some() {
+                log::warn!(
+                    "已移除 MCP 字段 oauth.authorization_server_issuer：Codex 要求它与 auth = \"ema_auth\" 同时出现"
+                );
+                oauth_now_empty = oauth.is_empty();
+            }
+        }
+        if oauth_now_empty {
+            t.remove("oauth");
+        }
+    }
+
     Ok(t)
+}
+
+/// 06B write preview: the `[mcp_servers.<id>]` section a projection would
+/// write for `spec`, with every `env`/header value replaced by `mask`.
+/// Returns `(section header, TOML text)`.
+#[allow(dead_code)]
+pub fn codex_mcp_section_preview(
+    id: &str,
+    spec: &Value,
+    mask: impl Fn(&str) -> String,
+) -> Result<(String, String), AppError> {
+    let mut masked = spec.clone();
+    for key in ["env", "headers", "http_headers"] {
+        if let Some(map) = masked.get_mut(key).and_then(Value::as_object_mut) {
+            for value in map.values_mut() {
+                if let Some(text) = value.as_str() {
+                    *value = Value::String(mask(text));
+                }
+            }
+        }
+    }
+    if let Some(args) = masked.get_mut("args").and_then(Value::as_array_mut) {
+        let mut mask_next = false;
+        for arg in args.iter_mut() {
+            if let Some(text) = arg.as_str() {
+                if mask_next {
+                    *arg = Value::String(mask(text));
+                    mask_next = false;
+                    continue;
+                }
+                let lower = text.to_ascii_lowercase();
+                if lower == "--key"
+                    || lower == "--api-key"
+                    || lower == "--token"
+                    || lower == "--secret"
+                    || lower == "--password"
+                {
+                    mask_next = true;
+                } else if let Some((flag, val)) = text.split_once('=') {
+                    let flag_lower = flag.to_ascii_lowercase();
+                    if flag_lower.contains("key")
+                        || flag_lower.contains("token")
+                        || flag_lower.contains("secret")
+                        || flag_lower.contains("password")
+                        || flag_lower.contains("auth")
+                    {
+                        *arg = Value::String(format!("{flag}={}", mask(val)));
+                    }
+                }
+            }
+        }
+    }
+    if let Some(url_val) = masked.get("url").and_then(Value::as_str) {
+        if let Ok(mut parsed) = url::Url::parse(url_val) {
+            if parsed.password().is_some() {
+                let _ = parsed.set_password(Some(&mask("***")));
+                masked["url"] = Value::String(parsed.to_string());
+            }
+        }
+    }
+    let mut doc = toml_edit::DocumentMut::new();
+    let mut servers = toml_edit::Table::new();
+    servers.set_implicit(true);
+    servers.insert(
+        id,
+        toml_edit::Item::Table(json_server_to_toml_table(&masked)?),
+    );
+    doc.insert("mcp_servers", toml_edit::Item::Table(servers));
+    let text = doc.to_string();
+    let header = text
+        .lines()
+        .find(|line| line.starts_with("[mcp_servers"))
+        .unwrap_or_default()
+        .to_string();
+    Ok((header, text))
+}
+
+/// Whether Chimera++ owns the live `[mcp_servers.<id>]` entry (MH-24 ledger).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CodexMcpProjection {
+    /// Written by us and unchanged since.
+    Managed,
+    /// Live has an entry with this id that we did not write; left alone.
+    Conflict,
+    /// Not in live config.toml from us.
+    NotProjected,
+}
+
+impl CodexMcpLedger {
+    pub fn projection(&self, id: &str) -> CodexMcpProjection {
+        if self.conflicts.contains(id) {
+            CodexMcpProjection::Conflict
+        } else if self.servers.contains_key(id) {
+            CodexMcpProjection::Managed
+        } else {
+            CodexMcpProjection::NotProjected
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn section_preview_masks_env_and_names_the_section() {
+        let (header, text) = codex_mcp_section_preview(
+            "github",
+            &json!({
+                "type": "stdio",
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-github"],
+                "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_secretvaluea91f"},
+                "enabled": false
+            }),
+            |value| format!("••••{}", &value[value.len().saturating_sub(4)..]),
+        )
+        .unwrap();
+        assert_eq!(header, "[mcp_servers.github]");
+        assert!(text.contains("enabled = false"), "{text}");
+        assert!(text.contains("••••a91f"), "{text}");
+        assert!(!text.contains("ghp_secretvalue"), "{text}");
+    }
 
     #[test]
     fn http_headers_are_only_written_to_codex_http_headers() {
@@ -846,6 +1036,50 @@ mod tests {
                 "spec must be rejected: {spec}"
             );
         }
+    }
+
+    #[test]
+    fn oauth_issuer_without_ema_auth_is_dropped_before_write() {
+        let table = json_server_to_toml_table(&json!({
+            "url": "https://mcp.example.com",
+            "oauth": { "authorization_server_issuer": "https://as.example" }
+        }))
+        .unwrap();
+        assert!(
+            table.get("oauth").is_none(),
+            "an emptied oauth table is dropped"
+        );
+
+        let table = json_server_to_toml_table(&json!({
+            "url": "https://mcp.example.com",
+            "oauth": { "authorization_server_issuer": "https://as.example", "client_id": "cid" }
+        }))
+        .unwrap();
+        let oauth = table
+            .get("oauth")
+            .and_then(|item| item.as_table_like())
+            .unwrap();
+        assert!(oauth.get("authorization_server_issuer").is_none());
+        assert_eq!(
+            oauth.get("client_id").and_then(|item| item.as_str()),
+            Some("cid")
+        );
+
+        let table = json_server_to_toml_table(&json!({
+            "url": "https://mcp.example.com",
+            "auth": "ema_auth",
+            "oauth": { "authorization_server_issuer": "https://as.example" }
+        }))
+        .unwrap();
+        assert_eq!(
+            table
+                .get("oauth")
+                .and_then(|item| item.as_table_like())
+                .and_then(|oauth| oauth.get("authorization_server_issuer"))
+                .and_then(|item| item.as_str()),
+            Some("https://as.example"),
+            "with auth = \"ema_auth\" the issuer is valid and kept"
+        );
     }
 
     #[test]

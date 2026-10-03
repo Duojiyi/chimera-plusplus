@@ -193,13 +193,14 @@ export function UsageHero({
   const appLabel =
     appType && appType in TITLE_THEMES ? t(`usage.appFilter.${appType}`) : null;
 
-  const cacheWriteState = deriveCacheWriteState(
+  const inferredCacheWriteState = deriveCacheWriteState(
     appType ? [appType] : allApps.map((a) => a.appType),
   );
 
   const input = summary?.totalInputTokens ?? 0;
   const output = summary?.totalOutputTokens ?? 0;
   const cacheWrite = summary?.totalCacheCreationTokens ?? 0;
+  const cacheWriteState = cacheWrite > 0 ? "ok" : inferredCacheWriteState;
   const cacheRead = summary?.totalCacheReadTokens ?? 0;
   const realTotal = summary?.realTotalTokens ?? 0;
   const hitRate = summary?.cacheHitRate ?? 0;

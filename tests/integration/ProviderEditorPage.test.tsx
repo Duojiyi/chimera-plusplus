@@ -61,6 +61,123 @@ function setup(overrides: Partial<ComponentProps<typeof ProviderEditor>> = {}) {
 }
 
 describe("full-page provider editor", () => {
+  it("edits the persisted line color and restores the default without changing credentials", () => {
+    const { onDraftChange } = setup();
+    fireEvent.click(screen.getByLabelText("修改线路外观"));
+    fireEvent.change(screen.getByLabelText("线路颜色"), {
+      target: { value: "#8F6446" },
+    });
+    expect(onDraftChange.mock.lastCall![0]).toMatchObject({
+      iconColor: "#8F6446",
+      apiKey: "test-key",
+    });
+    expect(screen.getByLabelText("修改线路外观")).toHaveTextContent(
+      "赭石 · 自动生成",
+    );
+    fireEvent.change(screen.getByLabelText("线路颜色"), {
+      target: { value: "" },
+    });
+    expect(onDraftChange.mock.lastCall![0].iconColor).toBeUndefined();
+  });
+
+  it("retains existing custom colors and provider metadata in the draft", () => {
+    const original = {
+      id: "existing",
+      name: "自定义",
+      icon: "openai",
+      iconColor: "#123456",
+      sortIndex: 7,
+      settingsConfig: { auth: {}, config: "" },
+    };
+    const draft = providerDraft(original);
+    expect(draft.iconColor).toBe("#123456");
+    expect(draft.original).toBe(original);
+    setup({ editor: draft });
+    fireEvent.click(screen.getByLabelText("修改线路外观"));
+    expect(screen.getByLabelText("线路颜色")).toHaveValue("#123456");
+    expect(
+      screen.getByRole("option", { name: "当前自定义颜色" }),
+    ).toBeInTheDocument();
+  });
+
+  it("locks appearance changes while saving", () => {
+    setup({ savingProvider: true });
+    expect(screen.getByLabelText("线路颜色")).toBeDisabled();
+    fireEvent.click(screen.getByLabelText("修改线路外观"));
+    expect(
+      screen.getByLabelText("修改线路外观").closest("details"),
+    ).not.toHaveAttribute("open");
+  });
+
+  it("updates the visible route preview without exposing credentials or URL secrets", () => {
+    setup();
+    const preview = screen.getByRole("complementary", { name: "线路草稿预览" });
+    fireEvent.change(screen.getByLabelText("线路名称 *"), {
+      target: { value: "预览线路" },
+    });
+    fireEvent.change(screen.getByLabelText(/API 请求地址/), {
+      target: {
+        value:
+          "https://user:password@example.com/private-token?key=query-secret#fragment",
+      },
+    });
+    fireEvent.change(screen.getByLabelText(/默认模型/), {
+      target: { value: "example-model" },
+    });
+    expect(preview).toHaveTextContent("预览线路");
+    expect(preview).toHaveTextContent("https://example.com");
+    expect(preview).toHaveTextContent("example-model");
+    for (const secret of [
+      "test-key",
+      "user:",
+      "password",
+      "private-token",
+      "query-secret",
+      "fragment",
+    ])
+      expect(preview).not.toHaveTextContent(secret);
+    fireEvent.change(screen.getByLabelText(/API 请求地址/), {
+      target: { value: "not-a-url secret-key" },
+    });
+    expect(preview).toHaveTextContent("尚未填写有效地址");
+    expect(preview).not.toHaveTextContent("secret-key");
+  });
+
+  it("keeps keyboard-accessible protocol choices visible outside advanced configuration", () => {
+    const { onDraftChange } = setup();
+    const group = screen.getByRole("radiogroup", { name: "上游格式" });
+    expect(group.closest("details")).toBeNull();
+    fireEvent.click(within(group).getByRole("radio", { name: "Anthropic" }));
+    expect(onDraftChange.mock.lastCall![0].apiFormat).toBe("anthropic");
+    expect(
+      within(group).getByRole("radio", { name: "Anthropic" }),
+    ).toBeChecked();
+    expect(screen.getByRole("complementary")).toHaveTextContent("Anthropic");
+  });
+
+  it("places deletion in the editor header and preserves the real save-and-apply operation", () => {
+    const onDelete = vi.fn();
+    const existing = {
+      id: "existing",
+      name: "已有线路",
+      settingsConfig: { auth: {}, config: "" },
+    };
+    setup({
+      editor: { ...providerDraft(existing), apiKey: "test-key" },
+      onDelete,
+    });
+    const button = screen.getByRole("button", { name: "删除线路" });
+    expect(button.closest("header")).not.toBeNull();
+    fireEvent.click(button);
+    expect(onDelete).toHaveBeenCalledOnce();
+    expect(
+      screen.getByRole("button", { name: "保存并应用" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "保存" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("is a non-modal page, focuses the heading, and exposes mapping outside advanced settings", () => {
     setup();
     expect(
@@ -185,4 +302,17 @@ describe("full-page provider editor", () => {
     expect(onSave).not.toHaveBeenCalled();
     expect(key).toHaveFocus();
   });
+});
+
+it("gives advanced configuration a visible disclosure action", () => {
+  const { container } = setup();
+  const summary = screen.getByText("高级配置").closest("summary")!;
+  expect(within(summary).getByText("展开")).toBeInTheDocument();
+  expect(within(summary).getByText("收起")).toBeInTheDocument();
+  const details = container.querySelector("details.advanced-options")!;
+  expect(details).not.toHaveAttribute("open");
+  fireEvent.click(summary);
+  expect(details).toHaveAttribute("open");
+  fireEvent.click(summary);
+  expect(details).not.toHaveAttribute("open");
 });

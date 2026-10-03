@@ -1,3 +1,4 @@
+import "./AppearanceView.css";
 import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -34,7 +35,7 @@ function skinToneClass(skin: CatalogSkin) {
 }
 
 function skinPreviewUrl(preview: string) {
-  return preview.startsWith("/")
+  return /^(?:https?:\/\/|\/(?!\/))/.test(preview)
     ? preview
     : `https://skins.agentsmirror.com/${preview.replace(/^\/+/, "")}`;
 }
@@ -46,6 +47,11 @@ export default function AppearanceView({
   enabled: boolean;
   onRequestSkinAction: (action: { label: string; execute: () => void }) => void;
 }) {
+  const [failedPreviews, setFailedPreviews] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const previewFailed = (url: string) =>
+    setFailedPreviews((current) => new Set(current).add(url));
   const [skins, setSkins] = useState<CatalogSkin[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [filter, setFilter] = useState<
@@ -54,6 +60,7 @@ export default function AppearanceView({
   const [busy, setBusy] = useState<string | null>(null);
   useLightweightCloseBlocker(Boolean(busy));
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
   const load = async () => {
     if (!runningInTauri) {
       setSkins([]);
@@ -62,6 +69,7 @@ export default function AppearanceView({
       return;
     }
     try {
+      setLoading(true);
       setError("");
       const result = await invoke<CatalogSkin[]>("list_skin_catalog");
       setSkins(result);
@@ -72,6 +80,8 @@ export default function AppearanceView({
       );
     } catch (reason) {
       setError(String(reason));
+    } finally {
+      setLoading(false);
     }
   };
   useEffect(() => {
@@ -116,7 +126,6 @@ export default function AppearanceView({
     <section className="skin-market-reference">
       <header className="skin-market-heading">
         <div>
-          <span className="eyebrow">CODEX 外观</span>
           <h1>皮肤市场</h1>
           <p>浏览、预览并安装 Codex 客户端皮肤。</p>
         </div>
@@ -153,13 +162,16 @@ export default function AppearanceView({
             <button
               key={skin.id}
               className={skin.id === selected?.id ? "active" : ""}
+              aria-pressed={skin.id === selected?.id}
               onClick={() => setSelectedId(skin.id)}
             >
               <span
                 className={`skin-card-preview ${skinToneClass(skin)}`}
                 aria-hidden="true"
               >
-                {skin.preview === routeGateIcon ? (
+                {!skin.preview ||
+                failedPreviews.has(skin.preview) ||
+                skin.preview === routeGateIcon ? (
                   <span className="skin-card-miniature">
                     <i />
                     <i />
@@ -169,6 +181,7 @@ export default function AppearanceView({
                 ) : (
                   <img
                     src={skinPreviewUrl(skin.preview)}
+                    onError={() => previewFailed(skin.preview)}
                     alt=""
                     loading="lazy"
                     decoding="async"
@@ -180,7 +193,7 @@ export default function AppearanceView({
                 <small>{skin.description || `皮肤包 · ${skin.version}`}</small>
                 <code>v{skin.version}</code>
                 {skin.installed && (
-                  <em>{skin.applied ? "已安装" : "已下载"}</em>
+                  <em>{skin.applied ? "当前外观" : "已安装"}</em>
                 )}
               </span>
             </button>
@@ -189,7 +202,9 @@ export default function AppearanceView({
             <Empty
               label={
                 runningInTauri
-                  ? "正在读取皮肤目录…"
+                  ? loading
+                    ? "正在读取皮肤目录…"
+                    : "皮肤目录暂无内容。"
                   : "浏览器预览不读取皮肤目录，请在桌面应用中查看真实皮肤。"
               }
             />
@@ -216,29 +231,23 @@ export default function AppearanceView({
                     : "has-catalog-image"
                 }`}
               >
-                {selected.preview === routeGateIcon ? (
-                  <div className="skin-preview-fallback">
-                    <aside>
-                      <b>CODEX</b>
-                      <span>新对话</span>
-                      <span>Codex</span>
-                      <span>设置</span>
-                    </aside>
-                    <main>
-                      <code>{selected.name} // CODEX ROUTE</code>
-                      <div>
-                        <b>ChimeraHub 已连接</b>
-                        <small>gpt-5.6-sol · 420 ms</small>
-                      </div>
-                      <footer>
-                        给 Codex 发送消息 <i>↑</i>
-                      </footer>
-                    </main>
+                {!selected.preview ||
+                failedPreviews.has(selected.preview) ||
+                selected.preview === routeGateIcon ? (
+                  <div className="skin-preview-fallback" role="status">
+                    <p>预览暂不可用，请检查网络或稍后重试。</p>
+                    <button
+                      type="button"
+                      onClick={() => setFailedPreviews(new Set())}
+                    >
+                      重试预览
+                    </button>
                   </div>
                 ) : (
                   <img
                     className="skin-catalog-preview-art"
                     src={skinPreviewUrl(selected.preview)}
+                    onError={() => previewFailed(selected.preview)}
                     alt={`${selected.name} 预览`}
                     decoding="async"
                   />
@@ -246,13 +255,16 @@ export default function AppearanceView({
               </div>
               <div className="skin-detail-footer">
                 <div>
-                  <h2>
-                    {selected.name} {selected.description}
-                  </h2>
-                  <p>
-                    {selected.installed
-                      ? `已安装 · v${selected.version} · 适配当前 Codex`
-                      : `v${selected.version} · 可下载安装`}
+                  <h2>{selected.name}</h2>
+                  {selected.description && <p>{selected.description}</p>}
+                  <p className="skin-detail-meta">
+                    v{selected.version}
+                    {selected.author && ` · ${selected.author}`} ·{" "}
+                    {selected.applied
+                      ? "当前外观"
+                      : selected.installed
+                        ? "已安装"
+                        : "可下载安装"}
                   </p>
                 </div>
                 <div className="skin-actions">

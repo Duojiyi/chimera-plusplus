@@ -2,14 +2,12 @@
 
 use super::codex_responses_sse as sse;
 use super::{
-    codex_chat_common::{
-        extract_reasoning_field_text, split_leading_think_block, strip_leading_think_open_tag,
-    },
+    codex_chat_common::{extract_reasoning_field_text, InlineThinkParser, InlineThinkPart},
     transform_codex_chat::{
         chat_usage_to_responses_usage, custom_tool_input_from_chat_arguments,
         response_id_from_chat_id, response_status_from_finish_reason,
         response_tool_call_item_from_chat_name, response_tool_call_item_id_from_chat_name,
-        CodexToolContext,
+        response_tool_call_status, CodexToolContext,
     },
 };
 use crate::proxy::json_canonical::canonicalize_tool_arguments_str;
@@ -37,30 +35,6 @@ struct ReasoningItemState {
     done: bool,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-enum InlineThinkMode {
-    #[default]
-    Detecting,
-    Reasoning,
-    Text,
-}
-
-#[derive(Debug, Default)]
-struct InlineThinkState {
-    mode: InlineThinkMode,
-    buffer: String,
-    /// The `<think>` opener has been removed from `buffer`; what remains is
-    /// reasoning text, streamed out as it arrives.
-    open_consumed: bool,
-    /// Whether any reasoning text has been emitted for the current block, so
-    /// only the block's first chunk has its leading whitespace trimmed.
-    emitted_any: bool,
-}
-
-/// Bytes of reasoning held back while streaming an inline `<think>` block, so a
-/// `</think>` split across two chunks is still recognised as one tag.
-const INLINE_THINK_TAIL_BYTES: usize = "</think>".len() - 1;
-
 #[derive(Debug, Default)]
 struct ToolCallState {
     output_index: Option<u32>,
@@ -83,7 +57,7 @@ struct ChatToResponsesState {
     next_output_index: u32,
     text: TextItemState,
     reasoning: ReasoningItemState,
-    inline_think: InlineThinkState,
+    inline_think: InlineThinkParser,
     tools: BTreeMap<usize, ToolCallState>,
     next_tool_index_to_add: usize,
     output_items: Vec<(u32, Value)>,
@@ -103,7 +77,7 @@ impl Default for ChatToResponsesState {
             next_output_index: 0,
             text: TextItemState::default(),
             reasoning: ReasoningItemState::default(),
-            inline_think: InlineThinkState::default(),
+            inline_think: InlineThinkParser::default(),
             tools: BTreeMap::new(),
             next_tool_index_to_add: 0,
             output_items: Vec::new(),
@@ -163,7 +137,11 @@ impl ChatToResponsesState {
                 }
             }
 
-            if let Some(tool_calls) = delta.get("tool_calls").and_then(|v| v.as_array()) {
+            if let Some(tool_calls) = delta
+                .get("tool_calls")
+                .and_then(|v| v.as_array())
+                .filter(|calls| !calls.is_empty())
+            {
                 events.extend(self.flush_inline_think_at_boundary());
                 let reasoning_for_tool_call = self.current_reasoning_text();
                 events.extend(self.finalize_reasoning());
@@ -183,145 +161,28 @@ impl ChatToResponsesState {
     }
 
     fn push_content_delta(&mut self, delta: &str) -> Vec<Bytes> {
-        match self.inline_think.mode {
-            InlineThinkMode::Text => {
-                let mut events = self.finalize_reasoning();
-                events.extend(self.push_text_delta(delta));
-                events
-            }
-            InlineThinkMode::Detecting => {
-                self.inline_think.buffer.push_str(delta);
-                match leading_think_prefix_decision(&self.inline_think.buffer) {
-                    ThinkPrefixDecision::NeedMore => Vec::new(),
-                    ThinkPrefixDecision::Reasoning => {
-                        self.inline_think.mode = InlineThinkMode::Reasoning;
-                        self.drain_complete_inline_think()
-                    }
-                    ThinkPrefixDecision::Text => {
-                        self.inline_think.mode = InlineThinkMode::Text;
-                        let text = std::mem::take(&mut self.inline_think.buffer);
-                        let mut events = self.finalize_reasoning();
-                        events.extend(self.push_text_delta(&text));
-                        events
-                    }
-                }
-            }
-            InlineThinkMode::Reasoning => {
-                self.inline_think.buffer.push_str(delta);
-                self.drain_complete_inline_think()
-            }
-        }
+        let parts = self.inline_think.push(delta);
+        self.emit_inline_parts(parts)
     }
 
-    /// Stream an inline `<think>` block as reasoning deltas while it is still
-    /// open. The whole block used to be buffered until `</think>` arrived, so a
-    /// model that thinks for minutes produced no downstream events at all and
-    /// the proxy's own silence watchdog cut the response off. Only the last
-    /// seven bytes are held back, enough to recognise a close tag that straddles
-    /// two chunks.
-    fn drain_complete_inline_think(&mut self) -> Vec<Bytes> {
-        if !self.inline_think.open_consumed {
-            let buffer = &self.inline_think.buffer;
-            let leading_ws = buffer.len() - buffer.trim_start().len();
-            if !buffer[leading_ws..].starts_with("<think>") {
-                return Vec::new();
+    fn emit_inline_parts(&mut self, parts: Vec<InlineThinkPart>) -> Vec<Bytes> {
+        let mut events = Vec::new();
+        for (reasoning, text) in parts {
+            if reasoning {
+                events.extend(self.finalize_text());
+                events.extend(self.push_reasoning_delta(&text));
+                self.append_reasoning_to_active_tools(&text);
+            } else {
+                events.extend(self.finalize_reasoning());
+                events.extend(self.push_text_delta(&text));
             }
-            let rest = buffer[leading_ws + "<think>".len()..].to_string();
-            self.inline_think.buffer = rest;
-            self.inline_think.open_consumed = true;
-            self.inline_think.emitted_any = false;
         }
-
-        if let Some(close) = self.inline_think.buffer.find("</think>") {
-            let buffer = std::mem::take(&mut self.inline_think.buffer);
-            let reasoning = &buffer[..close];
-            let answer = buffer[close + "</think>".len()..]
-                .trim_start_matches(['\r', '\n', '\t', ' '])
-                .to_string();
-            self.inline_think.mode = InlineThinkMode::Text;
-            self.inline_think.open_consumed = false;
-
-            let mut events = self.emit_inline_reasoning(reasoning.trim_end());
-            events.extend(self.finalize_reasoning());
-            if !answer.is_empty() {
-                events.extend(self.push_text_delta(&answer));
-            }
-            return events;
-        }
-
-        if self.inline_think.buffer.len() <= INLINE_THINK_TAIL_BYTES {
-            return Vec::new();
-        }
-        let mut split = self.inline_think.buffer.len() - INLINE_THINK_TAIL_BYTES;
-        while !self.inline_think.buffer.is_char_boundary(split) {
-            split -= 1;
-        }
-        let ready: String = self.inline_think.buffer.drain(..split).collect();
-        self.emit_inline_reasoning(&ready)
-    }
-
-    /// Emit a chunk of inline reasoning, trimming leading whitespace only at the
-    /// start of the block (the closed block's trailing whitespace is trimmed by
-    /// the caller), so the streamed text matches what buffering used to yield.
-    fn emit_inline_reasoning(&mut self, chunk: &str) -> Vec<Bytes> {
-        let chunk = if self.inline_think.emitted_any {
-            chunk
-        } else {
-            chunk.trim_start()
-        };
-        if chunk.is_empty() {
-            return Vec::new();
-        }
-        self.inline_think.emitted_any = true;
-        self.push_reasoning_delta(chunk)
+        events
     }
 
     fn flush_inline_think_at_boundary(&mut self) -> Vec<Bytes> {
-        match self.inline_think.mode {
-            InlineThinkMode::Text => Vec::new(),
-            InlineThinkMode::Detecting => {
-                self.inline_think.mode = InlineThinkMode::Text;
-                let text = std::mem::take(&mut self.inline_think.buffer);
-                if text.is_empty() {
-                    Vec::new()
-                } else {
-                    let mut events = self.finalize_reasoning();
-                    events.extend(self.push_text_delta(&text));
-                    events
-                }
-            }
-            InlineThinkMode::Reasoning => {
-                // The stream ended inside the think block. Whatever was held
-                // back is reasoning too (the open tag is already gone once
-                // `open_consumed` is set), and the reasoning item opened by the
-                // earlier deltas must be closed even if nothing is left.
-                let buffered = std::mem::take(&mut self.inline_think.buffer);
-                self.inline_think.mode = InlineThinkMode::Text;
-                let open_consumed = std::mem::take(&mut self.inline_think.open_consumed);
-                if !open_consumed {
-                    if let Some((reasoning, answer)) = split_leading_think_block(&buffered) {
-                        let mut events = Vec::new();
-                        if !reasoning.is_empty() {
-                            events.extend(self.push_reasoning_delta(&reasoning));
-                            events.extend(self.finalize_reasoning());
-                        }
-                        if !answer.is_empty() {
-                            events.extend(self.push_text_delta(&answer));
-                        }
-                        return events;
-                    }
-                }
-
-                let reasoning = if open_consumed {
-                    buffered
-                } else {
-                    strip_leading_think_open_tag(&buffered).unwrap_or(buffered)
-                };
-                let mut events = self.emit_inline_reasoning(reasoning.trim_end());
-                events.extend(self.finalize_reasoning());
-                events
-            }
-        }
+        let parts = self.inline_think.finish();
+        self.emit_inline_parts(parts)
     }
 
     fn ensure_response_started(&mut self) -> Vec<Bytes> {
@@ -341,9 +202,12 @@ impl ChatToResponsesState {
     fn push_reasoning_delta(&mut self, delta: &str) -> Vec<Bytes> {
         let mut events = Vec::new();
 
+        if self.reasoning.done {
+            self.reasoning = ReasoningItemState::default();
+        }
         if !self.reasoning.added {
             let output_index = self.next_output_index();
-            let item_id = format!("rs_{}", self.response_id);
+            let item_id = format!("rs_{}_{}", self.response_id, output_index);
             self.reasoning.output_index = Some(output_index);
             self.reasoning.item_id = item_id.clone();
             self.reasoning.added = true;
@@ -366,9 +230,12 @@ impl ChatToResponsesState {
     fn push_text_delta(&mut self, delta: &str) -> Vec<Bytes> {
         let mut events = Vec::new();
 
+        if self.text.done {
+            self.text = TextItemState::default();
+        }
         if !self.text.added {
             let output_index = self.next_output_index();
-            let item_id = format!("msg_{}", self.response_id);
+            let item_id = format!("msg_{}_{}", self.response_id, output_index);
             self.text.output_index = Some(output_index);
             self.text.item_id = item_id.clone();
             self.text.added = true;
@@ -389,7 +256,16 @@ impl ChatToResponsesState {
     }
 
     fn current_reasoning_text(&self) -> Option<String> {
-        (!self.reasoning.text.trim().is_empty()).then(|| self.reasoning.text.trim().to_string())
+        let mut reasoning = self
+            .output_items
+            .iter()
+            .filter(|(_, item)| item["type"] == "reasoning")
+            .filter_map(|(_, item)| item["summary"][0]["text"].as_str())
+            .collect::<String>();
+        if !self.reasoning.done {
+            reasoning.push_str(&self.reasoning.text);
+        }
+        (!reasoning.trim().is_empty()).then(|| reasoning.trim().to_string())
     }
 
     fn push_tool_call_delta(&mut self, tool_call: &Value, reasoning: Option<&str>) -> Vec<Bytes> {
@@ -532,7 +408,7 @@ impl ChatToResponsesState {
     fn has_substantive_output(&self) -> bool {
         !self.text.text.trim().is_empty()
             || !self.reasoning.text.trim().is_empty()
-            || !self.inline_think.buffer.trim().is_empty()
+            || self.inline_think.has_pending()
             || !self.output_items.is_empty()
             || self.tools.values().any(|state| {
                 state.added
@@ -596,6 +472,8 @@ impl ChatToResponsesState {
     fn finalize_tools(&mut self) -> Vec<Bytes> {
         let mut events = Vec::new();
         let keys: Vec<usize> = self.tools.keys().copied().collect();
+        let truncated =
+            response_status_from_finish_reason(self.finish_reason.as_deref()) == "incomplete";
 
         for key in keys {
             let mut add_event: Option<Bytes> = None;
@@ -662,7 +540,7 @@ impl ChatToResponsesState {
             let is_custom_tool = self.tool_context.is_custom_tool_chat_name(&state.name);
             let item = response_tool_call_item_from_chat_name(
                 &state.item_id,
-                "completed",
+                response_tool_call_status(&arguments, truncated),
                 &state.call_id,
                 &state.name,
                 &arguments,
@@ -749,29 +627,6 @@ impl ChatToResponsesState {
 
 fn chat_delta_reasoning_text(delta: &Value) -> Option<String> {
     extract_reasoning_field_text(delta)
-}
-
-enum ThinkPrefixDecision {
-    NeedMore,
-    Reasoning,
-    Text,
-}
-
-fn leading_think_prefix_decision(buffer: &str) -> ThinkPrefixDecision {
-    let trimmed = buffer.trim_start();
-    if trimmed.is_empty() {
-        return ThinkPrefixDecision::NeedMore;
-    }
-
-    if trimmed.starts_with("<think>") {
-        return ThinkPrefixDecision::Reasoning;
-    }
-
-    if "<think>".starts_with(trimmed) {
-        return ThinkPrefixDecision::NeedMore;
-    }
-
-    ThinkPrefixDecision::Text
 }
 
 /// Create a stream that converts Chat Completions SSE chunks into Responses SSE events.
@@ -940,6 +795,110 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn inline_think_tool_boundary_keeps_all_reasoning() {
+        let mut state = ChatToResponsesState::default();
+        state.handle_chat_chunk(
+            &json!({"choices": [{"delta": {"content": "<thi", "tool_calls": []}}]}),
+        );
+        state.handle_chat_chunk(
+            &json!({"choices": [{"delta": {"content": "nk>one</think>text<thinking>two"}}]}),
+        );
+        state.handle_chat_chunk(&json!({"choices": [{"delta": {"tool_calls": [{
+            "index": 0, "id": "call_inline", "type": "function", "function": {"name": "test", "arguments": "{}"}
+        }]}, "finish_reason": "tool_calls"}]}));
+        assert_eq!(state.current_reasoning_text().as_deref(), Some("onetwo"));
+        assert_eq!(state.tools[&0].reasoning_content, "onetwo");
+        assert!(!state.inline_think.has_pending());
+    }
+
+    #[tokio::test]
+    async fn inline_think_multiple_blocks_have_distinct_completed_items() {
+        let input = "before<thinking>一</thinking>middle<think>二</think>after";
+        let mut chunks: Vec<String> = input
+            .chars()
+            .map(|ch| {
+                format!(
+                    "data: {}\n\n",
+                    json!({
+                        "id": "chatcmpl_inline", "choices": [{"delta": {"content": ch.to_string()}}]
+                    })
+                )
+            })
+            .collect();
+        chunks.push(format!(
+            "data: {}\n\n",
+            json!({"choices": [{"delta": {}, "finish_reason": "stop"}]})
+        ));
+        chunks.push("data: [DONE]\n\n".into());
+        let output = collect(chunks.iter().map(String::as_str).collect()).await;
+        let events = parse_sse_events(&output);
+        let mut open = std::collections::HashSet::new();
+        let mut ids = std::collections::HashSet::new();
+        for event in &events {
+            match event["type"].as_str().unwrap_or_default() {
+                "response.output_item.added" => {
+                    assert!(open.insert(event["output_index"].as_u64().unwrap()));
+                    assert!(ids.insert(event["item"]["id"].as_str().unwrap()));
+                }
+                "response.reasoning_summary_text.delta" | "response.output_text.delta" => {
+                    assert!(open.contains(&event["output_index"].as_u64().unwrap()));
+                }
+                "response.output_item.done" => {
+                    assert!(open.remove(&event["output_index"].as_u64().unwrap()));
+                }
+                _ => {}
+            }
+        }
+        assert!(open.is_empty());
+        let completed = events
+            .iter()
+            .find(|e| e["type"] == "response.completed")
+            .unwrap();
+        let items = completed["response"]["output"].as_array().unwrap();
+        assert_eq!(items.len(), 5);
+        assert_eq!(items[0]["content"][0]["text"], "before");
+        assert_eq!(items[1]["summary"][0]["text"], "一");
+        assert_eq!(items[2]["content"][0]["text"], "middle");
+        assert_eq!(items[3]["summary"][0]["text"], "二");
+        assert_eq!(items[4]["content"][0]["text"], "after");
+    }
+
+    #[tokio::test]
+    async fn inline_think_terminal_and_literal_content() {
+        for (input, expected_reasoning, expected_text) in [
+            ("text<thinking>unfinished </thi", "unfinished </thi", "text"),
+            ("text <thi", "", "text <thi"),
+            ("`<think>literal</think>`", "", "`<think>literal</think>`"),
+        ] {
+            let chunk = format!(
+                "data: {}\n\n",
+                json!({"choices": [{"delta": {"content": input}, "finish_reason": "length"}]})
+            );
+            // EOF without [DONE] must also flush the parser.
+            let events = parse_sse_events(&collect(vec![chunk.as_str()]).await);
+            let reasoning: String = events
+                .iter()
+                .filter(|e| e["type"] == "response.reasoning_summary_text.delta")
+                .filter_map(|e| e["delta"].as_str())
+                .collect();
+            let text: String = events
+                .iter()
+                .filter(|e| e["type"] == "response.output_text.delta")
+                .filter_map(|e| e["delta"].as_str())
+                .collect();
+            assert_eq!(reasoning, expected_reasoning);
+            assert_eq!(text, expected_text);
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|e| e["type"] == "response.completed")
+                    .count(),
+                1
+            );
+        }
+    }
+
     #[tokio::test]
     async fn converts_text_chat_sse_to_responses_sse() {
         let output = collect(vec![
@@ -1018,6 +977,23 @@ mod tests {
             "data: {\"id\":\"chatcmpl_think\",\"created\":123,\"model\":\"deepseek-reasoner\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_string(),
             "data: [DONE]\n\n".to_string(),
         ];
+        // Assert delivery before a close tag (or later input) is supplied, not
+        // just multiple deltas after the complete stream has been collected.
+        let mut state = ChatToResponsesState::default();
+        let early = state.handle_chat_chunk(&json!({
+            "choices": [{"delta": {"content": "<think>\nFirst, "}}]
+        }));
+        let early = early
+            .iter()
+            .map(|bytes| String::from_utf8_lossy(bytes))
+            .collect::<String>();
+        let early_events = parse_sse_events(&early);
+        assert!(early_events.iter().any(|event| {
+            event["type"] == "response.reasoning_summary_text.delta"
+                && event["delta"]
+                    .as_str()
+                    .is_some_and(|text| text.starts_with("First,"))
+        }));
         let output = collect(chunks.iter().map(String::as_str).collect()).await;
         let events = parse_sse_events(&output);
 
@@ -1030,7 +1006,9 @@ mod tests {
             deltas.len() >= 2,
             "reasoning must be streamed as it arrives, not buffered whole: {deltas:?}"
         );
-        assert!(deltas[0].starts_with("First, "), "{deltas:?}");
+        // Boundary whitespace may be held until the next non-whitespace token.
+        // The first substantive text must still be emitted incrementally.
+        assert!(deltas[0].starts_with("First,"), "{deltas:?}");
         let reasoning: String = deltas.concat();
         assert_eq!(
             reasoning,
@@ -1349,6 +1327,31 @@ mod tests {
         assert!(output.contains("\"status\":\"incomplete\""));
         assert!(output.contains("\"incomplete_details\":{\"reason\":\"max_output_tokens\"}"));
         assert!(!output.contains("event: response.failed"));
+    }
+
+    #[tokio::test]
+    async fn truncated_tool_call_is_marked_incomplete_not_completed() {
+        let output = collect(vec![
+            "data: {\"id\":\"chatcmpl_cut_tool\",\"model\":\"gpt-5.4\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_cut\",\"type\":\"function\",\"function\":{\"name\":\"write_file\",\"arguments\":\"{\\\"path\\\":\\\"a.txt\\\",\\\"content\\\":\\\"hel\"}}]},\"finish_reason\":\"length\"}]}\n\n",
+            "data: [DONE]\n\n",
+        ])
+        .await;
+
+        let events = parse_sse_events(&output);
+        let done_item = events
+            .iter()
+            .find(|event| {
+                event["type"] == "response.output_item.done"
+                    && event["item"]["type"] == "function_call"
+            })
+            .expect("tool call item is still delivered");
+        assert_eq!(done_item["item"]["status"], "incomplete");
+        let completed = events
+            .iter()
+            .find(|event| event["type"] == "response.completed")
+            .unwrap();
+        assert_eq!(completed["response"]["status"], "incomplete");
+        assert_eq!(completed["response"]["output"][0]["status"], "incomplete");
     }
 
     #[tokio::test]

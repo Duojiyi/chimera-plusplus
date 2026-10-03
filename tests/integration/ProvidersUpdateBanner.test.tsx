@@ -1,4 +1,10 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  within,
+  waitFor,
+} from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
 import { NewProvidersView } from "@/ChimeraApp";
@@ -235,15 +241,21 @@ describe("route manager delete actions", () => {
       onSwitch,
     });
     fireEvent.click(screen.getByRole("button", { name: "管理线路" }));
-    fireEvent.click(screen.getByRole("button", { name: "删除备用测试线路" }));
+    fireEvent.click(
+      within(screen.getByRole("dialog", { name: "管理线路" })).getByRole(
+        "button",
+        { name: "删除备用测试线路" },
+      ),
+    );
     expect(onDelete).toHaveBeenCalledWith(spare);
     expect(onEdit).not.toHaveBeenCalled();
     expect(onSwitch).not.toHaveBeenCalled();
     expect(
       screen.getByRole("dialog", { name: "管理线路" }),
     ).toBeInTheDocument();
-    const activeDelete =
-      screen.getByTitle("当前线路正在使用，请先切换到其他线路");
+    const activeDelete = within(
+      screen.getByRole("dialog", { name: "管理线路" }),
+    ).getByTitle("当前线路正在使用，请先切换到其他线路");
     expect(activeDelete).toBeDisabled();
     fireEvent.click(activeDelete);
     expect(onDelete).toHaveBeenCalledTimes(1);
@@ -265,7 +277,9 @@ describe("route manager delete actions", () => {
       onDelete,
     });
     fireEvent.click(screen.getByRole("button", { name: "管理线路" }));
-    const button = screen.getByRole("button", { name: "删除备用测试线路" });
+    const button = within(
+      screen.getByRole("dialog", { name: "管理线路" }),
+    ).getByRole("button", { name: "删除备用测试线路" });
     expect(button).toBeDisabled();
     fireEvent.click(button);
     expect(onDelete).not.toHaveBeenCalled();
@@ -273,4 +287,40 @@ describe("route manager delete actions", () => {
       screen.queryByRole("button", { name: "删除官方账户" }),
     ).not.toBeInTheDocument();
   });
+});
+
+describe("current line resolution", () => {
+  it.each([
+    {
+      currentId: "",
+      currentSource: "none" as const,
+      message: "尚未确认当前线路",
+    },
+    {
+      currentId: mockProvider.id,
+      currentSource: "external" as const,
+      message: "正在使用外部配置",
+    },
+    {
+      currentId: "missing-provider",
+      currentSource: "stored" as const,
+      message: "尚未确认当前线路",
+    },
+  ])(
+    "does not mark the first provider current for $currentSource",
+    async ({ message, ...resolution }) => {
+      useUpdateMock.mockReturnValue({ hasUpdate: false });
+      const onSwitch = vi.fn().mockResolvedValue(true);
+      renderView({ ...resolution, onSwitch });
+      expect(screen.getByText(message)).toBeVisible();
+      const table = screen.getByRole("table", { name: "线路切换" });
+      expect(within(table).queryByText("当前")).not.toBeInTheDocument();
+      fireEvent.click(
+        within(table).getByRole("button", { name: "切换到ChimeraHub Relay" }),
+      );
+      await waitFor(() =>
+        expect(onSwitch).toHaveBeenCalledWith(mockProvider.id),
+      );
+    },
+  );
 });

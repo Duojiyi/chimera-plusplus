@@ -22,7 +22,7 @@
 
 ## ❤️赞助商
 
-> [想出现在这里？](mailto:farion1231@gmail.com)
+> [想出现在这里？](https://github.com/Duojiyi/chimera-plusplus/issues/new)
 
 <details open>
 <summary>点击折叠</summary>

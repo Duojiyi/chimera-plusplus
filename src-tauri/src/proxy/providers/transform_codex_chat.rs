@@ -6,8 +6,8 @@
 
 use super::codex_chat_common::{
     append_reasoning_content, extract_reasoning_field_text, extract_reasoning_summary_text,
-    response_function_call_item, response_function_call_item_with_namespace,
-    split_leading_think_block,
+    normalize_inline_think, response_function_call_item,
+    response_function_call_item_with_namespace,
 };
 use crate::provider::CodexChatReasoningConfig;
 use crate::proxy::{
@@ -30,7 +30,9 @@ const EXTRA_CHAT_PASSTHROUGH_FIELDS: &[&str] = &[
     "presence_penalty",
     "response_format",
     "seed",
-    "service_tier",
+    // `service_tier` is deliberately not forwarded: catalogs generated for
+    // Chat lines declare no tiers, so any tier Codex sends was never offered
+    // for the model (see `strip_undeclared_codex_service_tier`).
     "stop",
     "stream_options",
     "top_logprobs",
@@ -38,6 +40,9 @@ const EXTRA_CHAT_PASSTHROUGH_FIELDS: &[&str] = &[
 ];
 
 const TOOL_SEARCH_PROXY_NAME: &str = "tool_search";
+/// Wrapper key for replayed tool-call arguments that are not a JSON object;
+/// shared by the Chat and Anthropic bridges.
+pub(crate) const RAW_TOOL_ARGUMENTS_FIELD: &str = "__raw_arguments";
 const CUSTOM_TOOL_INPUT_FIELD: &str = "input";
 const CHAT_TOOL_NAME_MAX_LEN: usize = 64;
 const CUSTOM_TOOL_INPUT_DESCRIPTION: &str = "Raw string input for the original custom tool. Preserve formatting exactly and follow the original tool definition embedded in the description.";
@@ -243,7 +248,7 @@ pub(crate) fn build_codex_tool_context_from_request(body: &Value) -> CodexToolCo
     }
 
     if let Some(input) = body.get("input") {
-        collect_tool_search_output_tools(input, &mut context);
+        collect_input_declared_tools(input, &mut context);
     }
 
     context
@@ -603,6 +608,7 @@ fn append_responses_input_as_chat_messages(
     let mut pending_tool_calls = Vec::new();
     let mut pending_reasoning: Option<String> = None;
     let mut last_assistant_index: Option<usize> = None;
+    let mut pending_media: Vec<Value> = Vec::new();
 
     match input {
         Value::String(text) => {
@@ -619,6 +625,7 @@ fn append_responses_input_as_chat_messages(
                     &mut pending_tool_calls,
                     &mut pending_reasoning,
                     &mut last_assistant_index,
+                    &mut pending_media,
                     tool_context,
                 )?;
             }
@@ -630,12 +637,14 @@ fn append_responses_input_as_chat_messages(
                 &mut pending_tool_calls,
                 &mut pending_reasoning,
                 &mut last_assistant_index,
+                &mut pending_media,
                 tool_context,
             )?;
         }
         _ => {}
     }
 
+    flush_pending_chat_tool_media(messages, &mut pending_media);
     flush_pending_tool_calls(
         messages,
         &mut pending_tool_calls,
@@ -661,9 +670,18 @@ fn append_responses_item_as_chat_message(
     pending_tool_calls: &mut Vec<Value>,
     pending_reasoning: &mut Option<String>,
     last_assistant_index: &mut Option<usize>,
+    pending_media: &mut Vec<Value>,
     tool_context: &CodexToolContext,
 ) -> Result<(), ProxyError> {
     let item_type = item.get("type").and_then(|v| v.as_str());
+    if !matches!(
+        item_type,
+        Some("function_call_output" | "custom_tool_call_output" | "tool_search_output")
+    ) {
+        // Tool results must stay adjacent to their assistant tool calls; media
+        // moved out of them is emitted once the run of results ends.
+        flush_pending_chat_tool_media(messages, pending_media);
+    }
     match item_type {
         Some("function_call") => {
             append_unique_pending_reasoning(pending_reasoning, responses_item_reasoning_text(item));
@@ -708,11 +726,7 @@ fn append_responses_item_as_chat_message(
                     .unwrap_or_else(|| Value::String(canonical_json_string(value))),
                 None => Value::String(String::new()),
             };
-            messages.push(json!({
-                "role": "tool",
-                "tool_call_id": call_id,
-                "content": output
-            }));
+            push_chat_tool_message(messages, pending_media, call_id, output);
         }
         Some("custom_tool_call_output") | Some("tool_search_output") => {
             flush_pending_tool_calls(
@@ -739,11 +753,7 @@ fn append_responses_item_as_chat_message(
                     .unwrap_or_else(|| Value::String(canonical_json_string(value))),
                 None => Value::String(canonical_json_string(item)),
             };
-            messages.push(json!({
-                "role": "tool",
-                "tool_call_id": call_id,
-                "content": output
-            }));
+            push_chat_tool_message(messages, pending_media, call_id, output);
         }
         Some("reasoning") => {
             // reasoning 一律先进入 pending_reasoning，前向附挂到其后的
@@ -755,6 +765,13 @@ fn append_responses_item_as_chat_message(
             // 到达时回溯附挂，见 attach_pending_reasoning_to_previous_assistant。
             append_pending_reasoning(pending_reasoning, responses_reasoning_item_text(item));
         }
+        // An `additional_tools` carrier declares tools for this request; its
+        // nested tools are lifted via `build_codex_tool_context_from_request`
+        // and the carrier itself is not a message. It carries a `role` but no
+        // `content`, so letting it fall through the generic message arm used
+        // to fabricate a `content: null` system message that strict chat
+        // gateways reject with `messages[N]: missing field "content"`.
+        Some("additional_tools") => {}
         Some("input_text" | "input_image" | "input_file" | "input_audio") => {
             flush_pending_tool_calls(
                 messages,
@@ -830,6 +847,69 @@ fn append_responses_item_as_chat_message(
     }
 
     Ok(())
+}
+
+const TOOL_RESULT_MEDIA_MOVED_MARKER: &str =
+    "[tool result media moved to the following user message]";
+
+/// Push a Chat `role:"tool"` message for one tool result.
+///
+/// Chat tool messages are text-only on the OpenAI contract and on most
+/// compatible gateways, which reject image/file/audio parts there. Keep the
+/// text in the tool message and queue the media parts for a synthetic user
+/// message emitted right after the run of tool results, so every result still
+/// directly follows its assistant tool call.
+///
+/// Adapted from farion1231/cc-switch src-tauri/src/proxy/tool_media.rs (MIT).
+fn push_chat_tool_message(
+    messages: &mut Vec<Value>,
+    pending_media: &mut Vec<Value>,
+    call_id: &str,
+    output: Value,
+) {
+    let content = match output {
+        Value::Array(parts) if parts.iter().any(is_chat_media_part) => {
+            let mut texts = Vec::new();
+            let mut media = Vec::new();
+            for part in parts {
+                if is_chat_media_part(&part) {
+                    media.push(part);
+                } else if let Some(text) = part.get("text").and_then(Value::as_str) {
+                    texts.push(text.to_string());
+                }
+            }
+            texts.push(TOOL_RESULT_MEDIA_MOVED_MARKER.to_string());
+            pending_media.push(json!({
+                "type": "text",
+                "text": format!("[media output of tool call {call_id}]")
+            }));
+            pending_media.extend(media);
+            Value::String(texts.join("\n"))
+        }
+        other => other,
+    };
+    messages.push(json!({
+        "role": "tool",
+        "tool_call_id": call_id,
+        "content": content
+    }));
+}
+
+fn is_chat_media_part(part: &Value) -> bool {
+    matches!(
+        part.get("type").and_then(Value::as_str),
+        Some("image_url" | "file" | "input_audio")
+    )
+}
+
+fn flush_pending_chat_tool_media(messages: &mut Vec<Value>, pending_media: &mut Vec<Value>) {
+    if pending_media.is_empty() {
+        return;
+    }
+    messages.push(json!({
+        "role": "user",
+        "content": std::mem::take(pending_media)
+    }));
 }
 
 fn flush_pending_tool_calls(
@@ -1179,7 +1259,11 @@ fn structured_tool_output(output: &Value) -> Option<Value> {
         }
         Value::Object(object) => {
             if output.get("type").and_then(Value::as_str) == Some("image_url") {
-                return Some(json!([output]));
+                let mut part = output.clone();
+                if let Some(image_url) = part.get_mut("image_url") {
+                    *image_url = chat_image_url_detail_downgraded(image_url.take());
+                }
+                return Some(json!([part]));
             }
             if output.get("type").and_then(Value::as_str) == Some("image") {
                 if let Some(source) = output.get("source") {
@@ -1230,6 +1314,22 @@ fn structured_tool_output(output: &Value) -> Option<Value> {
     }
 }
 
+/// OpenAI-compatible Chat gateways accept only `auto` / `low` / `high` for
+/// `image_url.detail`. Codex emits the Responses-only `original` for models
+/// whose catalog advertises `supports_image_detail_original`, and strict
+/// gateways reject the whole request with 400; since Codex replays the full
+/// history, one such image would fail every later turn. Downgrade it to `auto`.
+///
+/// Adapted from farion1231/cc-switch 83a24dfbb (MIT).
+fn chat_image_url_detail_downgraded(mut image_url: Value) -> Value {
+    if let Some(object) = image_url.as_object_mut() {
+        if object.get("detail").and_then(Value::as_str) == Some("original") {
+            object.insert("detail".to_string(), json!("auto"));
+        }
+    }
+    image_url
+}
+
 fn responses_output_array_has_binary_content_part(parts: &[Value]) -> bool {
     parts.iter().any(|part| {
         matches!(
@@ -1277,7 +1377,7 @@ fn responses_content_to_chat_content(_role: &str, content: &Value) -> Value {
             "input_image" => {
                 if let Some(image_url) = part.get("image_url") {
                     let image_url = if image_url.is_object() {
-                        image_url.clone()
+                        chat_image_url_detail_downgraded(image_url.clone())
                     } else {
                         json!({ "url": image_url.as_str().unwrap_or_default() })
                     };
@@ -1338,15 +1438,27 @@ fn responses_input_file_to_chat_file(part: &Value) -> Option<Value> {
     Some(Value::Object(file))
 }
 
-fn collect_tool_search_output_tools(value: &Value, context: &mut CodexToolContext) {
+/// Collect tools declared inline in the request `input` instead of top-level
+/// `tools`: `tool_search_output` items (dynamically loaded tool groups) and
+/// `additional_tools` carriers (Codex 0.154+ ships extra tools, e.g. the
+/// `functions`/`collaboration` exec sandbox and plugins, in this Responses
+/// private-extension carrier). The xAI Responses passthrough already promotes
+/// the same carriers; the Chat and Anthropic converters go through this
+/// registry so they keep the carried tools too.
+///
+/// Adapted from farion1231/cc-switch a35e5000b (MIT).
+fn collect_input_declared_tools(value: &Value, context: &mut CodexToolContext) {
     match value {
         Value::Array(items) => {
             for item in items {
-                collect_tool_search_output_tools(item, context);
+                collect_input_declared_tools(item, context);
             }
         }
         Value::Object(obj) => {
-            if obj.get("type").and_then(|v| v.as_str()) == Some("tool_search_output") {
+            if matches!(
+                obj.get("type").and_then(|v| v.as_str()),
+                Some("tool_search_output" | "additional_tools")
+            ) {
                 if let Some(tools) = obj.get("tools").and_then(|v| v.as_array()) {
                     for tool in tools {
                         context.add_response_tool(tool);
@@ -1354,7 +1466,7 @@ fn collect_tool_search_output_tools(value: &Value, context: &mut CodexToolContex
                 }
             }
             for value in obj.values() {
-                collect_tool_search_output_tools(value, context);
+                collect_input_declared_tools(value, context);
             }
         }
         _ => {}
@@ -1415,6 +1527,7 @@ fn normalize_function_parameters(params: Option<&Value>) -> Value {
         Some(Value::Object(obj)) => Value::Object(obj.clone()),
         _ => json!({"type": "object", "properties": {}}),
     };
+    strip_nested_null_schema_types(&mut params);
     if let Some(obj) = params.as_object_mut() {
         match obj.get("type").and_then(|v| v.as_str()) {
             Some("object") => {}
@@ -1424,6 +1537,53 @@ fn normalize_function_parameters(params: Option<&Value>) -> Value {
         }
     }
     params
+}
+
+/// Remove `"type": null` from every schema node of a tool's parameters.
+///
+/// Some Codex App MCP tools ship schemas with `type: null` on nested nodes;
+/// strict providers (DeepSeek and others) reject the whole request ("got
+/// 'type: null'"), and since Codex resends the tool list every turn the
+/// session never recovers. A null type means "unspecified", so dropping the key
+/// keeps the schema's meaning. Only schema positions are walked (a property
+/// that happens to be named `type` is left alone), and combinators such as
+/// `oneOf`/`anyOf` are traversed but never reshaped. Used by the Chat and
+/// Anthropic bridges only; native Responses passthrough is untouched.
+fn strip_nested_null_schema_types(schema: &mut Value) {
+    let Some(object) = schema.as_object_mut() else {
+        return;
+    };
+    if object.get("type").is_some_and(Value::is_null) {
+        object.remove("type");
+    }
+    for (key, value) in object.iter_mut() {
+        match key.as_str() {
+            "properties" | "patternProperties" | "$defs" | "definitions" | "dependentSchemas" => {
+                if let Some(children) = value.as_object_mut() {
+                    children
+                        .values_mut()
+                        .for_each(strip_nested_null_schema_types);
+                }
+            }
+            "items" | "prefixItems" | "anyOf" | "oneOf" | "allOf" => match value {
+                Value::Array(children) => {
+                    children.iter_mut().for_each(strip_nested_null_schema_types)
+                }
+                other => strip_nested_null_schema_types(other),
+            },
+            "additionalProperties"
+            | "additionalItems"
+            | "unevaluatedProperties"
+            | "unevaluatedItems"
+            | "propertyNames"
+            | "contains"
+            | "not"
+            | "if"
+            | "then"
+            | "else" => strip_nested_null_schema_types(value),
+            _ => {}
+        }
+    }
 }
 
 fn responses_function_tool_to_chat_tool(tool: &Value, chat_name: &str) -> Option<Value> {
@@ -1485,7 +1645,7 @@ fn responses_function_call_to_chat_tool_call(
     let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("");
     let namespace = item.get("namespace").and_then(|v| v.as_str());
     let chat_name = tool_context.chat_name_for_response_function(name, namespace);
-    let arguments = canonicalize_tool_arguments(item.get("arguments"));
+    let arguments = chat_request_tool_arguments(item.get("arguments"));
 
     json!({
         "id": call_id,
@@ -1495,6 +1655,31 @@ fn responses_function_call_to_chat_tool_call(
             "arguments": arguments
         }
     })
+}
+
+/// Arguments of a replayed history `function_call` for a Chat upstream.
+///
+/// History can legitimately hold arguments that are not a JSON object: a call
+/// cut off by the token budget, or a model that emitted a bare value. Strict
+/// Chat gateways parse `arguments` and reject the whole request, and Codex
+/// replays the same history every turn, so the session would never recover.
+/// Wrap it the same way the Anthropic bridge does (`__raw_arguments`), keeping
+/// the call/output pair intact; an empty value stays `{}`.
+fn chat_request_tool_arguments(value: Option<&Value>) -> String {
+    let parsed = match value {
+        None | Some(Value::Null) => return "{}".to_string(),
+        Some(Value::String(text)) if text.trim().is_empty() => return "{}".to_string(),
+        Some(Value::String(text)) => {
+            serde_json::from_str::<Value>(text.trim()).map_err(|_| text.clone())
+        }
+        Some(other) => Ok(other.clone()),
+    };
+    let object = match parsed {
+        Ok(value @ Value::Object(_)) => value,
+        Ok(other) => json!({ RAW_TOOL_ARGUMENTS_FIELD: other }),
+        Err(raw) => json!({ RAW_TOOL_ARGUMENTS_FIELD: raw }),
+    };
+    canonical_json_string(&object)
 }
 
 fn responses_custom_tool_call_to_chat_tool_call(item: &Value) -> Value {
@@ -1599,6 +1784,8 @@ pub(crate) fn chat_completion_to_response_with_context(
     let created_at = body.get("created").and_then(|v| v.as_u64()).unwrap_or(0);
     let finish_reason = choice.get("finish_reason").and_then(|v| v.as_str());
 
+    let message = normalize_inline_think(message);
+    let message = &message;
     let reasoning = chat_reasoning_text(message);
     let mut output = Vec::new();
     if let Some(reasoning_item) =
@@ -1613,6 +1800,7 @@ pub(crate) fn chat_completion_to_response_with_context(
         message,
         reasoning.as_deref(),
         tool_context,
+        finish_reason == Some("length"),
     ));
 
     let mut response = json!({
@@ -1652,28 +1840,13 @@ fn chat_reasoning_to_response_output_item(
 }
 
 fn chat_reasoning_text(message: &Value) -> Option<String> {
-    if let Some(reasoning) = extract_reasoning_field_text(message) {
-        return Some(reasoning);
-    }
-
-    if let Some(content) = message.get("content").and_then(|v| v.as_str()) {
-        if let Some((reasoning, _answer)) = split_leading_think_block(content) {
-            if !reasoning.is_empty() {
-                return Some(reasoning);
-            }
-        }
-    }
-
-    None
+    extract_reasoning_field_text(message)
 }
 
 fn chat_message_to_response_output_item(message: &Value, response_id: &str) -> Option<Value> {
     let mut content = Vec::new();
 
     if let Some(text) = message.get("content").and_then(|v| v.as_str()) {
-        let text = split_leading_think_block(text)
-            .map(|(_reasoning, answer)| answer)
-            .unwrap_or_else(|| text.to_string());
         if !text.is_empty() {
             content.push(json!({
                 "type": "output_text",
@@ -1737,6 +1910,7 @@ fn chat_tool_calls_to_response_output_items(
     message: &Value,
     reasoning: Option<&str>,
     tool_context: &CodexToolContext,
+    truncated: bool,
 ) -> Vec<Value> {
     let mut output = Vec::new();
 
@@ -1755,12 +1929,16 @@ fn chat_tool_calls_to_response_output_items(
                 index,
                 reasoning,
                 tool_context,
+                truncated,
             ));
         }
     } else if let Some(function_call) = message.get("function_call") {
-        if let Some(item) =
-            chat_legacy_function_call_to_response_item(function_call, reasoning, tool_context)
-        {
+        if let Some(item) = chat_legacy_function_call_to_response_item(
+            function_call,
+            reasoning,
+            tool_context,
+            truncated,
+        ) {
             output.push(item);
         }
     }
@@ -1773,6 +1951,7 @@ fn chat_tool_call_to_response_item(
     index: usize,
     reasoning: Option<&str>,
     tool_context: &CodexToolContext,
+    truncated: bool,
 ) -> Value {
     let call_id = tool_call
         .get("id")
@@ -1787,7 +1966,7 @@ fn chat_tool_call_to_response_item(
     let item_id = response_tool_call_item_id_from_chat_name(&call_id, name, tool_context);
     response_tool_call_item_from_chat_name(
         &item_id,
-        "completed",
+        response_tool_call_status(&arguments, truncated),
         &call_id,
         name,
         &arguments,
@@ -1800,6 +1979,7 @@ fn chat_legacy_function_call_to_response_item(
     function_call: &Value,
     reasoning: Option<&str>,
     tool_context: &CodexToolContext,
+    truncated: bool,
 ) -> Option<Value> {
     let call_id = function_call
         .get("id")
@@ -1823,13 +2003,26 @@ fn chat_legacy_function_call_to_response_item(
     let item_id = response_tool_call_item_id_from_chat_name(call_id, name, tool_context);
     Some(response_tool_call_item_from_chat_name(
         &item_id,
-        "completed",
+        response_tool_call_status(&arguments, truncated),
         call_id,
         name,
         &arguments,
         reasoning,
         tool_context,
     ))
+}
+
+/// Status of a converted tool call. When the upstream stopped at its output
+/// limit, a call whose arguments never closed into a JSON object was cut off
+/// and is reported `incomplete` instead of `completed`. On replay, such
+/// arguments are wrapped the same way by both bridges (`__raw_arguments`).
+pub(crate) fn response_tool_call_status(arguments: &str, truncated: bool) -> &'static str {
+    let is_object = serde_json::from_str::<Value>(arguments).is_ok_and(|value| value.is_object());
+    if truncated && !is_object {
+        "incomplete"
+    } else {
+        "completed"
+    }
 }
 
 pub(crate) fn response_tool_call_item_id_from_chat_name(
@@ -2112,6 +2305,52 @@ pub fn chat_error_to_response_error(body: Option<&Value>) -> Value {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn inline_think_non_streaming_separates_reasoning() {
+        for (content, expected_reasoning, expected_text) in [
+            (
+                json!("before<thinking>hidden</thinking>after<think>unfinished"),
+                "hiddenunfinished",
+                "beforeafter",
+            ),
+            (json!("<thinking>hidden"), "hidden", ""),
+            (
+                json!("Use `<think>literal</think>`"),
+                "",
+                "Use `<think>literal</think>`",
+            ),
+            (json!("text <thi"), "", "text <thi"),
+            (
+                json!([{"type": "text", "text": "<thin"}, {"type": "output_text", "text": "king>hidden</thinking>answer"}]),
+                "hidden",
+                "answer",
+            ),
+        ] {
+            let result = chat_completion_to_response(json!({
+                "id": "chatcmpl_inline", "model": "test", "choices": [{
+                    "message": {"role": "assistant", "content": content}, "finish_reason": "stop"
+                }], "usage": {"prompt_tokens": 1, "completion_tokens": 2}
+            }))
+            .unwrap();
+            let text = result["output"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|item| item["content"].as_array().into_iter().flatten())
+                .filter_map(|part| part["text"].as_str())
+                .collect::<String>();
+            let reasoning = result["output"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|item| item["type"] == "reasoning")
+                .filter_map(|item| item["summary"][0]["text"].as_str())
+                .collect::<String>();
+            assert_eq!(text, expected_text);
+            assert_eq!(reasoning, expected_reasoning);
+        }
+    }
+
+    #[test]
     fn wrapped_chat_and_anthropic_images_keep_binary_out_of_text() {
         for image in [
             json!({"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}}),
@@ -2140,18 +2379,21 @@ mod tests {
             "tool_search_output",
         ] {
             let result = responses_to_chat_completions(json!({"model":"gpt-4.1","input":[{"type":kind,"call_id":"call_a","output":output}]})).unwrap();
-            let parts = result["messages"][0]["content"].as_array().unwrap();
-            assert!(parts
-                .iter()
-                .any(|part| part["image_url"]["url"] == "data:image/png;base64,AAAA"));
-            let text = parts
-                .iter()
-                .filter_map(|part| part["text"].as_str())
-                .collect::<Vec<_>>()
-                .join(" ");
+            // The tool message keeps only text; the media follows as a user message.
+            let tool = &result["messages"][0];
+            assert_eq!(tool["role"], "tool");
+            let text = tool["content"].as_str().expect("text-only tool content");
             assert!(text.contains("isError"));
             assert!(text.contains("custom"));
+            assert!(text.contains("caption"));
             assert!(!text.contains("base64"));
+            let media = &result["messages"][1];
+            assert_eq!(media["role"], "user");
+            assert!(media["content"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|part| part["image_url"]["url"] == "data:image/png;base64,AAAA"));
         }
         assert!(structured_tool_output(&json!({"content":null})).is_none());
         assert!(structured_tool_output(&json!({"count":42})).is_none());
@@ -2582,6 +2824,54 @@ mod tests {
         assert_eq!(parameters["type"], "object");
         assert_eq!(parameters["properties"]["query"]["type"], "string");
         assert_eq!(parameters["required"], json!(["query"]));
+    }
+    #[test]
+    fn responses_request_to_chat_strips_nested_null_schema_types() {
+        let input = json!({
+            "model": "deepseek-v4-flash",
+            "tools": [{
+                "type": "function",
+                "name": "codex_app__automation_update",
+                "parameters": {
+                    "type": null,
+                    "properties": {
+                        "schedule": {"type": null, "description": "When to run."},
+                        "type": {"type": "string"},
+                        "steps": {"type": "array", "items": {"type": null, "properties": {"cmd": {"type": null}}}},
+                        "target": {"anyOf": [{"type": null}, {"type": "string"}]}
+                    },
+                    "required": ["type"]
+                }
+            }],
+            "input": "hi"
+        });
+        let result = responses_to_chat_completions(input.clone()).unwrap();
+        let parameters = &result["tools"][0]["function"]["parameters"];
+        assert_eq!(parameters["type"], "object");
+        assert_eq!(
+            parameters["properties"]["schedule"],
+            json!({"description": "When to run."})
+        );
+        // A property literally named `type` is kept.
+        assert_eq!(parameters["properties"]["type"], json!({"type": "string"}));
+        assert_eq!(
+            parameters["properties"]["steps"]["items"],
+            json!({"properties": {"cmd": {}}})
+        );
+        // Combinators keep their shape.
+        assert_eq!(
+            parameters["properties"]["target"],
+            json!({"anyOf": [{}, {"type": "string"}]})
+        );
+        assert!(!canonical_json_string(parameters).contains("null"));
+
+        // The Anthropic bridge reuses the same registry.
+        let anthropic =
+            super::super::transform_codex_anthropic::responses_request_to_anthropic(input, 4096)
+                .unwrap();
+        let schema = &anthropic["tools"][0]["input_schema"];
+        assert_eq!(schema["type"], "object");
+        assert!(!canonical_json_string(schema).contains("null"));
     }
 
     #[test]
@@ -3486,20 +3776,80 @@ mod tests {
         let result = responses_to_chat_completions(input).unwrap();
         let messages = result["messages"].as_array().unwrap();
 
+        // Chat tool messages are text-only: the text stays with the result and
+        // the image moves to a user message right after it.
+        assert_eq!(messages.len(), 3);
         assert_eq!(messages[1]["role"], "tool");
-        let content = messages[1]["content"].as_array().expect("array content");
+        assert_eq!(messages[1]["tool_call_id"], "call_1");
+        let tool_text = messages[1]["content"].as_str().expect("text content");
+        assert!(tool_text.starts_with("captured"));
+        assert!(tool_text.contains(TOOL_RESULT_MEDIA_MOVED_MARKER));
+        assert_eq!(messages[2]["role"], "user");
+        let content = messages[2]["content"].as_array().expect("array content");
         assert_eq!(content[0]["type"], "text");
-        assert_eq!(content[0]["text"], "captured");
+        assert!(content[0]["text"].as_str().unwrap().contains("call_1"));
         assert_eq!(content[1]["type"], "image_url");
         assert_eq!(
             content[1]["image_url"]["url"],
             "data:image/png;base64,abc123"
         );
         // The whole point: the base64 payload must not appear as literal
-        // text anywhere in the message (that's the multi-million-token blowup).
-        let serialized = content.to_vec();
-        let as_text = serde_json::to_string(&serialized).unwrap();
+        // text anywhere in the request (that's the multi-million-token blowup).
+        let as_text = serde_json::to_string(messages).unwrap();
         assert_eq!(as_text.matches("base64,abc123").count(), 1);
+    }
+
+    #[test]
+    fn responses_request_to_chat_emits_tool_media_after_the_whole_result_run() {
+        let input = json!({
+            "model": "gpt-5.4",
+            "input": [
+                {"type": "function_call", "call_id": "call_1", "name": "shot", "arguments": "{}"},
+                {"type": "function_call", "call_id": "call_2", "name": "read", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call_1", "output": [
+                    {"type": "input_image", "image_url": {"url": "https://example.com/a.png", "detail": "original"}}
+                ]},
+                {"type": "function_call_output", "call_id": "call_2", "output": "text"},
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "next"}]}
+            ]
+        });
+
+        let result = responses_to_chat_completions(input).unwrap();
+        let messages = result["messages"].as_array().unwrap();
+        let roles: Vec<&str> = messages
+            .iter()
+            .map(|message| message["role"].as_str().unwrap())
+            .collect();
+        assert_eq!(roles, ["assistant", "tool", "tool", "user", "user"]);
+        assert_eq!(messages[1]["tool_call_id"], "call_1");
+        assert_eq!(messages[2]["tool_call_id"], "call_2");
+        let media = messages[3]["content"].as_array().unwrap();
+        assert_eq!(media[1]["image_url"]["url"], "https://example.com/a.png");
+        // Responses-only `original` detail is downgraded for Chat gateways.
+        assert_eq!(media[1]["image_url"]["detail"], "auto");
+        assert_eq!(messages[4]["content"], "next");
+    }
+
+    #[test]
+    fn chat_image_detail_original_is_downgraded_but_others_kept() {
+        let input = json!({
+            "model": "gpt-5.4",
+            "input": [{"type": "message", "role": "user", "content": [
+                {"type": "input_image", "image_url": {"url": "https://example.com/a.png", "detail": "original"}},
+                {"type": "input_image", "image_url": {"url": "https://example.com/b.png", "detail": "high"}}
+            ]}]
+        });
+        let result = responses_to_chat_completions(input).unwrap();
+        let parts = result["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(parts[0]["image_url"]["detail"], "auto");
+        assert_eq!(parts[1]["image_url"]["detail"], "high");
+
+        let chat_shaped = structured_tool_output(&json!({
+            "type": "image_url",
+            "image_url": {"url": "https://example.com/c.png", "detail": "original"}
+        }))
+        .unwrap();
+        assert_eq!(chat_shaped[0]["image_url"]["detail"], "auto");
     }
 
     #[test]
@@ -3602,11 +3952,48 @@ mod tests {
         let result = responses_to_chat_completions(input).unwrap();
         let messages = result["messages"].as_array().unwrap();
 
+        // Invalid replayed arguments are wrapped like the Anthropic bridge does,
+        // so strict Chat gateways still accept the history.
         assert_eq!(
             messages[0]["tool_calls"][0]["function"]["arguments"],
-            "not json"
+            r#"{"__raw_arguments":"not json"}"#
         );
         assert_eq!(messages[1]["content"], "plain text result");
+    }
+
+    #[test]
+    fn responses_request_to_chat_wraps_truncated_and_bare_tool_arguments() {
+        let input = json!({
+            "model": "gpt-5.4",
+            "input": [
+                {"type": "function_call", "call_id": "c1", "name": "write_file", "arguments": "{\"path\":\"a.txt\",\"content\":\"hel"},
+                {"type": "function_call", "call_id": "c2", "name": "count", "arguments": "42"},
+                {"type": "function_call", "call_id": "c3", "name": "noop", "arguments": ""},
+                {"type": "function_call", "call_id": "c4", "name": "read", "arguments": "{ \"b\": 1, \"a\": 2 }"},
+                {"type": "function_call_output", "call_id": "c1", "output": "error"},
+                {"type": "function_call_output", "call_id": "c2", "output": "ok"},
+                {"type": "function_call_output", "call_id": "c3", "output": "ok"},
+                {"type": "function_call_output", "call_id": "c4", "output": "ok"}
+            ]
+        });
+
+        let result = responses_to_chat_completions(input).unwrap();
+        let calls = result["messages"][0]["tool_calls"].as_array().unwrap();
+        let args: Vec<Value> = calls
+            .iter()
+            .map(|call| {
+                serde_json::from_str(call["function"]["arguments"].as_str().unwrap()).unwrap()
+            })
+            .collect();
+
+        // Every replayed argument string is a JSON object again.
+        assert_eq!(
+            args[0],
+            json!({"__raw_arguments": "{\"path\":\"a.txt\",\"content\":\"hel"})
+        );
+        assert_eq!(args[1], json!({"__raw_arguments": 42}));
+        assert_eq!(args[2], json!({}));
+        assert_eq!(calls[3]["function"]["arguments"], r#"{"a":2,"b":1}"#);
     }
 
     #[test]
@@ -4203,5 +4590,173 @@ mod tests {
             "tools should be present from tool_search_output"
         );
         assert_eq!(result["tools"][0]["function"]["name"], "search_docs");
+    }
+
+    // Adapted from farion1231/cc-switch a35e5000b (MIT).
+    #[test]
+    fn additional_tools_carrier_is_lifted_not_converted_to_a_message() {
+        // Codex 0.154+ ships extra tools in an `additional_tools` input
+        // carrier (role `developer`, no `content`).
+        let input = json!({
+            "model": "agnes-3.0-flash",
+            "input": [
+                {
+                    "type": "additional_tools",
+                    "id": "at_a8d5b9f5",
+                    "role": "developer",
+                    "tools": [
+                        {
+                            "type": "namespace",
+                            "name": "functions",
+                            "description": "",
+                            "tools": [
+                                {
+                                    "type": "function",
+                                    "name": "exec_command",
+                                    "description": "Run a shell command.",
+                                    "strict": false,
+                                    "parameters": {"type": "object", "properties": {"cmd": {"type": "string"}}, "required": ["cmd"]}
+                                }
+                            ]
+                        },
+                        {
+                            "type": "function",
+                            "name": "wait",
+                            "description": "Waits on a yielded exec cell.",
+                            "strict": false,
+                            "parameters": {"type": "object", "properties": {"cell_id": {"type": "string"}}, "required": ["cell_id"]}
+                        }
+                    ]
+                },
+                {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "You are Codex, a coding agent."}]},
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}
+            ]
+        });
+
+        let result = responses_to_chat_completions(input.clone()).unwrap();
+        let messages = result["messages"].as_array().unwrap();
+
+        for (idx, message) in messages.iter().enumerate() {
+            assert!(
+                !matches!(message.get("content"), None | Some(Value::Null)),
+                "messages[{idx}] lost its content: {message}"
+            );
+        }
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(messages[0]["content"], "You are Codex, a coding agent.");
+        assert_eq!(messages[1]["role"], "user");
+        assert_eq!(messages[1]["content"], "hi");
+
+        let tool_names: Vec<&str> = result["tools"]
+            .as_array()
+            .expect("carried tools must be lifted into top-level tools")
+            .iter()
+            .map(|tool| tool["function"]["name"].as_str().unwrap())
+            .collect();
+        assert!(
+            tool_names.contains(&"functions__exec_command"),
+            "{tool_names:?}"
+        );
+        assert!(tool_names.contains(&"wait"), "{tool_names:?}");
+
+        // The Anthropic bridge shares the registry and keeps the tools too.
+        let anthropic =
+            super::super::transform_codex_anthropic::responses_request_to_anthropic(input, 4096)
+                .unwrap();
+        let anthropic_names: Vec<&str> = anthropic["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect();
+        assert!(anthropic_names.contains(&"functions__exec_command"));
+        assert!(anthropic_names.contains(&"wait"));
+    }
+
+    #[test]
+    fn additional_tools_carrier_tools_dedup_against_top_level_tools() {
+        let input = json!({
+            "model": "m",
+            "tools": [
+                {"type": "function", "name": "wait", "description": "Top-level wait.", "parameters": {"type": "object", "properties": {}}}
+            ],
+            "input": [
+                {
+                    "type": "additional_tools",
+                    "role": "developer",
+                    "tools": [
+                        {"type": "function", "name": "wait", "description": "Carried wait.", "parameters": {"type": "object", "properties": {}}}
+                    ]
+                },
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}
+            ]
+        });
+
+        let result = responses_to_chat_completions(input).unwrap();
+
+        let tools = result["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 1, "duplicate carried tool must be dropped");
+        assert_eq!(tools[0]["function"]["name"], "wait");
+        assert_eq!(tools[0]["function"]["description"], "Top-level wait.");
+    }
+
+    #[test]
+    fn responses_request_to_chat_never_forwards_service_tier() {
+        for tier in ["flex", "priority", "default"] {
+            let result = responses_to_chat_completions(json!({
+                "model": "deepseek-v4-flash",
+                "service_tier": tier,
+                "seed": 7,
+                "input": "hi"
+            }))
+            .unwrap();
+            assert!(result.get("service_tier").is_none(), "{tier}");
+            assert_eq!(result["seed"], 7);
+        }
+    }
+
+    #[test]
+    fn plain_developer_messages_convert_without_additional_tools_carrier() {
+        let input = json!({
+            "model": "m",
+            "input": [
+                {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "Instructions."}]},
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}
+            ]
+        });
+
+        let result = responses_to_chat_completions(input).unwrap();
+        let messages = result["messages"].as_array().unwrap();
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(messages[0]["content"], "Instructions.");
+        assert_eq!(messages[1]["role"], "user");
+        assert!(result.get("tools").is_none());
+    }
+
+    #[test]
+    fn chat_response_length_marks_cut_tool_call_incomplete() {
+        let body = json!({
+            "id": "chatcmpl_cut",
+            "model": "gpt-5.4",
+            "choices": [{
+                "finish_reason": "length",
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {"id": "call_ok", "type": "function", "function": {"name": "a", "arguments": "{\"x\":1}"}},
+                        {"id": "call_cut", "type": "function", "function": {"name": "b", "arguments": "{\"x\":"}}
+                    ]
+                }
+            }]
+        });
+        let response = chat_completion_to_response(body).unwrap();
+        assert_eq!(response["status"], "incomplete");
+        assert_eq!(response["output"][0]["status"], "completed");
+        assert_eq!(response["output"][1]["status"], "incomplete");
+
+        assert_eq!(response_tool_call_status("{\"x\":", false), "completed");
     }
 }

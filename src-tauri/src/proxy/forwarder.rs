@@ -1237,6 +1237,9 @@ impl RequestForwarder {
             == Some("github_copilot")
             || base_url.contains("githubcopilot.com");
 
+        // Refuse before any Copilot model/vendor lookup can use a stored token.
+        require_managed_accounts(is_copilot || provider.is_codex_oauth())?;
+
         let codex_official_auth_passthrough = matches!(app_type, AppType::Codex)
             && super::providers::is_codex_official_provider(provider);
 
@@ -1743,6 +1746,17 @@ impl RequestForwarder {
             );
         }
 
+        // Third-party native Responses upstream: never forward a service tier
+        // the line's catalog did not declare (the Chat bridge never copies it).
+        if codex_protocol == Some(super::codex_url::CodexUpstreamProtocol::Native)
+            && super::providers::strip_undeclared_codex_service_tier(provider, &mut request_body)
+        {
+            log::debug!(
+                "[Codex] Dropped undeclared service_tier for native Responses upstream (provider={})",
+                provider.id
+            );
+        }
+
         if codex_responses_to_chat
             && super::providers::transform_codex_chat_moonshot_schema::upstream_requires_ref_sibling_all_of(&base_url)
         {
@@ -1827,6 +1841,10 @@ impl RequestForwarder {
             {
                 auth.strategy = AuthStrategy::Anthropic;
             }
+            require_managed_accounts(matches!(
+                auth.strategy,
+                AuthStrategy::GitHubCopilot | AuthStrategy::CodexOAuth
+            ))?;
             // GitHub Copilot 特殊处理：从 CopilotAuthManager 获取真实 token
             if auth.strategy == AuthStrategy::GitHubCopilot {
                 if let Some(app_handle) = &self.app_handle {
@@ -2434,7 +2452,7 @@ impl RequestForwarder {
             log::debug!(
                 "[Forwarder] Using pooled reqwest client (preserve_exact_header_case={preserve_exact_header_case}, socks_proxy={is_socks_proxy})"
             );
-            let client = super::http_client::get();
+            let client = super::http_client::get_for_forwarding();
             let mut request = client.request(method.clone(), &url);
             if request_is_streaming {
                 // reqwest 的 timeout 是整请求超时；流式请求交给 response_processor
@@ -3461,6 +3479,19 @@ fn headers_contain_proxy_placeholder(headers: &http::HeaderMap) -> bool {
     })
 }
 
+/// Proxy-injected managed accounts (GitHub Copilot and the ChatGPT
+/// subscription `codex_oauth` line) are guarded by the backend capability
+/// before their stored tokens are resolved or sent upstream.
+/// xAI OAuth is not part of it; it backs the live Codex "xAI (Grok) OAuth"
+/// preset and keeps working.
+fn require_managed_accounts(uses_managed_account: bool) -> Result<(), ProxyError> {
+    if !uses_managed_account {
+        return Ok(());
+    }
+    crate::product_policy::require(crate::product_policy::Capability::ManagedAccounts)
+        .map_err(|error| ProxyError::AuthError(error.to_string()))
+}
+
 fn should_preserve_exact_header_case(
     adapter_name: &str,
     provider: &Provider,
@@ -3593,89 +3624,15 @@ fn apply_local_proxy_header_overrides(
         return;
     }
 
-    let Some(header_overrides) = overrides.map(|overrides| &overrides.headers) else {
+    let Some(overrides) = overrides else {
         return;
     };
 
-    for (raw_name, raw_value) in header_overrides {
-        let header_name = raw_name.trim().to_ascii_lowercase();
-        if header_name.is_empty() {
-            log::warn!("[LocalProxyOverrides] Ignoring header override with empty name");
-            continue;
-        }
-
-        let Ok(name) = http::HeaderName::from_bytes(header_name.as_bytes()) else {
-            log::warn!("[LocalProxyOverrides] Ignoring invalid header override name: {raw_name}");
-            continue;
-        };
-
-        if is_protected_local_proxy_override_header(&name) {
-            log::debug!(
-                "[LocalProxyOverrides] Ignoring protected header override: {}",
-                name.as_str()
-            );
-            continue;
-        }
-
-        let Ok(value) = http::HeaderValue::from_str(raw_value) else {
-            log::warn!(
-                "[LocalProxyOverrides] Ignoring invalid header override value for {}",
-                name.as_str()
-            );
-            continue;
-        };
-
+    // Same filter as model discovery and the protocol probe: protected,
+    // invalid and duplicate names never reach the upstream.
+    for (name, value) in overrides.upstream_headers() {
         headers.insert(name, value);
     }
-}
-
-fn is_protected_local_proxy_override_header(name: &http::HeaderName) -> bool {
-    matches!(
-        name.as_str(),
-        "host"
-            | "content-length"
-            | "transfer-encoding"
-            | "connection"
-            | "proxy-authorization"
-            | "proxy-authenticate"
-            | "te"
-            | "trailer"
-            | "upgrade"
-            | "accept-encoding"
-            | "content-type"
-            | "authorization"
-            | "x-api-key"
-            | "x-goog-api-key"
-            | "chatgpt-account-id"
-            | "session_id"
-            | "x-client-request-id"
-            | "x-codex-window-id"
-            | "x-forwarded-host"
-            | "x-forwarded-port"
-            | "x-forwarded-proto"
-            | "forwarded"
-            | "cf-connecting-ip"
-            | "cf-ipcountry"
-            | "cf-ray"
-            | "cf-visitor"
-            | "true-client-ip"
-            | "fastly-client-ip"
-            | "x-azure-clientip"
-            | "x-azure-fdid"
-            | "x-azure-ref"
-            | "akamai-origin-hop"
-            | "x-akamai-config-log-detail"
-            | "x-request-id"
-            | "x-correlation-id"
-            | "x-trace-id"
-            | "x-amzn-trace-id"
-            | "x-b3-traceid"
-            | "x-b3-spanid"
-            | "x-b3-parentspanid"
-            | "x-b3-sampled"
-            | "traceparent"
-            | "tracestate"
-    )
 }
 
 fn prepare_upstream_request_body(request_body: Value) -> Value {
@@ -4296,6 +4253,21 @@ value"
         assert!(!should_preserve_exact_header_case(
             "Gemini", &provider, None, false
         ));
+    }
+
+    #[test]
+    fn managed_account_token_injection_is_closed_by_policy() {
+        // The capability stays off in this edition, so a managed account line
+        // is refused before any stored token is resolved; other lines pass.
+        assert!(require_managed_accounts(true).is_err());
+        assert!(require_managed_accounts(false).is_ok());
+
+        // The providers that feed the gate: Copilot and ChatGPT-subscription
+        // OAuth are managed accounts; xAI OAuth (live Codex preset) is not.
+        assert!(test_provider_with_type(Some("github_copilot")).is_github_copilot());
+        assert!(test_provider_with_type(Some("codex_oauth")).is_codex_oauth());
+        let xai = test_provider_with_type(Some("xai_oauth"));
+        assert!(!xai.is_github_copilot() && !xai.is_codex_oauth());
     }
 
     #[test]

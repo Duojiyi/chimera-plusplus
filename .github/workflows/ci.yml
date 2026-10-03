@@ -30,6 +30,8 @@ jobs:
 
       - name: Check repository references
         run: node scripts/check-repo-references.mjs
+      - name: Check preset promotion data
+        run: node scripts/check-preset-promotion.mjs
 
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86
@@ -44,7 +46,7 @@ jobs:
         run: node scripts/verify-release-version.mjs
 
       - name: Test release safety guards
-        run: node --test scripts/promote-latest-release.test.mjs scripts/release-workflow-guards.test.mjs
+        run: node --test scripts/promote-latest-release.test.mjs scripts/release-workflow-guards.test.mjs scripts/check-single-config-writer.test.mjs
 
       - name: Check frontend formatting
         run: pnpm format:check
@@ -60,6 +62,9 @@ jobs:
 
       - name: Build renderer and enforce bundle budgets
         run: pnpm build:renderer:check
+
+      - name: Verify single Codex config writer
+        run: node scripts/check-single-config-writer.mjs
 
       - name: Audit all npm dependencies
         run: pnpm audit --audit-level=low

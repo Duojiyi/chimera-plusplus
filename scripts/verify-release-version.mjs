@@ -47,4 +47,19 @@ if (new Set(Object.values(versions)).size !== 1) {
 if (expected && packageVersion !== expected.replace(/^v/, "")) {
   throw new Error(`expected ${JSON.stringify(expected)}, found ${JSON.stringify(packageVersion)}`);
 }
+
+// MH-2: the version bump itself was previously unguarded — nothing failed CI
+// when a release shipped without a matching CHANGELOG entry (this is exactly
+// how 2.7.10 went out with no entry). Every declared version must have a
+// `## [x.y.z]` heading, not just a tagged release.
+const changelog = fs.readFileSync(path.join(root, "CHANGELOG.md"), "utf8");
+const changelogHeading = new RegExp(
+  `^## \\[${packageVersion.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\]`,
+  "m",
+);
+if (!changelogHeading.test(changelog)) {
+  throw new Error(`CHANGELOG.md has no "## [${packageVersion}]" entry for the current version`);
+}
+
 console.log(`Version consistency verified: ${packageVersion}`);
+console.log(`CHANGELOG.md entry verified: ${packageVersion}`);

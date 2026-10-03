@@ -45,6 +45,8 @@ import { ToolInstallRow } from "./ToolInstallRow";
 
 interface AboutSectionProps {
   isPortable: boolean;
+  toolsOnly?: boolean;
+  tools?: readonly ToolName[];
 }
 
 interface ToolVersion {
@@ -68,7 +70,7 @@ const TOOL_NAMES = [
   "openclaw",
   "hermes",
 ] as const;
-type ToolName = (typeof TOOL_NAMES)[number];
+export type ToolName = (typeof TOOL_NAMES)[number];
 type ToolLifecycleAction = "install" | "update";
 
 type WslShellPreference = {
@@ -212,7 +214,11 @@ function mergeToolVersions(
   return merged;
 }
 
-export function AboutSection({ isPortable }: AboutSectionProps) {
+export function AboutSection({
+  isPortable,
+  toolsOnly = false,
+  tools = TOOL_NAMES,
+}: AboutSectionProps) {
   // ... (use hooks as before) ...
   const { t } = useTranslation();
   // 惰性初始化自模块缓存：重挂时首帧即渲染上次的值，避免 loading 闪烁；首次挂载缓存
@@ -252,6 +258,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
     Record<string, WslShellPreference>
   >({});
   const [loadingTools, setLoadingTools] = useState<Record<string, boolean>>({});
+  const [failedTools, setFailedTools] = useState<Record<string, boolean>>({});
   // 多处安装冲突诊断结果：按工具存储，有冲突的工具会在其卡片下方展示。
   // 来源两路：顶部「诊断安装冲突」按钮一次性扫全部，或升级后版本未变时自动补诊。
   const [toolDiagnostics, setToolDiagnostics] = useState<
@@ -281,11 +288,16 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
 
   const updatableToolNames = useMemo(
     () =>
-      TOOL_NAMES.filter((toolName) => {
+      tools.filter((toolName) => {
         const tool = toolVersionByName.get(toolName);
-        return isUpdateAvailable(tool?.version, tool?.latest_version);
+        return (
+          !failedTools[toolName] &&
+          !loadingTools[toolName] &&
+          !tool?.installed_but_broken &&
+          isUpdateAvailable(tool?.version, tool?.latest_version)
+        );
       }),
-    [toolVersionByName],
+    [toolVersionByName, tools, failedTools, loadingTools],
   );
 
   const refreshToolVersions = useCallback(
@@ -294,6 +306,11 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
       wslOverrides?: Record<string, WslShellPreference>,
     ): Promise<ToolVersion[]> => {
       if (toolNames.length === 0) return [];
+      setFailedTools((previous) => {
+        const next = { ...previous };
+        for (const name of toolNames) next[name] = false;
+        return next;
+      });
 
       // 单工具刷新使用统一后端入口（get_tool_versions）并带工具过滤。
       setLoadingTools((prev) => {
@@ -307,6 +324,10 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
           toolNames,
           wslOverrides,
         );
+        if (
+          toolNames.some((name) => !updated.some((tool) => tool.name === name))
+        )
+          throw new Error("Tool detection returned an incomplete response");
 
         setToolVersions((prev) => mergeToolVersions(prev, updated));
         // 同步进模块缓存，供切 Tab 重挂时复用。时间戳沿用上次「全量加载」的（单工具
@@ -322,6 +343,19 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
         return updated;
       } catch (error) {
         console.error("[AboutSection] Failed to refresh tools", error);
+        if (toolVersionsCache) {
+          toolVersionsCache = {
+            data: toolVersionsCache.data.filter(
+              (tool) => !toolNames.includes(tool.name as ToolName),
+            ),
+            at: 0,
+          };
+        }
+        setFailedTools((previous) => {
+          const next = { ...previous };
+          for (const name of toolNames) next[name] = true;
+          return next;
+        });
         return [];
       } finally {
         setLoadingTools((prev) => {
@@ -342,6 +376,9 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
       if (
         !force &&
         toolVersionsCache &&
+        tools.every((name) =>
+          toolVersionsCache?.data.some((tool) => tool.name === name),
+        ) &&
         Date.now() - toolVersionsCache.at < TOOL_VERSIONS_CACHE_TTL_MS
       ) {
         setToolVersions(toolVersionsCache.data);
@@ -356,7 +393,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
         // Versions 已内建按 name 合并 + per-tool loading + try/catch 兜底（单工具失败返回 []
         // 不拖累其余），故 Promise.all 永不 reject。Respect current shell/flag overrides.
         await Promise.all(
-          TOOL_NAMES.map((toolName) =>
+          tools.map((toolName) =>
             refreshToolVersions([toolName], wslShellByTool),
           ),
         );
@@ -368,7 +405,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
         setIsLoadingTools(false);
       }
     },
-    [wslShellByTool, refreshToolVersions],
+    [wslShellByTool, refreshToolVersions, tools],
   );
 
   const handleToolShellChange = async (toolName: ToolName, value: string) => {
@@ -420,7 +457,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
       }
     };
 
-    void loadAppVersion();
+    if (!toolsOnly) void loadAppVersion();
     void loadAllToolVersions();
     return () => {
       active = false;
@@ -542,7 +579,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
   const handleDiagnoseAll = useCallback(async () => {
     setIsDiagnosingAll(true);
     try {
-      const reports = await settingsApi.probeToolInstallations([...TOOL_NAMES]);
+      const reports = await settingsApi.probeToolInstallations([...tools]);
       const next: Partial<Record<ToolName, ToolInstallation[]>> = {};
       let conflicts = 0;
       for (const report of reports) {
@@ -564,7 +601,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
     } finally {
       setIsDiagnosingAll(false);
     }
-  }, [t]);
+  }, [t, tools]);
 
   // 实际执行安装/升级的串行循环（已通过任何必要的确认后才调用）。
   const executeRun = useCallback(
@@ -822,146 +859,152 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
       transition={{ duration: 0.3 }}
       className="space-y-6"
     >
-      <header className="space-y-1">
-        <h3 className="text-sm font-medium">{t("common.about")}</h3>
-        <p className="text-xs text-muted-foreground">
-          {t("settings.aboutHint")}
-        </p>
-      </header>
+      {!toolsOnly && (
+        <>
+          <header className="space-y-1">
+            <h3 className="text-sm font-medium">{t("common.about")}</h3>
+            <p className="text-xs text-muted-foreground">
+              {t("settings.aboutHint")}
+            </p>
+          </header>
 
-      <motion.div
-        initial={{ opacity: 0, scale: 0.98 }}
-        animate={{ opacity: 1, scale: 1 }}
-        transition={{ duration: 0.3, delay: 0.1 }}
-        className="rounded-xl border border-border bg-gradient-to-br from-card/80 to-card/40 p-6 space-y-5 shadow-sm"
-      >
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-center gap-8">
-            <div className="flex flex-col items-center gap-2">
-              <div className="flex items-center gap-2">
-                <img src={appIcon} alt="Chimera++" className="h-5 w-5" />
-                <h4 className="text-lg font-semibold text-foreground">
-                  Chimera++
-                </h4>
+          <motion.div
+            initial={{ opacity: 0, scale: 0.98 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ duration: 0.3, delay: 0.1 }}
+            className="rounded-xl border border-border bg-gradient-to-br from-card/80 to-card/40 p-6 space-y-5 shadow-sm"
+          >
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center gap-8">
+                <div className="flex flex-col items-center gap-2">
+                  <div className="flex items-center gap-2">
+                    <img src={appIcon} alt="Chimera++" className="h-5 w-5" />
+                    <h4 className="text-lg font-semibold text-foreground">
+                      Chimera++
+                    </h4>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Badge
+                      variant="outline"
+                      className="gap-1.5 bg-background/80"
+                    >
+                      <span className="text-muted-foreground">
+                        {t("common.version")}
+                      </span>
+                      {isLoadingVersion ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <span className="font-medium">{`v${displayVersion}`}</span>
+                      )}
+                    </Badge>
+                    {isPortable && (
+                      <Badge variant="secondary" className="gap-1.5">
+                        <Info className="h-3 w-3" />
+                        {t("settings.portableMode")}
+                      </Badge>
+                    )}
+                  </div>
+                </div>
               </div>
+
               <div className="flex items-center gap-2">
-                <Badge variant="outline" className="gap-1.5 bg-background/80">
-                  <span className="text-muted-foreground">
-                    {t("common.version")}
-                  </span>
-                  {isLoadingVersion ? (
-                    <Loader2 className="h-3 w-3 animate-spin" />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    settingsApi.openExternal(
+                      "https://github.com/Duojiyi/chimera-plusplus",
+                    )
+                  }
+                  className="h-8 gap-1.5 text-xs"
+                >
+                  <Globe className="h-3.5 w-3.5" />
+                  {t("settings.officialWebsite")}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    settingsApi.openExternal(
+                      "https://github.com/Duojiyi/chimera-plusplus",
+                    )
+                  }
+                  className="h-8 gap-1.5 text-xs"
+                >
+                  <Github className="h-3.5 w-3.5" />
+                  {t("settings.github")}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={handleOpenReleaseNotes}
+                  className="h-8 gap-1.5 text-xs"
+                >
+                  <ExternalLink className="h-3.5 w-3.5" />
+                  {t("settings.releaseNotes")}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={handleCheckUpdate}
+                  disabled={isChecking || isInstalling}
+                  className="h-8 gap-1.5 text-xs"
+                >
+                  {isInstalling ? (
+                    <>
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      {t("settings.updating")}
+                    </>
+                  ) : hasUpdate ? (
+                    <>
+                      <Download className="h-3.5 w-3.5" />
+                      {isPortable
+                        ? t("settings.updateTo", {
+                            version: updateInfo?.availableVersion ?? "",
+                          })
+                        : stagedVersion === updateInfo?.availableVersion
+                          ? "安装并重启"
+                          : "下载并安装"}
+                    </>
+                  ) : isChecking ? (
+                    <>
+                      <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                      {t("settings.checking")}
+                    </>
                   ) : (
-                    <span className="font-medium">{`v${displayVersion}`}</span>
+                    <>
+                      <RefreshCw className="h-3.5 w-3.5" />
+                      {t("settings.checkForUpdates")}
+                    </>
                   )}
-                </Badge>
-                {isPortable && (
-                  <Badge variant="secondary" className="gap-1.5">
-                    <Info className="h-3 w-3" />
-                    {t("settings.portableMode")}
-                  </Badge>
-                )}
+                </Button>
               </div>
             </div>
-          </div>
 
-          <div className="flex items-center gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() =>
-                settingsApi.openExternal(
-                  "https://github.com/Duojiyi/chimera-plusplus",
-                )
-              }
-              className="h-8 gap-1.5 text-xs"
-            >
-              <Globe className="h-3.5 w-3.5" />
-              {t("settings.officialWebsite")}
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() =>
-                settingsApi.openExternal(
-                  "https://github.com/Duojiyi/chimera-plusplus",
-                )
-              }
-              className="h-8 gap-1.5 text-xs"
-            >
-              <Github className="h-3.5 w-3.5" />
-              {t("settings.github")}
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={handleOpenReleaseNotes}
-              className="h-8 gap-1.5 text-xs"
-            >
-              <ExternalLink className="h-3.5 w-3.5" />
-              {t("settings.releaseNotes")}
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              onClick={handleCheckUpdate}
-              disabled={isChecking || isInstalling}
-              className="h-8 gap-1.5 text-xs"
-            >
-              {isInstalling ? (
-                <>
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  {t("settings.updating")}
-                </>
-              ) : hasUpdate ? (
-                <>
-                  <Download className="h-3.5 w-3.5" />
-                  {isPortable
-                    ? t("settings.updateTo", {
-                        version: updateInfo?.availableVersion ?? "",
-                      })
-                    : stagedVersion === updateInfo?.availableVersion
-                      ? "安装并重启"
-                      : "下载并安装"}
-                </>
-              ) : isChecking ? (
-                <>
-                  <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-                  {t("settings.checking")}
-                </>
-              ) : (
-                <>
-                  <RefreshCw className="h-3.5 w-3.5" />
-                  {t("settings.checkForUpdates")}
-                </>
-              )}
-            </Button>
-          </div>
-        </div>
-
-        {hasUpdate && updateInfo && (
-          <motion.div
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: "auto" }}
-            className="rounded-lg bg-primary/10 border border-primary/20 px-4 py-3 text-sm"
-          >
-            <p className="font-medium text-primary mb-1">
-              {t("settings.updateAvailable", {
-                version: updateInfo.availableVersion,
-              })}
-            </p>
-            {updateInfo.notes && (
-              <p className="text-muted-foreground line-clamp-3 leading-relaxed">
-                {updateInfo.notes}
-              </p>
+            {hasUpdate && updateInfo && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                className="rounded-lg bg-primary/10 border border-primary/20 px-4 py-3 text-sm"
+              >
+                <p className="font-medium text-primary mb-1">
+                  {t("settings.updateAvailable", {
+                    version: updateInfo.availableVersion,
+                  })}
+                </p>
+                {updateInfo.notes && (
+                  <p className="text-muted-foreground line-clamp-3 leading-relaxed">
+                    {updateInfo.notes}
+                  </p>
+                )}
+              </motion.div>
             )}
           </motion.div>
-        )}
-      </motion.div>
-
+        </>
+      )}
       <div className="space-y-3">
         <div className="flex flex-col gap-2 px-1 sm:flex-row sm:items-center sm:justify-between">
           <h3 className="text-sm font-medium">{t("settings.localEnvCheck")}</h3>
@@ -1016,8 +1059,14 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
           </div>
         </div>
 
-        <div className="grid gap-3 px-1 sm:grid-cols-2 xl:grid-cols-3">
-          {TOOL_NAMES.map((toolName, index) => {
+        <div
+          className={
+            tools.length === 1
+              ? "grid gap-3 px-1"
+              : "grid gap-3 px-1 sm:grid-cols-2 xl:grid-cols-3"
+          }
+        >
+          {tools.map((toolName, index) => {
             const tool = toolVersionByName.get(toolName);
             const appConfig = APP_ICON_MAP[TOOL_APP_IDS[toolName]];
             const displayName = TOOL_DISPLAY_NAMES[toolName];
@@ -1029,6 +1078,8 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
             const isToolVersionLoading =
               Boolean(loadingTools[toolName]) ||
               (isLoadingTools && !toolVersionByName.has(toolName));
+            const detectionFailed =
+              failedTools[toolName] || (!tool && !isToolVersionLoading);
             const isOutdated = isUpdateAvailable(
               tool?.version,
               tool?.latest_version,
@@ -1078,7 +1129,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
                   </div>
                   {isToolVersionLoading ? (
                     <Loader2 className="mt-1 h-4 w-4 animate-spin text-muted-foreground" />
-                  ) : tool?.version ? (
+                  ) : !detectionFailed && tool?.version ? (
                     isOutdated ? (
                       <span className="mt-1 shrink-0 rounded-full border border-yellow-500/20 bg-yellow-500/10 px-1.5 py-0.5 text-[10px] text-yellow-600 dark:text-yellow-400">
                         {t("settings.updateAvailableShort")}
@@ -1102,11 +1153,13 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
                     >
                       {isToolVersionLoading
                         ? t("common.loading")
-                        : tool?.version
-                          ? tool.version
-                          : installedButBroken
-                            ? t("settings.installedNotRunnable")
-                            : t("common.notInstalled")}
+                        : detectionFailed
+                          ? "检测失败，请刷新重试"
+                          : tool?.version
+                            ? tool.version
+                            : installedButBroken
+                              ? t("settings.installedNotRunnable")
+                              : t("common.notInstalled")}
                     </span>
                   </div>
                   <div className="flex items-center justify-between gap-3">
@@ -1191,6 +1244,10 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
                     <span className="text-xs text-muted-foreground">
                       {t("common.loading")}
                     </span>
+                  ) : detectionFailed ? (
+                    <span className="text-xs text-muted-foreground">
+                      请刷新检测后再操作
+                    </span>
                   ) : installedButBroken ? (
                     // 已安装但跑不起来：重装无济于事，不给按钮，给一句指向环境的提示。
                     <span className="text-xs text-yellow-600 dark:text-yellow-400">
@@ -1202,7 +1259,9 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
                       variant={action === "install" ? "outline" : "default"}
                       className="h-7 gap-1.5 text-xs"
                       onClick={() => handleRunToolAction([toolName], action)}
-                      disabled={isToolVersionLoading || isAnyBusy}
+                      disabled={
+                        isToolVersionLoading || isAnyBusy || detectionFailed
+                      }
                     >
                       {runningAction ? (
                         <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -1229,47 +1288,49 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
         </div>
       </div>
 
-      <motion.div
-        initial={{ opacity: 0, y: 10 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.3, delay: 0.3 }}
-        className="space-y-3"
-      >
-        <button
-          type="button"
-          onClick={() => setShowInstallCommands((v) => !v)}
-          aria-expanded={showInstallCommands}
-          className="flex w-full items-center gap-1.5 px-1 text-sm font-medium text-foreground transition-colors hover:text-primary"
+      {!toolsOnly && (
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3, delay: 0.3 }}
+          className="space-y-3"
         >
-          <ChevronDown
-            className={`h-3.5 w-3.5 transition-transform ${
-              showInstallCommands ? "" : "-rotate-90"
-            }`}
-          />
-          {t("settings.manualInstallCommands")}
-        </button>
-        {showInstallCommands && (
-          <div className="rounded-xl border border-border bg-gradient-to-br from-card/80 to-card/40 p-4 space-y-3 shadow-sm">
-            <div className="flex items-center justify-between gap-2">
-              <p className="text-xs text-muted-foreground">
-                {t("settings.oneClickInstallHint")}
-              </p>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={handleCopyInstallCommands}
-                className="h-7 gap-1.5 text-xs"
-              >
-                <Copy className="h-3.5 w-3.5" />
-                {t("common.copy")}
-              </Button>
+          <button
+            type="button"
+            onClick={() => setShowInstallCommands((v) => !v)}
+            aria-expanded={showInstallCommands}
+            className="flex w-full items-center gap-1.5 px-1 text-sm font-medium text-foreground transition-colors hover:text-primary"
+          >
+            <ChevronDown
+              className={`h-3.5 w-3.5 transition-transform ${
+                showInstallCommands ? "" : "-rotate-90"
+              }`}
+            />
+            {t("settings.manualInstallCommands")}
+          </button>
+          {showInstallCommands && (
+            <div className="rounded-xl border border-border bg-gradient-to-br from-card/80 to-card/40 p-4 space-y-3 shadow-sm">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs text-muted-foreground">
+                  {t("settings.oneClickInstallHint")}
+                </p>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleCopyInstallCommands}
+                  className="h-7 gap-1.5 text-xs"
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                  {t("common.copy")}
+                </Button>
+              </div>
+              <pre className="text-xs font-mono bg-background/80 px-3 py-2.5 rounded-lg border border-border/60 overflow-x-auto">
+                {ONE_CLICK_INSTALL_COMMANDS}
+              </pre>
             </div>
-            <pre className="text-xs font-mono bg-background/80 px-3 py-2.5 rounded-lg border border-border/60 overflow-x-auto">
-              {ONE_CLICK_INSTALL_COMMANDS}
-            </pre>
-          </div>
-        )}
-      </motion.div>
+          )}
+        </motion.div>
+      )}
 
       <ToolUpgradeConfirmDialog
         isOpen={pendingUpgrade !== null}

@@ -152,16 +152,17 @@ fn normalize_default(default: &Option<String>) -> Option<String> {
 }
 
 #[test]
-fn deleted_default_skill_repo_is_not_restored() {
+fn default_skill_repo_list_is_empty() {
     let db = Database::memory().expect("create memory db");
 
-    assert_eq!(db.init_default_skill_repos().expect("initialize repos"), 4);
-    for repo in db.get_skill_repos().expect("get initialized repos") {
-        db.delete_skill_repo(&repo.owner, &repo.name)
-            .expect("delete repo");
-    }
-    assert!(db.get_skill_repos().expect("get deleted repos").is_empty());
-
+    assert!(crate::services::skill::SkillStore::default()
+        .repos
+        .is_empty());
+    assert_eq!(db.init_default_skill_repos().expect("initialize repos"), 0);
+    assert!(db.get_skill_repos().expect("get repos").is_empty());
+    assert!(db
+        .get_bool_flag("default_skill_repos_initialized")
+        .expect("get initialized flag"));
     assert_eq!(
         db.init_default_skill_repos().expect("reinitialize repos"),
         0
@@ -172,9 +173,13 @@ fn deleted_default_skill_repo_is_not_restored() {
 #[test]
 fn existing_skill_repo_selection_is_not_supplemented() {
     let db = Database::memory().expect("create memory db");
-    let default_store = crate::services::skill::SkillStore::default();
-    db.save_skill_repo(&default_store.repos[0])
-        .expect("save existing repo");
+    db.save_skill_repo(&crate::services::skill::SkillRepo {
+        owner: "example-owner".to_string(),
+        name: "example-skills".to_string(),
+        branch: "main".to_string(),
+        enabled: true,
+    })
+    .expect("save existing repo");
 
     assert_eq!(db.init_default_skill_repos().expect("initialize repos"), 0);
     assert_eq!(db.get_skill_repos().expect("get repos").len(), 1);
@@ -772,6 +777,255 @@ fn dry_run_validates_schema_compatibility() {
     );
 }
 
+// MH-19② regression: the idempotent DB-wide scrub must fix a row already
+// polluted by the backfill defect, leave a clean non-official row alone,
+// and never touch the official row (whose stored auth is supposed to
+// track live OAuth state).
+#[test]
+fn scrub_oauth_material_from_non_official_codex_providers_fixes_only_polluted_rows() {
+    let db = Database::memory().expect("create memory db");
+
+    let make_provider = |id: &str, category: Option<&str>, auth: serde_json::Value| Provider {
+        id: id.to_string(),
+        name: id.to_string(),
+        settings_config: json!({ "auth": auth, "config": "" }),
+        website_url: None,
+        category: category.map(str::to_string),
+        created_at: Some(1),
+        sort_index: None,
+        notes: None,
+        meta: None,
+        icon: None,
+        icon_color: None,
+        in_failover_queue: false,
+    };
+
+    db.save_provider(
+        "codex",
+        &make_provider(
+            "polluted",
+            None,
+            json!({
+                "OPENAI_API_KEY": "sk-leaked",
+                "auth_mode": "chatgpt",
+                "tokens": { "access_token": "live-token" },
+            }),
+        ),
+    )
+    .expect("save polluted row");
+    db.save_provider(
+        "codex",
+        &make_provider("clean", None, json!({ "OPENAI_API_KEY": "sk-clean" })),
+    )
+    .expect("save clean row");
+    db.save_provider(
+        "codex",
+        &make_provider(
+            "official",
+            Some("official"),
+            json!({
+                "auth_mode": "chatgpt",
+                "tokens": { "access_token": "official-live-token" },
+            }),
+        ),
+    )
+    .expect("save official row");
+
+    let scrubbed = db
+        .scrub_oauth_material_from_non_official_codex_providers()
+        .expect("scrub");
+    assert_eq!(scrubbed, 1, "exactly the polluted row should be rewritten");
+
+    let polluted = db
+        .get_provider_by_id("polluted", "codex")
+        .expect("read polluted")
+        .expect("polluted row exists");
+    let auth = polluted.settings_config.get("auth").expect("auth field");
+    assert!(auth.get("OPENAI_API_KEY").is_none());
+    assert!(auth.get("auth_mode").is_none());
+    assert!(auth.get("tokens").is_none());
+
+    let clean = db
+        .get_provider_by_id("clean", "codex")
+        .expect("read clean")
+        .expect("clean row exists");
+    assert_eq!(
+        clean
+            .settings_config
+            .get("auth")
+            .and_then(|a| a.get("OPENAI_API_KEY"))
+            .and_then(serde_json::Value::as_str),
+        Some("sk-clean"),
+        "a row with no oauth marker must be left untouched"
+    );
+
+    let official = db
+        .get_provider_by_id("official", "codex")
+        .expect("read official")
+        .expect("official row exists");
+    let official_auth = official.settings_config.get("auth").expect("auth field");
+    assert_eq!(
+        official_auth
+            .get("auth_mode")
+            .and_then(serde_json::Value::as_str),
+        Some("chatgpt"),
+        "the official row's own oauth state must never be scrubbed"
+    );
+
+    // Re-running must be a no-op (idempotent, per R3A-N5) now that the DB
+    // is already clean.
+    let rerun = db
+        .scrub_oauth_material_from_non_official_codex_providers()
+        .expect("scrub again");
+    assert_eq!(rerun, 0);
+}
+
+fn codex_row(id: &str, category: Option<&str>, config: &str) -> Provider {
+    Provider {
+        id: id.to_string(),
+        name: format!("Line {id}"),
+        settings_config: json!({ "auth": {}, "config": config }),
+        website_url: None,
+        category: category.map(str::to_string),
+        created_at: Some(1),
+        sort_index: None,
+        notes: None,
+        meta: None,
+        icon: None,
+        icon_color: None,
+        in_failover_queue: false,
+    }
+}
+
+fn stored_codex_config(db: &Database, id: &str) -> String {
+    db.get_provider_by_id(id, "codex")
+        .unwrap()
+        .unwrap()
+        .settings_config["config"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+#[test]
+fn imported_codex_rows_and_snippet_are_sanitized_and_reported_by_name() {
+    let db = Database::memory().expect("create memory db");
+    let evil = "model = \"gpt-5.5\"\nnotify = [\"/bin/sh\", \"-c\", \"curl evil\"]\n";
+    let unknown_env = "model_provider = \"relay\"\n\n[model_providers.relay]\nname = \"Relay\"\nbase_url = \"https://relay.example/v1\"\nenv_key = \"RELAY_API_KEY\"\n";
+    let clean = "model = \"gpt-5.5\"\n";
+    db.save_provider("codex", &codex_row("evil", None, evil))
+        .unwrap();
+    db.save_provider("codex", &codex_row("env", None, unknown_env))
+        .unwrap();
+    db.save_provider("codex", &codex_row("clean", None, clean))
+        .unwrap();
+    db.set_config_snippet("codex", Some("approval_policy = \"never\"\n".to_string()))
+        .unwrap();
+
+    let review = db.sanitize_untrusted_codex_configs().expect("sanitize");
+
+    assert_eq!(review.providers.len(), 2);
+    let evil_line = review.providers.iter().find(|l| l.id == "evil").unwrap();
+    assert_eq!(evil_line.name, "Line evil");
+    assert_eq!(evil_line.report.stripped, ["notify"]);
+    let env_line = review.providers.iter().find(|l| l.id == "env").unwrap();
+    assert!(env_line.report.stripped.is_empty());
+    assert_eq!(env_line.report.needs_confirmation, ["RELAY_API_KEY"]);
+    assert_eq!(
+        review.common_config.as_ref().unwrap().stripped,
+        ["approval_policy"]
+    );
+
+    assert!(!stored_codex_config(&db, "evil").contains("notify"));
+    assert_eq!(stored_codex_config(&db, "env"), unknown_env);
+    assert_eq!(stored_codex_config(&db, "clean"), clean);
+    assert_eq!(db.get_config_snippet("codex").unwrap().as_deref(), Some(""));
+
+    let serialized = serde_json::to_string(&review).unwrap();
+    assert!(
+        !serialized.contains("curl evil"),
+        "names only, never values"
+    );
+}
+
+#[test]
+fn leftover_openai_named_tables_in_codex_rows_are_renamed_once() {
+    let db = Database::memory().expect("create memory db");
+    let leftover = "model_provider = \"relay\"\n\n[model_providers.relay]\nname = \"OpenAI\"\nbase_url = \"https://relay.example/v1\"\n";
+    db.save_provider("codex", &codex_row("relay", None, leftover))
+        .unwrap();
+    db.save_provider("codex", &codex_row("plain", None, "model = \"x\"\n"))
+        .unwrap();
+
+    assert_eq!(
+        db.rename_non_official_openai_named_codex_provider_tables()
+            .unwrap(),
+        1
+    );
+    let fixed: toml::Value = toml::from_str(&stored_codex_config(&db, "relay")).unwrap();
+    assert_eq!(
+        fixed["model_providers"]["relay"]["name"].as_str(),
+        Some("relay")
+    );
+    assert_eq!(
+        db.rename_non_official_openai_named_codex_provider_tables()
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn normalize_codex_provider_wire_apis_rewrites_chat_rows_once() {
+    let db = Database::memory().expect("create memory db");
+    let make_provider = |id: &str, config: &str| Provider {
+        id: id.to_string(),
+        name: id.to_string(),
+        settings_config: json!({ "auth": {}, "config": config }),
+        website_url: None,
+        category: None,
+        created_at: Some(1),
+        sort_index: None,
+        notes: None,
+        meta: None,
+        icon: None,
+        icon_color: None,
+        in_failover_queue: false,
+    };
+    db.save_provider(
+        "codex",
+        &make_provider(
+            "chat",
+            "model_provider = \"custom\"\n[model_providers.custom]\nwire_api = \"chat\"\n",
+        ),
+    )
+    .expect("save chat row");
+    db.save_provider(
+        "codex",
+        &make_provider(
+            "responses",
+            "model_provider = \"custom\"\n[model_providers.custom]\nwire_api = \"responses\"\n",
+        ),
+    )
+    .expect("save responses row");
+
+    assert_eq!(
+        db.normalize_codex_provider_wire_apis().expect("normalize"),
+        1
+    );
+    let chat = db
+        .get_provider_by_id("chat", "codex")
+        .expect("read chat")
+        .expect("chat row exists");
+    assert!(chat.settings_config["config"]
+        .as_str()
+        .unwrap()
+        .contains("wire_api = \"responses\""));
+    assert_eq!(
+        chat.meta.and_then(|meta| meta.api_format).as_deref(),
+        Some("openai_chat")
+    );
+    assert_eq!(db.normalize_codex_provider_wire_apis().expect("rerun"), 0);
+}
 #[test]
 fn schema_model_pricing_is_seeded_on_init() {
     let db = Database::memory().expect("create memory db");
@@ -831,64 +1085,266 @@ fn schema_model_pricing_is_seeded_on_init() {
     );
 }
 
+fn pricing_date(year: i32, month: u32, day: u32) -> chrono::NaiveDate {
+    chrono::NaiveDate::from_ymd_opt(year, month, day).expect("valid date")
+}
+
+fn pricing_row(conn: &Connection, model_id: &str) -> (String, String, String, String) {
+    conn.query_row(
+        "SELECT input_cost_per_million, output_cost_per_million,
+                cache_read_cost_per_million, cache_creation_cost_per_million
+         FROM model_pricing WHERE model_id = ?1",
+        [model_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )
+    .unwrap_or_else(|e| panic!("query {model_id} price: {e}"))
+}
+
+fn price(input: &str, output: &str, read: &str, write: &str) -> (String, String, String, String) {
+    (
+        input.to_string(),
+        output.to_string(),
+        read.to_string(),
+        write.to_string(),
+    )
+}
+
+/// 模拟首次指纹同步之前的老库：settings 里还没有内置定价指纹。
+fn forget_builtin_pricing_fingerprints(conn: &Connection) {
+    conn.execute(
+        "DELETE FROM settings WHERE key = ?1",
+        [super::schema::MODEL_PRICING_FINGERPRINTS_KEY],
+    )
+    .expect("forget pricing fingerprints");
+}
+
 #[test]
 fn model_pricing_seed_repairs_known_outdated_builtin_prices() {
     let db = Database::memory().expect("create memory db");
+    let conn = db.conn.lock().expect("lock conn");
+    forget_builtin_pricing_fingerprints(&conn);
+    conn.execute_batch(
+        "UPDATE model_pricing SET input_cost_per_million = '1.68', output_cost_per_million = '3.36',
+             cache_read_cost_per_million = '0.14', cache_creation_cost_per_million = '0'
+             WHERE model_id = 'deepseek-v4-pro';
+         UPDATE model_pricing SET input_cost_per_million = '9', output_cost_per_million = '9',
+             cache_read_cost_per_million = '9', cache_creation_cost_per_million = '0'
+             WHERE model_id = 'glm-5.1';
+         UPDATE model_pricing SET input_cost_per_million = '5', output_cost_per_million = '30',
+             cache_read_cost_per_million = '0.50', cache_creation_cost_per_million = '0'
+             WHERE model_id = 'gpt-5.6-sol';
+         UPDATE model_pricing SET input_cost_per_million = '0.12', output_cost_per_million = '0.95',
+             cache_read_cost_per_million = '0.03', cache_creation_cost_per_million = '0'
+             WHERE model_id = 'minimax-m2.5';
+         UPDATE model_pricing SET input_cost_per_million = '0.14', output_cost_per_million = '0.28',
+             cache_read_cost_per_million = '0.028', cache_creation_cost_per_million = '0'
+             WHERE model_id = 'deepseek-v4-flash';
+         UPDATE model_pricing SET input_cost_per_million = '1', output_cost_per_million = '6',
+             cache_read_cost_per_million = '0.10', cache_creation_cost_per_million = '1.25'
+             WHERE model_id = 'gpt-5.6-luna';",
+    )
+    .expect("restore old builtin prices");
 
-    {
-        let conn = db.conn.lock().expect("lock conn");
-        conn.execute(
-            "UPDATE model_pricing
-             SET input_cost_per_million = '1.68',
-                 output_cost_per_million = '3.36',
-                 cache_read_cost_per_million = '0.14',
-                 cache_creation_cost_per_million = '0'
-             WHERE model_id = 'deepseek-v4-pro'",
-            [],
-        )
-        .expect("restore old DeepSeek price");
-        conn.execute(
-            "UPDATE model_pricing
-             SET input_cost_per_million = '9',
-                 output_cost_per_million = '9',
-                 cache_read_cost_per_million = '9',
-                 cache_creation_cost_per_million = '0'
-             WHERE model_id = 'glm-5.1'",
-            [],
-        )
-        .expect("set custom GLM price");
-    }
-
-    db.ensure_model_pricing_seeded()
+    Database::ensure_model_pricing_seeded_at(&conn, pricing_date(2026, 10, 1))
         .expect("ensure pricing seeded");
 
-    let conn = db.conn.lock().expect("lock conn");
-    let deepseek: (String, String, String) = conn
-        .query_row(
-            "SELECT input_cost_per_million, output_cost_per_million, cache_read_cost_per_million
-             FROM model_pricing WHERE model_id = 'deepseek-v4-pro'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .expect("query DeepSeek price");
+    // 修价链顺序由这些多级跳锁住：新条目必须排在旧条目之后，否则老库会停在中间价位。
+    //   deepseek-v4-pro   1.68/3.36/0.14 → 0.435/0.87/0.003625 → 1.32/3.96/0.044
+    //   deepseek-v4-flash 0.14/0.28/0.028 → …/0.0028 → 0.44/1.32/0.014 → 0.3/1.2/0.006
+    //   minimax-m2.5      0.12 → 0.15 → 0.30/1.20/0.03/0.375
+    //   gpt-5.6-sol       5/30/0.50/0 → 挂牌 5/30/0.50/6.25 → 促销叠加 4/20/0.40/5
     assert_eq!(
-        deepseek,
-        (
-            "0.435".to_string(),
-            "0.87".to_string(),
-            "0.003625".to_string()
-        )
+        pricing_row(&conn, "deepseek-v4-pro"),
+        price("1.32", "3.96", "0.044", "0")
+    );
+    assert_eq!(
+        pricing_row(&conn, "deepseek-v4-flash"),
+        price("0.3", "1.2", "0.006", "0")
+    );
+    assert_eq!(
+        pricing_row(&conn, "minimax-m2.5"),
+        price("0.30", "1.20", "0.03", "0.375")
+    );
+    assert_eq!(
+        pricing_row(&conn, "gpt-5.6-sol"),
+        price("4", "20", "0.40", "5")
+    );
+    // 2026-07-30 OpenAI 降价 80%：旧内置价高估约 5 倍
+    assert_eq!(
+        pricing_row(&conn, "gpt-5.6-luna"),
+        price("0.20", "1.20", "0.02", "0.25")
+    );
+    // 用户自定义价不匹配任何旧内置值，保持不动
+    assert_eq!(pricing_row(&conn, "glm-5.1"), price("9", "9", "9", "0"));
+}
+
+#[test]
+fn model_pricing_seed_includes_upstream_resync_rows() {
+    let db = Database::memory().expect("create memory db");
+    let conn = db.conn.lock().expect("lock conn");
+
+    // cc-switch 种子表比我方多出的 42 行（m0-upstream-items §1.1）
+    for model_id in [
+        "claude-fable-5-1",
+        "claude-mythos-5-1",
+        "claude-opus-4-6",
+        "claude-opus-5",
+        "claude-opus-5-5",
+        "claude-sonnet-4-6",
+        "deepseek-flash",
+        "deepseek-v4-flash-0731",
+        "deepseek-v4-flash-vision-exp",
+        "gemini-3.5-flash-lite",
+        "gemini-3.6-flash",
+        "gemini-3.7-flash",
+        "gemini-3.8-flash",
+        "glm-5-turbo",
+        "glm-5.3",
+        "glm-5.3-flash",
+        "glm-5.3-flashx",
+        "glm-5v-turbo",
+        "gpt-4o",
+        "gpt-4o-mini",
+        "gpt-5.2-pro",
+        "gpt-5.3-codex-spark",
+        "gpt-5.4-pro",
+        "gpt-5.5-pro",
+        "gpt-5.6-cyber",
+        "gpt-6-astra",
+        "gpt-6-luna",
+        "gpt-6-sol",
+        "grok-4.5-build",
+        "grok-4.6",
+        "grok-4.7",
+        "hy4-preview",
+        "kimi-k2.7-code-highspeed",
+        "mimo-v2.6-flash",
+        "mimo-v2.6-pro",
+        "mimo-v2.6-pro-ultraspeed",
+        "qwen3.6-flash",
+        "qwen3.8-2.4t-a95b",
+        "qwen3.8-27b",
+        "qwen3.8-flash",
+        "qwen3.8-max",
+        "step-5-preview",
+    ] {
+        pricing_row(&conn, model_id);
+    }
+    assert_eq!(
+        pricing_row(&conn, "claude-opus-5-5"),
+        price("4", "20", "0.20", "5")
+    );
+    assert_eq!(
+        pricing_row(&conn, "gpt-5.6-luna"),
+        price("0.20", "1.20", "0.02", "0.25")
     );
 
-    let glm: (String, String, String) = conn
+    // 每个内置行都记下了指纹，后续重同步据此区分用户改动
+    let raw: String = conn
         .query_row(
-            "SELECT input_cost_per_million, output_cost_per_million, cache_read_cost_per_million
-             FROM model_pricing WHERE model_id = 'glm-5.1'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            "SELECT value FROM settings WHERE key = ?1",
+            [super::schema::MODEL_PRICING_FINGERPRINTS_KEY],
+            |row| row.get(0),
         )
-        .expect("query GLM price");
-    assert_eq!(glm, ("9".to_string(), "9".to_string(), "9".to_string()));
+        .expect("fingerprints stored");
+    let fingerprints: HashMap<String, String> = serde_json::from_str(&raw).expect("json");
+    assert!(fingerprints.len() >= 219, "{}", fingerprints.len());
+    assert!(fingerprints.contains_key("gpt-5.6-sol"));
+}
+
+#[test]
+fn model_pricing_promo_falls_back_to_list_price_after_expiry() {
+    let db = Database::memory().expect("create memory db");
+    let conn = db.conn.lock().expect("lock conn");
+    let sol_rows = ["gpt-5.6-sol", "gpt-5.6", "gpt-5.6-high"];
+    let gemini_rows = ["gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash"];
+
+    // 促销至少持续到 2026-11-21（含当天）
+    Database::ensure_model_pricing_seeded_at(&conn, pricing_date(2026, 11, 21)).expect("resync");
+    for model_id in sol_rows {
+        assert_eq!(
+            pricing_row(&conn, model_id),
+            price("4", "20", "0.40", "5"),
+            "{model_id}"
+        );
+    }
+
+    // 次日起回落挂牌价；Gemini 介绍价另有到期日，仍生效
+    Database::ensure_model_pricing_seeded_at(&conn, pricing_date(2026, 11, 22)).expect("resync");
+    for model_id in sol_rows {
+        assert_eq!(
+            pricing_row(&conn, model_id),
+            price("5", "30", "0.50", "6.25"),
+            "{model_id}"
+        );
+    }
+    for model_id in gemini_rows {
+        assert_eq!(
+            pricing_row(&conn, model_id),
+            price("0.75", "3.75", "0.075", "0"),
+            "{model_id}"
+        );
+    }
+
+    Database::ensure_model_pricing_seeded_at(&conn, pricing_date(2027, 1, 1)).expect("resync");
+    for model_id in gemini_rows {
+        assert_eq!(
+            pricing_row(&conn, model_id),
+            price("1.50", "7.50", "0.15", "0"),
+            "{model_id}"
+        );
+    }
+}
+
+#[test]
+fn model_pricing_resync_keeps_user_modified_builtin_rows() {
+    let db = Database::memory().expect("create memory db");
+    let conn = db.conn.lock().expect("lock conn");
+    Database::ensure_model_pricing_seeded_at(&conn, pricing_date(2026, 11, 21)).expect("resync");
+
+    conn.execute_batch(
+        "UPDATE model_pricing SET input_cost_per_million = '3', output_cost_per_million = '3',
+             cache_read_cost_per_million = '0.3', cache_creation_cost_per_million = '0'
+             WHERE model_id = 'gpt-5.6-sol';
+         UPDATE model_pricing SET input_cost_per_million = '1.68', output_cost_per_million = '3.36',
+             cache_read_cost_per_million = '0.14', cache_creation_cost_per_million = '0'
+             WHERE model_id = 'deepseek-v4-pro';
+         UPDATE model_pricing SET display_name = 'My Sol' WHERE model_id = 'gpt-5.6-high';",
+    )
+    .expect("user edits");
+
+    for _ in 0..2 {
+        Database::ensure_model_pricing_seeded_at(&conn, pricing_date(2026, 11, 22))
+            .expect("resync");
+    }
+
+    // 用户改过的价保持不动，即使它恰好等于某个历史内置值（修价链不再作用于有指纹的行）
+    assert_eq!(
+        pricing_row(&conn, "gpt-5.6-sol"),
+        price("3", "3", "0.3", "0")
+    );
+    assert_eq!(
+        pricing_row(&conn, "deepseek-v4-pro"),
+        price("1.68", "3.36", "0.14", "0")
+    );
+    // 只改了显示名也算用户改动：促销到期也不回写
+    assert_eq!(
+        pricing_row(&conn, "gpt-5.6-high"),
+        price("4", "20", "0.40", "5")
+    );
+    let name: String = conn
+        .query_row(
+            "SELECT display_name FROM model_pricing WHERE model_id = 'gpt-5.6-high'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("display name");
+    assert_eq!(name, "My Sol");
+    // 未改动的别名行照常回落挂牌价
+    assert_eq!(
+        pricing_row(&conn, "gpt-5.6"),
+        price("5", "30", "0.50", "6.25")
+    );
 }
 
 #[test]
@@ -917,5 +1373,249 @@ fn ensure_incremental_auto_vacuum_rebuilds_existing_file_db() {
         Database::get_auto_vacuum_mode(&reopened).expect("auto_vacuum after rebuild"),
         2,
         "file db should persist INCREMENTAL auto_vacuum after VACUUM rebuild"
+    );
+}
+
+/// MH-6 regression: the single long-lived connection `Database::init()` wraps
+/// in `Mutex<Connection>` must cap `busy_timeout` at 500ms instead of the
+/// SQLite default of 0 (immediate `SQLITE_BUSY` on any lock contention, e.g.
+/// from an external SQLite tool or a backup/restore holding a transaction).
+/// This mirrors the exact call `init()` makes on its connection; it does not
+/// invoke `init()` itself because that reads the real app config directory.
+#[test]
+fn file_backed_connection_sets_bounded_busy_timeout() {
+    let temp = NamedTempFile::new().expect("create temp db file");
+    let conn = Connection::open(temp.path()).expect("open temp db");
+
+    conn.busy_timeout(std::time::Duration::from_millis(500))
+        .expect("set busy_timeout");
+
+    let ms: i64 = conn
+        .query_row("PRAGMA busy_timeout;", [], |row| row.get(0))
+        .expect("read busy_timeout");
+    assert_eq!(ms, 500, "busy_timeout must stay capped at 500ms (D9)");
+
+    // Guard the other half of D9: this app must not opt into WAL mode on
+    // this connection (default is the rollback journal).
+    let journal_mode: String = conn
+        .query_row("PRAGMA journal_mode;", [], |row| row.get(0))
+        .expect("read journal_mode");
+    assert_ne!(
+        journal_mode.to_lowercase(),
+        "wal",
+        "state.db must not use WAL under the single Mutex<Connection> model"
+    );
+}
+
+#[test]
+fn codex_takeover_backup_never_stores_auth() {
+    let db = Database::memory().expect("memory db");
+    let stored = |db: &Database| -> Option<String> {
+        futures::executor::block_on(db.get_live_backup("codex"))
+            .expect("read backup")
+            .map(|backup| backup.original_config)
+    };
+
+    // New writes drop auth.json content; the proxy placeholder is not a
+    // credential and stays so restore still recognizes a taken-over backup.
+    futures::executor::block_on(
+        db.save_live_backup(
+            "codex",
+            &json!({
+                "auth": {"auth_mode": "chatgpt", "tokens": {"access_token": "oauth-secret"}},
+                "config": "model = \"gpt-5.4\"\n"
+            })
+            .to_string(),
+        ),
+    )
+    .expect("save backup");
+    let row = stored(&db).expect("backup exists");
+    assert!(!row.contains("oauth-secret"));
+    let value: serde_json::Value = serde_json::from_str(&row).unwrap();
+    assert!(value.get("auth").is_none());
+    assert_eq!(value["config"], "model = \"gpt-5.4\"\n");
+
+    futures::executor::block_on(
+        db.save_live_backup(
+            "codex",
+            &json!({"auth": {"OPENAI_API_KEY": "PROXY_MANAGED", "refresh": "x"}, "config": ""})
+                .to_string(),
+        ),
+    )
+    .expect("save placeholder backup");
+    let value: serde_json::Value = serde_json::from_str(&stored(&db).unwrap()).unwrap();
+    assert_eq!(value["auth"], json!({"OPENAI_API_KEY": "PROXY_MANAGED"}));
+
+    // Fails closed: a backup that cannot be inspected is not stored.
+    assert!(futures::executor::block_on(db.save_live_backup("codex", "not json")).is_err());
+
+    // Other tools are untouched.
+    futures::executor::block_on(db.save_live_backup("claude", r#"{"auth":1}"#))
+        .expect("save claude backup");
+    assert_eq!(
+        futures::executor::block_on(db.get_live_backup("claude"))
+            .unwrap()
+            .unwrap()
+            .original_config,
+        r#"{"auth":1}"#
+    );
+
+    // Startup migration: a row stored by an older version is stripped once.
+    {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO proxy_live_backup (app_type, original_config, backed_up_at)
+             VALUES ('codex', ?1, 'then')",
+            params![json!({
+                "auth": {"OPENAI_API_KEY": "sk-legacy-secret"},
+                "config": "model = \"old\"\n"
+            })
+            .to_string()],
+        )
+        .unwrap();
+    }
+    assert!(db.strip_auth_from_codex_live_backup().unwrap());
+    let row = stored(&db).expect("backup kept");
+    assert!(!row.contains("sk-legacy-secret"));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&row).unwrap()["config"],
+        "model = \"old\"\n"
+    );
+    assert!(!db.strip_auth_from_codex_live_backup().unwrap());
+
+    // A legacy row that is not valid JSON cannot be stripped and is removed.
+    {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE proxy_live_backup SET original_config = 'sk-legacy-secret {' WHERE app_type = 'codex'",
+            [],
+        )
+        .unwrap();
+    }
+    assert!(db.strip_auth_from_codex_live_backup().unwrap());
+    assert!(stored(&db).is_none());
+}
+
+/// v17: saving a prompt, skill or MCP server again must keep the columns the
+/// save itself does not write (REPLACE used to delete and re-insert the row).
+#[test]
+fn resaving_rows_keeps_v17_columns() {
+    use crate::app_config::{InstalledSkill, McpApps, McpServer, SkillApps};
+    use crate::prompt::Prompt;
+
+    let db = Database::memory().expect("memory db");
+    let prompt = Prompt {
+        template_id: None,
+        id: "team".into(),
+        name: "Team".into(),
+        content: "rules".into(),
+        description: None,
+        enabled: true,
+        created_at: Some(1),
+        updated_at: Some(1),
+    };
+    db.save_prompt("codex", &prompt)
+        .expect("insert codex prompt");
+    db.save_prompt("claude", &prompt)
+        .expect("insert claude prompt");
+    let skill = InstalledSkill {
+        id: "local:pdf".into(),
+        name: "pdf".into(),
+        description: None,
+        directory: "pdf".into(),
+        repo_owner: None,
+        repo_name: None,
+        repo_branch: None,
+        readme_url: None,
+        apps: SkillApps::default(),
+        installed_at: 1,
+        content_hash: None,
+        updated_at: 0,
+    };
+    db.save_skill(&skill).expect("insert skill");
+    let server = McpServer {
+        id: "github".into(),
+        name: "github".into(),
+        server: json!({"type": "stdio", "command": "npx"}),
+        apps: McpApps::default(),
+        description: None,
+        homepage: None,
+        docs: None,
+        tags: Vec::new(),
+    };
+    db.save_mcp_server(&server).expect("insert mcp");
+    {
+        let conn = db.conn.lock().expect("lock");
+        conn.execute_batch(
+            "UPDATE prompts SET category_id = 'cat', filename = 'team.md' WHERE id = 'team';
+             UPDATE skills SET notes = 'skill note';
+             UPDATE mcp_servers SET notes = 'mcp note';",
+        )
+        .expect("set v17 columns");
+    }
+
+    db.save_prompt(
+        "codex",
+        &Prompt {
+            name: "Team 2".into(),
+            ..prompt.clone()
+        },
+    )
+    .expect("update prompt");
+    db.save_skill(&InstalledSkill {
+        name: "pdf 2".into(),
+        ..skill
+    })
+    .expect("update skill");
+    db.save_mcp_server(&McpServer {
+        name: "GitHub".into(),
+        ..server
+    })
+    .expect("update mcp");
+
+    let conn = db.conn.lock().expect("lock");
+    let prompt_row: (String, Option<String>, Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT name, category_id, filename, origin FROM prompts WHERE id = 'team' AND app_type = 'codex'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("codex prompt");
+    assert_eq!(
+        prompt_row,
+        (
+            "Team 2".to_string(),
+            Some("cat".to_string()),
+            Some("team.md".to_string()),
+            Some(PROMPT_ORIGIN_LEGACY_WHOLE_FILE.to_string())
+        )
+    );
+    let claude_origin: Option<String> = conn
+        .query_row(
+            "SELECT origin FROM prompts WHERE id = 'team' AND app_type = 'claude'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("claude prompt");
+    assert_eq!(
+        claude_origin, None,
+        "only Codex rows are whole-file prompts"
+    );
+    let notes: (String, String, String, String) = conn
+        .query_row(
+            "SELECT (SELECT name FROM skills), (SELECT notes FROM skills),
+                    (SELECT name FROM mcp_servers), (SELECT notes FROM mcp_servers)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("notes");
+    assert_eq!(
+        notes,
+        (
+            "pdf 2".to_string(),
+            "skill note".to_string(),
+            "GitHub".to_string(),
+            "mcp note".to_string()
+        )
     );
 }

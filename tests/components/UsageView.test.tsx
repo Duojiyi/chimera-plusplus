@@ -20,6 +20,14 @@ import type {
   UsageSummary,
 } from "@/types/usage";
 
+vi.mock("@/components/usage/UsageDashboard", () => ({
+  UsageDashboard: ({ refreshIntervalMs }: { refreshIntervalMs: number }) => (
+    <div data-testid="advanced-usage-dashboard">
+      refresh:{refreshIntervalMs}
+    </div>
+  ),
+}));
+
 const originalTauri = vi.hoisted(() => {
   const descriptor = Object.getOwnPropertyDescriptor(
     window,
@@ -108,7 +116,10 @@ beforeEach(() => {
     backupPath: "C:\\backups\\usage.db",
   });
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 afterAll(() => {
   if (originalTauri)
     Object.defineProperty(window, "__TAURI_INTERNALS__", originalTauri);
@@ -116,6 +127,58 @@ afterAll(() => {
 });
 
 describe("UsageView", () => {
+  it("exports CSV with a UTF-8 BOM, real line breaks and six correctly ordered columns", async () => {
+    api.getUsageTrends.mockResolvedValue([
+      day,
+      {
+        ...day,
+        date: "2026-09-19",
+        requestCount: 2,
+        totalTokens: 30,
+        totalInputTokens: 10,
+        totalOutputTokens: 20,
+        totalCacheCreationTokens: 2,
+        totalCacheReadTokens: 3,
+      },
+    ]);
+    vi.stubGlobal(
+      "URL",
+      class extends URL {
+        static createObjectURL = vi.fn(() => "blob:usage-export");
+        static revokeObjectURL = vi.fn();
+      },
+    );
+    const click = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(() => {});
+    const user = userEvent.setup();
+    render(<UsageView />);
+    await loaded();
+    await user.click(screen.getByRole("button", { name: "导出 CSV" }));
+    expect(URL.createObjectURL).toHaveBeenCalledOnce();
+    const blob = vi.mocked(URL.createObjectURL).mock.calls[0][0] as Blob;
+    expect(blob.type).toBe("text/csv;charset=utf-8");
+    const buffer = await new Promise<ArrayBuffer>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as ArrayBuffer);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsArrayBuffer(blob);
+    });
+    const bytes = new Uint8Array(buffer);
+    expect(Array.from(bytes.slice(0, 3))).toEqual([0xef, 0xbb, 0xbf]);
+    expect(Array.from(bytes).filter((byte) => byte === 0x0a)).toHaveLength(2);
+    const csv = new TextDecoder().decode(bytes.subarray(3));
+    expect(csv).not.toContain("\\n");
+    expect(csv).not.toContain("\\ufeff");
+    expect(csv.split("\n").map((row) => row.split(","))).toEqual([
+      ["日期", "请求数", "总词元", "输入", "输出", "缓存"],
+      ["2026-09-18", "4", "2000", "600", "400", "1000"],
+      ["2026-09-19", "2", "35", "10", "20", "5"],
+    ]);
+    expect(click).toHaveBeenCalledOnce();
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:usage-export");
+  });
+
   it("queries the same Codex window, includes cache, and uses all models as the ranking denominator", async () => {
     const user = userEvent.setup();
     render(<UsageView />);
@@ -132,7 +195,7 @@ describe("UsageView", () => {
     expect(metrics.getByTitle("2,000 词元")).toHaveTextContent("2,000");
     expect(metrics.getByTitle("1,000 词元")).toHaveTextContent("1,000");
     expect(metrics.getByText("50.0% · 占总量")).toBeVisible();
-    expect(screen.getByText("09/18 峰值 2,000")).toBeVisible();
+    expect(screen.getByText("09/18 峰值 2,000 词元")).toBeVisible();
     const ranking = within(
       screen.getByRole("region", { name: "模型词元分布" }),
     );
@@ -146,8 +209,8 @@ describe("UsageView", () => {
     expect(dialog.getAllByTitle(/^model-/).map((el) => el.textContent)).toEqual(
       ["model-400", "model-300", "model-200", "model-100"],
     );
-    expect(dialog.getByText("10%")).toBeVisible();
-    expect(dialog.getByText("40%")).toBeVisible();
+    expect(dialog.getByText("100 词元")).toBeVisible();
+    expect(dialog.getByText("400 词元")).toBeVisible();
   });
 
   it("shows the existing database result while the historical sync is pending", async () => {
@@ -186,9 +249,7 @@ describe("UsageView", () => {
           exact: false,
         }),
       ).toBeVisible();
-      expect(screen.getByRole("alert")).toHaveTextContent(
-        "history unavailable",
-      );
+      expect(screen.getByRole("alert")).toHaveTextContent("无法更新统计");
     },
   );
 
@@ -216,9 +277,12 @@ describe("UsageView", () => {
     api.getUsageTrends.mockResolvedValue([
       { ...day, date: "2026-09-18T09:00:00+08:00" },
     ]);
+    expect(screen.getByRole("button", { name: "今日" })).toHaveTextContent(
+      "今日",
+    );
     await user.click(screen.getByRole("button", { name: "今日" }));
     await loaded();
-    expect(screen.getByText("09:00 峰值 2,000")).toBeVisible();
+    expect(screen.getByText("09:00 峰值 2,000 词元")).toBeVisible();
     expect(
       screen.getByRole("heading", { name: "每小时消耗光谱" }),
     ).toBeVisible();
@@ -237,7 +301,10 @@ describe("UsageView", () => {
       "保留上次成功结果（今日）",
     );
     expect(screen.getByText("今日 · 含缓存")).toBeVisible();
-    expect(screen.getByText("09:00 峰值 2,000")).toBeVisible();
+    expect(document.querySelector(".usage-status-period")).toHaveTextContent(
+      /近 1 天\s*·\s*今日/,
+    );
+    expect(screen.getByText("09:00 峰值 2,000 词元")).toBeVisible();
     expect(screen.getByRole("button", { name: "7 天" })).toHaveAttribute(
       "aria-pressed",
       "true",
@@ -280,11 +347,9 @@ describe("UsageView", () => {
       const heading = hourly ? "每小时消耗光谱" : "每日消耗光谱";
       const label = hourly ? "00:00" : "11/01";
       expect(screen.getByRole("heading", { name: heading })).toBeVisible();
-      expect(screen.getByText(label + " 峰值 2,000")).toBeVisible();
+      expect(screen.getByText(label + " 峰值 2,000 词元")).toBeVisible();
       expect(screen.getByText(label, { selector: "tspan" })).toBeVisible();
-      expect(
-        screen.getByText((hourly ? "每小时" : "每日") + "总量 · 含缓存"),
-      ).toBeVisible();
+      expect(screen.getByText("今日 · 含缓存")).toBeVisible();
 
       // A new query with the opposite grain must not relabel the retained data.
       windowMock.mockReturnValue({
@@ -303,7 +368,7 @@ describe("UsageView", () => {
       );
       expect(screen.getByText("今日 · 含缓存")).toBeVisible();
       expect(screen.getByRole("heading", { name: heading })).toBeVisible();
-      expect(screen.getByText(label + " 峰值 2,000")).toBeVisible();
+      expect(screen.getByText(label + " 峰值 2,000 词元")).toBeVisible();
     },
   );
 
@@ -316,7 +381,7 @@ describe("UsageView", () => {
         <UsageView />
       </StrictMode>,
     );
-    expect(screen.getByText("正在读取统计…")).toBeVisible();
+    expect(screen.getAllByText("正在读取统计…")[0]).toBeVisible();
     expect(screen.getByRole("button", { name: "同步词元记录" })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: "今日" }));
     expect(api.syncCodexSessionUsage).toHaveBeenCalledTimes(1);
@@ -381,8 +446,7 @@ describe("UsageView", () => {
     await act(async () =>
       pending.resolve({ ...sync, backupPath: "C:\\backups\\usage.db" }),
     );
-    await loaded();
-    expect(screen.getByText("重建完成")).toBeVisible();
+    expect(await screen.findByText(/重建完成/)).toBeVisible();
     expect(screen.queryByText("正在备份并重建…")).not.toBeInTheDocument();
     expect(refresh).toBeEnabled();
     expect(refresh.querySelector("svg")).not.toHaveClass("spin");
@@ -404,7 +468,7 @@ describe("UsageView", () => {
     await user.click(
       within(dialog).getByRole("button", { name: "备份并重建" }),
     );
-    expect(await screen.findByText("重建未完成")).toBeVisible();
+    expect(await screen.findByText(/重建未完成/)).toBeVisible();
     expect(screen.getByTitle("2,000 词元")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "重新尝试" }));
     expect(
@@ -420,8 +484,8 @@ describe("UsageView", () => {
     render(<UsageView />);
     await loaded();
     expect(screen.getByRole("alert")).toHaveTextContent("尚无可显示的统计");
-    expect(screen.getByText("统计暂时不可用")).toBeVisible();
-    expect(screen.getByText("模型统计暂时不可用")).toBeVisible();
+    expect(screen.getByText("当前时间范围暂无记录")).toBeVisible();
+    expect(screen.getByText("暂无模型统计")).toBeVisible();
     api.getUsageSummary.mockResolvedValue({
       ...summary,
       totalRequests: 0,
@@ -438,7 +502,49 @@ describe("UsageView", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(screen.getByText("当前时间范围暂无记录")).toBeVisible();
     expect(screen.getByText("暂无模型统计")).toBeVisible();
-    expect(screen.getByRole("button", { name: /查看全部/ })).toBeDisabled();
-    expect(screen.getByText("0 次请求 · 成功率 —")).toBeVisible();
+    expect(
+      within(
+        screen.getByRole("complementary", { name: "按线路模型排行" }),
+      ).getByRole("button", { name: /查看全部/ }),
+    ).toBeDisabled();
+    expect(screen.getByText("请求 0 · 成功率 100.0%")).toBeVisible();
   });
+});
+
+it("does not paint token bars for zero usage", async () => {
+  api.getUsageTrends.mockResolvedValue([
+    {
+      ...day,
+      totalTokens: 0,
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalCacheCreationTokens: 0,
+      totalCacheReadTokens: 0,
+    },
+  ]);
+  render(<UsageView />);
+  await loaded();
+  expect(screen.getByText("当前时间范围暂无记录")).toBeVisible();
+  document
+    .querySelectorAll<HTMLElement>(".usage-bar")
+    .forEach((bar) => expect(bar.style.height).toBe("0%"));
+});
+
+it("opens existing cost and request tools only on demand, with polling off", async () => {
+  render(<UsageView />);
+  expect(
+    screen.queryByTestId("advanced-usage-dashboard"),
+  ).not.toBeInTheDocument();
+  await userEvent.click(
+    screen.getByRole("button", { name: "成本、计价与请求明细" }),
+  );
+  expect(
+    await screen.findByTestId("advanced-usage-dashboard"),
+  ).toHaveTextContent("refresh:0");
+  await userEvent.click(
+    screen.getByRole("button", { name: "收起成本与请求明细" }),
+  );
+  expect(
+    screen.queryByTestId("advanced-usage-dashboard"),
+  ).not.toBeInTheDocument();
 });

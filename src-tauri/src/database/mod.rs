@@ -41,6 +41,8 @@ pub(crate) use dao::proxy::{
     PRICING_SOURCE_RESPONSE,
 };
 pub use dao::FailoverQueueItem;
+#[allow(unused_imports)]
+pub use dao::NotesTable;
 pub use dao::Profile;
 
 use crate::config::get_app_config_dir;
@@ -53,7 +55,10 @@ use std::sync::Mutex;
 
 /// 当前 Schema 版本号
 /// 每次修改表结构时递增，并在 schema.rs 中添加相应的迁移逻辑
-pub(crate) const SCHEMA_VERSION: i32 = 16;
+pub(crate) const SCHEMA_VERSION: i32 = 17;
+
+/// `prompts.origin` of rows owned by the whole-file `AGENTS.md` writer (v17).
+pub(crate) const PROMPT_ORIGIN_LEGACY_WHOLE_FILE: &str = "legacy-whole-file";
 
 /// 安全地序列化 JSON，避免 unwrap panic
 pub(crate) fn to_json_string<T: Serialize>(value: &T) -> Result<String, AppError> {
@@ -107,6 +112,20 @@ impl Database {
         }
 
         let conn = Connection::open(&db_path).map_err(|e| AppError::Database(e.to_string()))?;
+        // MH-17: tighten the database, its directory and existing backups.
+        #[cfg(unix)]
+        backup::restrict_db_storage_permissions(&db_path);
+
+        // MH-6: this is the single long-lived, cross-thread-shared connection
+        // (wrapped below in `Mutex<Connection>`); without a busy_timeout, any
+        // writer that finds the file locked (e.g. an external SQLite tool, or
+        // a backup/restore holding a transaction) fails immediately with
+        // SQLITE_BUSY instead of waiting briefly. Capped well below typical
+        // request timeouts so a stuck lock still surfaces quickly rather than
+        // hanging the single-connection hot path. Do not enable WAL here —
+        // this app deliberately keeps the default rollback journal.
+        conn.busy_timeout(std::time::Duration::from_millis(500))
+            .map_err(|e| AppError::Database(e.to_string()))?;
 
         // 启用外键约束
         conn.execute("PRAGMA foreign_keys = ON;", [])
@@ -122,9 +141,9 @@ impl Database {
         let db = Self {
             conn: Mutex::new(conn),
         };
-        db.create_tables()?;
 
-        // Pre-migration backup: only when upgrading from an existing database
+        // Pre-migration backup: only when upgrading from an existing database,
+        // taken BEFORE any DDL or migration changes.
         {
             let conn = lock_conn!(db.conn);
             let version = Self::get_user_version(&conn)?;
@@ -133,13 +152,28 @@ impl Database {
                 log::info!(
                     "Creating pre-migration database backup (v{version} → v{SCHEMA_VERSION})"
                 );
-                if let Err(e) = db.backup_database_file() {
+                // Crossing v17 keeps a separate downgrade backup (M3.5).
+                // Failing to create the downgrade backup aborts the upgrade to protect user data.
+                if version < 17 {
+                    db.backup_pre_v17_database_file().map_err(|e| {
+                        AppError::Database(format!(
+                            "升级至 v17 前安全备份失败，终止升级以防数据损坏: {e}"
+                        ))
+                    })?;
+                } else if let Err(e) = db.backup_database_file() {
                     log::warn!("Pre-migration backup failed, continuing migration: {e}");
                 }
             }
         }
 
+        db.create_tables()?;
         db.apply_schema_migrations()?;
+        // MH-17 / L4: before any takeover recovery reads it.
+        match db.strip_auth_from_codex_live_backup() {
+            Ok(true) => log::info!("Removed auth.json from the stored Codex takeover backup"),
+            Ok(false) => {}
+            Err(e) => log::warn!("Failed to strip auth from the Codex takeover backup: {e}"),
+        }
         if let Err(e) = db.ensure_incremental_auto_vacuum() {
             log::warn!("Failed to ensure incremental auto-vacuum: {e}");
         }
@@ -175,6 +209,8 @@ impl Database {
             return Ok(None);
         }
         let conn = Connection::open(db_path).map_err(|e| AppError::Database(e.to_string()))?;
+        conn.busy_timeout(std::time::Duration::from_millis(500))
+            .map_err(|e| AppError::Database(e.to_string()))?;
         let version = Self::get_user_version(&conn)?;
         Ok((version > SCHEMA_VERSION).then_some(version))
     }

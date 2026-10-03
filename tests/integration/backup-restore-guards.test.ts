@@ -106,7 +106,7 @@ describe("backup restore safety wiring", () => {
     ordered(sync, [
       "reload_settings()?",
       "ensure_no_takeover(state)?",
-      "ProviderService::sync_current_to_live(state)",
+      "ProviderService::sync_current_to_live",
     ]);
     const restore = commands.slice(
       commands.indexOf("pub async fn restore_db_backup"),

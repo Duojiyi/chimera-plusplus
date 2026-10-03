@@ -22,7 +22,7 @@
 
 ## ❤️スポンサー
 
-> [ここに掲載しませんか？](mailto:farion1231@gmail.com)
+> [ここに掲載しませんか？](https://github.com/Duojiyi/chimera-plusplus/issues/new)
 
 <details open>
 <summary>クリックで折りたたむ</summary>

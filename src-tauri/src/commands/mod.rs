@@ -2,6 +2,7 @@
 
 mod auth;
 mod balance;
+mod cc_switch_import;
 mod codex_oauth;
 mod codex_runtime;
 mod coding_plan;
@@ -13,11 +14,14 @@ mod failover;
 mod global_proxy;
 mod hermes;
 mod import_export;
+mod live_tools;
 mod mcp;
 mod misc;
 mod model_fetch;
+mod official_accounts;
 mod omo;
 mod openclaw;
+mod pi;
 mod plugin;
 mod profile;
 mod prompt;
@@ -51,11 +55,14 @@ pub use failover::*;
 pub use global_proxy::*;
 pub use hermes::*;
 pub use import_export::*;
+pub use live_tools::*;
 pub use mcp::*;
 pub use misc::*;
 pub use model_fetch::*;
+pub use official_accounts::*;
 pub use omo::*;
 pub use openclaw::*;
+pub(crate) use pi::*;
 pub use plugin::*;
 pub use profile::*;
 pub use prompt::*;
@@ -74,3 +81,8 @@ pub use s3_sync::*;
 pub use usage::*;
 pub use webdav_sync::*;
 pub use workspace::*;
+
+mod config_health;
+pub use config_health::*;
+
+pub use cc_switch_import::*;

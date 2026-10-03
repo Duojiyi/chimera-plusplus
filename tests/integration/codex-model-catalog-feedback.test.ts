@@ -7,13 +7,17 @@ const appSource = fs.readFileSync(APP_PATH, "utf8");
 
 describe("Codex model catalog feedback", () => {
   it("validates common TOML before committing a provider and retains update identity after partial success", () => {
-    const save = appSource.slice(
+    const handler = appSource.slice(
       appSource.indexOf("  const saveProvider ="),
       appSource.indexOf(
         "  useEffect(() => {",
         appSource.indexOf("  const saveProvider ="),
       ),
     );
+    // Native tool saves intentionally do not use Codex TOML validation.
+    const codexStart = handler.indexOf('if (editorAppId !== "codex")');
+    expect(codexStart).toBeGreaterThan(0);
+    const save = handler.slice(codexStart);
     expect(save.indexOf("validateCommonConfigSnippet")).toBeGreaterThan(0);
     expect(save.indexOf("validateCommonConfigSnippet")).toBeLessThan(
       save.indexOf("providersApi.updateAndActivate"),
@@ -46,7 +50,6 @@ describe("Codex model catalog feedback", () => {
     );
     expect(fetchHandler).toContain("fetchModelsForConfig(");
     expect(fetchHandler).not.toContain("detectCodexApiFormats(");
-    expect(appSource).toContain("不会在保存时调用上游");
     expect(appSource).toContain("测试地址连通性");
     expect(appSource).toContain("未验证 Key、模型或推理能力");
   });

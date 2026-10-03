@@ -9,11 +9,78 @@ use chrono::{Local, Utc};
 use rusqlite::backup::Backup;
 use rusqlite::types::ValueRef;
 use rusqlite::Connection;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 
 const CC_SWITCH_SQL_EXPORT_HEADER: &str = "-- CC Switch SQLite 导出";
+
+/// File-name prefix of the snapshots `backup_database_file` generates.
+const DB_BACKUP_PREFIX: &str = "db_backup_";
+
+/// File-name prefix of the one-time backup taken before the v17 migration.
+/// It is the 2.8.0 → 2.7.x downgrade path, so it never takes part in
+/// rotation (`is_rotated_db_backup` only matches [`DB_BACKUP_PREFIX`]).
+pub(crate) const PRE_V17_BACKUP_PREFIX: &str = "pre_v17_";
+
+/// Device-local tables whose rows never leave the device in a SQL export
+/// (plan M3.5 data classification): the takeover Live backup (full Codex
+/// `auth.json`, MH-17) and the prompt template cache.
+const EXPORT_SKIP_TABLES: &[&str] = &["proxy_live_backup", "prompt_template_cache"];
+
+/// `settings` rows that describe this device's live files (projection
+/// ledgers) and are dropped from every export.
+const EXPORT_SKIP_SETTINGS: &[&str] = &[crate::mcp::CODEX_MCP_PROJECTION_LEDGER_KEY];
+
+/// MCP spec objects whose values are credentials in practice; every value is
+/// blanked on export (key names stay, so the user knows what to refill).
+const MCP_SECRET_MAPS: &[&str] = &["env", "headers", "http_headers"];
+
+/// MH-17: the database and its `.db` snapshots hold provider credentials,
+/// yet files created by older releases (or under the default umask) are
+/// typically 0644 inside 0755 directories. Tighten the database file, its
+/// directory, `backups/` and every regular `*.db` file in it to owner-only.
+/// Runs at startup and after each backup. Best effort: a failure is logged
+/// and never blocks startup or a backup. Symlinks are skipped, because
+/// `set_permissions` would change the link target instead.
+#[cfg(unix)]
+pub(crate) fn restrict_db_storage_permissions(db_path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    fn restrict(path: &Path, mode: u32, expect_dir: bool) {
+        let Ok(metadata) = fs::symlink_metadata(path) else {
+            return;
+        };
+        let kind_matches = if expect_dir {
+            metadata.is_dir()
+        } else {
+            metadata.is_file()
+        };
+        if !kind_matches || metadata.permissions().mode() & 0o777 == mode {
+            return;
+        }
+        if let Err(e) = fs::set_permissions(path, fs::Permissions::from_mode(mode)) {
+            log::warn!("收紧权限失败 {}: {e}", path.display());
+        }
+    }
+
+    restrict(db_path, 0o600, false);
+    let Some(dir) = db_path.parent() else {
+        return;
+    };
+    restrict(dir, 0o700, true);
+    let backup_dir = dir.join("backups");
+    restrict(&backup_dir, 0o700, true);
+    if let Ok(entries) = fs::read_dir(&backup_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "db") {
+                restrict(&path, 0o600, false);
+            }
+        }
+    }
+}
 
 /// `dump_sql` 会写出的 PRAGMA。其余 PRAGMA 一律拒绝——`temp_store_directory`
 /// 能把临时文件重定向到任意目录，`writable_schema` 能绕过 schema 完整性检查。
@@ -69,12 +136,34 @@ fn quote_ident(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
+/// Blank the values of an MCP spec's credential maps (`env`, headers).
+/// Returns how many values were blanked.
+pub(crate) fn redact_mcp_spec_secrets(spec: &mut serde_json::Value) -> usize {
+    let mut blanked = 0;
+    for key in MCP_SECRET_MAPS {
+        let Some(map) = spec
+            .get_mut(*key)
+            .and_then(serde_json::Value::as_object_mut)
+        else {
+            continue;
+        };
+        for value in map.values_mut() {
+            if value.as_str() != Some("") {
+                *value = serde_json::Value::String(String::new());
+                blanked += 1;
+            }
+        }
+    }
+    blanked
+}
+
 /// Tables whose data rows are skipped when exporting for WebDAV sync.
 const SYNC_SKIP_TABLES: &[&str] = &[
     "proxy_request_logs",
     "stream_check_logs",
     "provider_health",
     "proxy_live_backup",
+    "prompt_template_cache",
     "usage_daily_rollups",
     "usage_rollup_dedup",
     "session_log_sync",
@@ -102,16 +191,73 @@ pub struct BackupEntry {
 
 impl Database {
     /// 导出为 SQLite 兼容的 SQL 文本（内存字符串，完整导出）
+    ///
+    /// MH-17: redacted by default — same as the sync export below — because
+    /// this text format is explicitly the "take this elsewhere" one (shared,
+    /// uploaded, or simply outliving a live session on disk longer than the
+    /// state.db file itself). A `.db` file-copy backup is the separate,
+    /// same-device, same-account mechanism for an exact local restore, and
+    /// keeps provider rows full-fidelity, protected by file permissions
+    /// instead (see `Self::backup_database_file`); only the device-local
+    /// takeover Live backup is dropped from both.
     pub fn export_sql_string(&self) -> Result<String, AppError> {
         let snapshot = self.snapshot_to_memory()?;
-        Self::dump_sql(&snapshot, &[])
+        Self::apply_export_classification(&snapshot)?;
+        // The takeover Live backup (full Codex auth.json) never leaves the
+        // device, and an import would refuse it anyway (MH-17).
+        Self::dump_sql(&snapshot, EXPORT_SKIP_TABLES)
     }
 
     /// Export SQL for sync (WebDAV), skipping local-only tables' data
     pub fn export_sql_string_for_sync(&self) -> Result<String, AppError> {
         let snapshot = self.snapshot_to_memory()?;
-        Self::redact_official_provider_auth(&snapshot)?;
+        Self::apply_export_classification(&snapshot)?;
         Self::dump_sql(&snapshot, SYNC_SKIP_TABLES)
+    }
+
+    /// Plan M3.5 data classification for everything that leaves the device:
+    /// OAuth material stripped by content (MH-17), MCP secrets blanked,
+    /// projection ledgers dropped. Table-level skips are the caller's
+    /// `dump_sql` list.
+    fn apply_export_classification(conn: &Connection) -> Result<(), AppError> {
+        Self::redact_codex_provider_auth(conn)?;
+        Self::redact_mcp_server_secrets(conn)?;
+        for key in EXPORT_SKIP_SETTINGS {
+            conn.execute("DELETE FROM main.settings WHERE key = ?1", [*key])?;
+        }
+        Ok(())
+    }
+
+    /// Blank every value of the MCP credential maps in each server spec.
+    /// Same boundary rules as [`Self::redact_codex_provider_auth`]: parse and
+    /// reserialize every row, abort on anything that cannot be rewritten.
+    fn redact_mcp_server_secrets(conn: &Connection) -> Result<(), AppError> {
+        Self::validate_backup_schema(conn)?;
+        let rows = {
+            let mut stmt = conn.prepare("SELECT id, server_config FROM main.mcp_servers")?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        for (id, raw) in rows {
+            let mut spec: serde_json::Value = serde_json::from_str(&raw).map_err(|_| {
+                AppError::InvalidInput("MCP 服务器配置不是有效 JSON，无法安全脱敏".into())
+            })?;
+            redact_mcp_spec_secrets(&mut spec);
+            let sanitized = serde_json::to_string(&spec)
+                .map_err(|source| AppError::JsonSerialize { source })?;
+            let affected = conn.execute(
+                "UPDATE OR ABORT main.mcp_servers SET server_config = ?1 WHERE id = ?2",
+                rusqlite::params![sanitized, id],
+            )?;
+            if affected != 1 {
+                return Err(AppError::InvalidInput(
+                    "MCP 服务器记录不唯一，无法安全脱敏".into(),
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// 导出为 SQLite 兼容的 SQL 文本
@@ -189,11 +335,12 @@ impl Database {
         Self::create_tables_on_conn(&temp_conn)?;
         Self::apply_schema_migrations_on_conn(&temp_conn)?;
         if !preserve_tables.is_empty() {
-            Self::redact_official_provider_auth(&temp_conn)?;
+            Self::redact_codex_provider_auth(&temp_conn)?;
         }
         Self::validate_basic_state(&temp_conn)?;
         if let Some(local_snapshot) = local_snapshot.as_ref() {
             Self::restore_tables(local_snapshot, &temp_conn, preserve_tables)?;
+            Self::merge_local_mcp_secrets(local_snapshot, &temp_conn)?;
         }
         // Validate the final staged state for both local and cloud imports.
         // Remote Live backups may have been replaced by local-only tables,
@@ -209,6 +356,7 @@ impl Database {
         // 使用 Backup 将临时库原子写回主库
         {
             let mut main_conn = lock_conn!(self.conn);
+            Self::preserve_local_account_pins_on_connection(&main_conn, &temp_conn)?;
             let backup = Backup::new(&temp_conn, &mut main_conn)
                 .map_err(|e| AppError::Database(e.to_string()))?;
             backup
@@ -226,15 +374,24 @@ impl Database {
     /// 创建内存快照以避免长时间持有数据库锁
     pub(crate) fn snapshot_to_memory(&self) -> Result<Connection, AppError> {
         let conn = lock_conn!(self.conn);
+        Self::snapshot_connection_to_memory(&conn)
+    }
+
+    pub(crate) fn snapshot_connection_to_memory(conn: &Connection) -> Result<Connection, AppError> {
         let mut snapshot =
             Connection::open_in_memory().map_err(|e| AppError::Database(e.to_string()))?;
 
         {
             let backup =
-                Backup::new(&conn, &mut snapshot).map_err(|e| AppError::Database(e.to_string()))?;
-            backup
+                Backup::new(conn, &mut snapshot).map_err(|e| AppError::Database(e.to_string()))?;
+            let result = backup
                 .step(-1)
                 .map_err(|e| AppError::Database(e.to_string()))?;
+            if !matches!(result, rusqlite::backup::StepResult::Done) {
+                return Err(AppError::Database(
+                    "Database backup did not complete".into(),
+                ));
+            }
         }
 
         Ok(snapshot)
@@ -322,6 +479,80 @@ impl Database {
         Ok(())
     }
 
+    /// When importing from a sync target (where MCP secrets were blanked by
+    /// data classification), restore local MCP secrets from the local database
+    /// snapshot so existing credentials on this machine are not wiped out.
+    fn merge_local_mcp_secrets(
+        local_conn: &Connection,
+        target_conn: &Connection,
+    ) -> Result<(), AppError> {
+        if !Self::table_exists(local_conn, "mcp_servers")?
+            || !Self::table_exists(target_conn, "mcp_servers")?
+        {
+            return Ok(());
+        }
+        let local_secrets = {
+            let mut stmt = local_conn.prepare("SELECT id, server_config FROM main.mcp_servers")?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            rows.collect::<Result<HashMap<String, String>, _>>()?
+        };
+
+        let target_rows = {
+            let mut stmt = target_conn.prepare("SELECT id, server_config FROM main.mcp_servers")?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            rows.collect::<Result<Vec<(String, String)>, _>>()?
+        };
+
+        for (id, target_raw) in target_rows {
+            let Some(local_raw) = local_secrets.get(&id) else {
+                continue;
+            };
+            let Ok(mut target_spec) = serde_json::from_str::<serde_json::Value>(&target_raw) else {
+                continue;
+            };
+            let Ok(local_spec) = serde_json::from_str::<serde_json::Value>(local_raw) else {
+                continue;
+            };
+
+            let mut modified = false;
+            for key in MCP_SECRET_MAPS {
+                if let (Some(target_map), Some(local_map)) = (
+                    target_spec
+                        .get_mut(*key)
+                        .and_then(serde_json::Value::as_object_mut),
+                    local_spec.get(*key).and_then(serde_json::Value::as_object),
+                ) {
+                    for (k, v) in target_map.iter_mut() {
+                        if v.as_str() == Some("") {
+                            if let Some(local_val) =
+                                local_map.get(k).and_then(serde_json::Value::as_str)
+                            {
+                                if !local_val.is_empty() {
+                                    *v = serde_json::Value::String(local_val.to_string());
+                                    modified = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if modified {
+                let updated_raw = serde_json::to_string(&target_spec)
+                    .map_err(|source| AppError::JsonSerialize { source })?;
+                target_conn.execute(
+                    "UPDATE main.mcp_servers SET server_config = ?1 WHERE id = ?2",
+                    rusqlite::params![updated_raw, id],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     /// Periodic backup: create a new backup if the latest one is older than the configured interval
     pub(crate) fn periodic_backup_if_needed(&self) -> Result<(), AppError> {
         let interval_hours = crate::settings::effective_backup_interval_hours();
@@ -333,7 +564,7 @@ impl Database {
                 let latest = fs::read_dir(&backup_dir).ok().and_then(|entries| {
                     entries
                         .filter_map(|e| e.ok())
-                        .filter(|e| e.path().extension().map(|ext| ext == "db").unwrap_or(false))
+                        .filter(|e| Self::is_rotated_db_backup(&e.path()))
                         .filter_map(|e| e.metadata().ok().and_then(|m| m.modified().ok()))
                         .max()
                 });
@@ -390,6 +621,18 @@ impl Database {
         if !db_path.exists() {
             return Ok(None);
         }
+        let snapshot = self.snapshot_to_memory()?;
+        Self::backup_database_snapshot(&snapshot)
+    }
+
+    /// Persist a caller-owned snapshot without reacquiring the live DB mutex.
+    pub(crate) fn backup_database_snapshot(
+        snapshot: &Connection,
+    ) -> Result<Option<PathBuf>, AppError> {
+        let db_path = get_app_config_dir().join(crate::product_policy::PRODUCT_DATABASE_FILE);
+        if !db_path.exists() {
+            return Ok(None);
+        }
 
         let backup_dir = db_path
             .parent()
@@ -398,29 +641,148 @@ impl Database {
 
         fs::create_dir_all(&backup_dir).map_err(|e| AppError::io(&backup_dir, e))?;
 
-        let base_id = format!("db_backup_{}", Local::now().format("%Y%m%d_%H%M%S"));
-        let mut backup_id = base_id.clone();
-        let mut backup_path = backup_dir.join(format!("{backup_id}.db"));
-        let mut counter = 1;
-        while backup_path.exists() {
-            backup_id = format!("{base_id}_{counter}");
-            backup_path = backup_dir.join(format!("{backup_id}.db"));
-            counter += 1;
-        }
+        let backup_path = Self::unique_backup_path(&backup_dir, DB_BACKUP_PREFIX);
 
         {
-            let conn = lock_conn!(self.conn);
+            // Stage through an in-memory snapshot so the takeover Live backup
+            // (MH-17) is dropped before any page reaches the backup file.
+            Self::strip_proxy_live_backup(snapshot)?;
             let mut dest_conn =
                 Connection::open(&backup_path).map_err(|e| AppError::Database(e.to_string()))?;
-            let backup = Backup::new(&conn, &mut dest_conn)
+            let backup = Backup::new(snapshot, &mut dest_conn)
                 .map_err(|e| AppError::Database(e.to_string()))?;
-            backup
+            let result = backup
                 .step(-1)
                 .map_err(|e| AppError::Database(e.to_string()))?;
+            if !matches!(result, rusqlite::backup::StepResult::Done) {
+                return Err(AppError::Database(
+                    "Database backup did not complete".into(),
+                ));
+            }
         }
 
+        #[cfg(unix)]
+        restrict_db_storage_permissions(&db_path);
         Self::cleanup_db_backups(&backup_dir)?;
         Ok(Some(backup_path))
+    }
+
+    /// `<prefix><timestamp>[_n].db` that does not exist yet in `dir`.
+    fn unique_backup_path(dir: &Path, prefix: &str) -> PathBuf {
+        let base_id = format!("{prefix}{}", Local::now().format("%Y%m%d_%H%M%S"));
+        let mut backup_path = dir.join(format!("{base_id}.db"));
+        let mut counter = 1;
+        while backup_path.exists() {
+            backup_path = dir.join(format!("{base_id}_{counter}.db"));
+            counter += 1;
+        }
+        backup_path
+    }
+
+    /// Plan M3.5: the backup taken right before the v17 migration, i.e. a
+    /// v16 database 2.7.x can open. Restoring it is the downgrade path. It is
+    /// excluded from standard rotation and redacts OAuth material and the
+    /// takeover Live backup (copy → redact → VACUUM → atomic rename, so no
+    /// page of the finished file ever held them).
+    /// Provider API keys and MCP env stay, as in every `.db` backup (a
+    /// same-device, full-fidelity restore point).
+    pub(crate) fn backup_pre_v17_database_file(&self) -> Result<Option<PathBuf>, AppError> {
+        let db_path = get_app_config_dir().join(crate::product_policy::PRODUCT_DATABASE_FILE);
+        if !db_path.exists() {
+            return Ok(None);
+        }
+        let backup_dir = db_path
+            .parent()
+            .ok_or_else(|| AppError::Config("无效的数据库路径".to_string()))?
+            .join("backups");
+        fs::create_dir_all(&backup_dir).map_err(|e| AppError::io(&backup_dir, e))?;
+        let backup_path = Self::unique_backup_path(&backup_dir, PRE_V17_BACKUP_PREFIX);
+        self.write_pre_v17_downgrade_backup(&backup_path)?;
+        Self::cleanup_pre_v17_backups(&backup_dir, 2);
+        #[cfg(unix)]
+        restrict_db_storage_permissions(&db_path);
+        Ok(Some(backup_path))
+    }
+
+    fn cleanup_pre_v17_backups(dir: &Path, retain: usize) {
+        let entries = match fs::read_dir(dir) {
+            Ok(iter) => iter
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| {
+                    entry.file_name().to_str().is_some_and(|name| {
+                        name.starts_with(PRE_V17_BACKUP_PREFIX) && name.ends_with(".db")
+                    })
+                })
+                .collect::<Vec<_>>(),
+            Err(_) => return,
+        };
+        if entries.len() <= retain {
+            return;
+        }
+        let remove_count = entries.len().saturating_sub(retain);
+        let mut sorted = entries;
+        sorted.sort_by_key(|entry| entry.metadata().and_then(|m| m.modified()).ok());
+        for entry in sorted.into_iter().take(remove_count) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+
+    fn write_pre_v17_downgrade_backup(&self, target: &Path) -> Result<(), AppError> {
+        // 1. Copy (in memory, so the live file is only read).
+        let snapshot = self.snapshot_to_memory()?;
+        // 2. Redact.
+        Self::strip_proxy_live_backup(&snapshot)?;
+        Self::redact_codex_provider_auth(&snapshot)?;
+        // 3. VACUUM into a partial file next to the target (same volume), so
+        //    the result has no free pages left from the redaction.
+        let mut partial_name = target.as_os_str().to_owned();
+        partial_name.push(".partial");
+        let partial = PathBuf::from(partial_name);
+        match fs::remove_file(&partial) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(AppError::io(&partial, error)),
+        }
+        let result = (|| -> Result<(), AppError> {
+            let partial_str = partial
+                .to_str()
+                .ok_or_else(|| AppError::Config("备份路径不是有效的 UTF-8".to_string()))?;
+            snapshot
+                .execute("VACUUM main INTO ?1", [partial_str])
+                .map_err(|e| AppError::Database(format!("写入迁移前备份失败: {e}")))?;
+            // 4. Atomic rename into place.
+            fs::rename(&partial, target).map_err(|e| AppError::io(target, e))
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&partial);
+        }
+        result
+    }
+
+    /// `proxy_live_backup` holds the whole pre-takeover Live state — for
+    /// Codex that is the full `auth.json`, OAuth tokens included (MH-17,
+    /// R3A-N7). It is device-local runtime state: every restore/import
+    /// already refuses a snapshot that still carries it
+    /// (`validate_stopped_proxy_state_on_conn`), so neither a local export
+    /// nor a `.db` backup gains anything by keeping it. `secure_delete`
+    /// zeroes the freed pages, so a page-level copy of this connection (the
+    /// SQLite Backup API) cannot carry the deleted content along.
+    fn strip_proxy_live_backup(conn: &Connection) -> Result<(), AppError> {
+        // Never run an unexpected trigger while rewriting the snapshot.
+        Self::validate_backup_schema(conn)?;
+        conn.execute_batch("PRAGMA secure_delete = ON; DELETE FROM main.proxy_live_backup;")
+            .map_err(|e| AppError::Database(format!("清理 Live 备份失败: {e}")))
+    }
+
+    /// Only files `backup_database_file` itself generated take part in
+    /// rotation. A backup the user renamed, or any other `.db` placed in
+    /// `backups/`, is never auto-deleted (MH-8e).
+    fn is_rotated_db_backup(path: &Path) -> bool {
+        path.extension().is_some_and(|ext| ext == "db")
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(DB_BACKUP_PREFIX))
     }
 
     /// 清理旧的数据库备份，保留最新的 N 个
@@ -429,13 +791,7 @@ impl Database {
         let entries = match fs::read_dir(dir) {
             Ok(iter) => iter
                 .filter_map(|entry| entry.ok())
-                .filter(|entry| {
-                    entry
-                        .path()
-                        .extension()
-                        .map(|ext| ext == "db")
-                        .unwrap_or(false)
-                })
+                .filter(|entry| Self::is_rotated_db_backup(&entry.path()))
                 .collect::<Vec<_>>(),
             Err(_) => return Ok(()),
         };
@@ -582,41 +938,59 @@ impl Database {
         Ok(())
     }
 
-    /// Remove live OAuth state from official providers in sync snapshots.
+    /// Remove OAuth login material from every Codex provider row in a
+    /// snapshot — content-based (MH-17), not category-based: the official
+    /// row's *entire* `auth` is reset (it exists only to track a live OAuth
+    /// session; nothing in it should ever leave the device), while a
+    /// non-official row is scrubbed with the same
+    /// [`crate::codex_config::scrub_oauth_material_from_non_official_codex_auth`]
+    /// used at backfill time (MH-19) — never wiped wholesale, since its own
+    /// `OPENAI_API_KEY`/env credential is exactly what a provider export or
+    /// sync exists to carry across devices. Non-Codex rows (whose `auth`/
+    /// `env` shapes are unrelated to this) are left alone.
     ///
-    /// Provider backfill intentionally keeps local runtime state so switching
-    /// between official accounts preserves each account's refreshed token.
-    /// The sync snapshot is the security boundary: that state must not leave
-    /// the device through the shared `providers` table.
-    fn redact_official_provider_auth(conn: &Connection) -> Result<(), AppError> {
+    /// Provider backfill intentionally keeps live runtime state, so this
+    /// boundary — every export and sync snapshot — is where OAuth material
+    /// must stop, regardless of which category or app_type row it drifted
+    /// into.
+    fn redact_codex_provider_auth(conn: &Connection) -> Result<(), AppError> {
         // Also protect devices that imported an unsafe snapshot with an older release.
         Self::validate_backup_schema(conn)?;
         let providers = {
             let mut stmt = conn.prepare(
-                "SELECT id, app_type, settings_config FROM main.providers WHERE category = 'official'",
+                "SELECT id, app_type, category, settings_config FROM main.providers WHERE app_type = 'codex'",
             )?;
             let rows = stmt.query_map([], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
                 ))
             })?;
             rows.collect::<Result<Vec<_>, _>>()?
         };
         let mut changed = 0;
-        for (id, app_type, raw) in providers {
+        for (id, app_type, category, raw) in providers {
             // Parse and reserialize even unchanged objects: SQLite json_set only
             // replaces the first duplicate auth key and could export later tokens.
             let mut settings: serde_json::Value = serde_json::from_str(&raw).map_err(|_| {
-                AppError::InvalidInput("官方供应商配置不是有效 JSON，无法安全脱敏同步".into())
+                AppError::InvalidInput("Codex 供应商配置不是有效 JSON，无法安全脱敏".into())
             })?;
             let object = settings.as_object_mut().ok_or_else(|| {
-                AppError::InvalidInput("官方供应商配置不是 JSON 对象，无法安全脱敏同步".into())
+                AppError::InvalidInput("Codex 供应商配置不是 JSON 对象，无法安全脱敏".into())
             })?;
-            if object.contains_key("auth") {
+            let is_official = category.as_deref() == Some("official");
+            if is_official {
                 object.insert("auth".into(), serde_json::json!({}));
+            } else if let Some(auth) = object.get_mut("auth") {
+                crate::codex_config::scrub_oauth_material_from_non_official_codex_auth(auth);
             }
+            // Always reserialize and write back every selected row, even one
+            // where nothing above changed — matching the prior behavior this
+            // replaces exactly: the JSON round-trip through serde_json is
+            // itself a canonicalization (collapses duplicate keys a crafted
+            // import could use to hide a secret past a narrower check).
             let sanitized = serde_json::to_string(&settings)
                 .map_err(|source| AppError::JsonSerialize { source })?;
             // Override imported IGNORE/REPLACE policies: a conflict must abort
@@ -627,13 +1001,13 @@ impl Database {
             )?;
             if affected != 1 {
                 return Err(AppError::InvalidInput(
-                    "官方供应商记录不唯一，无法安全脱敏同步".into(),
+                    "Codex 供应商记录不唯一，无法安全脱敏".into(),
                 ));
             }
             changed += affected;
         }
         if changed > 0 {
-            log::debug!("Redacted auth from {changed} official providers for sync");
+            log::debug!("Redacted OAuth material from {changed} Codex provider row(s)");
         }
 
         Ok(())
@@ -828,6 +1202,7 @@ impl Database {
             let staged_conn =
                 Connection::open(&staging_path).map_err(|e| AppError::Database(e.to_string()))?;
             let mut main_conn = lock_conn!(self.conn);
+            Self::preserve_local_account_pins_on_connection(&main_conn, &staged_conn)?;
             let backup = Backup::new(&staged_conn, &mut main_conn)
                 .map_err(|e| AppError::Database(format!("提交数据库恢复失败: {e}")))?;
             backup
@@ -841,8 +1216,11 @@ impl Database {
                 let rollback_result = (|| -> Result<(), AppError> {
                     let safety_conn = Connection::open(safety_path)
                         .map_err(|e| AppError::Database(e.to_string()))?;
+                    // Reconcile a private copy, never modify the safety backup.
+                    let safety_snapshot = Self::snapshot_connection_to_memory(&safety_conn)?;
                     let mut main_conn = lock_conn!(self.conn);
-                    let backup = Backup::new(&safety_conn, &mut main_conn)
+                    Self::preserve_local_account_pins_on_connection(&main_conn, &safety_snapshot)?;
+                    let backup = Backup::new(&safety_snapshot, &mut main_conn)
                         .map_err(|e| AppError::Database(format!("恢复安全备份失败: {e}")))?;
                     backup
                         .step(-1)
@@ -1332,7 +1710,7 @@ mod tests {
             }
             assert!(db.export_sql_string_for_sync().is_err());
             let snapshot = db.snapshot_to_memory()?;
-            assert!(Database::redact_official_provider_auth(&snapshot).is_err());
+            assert!(Database::redact_codex_provider_auth(&snapshot).is_err());
             let preserved: i64 = {
                 let conn = crate::database::lock_conn!(db.conn);
                 conn.query_row(
@@ -1397,7 +1775,7 @@ mod tests {
         }
         assert!(db.export_sql_string_for_sync().is_err());
         let snapshot = db.snapshot_to_memory()?;
-        assert!(Database::redact_official_provider_auth(&snapshot).is_err());
+        assert!(Database::redact_codex_provider_auth(&snapshot).is_err());
         let leaked: i64 =
             snapshot.query_row("SELECT COUNT(*) FROM leaked_auth", [], |row| row.get(0))?;
         assert_eq!(leaked, 0, "redaction must not execute the imported trigger");
@@ -1458,9 +1836,15 @@ mod tests {
         let imported = Database::memory()?;
         imported.import_sql_string_for_sync(&sync_export)?;
 
-        // Older remote snapshots may still contain the previous leak. The
-        // sync import boundary must clean them instead of restoring tokens.
-        let full_export = db.export_sql_string()?;
+        // Older remote snapshots (or, before MH-17, a local .sql export —
+        // export_sql_string() is redacted the same way now, so this reaches
+        // straight past both export paths for an unredacted dump) may still
+        // contain the previous leak. The sync import boundary must clean it
+        // instead of restoring tokens.
+        let full_export = {
+            let snapshot = db.snapshot_to_memory()?;
+            Database::dump_sql(&snapshot, &[])?
+        };
         assert!(full_export.contains("official-live-token"));
         let legacy_import = Database::memory()?;
         legacy_import.import_sql_string_for_sync(&full_export)?;
@@ -1483,6 +1867,103 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&test_home);
 
+        Ok(())
+    }
+
+    // MH-17 regressions: redaction is content-based (any Codex row, not
+    // just category='official') and now also applies to the plain local
+    // export, not just the sync export — but a non-official row's own
+    // legitimate credential must survive, only genuine OAuth pollution
+    // scrubbed, mirroring the MH-19 backfill-time fix exactly.
+
+    #[test]
+    fn local_export_redacts_official_but_keeps_non_official_codex_credential(
+    ) -> Result<(), AppError> {
+        let db = Database::memory()?;
+        {
+            let conn = crate::database::lock_conn!(db.conn);
+            conn.execute(
+                "INSERT INTO providers (id, app_type, name, settings_config, category, meta)
+                 VALUES ('official', 'codex', 'Official',
+                         '{\"auth\":{\"tokens\":{\"access_token\":\"local-live-token\"}},\"config\":\"\"}',
+                         'official', '{}')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO providers (id, app_type, name, settings_config, meta)
+                 VALUES ('relay', 'codex', 'Relay',
+                         '{\"auth\":{\"OPENAI_API_KEY\":\"sk-relay-own-key\"}}', '{}')",
+                [],
+            )?;
+        }
+
+        let exported = db.export_sql_string()?;
+        assert!(
+            !exported.contains("local-live-token"),
+            "plain local export must redact the official row too, not just sync export"
+        );
+        assert!(
+            exported.contains("sk-relay-own-key"),
+            "a non-official row's own credential must survive a local export"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn export_scrubs_oauth_pollution_from_non_official_row() -> Result<(), AppError> {
+        // Simulates a row already polluted by the MH-19 defect: real ChatGPT
+        // OAuth material sitting next to an OPENAI_API_KEY. Per MH-19's
+        // pollution-signature rule, a key found alongside real chatgpt
+        // tokens is part of the pollution (Codex's browser login persists an
+        // exchanged key next to its tokens), so it goes too. A row whose own
+        // key has no OAuth material beside it is covered by
+        // local_export_redacts_official_but_keeps_non_official_codex_credential
+        // and must survive.
+        let db = Database::memory()?;
+        {
+            let conn = crate::database::lock_conn!(db.conn);
+            conn.execute(
+                "INSERT INTO providers (id, app_type, name, settings_config, meta)
+                 VALUES ('polluted', 'codex', 'Polluted',
+                         '{\"auth\":{\"OPENAI_API_KEY\":\"sk-exchanged-key\",\"auth_mode\":\"chatgpt\",\
+                           \"tokens\":{\"access_token\":\"polluted-oauth-token\"}}}', '{}')",
+                [],
+            )?;
+        }
+
+        for exported in [db.export_sql_string()?, db.export_sql_string_for_sync()?] {
+            assert!(!exported.contains("polluted-oauth-token"));
+            assert!(!exported.contains("\"auth_mode\":\"chatgpt\""));
+            assert!(
+                !exported.contains("sk-exchanged-key"),
+                "a key sitting next to real chatgpt tokens is part of the pollution signature"
+            );
+            assert!(
+                exported.contains("'polluted'"),
+                "the row itself survives: only its auth material is scrubbed, it is not dropped"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn export_leaves_non_codex_rows_untouched() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        {
+            let conn = crate::database::lock_conn!(db.conn);
+            conn.execute(
+                "INSERT INTO providers (id, app_type, name, settings_config, meta)
+                 VALUES ('claude-custom', 'claude', 'Custom',
+                         '{\"env\":{\"ANTHROPIC_API_KEY\":\"anthropic-key\"}}', '{}')",
+                [],
+            )?;
+        }
+
+        let exported = db.export_sql_string()?;
+        assert!(
+            exported.contains("anthropic-key"),
+            "redaction is scoped to app_type='codex'; other app types are untouched"
+        );
         Ok(())
     }
 
@@ -1576,9 +2057,14 @@ mod tests {
                  VALUES ('codex', '{}', 'now')",
             )?;
         }
-        // A legacy full snapshot may contain remote Live backups. They are
-        // replaced by local-only tables before the final runtime validation.
-        let remote_sql = remote_db.export_sql_string()?;
+        // A legacy full snapshot may contain remote Live backups (current
+        // exports drop them, so build one directly). They are replaced by
+        // local-only tables before the final runtime validation.
+        let remote_sql = {
+            let snapshot = remote_db.snapshot_to_memory()?;
+            Database::dump_sql(&snapshot, &[])?
+        };
+        assert!(remote_sql.contains("INSERT INTO \"proxy_live_backup\""));
 
         let local_db = Database::memory()?;
         {
@@ -1898,5 +2384,352 @@ mod tests {
         let _ = std::fs::remove_dir_all(&test_home);
 
         Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn backup_rotation_only_deletes_generated_db_backups() -> Result<(), AppError> {
+        let old_test_home = std::env::var_os("CC_SWITCH_TEST_HOME");
+        let test_home = tempfile::tempdir().unwrap();
+        std::env::set_var("CC_SWITCH_TEST_HOME", test_home.path());
+
+        let previous_retain = crate::settings::get_settings().backup_retain_count;
+        let result = (|| -> Result<(), AppError> {
+            crate::settings::mutate_settings(|s| s.backup_retain_count = Some(1))?;
+            let dir = test_home.path().join("rotation-backups");
+            std::fs::create_dir_all(&dir).unwrap();
+            for name in [
+                "db_backup_20260101_000000.db",
+                "db_backup_20260102_000000.db",
+                "pre_v17_20251231_000000.db",
+                "db_backup_20260103_000000.db",
+                "before-upgrade.db",
+                "other-tool.db",
+                "db_backup_notes.txt",
+            ] {
+                std::fs::write(dir.join(name), b"x").unwrap();
+                // Distinct mtimes so "newest" is deterministic.
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+
+            Database::cleanup_db_backups(&dir)?;
+
+            let mut remaining = std::fs::read_dir(&dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().to_string())
+                .collect::<Vec<_>>();
+            remaining.sort();
+            assert_eq!(
+                remaining,
+                [
+                    "before-upgrade.db",
+                    "db_backup_20260103_000000.db",
+                    "db_backup_notes.txt",
+                    "other-tool.db",
+                    "pre_v17_20251231_000000.db",
+                ],
+                "rotation must only prune its own db_backup_*.db snapshots"
+            );
+            Ok(())
+        })();
+
+        crate::settings::mutate_settings(|s| s.backup_retain_count = previous_retain)
+            .expect("restore backup retain count");
+        match old_test_home {
+            Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
+            None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+        }
+        result
+    }
+
+    #[test]
+    #[serial]
+    fn local_export_and_db_backup_drop_takeover_live_backup() -> Result<(), AppError> {
+        let old_test_home = std::env::var_os("CC_SWITCH_TEST_HOME");
+        let test_home = tempfile::tempdir().unwrap();
+        std::env::set_var("CC_SWITCH_TEST_HOME", test_home.path());
+
+        let result = (|| -> Result<(), AppError> {
+            let app_dir = crate::config::get_app_config_dir();
+            std::fs::create_dir_all(&app_dir).unwrap();
+            // `backup_database_file` only checks that the main DB path exists;
+            // the snapshot itself comes from `self.conn`.
+            std::fs::write(
+                app_dir.join(crate::product_policy::PRODUCT_DATABASE_FILE),
+                b"placeholder",
+            )
+            .unwrap();
+
+            let db = Database::memory()?;
+            {
+                let conn = crate::database::lock_conn!(db.conn);
+                conn.execute_batch(
+                    r#"INSERT INTO providers (id, app_type, name, settings_config, meta)
+                       VALUES ('relay', 'codex', 'Relay',
+                               '{"auth":{"OPENAI_API_KEY":"sk-relay-kept"}}', '{}');
+                       INSERT INTO proxy_live_backup (app_type, original_config, backed_up_at)
+                       VALUES ('codex',
+                               '{"auth":{"tokens":{"access_token":"takeover-live-oauth"}},"config":""}',
+                               'now');"#,
+                )?;
+            }
+
+            let exported = db.export_sql_string()?;
+            assert!(!exported.contains("takeover-live-oauth"));
+            assert!(exported.contains("sk-relay-kept"));
+
+            let backup_path = db.backup_database_file()?.expect("backup created");
+            let raw = std::fs::read(&backup_path).unwrap();
+            assert!(
+                !raw.windows(b"takeover-live-oauth".len())
+                    .any(|window| window == b"takeover-live-oauth"),
+                "the deleted Live backup must not survive in free pages either"
+            );
+            let backup = rusqlite::Connection::open(&backup_path)?;
+            let live_rows: i64 =
+                backup.query_row("SELECT COUNT(*) FROM proxy_live_backup", [], |row| {
+                    row.get(0)
+                })?;
+            assert_eq!(live_rows, 0);
+            let kept: String = backup.query_row(
+                "SELECT settings_config FROM providers WHERE id = 'relay'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert!(
+                kept.contains("sk-relay-kept"),
+                "provider rows stay full-fidelity"
+            );
+
+            let conn = crate::database::lock_conn!(db.conn);
+            let local_rows: i64 =
+                conn.query_row("SELECT COUNT(*) FROM proxy_live_backup", [], |row| {
+                    row.get(0)
+                })?;
+            assert_eq!(local_rows, 1, "the live database keeps its own Live backup");
+            Ok(())
+        })();
+
+        match old_test_home {
+            Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
+            None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+        }
+        result
+    }
+
+    fn contains(haystack: &[u8], needle: &str) -> bool {
+        haystack
+            .windows(needle.len())
+            .any(|window| window == needle.as_bytes())
+    }
+
+    /// Seeds a database that looks like a v16 install mid-takeover: an
+    /// official line with OAuth tokens, a relay line with an API key, a
+    /// takeover Live backup and an MCP server with a token in `env`.
+    fn seed_tokens(db: &Database) -> Result<(), AppError> {
+        let conn = crate::database::lock_conn!(db.conn);
+        conn.execute_batch(
+            r#"INSERT INTO providers (id, app_type, name, settings_config, category, meta)
+               VALUES ('official', 'codex', 'OpenAI',
+                       '{"auth":{"tokens":{"access_token":"oauth-access-secret"}}}', 'official', '{}'),
+                      ('relay', 'codex', 'Relay',
+                       '{"auth":{"OPENAI_API_KEY":"sk-relay-kept"}}', 'custom', '{}');
+               INSERT INTO proxy_live_backup (app_type, original_config, backed_up_at)
+               VALUES ('codex', '{"auth":{"tokens":{"access_token":"takeover-live-oauth"}},"config":""}', 'now');
+               INSERT INTO mcp_servers (id, name, server_config, enabled_codex)
+               VALUES ('github', 'github',
+                       '{"type":"stdio","command":"npx","env":{"GITHUB_PERSONAL_ACCESS_TOKEN":"ghp-mcp-secret"}}', 1);
+               INSERT INTO settings (key, value) VALUES ('codex_mcp_projection_ledger', '{"servers":{"github":"abc"}}');
+               INSERT INTO prompt_template_cache (template_id, content, content_sha256)
+               VALUES ('code-review', 'cached-template-body', 'hash');"#,
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn pre_v17_backup_is_token_free_unrotated_and_restores_as_the_downgrade_path(
+    ) -> Result<(), AppError> {
+        let old_test_home = std::env::var_os("CC_SWITCH_TEST_HOME");
+        let test_home = tempfile::tempdir().unwrap();
+        std::env::set_var("CC_SWITCH_TEST_HOME", test_home.path());
+
+        let result = (|| -> Result<(), AppError> {
+            let app_dir = crate::config::get_app_config_dir();
+            std::fs::create_dir_all(&app_dir).unwrap();
+            std::fs::write(
+                app_dir.join(crate::product_policy::PRODUCT_DATABASE_FILE),
+                b"placeholder",
+            )
+            .unwrap();
+
+            let db = Database::memory()?;
+            seed_tokens(&db)?;
+            {
+                // Pre-migration state as 2.7.x left it.
+                let conn = crate::database::lock_conn!(db.conn);
+                Database::set_user_version(&conn, 16)?;
+            }
+
+            let path = db.backup_pre_v17_database_file()?.expect("backup created");
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            assert!(name.starts_with(super::PRE_V17_BACKUP_PREFIX), "{name}");
+            assert!(!Database::is_rotated_db_backup(&path));
+            let leftovers: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().to_string())
+                .filter(|name| name.ends_with(".partial"))
+                .collect();
+            assert!(leftovers.is_empty(), "{leftovers:?}");
+
+            let raw = std::fs::read(&path).unwrap();
+            for secret in ["oauth-access-secret", "takeover-live-oauth"] {
+                assert!(
+                    !contains(&raw, secret),
+                    "{secret} must not survive in any page"
+                );
+            }
+            assert!(
+                contains(&raw, "sk-relay-kept"),
+                "API keys stay for a local restore"
+            );
+            assert!(
+                contains(&raw, "ghp-mcp-secret"),
+                "MCP env stays for a local restore"
+            );
+
+            // 2.7.x (schema 16) can open it as-is.
+            let backup = rusqlite::Connection::open(&path)?;
+            assert_eq!(Database::get_user_version(&backup)?, 16);
+            drop(backup);
+
+            // Restoring it brings the rows back and migrates them again.
+            {
+                let conn = crate::database::lock_conn!(db.conn);
+                conn.execute("DELETE FROM providers WHERE id = 'relay'", [])?;
+                conn.execute("DELETE FROM proxy_live_backup", [])?;
+            }
+            db.restore_from_backup(&name)?;
+            let conn = crate::database::lock_conn!(db.conn);
+            let relay: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM providers WHERE id = 'relay'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(relay, 1);
+            assert_eq!(
+                Database::get_user_version(&conn)?,
+                crate::database::SCHEMA_VERSION
+            );
+            Ok(())
+        })();
+
+        match old_test_home {
+            Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
+            None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+        }
+        result
+    }
+
+    #[test]
+    fn exports_apply_the_v17_data_classification() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        seed_tokens(&db)?;
+
+        for exported in [db.export_sql_string()?, db.export_sql_string_for_sync()?] {
+            assert!(!exported.contains("ghp-mcp-secret"), "MCP env is blanked");
+            assert!(
+                exported.contains("GITHUB_PERSONAL_ACCESS_TOKEN"),
+                "the env key name stays so the user knows what to refill"
+            );
+            assert!(!exported.contains("oauth-access-secret"));
+            assert!(!exported.contains("takeover-live-oauth"));
+            assert!(
+                !exported.contains("codex_mcp_projection_ledger"),
+                "projection ledgers describe this device's live files"
+            );
+            assert!(
+                !exported.contains("cached-template-body"),
+                "cache is skipped"
+            );
+            assert!(
+                exported.contains("prompt_template_cache ("),
+                "the schema itself still round-trips"
+            );
+        }
+
+        let conn = crate::database::lock_conn!(db.conn);
+        let live: String = conn.query_row(
+            "SELECT server_config FROM mcp_servers WHERE id = 'github'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(
+            live.contains("ghp-mcp-secret"),
+            "only the export is redacted"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn mcp_secret_maps_are_blanked_by_value() {
+        let mut spec = serde_json::json!({
+            "type": "http",
+            "url": "https://mcp.example.com",
+            "headers": {"Authorization": "Bearer abc", "X-Empty": ""},
+            "env": {"TOKEN": "t"},
+            "args": ["--token", "stays-an-arg"]
+        });
+        assert_eq!(super::redact_mcp_spec_secrets(&mut spec), 2);
+        assert_eq!(spec["headers"]["Authorization"], "");
+        assert_eq!(spec["env"]["TOKEN"], "");
+        assert_eq!(spec["url"], "https://mcp.example.com");
+        assert_eq!(super::redact_mcp_spec_secrets(&mut spec), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn storage_permissions_are_tightened_to_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        fn mode(path: &std::path::Path) -> u32 {
+            std::fs::symlink_metadata(path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777
+        }
+        fn set(path: &std::path::Path, mode: u32) {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap()
+        }
+
+        let root = tempfile::tempdir().unwrap();
+
+        let app_dir = root.path().join("app");
+        let backups = app_dir.join("backups");
+        std::fs::create_dir_all(&backups).unwrap();
+        let db_path = app_dir.join("chimera.db");
+        let snapshot = backups.join("db_backup_20260101_000000.db");
+        let renamed = backups.join("before-upgrade.db");
+        let notes = backups.join("notes.txt");
+        let outside = root.path().join("outside.db");
+        for file in [&db_path, &snapshot, &renamed, &notes, &outside] {
+            std::fs::write(file, b"x").unwrap();
+            set(file, 0o644);
+        }
+        let link = backups.join("link.db");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        set(&app_dir, 0o755);
+        set(&backups, 0o755);
+
+        super::restrict_db_storage_permissions(&db_path);
+
+        assert_eq!(mode(&db_path), 0o600);
+        assert_eq!(mode(&app_dir), 0o700);
+        assert_eq!(mode(&backups), 0o700);
+        assert_eq!(mode(&snapshot), 0o600);
+        assert_eq!(mode(&renamed), 0o600);
+        assert_eq!(mode(&notes), 0o644, "only .db files are touched");
+        assert_eq!(mode(&outside), 0o644, "symlinks are not followed");
     }
 }

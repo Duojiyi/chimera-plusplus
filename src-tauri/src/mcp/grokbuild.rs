@@ -23,7 +23,9 @@ fn read_config_text() -> Result<String, AppError> {
     std::fs::read_to_string(&path).map_err(|e| AppError::io(&path, e))
 }
 
-fn json_server_to_grokbuild_toml_table(server_spec: &Value) -> Result<toml_edit::Table, AppError> {
+pub(super) fn json_server_to_grokbuild_toml_table(
+    server_spec: &Value,
+) -> Result<toml_edit::Table, AppError> {
     let mut table = json_server_to_toml_table(server_spec)?;
     // Grok infers transport from `command` or `url` and uses `headers`, while
     // Codex writes an explicit `type` plus `http_headers`.

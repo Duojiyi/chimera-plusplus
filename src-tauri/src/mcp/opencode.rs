@@ -25,12 +25,6 @@ use super::validation::validate_server_spec;
 // Helper Functions
 // ============================================================================
 
-/// Check if OpenCode MCP sync should proceed
-fn should_sync_opencode_mcp() -> bool {
-    // Skip if OpenCode config directory doesn't exist
-    opencode_config::get_opencode_dir().exists()
-}
-
 // ============================================================================
 // Format Conversion: CC Switch → OpenCode
 // ============================================================================
@@ -179,32 +173,6 @@ pub fn convert_from_opencode_format(spec: &Value) -> Result<Value, AppError> {
 // ============================================================================
 // Public API: Sync Functions
 // ============================================================================
-
-/// Sync a single MCP server to OpenCode live config
-pub fn sync_single_server_to_opencode(
-    _config: &MultiAppConfig,
-    id: &str,
-    server_spec: &Value,
-) -> Result<(), AppError> {
-    if !should_sync_opencode_mcp() {
-        return Ok(());
-    }
-
-    // Convert to OpenCode format
-    let opencode_spec = convert_to_opencode_format(server_spec)?;
-
-    // Set in OpenCode config
-    opencode_config::set_mcp_server(id, opencode_spec)
-}
-
-/// Remove a single MCP server from OpenCode live config
-pub fn remove_server_from_opencode(id: &str) -> Result<(), AppError> {
-    if !should_sync_opencode_mcp() {
-        return Ok(());
-    }
-
-    opencode_config::remove_mcp_server(id)
-}
 
 /// Import MCP servers from OpenCode config to unified structure
 ///

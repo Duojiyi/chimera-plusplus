@@ -137,8 +137,8 @@ pub struct RequestLogDetail {
     pub output_tokens: u32,
     pub cache_read_tokens: u32,
     pub cache_creation_tokens: u32,
-    /// Internal storage semantics; omitted from the UI/API payload.
-    #[serde(skip)]
+    /// 0 = legacy, 1 = cache-inclusive total, 2 = fresh input.
+    #[serde(default)]
     pub input_token_semantics: i64,
     pub input_cost_usd: String,
     pub output_cost_usd: String,
@@ -1355,7 +1355,7 @@ impl Database {
                 SELECT l.provider_id, l.app_type,
                     {detail_pname} as provider_name,
                     COUNT(*) as request_count,
-                    COALESCE(SUM({fresh_input_detail} + l.output_tokens), 0) as total_tokens,
+                    COALESCE(SUM({fresh_input_detail} + l.output_tokens + l.cache_creation_tokens + l.cache_read_tokens), 0) as total_tokens,
                     COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as total_cost,
                     COALESCE(SUM(CASE WHEN l.status_code >= 200 AND l.status_code < 300 THEN 1 ELSE 0 END), 0) as success_count,
                     COALESCE(SUM(l.latency_ms), 0) as latency_sum
@@ -1367,7 +1367,7 @@ impl Database {
                 SELECT r.provider_id, r.app_type,
                     {rollup_pname} as provider_name,
                     COALESCE(SUM(r.request_count), 0),
-                    COALESCE(SUM({fresh_input_rollup} + r.output_tokens), 0),
+                    COALESCE(SUM({fresh_input_rollup} + r.output_tokens + r.cache_creation_tokens + r.cache_read_tokens), 0),
                     COALESCE(SUM(CAST(r.total_cost_usd AS REAL)), 0),
                     COALESCE(SUM(r.success_count), 0),
                     COALESCE(SUM(r.avg_latency_ms * r.request_count), 0)
@@ -1509,7 +1509,7 @@ impl Database {
             FROM (
                 SELECT {detail_model} as model,
                     COUNT(*) as request_count,
-                    COALESCE(SUM({fresh_input_detail} + l.output_tokens), 0) as total_tokens,
+                    COALESCE(SUM({fresh_input_detail} + l.output_tokens + l.cache_creation_tokens + l.cache_read_tokens), 0) as total_tokens,
                     COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as total_cost
                 FROM proxy_request_logs l
                 {detail_join}
@@ -1518,7 +1518,7 @@ impl Database {
                 UNION ALL
                 SELECT {rollup_model},
                     COALESCE(SUM(r.request_count), 0),
-                    COALESCE(SUM({fresh_input_rollup} + r.output_tokens), 0),
+                    COALESCE(SUM({fresh_input_rollup} + r.output_tokens + r.cache_creation_tokens + r.cache_read_tokens), 0),
                     COALESCE(SUM(CAST(r.total_cost_usd AS REAL)), 0)
                 FROM usage_daily_rollups r
                 {rollup_join}
@@ -1672,10 +1672,10 @@ impl Database {
         let detail_sql = format!(
             "SELECT l.request_id, l.provider_id, {detail_pname} as provider_name, l.app_type, l.model,
                     l.request_model, l.cost_multiplier,
-                    input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-                    input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd, total_cost_usd,
-                    is_streaming, latency_ms, first_token_ms, duration_ms,
-                    status_code, error_message, created_at, l.data_source, l.pricing_model,
+                    l.input_tokens, l.output_tokens, l.cache_read_tokens, l.cache_creation_tokens,
+                    l.input_cost_usd, l.output_cost_usd, l.cache_read_cost_usd, l.cache_creation_cost_usd, l.total_cost_usd,
+                    l.is_streaming, l.latency_ms, l.first_token_ms, l.duration_ms,
+                    l.status_code, l.error_message, l.created_at, l.data_source, l.pricing_model,
                     l.input_token_semantics
              FROM proxy_request_logs l
              LEFT JOIN providers p ON l.provider_id = p.id AND l.app_type = p.app_type
@@ -1916,7 +1916,7 @@ impl Database {
         // 1. 历史 Codex/Gemini 行只包含 cache read；新 total 行还包含 cache write。
         // 2. Claude/Anthropic 的 input_tokens 已经是 fresh input，不能再次扣减
         // 3. 各项成本是基础成本（不含倍率），倍率只作用于最终总价
-        let cache_inclusive_app = matches!(log.app_type.as_str(), "codex" | "gemini");
+        let cache_inclusive_app = matches!(log.app_type.as_str(), "codex" | "gemini" | "grokbuild");
         let billable_input_tokens =
             if !cache_inclusive_app || log.input_token_semantics == INPUT_TOKEN_SEMANTICS_FRESH {
                 log.input_tokens as u64
@@ -2826,73 +2826,125 @@ mod tests {
     }
 
     #[test]
-    fn test_backfill_distinguishes_legacy_and_total_cache_semantics() -> Result<(), AppError> {
+    fn request_semantics_are_serialized_and_cached_totals_reconcile() -> Result<(), AppError> {
         let db = Database::memory()?;
-
         {
             let conn = lock_conn!(db.conn);
-            // v12 mirror row: input = fresh + read; creation was reported separately.
-            insert_usage_log(
-                &conn,
-                "legacy-cache-semantics",
-                "codex",
-                "p1",
-                "gpt-5.5",
-                "proxy",
-                1000,
-                800_000,
-                0,
-                600_000,
-                200_000,
-                200,
-                "0",
-            )?;
-            // v13 proxy row: input = fresh + read + creation.
-            insert_usage_log(
-                &conn,
-                "total-cache-semantics",
-                "codex",
-                "p1",
-                "gpt-5.5",
-                "proxy",
-                1001,
-                1_000_000,
-                0,
-                600_000,
-                200_000,
-                200,
-                "0",
-            )?;
-            conn.execute(
-                "UPDATE proxy_request_logs
+            for (id, semantics) in [("legacy", 0), ("total", 1), ("fresh", 2)] {
+                insert_usage_log(
+                    &conn,
+                    id,
+                    "grokbuild",
+                    "p1",
+                    "test-model",
+                    "proxy",
+                    1000,
+                    1000,
+                    50,
+                    600,
+                    200,
+                    200,
+                    "1",
+                )?;
+                conn.execute("UPDATE proxy_request_logs SET input_token_semantics = ?1 WHERE request_id = ?2",
+                    params![semantics, id])?;
+            }
+            conn.execute("INSERT INTO usage_daily_rollups (
+                date, app_type, provider_id, model, request_count, success_count,
+                input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                input_token_semantics, total_cost_usd, avg_latency_ms
+            ) VALUES ('2020-01-01', 'grokbuild', 'p1', 'test-model', 1, 1, 100, 50, 600, 200, 2, '1', 10)", [])?;
+        }
+        for (id, semantics) in [("legacy", 0), ("total", 1), ("fresh", 2)] {
+            let detail = db.get_request_detail(id)?.unwrap();
+            let dto = serde_json::to_value(detail).unwrap();
+            assert_eq!(dto["inputTokenSemantics"], semantics);
+            assert_eq!(dto["cacheCreationTokens"], 200);
+        }
+        let summary = db.get_usage_summary(None, None, Some("grokbuild"), None, None)?;
+        let providers = db.get_provider_stats(None, None, Some("grokbuild"), None, None)?;
+        let models = db.get_model_stats(None, None, Some("grokbuild"), None, None)?;
+        assert_eq!(summary.real_total_tokens, 5100);
+        assert_eq!(
+            providers.iter().map(|p| p.total_tokens).sum::<u64>(),
+            summary.real_total_tokens
+        );
+        assert_eq!(
+            models.iter().map(|m| m.total_tokens).sum::<u64>(),
+            summary.real_total_tokens
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_backfill_distinguishes_legacy_and_total_cache_semantics() -> Result<(), AppError> {
+        for app in ["codex", "gemini", "grokbuild"] {
+            let db = Database::memory()?;
+
+            {
+                let conn = lock_conn!(db.conn);
+                // v12 mirror row: input = fresh + read; creation was reported separately.
+                insert_usage_log(
+                    &conn,
+                    "legacy-cache-semantics",
+                    app,
+                    "p1",
+                    "gpt-5.5",
+                    "proxy",
+                    1000,
+                    800_000,
+                    0,
+                    600_000,
+                    200_000,
+                    200,
+                    "0",
+                )?;
+                // v13 proxy row: input = fresh + read + creation.
+                insert_usage_log(
+                    &conn,
+                    "total-cache-semantics",
+                    app,
+                    "p1",
+                    "gpt-5.5",
+                    "proxy",
+                    1001,
+                    1_000_000,
+                    0,
+                    600_000,
+                    200_000,
+                    200,
+                    "0",
+                )?;
+                conn.execute(
+                    "UPDATE proxy_request_logs
                  SET input_token_semantics = ?1
                  WHERE request_id = 'total-cache-semantics'",
-                [INPUT_TOKEN_SEMANTICS_TOTAL],
-            )?;
-        }
+                    [INPUT_TOKEN_SEMANTICS_TOTAL],
+                )?;
+            }
 
-        assert_eq!(db.backfill_missing_usage_costs()?, 2);
+            assert_eq!(db.backfill_missing_usage_costs()?, 2);
 
-        let conn = lock_conn!(db.conn);
-        let mut stmt = conn.prepare(
-            "SELECT request_id, input_cost_usd
+            let conn = lock_conn!(db.conn);
+            let mut stmt = conn.prepare(
+                "SELECT request_id, input_cost_usd
              FROM proxy_request_logs
              WHERE request_id IN ('legacy-cache-semantics', 'total-cache-semantics')
              ORDER BY request_id",
-        )?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        assert_eq!(
-            rows,
-            vec![
-                ("legacy-cache-semantics".to_string(), "1.000000".to_string()),
-                ("total-cache-semantics".to_string(), "1.000000".to_string()),
-            ]
-        );
-
+            )?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            assert_eq!(
+                rows,
+                vec![
+                    ("legacy-cache-semantics".to_string(), "1.000000".to_string()),
+                    ("total-cache-semantics".to_string(), "1.000000".to_string()),
+                ]
+            );
+        }
         Ok(())
     }
 
@@ -4156,11 +4208,14 @@ mod tests {
             assert!((trend_cost - 0.03).abs() < 1e-9);
             assert_eq!(models.len(), 1);
             assert_eq!(models[0].request_count, 3);
-            assert_eq!(models[0].total_tokens, 1050);
+            assert_eq!(models[0].total_tokens, 3150);
             assert_eq!(models[0].total_cost, summary.total_cost);
+            assert_eq!(models[0].total_tokens, summary.real_total_tokens);
+            let providers =
+                db.get_provider_stats(Some(start), Some(end), Some("codex"), None, None)?;
             assert_eq!(
-                models[0].total_tokens,
-                summary.total_input_tokens + summary.total_output_tokens
+                providers.iter().map(|p| p.total_tokens).sum::<u64>(),
+                summary.real_total_tokens
             );
             assert_eq!(
                 trends[0].date,

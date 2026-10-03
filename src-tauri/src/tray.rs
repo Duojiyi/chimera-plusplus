@@ -143,6 +143,12 @@ pub struct TrayAppSection {
     pub log_name: &'static str,
 }
 
+/// Whether the tray shows (and acts on) `app_type`. While `multi_tool` is off
+/// the product hard-hide leaves only Codex, whatever `visibleApps` says.
+fn tray_app_enabled(app_type: &AppType, visible_apps: &crate::settings::VisibleApps) -> bool {
+    crate::product_policy::is_tool_enabled(app_type, visible_apps)
+}
+
 /// Auto 菜单项后缀
 pub const AUTO_SUFFIX: &str = "auto";
 pub const TRAY_ID: &str = crate::product_policy::PRODUCT_TRAY_ID;
@@ -448,6 +454,13 @@ pub fn handle_profile_tray_event(app: &tauri::AppHandle, event_id: &str) -> bool
 pub fn handle_provider_tray_event(app: &tauri::AppHandle, event_id: &str) -> bool {
     for section in TRAY_SECTIONS.iter() {
         if let Some(suffix) = event_id.strip_prefix(section.prefix) {
+            // Non-Codex sections are never built while `multi_tool` is off;
+            // refuse a stray event for one instead of switching its live config.
+            if !crate::product_policy::is_app_visible_by_product(&section.app_type) {
+                log::warn!("忽略未开放应用的托盘事件: {}", section.log_name);
+                return true;
+            }
+
             // 处理 Auto 点击
             if suffix == AUTO_SUFFIX {
                 log::info!("切换到{} Auto模式", section.log_name);
@@ -663,9 +676,7 @@ pub fn create_tray_menu(
 
     // 每个应用类型折叠为子菜单，避免供应商过多时菜单过长
     for section in TRAY_SECTIONS.iter() {
-        if !crate::product_policy::is_app_visible_by_product(&section.app_type)
-            || !visible_apps.is_visible(&section.app_type)
-        {
+        if !tray_app_enabled(&section.app_type, &visible_apps) {
             continue;
         }
 
@@ -751,10 +762,10 @@ pub fn create_tray_menu(
         use crate::services::profile::ProfileScope;
 
         let any_scope_visible = ProfileScope::ALL.iter().any(|scope| {
-            scope.apps().iter().any(|app_type| {
-                crate::product_policy::is_app_visible_by_product(app_type)
-                    && visible_apps.is_visible(app_type)
-            })
+            scope
+                .apps()
+                .iter()
+                .any(|app_type| tray_app_enabled(app_type, &visible_apps))
         });
         let profiles = if any_scope_visible {
             app_state.db.get_all_profiles()?
@@ -765,10 +776,10 @@ pub fn create_tray_menu(
         let mut scope_submenus = Vec::new();
         for scope in ProfileScope::ALL {
             if profiles.is_empty()
-                || !scope.apps().iter().any(|app_type| {
-                    crate::product_policy::is_app_visible_by_product(app_type)
-                        && visible_apps.is_visible(app_type)
-                })
+                || !scope
+                    .apps()
+                    .iter()
+                    .any(|app_type| tray_app_enabled(app_type, &visible_apps))
             {
                 continue;
             }
@@ -1050,9 +1061,7 @@ pub(crate) async fn refresh_all_usage_in_tray(app: &tauri::AppHandle) {
     let mut script_futures = Vec::new();
 
     for section in TRAY_SECTIONS.iter() {
-        if !crate::product_policy::is_app_visible_by_product(&section.app_type)
-            || !visible_apps.is_visible(&section.app_type)
-        {
+        if !tray_app_enabled(&section.app_type, &visible_apps) {
             continue;
         }
 
@@ -1191,6 +1200,47 @@ mod tests {
         assert_eq!(section.prefix, "grokbuild_");
         assert_eq!(section.empty_id, "grokbuild_empty");
         assert_eq!(section.header_label, "Grok Build");
+    }
+
+    #[test]
+    fn tray_sections_follow_explicit_tool_visibility() {
+        use crate::settings::VisibleApps;
+
+        let everything_visible = VisibleApps {
+            claude: true,
+            claude_desktop: true,
+            codex: true,
+            gemini: true,
+            grokbuild: true,
+            opencode: true,
+            openclaw: true,
+            hermes: true,
+            pi: true,
+            mcode: true,
+        };
+        let shown: Vec<_> = TRAY_SECTIONS
+            .iter()
+            .filter(|section| super::tray_app_enabled(&section.app_type, &everything_visible))
+            .map(|section| section.app_type.clone())
+            .collect();
+        assert_eq!(
+            shown,
+            vec![
+                AppType::Claude,
+                AppType::Codex,
+                AppType::Gemini,
+                AppType::GrokBuild
+            ]
+        );
+        for app in [AppType::Claude, AppType::Gemini, AppType::GrokBuild] {
+            assert!(!super::tray_app_enabled(&app, &VisibleApps::default()));
+        }
+
+        let codex_hidden = VisibleApps {
+            codex: false,
+            ..VisibleApps::default()
+        };
+        assert!(!super::tray_app_enabled(&AppType::Codex, &codex_hidden));
     }
 
     fn make_quota(tool: &str, success: bool, tiers: Vec<QuotaTier>) -> SubscriptionQuota {

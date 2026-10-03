@@ -1,0 +1,141 @@
+{
+  "method": "Conservative literal-module import graph from src/main.tsx, including dynamic imports and barrel exports. Reachability is an upper bound, not proof of a reachable UI control. Calls named invoke only; tests excluded. The unregistered-command check excludes plugin commands. Dynamic command names and non-literal module paths require manual review. No native commands executed.",
+  "sourceModules": 364,
+  "reachableModules": 136,
+  "registeredCommands": 353,
+  "literalInvocations": 351,
+  "uniqueReachableInvocations": 301,
+  "targetReachability": [
+    {
+      "file": "src/components/AppSwitcher.tsx",
+      "reachable": false
+    },
+    {
+      "file": "src/components/providers/ProviderList.tsx",
+      "reachable": false
+    },
+    {
+      "file": "src/components/providers/forms/ClaudeDesktopProviderForm.tsx",
+      "reachable": false
+    },
+    {
+      "file": "src/components/proxy/ClaudeDesktopRouteToggle.tsx",
+      "reachable": false
+    },
+    {
+      "file": "src/components/profiles/ProfileSwitcher.tsx",
+      "reachable": false
+    },
+    {
+      "file": "src/components/skills/UnifiedSkillsPanel.tsx",
+      "reachable": false
+    },
+    {
+      "file": "src/components/mcp/UnifiedMcpPanel.tsx",
+      "reachable": false
+    },
+    {
+      "file": "src/views/SettingsView.tsx",
+      "reachable": false
+    }
+  ],
+  "unregisteredLiteralInvocations": [],
+  "registeredWithoutReachableLiteralInvocation": [
+    "get_pi_current_state",
+    "get_claude_config_status",
+    "get_config_status",
+    "get_migration_result",
+    "get_skills_migration_result",
+    "install_catalog_skin",
+    "import_skin_package",
+    "apply_skin_package",
+    "try_skin_package",
+    "restore_skin_package",
+    "get_copilot_optimizer_config",
+    "set_copilot_optimizer_config",
+    "copy_text_to_clipboard",
+    "get_claude_plugin_status",
+    "read_claude_plugin_config",
+    "is_claude_plugin_applied",
+    "import_from_deeplink",
+    "check_env_conflicts",
+    "delete_env_vars",
+    "restore_env_backup",
+    "stop_proxy_server",
+    "get_provider_health",
+    "reset_circuit_breaker",
+    "get_circuit_breaker_config",
+    "update_circuit_breaker_config",
+    "get_circuit_breaker_stats",
+    "get_failover_queue",
+    "get_available_providers_for_failover",
+    "add_to_failover_queue",
+    "remove_from_failover_queue",
+    "get_auto_failover_enabled",
+    "set_auto_failover_enabled",
+    "stream_check_provider",
+    "stream_check_all_providers",
+    "get_stream_check_config",
+    "save_stream_check_config",
+    "get_hermes_live_provider",
+    "get_global_proxy_url",
+    "set_global_proxy_url",
+    "test_proxy_url",
+    "get_upstream_proxy_status",
+    "scan_local_proxies",
+    "read_omo_local_file",
+    "get_current_omo_provider_id",
+    "disable_current_omo",
+    "read_omo_slim_local_file",
+    "get_current_omo_slim_provider_id",
+    "disable_current_omo_slim",
+    "hide_main_window",
+    "enter_lightweight_mode",
+    "exit_lightweight_mode",
+    "is_lightweight_mode"
+  ],
+  "dynamicInvocations": [
+    {
+      "command": null,
+      "expression": "blockers.size > 0 || openDialogCount() > 0\n            ? \"hide_main_window\"\n            : \"enter_lightweight_mode\"",
+      "file": "src/hooks/useLightweightClose.ts",
+      "line": 31
+    },
+    {
+      "command": null,
+      "expression": "command",
+      "file": "src/views/AppearanceView.tsx",
+      "line": 111
+    }
+  ],
+  "claudeDesktopInvocations": [
+    {
+      "command": "import_claude_desktop_providers_from_claude",
+      "expression": "\"import_claude_desktop_providers_from_claude\"",
+      "file": "src/lib/api/providers.ts",
+      "line": 145,
+      "moduleReachable": true
+    },
+    {
+      "command": "ensure_claude_desktop_official_provider",
+      "expression": "\"ensure_claude_desktop_official_provider\"",
+      "file": "src/lib/api/providers.ts",
+      "line": 149,
+      "moduleReachable": true
+    },
+    {
+      "command": "get_claude_desktop_status",
+      "expression": "\"get_claude_desktop_status\"",
+      "file": "src/lib/api/providers.ts",
+      "line": 157,
+      "moduleReachable": true
+    },
+    {
+      "command": "get_claude_desktop_default_routes",
+      "expression": "\"get_claude_desktop_default_routes\"",
+      "file": "src/lib/api/providers.ts",
+      "line": 161,
+      "moduleReachable": true
+    }
+  ]
+}

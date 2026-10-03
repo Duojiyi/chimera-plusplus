@@ -33,9 +33,27 @@ export interface WebDavSyncResult {
   warning?: string;
 }
 
+/** Key names only (MH-13b): what was removed, and unknown env vars to confirm. */
+export interface UntrustedConfigReport {
+  stripped: string[];
+  needsConfirmation: string[];
+}
+
+export interface CodexImportReviewLine extends UntrustedConfigReport {
+  id: string;
+  name: string;
+}
+
+/** Pending after an import/restore/download; Codex live is not synced until confirmed. */
+export interface CodexImportReview {
+  providers: CodexImportReviewLine[];
+  commonConfig?: UntrustedConfigReport;
+}
+
 export type PreferencesPatch = Partial<
   Pick<
     Settings,
+    | "language"
     | "codexUpdateSource"
     | "codexInstallMode"
     | "checkCodexUpdatesOnStart"
@@ -47,6 +65,20 @@ export type PreferencesPatch = Partial<
 >;
 
 export const settingsApi = {
+  async patchConfigDirectory(
+    app:
+      | "claude"
+      | "codex"
+      | "gemini"
+      | "grokbuild"
+      | "opencode"
+      | "openclaw"
+      | "hermes",
+    path: string | null,
+  ): Promise<boolean> {
+    return invoke("patch_config_directory", { app, path });
+  },
+
   async patchPreferences(patch: PreferencesPatch): Promise<Settings> {
     return invoke("patch_preferences", { patch });
   },
@@ -245,6 +277,20 @@ export const settingsApi = {
     };
     if (!result?.success) {
       throw new Error(result?.message || "Sync current providers failed");
+    }
+  },
+
+  async getCodexImportReview(): Promise<CodexImportReview | null> {
+    return await invoke("get_codex_import_review");
+  },
+
+  async confirmCodexImportSync(): Promise<void> {
+    const result = (await invoke("confirm_codex_import_sync")) as {
+      success?: boolean;
+      message?: string;
+    };
+    if (!result?.success) {
+      throw new Error(result?.message || "Codex sync failed");
     }
   },
 

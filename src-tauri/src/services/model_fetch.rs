@@ -22,11 +22,18 @@ pub struct FetchedModel {
     pub owned_by: Option<String>,
 }
 
-/// OpenAI 兼容的 /v1/models 响应格式
+/// OpenAI 兼容的 /v1/models 响应格式。
+///
+/// OpenAI 兼容接口和 Anthropic 接口使用 `data` 字段；Codex 远端模型目录
+/// （智谱 /api/v1 即此格式）使用 `models[].slug`。`models` 收成 `Value`：部分
+/// 供应商会在 `data` 旁附带任意形状的 `models`，强类型字段一旦对不上就会连带
+/// `data` 一起解析失败。
+///
+/// Adapted from farion1231/cc-switch f2537fdf6 (MIT).
 #[derive(Debug, Deserialize)]
 struct ModelsResponse {
     data: Option<Vec<ModelEntry>>,
-    models: Option<Vec<ModelEntry>>,
+    models: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -34,6 +41,107 @@ struct ModelEntry {
     #[serde(alias = "slug")]
     id: String,
     owned_by: Option<String>,
+}
+
+/// `models[]` 条目对应的模型 id：`slug` 优先，回退 OpenAI 风格的 `id`；
+/// 非数组、非对象、非字符串或空串一律跳过，绝不报错。
+fn catalog_model_ids(models: Option<serde_json::Value>) -> Vec<String> {
+    let Some(serde_json::Value::Array(entries)) = models else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter_map(|m| {
+            ["slug", "id"]
+                .iter()
+                .find_map(|k| m.get(k)?.as_str().filter(|s| !s.is_empty()))
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+/// A 2xx model-list body that is really a business error, e.g.
+/// `{"code":401,"msg":"token expired","success":false,"data":[{"id":"glm-5.3"}]}`:
+/// `success:false`, a numeric `code` other than 0/200, or a non-empty `error`.
+/// Returns the upstream message. A standard OpenAI list carries none of these.
+fn model_list_error_envelope(body: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(body).ok()?;
+    let value = serde_json::from_str::<serde_json::Value>(text).ok()?;
+    let object = value.as_object()?;
+    let unsuccessful = object.get("success").and_then(|v| v.as_bool()) == Some(false);
+    let error_code = object
+        .get("code")
+        .and_then(|code| {
+            code.as_i64()
+                .or_else(|| code.as_str().and_then(|s| s.trim().parse::<i64>().ok()))
+        })
+        .is_some_and(|code| code != 0 && code != 200);
+    let has_error = object.get("error").is_some_and(|error| match error {
+        serde_json::Value::Null | serde_json::Value::Bool(false) => false,
+        serde_json::Value::String(s) => !s.trim().is_empty(),
+        serde_json::Value::Array(items) => !items.is_empty(),
+        serde_json::Value::Object(fields) => !fields.is_empty(),
+        _ => true,
+    });
+    let failed = unsuccessful || error_code || has_error || body_carries_error_envelope(text);
+    failed.then(|| upstream_error_message(text))
+}
+
+/// Extra headers sent with model discovery and protocol probes, so they reach
+/// the upstream the same way proxied requests do: the line's custom
+/// User-Agent and its custom request headers (CPP-A7, applied only while the
+/// `custom_request_headers` capability is on). Protected names are already
+/// filtered out, so the API key always stays the only credential.
+// No `Debug`: header values may be credentials.
+#[derive(Clone, Default)]
+pub struct UpstreamRequestHeaders {
+    pub user_agent: Option<HeaderValue>,
+    pub extra: Vec<(reqwest::header::HeaderName, HeaderValue)>,
+    /// Values masked in every error string returned to the caller.
+    secrets: Vec<String>,
+}
+
+impl UpstreamRequestHeaders {
+    pub fn with_user_agent(user_agent: Option<HeaderValue>) -> Self {
+        Self {
+            user_agent,
+            ..Self::default()
+        }
+    }
+
+    /// Add a line's custom request headers when `enabled`
+    /// (`Capability::CustomRequestHeaders`).
+    pub fn with_overrides(
+        mut self,
+        overrides: Option<&crate::provider::LocalProxyRequestOverrides>,
+        enabled: bool,
+    ) -> Self {
+        if let Some(overrides) = overrides.filter(|_| enabled) {
+            self.extra = overrides.upstream_headers();
+            self.secrets = overrides.secret_header_values();
+        }
+        self
+    }
+
+    fn apply(&self, mut request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        // A custom `user-agent` header replaces the line's User-Agent setting,
+        // as it does in the proxy (reqwest appends, so never send both).
+        let ua_overridden = self.extra.iter().any(|(name, _)| *name == USER_AGENT);
+        if let Some(ua) = self.user_agent.as_ref().filter(|_| !ua_overridden) {
+            request = request.header(USER_AGENT, ua.clone());
+        }
+        for (name, value) in &self.extra {
+            request = request.header(name.clone(), value.clone());
+        }
+        request
+    }
+
+    fn redact(&self, text: String) -> String {
+        self.secrets
+            .iter()
+            .filter(|secret| secret.len() >= 4)
+            .fold(text, |text, secret| text.replace(secret.as_str(), "***"))
+    }
 }
 
 const FETCH_TIMEOUT_SECS: u64 = 15;
@@ -76,7 +184,20 @@ pub async fn fetch_models(
     api_key: &str,
     is_full_url: bool,
     models_url_override: Option<&str>,
-    user_agent: Option<HeaderValue>,
+    headers: UpstreamRequestHeaders,
+) -> Result<Vec<FetchedModel>, String> {
+    let redactor = headers.clone();
+    fetch_models_unredacted(base_url, api_key, is_full_url, models_url_override, headers)
+        .await
+        .map_err(|error| redactor.redact(error))
+}
+
+async fn fetch_models_unredacted(
+    base_url: &str,
+    api_key: &str,
+    is_full_url: bool,
+    models_url_override: Option<&str>,
+    headers: UpstreamRequestHeaders,
 ) -> Result<Vec<FetchedModel>, String> {
     if api_key.is_empty() {
         return Err("API Key is required to fetch models".to_string());
@@ -98,11 +219,10 @@ pub async fn fetch_models(
             .get(url)
             .header("Authorization", format!("Bearer {api_key}"))
             .timeout(Duration::from_secs(FETCH_TIMEOUT_SECS));
-        // 自定义 User-Agent：部分 /models 端点同样有 UA 白名单（如 Kimi Coding Plan），
-        // 与转发 / 检测路径共用同一 UA，避免"代理可用但取模型失败"。
-        if let Some(ua) = &user_agent {
-            request = request.header(USER_AGENT, ua.clone());
-        }
+        // 自定义 User-Agent / 自定义请求头：部分 /models 端点同样有 UA 白名单
+        // （如 Kimi Coding Plan）或企业网关识别头，与转发 / 检测路径保持一致，
+        // 避免"代理可用但取模型失败"。
+        request = headers.apply(request);
         let response = match request.send().await {
             Ok(r) => r,
             Err(e) => {
@@ -123,20 +243,31 @@ pub async fn fetch_models(
             )
             .await
             .map_err(|error| sanitize_probe_error(&error, api_key))?;
+            // A business error wrapped in a 2xx must not pass as a model list:
+            // its placeholder `data` would otherwise be reported as success.
+            if let Some(message) = model_list_error_envelope(&body) {
+                return Err(format!(
+                    "HTTP {status}: {}",
+                    truncate_body(sanitize_probe_error(&message, api_key))
+                ));
+            }
             let resp: ModelsResponse = serde_json::from_slice(&body).map_err(|error| {
                 sanitize_probe_error(&format!("Failed to parse response: {error}"), api_key)
             })?;
 
-            let mut models: Vec<FetchedModel> = resp
-                .data
-                .or(resp.models)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|m| FetchedModel {
-                    id: m.id,
-                    owned_by: m.owned_by,
-                })
-                .collect();
+            let mut models: Vec<FetchedModel> = match resp.data {
+                Some(data) => data
+                    .into_iter()
+                    .map(|m| FetchedModel {
+                        id: m.id,
+                        owned_by: m.owned_by,
+                    })
+                    .collect(),
+                None => catalog_model_ids(resp.models)
+                    .into_iter()
+                    .map(|id| FetchedModel { id, owned_by: None })
+                    .collect(),
+            };
 
             models.sort_by(|a, b| a.id.cmp(&b.id));
             return Ok(models);
@@ -453,26 +584,22 @@ pub async fn detect_codex_api_format(
     api_key: &str,
     is_full_url: bool,
     model_hint: Option<&str>,
-    user_agent: Option<HeaderValue>,
+    headers: UpstreamRequestHeaders,
 ) -> Result<DetectedCodexApiFormat, String> {
     if api_key.trim().is_empty() {
         return Err("API Key is required to detect the upstream API format".to_string());
     }
 
-    let probe_model = resolve_codex_api_probe_model(
-        base_url,
-        api_key,
-        is_full_url,
-        model_hint,
-        user_agent.clone(),
-    )
-    .await?;
-    probe_model_protocol(base_url, api_key, is_full_url, &probe_model, user_agent)
+    let redactor = headers.clone();
+    let probe_model =
+        resolve_codex_api_probe_model(base_url, api_key, is_full_url, model_hint, headers.clone())
+            .await?;
+    probe_model_protocol(base_url, api_key, is_full_url, &probe_model, headers)
         .await
         .map_err(|failure| {
-            format!(
+            redactor.redact(format!(
                 "Could not safely identify a supported API protocol. Verify the endpoint, API Key, and model, or choose the protocol manually. {failure}"
-            )
+            ))
         })
 }
 
@@ -483,19 +610,12 @@ async fn probe_model_protocol(
     api_key: &str,
     is_full_url: bool,
     probe_model: &str,
-    user_agent: Option<HeaderValue>,
+    headers: UpstreamRequestHeaders,
 ) -> Result<DetectedCodexApiFormat, String> {
     let candidates = build_api_format_probe_urls(base_url, is_full_url)?;
     let client = crate::proxy::http_client::get_for_auth_probe()?;
     let probes = candidates.into_iter().map(|(probe, url)| {
-        probe_codex_api_format_endpoint(
-            &client,
-            probe,
-            url,
-            api_key,
-            probe_model,
-            user_agent.clone(),
-        )
+        probe_codex_api_format_endpoint(&client, probe, url, api_key, probe_model, headers.clone())
     });
     let outcomes = join_all(probes).await;
 
@@ -526,7 +646,7 @@ pub async fn detect_codex_api_formats(
     api_key: &str,
     is_full_url: bool,
     models: Vec<String>,
-    user_agent: Option<HeaderValue>,
+    headers: UpstreamRequestHeaders,
 ) -> Result<DetectedCodexApiFormats, String> {
     if api_key.trim().is_empty() {
         return Err("API Key is required to detect the upstream API format".to_string());
@@ -538,10 +658,10 @@ pub async fn detect_codex_api_formats(
     }
 
     let results = stream::iter(unique_models.into_iter().map(|model| {
-        let user_agent = user_agent.clone();
+        let headers = headers.clone();
         async move {
             let result =
-                probe_model_protocol(base_url, api_key, is_full_url, &model, user_agent).await;
+                probe_model_protocol(base_url, api_key, is_full_url, &model, headers).await;
             (model, result)
         }
     }))
@@ -556,7 +676,7 @@ pub async fn detect_codex_api_formats(
                 report.detected.insert(model, detected);
             }
             Err(reason) => {
-                report.failures.insert(model, reason);
+                report.failures.insert(model, headers.redact(reason));
             }
         }
     }
@@ -584,13 +704,13 @@ async fn resolve_codex_api_probe_model(
     api_key: &str,
     is_full_url: bool,
     model_hint: Option<&str>,
-    user_agent: Option<HeaderValue>,
+    headers: UpstreamRequestHeaders,
 ) -> Result<String, String> {
     if let Some(model) = model_hint.map(str::trim).filter(|model| !model.is_empty()) {
         return Ok(model.to_string());
     }
 
-    let models = fetch_models(base_url, api_key, is_full_url, None, user_agent)
+    let models = fetch_models(base_url, api_key, is_full_url, None, headers)
         .await
         .map_err(|error| {
             format!("Could not obtain a real model name for safe protocol detection: {error}")
@@ -658,7 +778,7 @@ async fn probe_codex_api_format_endpoint(
     url: String,
     api_key: &str,
     probe_model: &str,
-    user_agent: Option<HeaderValue>,
+    headers: UpstreamRequestHeaders,
 ) -> ApiProbeOutcome {
     // Native Anthropic gateways differ on whether they expect `x-api-key` or
     // Bearer auth. Probe the canonical header first and only then fall back to
@@ -678,7 +798,7 @@ async fn probe_codex_api_format_endpoint(
             &url,
             api_key,
             probe_model,
-            user_agent.clone(),
+            headers.clone(),
             *auth_field,
         )
         .await;
@@ -741,7 +861,7 @@ async fn send_codex_api_format_probe(
     url: &str,
     api_key: &str,
     probe_model: &str,
-    user_agent: Option<HeaderValue>,
+    headers: UpstreamRequestHeaders,
     anthropic_auth_field: Option<&str>,
 ) -> ProbeAttempt {
     let _permit = probe_permits().acquire().await.ok();
@@ -751,7 +871,7 @@ async fn send_codex_api_format_probe(
         url,
         api_key,
         probe_model,
-        user_agent.clone(),
+        headers.clone(),
         anthropic_auth_field,
     )
     .await;
@@ -773,7 +893,7 @@ async fn send_codex_api_format_probe(
         url,
         api_key,
         probe_model,
-        user_agent,
+        headers,
         anthropic_auth_field,
     )
     .await
@@ -791,7 +911,7 @@ async fn send_codex_api_format_probe_once(
     url: &str,
     api_key: &str,
     probe_model: &str,
-    user_agent: Option<HeaderValue>,
+    headers: UpstreamRequestHeaders,
     anthropic_auth_field: Option<&str>,
 ) -> ProbeExchange {
     let mut request = client
@@ -817,9 +937,7 @@ async fn send_codex_api_format_probe_once(
             }
         }
     }
-    if let Some(ua) = user_agent {
-        request = request.header(USER_AGENT, ua);
-    }
+    request = headers.apply(request);
 
     let response = match request.send().await {
         Ok(response) => response,
@@ -982,7 +1100,13 @@ fn body_carries_error_envelope(body: &str) -> bool {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
         return false;
     };
-    if value.get("error").is_some_and(|error| !error.is_null()) {
+    if value.get("error").is_some_and(|error| match error {
+        serde_json::Value::Null | serde_json::Value::Bool(false) => false,
+        serde_json::Value::String(s) => !s.trim().is_empty(),
+        serde_json::Value::Array(items) => !items.is_empty(),
+        serde_json::Value::Object(fields) => !fields.is_empty(),
+        _ => true,
+    }) {
         return true;
     }
     value
@@ -1604,7 +1728,7 @@ mod tests {
             axum::Json(serde_json::json!({"models": [{"slug": "glm-5.3"}, {"slug": "glm-5"}]}))
         }))
         .await;
-        let models = fetch_models(&url, "test-discovery-key", false, None, None)
+        let models = fetch_models(&url, "test-discovery-key", false, None, Default::default())
             .await
             .unwrap();
         server.abort();
@@ -1681,10 +1805,10 @@ mod tests {
                 KEY,
                 true,
                 Some("claude-test"),
-                None,
+                Default::default(),
             )
             .await;
-            let models_result = fetch_models(&origin, KEY, false, None, None).await;
+            let models_result = fetch_models(&origin, KEY, false, None, Default::default()).await;
             origin_server.abort();
             destination_server.abort();
 
@@ -1718,7 +1842,14 @@ mod tests {
             }))
             .await;
             // Compatibility paths exercise multiple 404/405 candidates.
-            let result = fetch_models(&format!("{url}/api/coding"), KEY, false, None, None).await;
+            let result = fetch_models(
+                &format!("{url}/api/coding"),
+                KEY,
+                false,
+                None,
+                Default::default(),
+            )
+            .await;
             server.abort();
             let error = result.unwrap_err();
             assert!(error.contains(&format!("HTTP {status}")));
@@ -1740,7 +1871,7 @@ mod tests {
             async move { body }
         }))
         .await;
-        let result = fetch_models(&url, KEY, false, None, None).await;
+        let result = fetch_models(&url, KEY, false, None, Default::default()).await;
         server.abort();
         let error = result.unwrap_err();
         assert!(error.contains("Failed to parse response:"));
@@ -3128,6 +3259,198 @@ mod tests {
         let json = r#"{"object":"list","data":[]}"#;
         let resp: ModelsResponse = serde_json::from_str(json).unwrap();
         assert!(resp.data.unwrap().is_empty());
+    }
+
+    // Adapted from farion1231/cc-switch f2537fdf6 (MIT).
+    #[test]
+    fn test_parse_response_with_non_zhipu_models_field() {
+        let json = r#"{
+            "data": [
+                {"id": "model-a", "name": "model-a", "max_tokens": 32000, "context_window": 400000},
+                {"id": "model-b", "name": "model-b", "max_tokens": 32000, "context_window": 1000000}
+            ],
+            "models": [
+                {"id": "model-a", "name": "model-a", "max_tokens": 32000, "context_window": 400000},
+                {"id": "model-b", "name": "model-b", "max_tokens": 32000, "context_window": 1000000}
+            ],
+            "success": true
+        }"#;
+        let resp: ModelsResponse = serde_json::from_str(json).unwrap();
+        let data = resp.data.unwrap();
+        assert_eq!(data.len(), 2);
+        assert_eq!(data[0].id, "model-a");
+        assert_eq!(data[1].id, "model-b");
+        assert!(model_list_error_envelope(json.as_bytes()).is_none());
+    }
+
+    #[test]
+    fn test_catalog_model_ids_slug_then_id() {
+        let json = r#"{"models": [
+            {"slug": "glm-4.7"},
+            {"id": "openai-shaped"},
+            {"name": "neither-slug-nor-id"},
+            {}
+        ]}"#;
+        let resp: ModelsResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            catalog_model_ids(resp.models),
+            vec!["glm-4.7".to_string(), "openai-shaped".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_parse_response_tolerates_any_models_shape() {
+        for models in [
+            r#"["a","b"]"#,
+            r#"{"count":1}"#,
+            "2",
+            r#"[{"slug":"glm","id":123}]"#,
+            r#"[{"slug":1}]"#,
+        ] {
+            let json = format!(r#"{{"data":[{{"id":"model-a"}}],"models":{models}}}"#);
+            let resp: ModelsResponse = serde_json::from_str(&json).unwrap();
+            assert_eq!(resp.data.unwrap()[0].id, "model-a");
+        }
+        let resp: ModelsResponse =
+            serde_json::from_str(r#"{"models":[{"slug":"glm","id":123}]}"#).unwrap();
+        assert_eq!(catalog_model_ids(resp.models), vec!["glm".to_string()]);
+    }
+
+    #[test]
+    fn model_list_business_error_envelopes_are_detected() {
+        for body in [
+            r#"{"code":401,"msg":"token expired","success":false,"data":[{"id":"glm-5.3"}]}"#,
+            r#"{"success":false,"data":[{"id":"m"}]}"#,
+            r#"{"code":"1001","message":"quota","data":[{"id":"m"}]}"#,
+            r#"{"error":{"message":"bad key"},"data":[]}"#,
+            r#"{"error":"bad key"}"#,
+            r#"{"base_resp":{"status_code":1004,"status_msg":"auth"},"data":[]}"#,
+        ] {
+            assert!(
+                model_list_error_envelope(body.as_bytes()).is_some(),
+                "{body}"
+            );
+        }
+        assert_eq!(
+            model_list_error_envelope(
+                br#"{"code":401,"msg":"token expired","success":false,"data":[]}"#
+            )
+            .as_deref(),
+            Some("token expired")
+        );
+        for body in [
+            r#"{"object":"list","data":[{"id":"gpt-4"}]}"#,
+            r#"{"code":0,"success":true,"data":[{"id":"m"}]}"#,
+            r#"{"code":200,"data":[{"id":"m"}]}"#,
+            r#"{"error":null,"data":[{"id":"m"}]}"#,
+            r#"{"error":"","data":[{"id":"m"}]}"#,
+            r#"[{"id":"m"}]"#,
+        ] {
+            assert!(
+                model_list_error_envelope(body.as_bytes()).is_none(),
+                "{body}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn model_discovery_rejects_a_2xx_business_error_instead_of_listing_it() {
+        let (url, server) = serve_test_router(axum::Router::new().fallback(|| async {
+            axum::Json(serde_json::json!({
+                "code": 401, "msg": "token expired", "success": false,
+                "data": [{"id": "glm-5.3"}]
+            }))
+        }))
+        .await;
+        let result =
+            fetch_models(&url, "test-discovery-key", false, None, Default::default()).await;
+        server.abort();
+        let error = result.expect_err("an error envelope is not a model list");
+        assert!(error.contains("token expired"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn model_discovery_sends_custom_headers_and_redacts_secret_values() {
+        let (url, server) = serve_test_router(axum::Router::new().fallback(
+            |headers: axum::http::HeaderMap| async move {
+                let team = headers
+                    .get("x-gateway-team")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or_default()
+                    .to_string();
+                let token = headers
+                    .get("x-gateway-token")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or_default()
+                    .to_string();
+                let authorization = headers
+                    .get("authorization")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or_default()
+                    .to_string();
+                if team == "team-a" && authorization == "Bearer test-discovery-key" {
+                    (
+                        StatusCode::OK,
+                        axum::Json(serde_json::json!({"data": [{"id": "m"}]})),
+                    )
+                } else {
+                    // Echo the token back, as some gateways do in error bodies.
+                    (
+                        StatusCode::FORBIDDEN,
+                        axum::Json(serde_json::json!({"error": format!("bad token {token}")})),
+                    )
+                }
+            },
+        ))
+        .await;
+        let overrides = crate::provider::LocalProxyRequestOverrides {
+            headers: std::collections::HashMap::from([
+                ("X-Gateway-Team".to_string(), "team-a".to_string()),
+                ("X-Gateway-Token".to_string(), "gw-secret-123".to_string()),
+                // Protected: the API key stays the only credential.
+                ("Authorization".to_string(), "Bearer override".to_string()),
+            ]),
+            body: None,
+        };
+
+        let ok = fetch_models(
+            &url,
+            "test-discovery-key",
+            false,
+            None,
+            UpstreamRequestHeaders::default().with_overrides(Some(&overrides), true),
+        )
+        .await
+        .unwrap();
+        assert_eq!(ok[0].id, "m");
+
+        // Gate off: the headers are not sent, and the upstream refuses.
+        let off = fetch_models(
+            &url,
+            "test-discovery-key",
+            false,
+            None,
+            UpstreamRequestHeaders::default().with_overrides(Some(&overrides), false),
+        )
+        .await;
+        assert!(off.is_err());
+
+        let mut wrong_team = overrides.clone();
+        wrong_team
+            .headers
+            .insert("X-Gateway-Team".to_string(), "team-b".to_string());
+        let error = fetch_models(
+            &url,
+            "test-discovery-key",
+            false,
+            None,
+            UpstreamRequestHeaders::default().with_overrides(Some(&wrong_team), true),
+        )
+        .await
+        .unwrap_err();
+        server.abort();
+        assert!(!error.contains("gw-secret-123"), "{error}");
+        assert!(error.contains("***"), "{error}");
     }
 
     #[test]
