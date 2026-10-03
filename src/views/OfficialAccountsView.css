@@ -1,0 +1,393 @@
+.official-accounts-page {
+  padding: 24px;
+  min-height: 100%;
+  background: var(--bg-base);
+  color: var(--text-1);
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+.accounts-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.accounts-heading h1 {
+  font-size: 26px;
+  line-height: 36px;
+  font-weight: 700;
+  margin: 0;
+}
+.accounts-heading p {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--text-3);
+}
+.accounts-heading > button {
+  flex-shrink: 0;
+  gap: 6px;
+}
+.accounts-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  font-size: 13px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+}
+.account-current {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.2fr) repeat(2, minmax(140px, 1fr));
+  gap: 24px;
+  padding: 24px;
+  border-radius: 8px;
+  background: var(--bg-plate);
+  color: var(--plate-fg-1);
+}
+.account-eyebrow {
+  color: var(--text-3);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+}
+.account-current .account-eyebrow {
+  color: var(--plate-fg-2);
+}
+.account-current h2 {
+  margin: 8px 0 5px;
+  font-size: 20px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.account-current p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--plate-fg-2);
+  overflow-wrap: anywhere;
+}
+.account-current-quota {
+  display: grid;
+  gap: 7px;
+  align-content: center;
+  padding-left: 20px;
+  border-left: 1px solid var(--plate-border);
+}
+.account-current-quota > span {
+  font-size: 12px;
+  color: var(--plate-fg-2);
+}
+.account-current-quota strong {
+  font:
+    600 27px "Overpass",
+    sans-serif;
+}
+.account-current-quota small {
+  font-size: 12px;
+  color: var(--plate-fg-3);
+}
+.accounts-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 48px 24px 30px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--bg-surface);
+  text-align: center;
+}
+.accounts-empty-icon {
+  display: grid;
+  place-items: center;
+  width: 58px;
+  height: 58px;
+  margin-bottom: 22px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 16px;
+  background: var(--bg-subtle);
+  color: var(--text-2);
+}
+.accounts-empty h2 {
+  margin: 9px 0;
+  font-size: 22px;
+  font-weight: 650;
+}
+.accounts-empty p {
+  margin: 0 0 24px;
+  font-size: 13px;
+  line-height: 1.9;
+  color: var(--text-3);
+}
+.accounts-empty > button {
+  gap: 7px;
+  padding: 0 22px;
+}
+.accounts-login-steps {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 24px;
+  width: 100%;
+  margin-top: 40px;
+  padding-top: 22px;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-3);
+  font-size: 12px;
+}
+.accounts-login-steps b {
+  margin-right: 8px;
+  color: var(--text-2);
+  font:
+    12px "Overpass Mono",
+    monospace;
+}
+.accounts-list-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.accounts-list-heading h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+.accounts-list-heading h2 span {
+  margin-left: 6px;
+  color: var(--text-3);
+  font-weight: 400;
+}
+.accounts-list-heading button {
+  gap: 6px;
+}
+.account-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.account-row[data-current="true"] {
+  background: var(--bg-selected);
+}
+.account-avatar {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--text-1);
+  color: var(--bg-base);
+  font-size: 13px;
+  flex-shrink: 0;
+}
+.account-identity {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  gap: 5px;
+}
+.account-identity strong {
+  font-size: 14px;
+  font-weight: 550;
+  overflow-wrap: anywhere;
+}
+.account-identity strong span {
+  margin-left: 8px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-2);
+}
+.account-identity small {
+  font-size: 12px;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+.account-status {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-3);
+  font-size: 12px;
+}
+.account-status.expired {
+  color: var(--warning-fg);
+}
+.account-row-quota {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  min-width: 150px;
+  color: var(--text-3);
+}
+.account-row-quota b {
+  color: var(--text-1);
+  font-weight: 500;
+}
+.account-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.accounts-privacy {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.8;
+}
+.accounts-privacy svg {
+  flex-shrink: 0;
+  margin-top: 3px;
+}
+.accounts-privacy p {
+  margin: 0;
+  max-width: 680px;
+}
+
+.account-dialog {
+  width: min(520px, calc(100vw - 48px));
+  max-width: 520px;
+  padding: 24px;
+  gap: 20px;
+  overflow-y: auto;
+  background: var(--bg-surface);
+  color: var(--text-1);
+  border-color: var(--border-subtle);
+  border-radius: 8px;
+}
+.account-dialog-heading,
+.account-login-address,
+.account-login-wait,
+.account-dialog-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.account-dialog-heading {
+  justify-content: space-between;
+}
+.account-dialog-description {
+  font-size: 14px;
+  line-height: 1.8;
+  color: var(--text-2);
+}
+.account-login-address {
+  padding: 6px 8px 6px 12px;
+  background: var(--bg-subtle);
+  border-radius: 4px;
+}
+.account-login-address code {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+}
+.account-login-address button {
+  flex-shrink: 0;
+}
+.account-login-code {
+  display: grid;
+  justify-items: center;
+  gap: 14px;
+  padding: 24px 16px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+}
+.account-login-code > span,
+.account-dialog-note {
+  font-size: 13px;
+  color: var(--text-3);
+}
+.account-login-code strong {
+  font:
+    600 30px "Overpass Mono",
+    monospace;
+  letter-spacing: 2px;
+  user-select: all;
+}
+.account-login-wait {
+  font-size: 13px;
+  color: var(--text-2);
+  flex-wrap: wrap;
+}
+.account-login-wait span {
+  flex: 1;
+}
+.account-login-wait small {
+  font-size: 12px;
+  color: var(--text-3);
+}
+.account-dialog-note {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  line-height: 1.8;
+}
+.account-dialog-actions {
+  justify-content: flex-end;
+  padding-top: 4px;
+}
+.account-switch-preview {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 12px 20px;
+  margin: 0;
+  padding: 16px;
+  background: var(--bg-subtle);
+  border-radius: 4px;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.account-switch-preview dt {
+  color: var(--text-3);
+}
+.account-switch-preview dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.accounts-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.account-dialog {
+  max-height: calc(100dvh - 48px);
+}
+.account-login-help {
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.7;
+  padding: 12px;
+  border-radius: 4px;
+  background: var(--bg-subtle);
+}
+.account-login-help strong {
+  color: var(--text-1);
+  font-size: 13px;
+}
+.account-login-help p {
+  margin: 6px 0 0;
+}
+.account-login-help code,
+.account-login-error {
+  overflow-wrap: anywhere;
+}
+.account-login-error {
+  padding: 12px;
+  border: 1px solid var(--danger-border);
+  border-radius: 4px;
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+  font-size: 13px;
+}
+.account-login-error p {
+  margin: 6px 0 0;
+}

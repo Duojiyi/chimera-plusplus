@@ -87,6 +87,10 @@ export type ImportResult =
   | { type: "skill"; key: string };
 
 export const deeplinkApi = {
+  /** Queue a pasted link for the existing confirmation UI; never import here. */
+  submitImport: async (url: string): Promise<void> => {
+    return invoke("submit_deeplink_import", { url });
+  },
   /**
    * Parse a deep link URL
    * @param url The ccswitch:// URL to parse

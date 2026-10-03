@@ -1,0 +1,62 @@
+.window-controls {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  -webkit-app-region: no-drag;
+}
+.window-controls button {
+  display: grid;
+  place-items: center;
+  background: transparent;
+  border: 0;
+  color: var(--text-1);
+  cursor: pointer;
+}
+.window-controls button:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: -2px;
+}
+.window-controls-windows button {
+  width: 46px;
+  height: 40px;
+}
+.window-controls-windows button:hover:not(:disabled) {
+  background: var(--bg-selected);
+}
+.window-controls-windows .window-control-close:hover:not(:disabled) {
+  background: var(--p-win-close);
+  color: white;
+}
+.window-controls button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.window-controls-mac {
+  gap: 8px;
+  padding: 0 8px 0 0;
+}
+.window-controls-mac button {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid #0002;
+  color: #000a;
+}
+.window-controls-mac .window-control-close {
+  background: var(--p-mac-close);
+}
+.window-controls-mac .window-control-minimize {
+  background: var(--p-mac-min);
+}
+.window-controls-mac .window-control-maximize {
+  background: var(--p-mac-zoom);
+}
+.window-controls-mac svg {
+  opacity: 0;
+  width: 9px;
+  height: 9px;
+}
+.window-controls-mac:hover svg,
+.window-controls-mac:focus-within svg {
+  opacity: 1;
+}

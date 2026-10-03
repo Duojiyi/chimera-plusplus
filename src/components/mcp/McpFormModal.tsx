@@ -33,6 +33,7 @@ interface McpFormModalProps {
   existingIds?: string[];
   defaultFormat?: "json" | "toml";
   defaultEnabledApps?: AppId[];
+  visibleApps?: AppId[];
 }
 
 const McpFormModal: React.FC<McpFormModalProps> = ({
@@ -42,9 +43,11 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
   onClose,
   existingIds = [],
   defaultFormat = "json",
+  visibleApps,
   defaultEnabledApps = ["claude", "codex", "gemini", "grokbuild"],
 }) => {
   const { t } = useTranslation();
+  const fieldPrefix = React.useId();
   const { formatTomlError, validateTomlConfig, validateJsonConfig } =
     useMcpValidation();
 
@@ -486,7 +489,10 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
             {/* ID (标题) */}
             <div>
               <div className="flex items-center justify-between mb-2">
-                <label className="block text-sm font-medium text-foreground">
+                <label
+                  htmlFor={`${fieldPrefix}-title`}
+                  className="block text-sm font-medium text-foreground"
+                >
                   {t("mcp.form.title")} <span className="text-red-500">*</span>
                 </label>
                 {!isEditing && idError && (
@@ -496,6 +502,7 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
                 )}
               </div>
               <Input
+                id={`${fieldPrefix}-title`}
                 type="text"
                 placeholder={t("mcp.form.titlePlaceholder")}
                 value={formId}
@@ -506,10 +513,14 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
 
             {/* Name */}
             <div>
-              <label className="block text-sm font-medium text-foreground mb-2">
+              <label
+                htmlFor={`${fieldPrefix}-name`}
+                className="block text-sm font-medium text-foreground mb-2"
+              >
                 {t("mcp.form.name")}
               </label>
               <Input
+                id={`${fieldPrefix}-name`}
                 type="text"
                 placeholder={t("mcp.form.namePlaceholder")}
                 value={formName}
@@ -523,101 +534,113 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
                 {t("mcp.form.enabledApps")}
               </label>
               <div className="flex flex-wrap gap-4">
-                <div className="flex items-center gap-2">
-                  <Checkbox
-                    id="enable-claude"
-                    checked={enabledApps.claude}
-                    onCheckedChange={(checked: boolean) =>
-                      setEnabledApps({ ...enabledApps, claude: checked })
-                    }
-                  />
-                  <label
-                    htmlFor="enable-claude"
-                    className="text-sm text-foreground cursor-pointer select-none"
-                  >
-                    {t("mcp.unifiedPanel.apps.claude")}
-                  </label>
-                </div>
+                {(!visibleApps || visibleApps.includes("claude")) && (
+                  <div className="flex items-center gap-2">
+                    <Checkbox
+                      id="enable-claude"
+                      checked={enabledApps.claude}
+                      onCheckedChange={(checked: boolean) =>
+                        setEnabledApps({ ...enabledApps, claude: checked })
+                      }
+                    />
+                    <label
+                      htmlFor="enable-claude"
+                      className="text-sm text-foreground cursor-pointer select-none"
+                    >
+                      {t("mcp.unifiedPanel.apps.claude")}
+                    </label>
+                  </div>
+                )}
 
-                <div className="flex items-center gap-2">
-                  <Checkbox
-                    id="enable-codex"
-                    checked={enabledApps.codex}
-                    onCheckedChange={(checked: boolean) =>
-                      setEnabledApps({ ...enabledApps, codex: checked })
-                    }
-                  />
-                  <label
-                    htmlFor="enable-codex"
-                    className="text-sm text-foreground cursor-pointer select-none"
-                  >
-                    {t("mcp.unifiedPanel.apps.codex")}
-                  </label>
-                </div>
+                {(!visibleApps || visibleApps.includes("codex")) && (
+                  <div className="flex items-center gap-2">
+                    <Checkbox
+                      id="enable-codex"
+                      checked={enabledApps.codex}
+                      onCheckedChange={(checked: boolean) =>
+                        setEnabledApps({ ...enabledApps, codex: checked })
+                      }
+                    />
+                    <label
+                      htmlFor="enable-codex"
+                      className="text-sm text-foreground cursor-pointer select-none"
+                    >
+                      {t("mcp.unifiedPanel.apps.codex")}
+                    </label>
+                  </div>
+                )}
 
-                <div className="flex items-center gap-2">
-                  <Checkbox
-                    id="enable-gemini"
-                    checked={enabledApps.gemini}
-                    onCheckedChange={(checked: boolean) =>
-                      setEnabledApps({ ...enabledApps, gemini: checked })
-                    }
-                  />
-                  <label
-                    htmlFor="enable-gemini"
-                    className="text-sm text-foreground cursor-pointer select-none"
-                  >
-                    {t("mcp.unifiedPanel.apps.gemini")}
-                  </label>
-                </div>
+                {(!visibleApps || visibleApps.includes("gemini")) && (
+                  <div className="flex items-center gap-2">
+                    <Checkbox
+                      id="enable-gemini"
+                      checked={enabledApps.gemini}
+                      onCheckedChange={(checked: boolean) =>
+                        setEnabledApps({ ...enabledApps, gemini: checked })
+                      }
+                    />
+                    <label
+                      htmlFor="enable-gemini"
+                      className="text-sm text-foreground cursor-pointer select-none"
+                    >
+                      {t("mcp.unifiedPanel.apps.gemini")}
+                    </label>
+                  </div>
+                )}
 
-                <div className="flex items-center gap-2">
-                  <Checkbox
-                    id="enable-grokbuild"
-                    checked={enabledApps.grokbuild}
-                    onCheckedChange={(checked: boolean) =>
-                      setEnabledApps({ ...enabledApps, grokbuild: checked })
-                    }
-                  />
-                  <label
-                    htmlFor="enable-grokbuild"
-                    className="text-sm text-foreground cursor-pointer select-none"
-                  >
-                    {t("mcp.unifiedPanel.apps.grokbuild")}
-                  </label>
-                </div>
+                {(!visibleApps || visibleApps.includes("grokbuild")) && (
+                  <div className="flex items-center gap-2">
+                    <Checkbox
+                      id="enable-grokbuild"
+                      checked={enabledApps.grokbuild}
+                      onCheckedChange={(checked: boolean) =>
+                        setEnabledApps({ ...enabledApps, grokbuild: checked })
+                      }
+                    />
+                    <label
+                      htmlFor="enable-grokbuild"
+                      className="text-sm text-foreground cursor-pointer select-none"
+                    >
+                      {t("mcp.unifiedPanel.apps.grokbuild")}
+                    </label>
+                  </div>
+                )}
 
-                <div className="flex items-center gap-2">
-                  <Checkbox
-                    id="enable-opencode"
-                    checked={enabledApps.opencode}
-                    onCheckedChange={(checked: boolean) =>
-                      setEnabledApps({ ...enabledApps, opencode: checked })
-                    }
-                  />
-                  <label
-                    htmlFor="enable-opencode"
-                    className="text-sm text-foreground cursor-pointer select-none"
-                  >
-                    {t("mcp.unifiedPanel.apps.opencode")}
-                  </label>
-                </div>
+                {(!visibleApps || visibleApps.includes("opencode")) && (
+                  <div className="flex items-center gap-2">
+                    <Checkbox
+                      id="enable-opencode"
+                      checked={enabledApps.opencode}
+                      onCheckedChange={(checked: boolean) =>
+                        setEnabledApps({ ...enabledApps, opencode: checked })
+                      }
+                    />
+                    <label
+                      htmlFor="enable-opencode"
+                      className="text-sm text-foreground cursor-pointer select-none"
+                    >
+                      {t("mcp.unifiedPanel.apps.opencode")}
+                    </label>
+                  </div>
+                )}
 
-                <div className="flex items-center gap-2">
-                  <Checkbox
-                    id="enable-hermes"
-                    checked={enabledApps.hermes}
-                    onCheckedChange={(checked: boolean) =>
-                      setEnabledApps({ ...enabledApps, hermes: checked })
-                    }
-                  />
-                  <label
-                    htmlFor="enable-hermes"
-                    className="text-sm text-foreground cursor-pointer select-none"
-                  >
-                    {t("mcp.unifiedPanel.apps.hermes")}
-                  </label>
-                </div>
+                {(!visibleApps || visibleApps.includes("hermes")) && (
+                  <div className="flex items-center gap-2">
+                    <Checkbox
+                      id="enable-hermes"
+                      checked={enabledApps.hermes}
+                      onCheckedChange={(checked: boolean) =>
+                        setEnabledApps({ ...enabledApps, hermes: checked })
+                      }
+                    />
+                    <label
+                      htmlFor="enable-hermes"
+                      className="text-sm text-foreground cursor-pointer select-none"
+                    >
+                      {t("mcp.unifiedPanel.apps.hermes")}
+                    </label>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -626,7 +649,8 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
               <button
                 type="button"
                 onClick={() => setShowMetadata(!showMetadata)}
-                className="flex items-center gap-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
+                aria-expanded={showMetadata}
+                className="flex items-center gap-2 rounded-lg border border-border bg-accent/50 px-3 py-2 text-sm font-medium text-foreground hover:bg-accent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 {showMetadata ? (
                   <ChevronUp size={16} />
@@ -641,10 +665,14 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
             {showMetadata && (
               <>
                 <div>
-                  <label className="block text-sm font-medium text-foreground mb-2">
+                  <label
+                    htmlFor={`${fieldPrefix}-description`}
+                    className="block text-sm font-medium text-foreground mb-2"
+                  >
                     {t("mcp.form.description")}
                   </label>
                   <Input
+                    id={`${fieldPrefix}-description`}
                     type="text"
                     placeholder={t("mcp.form.descriptionPlaceholder")}
                     value={formDescription}
@@ -653,10 +681,14 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-foreground mb-2">
+                  <label
+                    htmlFor={`${fieldPrefix}-tags`}
+                    className="block text-sm font-medium text-foreground mb-2"
+                  >
                     {t("mcp.form.tags")}
                   </label>
                   <Input
+                    id={`${fieldPrefix}-tags`}
                     type="text"
                     placeholder={t("mcp.form.tagsPlaceholder")}
                     value={formTags}
@@ -665,10 +697,14 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-foreground mb-2">
+                  <label
+                    htmlFor={`${fieldPrefix}-homepage`}
+                    className="block text-sm font-medium text-foreground mb-2"
+                  >
                     {t("mcp.form.homepage")}
                   </label>
                   <Input
+                    id={`${fieldPrefix}-homepage`}
                     type="text"
                     placeholder={t("mcp.form.homepagePlaceholder")}
                     value={formHomepage}
@@ -677,10 +713,14 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-foreground mb-2">
+                  <label
+                    htmlFor={`${fieldPrefix}-docs`}
+                    className="block text-sm font-medium text-foreground mb-2"
+                  >
                     {t("mcp.form.docs")}
                   </label>
                   <Input
+                    id={`${fieldPrefix}-docs`}
                     type="text"
                     placeholder={t("mcp.form.docsPlaceholder")}
                     value={formDocs}

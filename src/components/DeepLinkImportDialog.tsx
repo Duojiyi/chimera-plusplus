@@ -45,10 +45,12 @@ export function DeepLinkImportDialog({
   request: incomingRequest,
   onHandled,
   onProviderImported,
+  onImported,
 }: {
   request: DeepLinkImportRequest;
   onHandled: () => Promise<void>;
-  onProviderImported: (app?: DeepLinkImportRequest["app"]) => void;
+  onImported?: () => void;
+  onProviderImported?: (app?: DeepLinkImportRequest["app"]) => void;
 }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -160,8 +162,9 @@ export function DeepLinkImportDialog({
       });
       importedRef.current = true;
       setImported(true);
+      onImported?.();
       if (typeof result === "string" || result.type === "provider") {
-        onProviderImported(request.app);
+        onProviderImported?.(request.app);
       }
       const refreshMcp = async (summary: {
         importedCount: number;

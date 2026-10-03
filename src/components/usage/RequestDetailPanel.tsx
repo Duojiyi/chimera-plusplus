@@ -202,7 +202,12 @@ export function RequestDetailPanel({
                   {t("usage.totalTokens", "总计")}
                 </dt>
                 <dd className="text-lg font-semibold">
-                  {(freshInput + request.outputTokens).toLocaleString()}
+                  {(
+                    freshInput +
+                    request.outputTokens +
+                    request.cacheReadTokens +
+                    request.cacheCreationTokens
+                  ).toLocaleString()}
                 </dd>
               </div>
             </dl>

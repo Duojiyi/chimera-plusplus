@@ -103,7 +103,11 @@ function normalizeServerConfig(config: any): McpServerSpec {
     throw new Error("服务器配置必须是对象");
   }
 
-  const type = (config.type as string) || "stdio";
+  // Native Codex tables omit type and infer HTTP from url. Keep command
+  // precedence and explicit types so malformed stdio is still rejected.
+  const type =
+    (config.type as string) ||
+    ("command" in config ? "stdio" : "url" in config ? "http" : "stdio");
 
   // 已知字段列表（用于后续排除）
   const knownFields = new Set<string>();

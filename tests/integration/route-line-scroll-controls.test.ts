@@ -1,22 +1,50 @@
-import { describe, expect, it } from "vitest";
-import fs from "node:fs";
-import path from "node:path";
+import { createElement } from "react";
+import { render, screen, within } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import { ProviderLineTable } from "@/components/ProviderLineTable";
+import type { Provider } from "@/types";
 
-const APP_PATH = path.resolve(__dirname, "../../src/ChimeraApp.tsx");
-const CSS_PATH = path.resolve(__dirname, "../../src/chimera.css");
-const appSource = fs.readFileSync(APP_PATH, "utf8");
-const cssSource = fs.readFileSync(CSS_PATH, "utf8");
+vi.mock("@/lib/api/vscode", () => ({
+  vscodeApi: { testApiEndpoints: vi.fn() },
+}));
 
-describe("route line overflow controls", () => {
-  it("provides explicit previous and next controls alongside the native scrollbar", () => {
-    expect(appSource).toContain("route-line-scroll-shell");
-    expect(appSource).toContain('aria-label="显示上一条线路"');
-    expect(appSource).toContain('aria-label="显示下一条线路"');
-    expect(appSource).toContain("routeLineScrollRef");
-  });
-
-  it("reserves space so the controls and scrollbar cannot cover route cards", () => {
-    expect(cssSource).toContain(".route-line-scroll-shell");
-    expect(cssSource).toMatch(/\.route-line-scroll\s*\{[^}]*padding:\s*0 40px 8px/s);
+describe("provider table replaces horizontal route cards", () => {
+  it("keeps every line accessible in grouped rows without carousel controls", () => {
+    const providers: Provider[] = Array.from({ length: 30 }, (_, i) => ({
+      id: `line-${i}`,
+      name: `Line ${i}`,
+      settingsConfig: {},
+    }));
+    const labels = new Map(
+      providers.map((p, i) => [
+        p.id,
+        {
+          name: p.name,
+          source: "Configured source",
+          mark: "L",
+          official: i < 2,
+        },
+      ]),
+    );
+    render(
+      createElement(ProviderLineTable, {
+        providers,
+        labels,
+        currentId: "line-0",
+        switchingId: null,
+        deletingProviderId: null,
+        onSwitch: vi.fn().mockResolvedValue(undefined),
+        onEdit: vi.fn(),
+        onDelete: vi.fn().mockResolvedValue(true),
+      }),
+    );
+    const table = screen.getByRole("table", { name: "线路切换" });
+    expect(within(table).getAllByRole("rowgroup")).toHaveLength(2);
+    expect(within(table).getAllByRole("row")).toHaveLength(33);
+    for (const provider of providers)
+      expect(within(table).getByText(provider.name)).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "显示下一条线路" }),
+    ).not.toBeInTheDocument();
   });
 });

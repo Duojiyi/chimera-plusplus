@@ -1,3 +1,4 @@
+import "./SessionManagerPage.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSessionSearch } from "@/hooks/useSessionSearch";
 import { useTranslation } from "react-i18next";
@@ -6,6 +7,7 @@ import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   ArchiveRestore,
+  Download,
   Copy,
   RefreshCw,
   Search,
@@ -35,6 +37,7 @@ import {
   SelectContent,
   SelectItem,
   SelectTrigger,
+  SelectValue,
 } from "@/components/ui/select";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -333,6 +336,39 @@ export function SessionManagerPage({ appId }: { appId: string }) {
     selectedSession?.providerId,
     selectedSession?.sourcePath,
   );
+  const handleExport = () => {
+    if (
+      !selectedSession ||
+      isLoadingMessages ||
+      isFetchingMessages ||
+      isMessagesError
+    )
+      return;
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(
+      new Blob(
+        [
+          JSON.stringify(
+            { version: 1, session: selectedSession, messages },
+            null,
+            2,
+          ),
+        ],
+        { type: "application/json;charset=utf-8" },
+      ),
+    );
+    link.href = url;
+    link.download = `session-${selectedSession.sessionId.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 100)}.json`;
+    document.body.appendChild(link);
+    try {
+      link.click();
+    } finally {
+      link.remove();
+      // Let the WebView consume the download before releasing its URL.
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+  };
+
   const isDeleting = isBatchDeleting;
 
   const virtualizer = useVirtualizer({
@@ -901,10 +937,71 @@ export function SessionManagerPage({ appId }: { appId: string }) {
   return (
     <TooltipProvider>
       <div
-        className="mx-auto px-4 sm:px-6 flex flex-col h-full min-h-0"
+        className="session-manager-page"
         onWheel={(e) => e.stopPropagation()}
       >
-        <div className="flex-1 overflow-hidden flex flex-col gap-4">
+        <header className="session-page-heading">
+          <div>
+            <h1>会话记录</h1>
+            <p>找回上下文，继续未完成的工作。</p>
+          </div>
+          <Select
+            value={providerFilter}
+            onValueChange={(value) =>
+              setProviderFilter(value as ProviderFilter)
+            }
+          >
+            <SelectTrigger className="session-app-select" aria-label="会话应用">
+              <span className="session-app-label">应用</span>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">
+                <div className="flex items-center gap-2">
+                  <ProviderIcon icon="apps" name="all" size={14} />
+                  <span>{t("sessionManager.providerFilterAll")}</span>
+                </div>
+              </SelectItem>
+              <SelectItem value="codex">
+                <div className="flex items-center gap-2">
+                  <ProviderIcon icon="openai" name="codex" size={14} />
+                  <span>Codex</span>
+                </div>
+              </SelectItem>
+              <SelectItem value="grokbuild">
+                <div className="flex items-center gap-2">
+                  <ProviderIcon icon="grok" name="grokbuild" size={14} />
+                  <span>Grok Build</span>
+                </div>
+              </SelectItem>
+              <SelectItem value="claude">
+                <div className="flex items-center gap-2">
+                  <ProviderIcon icon="claude" name="claude" size={14} />
+                  <span>Claude Code</span>
+                </div>
+              </SelectItem>
+              <SelectItem value="opencode">
+                <div className="flex items-center gap-2">
+                  <ProviderIcon icon="opencode" name="opencode" size={14} />
+                  <span>OpenCode</span>
+                </div>
+              </SelectItem>
+              <SelectItem value="openclaw">
+                <div className="flex items-center gap-2">
+                  <ProviderIcon icon="openclaw" name="openclaw" size={14} />
+                  <span>OpenClaw</span>
+                </div>
+              </SelectItem>
+              <SelectItem value="gemini">
+                <div className="flex items-center gap-2">
+                  <ProviderIcon icon="gemini" name="gemini" size={14} />
+                  <span>Gemini CLI</span>
+                </div>
+              </SelectItem>
+            </SelectContent>
+          </Select>
+        </header>
+        <div className="flex-1 min-h-0 overflow-hidden flex flex-col gap-4">
           {deleteRetryTargets.length > 0 && (
             <div
               role="alert"
@@ -929,10 +1026,10 @@ export function SessionManagerPage({ appId }: { appId: string }) {
             </div>
           )}
           {/* 主内容区域 - 左右分栏 */}
-          <div className="flex-1 overflow-hidden grid gap-4 md:grid-cols-[320px_1fr]">
+          <div className="session-workspace">
             {/* 左侧会话列表 */}
-            <Card className="flex flex-col flex-1 min-h-0 overflow-hidden">
-              <CardHeader className="py-2 px-3 border-b">
+            <Card className="session-list-panel flex flex-col min-h-0 overflow-hidden">
+              <CardHeader className="py-3 px-3 border-b shrink-0">
                 {isSearchOpen ? (
                   <div className="flex items-center gap-2">
                     <div className="relative flex-1">
@@ -942,6 +1039,9 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                         value={search}
                         onChange={(event) => setSearch(event.target.value)}
                         placeholder={t("sessionManager.searchPlaceholder")}
+                        aria-label={t("sessionManager.searchSessions", {
+                          defaultValue: "搜索会话",
+                        })}
                         className="h-8 pl-8 pr-8 text-sm"
                         autoFocus
                         onKeyDown={(e) => {
@@ -960,6 +1060,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                         variant="ghost"
                         size="icon"
                         className="absolute right-1 top-1/2 -translate-y-1/2 size-6"
+                        aria-label="关闭搜索"
                         onClick={() => {
                           setIsSearchOpen(false);
                           setSearch("");
@@ -974,7 +1075,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                           <Button
                             variant="secondary"
                             size="icon"
-                            className="size-7 bg-blue-50 text-blue-600 hover:bg-blue-100 dark:bg-blue-950/40 dark:text-blue-300 dark:hover:bg-blue-950/60"
+                            className="size-7 bg-muted text-foreground hover:bg-accent"
                             aria-label={t(
                               "sessionManager.exitBatchModeTooltip",
                               {
@@ -996,7 +1097,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                   </div>
                 ) : (
                   <div className="flex flex-col gap-2">
-                    <div className="flex items-center justify-between gap-2">
+                    <div className="session-list-header">
                       <div className="flex items-center gap-2 min-w-0">
                         <CardTitle className="text-sm font-medium whitespace-nowrap">
                           {t("sessionManager.sessionList")}
@@ -1005,7 +1106,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                           {filteredSessions.length}
                         </Badge>
                       </div>
-                      <div className="flex items-center gap-1 shrink-0">
+                      <div className="session-list-toolbar">
                         {(selectionMode ||
                           deletableFilteredSessions.length > 0) && (
                           <Tooltip>
@@ -1015,7 +1116,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                                 size="icon"
                                 className={
                                   selectionMode
-                                    ? "size-7 bg-blue-50 text-blue-600 hover:bg-blue-100 dark:bg-blue-950/40 dark:text-blue-300 dark:hover:bg-blue-950/60"
+                                    ? "size-7 bg-muted text-foreground hover:bg-accent"
                                     : "size-7"
                                 }
                                 aria-label={
@@ -1134,6 +1235,9 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                               variant="ghost"
                               size="icon"
                               className="size-7"
+                              aria-label={t("sessionManager.searchSessions", {
+                                defaultValue: "搜索会话",
+                              })}
                               onClick={() => {
                                 setIsSearchOpen(true);
                                 setTimeout(
@@ -1149,121 +1253,6 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                             {t("sessionManager.searchSessions")}
                           </TooltipContent>
                         </Tooltip>
-
-                        <Select
-                          value={providerFilter}
-                          onValueChange={(value) =>
-                            setProviderFilter(value as ProviderFilter)
-                          }
-                        >
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <SelectTrigger
-                                className="size-7 p-0 justify-center border-0 bg-transparent hover:bg-muted"
-                                aria-label={t(
-                                  "sessionManager.providerFilterTooltip",
-                                  {
-                                    defaultValue: "供应商筛选",
-                                  },
-                                )}
-                              >
-                                <span className="sr-only">
-                                  {t("sessionManager.providerFilterTooltip", {
-                                    defaultValue: "供应商筛选",
-                                  })}
-                                </span>
-                                <ProviderIcon
-                                  icon={
-                                    providerFilter === "all"
-                                      ? "apps"
-                                      : getProviderIconName(providerFilter)
-                                  }
-                                  name={providerFilter}
-                                  size={14}
-                                />
-                              </SelectTrigger>
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              {providerFilter === "all"
-                                ? t("sessionManager.providerFilterAll")
-                                : providerFilter}
-                            </TooltipContent>
-                          </Tooltip>
-                          <SelectContent>
-                            <SelectItem value="all">
-                              <div className="flex items-center gap-2">
-                                <ProviderIcon
-                                  icon="apps"
-                                  name="all"
-                                  size={14}
-                                />
-                                <span>
-                                  {t("sessionManager.providerFilterAll")}
-                                </span>
-                              </div>
-                            </SelectItem>
-                            <SelectItem value="codex">
-                              <div className="flex items-center gap-2">
-                                <ProviderIcon
-                                  icon="openai"
-                                  name="codex"
-                                  size={14}
-                                />
-                                <span>Codex</span>
-                              </div>
-                            </SelectItem>
-                            <SelectItem value="grokbuild">
-                              <div className="flex items-center gap-2">
-                                <ProviderIcon
-                                  icon="grok"
-                                  name="grokbuild"
-                                  size={14}
-                                />
-                                <span>Grok Build</span>
-                              </div>
-                            </SelectItem>
-                            <SelectItem value="claude">
-                              <div className="flex items-center gap-2">
-                                <ProviderIcon
-                                  icon="claude"
-                                  name="claude"
-                                  size={14}
-                                />
-                                <span>Claude Code</span>
-                              </div>
-                            </SelectItem>
-                            <SelectItem value="opencode">
-                              <div className="flex items-center gap-2">
-                                <ProviderIcon
-                                  icon="opencode"
-                                  name="opencode"
-                                  size={14}
-                                />
-                                <span>OpenCode</span>
-                              </div>
-                            </SelectItem>
-                            <SelectItem value="openclaw">
-                              <div className="flex items-center gap-2">
-                                <ProviderIcon
-                                  icon="openclaw"
-                                  name="openclaw"
-                                  size={14}
-                                />
-                                <span>OpenClaw</span>
-                              </div>
-                            </SelectItem>
-                            <SelectItem value="gemini">
-                              <div className="flex items-center gap-2">
-                                <ProviderIcon
-                                  icon="gemini"
-                                  name="gemini"
-                                  size={14}
-                                />
-                                <span>Gemini CLI</span>
-                              </div>
-                            </SelectItem>
-                          </SelectContent>
-                        </Select>
 
                         <Tooltip>
                           <TooltipTrigger asChild>
@@ -1299,7 +1288,13 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                               variant="ghost"
                               size="icon"
                               className="size-7"
-                              onClick={() => void refetch()}
+                              aria-label={t("common.refresh", {
+                                defaultValue: "刷新",
+                              })}
+                              onClick={() => {
+                                void refetch();
+                                if (selectedSession) void refetchMessages();
+                              }}
                             >
                               <RefreshCw className="size-3.5" />
                             </Button>
@@ -1563,7 +1558,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
 
             {/* 右侧会话详情 */}
             <Card
-              className="flex flex-col overflow-hidden min-h-0"
+              className="session-detail-panel flex flex-col overflow-hidden min-h-0 min-w-0"
               ref={detailRef}
             >
               {!selectedSession ? (
@@ -1680,6 +1675,25 @@ export function SessionManagerPage({ appId }: { appId: string }) {
 
                       {/* 右侧：操作按钮组 */}
                       <div className="flex items-center gap-2 shrink-0">
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={handleExport}
+                          disabled={
+                            isLoadingMessages ||
+                            isFetchingMessages ||
+                            isMessagesError
+                          }
+                          title={t("sessionManager.exportPrivacy", {
+                            defaultValue:
+                              "导出包含会话原文与本地路径，请谨慎分享",
+                          })}
+                        >
+                          <Download className="size-3.5 mr-1.5" />
+                          {t("sessionManager.exportJson", {
+                            defaultValue: "导出 JSON",
+                          })}
+                        </Button>
                         {isMac() && (
                           <Tooltip>
                             <TooltipTrigger asChild>
@@ -1712,8 +1726,8 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                           <TooltipTrigger asChild>
                             <Button
                               size="sm"
-                              variant="destructive"
-                              className="gap-1.5"
+                              variant="ghost"
+                              className="gap-1.5 text-muted-foreground"
                               onClick={() =>
                                 setDeleteTargets([selectedSession])
                               }
@@ -1754,6 +1768,9 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                               variant="ghost"
                               size="icon"
                               className="size-7 shrink-0"
+                              aria-label={t("sessionManager.copyCommand", {
+                                defaultValue: "复制命令",
+                              })}
                               onClick={() =>
                                 void handleCopy(
                                   selectedSession.resumeCommand!,

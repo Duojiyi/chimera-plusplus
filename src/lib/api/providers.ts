@@ -40,6 +40,8 @@ export interface ProviderUpdateOptions {
 }
 
 export interface ClaudeDesktopStatus {
+  /** Best-effort executable discovery; no match does not prove not installed. */
+  installationPath?: string | null;
   supported: boolean;
   configured: boolean;
   appliedId?: string | null;

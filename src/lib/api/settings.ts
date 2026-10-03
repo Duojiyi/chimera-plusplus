@@ -53,6 +53,7 @@ export interface CodexImportReview {
 export type PreferencesPatch = Partial<
   Pick<
     Settings,
+    | "language"
     | "codexUpdateSource"
     | "codexInstallMode"
     | "checkCodexUpdatesOnStart"
@@ -64,6 +65,20 @@ export type PreferencesPatch = Partial<
 >;
 
 export const settingsApi = {
+  async patchConfigDirectory(
+    app:
+      | "claude"
+      | "codex"
+      | "gemini"
+      | "grokbuild"
+      | "opencode"
+      | "openclaw"
+      | "hermes",
+    path: string | null,
+  ): Promise<boolean> {
+    return invoke("patch_config_directory", { app, path });
+  },
+
   async patchPreferences(patch: PreferencesPatch): Promise<Settings> {
     return invoke("patch_preferences", { patch });
   },

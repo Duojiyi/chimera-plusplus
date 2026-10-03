@@ -7,6 +7,7 @@ export interface Prompt {
   content: string;
   description?: string;
   enabled: boolean;
+  templateId?: string;
   createdAt?: number;
   updatedAt?: number;
 }
@@ -28,8 +29,15 @@ export const promptsApi = {
     return await invoke("enable_prompt", { app, id });
   },
 
-  async importFromFile(app: AppId): Promise<string> {
-    return await invoke("import_prompt_from_file", { app });
+  async importFromFile(app: AppId, filePath?: string): Promise<string> {
+    return await invoke("import_prompt_from_file", {
+      app,
+      ...(filePath ? { filePath } : {}),
+    });
+  },
+
+  async adoptForeignCodex(expectedContent: string): Promise<string> {
+    return await invoke("adopt_foreign_codex_prompt", { expectedContent });
   },
 
   async getCurrentFileContent(app: AppId): Promise<string | null> {

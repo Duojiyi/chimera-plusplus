@@ -11,7 +11,12 @@ import type {
 export type ConnectionState =
   | { kind: "unknown"; message: string }
   | { kind: "checking"; message: string }
-  | { kind: "connected"; message: string; modelCount: number }
+  | {
+      kind: "connected";
+      message: string;
+      modelCount: number;
+      latencyMs?: number;
+    }
   | { kind: "error"; message: string };
 
 export interface OperationRecord {

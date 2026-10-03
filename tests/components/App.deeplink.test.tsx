@@ -158,6 +158,42 @@ describe("default App deep-link handoff", () => {
     expect(queue).toHaveLength(0);
   });
 
+  it.each(["claude", "gemini"] as const)(
+    "refreshes the current tool after a %s provider import",
+    async (app) => {
+      queue[0].request.app = app;
+      mount();
+      await screen.findByText("Cold Start");
+      await importReady();
+      fireEvent.click(importButton());
+      await waitFor(() =>
+        expect(screen.getByTestId("provider-refresh")).toHaveTextContent("1"),
+      );
+    },
+  );
+
+  it("refreshes local-state pages even for a resource import", async () => {
+    const normal = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation((command, payload) =>
+      command === "import_from_deeplink_unified"
+        ? Promise.resolve({
+            type: "mcp",
+            importedCount: 1,
+            importedIds: ["test"],
+            failed: [],
+          })
+        : normal(command, payload),
+    );
+    mount();
+    await screen.findByText("Cold Start");
+    await importReady();
+    fireEvent.click(importButton());
+    await waitFor(() =>
+      expect(screen.getByTestId("provider-refresh")).toHaveTextContent("1"),
+    );
+    expect(calls("import_from_deeplink_unified")).toHaveLength(1);
+  });
+
   it("does not duplicate import when events overlap pending reads or a double click", async () => {
     const importing = deferred<{ type: string; id: string }>();
     const normal = mocks.invoke.getMockImplementation()!;

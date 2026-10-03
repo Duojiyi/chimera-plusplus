@@ -3,9 +3,11 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import { DatabaseUpgrade } from "./components/DatabaseUpgrade";
 import { UpdateProvider } from "./contexts/UpdateContext";
+import "./theme/fonts.css";
+import "./theme/tokens.css";
 import "./index.css";
 // 导入国际化配置
-import i18n from "./i18n";
+import i18n, { i18nReady } from "./i18n";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { ThemeProvider } from "@/components/theme-provider";
 import { queryClient } from "@/lib/query";
@@ -92,6 +94,8 @@ if (isTauri()) {
 }
 
 async function bootstrap() {
+  // Render only after the selected language and its fallback are ready.
+  await i18nReady;
   // 启动早期主动查询后端初始化错误，避免事件竞态
   if (isTauri()) {
     try {
@@ -149,6 +153,18 @@ async function bootstrap() {
       </FrontendErrorBoundary>
     </React.StrictMode>,
   );
+
+  // 显式唤出并聚焦主窗口，杜绝隐藏启动或无句柄状态
+  if (isTauri()) {
+    try {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      const appWin = getCurrentWindow();
+      await appWin.show();
+      await appWin.setFocus();
+    } catch {
+      // 忽略非桌面环境异常
+    }
+  }
 }
 
 void bootstrap();

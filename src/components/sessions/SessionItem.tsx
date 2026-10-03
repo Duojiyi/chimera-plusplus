@@ -47,10 +47,8 @@ export function SessionItem({
   return (
     <div
       className={cn(
-        "flex items-start gap-2 rounded-lg px-3 py-2.5 transition-all group",
-        isSelected
-          ? "bg-primary/10 border border-primary/30"
-          : "hover:bg-muted/60 border border-transparent",
+        "session-list-row flex items-start gap-2 group",
+        isSelected && "is-selected",
       )}
     >
       {selectionMode && (
@@ -68,6 +66,7 @@ export function SessionItem({
       <button
         type="button"
         onClick={() => onSelect(sessionKey)}
+        aria-pressed={isSelected}
         className="min-w-0 flex-1 text-left"
       >
         <div className="flex items-center gap-2 mb-1">

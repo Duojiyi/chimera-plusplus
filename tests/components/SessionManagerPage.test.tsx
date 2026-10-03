@@ -122,7 +122,7 @@ const switchToGroupedView = async () => {
 
 const switchProviderFilter = async (providerLabel: RegExp) => {
   const providerFilterTrigger = screen.getByRole("combobox", {
-    name: /供应商筛选/i,
+    name: /会话应用/i,
   });
 
   await userEvent.click(providerFilterTrigger);
@@ -154,6 +154,14 @@ const expandDirectoryGroup = (provider: string, directory: string) => {
 };
 
 describe("SessionManagerPage", () => {
+  it("keeps the named application selector visible even while searching", async () => {
+    renderPage("all");
+    const selector = await screen.findByRole("combobox", { name: "会话应用" });
+    expect(selector).toHaveTextContent("应用");
+    expect(selector.closest("header")).toHaveClass("session-page-heading");
+    openSearch();
+    expect(screen.getByRole("combobox", { name: "会话应用" })).toBeVisible();
+  });
   beforeEach(() => {
     toastSuccessMock.mockReset();
     toastErrorMock.mockReset();
@@ -252,6 +260,77 @@ describe("SessionManagerPage", () => {
       ).toEqual([{ role: "user", content: "alpha", ts: 20 }]);
     } finally {
       getMessages.mockRestore();
+    }
+  });
+
+  it("exports the loaded session as JSON and disables export on message errors", async () => {
+    const createUrl = vi.fn((_blob: Blob) => "blob:session-export");
+    const revokeUrl = vi.fn();
+    vi.stubGlobal(
+      "URL",
+      Object.assign(URL, {
+        createObjectURL: createUrl,
+        revokeObjectURL: revokeUrl,
+      }),
+    );
+    const click = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(() => {});
+    const { client } = renderPage();
+    try {
+      const button = await screen.findByRole("button", { name: "导出 JSON" });
+      await waitFor(() => expect(button).toBeEnabled());
+      fireEvent.click(button);
+      expect(createUrl).toHaveBeenCalledWith(expect.any(Blob));
+      expect(click).toHaveBeenCalledTimes(1);
+      const anchor = click.mock.instances[0] as HTMLAnchorElement;
+      expect(anchor.download).toBe("session-codex-session-1.json");
+      expect(anchor.isConnected).toBe(false);
+      const blob = createUrl.mock.calls[0][0] as Blob;
+      const content = await new Promise<string>((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.readAsText(blob);
+      });
+      expect(JSON.parse(content)).toMatchObject({
+        version: 1,
+        session: { sessionId: "codex-session-1", providerId: "codex" },
+        messages: [{ role: "user", content: "alpha", ts: 20 }],
+      });
+      let resolveMessages!: (messages: SessionMessage[]) => void;
+      const refreshed = [
+        { role: "user", content: "alpha", ts: 20 },
+        { role: "assistant", content: "new message", ts: 21 },
+      ];
+      const getMessages = vi
+        .spyOn(sessionsApi, "getMessages")
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              resolveMessages = resolve;
+            }),
+        );
+      fireEvent.click(screen.getByRole("button", { name: "刷新" }));
+      await waitFor(() => expect(getMessages).toHaveBeenCalled());
+      await waitFor(() => expect(button).toBeDisabled());
+      await act(async () => resolveMessages(refreshed));
+      await waitFor(() => expect(button).toBeEnabled());
+      fireEvent.click(button);
+      const refreshedContent = await new Promise<string>((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.readAsText(createUrl.mock.calls[1][0]);
+      });
+      expect(JSON.parse(refreshedContent).messages).toEqual(refreshed);
+      getMessages.mockRejectedValue(new Error("unavailable"));
+      await act(async () => {
+        await client.invalidateQueries({ queryKey: ["sessionMessages"] });
+      });
+      await waitFor(() => expect(button).toBeDisabled());
+      getMessages.mockRestore();
+    } finally {
+      click.mockRestore();
+      vi.unstubAllGlobals();
     }
   });
 

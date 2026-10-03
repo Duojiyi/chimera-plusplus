@@ -1,0 +1,130 @@
+.session-manager-page {
+  height: 100%;
+  min-height: 0;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  color: var(--text-1);
+  background: var(--bg-base);
+}
+.session-page-heading {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.session-app-select {
+  width: auto;
+  min-width: 200px;
+  height: 36px;
+  gap: 12px;
+  background: var(--bg-surface);
+  color: var(--text-1);
+  border-color: var(--border-control);
+}
+.session-app-label {
+  color: var(--text-2);
+}
+.session-page-heading h1 {
+  margin: 0;
+  font-size: 26px;
+  line-height: 36px;
+  font-weight: 700;
+}
+.session-page-heading p {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--text-3);
+}
+.session-workspace {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(230px, 29%) minmax(0, 1fr);
+  gap: 18px;
+  overflow: hidden;
+}
+.session-list-panel,
+.session-detail-panel {
+  border-color: var(--border-subtle);
+  border-radius: 6px;
+  box-shadow: none;
+  background: var(--bg-surface);
+}
+.session-list-row {
+  position: relative;
+  padding: 14px 10px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--text-2);
+}
+.session-list-row:hover {
+  background: var(--bg-subtle);
+}
+.session-list-row.is-selected {
+  background: var(--bg-selected);
+  color: var(--text-1);
+}
+.session-list-row.is-selected::before {
+  content: "";
+  position: absolute;
+  top: 12px;
+  bottom: 12px;
+  left: 0;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--brand);
+}
+.session-message {
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 14px 16px;
+  color: var(--text-1);
+}
+.session-message-user {
+  background: var(--bg-subtle);
+}
+.session-message-assistant {
+  background: var(--bg-surface);
+  border-color: transparent;
+  border-bottom-color: var(--border-subtle);
+  border-radius: 0;
+}
+.session-message-context {
+  background: var(--bg-subtle);
+  color: var(--text-3);
+  border-style: dashed;
+}
+.session-message-role {
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--text-2);
+}
+.session-message-active {
+  box-shadow: inset 3px 0 var(--brand);
+  background: var(--bg-selected);
+}
+@media (max-width: 950px) {
+  .session-workspace {
+    grid-template-columns: 240px minmax(0, 1fr);
+    gap: 12px;
+  }
+}
+
+.session-list-header {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.session-list-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.session-list-toolbar [role="combobox"] > svg:last-child {
+  display: none;
+}

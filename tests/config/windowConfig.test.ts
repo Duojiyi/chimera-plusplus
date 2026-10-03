@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-describe("fixed-size desktop window", () => {
-  it("keeps the main window fixed and non-maximizable", () => {
+describe("resizable desktop window", () => {
+  it("keeps the design size as default while allowing resize and maximize", () => {
     const config = JSON.parse(
       readFileSync(resolve(process.cwd(), "src-tauri/tauri.conf.json"), "utf8"),
     ) as {
@@ -26,13 +26,13 @@ describe("fixed-size desktop window", () => {
     expect(main).toMatchObject({
       width: 1140,
       height: 816,
-      minWidth: 1140,
-      minHeight: 816,
-      maxWidth: 1140,
-      maxHeight: 816,
-      resizable: false,
-      maximizable: false,
+      minWidth: 960,
+      minHeight: 640,
+      resizable: true,
+      maximizable: true,
       fullscreen: false,
     });
+    expect(main?.maxWidth).toBeUndefined();
+    expect(main?.maxHeight).toBeUndefined();
   });
 });

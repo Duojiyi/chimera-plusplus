@@ -14,6 +14,7 @@ import { useTranslation } from "react-i18next";
 
 interface ConfirmDialogProps {
   isOpen: boolean;
+  busy?: boolean;
   title: string;
   message: string;
   confirmText?: string;
@@ -23,12 +24,14 @@ interface ConfirmDialogProps {
   /** 可选勾选项：提供 label 即显示，勾选状态经 onConfirm 参数回传 */
   checkboxLabel?: string;
   checkboxDefaultChecked?: boolean;
+  checkboxRequired?: boolean;
   onConfirm: (checkboxChecked: boolean) => void;
   onCancel: () => void;
 }
 
 export function ConfirmDialog({
   isOpen,
+  busy = false,
   title,
   message,
   confirmText,
@@ -37,6 +40,7 @@ export function ConfirmDialog({
   zIndex = "alert",
   checkboxLabel,
   checkboxDefaultChecked = false,
+  checkboxRequired = false,
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
@@ -59,7 +63,7 @@ export function ConfirmDialog({
     <Dialog
       open={isOpen}
       onOpenChange={(open) => {
-        if (!open) {
+        if (!open && !busy) {
           onCancel();
         }
       }}
@@ -77,6 +81,7 @@ export function ConfirmDialog({
         {checkboxLabel ? (
           <label className="flex cursor-pointer select-none items-start gap-2 px-6 pt-3">
             <Checkbox
+              disabled={busy}
               checked={checkboxChecked}
               onCheckedChange={(value) => setCheckboxChecked(value === true)}
               className="mt-0.5"
@@ -85,10 +90,13 @@ export function ConfirmDialog({
           </label>
         ) : null}
         <DialogFooter className="flex gap-2 border-t-0 bg-transparent pt-2 sm:justify-end">
-          <Button variant="outline" onClick={onCancel}>
+          <Button variant="outline" disabled={busy} onClick={onCancel}>
             {cancelText || t("common.cancel")}
           </Button>
           <Button
+            disabled={
+              busy || (checkboxRequired && !!checkboxLabel && !checkboxChecked)
+            }
             variant={variant === "info" ? "default" : "destructive"}
             onClick={() =>
               // 未渲染勾选框时不得回传 defaultChecked 残留值

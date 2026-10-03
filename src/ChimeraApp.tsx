@@ -1,3 +1,7 @@
+import { ToolVisibilityView } from "./views/ToolVisibilityView";
+import { isProductToolVisible } from "@/lib/productCapabilities";
+import { WindowControls } from "@/components/WindowControls";
+import { isMac } from "@/lib/platform";
 import {
   useLightweightClose,
   useLightweightCloseBlocker,
@@ -18,15 +22,14 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openNativeFileDialog } from "@tauri-apps/plugin-dialog";
 import {
   Activity,
-  ArrowUp,
   BarChart3,
   Check,
   ChevronDown,
   ChevronLeft,
-  ChevronRight,
   CircleCheck,
   CircleAlert,
   type Command,
+  Cpu,
   Download,
   Eye,
   EyeOff,
@@ -37,13 +40,13 @@ import {
   Package,
   Paintbrush,
   Pencil,
-  Play,
   Plus,
   RefreshCw,
   Route,
   Search,
   Settings2,
   Trash2,
+  Users,
   Wrench,
   X,
 } from "lucide-react";
@@ -55,11 +58,11 @@ import type {
   CodexCatalogModel,
   Provider,
 } from "@/types";
+import type { AppId } from "@/lib/api/types";
 import { providersApi } from "@/lib/api/providers";
 import { settingsApi } from "@/lib/api/settings";
 import { configApi } from "@/lib/api";
 import { vscodeApi } from "@/lib/api/vscode";
-import { WindowControls } from "@/components/WindowControls";
 import { useUpdate } from "@/contexts/UpdateContext";
 import type { Settings } from "@/types";
 import {
@@ -104,14 +107,37 @@ import {
   type OperationRecord,
 } from "./chimeraUtils";
 import { Empty } from "@/components/Empty";
+import {
+  isNativeToolAppId,
+  nativeToolNames,
+  toolProviderFields,
+  updateToolProviderConfig,
+} from "@/utils/toolProviderConfig";
 import { useSettingsQuery } from "@/lib/query/queries";
 import routeGateIcon from "@/assets/icons/chimera-dragon-mark.png";
-import RouteGlobe from "@/components/RouteGlobe";
 import "./chimera.css";
 import "./components/ProviderEditorPage.css";
 
 const runningInTauri =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+const browserPreviewCapabilities: ProductCapability[] = [
+  { id: "mcp", available: true, enabledByDefault: true },
+  { id: "skills", available: true, enabledByDefault: true },
+  { id: "prompts", available: true, enabledByDefault: true },
+  { id: "config_health", available: true, enabledByDefault: true },
+  { id: "codex_themes", available: true, enabledByDefault: true },
+  { id: "official_accounts", available: true, enabledByDefault: true },
+  { id: "multi_tool", available: true, enabledByDefault: true },
+  { id: "live_backups", available: true, enabledByDefault: true },
+  { id: "cc_switch_import", available: true, enabledByDefault: true },
+];
+
+// Explicitly opt in to fixtures only in the browser development renderer.
+const designPreview =
+  import.meta.env.DEV &&
+  !runningInTauri &&
+  new URLSearchParams(window.location.search).get("preview") === "design";
 
 // Canonical Codex reasoning-effort levels in ascending depth order. Mirrors
 // CODEX_REASONING_LEVELS in CodexFormFields.tsx (the backend drops unknown
@@ -132,17 +158,79 @@ const UsageView = lazy(() =>
     default: view,
   })),
 );
-const AppearanceView = lazy(() => import("./views/AppearanceView"));
+import {
+  CANONICAL_LINES,
+  CANONICAL_PROVIDERS,
+  CANONICAL_STATION,
+} from "@/data/canonicalData";
+import { ProviderLineTable } from "@/components/ProviderLineTable";
+import { StationSignboard } from "@/components/StationSignboard";
+import { CommandPalette } from "@/components/CommandPalette";
+const OfficialAccountsView = lazy(() =>
+  import("./views/OfficialAccountsView").then(({ OfficialAccountsView }) => ({
+    default: OfficialAccountsView,
+  })),
+);
+const PromptsView = lazy(() =>
+  import("./views/PromptsView").then(({ PromptsView }) => ({
+    default: PromptsView,
+  })),
+);
+const SkillsMcpView = lazy(() =>
+  import("./views/SkillsMcpView").then(({ SkillsMcpView }) => ({
+    default: SkillsMcpView,
+  })),
+);
+const ConfigHealthView = lazy(() =>
+  import("./views/ConfigHealthView").then(({ ConfigHealthView }) => ({
+    default: ConfigHealthView,
+  })),
+);
 const SessionManagerPage = lazy(() =>
   import("./components/sessions/SessionManagerPage").then(
-    ({ SessionManagerPage: page }) => ({
-      default: page,
-    }),
+    ({ SessionManagerPage }) => ({ default: SessionManagerPage }),
   ),
 );
+const NewSettingsView = lazy(() =>
+  import("./views/NewSettingsView").then(({ NewSettingsView }) => ({
+    default: NewSettingsView,
+  })),
+);
+
+const AppearanceView = lazy(() => import("./views/AppearanceView"));
+const ToolView = lazy(() =>
+  import("./views/ToolView").then(({ ToolView }) => ({
+    default: ToolView,
+  })),
+);
+import { MiniSignboard } from "@/components/MiniSignboard";
+import {
+  canOpenProductView,
+  hasEnabledCapability,
+  type ProductCapability,
+} from "@/lib/productCapabilities";
 
 type View =
-  "providers" | "runtime" | "usage" | "appearance" | "sessions" | "settings";
+  | "providers"
+  | "official-accounts"
+  | "prompts"
+  | "skills-mcp"
+  | "sessions"
+  | "usage"
+  | "runtime"
+  | "appearance"
+  | "health"
+  | "settings"
+  | "tool-claude"
+  | "tool-gemini"
+  | "tool-opencode"
+  | "tool-pi"
+  | "tool-claude-desktop"
+  | "tool-grokbuild"
+  | "tool-openclaw"
+  | "tool-hermes"
+  | "tool-mcode"
+  | "tool-settings";
 type RuntimeStatus = {
   supported: boolean;
   installed: boolean;
@@ -192,8 +280,7 @@ type ReleaseStatus = {
   sizeBytes: number;
   source: string;
 };
-type Capability = { id: string; enabledByDefault: boolean };
-type ProductCapabilities = { capabilities: Capability[] };
+type ProductCapabilities = { capabilities: ProductCapability[] };
 type Diagnostic = { name: string; result: string };
 type DownloadProgress = {
   downloaded: number;
@@ -254,11 +341,25 @@ type CodexInstallRecoveryEntry = {
 };
 const nav: Array<[View, string, typeof Command]> = [
   ["providers", "供应商", Route],
-  ["runtime", "更新", Package],
-  ["usage", "词元", BarChart3],
-  ["appearance", "外观", Paintbrush],
+  ["official-accounts", "官方账号", Users],
+  ["prompts", "提示词", FileText],
+  ["skills-mcp", "Skills 与 MCP", Cpu],
   ["sessions", "会话", MessagesSquare],
+  ["usage", "词元", BarChart3],
+  ["runtime", "Codex 管理", Package],
+  ["appearance", "外观", Paintbrush],
+  ["health", "配置体检", Activity],
   ["settings", "设置", Settings2],
+  ["tool-claude", "Claude Code", Route],
+  ["tool-gemini", "Gemini CLI", Route],
+  ["tool-opencode", "OpenCode", Route],
+  ["tool-pi", "Pi", Route],
+  ["tool-claude-desktop", "Claude Desktop", Route],
+  ["tool-grokbuild", "Grok Build", Route],
+  ["tool-openclaw", "OpenClaw", Route],
+  ["tool-hermes", "Hermes", Route],
+  ["tool-mcode", "MiniMax Code", Route],
+  ["tool-settings", "管理工具", Settings2],
 ];
 
 const viewLabels: Record<View, string> = Object.fromEntries(
@@ -364,9 +465,17 @@ function codexApiFormatLabel(format: CodexApiFormat): string {
 export function providerDraft(
   provider?: Provider | null,
   suggestedName?: string,
+  appId: AppId = "codex",
 ) {
-  const template = getChimeraHubTemplate();
-  const config = String(provider?.settingsConfig?.config ?? template.config);
+  const native = isNativeToolAppId(appId)
+    ? toolProviderFields(appId, provider)
+    : null;
+  const template = native
+    ? { name: "新线路", websiteUrl: "", config: "", auth: {} }
+    : getChimeraHubTemplate();
+  const config = native
+    ? ""
+    : String(provider?.settingsConfig?.config ?? template.config);
   const auth = (provider?.settingsConfig?.auth ?? template.auth) as Record<
     string,
     unknown
@@ -391,6 +500,7 @@ export function providerDraft(
     name: provider?.name ?? suggestedName ?? template.name,
     websiteUrl: provider?.websiteUrl ?? template.websiteUrl,
     notes: provider?.notes ?? "",
+    iconColor: provider?.iconColor,
     baseUrl: extractCodexBaseUrl(config) ?? "",
     apiKey: String(
       auth.OPENAI_API_KEY ?? auth[anthropicAuthField] ?? auth.api_key ?? "",
@@ -418,6 +528,8 @@ export function providerDraft(
     // rows + fetched models) is rebuilt on save and never read back here.
     catalogModels: extractCodexMappingRows(provider),
     original: provider ?? null,
+    nativeProtocol: "",
+    ...native,
   };
 }
 
@@ -437,12 +549,72 @@ function detectionFromProvider(
 export default function ChimeraApp({
   providerRefreshVersion = 0,
 }: { providerRefreshVersion?: number } = {}) {
-  const [view, setView] = useState<View>("providers");
+  const [requestedView, setRequestedView] = useState<View>("providers");
+  const editorOpenSeqRef = useRef(0);
+  const [skillsAppId, setSkillsAppId] = useState<AppId>("codex");
+  const [capabilities, setCapabilities] = useState<ProductCapability[]>(
+    runningInTauri ? [] : browserPreviewCapabilities,
+  );
+  const { data: toolSettings } = useQuery({
+    queryKey: ["settings"],
+    queryFn: () => settingsApi.get(),
+    enabled: runningInTauri,
+  });
+  const canNavigate = useCallback(
+    (target: string) =>
+      canOpenProductView(target, capabilities) &&
+      (!runningInTauri ||
+        isProductToolVisible(target, toolSettings?.visibleApps)),
+    [capabilities, toolSettings?.visibleApps],
+  );
+  const setView = (target: View) => {
+    if (canNavigate(target)) {
+      editorOpenSeqRef.current += 1;
+      setRequestedView(target);
+    }
+  };
+  const view = canNavigate(requestedView) ? requestedView : "providers";
+  // Also revoke pending opens on policy-driven navigation and unmount.
+  useLayoutEffect(
+    () => () => {
+      editorOpenSeqRef.current += 1;
+    },
+    [view],
+  );
+  const manageToolResources = canNavigate("skills-mcp")
+    ? (appId: AppId) => {
+        setSkillsAppId(appId);
+        setView("skills-mcp");
+      }
+    : undefined;
+  const multiToolEnabled = hasEnabledCapability(capabilities, "multi_tool");
+  const skinEnabled = hasEnabledCapability(capabilities, "codex_themes");
   const [providers, setProviders] = useState<Provider[]>([]);
   const [currentId, setCurrentId] = useState("");
   const [currentSource, setCurrentSource] = useState<
     "live" | "stored" | "external" | "none"
   >("none");
+  const [cmdPaletteOpen, setCmdPaletteOpen] = useState(false);
+  const activeProvider = useMemo(
+    () =>
+      currentSource === "external" || currentSource === "none"
+        ? null
+        : (providers.find((p) => p.id === currentId) ?? null),
+    [providers, currentId, currentSource],
+  );
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setCmdPaletteOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, []);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [runtime, setRuntime] = useState<RuntimeStatus | null>(null);
@@ -463,6 +635,7 @@ export default function ChimeraApp({
   const [editor, setEditor] = useState<ReturnType<typeof providerDraft> | null>(
     null,
   );
+  const [editorAppId, setEditorAppId] = useState<AppId>("codex");
   const [models, setModels] = useState<FetchedModel[] | null>(null);
   const [modelFetchIdentity, setModelFetchIdentity] = useState<string | null>(
     null,
@@ -486,7 +659,6 @@ export default function ChimeraApp({
   const [runtimeOperation, setRuntimeOperation] =
     useState<RuntimeOperation | null>(null);
   const [diagnosing, setDiagnosing] = useState(false);
-  const [skinEnabled, setSkinEnabled] = useState(false);
   const [activity, setActivity] = useState<OperationRecord[]>([]);
   const activityKeyRef = useRef<string | null>(null);
   const startupProviderCheckRef = useRef(false);
@@ -529,6 +701,17 @@ export default function ChimeraApp({
   });
   const editorBaselineRef = useRef<string | null>(null);
   const codexProcessSeqRef = useRef(0);
+
+  const currentEndpoint = activeProvider
+    ? extractCodexBaseUrl(String(activeProvider.settingsConfig?.config ?? ""))
+    : null;
+  useLayoutEffect(() => {
+    testConnectionSeqRef.current += 1;
+    setConnection({ kind: "unknown", message: "尚未测试" });
+    return () => {
+      testConnectionSeqRef.current += 1;
+    };
+  }, [activeProvider?.id, currentEndpoint]);
 
   const activeEndpointIdentity = editor ? codexEndpointIdentity(editor) : null;
   const activeProtocolIdentity = editor ? codexProtocolIdentity(editor) : null;
@@ -582,17 +765,63 @@ export default function ChimeraApp({
     });
   }, [Boolean(editor)]);
 
-  const openEditor = (draft: ReturnType<typeof providerDraft>) => {
+  void runtime;
+  void apiFormatDetection;
+  void apiFormatDetectionError;
+  void modelFetchError;
+  void commonConfigLoading;
+  void fetchingModels;
+  void showKey;
+  void draftConnection;
+  void editorSaveError;
+
+  const openEditor = (
+    draft: ReturnType<typeof providerDraft>,
+    appId: AppId = "codex",
+  ) => {
+    editorOpenSeqRef.current += 1;
+    editorRef.current = draft;
     editorReturnFocusRef.current = document.activeElement as HTMLElement | null;
     setEditorSaveError(null);
     setModels(null);
     setModelFetchError(null);
     editorBaselineRef.current = editorDraftSignature(draft);
+    setEditorAppId(appId);
     setEditor(draft);
     setApiFormatDetection(detectionFromProvider(draft.original, draft));
   };
 
+  const openToolEditor = async (lineId: string, appId: AppId) => {
+    if (editorRef.current) {
+      toast.info("请先保存或关闭当前正在编辑的线路");
+      return;
+    }
+    if (!isNativeToolAppId(appId)) {
+      toast.error("此工具尚未提供线路编辑器");
+      return;
+    }
+    const request = ++editorOpenSeqRef.current;
+    const ownsOpen = () =>
+      request === editorOpenSeqRef.current && !editorRef.current;
+    if (lineId === "new") {
+      openEditor(providerDraft(null, "新线路", appId), appId);
+      return;
+    }
+    try {
+      const all = await providersApi.getAll(appId);
+      if (!ownsOpen()) return;
+      const provider = all[lineId];
+      if (!provider) throw new Error("线路不存在或已被删除");
+      openEditor(providerDraft(provider, undefined, appId), appId);
+    } catch (error) {
+      if (ownsOpen())
+        toast.error("无法打开线路", { description: String(error) });
+    }
+  };
+
   const closeEditor = () => {
+    editorOpenSeqRef.current += 1;
+    editorRef.current = null;
     editorBaselineRef.current = null;
     setPendingEditorDiscard(false);
     setEditor(null);
@@ -619,7 +848,7 @@ export default function ChimeraApp({
   const {
     hasUpdate: titlebarHasUpdate,
     updateInfo: titlebarUpdateInfo,
-    isChecking: titlebarChecking,
+    isChecking: _titlebarChecking,
     isInstalling: titlebarInstalling,
     isStaging: titlebarStaging,
     checkUpdate: titlebarCheckUpdate,
@@ -722,17 +951,17 @@ export default function ChimeraApp({
   const loadProviders = useCallback(async () => {
     const seq = ++providerLoadSeqRef.current;
     if (!runningInTauri) {
-      const template = getChimeraHubTemplate();
-      const previewProvider: Provider = {
-        id: "preview-chimerahub",
-        name: template.name,
-        websiteUrl: template.websiteUrl,
-        category: "custom",
-        settingsConfig: { auth: template.auth, config: template.config },
-      };
-      setProviders([previewProvider]);
-      setCurrentId(previewProvider.id);
-      setCurrentSource("live");
+      if (designPreview) {
+        if (seq !== providerLoadSeqRef.current) return;
+        setProviders(CANONICAL_PROVIDERS);
+        setCurrentId(CANONICAL_LINES.find((line) => line.isCurrent)?.id ?? "");
+        setCurrentSource("stored");
+        setLoading(false);
+        return;
+      }
+      setProviders([]);
+      setCurrentId("");
+      setCurrentSource("none");
       setLoading(false);
       return;
     }
@@ -804,16 +1033,7 @@ export default function ChimeraApp({
 
   const loadRuntime = async () => {
     if (!runningInTauri) {
-      setRuntime({
-        supported: true,
-        installed: true,
-        version: "26.721.41059",
-        installMode: "standard",
-        installPath: "预览模式 · 未访问本机文件",
-        canRepair: true,
-        canRollback: true,
-        canUninstall: true,
-      });
+      setRuntime(null);
       return;
     }
     try {
@@ -846,17 +1066,10 @@ export default function ChimeraApp({
 
   const loadCodexProcess = useCallback(async () => {
     if (!runningInTauri) {
-      const status: CodexProcessStatus = {
-        supported: true,
-        installed: true,
-        running: false,
-        installMode: "standard",
-        officialLoginAvailable: false,
-      };
-      codexProcessRef.current = status;
-      setCodexProcess(status);
+      codexProcessRef.current = null;
+      setCodexProcess(null);
       setRendererUnlock(null);
-      return status;
+      return null;
     }
     // Polls, focus events and launch/switch flows all call this; a slow older
     // probe resolving after a newer one must not roll the status backwards.
@@ -895,6 +1108,7 @@ export default function ChimeraApp({
   }, []);
 
   const openCodex = async () => {
+    if (designPreview) return;
     if (
       launchingCodex ||
       codexProcess?.supported === false ||
@@ -974,7 +1188,6 @@ export default function ChimeraApp({
 
   useEffect(() => {
     if (!runningInTauri) {
-      setSkinEnabled(true);
       void loadRuntime();
       void loadCodexProcess();
       return;
@@ -995,14 +1208,12 @@ export default function ChimeraApp({
     void loadRuntime();
     void loadCodexProcess();
     void invoke<ProductCapabilities>("get_product_capabilities")
-      .then((value) =>
-        setSkinEnabled(
-          value.capabilities.some(
-            (item) => item.id === "codex_themes" && item.enabledByDefault,
-          ),
-        ),
-      )
-      .catch(() => setSkinEnabled(false));
+      .then((value) => {
+        if (active) setCapabilities(value.capabilities ?? []);
+      })
+      .catch(() => {
+        if (active) setCapabilities([]);
+      });
     const unlisten = listen<DownloadProgress>(
       "codex-runtime-download-progress",
       (event) => {
@@ -1076,6 +1287,7 @@ export default function ChimeraApp({
   };
 
   const switchProvider = async (id: string) => {
+    if (designPreview) return false;
     const started = performance.now();
     const selectedProvider = providers.find((item) => item.id === id);
     const isOfficial =
@@ -1100,13 +1312,14 @@ export default function ChimeraApp({
       );
       toast.success(isOfficial ? "已切回官方账户" : "已应用到 Codex", {
         description: isOfficial
-          ? latestProcess.running
+          ? latestProcess?.running
             ? "请重启 Codex 以载入官方登录配置"
             : "启动 Codex 即可继续使用 ChatGPT 官方账户"
-          : latestProcess.running
+          : latestProcess?.running
             ? "请重启 Codex 以载入新线路"
             : undefined,
       });
+      return true;
     } catch (error) {
       note(
         "切换线路",
@@ -1116,6 +1329,7 @@ export default function ChimeraApp({
         performance.now() - started,
       );
       toast.error("切换失败", { description: String(error) });
+      return false;
     }
   };
 
@@ -1124,6 +1338,7 @@ export default function ChimeraApp({
     providerName = "Codex",
     target: "home" | "draft" = "home",
   ) => {
+    if (designPreview) return false;
     const started = performance.now();
     const seqRef = target === "draft" ? draftTestSeqRef : testConnectionSeqRef;
     const setState = target === "draft" ? setDraftConnection : setConnection;
@@ -1142,6 +1357,7 @@ export default function ChimeraApp({
         kind: "connected",
         message: `${result.latency}ms`,
         modelCount: models?.length ?? 0,
+        latencyMs: result.latency,
       });
       note(
         "连接测试",
@@ -1171,13 +1387,18 @@ export default function ChimeraApp({
 
   useEffect(() => {
     if (!runningInTauri || loading || startupProviderCheckRef.current) return;
-    const current = providers.find((provider) => provider.id === currentId);
+    const current = activeProvider;
     if (!current) return;
     startupProviderCheckRef.current = true;
+    const seq = testConnectionSeqRef.current;
     void settingsApi
       .get()
       .then((settings) => {
-        if (settings.checkProviderStatusOnStart === false) return;
+        if (
+          settings.checkProviderStatusOnStart === false ||
+          seq !== testConnectionSeqRef.current
+        )
+          return;
         const endpoint = extractCodexBaseUrl(
           String(current.settingsConfig?.config ?? ""),
         );
@@ -1186,12 +1407,13 @@ export default function ChimeraApp({
       .catch(() => {
         // Startup validation is optional and must never block the main window.
       });
-  }, [currentId, loading, providers]);
+  }, [activeProvider, loading]);
 
   // `formatOverride` backs the "按 Chat / Responses / Anthropic 保存" quick
   // actions shown when detection fails: the choice is applied to the draft and
   // saved in one step, so a failed probe never strands the user.
   const saveProvider = async (formatOverride?: CodexApiFormat) => {
+    if (designPreview) return;
     if (!editor) return;
     const draft =
       formatOverride && formatOverride !== editor.apiFormat
@@ -1205,10 +1427,16 @@ export default function ChimeraApp({
     if (
       !draft.name.trim() ||
       !draft.baseUrl.trim() ||
-      !draft.apiKey.trim() ||
-      !draft.model.trim()
+      (editorAppId === "codex" && !draft.apiKey.trim()) ||
+      (editorAppId !== "claude" &&
+        editorAppId !== "gemini" &&
+        !draft.model.trim())
     ) {
-      toast.error("请填写线路名称、API 请求地址、API Key 和默认模型");
+      toast.error(
+        editorAppId === "codex"
+          ? "请填写线路名称、API 请求地址、API Key 和默认模型"
+          : "请填写标有 * 的必填项",
+      );
       return;
     }
 
@@ -1219,10 +1447,51 @@ export default function ChimeraApp({
     setModelPickerOpen(false);
 
     try {
+      if (isNativeToolAppId(editorAppId)) {
+        const provider: Provider = {
+          ...draft.original,
+          id: draft.id,
+          name: draft.name.trim(),
+          websiteUrl: draft.websiteUrl.trim(),
+          notes: draft.notes,
+          iconColor: draft.iconColor,
+          settingsConfig: updateToolProviderConfig(
+            editorAppId,
+            draft.original,
+            draft,
+          ),
+        };
+        try {
+          if (draft.original) {
+            await providersApi.updateAndActivate(
+              provider,
+              editorAppId,
+              draft.original.id,
+            );
+          } else {
+            await providersApi.addAndActivate(provider, editorAppId, false);
+          }
+          window.dispatchEvent(
+            new CustomEvent("chimera-provider-mutated", {
+              detail: { appId: editorAppId },
+            }),
+          );
+          toast.success(`${nativeToolNames[editorAppId]} 线路已保存并应用`);
+          closeEditor();
+        } catch (error) {
+          setEditorSaveError(`保存失败，编辑内容已保留：${String(error)}`);
+          toast.error("保存失败", { description: String(error) });
+        }
+        return;
+      }
+      if (editorAppId !== "codex") {
+        setEditorSaveError("此工具尚未提供线路编辑器");
+        return;
+      }
       if (commonConfigLoaded && commonConfigDirty) {
         try {
           await configApi.validateCommonConfigSnippet(
-            "codex",
+            editorAppId,
             commonConfigSnippet,
           );
         } catch (error) {
@@ -1337,6 +1606,7 @@ export default function ChimeraApp({
         name: draft.name.trim(),
         websiteUrl: draft.websiteUrl.trim() || undefined,
         notes: draft.notes.trim() || undefined,
+        iconColor: draft.iconColor,
         // New providers default to "custom"; editing an existing provider
         // must never change its category out from under it.
         category: draft.original?.category ?? "custom",
@@ -1403,21 +1673,24 @@ export default function ChimeraApp({
           // under one transaction using its own current pointer.
           await providersApi.updateAndActivate(
             provider,
-            "codex",
+            editorAppId,
             draft.original.id,
             { clearApiKey: codexApiKeyCleared(draft.original, draft.apiKey) },
           );
         } else {
-          await providersApi.addAndActivate(provider, "codex", false);
+          await providersApi.addAndActivate(provider, editorAppId, false);
         }
         providerCommitted = true;
-        setCodexRestartRequired(true);
+        if (editorAppId === "codex") setCodexRestartRequired(true);
         // A later failure must retry an update, not add the same route again.
         const savedDraft = { ...draft, original: provider };
         editorRef.current = savedDraft;
         setEditor(savedDraft);
         if (commonConfigLoaded && commonConfigDirty) {
-          await configApi.setCommonConfigSnippet("codex", commonConfigSnippet);
+          await configApi.setCommonConfigSnippet(
+            editorAppId,
+            commonConfigSnippet,
+          );
           commonConfigBaselineRef.current = commonConfigSnippet;
           setCommonConfigDirty(false);
         }
@@ -1425,16 +1698,18 @@ export default function ChimeraApp({
         // 环境限制（如 macOS 图形进程 PATH 里没有 node），不该报成保存失败。
         let catalogStatus: CodexModelCatalogStatus | null = null;
         try {
-          catalogStatus = await invoke<CodexModelCatalogStatus>(
-            "verify_codex_model_catalog",
-            {
-              expectedModel: draft.model.trim(),
-              expectedModels: catalogModels.map((item) => ({
-                model: item.model.trim(),
-                displayName: item.displayName?.trim() || item.model.trim(),
-              })),
-            },
-          );
+          if (editorAppId === "codex") {
+            catalogStatus = await invoke<CodexModelCatalogStatus>(
+              "verify_codex_model_catalog",
+              {
+                expectedModel: draft.model.trim(),
+                expectedModels: catalogModels.map((item) => ({
+                  model: item.model.trim(),
+                  displayName: item.displayName?.trim() || item.model.trim(),
+                })),
+              },
+            );
+          }
         } catch (error) {
           await loadProviders();
           setEditorSaveError(
@@ -1447,6 +1722,11 @@ export default function ChimeraApp({
           return;
         }
         await loadProviders();
+        window.dispatchEvent(
+          new CustomEvent("chimera-provider-mutated", {
+            detail: { appId: editorAppId },
+          }),
+        );
         closeEditor();
         setPendingModelReload(draft.model.trim());
         const writtenSummary = automaticFetchFailed
@@ -1501,8 +1781,16 @@ export default function ChimeraApp({
     setCommonConfigLoading(true);
     setCommonConfigLoaded(false);
     setCommonConfigDirty(false);
+    if (
+      editorAppId !== "claude" &&
+      editorAppId !== "codex" &&
+      editorAppId !== "gemini"
+    ) {
+      setCommonConfigLoading(false);
+      return;
+    }
     void configApi
-      .getCommonConfigSnippet("codex")
+      .getCommonConfigSnippet(editorAppId)
       .then((snippet) => {
         if (!active) return;
         commonConfigBaselineRef.current = snippet ?? "";
@@ -1518,16 +1806,25 @@ export default function ChimeraApp({
     return () => {
       active = false;
     };
-  }, [editor?.id]);
+  }, [editor?.id, editorAppId]);
 
-  const deleteProvider = async (provider: Provider): Promise<boolean> => {
+  const deleteProvider = async (
+    provider: Provider,
+    appId: AppId,
+  ): Promise<boolean> => {
+    if (designPreview) return false;
     if (providerDeleteInFlightRef.current) return false;
     providerDeleteInFlightRef.current = true;
     setDeletingProviderId(provider.id);
     try {
-      const deleted = await providersApi.delete(provider.id, "codex");
+      const deleted = await providersApi.delete(provider.id, appId);
       if (!deleted) throw new Error("线路未删除，请重试");
       await loadProviders();
+      window.dispatchEvent(
+        new CustomEvent("chimera-provider-mutated", {
+          detail: { appId },
+        }),
+      );
       toast.success(`线路“${provider.name}”已删除`);
       return true;
     } catch (error) {
@@ -1626,6 +1923,7 @@ export default function ChimeraApp({
       if (fetchSeq === fetchModelsSeqRef.current) setFetchingModels(false);
     }
   };
+  void fetchModels;
 
   const checkRuntime = async (
     preferences?: RuntimeUpdatePreferences,
@@ -1717,6 +2015,7 @@ export default function ChimeraApp({
       setDiagnosing(false);
     }
   };
+  void diagnose;
 
   const runRuntimeAction = async () => {
     if (!pendingAction) return;
@@ -1795,6 +2094,7 @@ export default function ChimeraApp({
   // or permission error is indistinguishable from a fresh install and the user
   // gets an onboarding screen with no way back.
   if (
+    runningInTauri &&
     !loading &&
     !loadError &&
     !providers.length &&
@@ -1811,65 +2111,409 @@ export default function ChimeraApp({
 
   return (
     <div className="chimera-shell">
+      {/* 216px Sidebar (Frame 01 HdG9j; full visual acceptance pending) */}
+      {!editor && (
+        <aside
+          data-pencil-name="侧栏"
+          className="box-border w-[216px] shrink-0 h-full flex flex-col gap-[2px] p-[0px_8px_12px_8px] justify-start items-start bg-[#13181C] select-none z-10"
+        >
+          {/* 字标区 */}
+          <div
+            data-pencil-name="字标区"
+            className="box-border w-full h-[40px] shrink-0 flex flex-row gap-0 p-[0px_8px] justify-start items-center"
+            data-tauri-drag-region
+          >
+            {isMac() && <WindowControls closeDisabled={Boolean(editor)} />}
+            <div
+              data-pencil-name="字标"
+              className="text-[14px]/[20px] box-border text-[#EEF0F3] font-bold text-left whitespace-nowrap"
+            >
+              Chimera++
+            </div>
+          </div>
+
+          <nav className="chimera-navigation" aria-label="工具与功能">
+            {/* 干线 (Codex 主干轨道) */}
+            <div
+              data-pencil-name="干线"
+              className="box-border w-full h-fit shrink-0 flex flex-col gap-0 justify-start items-start"
+            >
+              {/* 宿主行 · Codex */}
+              <div
+                data-pencil-name="工具 · Codex"
+                className="box-border w-full h-[36px] shrink-0 flex flex-row gap-[10px] p-[0px_8px_0px_10px] justify-start items-center rounded-[4px] relative"
+              >
+                <div
+                  data-pencil-name="徽标"
+                  className="box-border w-[24px] shrink-0 h-[24px] flex flex-row gap-0 justify-center items-center bg-transparent border border-[#8D9398] rounded-[4px] relative z-10"
+                >
+                  <div
+                    data-pencil-name="简称"
+                    className="text-[12px]/[17px] box-border text-[#BABEC3] font-bold text-left whitespace-nowrap"
+                  >
+                    Cx
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="名称"
+                  className="text-[14px]/[20px] box-border flex-1 text-[#EEF0F3] font-normal text-left relative z-10"
+                >
+                  Codex
+                </div>
+                <div
+                  data-pencil-name="尾部"
+                  className="box-border w-fit shrink-0 h-fit flex flex-row gap-[4px] justify-start items-center relative z-10"
+                >
+                  <div
+                    data-pencil-name="当前线路"
+                    className="box-border w-[20px] shrink-0 h-[20px] flex flex-row gap-0 justify-center items-center overflow-hidden rounded-[4px]"
+                    title={activeProvider?.name ?? "未选择线路"}
+                    style={{
+                      backgroundColor:
+                        activeProvider?.category === "official"
+                          ? "#1A1E24"
+                          : activeProvider?.iconColor || "#7B9BC3",
+                      border:
+                        activeProvider?.category === "official"
+                          ? "1px solid #6F757B"
+                          : "none",
+                    }}
+                  >
+                    <div
+                      data-pencil-name="简称"
+                      className="text-[12px]/[17px] box-border font-bold text-left whitespace-nowrap"
+                      style={{
+                        color:
+                          activeProvider?.category === "official"
+                            ? "#EEF0F3"
+                            : "#12161C",
+                      }}
+                    >
+                      {activeProvider
+                        ? activeProvider.category === "official"
+                          ? "官"
+                          : activeProvider.name.includes("DeepSeek")
+                            ? "DS"
+                            : /[\u3400-\u9fff]/.test(
+                                  activeProvider.name[0] ?? "",
+                                )
+                              ? activeProvider.name[0]
+                              : activeProvider.name.slice(0, 2).toUpperCase()
+                        : "—"}
+                    </div>
+                  </div>
+                </div>
+                {/* 干线起点向下的引线 */}
+                <div
+                  data-pencil-name="干线起点"
+                  className="box-border w-[2px] h-[6px] absolute left-[21px] top-[30px] bg-[#7B9BC3] z-0"
+                />
+              </div>
+
+              {/* 8 个站点能力项 */}
+              {[
+                { id: "providers", label: "线路" },
+                { id: "official-accounts", label: "官方账号" },
+                { id: "prompts", label: "提示词" },
+                { id: "skills-mcp", label: "Skills 与 MCP" },
+                { id: "usage", label: "用量" },
+                { id: "runtime", label: "Codex 管理" },
+                { id: "appearance", label: "外观" },
+                { id: "health", label: "配置体检" },
+              ].map((item, index, arr) => {
+                const available = canNavigate(item.id);
+                const active = view === item.id;
+                const isLast = index === arr.length - 1;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => setView(item.id as View)}
+                    disabled={!available}
+                    title={
+                      available
+                        ? undefined
+                        : `${item.label}：当前产品策略尚未开放`
+                    }
+                    data-pencil-name={`能力 · ${item.label}`}
+                    className={`box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left ${
+                      active
+                        ? "bg-[#23282D]"
+                        : "bg-transparent hover:bg-[#1A1E24]"
+                    }`}
+                  >
+                    {/* 站点轴线 */}
+                    <div
+                      data-pencil-name="站"
+                      className="box-border w-[12px] shrink-0 h-fit flex flex-col gap-0 justify-start items-center"
+                    >
+                      <div
+                        data-pencil-name="上"
+                        className="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3]"
+                      />
+                      <div
+                        data-pencil-name="点"
+                        className={`box-border w-[8px] h-[8px] shrink-0 border-2 border-[#7B9BC3] rounded-full ${
+                          active ? "bg-[#7B9BC3]" : "bg-[#13181C]"
+                        }`}
+                      />
+                      <div
+                        data-pencil-name="下"
+                        className={`box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3] ${
+                          isLast ? "opacity-0" : ""
+                        }`}
+                      />
+                    </div>
+                    {/* 文字 */}
+                    <div
+                      data-pencil-name="文字"
+                      className={`text-[14px]/[20px] box-border flex-1 text-left ${
+                        active
+                          ? "text-[#EEF0F3] font-bold"
+                          : "text-[#BABEC3] font-normal"
+                      }`}
+                    >
+                      {item.label}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="w-full h-[40px] shrink-0 px-[10px] pt-[16px] pb-[6px] text-[13px]/[18px] text-[#8D9398]">
+              其他工具
+            </div>
+            {(
+              [
+                ["tool-claude", "Claude Code", "CC"],
+                ["tool-gemini", "Gemini CLI", "Gm"],
+                ["tool-opencode", "OpenCode", "OC"],
+                ["tool-pi", "Pi", "Pi"],
+                ["tool-claude-desktop", "Claude Desktop", "CD"],
+                ["tool-grokbuild", "Grok Build", "Gk"],
+                ["tool-openclaw", "OpenClaw", "Cl"],
+                ["tool-hermes", "Hermes", "He"],
+                ["tool-mcode", "MiniMax Code", "MM"],
+              ] as const
+            )
+              .filter(
+                ([id]) =>
+                  !runningInTauri ||
+                  isProductToolVisible(id, toolSettings?.visibleApps),
+              )
+              .map(([id, label, badge]) => (
+                <button
+                  key={id}
+                  type="button"
+                  disabled={!canNavigate(id)}
+                  title={
+                    canNavigate(id)
+                      ? undefined
+                      : `${label}：当前产品策略尚未开放`
+                  }
+                  onClick={() => setView(id)}
+                  aria-label={label}
+                  data-pencil-name={`工具 · ${label}`}
+                  className={`w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 ${view === id ? "bg-[#23282D] text-[#EEF0F3]" : "bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"}`}
+                >
+                  <span className="w-[24px] h-[24px] shrink-0 flex items-center justify-center border border-[#8D9398] rounded-[4px] text-[12px] font-bold">
+                    {badge}
+                  </span>
+                  <span className="flex-1 text-[14px]">{label}</span>
+                  {!canNavigate(id) && (
+                    <span aria-hidden="true" className="text-[11px]">
+                      未开放
+                    </span>
+                  )}
+                </button>
+              ))}
+            <button
+              type="button"
+              onClick={() => {
+                setView("tool-settings");
+              }}
+              title="管理工具显示偏好"
+              disabled={!canNavigate("tool-settings")}
+              data-pencil-name="添加工具"
+              className="w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] bg-transparent border-0 text-left text-[#BABEC3] cursor-pointer hover:bg-[#1A1E24]"
+            >
+              <span className="w-[24px] h-[24px] flex items-center justify-center border border-[#8D9398] rounded-[4px]">
+                <Plus size={14} />
+              </span>
+              <span className="text-[14px]">管理工具</span>
+            </button>
+          </nav>
+
+          {/* 分隔线 */}
+          <div
+            data-pencil-name="分隔"
+            className="box-border w-full h-[1px] shrink-0 bg-[#23282D] my-1"
+          />
+
+          {/* 会话 */}
+          <button
+            type="button"
+            onClick={() => setView("sessions")}
+            data-pencil-name="会话"
+            className={`box-border w-full h-[32px] shrink-0 flex flex-row gap-[12px] p-[0px_8px_0px_12px] justify-start items-center rounded-[4px] cursor-pointer border-0 transition-colors text-left ${
+              view === "sessions"
+                ? "bg-[#23282D]"
+                : "bg-transparent hover:bg-[#1A1E24]"
+            }`}
+          >
+            <MessagesSquare
+              size={16}
+              className={
+                view === "sessions" ? "text-[#EEF0F3]" : "text-[#BABEC3]"
+              }
+            />
+            <div
+              data-pencil-name="文字"
+              className={`text-[14px]/[20px] box-border flex-1 text-left ${
+                view === "sessions"
+                  ? "text-[#EEF0F3] font-bold"
+                  : "text-[#BABEC3] font-normal"
+              }`}
+            >
+              会话
+            </div>
+          </button>
+
+          {/* 设置 */}
+          <button
+            type="button"
+            onClick={() => setView("settings")}
+            data-pencil-name="设置"
+            className={`box-border w-full h-[32px] shrink-0 flex flex-row gap-[12px] p-[0px_8px_0px_12px] justify-start items-center rounded-[4px] cursor-pointer border-0 transition-colors text-left ${
+              view === "settings"
+                ? "bg-[#23282D]"
+                : "bg-transparent hover:bg-[#1A1E24]"
+            }`}
+          >
+            <Settings2
+              size={16}
+              className={
+                view === "settings" ? "text-[#EEF0F3]" : "text-[#BABEC3]"
+              }
+            />
+            <div
+              data-pencil-name="文字"
+              className={`text-[14px]/[20px] box-border flex-1 text-left ${
+                view === "settings"
+                  ? "text-[#EEF0F3] font-bold"
+                  : "text-[#BABEC3] font-normal"
+              }`}
+            >
+              设置
+            </div>
+          </button>
+        </aside>
+      )}
+
       <main
         className={`chimera-main${view === "usage" ? " is-usage-view" : ""}${editor ? " is-editing-provider" : ""}`}
       >
+        {/* Pencil wnYKj: fixed search and window controls, flexible left drag area. */}
         <header
-          className="chimera-titlebar"
+          data-pencil-name="标题栏"
+          className="box-border w-full h-[40px] shrink-0 flex flex-row gap-0 justify-start items-center bg-[#FDFDFE] dark:bg-[#1A1E24] border-b border-[#DDE0E3] dark:border-[#31363D] select-none z-10"
           onMouseDown={handleTitlebarMouseDown}
           onDoubleClick={preventTitlebarDoubleClick}
         >
-          <div className="route-brand">
-            <span className="route-brand-mark">
-              <img src={routeGateIcon} alt="" />
-            </span>
-            <strong>Chimera++</strong>
+          {/* 左侧站牌与拖拽区 (Frame 01 1:1) */}
+          <div
+            data-pencil-name="左"
+            className="box-border flex-1 min-w-0 h-[40px] flex flex-row p-[0px_12px] justify-start items-center gap-2"
+            data-tauri-drag-region
+          >
+            {isMac() && editor && (
+              <WindowControls closeDisabled={Boolean(editor)} />
+            )}
+            {!runningInTauri && (
+              <span
+                className="text-[12px] text-[#646970] dark:text-[#8D9398] truncate"
+                title={
+                  designPreview
+                    ? "设计示例 · 非本机数据 · 写入及测速已禁用"
+                    : "浏览器预览 · 未连接本机，不读取或修改本机配置"
+                }
+              >
+                {designPreview
+                  ? "设计示例 · 非本机数据 · 写入及测速已禁用"
+                  : "浏览器预览 · 未连接本机"}
+              </span>
+            )}
+            {(view !== "providers" || editor) && (
+              <MiniSignboard
+                currentProvider={activeProvider}
+                connection={connection}
+                unresolvedLabel={
+                  currentSource === "external" ? "外部配置" : "未选择线路"
+                }
+                onClick={() => setView("providers")}
+              />
+            )}
           </div>
-          <div className="route-page-label">
-            <span className="status-dot" />
-            {editor
-              ? "线路配置"
-              : view === "usage"
-                ? "词元 · 本机统计"
-                : viewLabels[view]}
-          </div>
-          <div className="route-window-tools" data-tauri-no-drag>
-            <button
-              className={`titlebar-update${titlebarHasUpdate ? " is-available" : ""}`}
-              aria-label={
-                titlebarInstalling
-                  ? "正在安装更新"
-                  : titlebarChecking
-                    ? "正在检查更新"
-                    : titlebarHasUpdate
-                      ? `下载并安装 Chimera++ ${titlebarUpdateInfo?.availableVersion ?? "更新"}`
-                      : "检查更新"
-              }
-              title={
-                titlebarInstalling
-                  ? "正在安装更新…"
-                  : titlebarChecking
-                    ? "正在检查更新…"
-                    : titlebarHasUpdate
-                      ? `下载并安装 Chimera++ ${titlebarUpdateInfo?.availableVersion ?? "更新"}`
-                      : "检查更新"
-              }
-              disabled={
-                Boolean(editor) || titlebarChecking || titlebarInstalling
-              }
-              onClick={() => void runTitlebarUpdateCheck()}
+
+          {/* 搜索入口随窗口宽度收缩，始终保留窗口控制。 */}
+          <button
+            type="button"
+            aria-label="搜索线路、页面或命令"
+            data-pencil-name="搜索"
+            onClick={() => setCmdPaletteOpen(true)}
+            className="box-border w-[360px] max-w-[42%] min-w-0 shrink h-[28px] flex flex-row gap-[8px] px-2.5 justify-start items-center bg-[#F2F4F6] dark:bg-[#23282D] rounded-[4px] border-0 cursor-pointer hover:bg-[var(--bg-selected)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--focus)] transition"
+            data-tauri-no-drag
+          >
+            <Search size={14} className="text-[#646970] dark:text-[#8D9398]" />
+            <span
+              data-pencil-name="占位"
+              className="text-[13px]/[18px] box-border flex-1 text-[#646970] dark:text-[#8D9398] font-normal text-left truncate"
             >
-              {titlebarChecking || titlebarInstalling ? (
-                <LoaderCircle size={16} className="spin" />
-              ) : titlebarHasUpdate ? (
-                <Download size={16} />
-              ) : (
-                <ArrowUp size={16} />
+              搜索线路、页面或命令
+            </span>
+            <div
+              data-pencil-name="键帽"
+              className="box-border w-fit shrink-0 h-[20px] flex flex-row gap-0 px-1.5 justify-start items-center bg-[#FDFDFE] dark:bg-[#1A1E24] border border-[#DDE0E3] dark:border-[#31363D] rounded-[4px]"
+            >
+              <span
+                data-pencil-name="值"
+                className="text-[12px]/[17px] box-border text-[#646970] dark:text-[#8D9398] font-mono whitespace-nowrap"
+              >
+                {isMac() ? "⌘ K" : "Ctrl K"}
+              </span>
+            </div>
+          </button>
+
+          {/* 右侧窗口控制三键 */}
+          <div
+            data-pencil-name="右"
+            className="box-border shrink-0 h-[40px] flex flex-row justify-end items-center"
+          >
+            <div className="flex items-center" data-tauri-no-drag>
+              <button
+                type="button"
+                aria-label="检查更新"
+                onClick={() => void runTitlebarUpdateCheck()}
+                className="sr-only"
+              >
+                检查更新
+              </button>
+              {titlebarHasUpdate && (
+                <button
+                  type="button"
+                  onClick={() => void runTitlebarUpdateCheck()}
+                  title={`发现新版本 ${titlebarUpdateInfo?.availableVersion ?? ""}，点击更新`}
+                  className="h-[26px] px-2 mr-2 flex items-center gap-1.5 rounded text-[12px] font-medium bg-[#006AA0] text-white hover:bg-[#005a88] transition cursor-pointer border-0"
+                >
+                  <Download size={13} />
+                  <span>更新</span>
+                </button>
               )}
-            </button>
-            <WindowControls closeDisabled={Boolean(editor)} />
+              {!isMac() && <WindowControls closeDisabled={Boolean(editor)} />}
+            </div>
           </div>
         </header>
+
         {view === "providers" && (
           <h1 className="sr-only">
             {editor
@@ -1924,13 +2568,14 @@ export default function ChimeraApp({
               onOpenCodex={openCodex}
               onSwitch={switchProvider}
               onEdit={(provider) => openEditor(providerDraft(provider))}
-              onDelete={deleteProvider}
+              onDelete={(provider) => deleteProvider(provider, "codex")}
               deletingProviderId={deletingProviderId}
               onAdd={() =>
                 openEditor(
                   providerDraft(null, providers.length ? "新线路" : "默认线路"),
                 )
               }
+              onTestSpeed={testConnection}
             />
           )}
           {view === "runtime" && (
@@ -1964,34 +2609,117 @@ export default function ChimeraApp({
             )}
             {view === "sessions" && (
               <div className="chimera-sessions-host">
-                <SessionManagerPage appId="all" />
+                <SessionManagerPage
+                  appId={multiToolEnabled ? "all" : "codex"}
+                />
               </div>
             )}
-            {view === "settings" && <NewSettingsView />}
+            {view === "official-accounts" && (
+              <OfficialAccountsView
+                onAccountSwitched={() => void loadProviders()}
+              />
+            )}
+            {view === "prompts" && (
+              <PromptsView refreshVersion={providerRefreshVersion} />
+            )}
+            {view === "skills-mcp" && (
+              <SkillsMcpView
+                initialApp={skillsAppId}
+                refreshVersion={providerRefreshVersion}
+              />
+            )}
+            {view === "health" && <ConfigHealthView />}
+            {view === "settings" && (
+              <NewSettingsView
+                onImported={() => void loadProviders()}
+                liveBackupsEnabled={hasEnabledCapability(
+                  capabilities,
+                  "live_backups",
+                )}
+              />
+            )}
+            {view === "tool-settings" && (
+              <ToolVisibilityView native={runningInTauri} />
+            )}
+            {view === "tool-claude-desktop" && (
+              <ToolView
+                toolId="claude-desktop"
+                native={runningInTauri}
+                refreshVersion={providerRefreshVersion}
+              />
+            )}
+            {view === "tool-grokbuild" && (
+              <ToolView
+                toolId="grokbuild"
+                onManageResources={manageToolResources}
+                native={runningInTauri}
+                refreshVersion={providerRefreshVersion}
+              />
+            )}
+            {view === "tool-openclaw" && (
+              <ToolView
+                toolId="openclaw"
+                onManageResources={manageToolResources}
+                native={runningInTauri}
+                refreshVersion={providerRefreshVersion}
+              />
+            )}
+            {view === "tool-hermes" && (
+              <ToolView
+                toolId="hermes"
+                onManageResources={manageToolResources}
+                native={runningInTauri}
+                refreshVersion={providerRefreshVersion}
+              />
+            )}
+            {view === "tool-mcode" && (
+              <ToolView
+                toolId="mcode"
+                native={runningInTauri}
+                refreshVersion={providerRefreshVersion}
+              />
+            )}
+            {view === "tool-claude" && (
+              <ToolView
+                refreshVersion={providerRefreshVersion}
+                toolId="claude-code"
+                onEditLine={openToolEditor}
+                native={runningInTauri}
+                onManageResources={manageToolResources}
+              />
+            )}
+            {view === "tool-gemini" && (
+              <ToolView
+                refreshVersion={providerRefreshVersion}
+                toolId="gemini-cli"
+                onEditLine={openToolEditor}
+                native={runningInTauri}
+                onManageResources={manageToolResources}
+              />
+            )}
+            {view === "tool-opencode" && (
+              <ToolView
+                refreshVersion={providerRefreshVersion}
+                toolId="opencode"
+                onEditLine={openToolEditor}
+                native={runningInTauri}
+                onManageResources={manageToolResources}
+              />
+            )}
+            {view === "tool-pi" && (
+              <ToolView
+                refreshVersion={providerRefreshVersion}
+                toolId="pi"
+                onEditLine={openToolEditor}
+                native={runningInTauri}
+              />
+            )}
           </Suspense>
         </section>
-        <nav
-          className="route-bottom-nav"
-          aria-label="主导航"
-          hidden={Boolean(editor)}
-        >
-          {nav.map(([id, label, Icon]) => (
-            <button
-              key={id}
-              className={view === id ? "is-active" : ""}
-              aria-current={view === id ? "page" : undefined}
-              onClick={() => setView(id)}
-            >
-              <span>
-                <Icon size={16} />
-              </span>
-              <small>{label}</small>
-            </button>
-          ))}
-        </nav>
         {editor && (
           <div className="provider-editor-page">
             <ProviderEditor
+              appId={editorAppId}
               editor={editor}
               setEditor={(value) => {
                 if (!savingProvider) setEditor(value);
@@ -2044,6 +2772,47 @@ export default function ChimeraApp({
           </div>
         )}
       </main>
+      <CommandPalette
+        isOpen={cmdPaletteOpen}
+        onClose={() => setCmdPaletteOpen(false)}
+        providers={providers}
+        currentProviderId={currentId}
+        onSwitchProvider={(id) => void switchProvider(id)}
+        canNavigate={canNavigate}
+        onNavigate={(targetView) => setView(targetView as View)}
+        onAddProvider={() => {
+          if (editor) {
+            toast.info("请先保存或关闭当前正在编辑的线路");
+            return;
+          }
+          openEditor(
+            providerDraft(null, providers.length ? "新线路" : "默认线路"),
+          );
+        }}
+        onSpeedTestAll={async () => {
+          toast.info("正在对所有线路进行测速…");
+          for (const p of providers) {
+            const configStr = String(p.settingsConfig?.config ?? "");
+            const endpoint =
+              extractCodexBaseUrl(configStr) ||
+              (p.category === "official" || p.id === "codex-official"
+                ? "https://api.openai.com/v1"
+                : "http://127.0.0.1:4000");
+            await testConnection(endpoint, p.name);
+          }
+        }}
+        onCheckHealth={() => setView("health")}
+        onOpenCodex={openCodex}
+        onRefresh={loadProviders}
+        onEditProvider={(id) => {
+          if (editor) {
+            toast.info("请先保存或关闭当前正在编辑的线路");
+            return;
+          }
+          const provider = providers.find((item) => item.id === id);
+          if (provider) openEditor(providerDraft(provider));
+        }}
+      />
       {editor && models && modelPickerOpen && (
         <ModelPickerDialog
           models={models}
@@ -2066,7 +2835,7 @@ export default function ChimeraApp({
           provider={pendingProviderDelete}
           onCancel={() => setPendingProviderDelete(null)}
           onConfirm={async () => {
-            if (await deleteProvider(pendingProviderDelete)) {
+            if (await deleteProvider(pendingProviderDelete, editorAppId)) {
               setPendingProviderDelete(null);
               closeEditor();
             }
@@ -2385,7 +3154,8 @@ export function NewRuntimeView({
     action: RuntimeAction,
     preferences?: RuntimeUpdatePreferences,
   ) => {
-    if (preferencesBusy) return;
+    if (!runningInTauri || !runtimeSupported || preferencesBusy || operation)
+      return;
     setMaintenanceOpen(false);
     onAction(action, preferences);
   };
@@ -2394,7 +3164,8 @@ export function NewRuntimeView({
     installMode,
   };
   const checkSelectedRuntime = () => {
-    if (!preferencesBusy) onCheck(selectedPreferences);
+    if (runningInTauri && runtimeSupported && !preferencesBusy && !operation)
+      onCheck(selectedPreferences);
   };
   const runDiagnostics = () => {
     setMaintenanceOpen(false);
@@ -2453,82 +3224,121 @@ export function NewRuntimeView({
   };
   return (
     <>
-      <section className="runtime-reference-view">
-        <span className="eyebrow">CODEX 更新</span>
-        <h1>
-          {runtimeSupported
-            ? !runtime
-              ? "正在识别本机 Codex"
-              : runtime.installed
-                ? "本机 Codex 已准备就绪"
-                : "尚未安装 Codex"
-            : "Codex 更新管理仅支持 Windows"}
-        </h1>
-        <div className="runtime-ring">
+      <section className="runtime-reference-view" aria-label="Codex 管理">
+        <header className="runtime-page-heading">
           <div>
-            <CircleCheck size={28} />
-            <code>{version}</code>
+            <h1>Codex 管理</h1>
+            <p>Codex 的安装、升级、修复、回滚与卸载 · 只改动本机</p>
+          </div>
+          <button
+            className="secondary"
+            onClick={checkSelectedRuntime}
+            disabled={
+              !runningInTauri ||
+              !runtimeSupported ||
+              Boolean(operation) ||
+              preferencesBusy
+            }
+          >
+            <RefreshCw size={14} />
+            {updateAvailable ? "重新检查" : "检查更新"}
+          </button>
+        </header>
+        <div className="runtime-status-board">
+          <div className="runtime-installed">
+            <h2>
+              {!runningInTauri
+                ? "浏览器预览 · 未检测本机"
+                : runtimeSupported
+                  ? !runtime
+                    ? "正在识别本机 Codex"
+                    : runtime.installed
+                      ? "已安装"
+                      : "尚未安装 Codex"
+                  : "Codex 更新管理仅支持 Windows"}
+            </h2>
+            <code>
+              {!runningInTauri ? "未检测" : runtime?.installed ? version : "—"}
+            </code>
             <small>
-              {runtimeSupported
-                ? runtime?.installed
+              {!runningInTauri
+                ? "请在桌面 DEV 中验证安装状态"
+                : runtime?.installed
                   ? runtimeText(runtime.installMode)
-                  : runtime
-                    ? "未检测到安装"
-                    : "正在识别"
-                : "macOS 可正常切换官方账户与中转线路"}
+                  : "安装状态以本机检测为准"}
             </small>
           </div>
-        </div>
-        <div className="runtime-info-strip">
-          <div>
+          <div className="runtime-info-strip">
+            <div>
+              <FolderOpen size={14} />
+              <span>
+                安装位置
+                <b
+                  title={
+                    runningInTauri
+                      ? runtime?.installPath || undefined
+                      : undefined
+                  }
+                >
+                  {!runningInTauri
+                    ? "未访问本机文件"
+                    : !runtimeSupported
+                      ? "不适用"
+                      : runtime?.installed
+                        ? runtime.installPath || "路径未识别"
+                        : runtime
+                          ? "未检测到"
+                          : "正在识别"}
+                </b>
+              </span>
+            </div>
+            <div>
+              <Download size={14} />
+              <span>
+                更新源
+                <b>
+                  {!runningInTauri
+                    ? "未读取"
+                    : preferences
+                      ? runtimeChannelText(updateSource)
+                      : preferencesError
+                        ? "读取失败"
+                        : "读取中"}
+                </b>
+              </span>
+            </div>
+            <div>
+              <Activity size={14} />
+              <span>
+                启动时检查
+                <b>
+                  {!runningInTauri
+                    ? "未读取"
+                    : preferences
+                      ? preferences.checkCodexUpdatesOnStart === false
+                        ? "已关闭"
+                        : "已开启"
+                      : preferencesError
+                        ? "读取失败"
+                        : "读取中"}
+                </b>
+              </span>
+            </div>
+          </div>
+          <button
+            className="runtime-folder"
+            aria-label="打开安装目录"
+            title="打开安装目录"
+            onClick={() => void openInstallDirectory()}
+            disabled={
+              !runningInTauri ||
+              !runtimeSupported ||
+              !runtime?.installed ||
+              Boolean(operation)
+            }
+          >
             <FolderOpen size={16} />
-            <span>
-              安装位置
-              <b
-                title={
-                  runtimeSupported && runtime?.installed
-                    ? runtime.installPath || undefined
-                    : undefined
-                }
-              >
-                {runtimeSupported
-                  ? runtime?.installed
-                    ? runtime.installPath || "路径未识别"
-                    : runtime
-                      ? "未检测到"
-                      : "正在识别"
-                  : "不适用"}
-              </b>
-            </span>
-          </div>
-          <div>
-            <Download size={16} />
-            <span>
-              更新源
-              <b>
-                {preferences
-                  ? runtimeChannelText(updateSource)
-                  : preferencesError
-                    ? "读取失败"
-                    : "读取中"}
-              </b>
-            </span>
-          </div>
-          <div>
-            <Activity size={16} />
-            <span>
-              启动时检查
-              <b>
-                {preferences
-                  ? preferences.checkCodexUpdatesOnStart === false
-                    ? "已关闭"
-                    : "已开启"
-                  : preferencesError
-                    ? "读取失败"
-                    : "读取中"}
-              </b>
-            </span>
-          </div>
+          </button>
         </div>
         {preferencesError && (
           <div role="alert">
@@ -2566,69 +3376,139 @@ export function NewRuntimeView({
             </button>
           </div>
         )}
-        <div className="runtime-reference-actions">
-          <button
-            className={updateAvailable ? "primary" : "secondary"}
-            onClick={() =>
-              updateAvailable
-                ? startAction("update", selectedPreferences)
-                : checkSelectedRuntime()
-            }
-            disabled={
-              !runtimeSupported || Boolean(operation) || preferencesBusy
-            }
-          >
-            {updateAvailable ? <Download size={14} /> : <RefreshCw size={14} />}
-            {updateActionLabel}
-          </button>
-          <button
-            className="secondary"
-            onClick={() => void openInstallDirectory()}
-            disabled={
-              !runtimeSupported || !runtime?.installed || Boolean(operation)
-            }
-          >
-            <FolderOpen size={14} />
-            打开安装目录
-          </button>
-          <button
-            className="secondary"
-            onClick={() => setMaintenanceOpen(true)}
-            disabled={
-              !runtimeSupported || Boolean(operation) || preferencesBusy
-            }
-          >
-            <Settings2 size={14} />
-            安装方式与更新源
-          </button>
+        <div
+          className="runtime-release-card"
+          role={updateAvailable && runningInTauri ? "status" : undefined}
+        >
+          <strong>
+            {!runningInTauri
+              ? "更新状态待检测"
+              : updateAvailable && release
+                ? `Codex ${release.latestVersion} 可用`
+                : release
+                  ? "未发现可用更新"
+                  : "尚未检查更新"}
+          </strong>
+          <p>
+            {!runningInTauri
+              ? "浏览器预览不读取本机安装，也不执行下载、修复或卸载。"
+              : updateAvailable && release
+                ? `${selectedInstallLabel}${
+                    release.sizeBytes > 0
+                      ? ` · ${(release.sizeBytes / 1024 / 1024).toFixed(1)} MB`
+                      : ""
+                  } · 确认后下载并安装。`
+                : "检查所选更新源，版本与安装包信息以检测结果为准。"}
+          </p>
+          <small>安装或维护可能中断正在运行的 Codex，请先保存工作。</small>
+          <div className="runtime-reference-actions">
+            {updateAvailable && runningInTauri && (
+              <button
+                className="primary"
+                onClick={() => startAction("update", selectedPreferences)}
+                disabled={
+                  !runtimeSupported || Boolean(operation) || preferencesBusy
+                }
+              >
+                <Download size={14} />
+                {updateActionLabel}
+              </button>
+            )}
+            <button
+              className="secondary"
+              onClick={() => setMaintenanceOpen(true)}
+              disabled={
+                !runtimeSupported || Boolean(operation) || preferencesBusy
+              }
+            >
+              <Settings2 size={14} />
+              安装方式与更新源
+            </button>
+          </div>
         </div>
-        {updateAvailable && release && (
-          <div
-            className="runtime-update-ready"
-            role="status"
-            aria-live="polite"
-          >
-            <CircleCheck size={16} aria-hidden="true" />
+        <section className="runtime-maintenance-rows" aria-label="维护">
+          <h2>维护</h2>
+          <div>
+            <Wrench size={18} />
             <span>
-              <b>Codex {release.latestVersion} 可用</b>
+              <strong>修复安装</strong>
+              <small>修复损坏的 Codex 安装文件；操作前会再次确认。</small>
+            </span>
+            <button
+              className="secondary"
+              onClick={() => startAction("repair")}
+              disabled={
+                !runningInTauri ||
+                !runtimeSupported ||
+                !runtime?.canRepair ||
+                Boolean(operation) ||
+                preferencesBusy
+              }
+            >
+              修复
+            </button>
+          </div>
+          <div>
+            <RefreshCw size={18} />
+            <span>
+              <strong>回滚</strong>
               <small>
-                {selectedInstallLabel}
-                {release.sizeBytes > 0
-                  ? ` · ${(release.sizeBytes / 1024 / 1024).toFixed(1)} MB`
-                  : ""}
-                {" · 点击上方按钮后确认下载并安装"}
+                {runningInTauri && runtime?.canRollback
+                  ? "恢复上一个可用版本，具体备份以本机检测为准。"
+                  : "尚未确认本机存在可恢复版本。"}
               </small>
             </span>
             <button
-              type="button"
-              className="runtime-update-recheck"
-              onClick={checkSelectedRuntime}
-              disabled={Boolean(operation) || preferencesBusy}
+              className="secondary"
+              onClick={() => startAction("rollback")}
+              disabled={
+                !runningInTauri ||
+                !runtimeSupported ||
+                !runtime?.canRollback ||
+                Boolean(operation) ||
+                preferencesBusy
+              }
             >
-              重新检查
+              回滚
             </button>
           </div>
-        )}
+          <div>
+            <Trash2 size={18} />
+            <span>
+              <strong>卸载</strong>
+              <small>移除本机 Codex，卸载范围与风险会在确认时显示。</small>
+            </span>
+            <button
+              className="secondary danger"
+              onClick={() => startAction("uninstall")}
+              disabled={
+                !runningInTauri ||
+                !runtimeSupported ||
+                !runtime?.canUninstall ||
+                Boolean(operation) ||
+                preferencesBusy
+              }
+            >
+              卸载…
+            </button>
+          </div>
+        </section>
+        <section className="runtime-local-records" aria-label="本机版本记录">
+          <h2>本机版本记录</h2>
+          {runningInTauri && runtime?.installed ? (
+            <div>
+              <code>{version}</code>
+              <span>当前检测版本</span>
+              <small>安装时间与历史缓存记录尚未提供</small>
+            </div>
+          ) : (
+            <p>
+              {runningInTauri
+                ? "尚无已确认的本机版本记录。"
+                : "桌面 DEV 检测后显示，不使用示例版本或安装时间。"}
+            </p>
+          )}
+        </section>
         {operationLabel && (
           <div className="runtime-reference-progress">
             <span>{operationLabel}</span>
@@ -2655,7 +3535,10 @@ export function NewRuntimeView({
           <section
             ref={maintenanceDialogRef}
             className="runtime-maintenance-drawer"
+            role="dialog"
+            aria-modal="true"
             aria-label="安装与维护"
+            tabIndex={-1}
           >
             <header>
               <div>
@@ -3032,6 +3915,7 @@ export function NewProvidersView({
   onDelete,
   deletingProviderId,
   onAdd,
+  onTestSpeed,
 }: {
   providers: Provider[];
   currentId: string;
@@ -3043,11 +3927,12 @@ export function NewProvidersView({
   launchingCodex: boolean;
   restartRequired: boolean;
   onOpenCodex: () => Promise<void>;
-  onSwitch: (id: string) => Promise<void>;
+  onSwitch: (id: string) => Promise<boolean | void>;
   onEdit: (provider: Provider) => void;
   onDelete: (provider: Provider) => Promise<boolean>;
   deletingProviderId: string | null;
   onAdd: () => void;
+  onTestSpeed?: (baseUrl: string, providerName?: string) => Promise<boolean>;
 }) {
   const {
     hasUpdate,
@@ -3060,52 +3945,25 @@ export function NewProvidersView({
     installUpdate,
   } = useUpdate();
   const [managerOpen, setManagerOpen] = useState(false);
+  const [toolbarContainer, setToolbarContainer] =
+    useState<HTMLDivElement | null>(null);
   const [query, setQuery] = useState("");
   const [switchingId, setSwitchingId] = useState<string | null>(null);
+  const [undoReceipt, setUndoReceipt] = useState<{
+    fromName: string;
+    toName: string;
+    backupId: string;
+    timestamp: string;
+    onUndo: () => void;
+  } | null>(null);
+  const undoTimerRef = useRef<NodeJS.Timeout | null>(null);
   const managerTriggerRef = useRef<HTMLButtonElement>(null);
-  const routeLineScrollRef = useRef<HTMLDivElement>(null);
-  const [routeLineScrollState, setRouteLineScrollState] = useState({
-    previous: false,
-    next: false,
-  });
-  const syncRouteLineScrollControls = useCallback(() => {
-    const element = routeLineScrollRef.current;
-    const nextState = element
-      ? {
-          previous: element.scrollLeft > 1,
-          next:
-            element.scrollLeft + element.clientWidth < element.scrollWidth - 1,
-        }
-      : { previous: false, next: false };
-    setRouteLineScrollState((currentState) =>
-      currentState.previous === nextState.previous &&
-      currentState.next === nextState.next
-        ? currentState
-        : nextState,
-    );
-  }, []);
-  const scrollRouteLines = useCallback((direction: -1 | 1) => {
-    const element = routeLineScrollRef.current;
-    if (!element) return;
-    element.scrollBy({
-      left: direction * Math.max(200, element.clientWidth * 0.7),
-      behavior: "smooth",
-    });
-  }, []);
-  useEffect(() => {
-    const element = routeLineScrollRef.current;
-    if (!element) return;
-    syncRouteLineScrollControls();
-    element.addEventListener("scroll", syncRouteLineScrollControls, {
-      passive: true,
-    });
-    const observer = new ResizeObserver(syncRouteLineScrollControls);
-    observer.observe(element);
-    return () => {
-      element.removeEventListener("scroll", syncRouteLineScrollControls);
-      observer.disconnect();
-    };
-  }, [providers.length, syncRouteLineScrollControls]);
+  useEffect(
+    () => () => {
+      if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+    },
+    [],
+  );
   const managerRef = useDialogFocus<HTMLElement>(
     () => setManagerOpen(false),
     managerOpen,
@@ -3146,7 +4004,7 @@ export function NewProvidersView({
       );
       let name: string;
       if (official) {
-        name = "官方账户";
+        name = provider.name.trim() || "官方账户";
       } else if (!generic) {
         name = provider.name || "未命名线路";
       } else if (chimera) {
@@ -3178,7 +4036,9 @@ export function NewProvidersView({
     return labels;
   }, [providers]);
   const current =
-    providers.find((provider) => provider.id === currentId) ?? providers[0];
+    currentSource === "external" || currentSource === "none"
+      ? null
+      : (providers.find((provider) => provider.id === currentId) ?? null);
   const currentConfig = current?.settingsConfig?.config ?? "";
   const currentAuth = (current?.settingsConfig?.auth ?? {}) as Record<
     string,
@@ -3258,22 +4118,8 @@ export function NewProvidersView({
   if (!providers.length) return <Onboarding onAdd={onAdd} />;
   const officialLoginRequired =
     currentIsOfficial && codexProcess?.officialLoginAvailable === false;
-  const model =
-    extractCodexModelName(String(current.settingsConfig?.config ?? "")) ||
-    "未设置";
-  const connectionLabel =
-    connection.kind === "connected"
-      ? `已连接 · ${connection.message}`
-      : connection.kind === "checking"
-        ? "测试中"
-        : connection.kind === "error"
-          ? "连接失败"
-          : currentSource === "live"
-            ? "配置已识别"
-            : "等待测试";
   const isOfficialLine = (provider: Provider) =>
-    lineLabels.get(provider.id)?.official ??
-    (provider.id === "codex-official" || provider.category === "official");
+    lineLabels.get(provider.id)?.official ?? false;
   const lineName = (provider: Provider) =>
     lineLabels.get(provider.id)?.name ?? provider.name ?? "未命名线路";
   const lineSource = (provider: Provider) =>
@@ -3286,29 +4132,42 @@ export function NewProvidersView({
       `${lineName(provider)} ${lineSource(provider)} ${provider.name} ${extractCodexModelName(String(provider.settingsConfig?.config ?? ""))}`.toLowerCase();
     return haystack.includes(query.trim().toLowerCase());
   });
-  const railLines = [...providers].sort((a, b) => {
-    if (isOfficialLine(a) !== isOfficialLine(b)) {
-      return isOfficialLine(a) ? -1 : 1;
-    }
-    return 0;
-  });
   const activateLine = async (provider: Provider) => {
-    if (provider.id === current.id || switchingId || deletingProviderId) return;
+    if (provider.id === current?.id || switchingId || deletingProviderId)
+      return;
+    const previous = current;
     setSwitchingId(provider.id);
     try {
-      await onSwitch(provider.id);
+      const switched = await onSwitch(provider.id);
+      if (switched === false) return;
+      if (previous && previous.id !== provider.id) {
+        if (undoTimerRef.current) {
+          clearTimeout(undoTimerRef.current);
+        }
+        setUndoReceipt({
+          fromName: lineName(previous),
+          toName: lineName(provider),
+          backupId: `sw-${Date.now()}`,
+          timestamp: "刚刚",
+          onUndo: () => {
+            if (undoTimerRef.current) {
+              clearTimeout(undoTimerRef.current);
+              undoTimerRef.current = null;
+            }
+            void onSwitch(previous.id);
+            setUndoReceipt(null);
+          },
+        });
+        undoTimerRef.current = setTimeout(() => {
+          setUndoReceipt(null);
+          undoTimerRef.current = null;
+        }, 8000);
+      }
     } finally {
       setSwitchingId(null);
     }
   };
-  const globeStageLabel =
-    connection.kind === "connected"
-      ? "连接稳定"
-      : connection.kind === "checking"
-        ? "正在检测"
-        : connection.kind === "error"
-          ? "连接异常"
-          : "等待检测";
+
   const rendererUnlockPending =
     codexProcess?.running === true &&
     rendererUnlock != null &&
@@ -3349,7 +4208,7 @@ export function NewProvidersView({
                 : "启动 Codex";
 
   return (
-    <section className="route-gate-view route-gate-reference">
+    <section className="provider-page">
       {hasUpdate && !isDismissed && updateInfo && (
         <div className="route-update-banner" role="status" aria-live="polite">
           <i aria-hidden="true" />
@@ -3396,128 +4255,171 @@ export function NewProvidersView({
           </div>
         </div>
       )}
-      <div className="route-map" aria-label="当前 Codex 连接状态">
-        <code className="route-stage-label">{globeStageLabel}</code>
-        <div className="route-globe-stage">
-          <RouteGlobe className="route-globe-art" />
-          <div
-            className={`route-codex-launch${codexProcess?.running ? " is-running" : ""}${codexProcess?.supported === false || codexProcess?.installed === false ? " is-missing" : ""}`}
-            aria-live="polite"
-          >
-            <div className="route-codex-launch-status">
-              <i aria-hidden="true" />
-              <span>
-                <b>{codexStatusLabel}</b>
-                <code title={model}>当前模型 · {model}</code>
-              </span>
-            </div>
-            {rendererUnlockPending && (
-              <p className="route-codex-unlock-hint">
-                暂时无法确认模型列表解锁状态，正在重新检测。
-              </p>
-            )}
-            {codexProcess?.running === true &&
-              rendererUnlock?.attachable === true &&
-              rendererUnlock.injected === false && (
-                <p className="route-codex-unlock-hint">
-                  调试连接可用，模型解锁未确认/未安装。
-                </p>
-              )}
-            <button
-              type="button"
-              onClick={() => void onOpenCodex()}
-              disabled={
-                launchingCodex ||
-                codexProcess === null ||
-                codexProcess?.supported === false ||
-                codexProcess?.installed === false
-              }
-            >
-              {launchingCodex ? (
-                <LoaderCircle className="spin" size={16} aria-hidden="true" />
-              ) : (
-                <Play size={16} fill="currentColor" aria-hidden="true" />
-              )}
-              <span>{codexButtonLabel}</span>
-            </button>
-          </div>
+      <header className="provider-page-heading">
+        <div>
+          <h2>线路</h2>
+          <p>Codex 同一时间只走一条线路 · 共 {providers.length} 条</p>
         </div>
-        <div className="route-line-switcher">
-          <header className="route-line-heading">
-            <div>
-              <b>线路切换</b>
-              <span>{providers.length} 条可用</span>
-            </div>
-            <button
-              ref={managerTriggerRef}
-              type="button"
-              aria-label="管理线路"
-              onClick={() => setManagerOpen(true)}
-            >
-              管理线路 <span aria-hidden="true">→</span>
-            </button>
-          </header>
-          {showProviderBalance && !currentIsOfficial && (
-            <div className="route-balance-bar">
-              <span className="route-balance-bar-label">余额</span>
-              <code
-                className={balanceNotice || balanceErrorText ? "is-muted" : ""}
-              >
-                {balanceLabel}
-              </code>
+        <div className="provider-page-heading-actions">
+          <div
+            className="provider-page-heading-tools"
+            ref={setToolbarContainer}
+          />
+          <button
+            type="button"
+            className="provider-add"
+            onClick={onAdd}
+            disabled={designPreview}
+          >
+            <Plus size={16} />
+            添加线路
+          </button>
+        </div>
+      </header>
+      <div className="provider-page-signboard" aria-label="当前 Codex 线路站牌">
+        {!current && (
+          <div className="provider-current-unresolved" role="status">
+            <strong>
+              {currentSource === "external"
+                ? "正在使用外部配置"
+                : "尚未确认当前线路"}
+            </strong>
+            <p>请从下方选择线路；不会自动将第一条线路设为当前。</p>
+          </div>
+        )}
+        <StationSignboard
+          currentProvider={current}
+          designSample={designPreview ? CANONICAL_STATION : undefined}
+          runtimeLabel={
+            designPreview ? "设计预览 · 未检测本机" : codexStatusLabel
+          }
+          runtimeHint={
+            rendererUnlockPending
+              ? "暂时无法确认模型列表解锁状态，正在重新检测。"
+              : rendererUnlock?.attachable && rendererUnlock.injected === false
+                ? "调试连接可用，模型解锁未确认/未安装。"
+                : undefined
+          }
+          onOpenCodex={() => void onOpenCodex()}
+          openCodexLabel={codexButtonLabel}
+          openCodexDisabled={
+            designPreview ||
+            launchingCodex ||
+            codexProcess === null ||
+            !codexProcess.supported ||
+            !codexProcess.installed
+          }
+          latencyMs={
+            connection.kind === "connected"
+              ? (connection.latencyMs ?? null)
+              : null
+          }
+          testingLatency={connection.kind === "checking"}
+          onTestSpeed={
+            !designPreview && onTestSpeed && balanceBaseUrl && current
+              ? () => {
+                  void onTestSpeed(balanceBaseUrl, current.name);
+                }
+              : undefined
+          }
+          onEdit={!designPreview && current ? () => onEdit(current) : undefined}
+          undoReceipt={undoReceipt}
+        />
+      </div>
+      {balanceEnabled && (
+        <div className="route-balance-bar">
+          <span className="route-balance-bar-label">线路余额</span>
+          <span
+            className={`route-balance-value${balanceNotice || !balanceData ? " is-muted" : ""}`}
+            role="status"
+          >
+            {balanceLabel}
+          </span>
+          <button
+            type="button"
+            className="route-balance-refresh"
+            aria-label="刷新余额"
+            disabled={balanceQuery.isFetching}
+            onClick={() => void balanceQuery.refetch()}
+          >
+            <RefreshCw
+              size={14}
+              className={balanceQuery.isFetching ? "animate-spin" : undefined}
+            />
+            <span>刷新</span>
+          </button>
+        </div>
+      )}
+      <ProviderLineTable
+        readOnly={designPreview}
+        designSamples={designPreview ? CANONICAL_LINES : undefined}
+        toolbarContainer={toolbarContainer}
+        onManage={designPreview ? undefined : () => setManagerOpen(true)}
+        managerTriggerRef={managerTriggerRef}
+        providers={providers}
+        currentId={current?.id ?? ""}
+        switchingId={switchingId}
+        deletingProviderId={deletingProviderId}
+        labels={lineLabels}
+        onSwitch={activateLine}
+        onEdit={onEdit}
+        onDelete={onDelete}
+      />
+      {managerOpen && (
+        <div
+          className="route-line-manager-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setManagerOpen(false);
+          }}
+        >
+          <section
+            ref={managerRef}
+            className="route-line-manager"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="route-line-manager-title"
+            tabIndex={-1}
+          >
+            <header>
+              <div>
+                <h2 id="route-line-manager-title">管理线路</h2>
+                <p>切换、编辑、删除或添加 Codex 线路</p>
+              </div>
               <button
                 type="button"
-                className="route-balance-refresh"
-                aria-label="刷新余额"
-                title="刷新余额"
-                disabled={!balanceEnabled}
-                onClick={() => void balanceQuery.refetch()}
+                aria-label="关闭线路管理"
+                onClick={() => setManagerOpen(false)}
               >
-                {balanceQuery.isFetching ? (
-                  <LoaderCircle className="spin" size={14} />
-                ) : (
-                  <RefreshCw size={14} />
-                )}
+                <X size={18} />
               </button>
-            </div>
-          )}
-          <div className="route-line-rail">
-            <div className="route-line-scroll-shell">
-              <button
-                type="button"
-                className="route-line-scroll-arrow is-previous"
-                aria-label="显示上一条线路"
-                disabled={!routeLineScrollState.previous}
-                onClick={() => scrollRouteLines(-1)}
-              >
-                <ChevronLeft size={16} aria-hidden="true" />
-              </button>
-              <div
-                ref={routeLineScrollRef}
-                className="route-line-scroll"
-                role="list"
-                aria-label="线路"
-                tabIndex={0}
-                onKeyDown={(event) => {
-                  if (event.key === "ArrowLeft") {
-                    event.preventDefault();
-                    scrollRouteLines(-1);
-                  } else if (event.key === "ArrowRight") {
-                    event.preventDefault();
-                    scrollRouteLines(1);
-                  }
-                }}
-              >
-                {railLines.map((provider) => {
-                  const active = provider.id === current.id;
-                  const switching = switchingId === provider.id;
-                  return (
+            </header>
+            <label className="route-line-search">
+              <Search size={15} aria-hidden="true" />
+              <input
+                name="line-search"
+                aria-label="搜索线路"
+                autoComplete="off"
+                spellCheck={false}
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="搜索线路名称或来源…"
+                autoFocus
+              />
+            </label>
+            <div className="route-line-manager-list">
+              {visibleLines.map((provider) => {
+                const active = provider.id === current?.id;
+                const switching = switchingId === provider.id;
+                return (
+                  <article
+                    key={provider.id}
+                    className={active ? "is-active" : ""}
+                  >
                     <button
-                      key={provider.id}
                       type="button"
-                      className={`route-line-card${active ? " is-active" : ""}`}
-                      aria-pressed={active}
-                      aria-label={`${lineName(provider)}，${lineSource(provider)}${active ? "，当前线路" : ""}`}
+                      className="route-line-manager-main"
+                      aria-label={`切换到${lineName(provider)}`}
                       onClick={() => void activateLine(provider)}
                     >
                       <span className="route-line-mark" aria-hidden="true">
@@ -3527,188 +4429,92 @@ export function NewProvidersView({
                           lineMark(provider)
                         )}
                       </span>
-                      <span className="route-line-copy">
-                        <b>
-                          {active && <i aria-hidden="true" />}
-                          {lineName(provider)}
-                        </b>
+                      <span>
+                        <b>{lineName(provider)}</b>
                         <small>{lineSource(provider)}</small>
                       </span>
+                      {active && <Check size={16} aria-label="当前线路" />}
                     </button>
-                  );
-                })}
-              </div>
-              <button
-                type="button"
-                className="route-line-scroll-arrow is-next"
-                aria-label="显示下一条线路"
-                disabled={!routeLineScrollState.next}
-                onClick={() => scrollRouteLines(1)}
-              >
-                <ChevronRight size={16} aria-hidden="true" />
-              </button>
-            </div>
-            <button type="button" className="route-line-add" onClick={onAdd}>
-              <span aria-hidden="true">
-                <Plus size={18} />
-              </span>
-              添加线路
-            </button>
-          </div>
-        </div>
-        {managerOpen && (
-          <div
-            className="route-line-manager-backdrop"
-            role="presentation"
-            onMouseDown={(event) => {
-              if (event.target === event.currentTarget) setManagerOpen(false);
-            }}
-          >
-            <section
-              ref={managerRef}
-              className="route-line-manager"
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="route-line-manager-title"
-              tabIndex={-1}
-            >
-              <header>
-                <div>
-                  <h2 id="route-line-manager-title">管理线路</h2>
-                  <p>切换、编辑、删除或添加 Codex 线路</p>
-                </div>
-                <button
-                  type="button"
-                  aria-label="关闭线路管理"
-                  onClick={() => setManagerOpen(false)}
-                >
-                  <X size={18} />
-                </button>
-              </header>
-              <label className="route-line-search">
-                <Search size={15} aria-hidden="true" />
-                <input
-                  name="line-search"
-                  aria-label="搜索线路"
-                  autoComplete="off"
-                  spellCheck={false}
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                  placeholder="搜索线路名称或来源…"
-                  autoFocus
-                />
-              </label>
-              <div className="route-line-manager-list">
-                {visibleLines.map((provider) => {
-                  const active = provider.id === current.id;
-                  const switching = switchingId === provider.id;
-                  return (
-                    <article
-                      key={provider.id}
-                      className={active ? "is-active" : ""}
-                    >
-                      <button
-                        type="button"
-                        className="route-line-manager-main"
-                        aria-label={`切换到${lineName(provider)}`}
-                        onClick={() => void activateLine(provider)}
-                      >
-                        <span className="route-line-mark" aria-hidden="true">
-                          {switching ? (
-                            <LoaderCircle className="spin" size={16} />
+                    {isOfficialLine(provider) ? (
+                      <span className="route-line-official-note">
+                        由 Codex 管理
+                      </span>
+                    ) : (
+                      <div className="route-line-actions">
+                        <button
+                          type="button"
+                          className="route-line-edit"
+                          aria-label={`编辑${lineName(provider)}`}
+                          title="编辑线路"
+                          disabled={
+                            Boolean(deletingProviderId) || Boolean(switchingId)
+                          }
+                          onClick={() => {
+                            setManagerOpen(false);
+                            onEdit(provider);
+                          }}
+                        >
+                          <Pencil size={15} />
+                        </button>
+                        <button
+                          type="button"
+                          className="route-line-edit route-line-delete"
+                          aria-label={`删除${lineName(provider)}`}
+                          title={
+                            active
+                              ? "当前线路正在使用，请先切换到其他线路"
+                              : "删除线路"
+                          }
+                          disabled={
+                            active ||
+                            Boolean(deletingProviderId) ||
+                            Boolean(switchingId)
+                          }
+                          onClick={() => void onDelete(provider)}
+                        >
+                          {deletingProviderId === provider.id ? (
+                            <LoaderCircle className="spin" size={15} />
                           ) : (
-                            lineMark(provider)
+                            <Trash2 size={15} />
                           )}
-                        </span>
-                        <span>
-                          <b>{lineName(provider)}</b>
-                          <small>{lineSource(provider)}</small>
-                        </span>
-                        {active && <Check size={16} aria-label="当前线路" />}
-                      </button>
-                      {isOfficialLine(provider) ? (
-                        <span className="route-line-official-note">
-                          由 Codex 管理
-                        </span>
-                      ) : (
-                        <div className="route-line-actions">
-                          <button
-                            type="button"
-                            className="route-line-edit"
-                            aria-label={`编辑${lineName(provider)}`}
-                            title="编辑线路"
-                            disabled={
-                              Boolean(deletingProviderId) ||
-                              Boolean(switchingId)
-                            }
-                            onClick={() => {
-                              setManagerOpen(false);
-                              onEdit(provider);
-                            }}
-                          >
-                            <Pencil size={15} />
-                          </button>
-                          <button
-                            type="button"
-                            className="route-line-edit route-line-delete"
-                            aria-label={`删除${lineName(provider)}`}
-                            title={
-                              active
-                                ? "当前线路正在使用，请先切换到其他线路"
-                                : "删除线路"
-                            }
-                            disabled={
-                              active ||
-                              Boolean(deletingProviderId) ||
-                              Boolean(switchingId)
-                            }
-                            onClick={() => void onDelete(provider)}
-                          >
-                            {deletingProviderId === provider.id ? (
-                              <LoaderCircle className="spin" size={15} />
-                            ) : (
-                              <Trash2 size={15} />
-                            )}
-                          </button>
-                        </div>
-                      )}
-                    </article>
-                  );
-                })}
-                {!visibleLines.length && (
-                  <p className="route-line-empty">没有匹配的线路。</p>
-                )}
-              </div>
-              <button
-                type="button"
-                className="primary route-line-manager-add"
-                onClick={() => {
-                  setManagerOpen(false);
-                  onAdd();
-                }}
-              >
-                <Plus size={15} /> 添加线路
-              </button>
-            </section>
-          </div>
-        )}
-      </div>
-      <div className="route-meta">
-        <span>
-          当前模型：<code>{model}</code>
-        </span>
-        <span>
-          连接状态：
-          <b className={connection.kind === "error" ? "error" : "ok"}>
-            {connectionLabel}
-          </b>
-        </span>
-      </div>
+                        </button>
+                      </div>
+                    )}
+                  </article>
+                );
+              })}
+              {!visibleLines.length && (
+                <p className="route-line-empty">没有匹配的线路。</p>
+              )}
+            </div>
+            <button
+              type="button"
+              className="primary route-line-manager-add"
+              onClick={() => {
+                setManagerOpen(false);
+                onAdd();
+              }}
+            >
+              <Plus size={15} /> 添加线路
+            </button>
+          </section>
+        </div>
+      )}
     </section>
   );
 }
 
+const lineColors = [
+  ["#537197", "钴蓝"],
+  ["#776894", "紫罗兰"],
+  ["#8F607A", "品红"],
+  ["#357B7F", "青绿"],
+  ["#61774B", "苔绿"],
+  ["#8F6446", "赭石"],
+] as const;
+
 export function ProviderEditor({
+  appId = "codex",
   editor,
   setEditor,
   showKey,
@@ -3732,6 +4538,7 @@ export function ProviderEditor({
   onRequestClose,
   escapeDisabled,
 }: {
+  appId?: AppId;
   editor: ReturnType<typeof providerDraft>;
   setEditor: (value: ReturnType<typeof providerDraft> | null) => void;
   showKey: boolean;
@@ -3755,6 +4562,23 @@ export function ProviderEditor({
   onRequestClose: () => void;
   escapeDisabled: boolean;
 }) {
+  const isCodex = appId === "codex";
+  const toolName = isNativeToolAppId(appId) ? nativeToolNames[appId] : "Codex";
+  const needsModel = appId !== "claude" && appId !== "gemini";
+  const nativeProtocolOptions =
+    appId === "opencode"
+      ? [
+          ["@ai-sdk/openai-compatible", "Chat Completions"],
+          ["@ai-sdk/openai", "Responses"],
+          ["@ai-sdk/anthropic", "Anthropic"],
+          ["@ai-sdk/google", "Gemini"],
+        ]
+      : [
+          ["openai-completions", "Chat Completions"],
+          ["openai-responses", "Responses"],
+          ["anthropic-messages", "Anthropic"],
+          ["google-generative-ai", "Gemini"],
+        ];
   const [commonConfigOpen, setCommonConfigOpen] = useState(false);
   const [openReasoningRow, setOpenReasoningRow] = useState<number | null>(null);
   const [openInstructionsRow, setOpenInstructionsRow] = useState<number | null>(
@@ -3823,10 +4647,15 @@ export function ProviderEditor({
       [editor.baseUrl, "provider-base-url"],
       [editor.apiKey, "provider-api-key"],
       [editor.model, "provider-model"],
-    ].find(([value]) => !value.trim());
-    const missingModel = editor.catalogModels.findIndex(
-      (item) => !item.model.trim(),
+    ].find(
+      ([value, field]) =>
+        !value.trim() &&
+        (field !== "provider-api-key" || isCodex) &&
+        (field !== "provider-model" || needsModel),
     );
+    const missingModel = !isCodex
+      ? -1
+      : editor.catalogModels.findIndex((item) => !item.model.trim());
     if (missing || missingModel !== -1) {
       const selector = missing
         ? `[name="${missing[1]}"]`
@@ -3842,6 +4671,13 @@ export function ProviderEditor({
     setEditor({ ...editor, [key]: value });
   const detectedDefaultFormat =
     apiFormatDetection?.formats[editor.model.trim()] ?? null;
+  let previewOrigin = "尚未填写有效地址";
+  try {
+    const url = new URL(editor.baseUrl);
+    if (["http:", "https:"].includes(url.protocol)) previewOrigin = url.origin;
+  } catch {
+    /* Invalid drafts never echo potential credentials into the preview. */
+  }
   const remoteCompactionAvailable = codexRemoteCompactionAllowed(
     editor.apiFormat,
     codexProbeModels(editor.model, editor.catalogModels),
@@ -3873,20 +4709,37 @@ export function ProviderEditor({
         <button
           type="button"
           className="secondary editor-back"
+          aria-label="返回线路"
           onClick={onRequestClose}
           disabled={savingProvider}
         >
-          <ChevronLeft size={18} /> 返回线路
+          <ChevronLeft size={16} /> 线路
         </button>
         <div className="editor-heading">
-          <h2 id="provider-editor-title" ref={headingRef} tabIndex={-1}>
-            {editor.original ? "编辑线路" : "新建线路"}
+          <h2
+            id="provider-editor-title"
+            ref={headingRef}
+            tabIndex={-1}
+            aria-label={editor.original ? "编辑线路" : "新建线路"}
+          >
+            {editor.name.trim() || "未命名线路"}
           </h2>
-          <p>保存后切换为当前线路；运行中的 Codex 可能需要重启。</p>
+          <span>
+            {toolName} · {editor.original ? "编辑线路" : "新建线路"}
+          </span>
         </div>
         <span className="editor-draft-status" role="status">
           {savingProvider ? "正在保存…" : dirty ? "未保存修改" : ""}
         </span>
+        {editor.original && (
+          <button
+            className="danger"
+            onClick={onDelete}
+            disabled={savingProvider}
+          >
+            <Trash2 size={15} /> 删除线路
+          </button>
+        )}
       </header>
       <div className="editor-scroll">
         <fieldset className="editor-form" disabled={savingProvider}>
@@ -3899,19 +4752,19 @@ export function ProviderEditor({
           {validationAttempted &&
             (!editor.name.trim() ||
               !editor.baseUrl.trim() ||
-              !editor.apiKey.trim() ||
-              !editor.model.trim()) && (
+              (isCodex && !editor.apiKey.trim()) ||
+              (needsModel && !editor.model.trim())) && (
               <p className="editor-feedback" role="alert">
-                请填写线路名称、API 请求地址、API Key 和默认模型。
+                {isCodex
+                  ? "请填写线路名称、API 请求地址、API Key 和默认模型。"
+                  : "请填写标有 * 的必填项。"}
               </p>
             )}
-          {!editor.original && (
-            <div className="provider-template" role="status">
+          {isCodex && !editor.original && (
+            <div className="editor-template-actions">
               <div>
-                <b>Chimera 中转站默认模板</b>
-                <small>
-                  已填入 Responses 地址和默认模型；只需粘贴 API Key。
-                </small>
+                <b>默认模板</b>
+                <small>请核对地址、模型和密钥后再保存。</small>
               </div>
               <button
                 type="button"
@@ -3926,34 +4779,91 @@ export function ProviderEditor({
             className="editor-basic"
             aria-labelledby="editor-basic-title"
           >
-            <h3 id="editor-basic-title">
-              基础连接 <small>* 为必填项</small>
-            </h3>
+            <h3 id="editor-basic-title">基础</h3>
             <div className="editor-basic-grid">
-              <Field
-                label="线路名称 *"
-                name="provider-name"
-                value={editor.name}
-                onChange={(value) => patch("name", value)}
-                placeholder="例如 默认线路或备用线路"
-              />
-              <Field
-                label="官网链接（可选）"
-                name="provider-website"
-                value={editor.websiteUrl}
-                onChange={(value) => patch("websiteUrl", value)}
-                placeholder="https://example.com"
-              />
+              <div className="editor-name-row">
+                <Field
+                  label="线路名称 *"
+                  name="provider-name"
+                  value={editor.name}
+                  onChange={(value) => patch("name", value)}
+                  placeholder="例如 默认线路或备用线路"
+                />
+                <details className="editor-appearance">
+                  <summary
+                    aria-label="修改线路外观"
+                    aria-disabled={savingProvider}
+                    onClick={(event) => {
+                      if (savingProvider) event.preventDefault();
+                    }}
+                  >
+                    外观
+                    <span
+                      className="provider-row-badge"
+                      aria-hidden="true"
+                      style={{ background: editor.iconColor || "#537197" }}
+                    >
+                      {editor.name.trim().slice(0, 1) || "未"}
+                    </span>
+                    <span>
+                      {lineColors.find(
+                        ([color]) =>
+                          color.toLowerCase() ===
+                          editor.iconColor?.toLowerCase(),
+                      )?.[1] ?? (editor.iconColor ? "自定义" : "默认")}{" "}
+                      · 自动生成
+                    </span>
+                    修改 <ChevronDown size={14} />
+                  </summary>
+                  <label>
+                    线路颜色
+                    <select
+                      aria-label="线路颜色"
+                      value={editor.iconColor ?? ""}
+                      onChange={(event) =>
+                        setEditor({
+                          ...editor,
+                          iconColor: event.target.value || undefined,
+                        })
+                      }
+                    >
+                      <option value="">默认（钴蓝）</option>
+                      {editor.iconColor &&
+                        !lineColors.some(
+                          ([color]) => color === editor.iconColor,
+                        ) && (
+                          <option value={editor.iconColor}>
+                            当前自定义颜色
+                          </option>
+                        )}
+                      {lineColors.map(([color, name]) => (
+                        <option key={color} value={color}>
+                          {name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </details>
+              </div>
+
               <Field
                 label="API 请求地址 *"
                 name="provider-base-url"
                 value={editor.baseUrl}
                 onChange={(value) => patch("baseUrl", value)}
-                placeholder="https://api.example.com/v1"
-                hint="Chimera 中转站和自定义线路都可编辑 URL。"
+                placeholder={
+                  appId === "claude" || appId === "gemini"
+                    ? "https://api.example.com"
+                    : "https://api.example.com/v1"
+                }
+                hint={
+                  isCodex
+                    ? "经本地路由连接时，仅填域名会自动补 /v1；已带 /v1 不会重复，自定义路径会保留。直连时，请按服务商文档填写完整基础地址。"
+                    : `按服务商文档填写 ${toolName} 的完整基础地址，不自动追加路径。`
+                }
               />
               <label>
-                API Key *
+                {isCodex ? "API Key *" : "API Key"}
                 <div className="password-field">
                   <input
                     name="provider-api-key"
@@ -3971,497 +4881,48 @@ export function ProviderEditor({
                     {showKey ? <EyeOff size={16} /> : <Eye size={16} />}
                   </button>
                 </div>
-              </label>
-              <label className="editor-default-model">
-                默认模型 *
-                <div className="model-input">
-                  <input
-                    name="provider-model"
-                    autoComplete="off"
-                    spellCheck={false}
-                    value={editor.model}
-                    onChange={(event) => patch("model", event.target.value)}
-                    placeholder="先获取模型列表，或手动输入"
-                  />
-                  <button
-                    onClick={onFetchModels}
-                    disabled={fetchingModels || savingProvider}
-                  >
-                    {fetchingModels ? (
-                      <LoaderCircle className="spin" size={15} />
-                    ) : (
-                      <Download size={15} />
-                    )}{" "}
-                    获取模型
-                  </button>
-                </div>
+                <small>预览仅显示填写状态，不展示密钥内容。</small>
               </label>
             </div>
           </section>
-          <div className="advanced-group model-mapping">
-            <div className="advanced-section-heading">
-              <div>
-                <b>模型映射</b>
-                <small>
-                  未添加映射时使用默认模型；添加后需填写实际请求模型。显示名可选，留空使用模型
-                  ID。
-                </small>
-              </div>
-              <button
-                type="button"
-                className="secondary compact"
-                onClick={() => {
-                  // A row's index shifts whenever the array grows, so any
-                  // panel expanded by index must collapse first or it can
-                  // end up rendered against the wrong row.
-                  setOpenReasoningRow(null);
-                  setOpenInstructionsRow(null);
-                  setEditor({
-                    ...editor,
-                    catalogModels: [
-                      ...editor.catalogModels,
-                      { model: "", displayName: "", contextWindow: "" },
-                    ],
-                  });
-                }}
-              >
-                添加模型
-              </button>
-            </div>
-            <div className="mapping-head">
-              <span>菜单显示名（可选）</span>
-              <span>实际请求模型</span>
-              <span>上下文 / tokens</span>
-              <span>思考等级</span>
-              <span>操作</span>
-            </div>
-            {!editor.catalogModels.length && (
-              <p className="mapping-empty">
-                尚未添加自定义映射。可直接使用默认模型，或添加一条映射。
-              </p>
-            )}
-            {editor.catalogModels.map((item, index) => (
-              // Rows are only ever appended or removed, never reordered
-              // (no drag-and-drop here), so the positional index is a
-              // stable key. Keying on `item.model` instead broke the
-              // "实际请求模型" input: every keystroke changed the key,
-              // which made React remount the row and drop input focus.
-              <div className="mapping-row" key={index}>
-                <label className="mapping-field">
-                  <span>菜单显示名（可选）</span>
-                  <input
-                    aria-label={`模型 ${index + 1} 显示名`}
-                    value={item.displayName ?? ""}
-                    onChange={(event) => {
-                      const catalogModels = [...editor.catalogModels];
-                      catalogModels[index] = {
-                        ...item,
-                        displayName: event.target.value,
-                      };
-                      setEditor({ ...editor, catalogModels });
-                    }}
-                    placeholder="菜单显示名"
-                  />
-                </label>
-                <label className="mapping-field">
-                  <span>实际请求模型</span>
-                  <input
-                    id={`mapping-model-${index}`}
-                    aria-label={`模型 ${index + 1} 实际请求模型`}
-                    aria-invalid={validationAttempted && !item.model.trim()}
-                    aria-describedby={
-                      validationAttempted && !item.model.trim()
-                        ? `mapping-error-${index}`
-                        : undefined
-                    }
-                    value={item.model}
-                    onChange={(event) => {
-                      const catalogModels = [...editor.catalogModels];
-                      catalogModels[index] = {
-                        ...item,
-                        model: event.target.value,
-                      };
-                      setEditor({ ...editor, catalogModels });
-                    }}
-                    placeholder="实际请求模型"
-                  />
-                </label>
-                <label className="mapping-field">
-                  <span>上下文 / tokens（可选）</span>
-                  <input
-                    aria-label={`模型 ${index + 1} 上下文窗口`}
-                    type="number"
-                    min="1"
-                    inputMode="numeric"
-                    value={item.contextWindow ?? ""}
-                    onChange={(event) => {
-                      const catalogModels = [...editor.catalogModels];
-                      catalogModels[index] = {
-                        ...item,
-                        contextWindow: event.target.value.replace(/[^\d]/g, ""),
-                      };
-                      setEditor({ ...editor, catalogModels });
-                    }}
-                    placeholder="上下文"
-                  />
-                </label>
-                <div className="mapping-field">
-                  <span>思考等级</span>
-                  <button
-                    type="button"
-                    className="reasoning-trigger"
-                    aria-label={`模型 ${index + 1} 思考等级`}
-                    aria-controls={`reasoning-panel-${index}`}
-                    aria-expanded={openReasoningRow === index}
-                    onClick={() =>
-                      setOpenReasoningRow(
-                        openReasoningRow === index ? null : index,
-                      )
-                    }
-                  >
-                    <span
-                      className={
-                        (item.reasoningLevels?.length ?? 0) === 0
-                          ? "reasoning-trigger-placeholder"
-                          : undefined
-                      }
-                    >
-                      {(item.reasoningLevels?.length ?? 0) > 0
-                        ? `${item.reasoningLevels!.length} 档${
-                            item.defaultReasoningLevel
-                              ? ` · ${item.defaultReasoningLevel}`
-                              : ""
-                          }`
-                        : "自动"}
-                    </span>
-                    <ChevronDown
-                      size={14}
-                      style={{
-                        transform:
-                          openReasoningRow === index
-                            ? "rotate(180deg)"
-                            : "rotate(0deg)",
-                        transition: "transform 0.15s ease",
-                      }}
-                    />
-                  </button>
-                </div>
-                <div className="mapping-actions">
-                  <button
-                    type="button"
-                    className={
-                      "instructions-trigger" +
-                      (item.baseInstructions?.trim() ? " has-value" : "")
-                    }
-                    aria-label={`模型 ${index + 1} 系统提示词`}
-                    aria-expanded={openInstructionsRow === index}
-                    aria-controls={`instructions-panel-${index}`}
-                    title="系统提示词 / Base Instructions"
-                    onClick={() =>
-                      setOpenInstructionsRow(
-                        openInstructionsRow === index ? null : index,
-                      )
-                    }
-                  >
-                    <FileText size={15} />
-                    <span>
-                      {item.baseInstructions?.trim() ? "已设置" : "指令"}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-button"
-                    aria-label={`删除模型 ${index + 1} 映射`}
-                    onClick={() => {
-                      // See the "添加模型" handler above: collapse any
-                      // index-addressed panel before the array shifts.
-                      setOpenReasoningRow(null);
-                      setOpenInstructionsRow(null);
-                      setEditor({
-                        ...editor,
-                        catalogModels: editor.catalogModels.filter(
-                          (_, i) => i !== index,
-                        ),
-                      });
-                    }}
-                  >
-                    <Trash2 size={15} />
-                  </button>
-                </div>
-                {validationAttempted && !item.model.trim() && (
-                  <p
-                    className="mapping-error"
-                    id={`mapping-error-${index}`}
-                    role="alert"
-                  >
-                    请填写实际请求模型，或删除此行。
-                  </p>
-                )}
-                {openReasoningRow === index && (
+          <section
+            className="editor-protocol"
+            aria-labelledby="editor-protocol-title"
+          >
+            <h3 id="editor-protocol-title">协议与模型</h3>
+            {isCodex && (
+              <div className="editor-format">
+                <span>协议</span>
+                <div className="editor-format-line">
                   <div
-                    className="reasoning-panel"
-                    id={`reasoning-panel-${index}`}
+                    className="editor-format-options"
+                    role="radiogroup"
+                    aria-label="上游格式"
                   >
-                    <div className="reasoning-panel-head">
-                      支持等级（可多选）
-                    </div>
-                    <div className="reasoning-checkboxes">
-                      {CODEX_REASONING_LEVELS.map((level) => {
-                        const checked = (item.reasoningLevels ?? []).includes(
-                          level,
-                        );
-                        return (
-                          <label key={level} className="reasoning-level-option">
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={() => {
-                                const current = new Set(
-                                  item.reasoningLevels ?? [],
-                                );
-                                if (current.has(level)) {
-                                  current.delete(level);
-                                } else {
-                                  current.add(level);
-                                }
-                                const nextLevels = (
-                                  CODEX_REASONING_LEVELS as readonly string[]
-                                ).filter((l) => current.has(l));
-                                const catalogModels = [...editor.catalogModels];
-                                const next: CodexCatalogModel = { ...item };
-                                if (nextLevels.length > 0) {
-                                  next.reasoningLevels = nextLevels;
-                                  if (
-                                    next.defaultReasoningLevel &&
-                                    !nextLevels.includes(
-                                      next.defaultReasoningLevel,
-                                    )
-                                  ) {
-                                    delete next.defaultReasoningLevel;
-                                  }
-                                } else {
-                                  delete next.reasoningLevels;
-                                  delete next.defaultReasoningLevel;
-                                }
-                                catalogModels[index] = next;
-                                setEditor({ ...editor, catalogModels });
-                              }}
-                            />
-                            <span>{level}</span>
-                          </label>
-                        );
-                      })}
-                    </div>
-                    {(item.reasoningLevels?.length ?? 0) > 0 && (
-                      <div className="reasoning-panel-default">
-                        <span>默认等级</span>
-                        <select
-                          aria-label={`模型 ${index + 1} 默认思考等级`}
-                          value={item.defaultReasoningLevel ?? ""}
-                          onChange={(event) => {
-                            const catalogModels = [...editor.catalogModels];
-                            const next: CodexCatalogModel = { ...item };
-                            if (event.target.value) {
-                              next.defaultReasoningLevel = event.target.value;
-                            } else {
-                              delete next.defaultReasoningLevel;
-                            }
-                            catalogModels[index] = next;
-                            setEditor({ ...editor, catalogModels });
-                          }}
-                        >
-                          <option value="">自动</option>
-                          {item.reasoningLevels!.map((level) => (
-                            <option key={level} value={level}>
-                              {level}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    )}
+                    {(
+                      [
+                        ["auto", "自动"],
+                        ["openai_responses", "Responses"],
+                        ["openai_chat", "Chat"],
+                        ["anthropic", "Anthropic"],
+                      ] as const
+                    ).map(([value, label]) => (
+                      <label key={value}>
+                        <input
+                          type="radio"
+                          name="provider-api-format"
+                          value={value}
+                          checked={editor.apiFormat === value}
+                          onChange={() => patch("apiFormat", value)}
+                        />
+                        <span>{label}</span>
+                      </label>
+                    ))}
                   </div>
-                )}
-                {openInstructionsRow === index && (
-                  <div
-                    className="instructions-panel"
-                    id={`instructions-panel-${index}`}
-                  >
-                    <div className="instructions-panel-head">
-                      系统提示词 / Base Instructions（可选）
-                    </div>
-                    <textarea
-                      aria-label="系统提示词"
-                      value={item.baseInstructions ?? ""}
-                      onChange={(event) => {
-                        const catalogModels = [...editor.catalogModels];
-                        const next: CodexCatalogModel = { ...item };
-                        if (event.target.value) {
-                          next.baseInstructions = event.target.value;
-                        } else {
-                          delete next.baseInstructions;
-                        }
-                        catalogModels[index] = next;
-                        setEditor({ ...editor, catalogModels });
-                      }}
-                      placeholder="留空则使用默认模板"
-                    />
-                    <small>
-                      覆盖该模型的身份说明/系统前言；留空则使用默认模板。
-                    </small>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-          <details className="advanced-options" ref={advancedRef}>
-            <summary>
-              高级配置 <span>Codex 功能 · 通用配置 · 协议与兼容性</span>
-            </summary>
-            <div className="advanced-options-body">
-              <p className="advanced-intro">
-                按需调整此线路功能与协议。共享通用配置的修改会影响启用它的线路。
-              </p>
-              <div className="advanced-group codex-feature-options">
-                <div className="advanced-section-heading">
-                  <div>
-                    <b>Codex 功能</b>
-                    <small>每条线路独立保存，未开启的功能不会写入配置。</small>
-                  </div>
+                  <small title="自动按模型族选择；保存时不探测上游，网关协议不一致时请明确指定。">
+                    自动按模型族选择协议
+                  </small>
                 </div>
-                <label className="toggle-field">
-                  <span>
-                    <b>目标模式</b>
-                    <small>在 Codex 中开启目标规划能力。</small>
-                  </span>
-                  <input
-                    name="provider-goal-mode"
-                    type="checkbox"
-                    checked={editor.goalModeEnabled}
-                    onChange={(event) =>
-                      setEditor({
-                        ...editor,
-                        goalModeEnabled: event.target.checked,
-                      })
-                    }
-                  />
-                </label>
-                <label className="toggle-field">
-                  <span>
-                    <b>
-                      远程上下文压缩
-                      <em className="experimental-tag">实验性</em>
-                    </b>
-                    <small>
-                      {remoteCompactionAvailable
-                        ? "仅原生 Responses 上游可用，由上游压缩长对话，默认关闭。"
-                        : "经 Chat 或 Anthropic 转换的线路不支持远程压缩。"}
-                    </small>
-                  </span>
-                  <input
-                    name="provider-remote-compaction"
-                    type="checkbox"
-                    checked={
-                      editor.remoteCompactionEnabled &&
-                      remoteCompactionAvailable
-                    }
-                    disabled={!remoteCompactionAvailable}
-                    onChange={(event) =>
-                      setEditor({
-                        ...editor,
-                        remoteCompactionEnabled: event.target.checked,
-                      })
-                    }
-                  />
-                </label>
-                <label className="toggle-field">
-                  <span>
-                    <b>应用通用配置</b>
-                    <small>切换到这条线路时合并共享的 Codex 配置。</small>
-                  </span>
-                  <input
-                    name="provider-common-config"
-                    type="checkbox"
-                    checked={editor.commonConfigEnabled}
-                    disabled={commonConfigLoading || !commonConfigLoaded}
-                    onChange={(event) =>
-                      setEditor({
-                        ...editor,
-                        commonConfigEnabled: event.target.checked,
-                      })
-                    }
-                  />
-                </label>
-                <div className="common-config-actions">
-                  <span>
-                    {commonConfigLoading
-                      ? "正在读取通用配置…"
-                      : commonConfigLoaded
-                        ? commonConfigSnippet.trim()
-                          ? "已设置通用配置"
-                          : "尚未设置通用配置"
-                        : "通用配置暂时不可用"}
-                  </span>
-                  <button
-                    type="button"
-                    className="link-button"
-                    aria-expanded={commonConfigOpen}
-                    disabled={!commonConfigLoaded}
-                    onClick={() => setCommonConfigOpen(!commonConfigOpen)}
-                  >
-                    {commonConfigOpen ? "收起编辑器" : "编辑通用配置"}
-                  </button>
-                </div>
-                {commonConfigOpen && (
-                  <label className="common-config-editor">
-                    通用 config.toml
-                    <textarea
-                      name="provider-common-config-snippet"
-                      spellCheck={false}
-                      value={commonConfigSnippet}
-                      onChange={(event) =>
-                        onCommonConfigChange(event.target.value)
-                      }
-                      placeholder="例如 [features] 下需要在多条线路间共享的配置"
-                    />
-                    <small>
-                      共享内容影响启用通用配置的线路；供应商地址、密钥、模型和模型目录不会共享。
-                    </small>
-                    {commonConfigWarning && (
-                      <small className="error-text">
-                        {commonConfigWarning}
-                      </small>
-                    )}
-                  </label>
-                )}
-              </div>
-              <label>
-                上游格式
-                <select
-                  name="provider-api-format"
-                  value={editor.apiFormat}
-                  onChange={(event) =>
-                    patch(
-                      "apiFormat",
-                      event.target.value as CodexApiFormatSelection,
-                    )
-                  }
-                >
-                  <option value="auto">自动检测（保存时识别）</option>
-                  <option value="openai_responses">
-                    Responses（明确指定）
-                  </option>
-                  <option value="openai_chat">
-                    Chat Completions（明确指定，需路由接管）
-                  </option>
-                  <option value="anthropic">
-                    Anthropic Messages（明确指定，需路由接管）
-                  </option>
-                </select>
-                <small>
-                  自动模式按模型族选择协议：GPT、o1/o3/o4、Codex 和 ChatGPT 使用
-                  Responses；Claude 使用 Anthropic Messages；其他模型使用 Chat
-                  Completions。显式指定始终优先。
-                </small>
                 {editor.apiFormat === "auto" && detectedDefaultFormat && (
                   <small>
                     已识别：
@@ -4510,181 +4971,737 @@ export function ProviderEditor({
                       </div>
                     </div>
                   )}
-              </label>
-              <div className="advanced-group">
-                <label className="toggle-field">
-                  <span>
-                    <b>完整 API 地址</b>
-                    <small>
-                      地址已含完整请求路径时开启，不再自动补全路径。
-                    </small>
-                  </span>
-                  <input
-                    name="provider-full-url"
-                    type="checkbox"
-                    checked={editor.isFullUrl}
-                    onChange={(event) =>
-                      setEditor({ ...editor, isFullUrl: event.target.checked })
-                    }
-                  />
-                </label>
-                <label>
-                  模型列表地址（可选）
-                  <input
-                    name="provider-models-url"
-                    type="url"
-                    autoComplete="url"
-                    spellCheck={false}
-                    value={editor.modelsUrl}
-                    onChange={(event) => patch("modelsUrl", event.target.value)}
-                    placeholder="https://api.example.com/v1/models"
-                  />
-                  <small>上游的模型接口不同于主接口时填写。</small>
-                </label>
-                <label>
-                  自定义 User-Agent（可选）
-                  <input
-                    name="provider-user-agent"
-                    autoComplete="off"
-                    spellCheck={false}
-                    value={editor.customUserAgent}
-                    onChange={(event) =>
-                      patch("customUserAgent", event.target.value)
-                    }
-                    placeholder="留空使用默认请求标识"
-                  />
-                </label>
               </div>
-              {editor.apiFormat === "anthropic" && (
-                <div className="advanced-group">
-                  <label>
-                    Anthropic 认证字段
-                    <select
-                      name="provider-anthropic-auth"
-                      value={editor.anthropicAuthField}
-                      onChange={(event) =>
-                        patch("anthropicAuthField", event.target.value)
-                      }
-                    >
-                      <option value="ANTHROPIC_AUTH_TOKEN">
-                        Authorization: Bearer
-                      </option>
-                      <option value="ANTHROPIC_API_KEY">x-api-key</option>
-                    </select>
-                  </label>
-                  <label>
-                    最大输出 tokens（可选）
-                    <input
-                      name="provider-max-output-tokens"
-                      type="number"
-                      min="1"
-                      inputMode="numeric"
-                      value={editor.maxOutputTokens}
-                      onChange={(event) =>
-                        patch(
-                          "maxOutputTokens",
-                          event.target.value.replace(/[^\d]/g, ""),
-                        )
-                      }
-                      placeholder="默认 8192"
-                    />
-                  </label>
-                  <label className="toggle-field">
-                    <span>
-                      <b>模拟 Claude Code 客户端</b>
-                      <small>
-                        仅当上游明确要求 Claude Code 请求特征时开启。
-                      </small>
+            )}
+            {(appId === "opencode" || appId === "pi") && (
+              <label>
+                接口类型
+                <select
+                  aria-label="接口类型"
+                  value={editor.nativeProtocol}
+                  onChange={(event) =>
+                    patch("nativeProtocol", event.target.value)
+                  }
+                >
+                  {!nativeProtocolOptions.some(
+                    ([value]) => value === editor.nativeProtocol,
+                  ) && (
+                    <option value={editor.nativeProtocol}>
+                      {editor.nativeProtocol}
+                    </option>
+                  )}
+                  {nativeProtocolOptions.map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {appId === "claude" && (
+              <label>
+                认证方式
+                <select
+                  aria-label="认证方式"
+                  value={editor.anthropicAuthField}
+                  onChange={(event) =>
+                    patch("anthropicAuthField", event.target.value)
+                  }
+                >
+                  <option value="ANTHROPIC_AUTH_TOKEN">Bearer Token</option>
+                  <option value="ANTHROPIC_API_KEY">API Key (x-api-key)</option>
+                </select>
+              </label>
+            )}
+            <label className="editor-default-model">
+              {isCodex
+                ? "默认模型 *"
+                : needsModel
+                  ? "模型 ID *"
+                  : "默认模型（可选）"}
+              <div className="model-input">
+                <input
+                  name="provider-model"
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={editor.model}
+                  onChange={(event) => patch("model", event.target.value)}
+                  placeholder={
+                    isCodex
+                      ? "先获取模型列表，或手动输入"
+                      : "填写服务商提供的模型 ID"
+                  }
+                />
+                {isCodex && (
+                  <button
+                    onClick={onFetchModels}
+                    disabled={fetchingModels || savingProvider}
+                  >
+                    {fetchingModels ? (
+                      <LoaderCircle className="spin" size={15} />
+                    ) : (
+                      <Download size={15} />
+                    )}{" "}
+                    获取模型
+                  </button>
+                )}
+              </div>
+            </label>
+          </section>
+          {isCodex && (
+            <>
+              <div className="advanced-group model-mapping">
+                <div className="advanced-section-heading">
+                  <div>
+                    <b title="未添加映射时使用默认模型；显示名可选，留空使用模型 ID。">
+                      模型映射
+                    </b>{" "}
+                    <span aria-label="映射数量">
+                      {editor.catalogModels.length}
                     </span>
-                    <input
-                      name="provider-impersonate-claude-code"
-                      type="checkbox"
-                      checked={editor.impersonateClaudeCode}
-                      onChange={(event) =>
-                        setEditor({
-                          ...editor,
-                          impersonateClaudeCode: event.target.checked,
-                        })
-                      }
-                    />
-                  </label>
+                  </div>
+                  <button
+                    type="button"
+                    className="secondary compact"
+                    onClick={() => {
+                      // A row's index shifts whenever the array grows, so any
+                      // panel expanded by index must collapse first or it can
+                      // end up rendered against the wrong row.
+                      setOpenReasoningRow(null);
+                      setOpenInstructionsRow(null);
+                      setEditor({
+                        ...editor,
+                        catalogModels: [
+                          ...editor.catalogModels,
+                          { model: "", displayName: "", contextWindow: "" },
+                        ],
+                      });
+                    }}
+                  >
+                    添加模型
+                  </button>
                 </div>
-              )}
-              {editor.apiFormat === "openai_chat" && (
-                <div className="advanced-group">
-                  <label>
-                    提示词缓存路由
-                    <select
-                      name="provider-prompt-cache-routing"
-                      value={editor.promptCacheRouting}
-                      onChange={(event) =>
-                        patch("promptCacheRouting", event.target.value)
-                      }
-                    >
-                      <option value="auto">自动（推荐）</option>
-                      <option value="enabled">开启</option>
-                      <option value="disabled">关闭</option>
-                    </select>
-                    <small>严格网关遇到未知缓存字段时可选择关闭。</small>
-                  </label>
-                  <label className="toggle-field">
-                    <span>
-                      <b>支持思考模式</b>
-                      <small>将 Codex 思考开关转换为上游 Chat 参数。</small>
-                    </span>
-                    <input
-                      name="provider-supports-thinking"
-                      type="checkbox"
-                      checked={
-                        editor.codexChatReasoning.supportsThinking === true
-                      }
-                      onChange={(event) =>
-                        setEditor({
-                          ...editor,
-                          codexChatReasoning: {
-                            ...editor.codexChatReasoning,
-                            supportsThinking: event.target.checked,
-                            supportsEffort: event.target.checked
-                              ? editor.codexChatReasoning.supportsEffort
-                              : false,
-                          },
-                        })
-                      }
-                    />
-                  </label>
-                  <label className="toggle-field">
-                    <span>
-                      <b>支持思考等级</b>
-                      <small>支持 low、high、max 等推理强度时开启。</small>
-                    </span>
-                    <input
-                      name="provider-supports-effort"
-                      type="checkbox"
-                      checked={
-                        editor.codexChatReasoning.supportsEffort === true
-                      }
-                      onChange={(event) =>
-                        setEditor({
-                          ...editor,
-                          codexChatReasoning: {
-                            ...editor.codexChatReasoning,
-                            supportsThinking: event.target.checked
-                              ? true
-                              : editor.codexChatReasoning.supportsThinking,
-                            supportsEffort: event.target.checked,
-                            effortParam: event.target.checked
-                              ? (editor.codexChatReasoning.effortParam ??
-                                "reasoning_effort")
-                              : "none",
-                          },
-                        })
-                      }
-                    />
-                  </label>
+                <div className="mapping-head">
+                  <span>菜单显示名（可选）</span>
+                  <span>实际请求模型</span>
+                  <span title="上下文 / tokens">上下文</span>
+                  <span>思考等级</span>
+                  <span>操作</span>
                 </div>
-              )}
-            </div>
-          </details>
+                {!editor.catalogModels.length && (
+                  <p className="mapping-empty">
+                    尚未添加自定义映射。可直接使用默认模型，或添加一条映射。
+                  </p>
+                )}
+                {editor.catalogModels.map((item, index) => (
+                  // Rows are only ever appended or removed, never reordered
+                  // (no drag-and-drop here), so the positional index is a
+                  // stable key. Keying on `item.model` instead broke the
+                  // "实际请求模型" input: every keystroke changed the key,
+                  // which made React remount the row and drop input focus.
+                  <div className="mapping-row" key={index}>
+                    <label className="mapping-field">
+                      <span>菜单显示名（可选）</span>
+                      <input
+                        aria-label={`模型 ${index + 1} 显示名`}
+                        value={item.displayName ?? ""}
+                        onChange={(event) => {
+                          const catalogModels = [...editor.catalogModels];
+                          catalogModels[index] = {
+                            ...item,
+                            displayName: event.target.value,
+                          };
+                          setEditor({ ...editor, catalogModels });
+                        }}
+                        placeholder="菜单显示名"
+                      />
+                    </label>
+                    <label className="mapping-field">
+                      <span>实际请求模型</span>
+                      <input
+                        id={`mapping-model-${index}`}
+                        aria-label={`模型 ${index + 1} 实际请求模型`}
+                        aria-invalid={validationAttempted && !item.model.trim()}
+                        aria-describedby={
+                          validationAttempted && !item.model.trim()
+                            ? `mapping-error-${index}`
+                            : undefined
+                        }
+                        value={item.model}
+                        onChange={(event) => {
+                          const catalogModels = [...editor.catalogModels];
+                          catalogModels[index] = {
+                            ...item,
+                            model: event.target.value,
+                          };
+                          setEditor({ ...editor, catalogModels });
+                        }}
+                        placeholder="实际请求模型"
+                      />
+                    </label>
+                    <label className="mapping-field">
+                      <span>上下文 / tokens（可选）</span>
+                      <input
+                        aria-label={`模型 ${index + 1} 上下文窗口`}
+                        type="number"
+                        min="1"
+                        inputMode="numeric"
+                        value={item.contextWindow ?? ""}
+                        onChange={(event) => {
+                          const catalogModels = [...editor.catalogModels];
+                          catalogModels[index] = {
+                            ...item,
+                            contextWindow: event.target.value.replace(
+                              /[^\d]/g,
+                              "",
+                            ),
+                          };
+                          setEditor({ ...editor, catalogModels });
+                        }}
+                        placeholder="上下文"
+                      />
+                    </label>
+                    <div className="mapping-field">
+                      <span>思考等级</span>
+                      <button
+                        type="button"
+                        className="reasoning-trigger"
+                        aria-label={`模型 ${index + 1} 思考等级`}
+                        aria-controls={`reasoning-panel-${index}`}
+                        aria-expanded={openReasoningRow === index}
+                        onClick={() =>
+                          setOpenReasoningRow(
+                            openReasoningRow === index ? null : index,
+                          )
+                        }
+                      >
+                        <span
+                          className={
+                            (item.reasoningLevels?.length ?? 0) === 0
+                              ? "reasoning-trigger-placeholder"
+                              : undefined
+                          }
+                        >
+                          {(item.reasoningLevels?.length ?? 0) > 0
+                            ? `${item.reasoningLevels!.length} 档${
+                                item.defaultReasoningLevel
+                                  ? ` · ${item.defaultReasoningLevel}`
+                                  : ""
+                              }`
+                            : "自动"}
+                        </span>
+                        <ChevronDown
+                          size={14}
+                          style={{
+                            transform:
+                              openReasoningRow === index
+                                ? "rotate(180deg)"
+                                : "rotate(0deg)",
+                            transition: "transform 0.15s ease",
+                          }}
+                        />
+                      </button>
+                    </div>
+                    <div className="mapping-actions">
+                      <button
+                        type="button"
+                        className={
+                          "instructions-trigger" +
+                          (item.baseInstructions?.trim() ? " has-value" : "")
+                        }
+                        aria-label={`模型 ${index + 1} 系统提示词`}
+                        aria-expanded={openInstructionsRow === index}
+                        aria-controls={`instructions-panel-${index}`}
+                        title="系统提示词 / Base Instructions"
+                        onClick={() =>
+                          setOpenInstructionsRow(
+                            openInstructionsRow === index ? null : index,
+                          )
+                        }
+                      >
+                        <FileText size={15} />
+                        <span>
+                          {item.baseInstructions?.trim() ? "已设置" : "指令"}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        className="icon-button"
+                        aria-label={`删除模型 ${index + 1} 映射`}
+                        onClick={() => {
+                          // See the "添加模型" handler above: collapse any
+                          // index-addressed panel before the array shifts.
+                          setOpenReasoningRow(null);
+                          setOpenInstructionsRow(null);
+                          setEditor({
+                            ...editor,
+                            catalogModels: editor.catalogModels.filter(
+                              (_, i) => i !== index,
+                            ),
+                          });
+                        }}
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    </div>
+                    {validationAttempted && !item.model.trim() && (
+                      <p
+                        className="mapping-error"
+                        id={`mapping-error-${index}`}
+                        role="alert"
+                      >
+                        请填写实际请求模型，或删除此行。
+                      </p>
+                    )}
+                    {openReasoningRow === index && (
+                      <div
+                        className="reasoning-panel"
+                        id={`reasoning-panel-${index}`}
+                      >
+                        <div className="reasoning-panel-head">
+                          支持等级（可多选）
+                        </div>
+                        <div className="reasoning-checkboxes">
+                          {CODEX_REASONING_LEVELS.map((level) => {
+                            const checked = (
+                              item.reasoningLevels ?? []
+                            ).includes(level);
+                            return (
+                              <label
+                                key={level}
+                                className="reasoning-level-option"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() => {
+                                    const current = new Set(
+                                      item.reasoningLevels ?? [],
+                                    );
+                                    if (current.has(level)) {
+                                      current.delete(level);
+                                    } else {
+                                      current.add(level);
+                                    }
+                                    const nextLevels = (
+                                      CODEX_REASONING_LEVELS as readonly string[]
+                                    ).filter((l) => current.has(l));
+                                    const catalogModels = [
+                                      ...editor.catalogModels,
+                                    ];
+                                    const next: CodexCatalogModel = { ...item };
+                                    if (nextLevels.length > 0) {
+                                      next.reasoningLevels = nextLevels;
+                                      if (
+                                        next.defaultReasoningLevel &&
+                                        !nextLevels.includes(
+                                          next.defaultReasoningLevel,
+                                        )
+                                      ) {
+                                        delete next.defaultReasoningLevel;
+                                      }
+                                    } else {
+                                      delete next.reasoningLevels;
+                                      delete next.defaultReasoningLevel;
+                                    }
+                                    catalogModels[index] = next;
+                                    setEditor({ ...editor, catalogModels });
+                                  }}
+                                />
+                                <span>{level}</span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                        {(item.reasoningLevels?.length ?? 0) > 0 && (
+                          <div className="reasoning-panel-default">
+                            <span>默认等级</span>
+                            <select
+                              aria-label={`模型 ${index + 1} 默认思考等级`}
+                              value={item.defaultReasoningLevel ?? ""}
+                              onChange={(event) => {
+                                const catalogModels = [...editor.catalogModels];
+                                const next: CodexCatalogModel = { ...item };
+                                if (event.target.value) {
+                                  next.defaultReasoningLevel =
+                                    event.target.value;
+                                } else {
+                                  delete next.defaultReasoningLevel;
+                                }
+                                catalogModels[index] = next;
+                                setEditor({ ...editor, catalogModels });
+                              }}
+                            >
+                              <option value="">自动</option>
+                              {item.reasoningLevels!.map((level) => (
+                                <option key={level} value={level}>
+                                  {level}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {openInstructionsRow === index && (
+                      <div
+                        className="instructions-panel"
+                        id={`instructions-panel-${index}`}
+                      >
+                        <div className="instructions-panel-head">
+                          系统提示词 / Base Instructions（可选）
+                        </div>
+                        <textarea
+                          aria-label="系统提示词"
+                          value={item.baseInstructions ?? ""}
+                          onChange={(event) => {
+                            const catalogModels = [...editor.catalogModels];
+                            const next: CodexCatalogModel = { ...item };
+                            if (event.target.value) {
+                              next.baseInstructions = event.target.value;
+                            } else {
+                              delete next.baseInstructions;
+                            }
+                            catalogModels[index] = next;
+                            setEditor({ ...editor, catalogModels });
+                          }}
+                          placeholder="留空则使用默认模板"
+                        />
+                        <small>
+                          覆盖该模型的身份说明/系统前言；留空则使用默认模板。
+                        </small>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <details className="advanced-options" ref={advancedRef}>
+                <summary>
+                  <span className="advanced-summary-copy">
+                    <b>高级配置</b>
+                    <small>Codex 功能 · 通用配置 · 兼容性</small>
+                  </span>
+                  <span className="advanced-summary-action">
+                    <span className="when-collapsed">展开</span>
+                    <span className="when-expanded">收起</span>
+                    <ChevronDown size={18} aria-hidden="true" />
+                  </span>
+                </summary>
+                <div className="advanced-options-body">
+                  <Field
+                    label="官网链接（可选）"
+                    name="provider-website"
+                    value={editor.websiteUrl}
+                    onChange={(value) => patch("websiteUrl", value)}
+                    placeholder="https://example.com"
+                  />
+                  <p className="advanced-intro">
+                    按需调整此线路功能与协议。共享通用配置的修改会影响启用它的线路。
+                  </p>
+                  <div className="advanced-group codex-feature-options">
+                    <div className="advanced-section-heading">
+                      <div>
+                        <b>Codex 功能</b>
+                        <small>
+                          每条线路独立保存，未开启的功能不会写入配置。
+                        </small>
+                      </div>
+                    </div>
+                    <label className="toggle-field">
+                      <span>
+                        <b>目标模式</b>
+                        <small>在 Codex 中开启目标规划能力。</small>
+                      </span>
+                      <input
+                        name="provider-goal-mode"
+                        type="checkbox"
+                        checked={editor.goalModeEnabled}
+                        onChange={(event) =>
+                          setEditor({
+                            ...editor,
+                            goalModeEnabled: event.target.checked,
+                          })
+                        }
+                      />
+                    </label>
+                    <label className="toggle-field">
+                      <span>
+                        <b>
+                          远程上下文压缩
+                          <em className="experimental-tag">实验性</em>
+                        </b>
+                        <small>
+                          {remoteCompactionAvailable
+                            ? "仅原生 Responses 上游可用，由上游压缩长对话，默认关闭。"
+                            : "经 Chat 或 Anthropic 转换的线路不支持远程压缩。"}
+                        </small>
+                      </span>
+                      <input
+                        name="provider-remote-compaction"
+                        type="checkbox"
+                        checked={
+                          editor.remoteCompactionEnabled &&
+                          remoteCompactionAvailable
+                        }
+                        disabled={!remoteCompactionAvailable}
+                        onChange={(event) =>
+                          setEditor({
+                            ...editor,
+                            remoteCompactionEnabled: event.target.checked,
+                          })
+                        }
+                      />
+                    </label>
+                    <label className="toggle-field">
+                      <span>
+                        <b>应用通用配置</b>
+                        <small>切换到这条线路时合并共享的 Codex 配置。</small>
+                      </span>
+                      <input
+                        name="provider-common-config"
+                        type="checkbox"
+                        checked={editor.commonConfigEnabled}
+                        disabled={commonConfigLoading || !commonConfigLoaded}
+                        onChange={(event) =>
+                          setEditor({
+                            ...editor,
+                            commonConfigEnabled: event.target.checked,
+                          })
+                        }
+                      />
+                    </label>
+                    <div className="common-config-actions">
+                      <span>
+                        {commonConfigLoading
+                          ? "正在读取通用配置…"
+                          : commonConfigLoaded
+                            ? commonConfigSnippet.trim()
+                              ? "已设置通用配置"
+                              : "尚未设置通用配置"
+                            : "通用配置暂时不可用"}
+                      </span>
+                      <button
+                        type="button"
+                        className="link-button"
+                        aria-expanded={commonConfigOpen}
+                        disabled={!commonConfigLoaded}
+                        onClick={() => setCommonConfigOpen(!commonConfigOpen)}
+                      >
+                        {commonConfigOpen ? "收起编辑器" : "编辑通用配置"}
+                      </button>
+                    </div>
+                    {commonConfigOpen && (
+                      <label className="common-config-editor">
+                        通用 config.toml
+                        <textarea
+                          name="provider-common-config-snippet"
+                          spellCheck={false}
+                          value={commonConfigSnippet}
+                          onChange={(event) =>
+                            onCommonConfigChange(event.target.value)
+                          }
+                          placeholder="例如 [features] 下需要在多条线路间共享的配置"
+                        />
+                        <small>
+                          共享内容影响启用通用配置的线路；供应商地址、密钥、模型和模型目录不会共享。
+                        </small>
+                        {commonConfigWarning && (
+                          <small className="error-text">
+                            {commonConfigWarning}
+                          </small>
+                        )}
+                      </label>
+                    )}
+                  </div>
+
+                  <div className="advanced-group">
+                    <label className="toggle-field">
+                      <span>
+                        <b>完整 API 地址</b>
+                        <small>
+                          地址已含完整请求路径时开启，不再自动补全路径。
+                        </small>
+                      </span>
+                      <input
+                        name="provider-full-url"
+                        type="checkbox"
+                        checked={editor.isFullUrl}
+                        onChange={(event) =>
+                          setEditor({
+                            ...editor,
+                            isFullUrl: event.target.checked,
+                          })
+                        }
+                      />
+                    </label>
+                    <label>
+                      模型列表地址（可选）
+                      <input
+                        name="provider-models-url"
+                        type="url"
+                        autoComplete="url"
+                        spellCheck={false}
+                        value={editor.modelsUrl}
+                        onChange={(event) =>
+                          patch("modelsUrl", event.target.value)
+                        }
+                        placeholder="https://api.example.com/v1/models"
+                      />
+                      <small>上游的模型接口不同于主接口时填写。</small>
+                    </label>
+                    <label>
+                      自定义 User-Agent（可选）
+                      <input
+                        name="provider-user-agent"
+                        autoComplete="off"
+                        spellCheck={false}
+                        value={editor.customUserAgent}
+                        onChange={(event) =>
+                          patch("customUserAgent", event.target.value)
+                        }
+                        placeholder="留空使用默认请求标识"
+                      />
+                    </label>
+                  </div>
+                  {editor.apiFormat === "anthropic" && (
+                    <div className="advanced-group">
+                      <label>
+                        Anthropic 认证字段
+                        <select
+                          name="provider-anthropic-auth"
+                          value={editor.anthropicAuthField}
+                          onChange={(event) =>
+                            patch("anthropicAuthField", event.target.value)
+                          }
+                        >
+                          <option value="ANTHROPIC_AUTH_TOKEN">
+                            Authorization: Bearer
+                          </option>
+                          <option value="ANTHROPIC_API_KEY">x-api-key</option>
+                        </select>
+                      </label>
+                      <label>
+                        最大输出 tokens（可选）
+                        <input
+                          name="provider-max-output-tokens"
+                          type="number"
+                          min="1"
+                          inputMode="numeric"
+                          value={editor.maxOutputTokens}
+                          onChange={(event) =>
+                            patch(
+                              "maxOutputTokens",
+                              event.target.value.replace(/[^\d]/g, ""),
+                            )
+                          }
+                          placeholder="默认 8192"
+                        />
+                      </label>
+                      <label className="toggle-field">
+                        <span>
+                          <b>模拟 Claude Code 客户端</b>
+                          <small>
+                            仅当上游明确要求 Claude Code 请求特征时开启。
+                          </small>
+                        </span>
+                        <input
+                          name="provider-impersonate-claude-code"
+                          type="checkbox"
+                          checked={editor.impersonateClaudeCode}
+                          onChange={(event) =>
+                            setEditor({
+                              ...editor,
+                              impersonateClaudeCode: event.target.checked,
+                            })
+                          }
+                        />
+                      </label>
+                    </div>
+                  )}
+                  {editor.apiFormat === "openai_chat" && (
+                    <div className="advanced-group">
+                      <label>
+                        提示词缓存路由
+                        <select
+                          name="provider-prompt-cache-routing"
+                          value={editor.promptCacheRouting}
+                          onChange={(event) =>
+                            patch("promptCacheRouting", event.target.value)
+                          }
+                        >
+                          <option value="auto">自动（推荐）</option>
+                          <option value="enabled">开启</option>
+                          <option value="disabled">关闭</option>
+                        </select>
+                        <small>严格网关遇到未知缓存字段时可选择关闭。</small>
+                      </label>
+                      <label className="toggle-field">
+                        <span>
+                          <b>支持思考模式</b>
+                          <small>将 Codex 思考开关转换为上游 Chat 参数。</small>
+                        </span>
+                        <input
+                          name="provider-supports-thinking"
+                          type="checkbox"
+                          checked={
+                            editor.codexChatReasoning.supportsThinking === true
+                          }
+                          onChange={(event) =>
+                            setEditor({
+                              ...editor,
+                              codexChatReasoning: {
+                                ...editor.codexChatReasoning,
+                                supportsThinking: event.target.checked,
+                                supportsEffort: event.target.checked
+                                  ? editor.codexChatReasoning.supportsEffort
+                                  : false,
+                              },
+                            })
+                          }
+                        />
+                      </label>
+                      <label className="toggle-field">
+                        <span>
+                          <b>支持思考等级</b>
+                          <small>支持 low、high、max 等推理强度时开启。</small>
+                        </span>
+                        <input
+                          name="provider-supports-effort"
+                          type="checkbox"
+                          checked={
+                            editor.codexChatReasoning.supportsEffort === true
+                          }
+                          onChange={(event) =>
+                            setEditor({
+                              ...editor,
+                              codexChatReasoning: {
+                                ...editor.codexChatReasoning,
+                                supportsThinking: event.target.checked
+                                  ? true
+                                  : editor.codexChatReasoning.supportsThinking,
+                                supportsEffort: event.target.checked,
+                                effortParam: event.target.checked
+                                  ? (editor.codexChatReasoning.effortParam ??
+                                    "reasoning_effort")
+                                  : "none",
+                              },
+                            })
+                          }
+                        />
+                      </label>
+                    </div>
+                  )}
+                </div>
+              </details>
+            </>
+          )}
+          {!isCodex && (
+            <p className="editor-test-scope">
+              {appId === "opencode" || appId === "pi"
+                ? "编辑此线路的首个模型，其他模型与高级设置会保留；默认模型仍在工具中选择。"
+                : "使用工具原生协议。模型留空时由工具选择，未填写密钥时沿用工具自身的登录方式。"}
+            </p>
+          )}
           {modelFetchError && (
             <p className="editor-model-error" role="status">
               <CircleAlert size={15} /> {modelFetchError}
@@ -4699,28 +5716,62 @@ export function ProviderEditor({
             </p>
           )}
         </fieldset>
+        <aside className="editor-preview" aria-label="线路草稿预览">
+          <h3>保存后的线路</h3>
+          <ol className="editor-route-preview">
+            <li>
+              <b>{toolName}</b>
+              <small>客户端</small>
+            </li>
+            <li>
+              <b>{editor.name.trim() || "未命名线路"}</b>
+              <small>
+                {!isCodex
+                  ? "原生配置"
+                  : editor.apiFormat === "auto"
+                    ? "按模型族选择协议"
+                    : codexApiFormatLabel(editor.apiFormat)}
+              </small>
+            </li>
+            <li>
+              <b>{previewOrigin}</b>
+              <small>仅显示服务源，不展示凭据或请求参数</small>
+            </li>
+            <li>
+              <b>{editor.model.trim() || "尚未填写模型"}</b>
+              <small>
+                {isCodex
+                  ? `${editor.catalogModels.length} 条模型映射`
+                  : "保留原有其他模型设置"}
+              </small>
+            </li>
+          </ol>
+          <h3>写入预告</h3>
+          <p>
+            {appId === "opencode" || appId === "pi"
+              ? `保存并启用 ${toolName} 线路，不修改其他已启用线路。`
+              : `保存线路至本地数据库，并将其应用为当前 ${toolName} 线路。`}
+          </p>
+          <dl>
+            <dt>协议</dt>
+            <dd>
+              {!isCodex
+                ? editor.nativeProtocol || `${toolName} 原生协议`
+                : editor.apiFormat === "auto"
+                  ? "按模型族选择"
+                  : codexApiFormatLabel(editor.apiFormat)}
+            </dd>
+            <dt>API Key</dt>
+            <dd>{editor.apiKey.trim() ? "已填写 · 预览不展示" : "尚未填写"}</dd>
+          </dl>
+          <p>
+            {isCodex && "运行中的 Codex 可能需要重启。"}
+            地址测试仅验证连通性，不验证 API Key 或模型可用性。
+          </p>
+          <p>这是当前草稿预览，尚未保存或测试。</p>
+        </aside>
       </div>
       <div className="editor-bottom">
-        {editor.apiFormat === "auto" && (
-          <p className="editor-probe-notice" role="note">
-            自动模式按模型名称选择默认协议，不会在保存时调用上游；第三方网关协议不符合模型族时请手动指定。
-            <button
-              type="button"
-              className="link-button"
-              disabled={savingProvider}
-              onClick={() => {
-                if (advancedRef.current) advancedRef.current.open = true;
-                pageRef.current
-                  ?.querySelector<HTMLSelectElement>(
-                    "[name=provider-api-format]",
-                  )
-                  ?.focus();
-              }}
-            >
-              指定协议
-            </button>
-          </p>
-        )}
         <footer>
           <div className="editor-test-actions">
             <button
@@ -4740,15 +5791,6 @@ export function ProviderEditor({
             </small>
           </div>
           <div className="editor-save-actions">
-            {editor.original && (
-              <button
-                className="danger"
-                onClick={onDelete}
-                disabled={savingProvider}
-              >
-                <Trash2 size={15} /> 删除线路
-              </button>
-            )}
             <button
               type="button"
               className="secondary"
@@ -4872,12 +5914,6 @@ function ModelPickerDialog({
     </div>
   );
 }
-
-const NewSettingsView = lazy(() =>
-  import("./views/NewSettingsView").then((m) => ({
-    default: m.NewSettingsView,
-  })),
-);
 
 function ConfirmOperation({
   action,
@@ -5295,12 +6331,13 @@ function Field({
       {label}
       <input
         name={name}
+        aria-describedby={hint ? `${name}-hint` : undefined}
         autoComplete="off"
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder={placeholder}
       />
-      {hint && <small>{hint}</small>}
+      {hint && <small id={`${name}-hint`}>{hint}</small>}
     </label>
   );
 }

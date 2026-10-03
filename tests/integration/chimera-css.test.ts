@@ -1,59 +1,51 @@
-/**
- * Integration test — Bug 3: CSS scrollbar fix + update banner styles.
- *
- * Reads src/chimera.css directly and asserts:
- *  - .route-line-scroll exposes a compact native scrollbar when overflow exists
- *  - the scrollbar is allocated below the cards instead of being hidden/overlaid
- *  - .route-line-card keeps a readable minimum width so the fourth route remains reachable
- *  - .route-update-banner block is present (Bug 2 styles)
- */
+/** Layout regression checks for the connected provider table and shared shell. */
 import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 
 const CSS_PATH = path.resolve(__dirname, "../../src/chimera.css");
 const css = fs.readFileSync(CSS_PATH, "utf8");
+const tableCss = fs.readFileSync(
+  path.resolve(__dirname, "../../src/components/ProviderLineTable.css"),
+  "utf8",
+);
 
 // ---------------------------------------------------------------------------
 // Helper: extract the text of the FIRST CSS block whose selector matches
 // ---------------------------------------------------------------------------
-function extractBlock(selector: string): string {
+function extractBlock(selector: string, source = css): string {
   // Escape selector for regex use
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const re = new RegExp(`${escaped}\\s*\\{([^}]*)\\}`, "s");
-  const match = re.exec(css);
+  const match = re.exec(source);
   return match ? match[1] : "";
 }
 
-describe("chimera.css — Bug 3 scrollbar fix", () => {
-  it(".route-line-scroll exposes a thin native scrollbar", () => {
-    const block = extractBlock(".route-line-scroll");
+describe("provider table scrolling and fixed row geometry", () => {
+  it("exposes a thin native scrollbar for long lists", () => {
+    const block = extractBlock(".provider-page", tableCss);
+    expect(block).toContain("overflow: auto");
     expect(block).toContain("scrollbar-width: thin");
-    expect(block).not.toContain("scrollbar-width: none");
   });
-
-  it(".route-line-scroll reserves room for the scrollbar below route cards", () => {
-    const block = extractBlock(".route-line-scroll");
-    expect(block).toMatch(/scrollbar-gutter:\s*stable/);
+  it("allows the scroll container to fit its parent", () => {
+    expect(extractBlock(".provider-page", tableCss)).toContain("min-height: 0");
   });
-
-  it(".route-line-scroll does not suppress the native scrollbar", () => {
-    const block = extractBlock(".route-line-scroll");
-    expect(block).not.toContain("-ms-overflow-style: none");
+  it("overrides the global WebKit scrollbar hiding rule", () => {
+    const block = extractBlock(".provider-page::-webkit-scrollbar", tableCss);
+    expect(block).toContain("display: block");
+    expect(block).toContain("width: 6px");
+    expect(block).toContain("height: 6px");
   });
-
-  it("webkit route scrollbar is compact rather than hidden", () => {
-    expect(css).toMatch(
-      /\.route-line-scroll::-webkit-scrollbar\s*\{[^}]*height:\s*[4-9]px/s,
-    );
-    expect(css).not.toMatch(
-      /\.route-line-scroll::-webkit-scrollbar\s*\{[^}]*display:\s*none/s,
-    );
+  it("keeps Pencil row and action dimensions", () => {
+    const block = extractBlock(".provider-table-row", tableCss);
+    expect(block).toContain("height: 42px");
+    expect(block).toContain("90px 136px");
+    expect(block).toContain("gap: 12px");
   });
-
-  it(".route-line-card keeps a readable minimum width", () => {
-    const block = extractBlock(".route-line-card");
-    expect(block).toMatch(/min-width:\s*184px/);
+  it("keeps long cell content inside its column", () => {
+    const block = extractBlock(".provider-table-row > *", tableCss);
+    expect(block).toContain("min-width: 0");
+    expect(block).toContain("text-overflow: ellipsis");
   });
 });
 
@@ -90,7 +82,7 @@ describe("chimera.css — Bug 2 update banner styles", () => {
 describe("chimera.css — runtime information layout", () => {
   it("reserves readable status columns while allowing the path to shrink", () => {
     expect(extractBlock(".runtime-info-strip")).toContain(
-      "grid-template-columns: minmax(0, 1fr) 140px 150px",
+      "grid-template-columns: minmax(0, 1fr) 110px 110px",
     );
   });
 
