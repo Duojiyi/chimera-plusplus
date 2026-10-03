@@ -4256,8 +4256,10 @@ value"
     }
 
     #[test]
-    fn managed_account_token_injection_is_available_when_enabled() {
-        assert!(require_managed_accounts(true).is_ok());
+    fn managed_account_token_injection_is_closed_by_policy() {
+        // The capability stays off in this edition, so a managed account line
+        // is refused before any stored token is resolved; other lines pass.
+        assert!(require_managed_accounts(true).is_err());
         assert!(require_managed_accounts(false).is_ok());
 
         // The providers that feed the gate: Copilot and ChatGPT-subscription

@@ -110,9 +110,41 @@ impl Capability {
         }
     }
 
+    /// Whether the capability ships enabled in this build. The match is
+    /// exhaustive on purpose: adding a capability forces an explicit decision
+    /// here, and `capability_matrix_*` pins the set that stays off.
+    ///
     /// Automatic startup behavior remains separately constrained below.
     pub const fn enabled(self) -> bool {
-        !matches!(self, Capability::WebdavSync | Capability::S3Sync)
+        match self {
+            Capability::Providers
+            | Capability::ModelDiscovery
+            | Capability::LocalProxy
+            | Capability::Failover
+            | Capability::Usage
+            | Capability::Mcp
+            | Capability::Skills
+            | Capability::Prompts
+            | Capability::Sessions
+            | Capability::CodexRuntimeManager
+            | Capability::CodexThemes
+            | Capability::OfficialAccounts
+            | Capability::ConfigHealth
+            | Capability::SessionExport
+            | Capability::LiveBackups
+            | Capability::CcSwitchImport
+            | Capability::CustomRequestHeaders
+            | Capability::MultiTool => true,
+            // Out of scope for the local-only edition.
+            Capability::WebdavSync | Capability::S3Sync => false,
+            // Closed on purpose: the proxy must not inject managed-account
+            // (Copilot / ChatGPT OAuth) tokens; guarded in `proxy::forwarder`.
+            Capability::ManagedAccounts => false,
+            // No implementation behind these yet; they open together with it.
+            Capability::Context1m | Capability::ThreadUsage => false,
+            // Needs a real-machine smoke test against the Codex app-server.
+            Capability::CodexAppServerDelete => false,
+        }
     }
 
     const fn starts_automatically(self) -> bool {
@@ -370,26 +402,43 @@ mod tests {
             "mcp",
             "skills",
             "prompts",
-            "config_health",
             "failover",
-            "managed_accounts",
             "official_accounts",
             "config_health",
             "session_export",
             "live_backups",
             "cc_switch_import",
-            "context_1m",
-            "thread_usage",
             "custom_request_headers",
-            "codex_app_server_delete",
             "multi_tool",
         ] {
             assert!(enabled(id), "{id} should be on");
         }
         assert_eq!(policy.capabilities.len(), Capability::ALL.len());
-        for capability in [Capability::WebdavSync, Capability::S3Sync] {
-            assert!(!enabled(capability.id()));
+        // Opening one of these is a deliberate edit: the capability needs its
+        // implementation (or a real-machine smoke) first, then moves up there.
+        const OFF: [Capability; 6] = [
+            Capability::WebdavSync,
+            Capability::S3Sync,
+            Capability::ManagedAccounts,
+            Capability::Context1m,
+            Capability::ThreadUsage,
+            Capability::CodexAppServerDelete,
+        ];
+        for capability in OFF {
+            assert!(
+                !enabled(capability.id()),
+                "{} should be off",
+                capability.id()
+            );
             assert!(require(capability).is_err());
+        }
+        for capability in Capability::ALL {
+            assert_eq!(
+                capability.enabled(),
+                !OFF.contains(&capability),
+                "{} is neither in the on-list nor the off-list",
+                capability.id()
+            );
         }
         let mut ids: Vec<_> = policy.capabilities.iter().map(|c| c.id).collect();
         ids.sort_unstable();
