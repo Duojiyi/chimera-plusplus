@@ -1602,7 +1602,10 @@ pub fn run() {
                 // 仅 Linux 生效：解决 Wayland 下系统窗口按钮不可用的问题
                 #[cfg(target_os = "linux")]
                 let _ = window.set_decorations(!settings.use_app_window_controls);
-                if settings.silent_startup {
+                if settings.silent_startup && !settings.show_in_tray {
+                    log::warn!("静默启动需要托盘图标，当前已关闭托盘，改为显示主窗口");
+                }
+                if settings.starts_hidden() {
                     // 静默启动模式：保持窗口隐藏
                     let _ = window.hide();
                     #[cfg(target_os = "windows")]

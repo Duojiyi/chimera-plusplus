@@ -885,6 +885,13 @@ impl Default for AppSettings {
 }
 
 impl AppSettings {
+    /// Whether the main window stays hidden at launch. Silent startup needs a
+    /// tray icon to bring the window back; without one the app would run with
+    /// no reachable window, so the setting is ignored in that case.
+    pub fn starts_hidden(&self) -> bool {
+        self.silent_startup && self.show_in_tray
+    }
+
     fn settings_path() -> Option<PathBuf> {
         // settings.json 保留用于旧版本迁移和无数据库场景
         Some(crate::config::get_app_config_dir().join("settings.json"))
@@ -1557,6 +1564,17 @@ mod tests {
                 .unwrap()
                 .launch_on_startup
         );
+    }
+
+    #[test]
+    fn silent_startup_is_ignored_without_a_tray_icon() {
+        let mut settings = AppSettings::default();
+        assert!(!settings.starts_hidden());
+        settings.silent_startup = true;
+        assert!(settings.starts_hidden());
+        // No tray icon means no way to reopen the window: show it instead.
+        settings.show_in_tray = false;
+        assert!(!settings.starts_hidden());
     }
 
     use crate::app_config::AppType;
