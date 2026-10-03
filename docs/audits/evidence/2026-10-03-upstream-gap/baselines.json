@@ -1,0 +1,48 @@
+{
+  "date": "2026-10-03",
+  "project": {
+    "head": "6b737c7d0aed7dd69304f40a8aa1ef35ddc9fb84",
+    "scope": "Current working tree, not just committed HEAD",
+    "dirtyEntriesAtStart": 231
+  },
+  "comparison": [
+    {
+      "name": "CC Switch",
+      "repository": "https://github.com/farion1231/cc-switch",
+      "independentAuditSnapshot": "1bc68e293f635a065fa984d4c2ca7604fbd77854",
+      "remoteHead": "bfaaba1679b8e8df6c8673d2b963d204fc1e521e",
+      "commitsAhead": 8,
+      "latestDeltaReview": "MIT source patches and behavior; no upstream executable run"
+    },
+    {
+      "name": "Codex-X",
+      "repository": "https://github.com/yynxxxxx/Codex-X",
+      "independentAuditSnapshot": "8f018fddd3ee1a68464e4df8765eb370ede0c76f",
+      "remoteHead": "8f018fddd3ee1a68464e4df8765eb370ede0c76f",
+      "commitsAhead": 0
+    },
+    {
+      "name": "Codex-App-Manager",
+      "repository": "https://github.com/Wangnov/Codex-App-Manager",
+      "independentAuditSnapshot": "99c25522e8cac87b47c9a5d325de24009c58f71f",
+      "remoteHead": "99c25522e8cac87b47c9a5d325de24009c58f71f",
+      "commitsAhead": 0
+    },
+    {
+      "name": "CodexPlusPlus",
+      "repository": "https://github.com/BigPizzaV3/CodexPlusPlus",
+      "independentAuditSnapshot": "27d50a1a0413b3c445bc95fae081f16b6c7edbf0",
+      "remoteHead": "f55bb64663ba5024ab434017bb6212a0fd9f4bb3",
+      "commitsAhead": 35,
+      "cleanRoomBoundary": "README and commit descriptions only; source code not inspected"
+    }
+  ],
+  "validation": {
+    "targetedFrontendTestFiles": 7,
+    "targetedFrontendTests": 113,
+    "targetedFrontendTestsPassed": 113,
+    "rustCompilationOrTests": "Not run: explicit permission required",
+    "nativeMutationTests": "Not run: no real account/configuration/installation operations",
+    "productionCodeChanges": "None during this audit"
+  }
+}

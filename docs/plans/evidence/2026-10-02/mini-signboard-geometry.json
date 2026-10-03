@@ -1,0 +1,708 @@
+{
+  "scope": "Browser-only isolated rendering of production MiniSignboard; synthetic inputs, not native acceptance",
+  "design": {
+    "node": "FTvtk",
+    "width": 257,
+    "height": 28,
+    "badge": 20,
+    "track": 12,
+    "dot": 8
+  },
+  "actual": [
+    {
+      "variant": "normal",
+      "text": "CodexDSDeepSeek182 ms",
+      "rect": {
+        "x": 240,
+        "y": 64,
+        "width": 256.046875,
+        "height": 28,
+        "top": 64,
+        "right": 496.046875,
+        "bottom": 92,
+        "left": 240
+      },
+      "font": "13px / 18.2px Overpass, \"Noto Sans SC\", sans-serif",
+      "children": [
+        {
+          "class": "mini-signboard-stripe",
+          "text": "",
+          "x": 0,
+          "y": 0,
+          "width": 3,
+          "height": 28,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "mini-signboard-tool",
+          "text": "Codex",
+          "x": 12,
+          "y": 4.90625,
+          "width": 36.578125,
+          "height": 18.1875,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "mini-signboard-track",
+          "text": "",
+          "x": 56.578125,
+          "y": 13,
+          "width": 12,
+          "height": 2,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "mini-signboard-line",
+          "text": "DSDeepSeek",
+          "x": 76.578125,
+          "y": 4,
+          "width": 86.8125,
+          "height": 20,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "mini-signboard-badge",
+          "text": "DS",
+          "x": 76.578125,
+          "y": 4,
+          "width": 20,
+          "height": 20,
+          "color": "rgb(253, 253, 254)"
+        },
+        {
+          "class": "mini-signboard-name",
+          "text": "DeepSeek",
+          "x": 102.578125,
+          "y": 4.90625,
+          "width": 60.8125,
+          "height": 18.1875,
+          "color": "rgb(245, 247, 249)"
+        },
+        {
+          "class": "mini-signboard-track",
+          "text": "",
+          "x": 171.390625,
+          "y": 13,
+          "width": 12,
+          "height": 2,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "mini-signboard-status",
+          "text": "182 ms",
+          "x": 191.390625,
+          "y": 4.90625,
+          "width": 54.65625,
+          "height": 18.1875,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "mini-signboard-dot",
+          "text": "",
+          "x": 191.390625,
+          "y": 10,
+          "width": 8,
+          "height": 8,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "",
+          "text": "182 ms",
+          "x": 205.390625,
+          "y": 4.90625,
+          "width": 40.65625,
+          "height": 18.1875,
+          "color": "rgb(180, 184, 188)"
+        }
+      ]
+    },
+    {
+      "variant": "zero",
+      "text": "CodexDSDeepSeek0 ms",
+      "rect": {
+        "x": 240,
+        "y": 108,
+        "width": 243.90625,
+        "height": 28,
+        "top": 108,
+        "right": 483.90625,
+        "bottom": 136,
+        "left": 240
+      },
+      "font": "13px / 18.2px Overpass, \"Noto Sans SC\", sans-serif",
+      "children": [
+        {
+          "class": "mini-signboard-stripe",
+          "text": "",
+          "x": 0,
+          "y": 0,
+          "width": 3,
+          "height": 28,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "mini-signboard-tool",
+          "text": "Codex",
+          "x": 12,
+          "y": 4.90625,
+          "width": 36.578125,
+          "height": 18.1875,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "mini-signboard-track",
+          "text": "",
+          "x": 56.578125,
+          "y": 13,
+          "width": 12,
+          "height": 2,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "mini-signboard-line",
+          "text": "DSDeepSeek",
+          "x": 76.578125,
+          "y": 4,
+          "width": 86.8125,
+          "height": 20,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "mini-signboard-badge",
+          "text": "DS",
+          "x": 76.578125,
+          "y": 4,
+          "width": 20,
+          "height": 20,
+          "color": "rgb(253, 253, 254)"
+        },
+        {
+          "class": "mini-signboard-name",
+          "text": "DeepSeek",
+          "x": 102.578125,
+          "y": 4.90625,
+          "width": 60.8125,
+          "height": 18.1875,
+          "color": "rgb(245, 247, 249)"
+        },
+        {
+          "class": "mini-signboard-track",
+          "text": "",
+          "x": 171.390625,
+          "y": 13,
+          "width": 12,
+          "height": 2,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "mini-signboard-status",
+          "text": "0 ms",
+          "x": 191.390625,
+          "y": 4.90625,
+          "width": 42.515625,
+          "height": 18.1875,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "mini-signboard-dot",
+          "text": "",
+          "x": 191.390625,
+          "y": 10,
+          "width": 8,
+          "height": 8,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "",
+          "text": "0 ms",
+          "x": 205.390625,
+          "y": 4.90625,
+          "width": 28.515625,
+          "height": 18.1875,
+          "color": "rgb(180, 184, 188)"
+        }
+      ]
+    },
+    {
+      "variant": "slow",
+      "text": "CodexDSDeepSeek1200 ms 慢",
+      "rect": {
+        "x": 240,
+        "y": 152,
+        "width": 281.015625,
+        "height": 28,
+        "top": 152,
+        "right": 521.015625,
+        "bottom": 180,
+        "left": 240
+      },
+      "font": "13px / 18.2px Overpass, \"Noto Sans SC\", sans-serif",
+      "children": [
+        {
+          "class": "mini-signboard-stripe",
+          "text": "",
+          "x": 0,
+          "y": 0,
+          "width": 3,
+          "height": 28,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "mini-signboard-tool",
+          "text": "Codex",
+          "x": 12,
+          "y": 4.90625,
+          "width": 36.578125,
+          "height": 18.1875,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "mini-signboard-track",
+          "text": "",
+          "x": 56.578125,
+          "y": 13,
+          "width": 12,
+          "height": 2,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "mini-signboard-line",
+          "text": "DSDeepSeek",
+          "x": 76.578125,
+          "y": 4,
+          "width": 86.8125,
+          "height": 20,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "mini-signboard-badge",
+          "text": "DS",
+          "x": 76.578125,
+          "y": 4,
+          "width": 20,
+          "height": 20,
+          "color": "rgb(253, 253, 254)"
+        },
+        {
+          "class": "mini-signboard-name",
+          "text": "DeepSeek",
+          "x": 102.578125,
+          "y": 4.90625,
+          "width": 60.8125,
+          "height": 18.1875,
+          "color": "rgb(245, 247, 249)"
+        },
+        {
+          "class": "mini-signboard-track",
+          "text": "",
+          "x": 171.390625,
+          "y": 13,
+          "width": 12,
+          "height": 2,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "mini-signboard-status",
+          "text": "1200 ms 慢",
+          "x": 191.390625,
+          "y": 4.90625,
+          "width": 79.625,
+          "height": 18.1875,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "mini-signboard-dot",
+          "text": "",
+          "x": 191.390625,
+          "y": 10,
+          "width": 8,
+          "height": 8,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "",
+          "text": "1200 ms 慢",
+          "x": 205.390625,
+          "y": 4.90625,
+          "width": 65.625,
+          "height": 18.1875,
+          "color": "rgb(180, 184, 188)"
+        }
+      ]
+    },
+    {
+      "variant": "checking",
+      "text": "CodexDSDeepSeek测速中…",
+      "rect": {
+        "x": 240,
+        "y": 196,
+        "width": 272.625,
+        "height": 28,
+        "top": 196,
+        "right": 512.625,
+        "bottom": 224,
+        "left": 240
+      },
+      "font": "13px / 18.2px Overpass, \"Noto Sans SC\", sans-serif",
+      "children": [
+        {
+          "class": "mini-signboard-stripe",
+          "text": "",
+          "x": 0,
+          "y": 0,
+          "width": 3,
+          "height": 28,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "mini-signboard-tool",
+          "text": "Codex",
+          "x": 12,
+          "y": 4.90625,
+          "width": 36.578125,
+          "height": 18.1875,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "mini-signboard-track",
+          "text": "",
+          "x": 56.578125,
+          "y": 13,
+          "width": 12,
+          "height": 2,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "mini-signboard-line",
+          "text": "DSDeepSeek",
+          "x": 76.578125,
+          "y": 4,
+          "width": 86.8125,
+          "height": 20,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "mini-signboard-badge",
+          "text": "DS",
+          "x": 76.578125,
+          "y": 4,
+          "width": 20,
+          "height": 20,
+          "color": "rgb(253, 253, 254)"
+        },
+        {
+          "class": "mini-signboard-name",
+          "text": "DeepSeek",
+          "x": 102.578125,
+          "y": 4.90625,
+          "width": 60.8125,
+          "height": 18.1875,
+          "color": "rgb(245, 247, 249)"
+        },
+        {
+          "class": "mini-signboard-track",
+          "text": "",
+          "x": 171.390625,
+          "y": 13,
+          "width": 12,
+          "height": 2,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "mini-signboard-status",
+          "text": "测速中…",
+          "x": 191.390625,
+          "y": 4.90625,
+          "width": 71.234375,
+          "height": 18.1875,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "",
+          "text": "测速中…",
+          "x": 211.390625,
+          "y": 4.90625,
+          "width": 51.234375,
+          "height": 18.1875,
+          "color": "rgb(180, 184, 188)"
+        }
+      ]
+    },
+    {
+      "variant": "error",
+      "text": "CodexDSDeepSeek连接失败",
+      "rect": {
+        "x": 240,
+        "y": 240,
+        "width": 267.390625,
+        "height": 28,
+        "top": 240,
+        "right": 507.390625,
+        "bottom": 268,
+        "left": 240
+      },
+      "font": "13px / 18.2px Overpass, \"Noto Sans SC\", sans-serif",
+      "children": [
+        {
+          "class": "mini-signboard-stripe",
+          "text": "",
+          "x": 0,
+          "y": 0,
+          "width": 3,
+          "height": 28,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "mini-signboard-tool",
+          "text": "Codex",
+          "x": 12,
+          "y": 4.90625,
+          "width": 36.578125,
+          "height": 18.1875,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "mini-signboard-track",
+          "text": "",
+          "x": 56.578125,
+          "y": 13,
+          "width": 12,
+          "height": 2,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "mini-signboard-line",
+          "text": "DSDeepSeek",
+          "x": 76.578125,
+          "y": 4,
+          "width": 86.8125,
+          "height": 20,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "mini-signboard-badge",
+          "text": "DS",
+          "x": 76.578125,
+          "y": 4,
+          "width": 20,
+          "height": 20,
+          "color": "rgb(253, 253, 254)"
+        },
+        {
+          "class": "mini-signboard-name",
+          "text": "DeepSeek",
+          "x": 102.578125,
+          "y": 4.90625,
+          "width": 60.8125,
+          "height": 18.1875,
+          "color": "rgb(245, 247, 249)"
+        },
+        {
+          "class": "mini-signboard-track",
+          "text": "",
+          "x": 171.390625,
+          "y": 13,
+          "width": 12,
+          "height": 2,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "mini-signboard-status",
+          "text": "连接失败",
+          "x": 191.390625,
+          "y": 4.90625,
+          "width": 66,
+          "height": 18.1875,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "mini-signboard-dot",
+          "text": "",
+          "x": 191.390625,
+          "y": 10,
+          "width": 8,
+          "height": 8,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "",
+          "text": "连接失败",
+          "x": 205.390625,
+          "y": 4.90625,
+          "width": 52,
+          "height": 18.1875,
+          "color": "rgb(254, 139, 131)"
+        }
+      ]
+    },
+    {
+      "variant": "unknown",
+      "text": "CodexDSDeepSeek未测速",
+      "rect": {
+        "x": 240,
+        "y": 284,
+        "width": 254.390625,
+        "height": 28,
+        "top": 284,
+        "right": 494.390625,
+        "bottom": 312,
+        "left": 240
+      },
+      "font": "13px / 18.2px Overpass, \"Noto Sans SC\", sans-serif",
+      "children": [
+        {
+          "class": "mini-signboard-stripe",
+          "text": "",
+          "x": 0,
+          "y": 0,
+          "width": 3,
+          "height": 28,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "mini-signboard-tool",
+          "text": "Codex",
+          "x": 12,
+          "y": 4.90625,
+          "width": 36.578125,
+          "height": 18.1875,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "mini-signboard-track",
+          "text": "",
+          "x": 56.578125,
+          "y": 13,
+          "width": 12,
+          "height": 2,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "mini-signboard-line",
+          "text": "DSDeepSeek",
+          "x": 76.578125,
+          "y": 4,
+          "width": 86.8125,
+          "height": 20,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "mini-signboard-badge",
+          "text": "DS",
+          "x": 76.578125,
+          "y": 4,
+          "width": 20,
+          "height": 20,
+          "color": "rgb(253, 253, 254)"
+        },
+        {
+          "class": "mini-signboard-name",
+          "text": "DeepSeek",
+          "x": 102.578125,
+          "y": 4.90625,
+          "width": 60.8125,
+          "height": 18.1875,
+          "color": "rgb(245, 247, 249)"
+        },
+        {
+          "class": "mini-signboard-track",
+          "text": "",
+          "x": 171.390625,
+          "y": 13,
+          "width": 12,
+          "height": 2,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "mini-signboard-status",
+          "text": "未测速",
+          "x": 191.390625,
+          "y": 4.90625,
+          "width": 53,
+          "height": 18.1875,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "mini-signboard-dot",
+          "text": "",
+          "x": 191.390625,
+          "y": 10,
+          "width": 8,
+          "height": 8,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "",
+          "text": "未测速",
+          "x": 205.390625,
+          "y": 4.90625,
+          "width": 39,
+          "height": 18.1875,
+          "color": "rgb(180, 184, 188)"
+        }
+      ]
+    },
+    {
+      "variant": "unselected",
+      "text": "Codex未选择线路",
+      "rect": {
+        "x": 240,
+        "y": 328,
+        "width": 151.578125,
+        "height": 28,
+        "top": 328,
+        "right": 391.578125,
+        "bottom": 356,
+        "left": 240
+      },
+      "font": "13px / 18.2px Overpass, \"Noto Sans SC\", sans-serif",
+      "children": [
+        {
+          "class": "mini-signboard-stripe",
+          "text": "",
+          "x": 0,
+          "y": 0,
+          "width": 3,
+          "height": 28,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "mini-signboard-tool",
+          "text": "Codex",
+          "x": 12,
+          "y": 4.90625,
+          "width": 36.578125,
+          "height": 18.1875,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "mini-signboard-track",
+          "text": "",
+          "x": 56.578125,
+          "y": 13,
+          "width": 12,
+          "height": 2,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "mini-signboard-line",
+          "text": "未选择线路",
+          "x": 76.578125,
+          "y": 4.90625,
+          "width": 65,
+          "height": 18.1875,
+          "color": "rgb(180, 184, 188)"
+        },
+        {
+          "class": "mini-signboard-name",
+          "text": "未选择线路",
+          "x": 76.578125,
+          "y": 4.90625,
+          "width": 65,
+          "height": 18.1875,
+          "color": "rgb(180, 184, 188)"
+        }
+      ]
+    }
+  ]
+}

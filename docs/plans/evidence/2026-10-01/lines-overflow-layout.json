@@ -1,0 +1,30 @@
+{
+  "fixture": "isolated actual ProviderLineTable with 30 synthetic providers; no backend mutations",
+  "rows": 33,
+  "scrollTop": 664,
+  "clientHeight": 776,
+  "scrollHeight": 1440,
+  "clientWidth": 924,
+  "scrollWidth": 924,
+  "scrollbar": "thin",
+  "last": {
+    "x": 240,
+    "y": 766,
+    "width": 876,
+    "height": 42,
+    "top": 766,
+    "right": 1116,
+    "bottom": 808,
+    "left": 240
+  },
+  "container": {
+    "x": 216,
+    "y": 40,
+    "width": 924,
+    "height": 776,
+    "top": 40,
+    "right": 1140,
+    "bottom": 816,
+    "left": 216
+  }
+}
