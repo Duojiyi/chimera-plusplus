@@ -713,7 +713,7 @@ mod tests {
         assert_eq!(get_sync_state(&db, &path)?, (0, 1));
 
         let mut writer = fs::OpenOptions::new().append(true).open(&file).unwrap();
-        writer.write_all(second[split..].as_bytes()).unwrap();
+        writer.write_all(&second.as_bytes()[split..]).unwrap();
         writer
             .set_times(fs::FileTimes::new().set_modified(original_modified))
             .unwrap();

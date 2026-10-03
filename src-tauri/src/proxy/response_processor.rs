@@ -621,7 +621,54 @@ pub(crate) fn usage_logging_enabled(state: &ProxyState) -> bool {
 /// 「按代理发出的请求计价、不信任上游回显」，接管场景下发出的请求模型是
 /// 映射后的 Y 而非客户端别名 X，按 X 计价会用错定价表行。
 #[allow(clippy::too_many_arguments)]
-async fn log_usage_internal(
+pub(crate) async fn log_usage_internal(
+    state: &ProxyState,
+    provider_id: &str,
+    app_type: &str,
+    model: &str,
+    request_model: &str,
+    outbound_model: &str,
+    usage: TokenUsage,
+    latency_ms: u64,
+    first_token_ms: Option<u64>,
+    is_streaming: bool,
+    status_code: u16,
+    session_id: Option<String>,
+) {
+    // All pricing reads and SQLite writes belong on the blocking pool.
+    let state = state.clone();
+    let (provider_id, app_type, model, request_model, outbound_model) = (
+        provider_id.to_owned(),
+        app_type.to_owned(),
+        model.to_owned(),
+        request_model.to_owned(),
+        outbound_model.to_owned(),
+    );
+    let runtime = tokio::runtime::Handle::current();
+    if let Err(error) = tokio::task::spawn_blocking(move || {
+        runtime.block_on(log_usage_blocking(
+            &state,
+            &provider_id,
+            &app_type,
+            &model,
+            &request_model,
+            &outbound_model,
+            usage,
+            latency_ms,
+            first_token_ms,
+            is_streaming,
+            status_code,
+            session_id,
+        ))
+    })
+    .await
+    {
+        log::error!("[USG-001] Usage worker failed: {error}");
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn log_usage_blocking(
     state: &ProxyState,
     provider_id: &str,
     app_type: &str,
@@ -1048,6 +1095,46 @@ pub(crate) mod tests {
         assert_eq!(
             headers.get(axum::http::header::CONTENT_TYPE),
             Some(&axum::http::HeaderValue::from_static("text/event-stream"))
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn usage_database_lock_does_not_block_the_runtime() {
+        let db = Arc::new(Database::memory().unwrap());
+        let state = build_state(db.clone());
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _guard = db.conn.lock().unwrap();
+            locked_tx.send(()).unwrap();
+            // The timeout releases a regressed blocking implementation instead of hanging CI.
+            release_rx.recv_timeout(Duration::from_secs(5)).is_ok()
+        });
+        locked_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let logging = tokio::spawn(async move {
+            log_usage_internal(
+                &state,
+                "provider",
+                "codex",
+                "model",
+                "model",
+                "model",
+                TokenUsage::default(),
+                1,
+                None,
+                false,
+                200,
+                None,
+            )
+            .await;
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let released = release_tx.send(()).is_ok();
+        logging.await.unwrap();
+        let timely = worker.join().unwrap();
+        assert!(
+            released && timely,
+            "usage logging blocked the async runtime"
         );
     }
 

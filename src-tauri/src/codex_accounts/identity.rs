@@ -310,14 +310,6 @@ pub(crate) fn classify(auth: &Value) -> LoginClass {
     }
 }
 
-/// Whether `value` holds ChatGPT token material at all (complete or not).
-pub(crate) fn has_chatgpt_tokens(value: &Value) -> bool {
-    matches!(
-        classify(value),
-        LoginClass::Chatgpt(_) | LoginClass::Conflict | LoginClass::Incomplete
-    )
-}
-
 pub(crate) fn last_refresh(auth: &Value) -> Option<DateTime<Utc>> {
     auth.get("last_refresh")
         .and_then(Value::as_str)

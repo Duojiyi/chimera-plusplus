@@ -53,8 +53,7 @@ const REASONING_CONTENT_PRESERVE_VENDOR_HINTS: &[&str] =
 // gpt-5.6-luna 解析到未部署的内部引擎（HTTP 404 Model not found，openai/codex#31967，
 // 本机 A/B 实测确认）。两个头必须成对发送，缺一即 404；version 需 ≥ 目标模型
 // catalog 的 minimal_client_version（luna=0.144.0），新模型抬门槛时同步 bump。
-const CODEX_OAUTH_ORIGINATOR: &str = "codex_cli_rs";
-const CODEX_OAUTH_CLIENT_VERSION: &str = "0.153.4";
+use crate::services::codex_oauth_models::{CODEX_OAUTH_CLIENT_VERSION, CODEX_OAUTH_ORIGINATOR};
 
 /// 获取 Claude 供应商的 API 格式
 ///

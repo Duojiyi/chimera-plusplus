@@ -65,6 +65,7 @@ pub fn import_prompt_from_deeplink(
         log::info!("Ignoring enabled=true on prompt deep link; prompts import disabled");
     }
     let prompt = Prompt {
+        template_id: None,
         id: id.clone(),
         name: name.clone(),
         content,

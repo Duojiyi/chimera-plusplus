@@ -502,6 +502,8 @@ pub fn openai_to_anthropic(body: Value) -> Result<Value, ProxyError> {
         .get("message")
         .ok_or_else(|| ProxyError::TransformError("No message in choice".to_string()))?;
 
+    let message = super::codex_chat_common::normalize_inline_think(message);
+
     let mut content = Vec::new();
     let mut has_tool_use = false;
 
@@ -688,6 +690,50 @@ pub fn openai_to_anthropic(body: Value) -> Result<Value, ProxyError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inline_think_non_streaming_separates_reasoning() {
+        for (content, expected_reasoning, expected_text) in [
+            (
+                json!("before<thinking>hidden</thinking>after<think>unfinished"),
+                "hiddenunfinished",
+                "beforeafter",
+            ),
+            (json!("<thinking>hidden"), "hidden", ""),
+            (
+                json!("Use `<think>literal</think>`"),
+                "",
+                "Use `<think>literal</think>`",
+            ),
+            (json!("text <thi"), "", "text <thi"),
+            (
+                json!([{"type": "text", "text": "<thin"}, {"type": "output_text", "text": "king>hidden</thinking>answer"}]),
+                "hidden",
+                "answer",
+            ),
+        ] {
+            let result = openai_to_anthropic(json!({
+                "id": "chatcmpl_inline", "model": "test", "choices": [{
+                    "message": {"role": "assistant", "content": content}, "finish_reason": "stop"
+                }], "usage": {"prompt_tokens": 1, "completion_tokens": 2}
+            }))
+            .unwrap();
+            let text = result["content"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|part| part["text"].as_str())
+                .collect::<String>();
+            let reasoning = result["content"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|part| part["thinking"].as_str())
+                .collect::<String>();
+            assert_eq!(text, expected_text);
+            assert_eq!(reasoning, expected_reasoning);
+        }
+    }
 
     #[test]
     fn test_anthropic_to_openai_simple() {

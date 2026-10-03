@@ -161,7 +161,7 @@ pub(crate) fn ensure_targets_allowed(
     for target in targets {
         match target.parse::<crate::app_config::AppType>() {
             Ok(app) => crate::product_policy::require_app(&app)?,
-            Err(_) => crate::product_policy::require(crate::product_policy::Capability::MultiTool)?,
+            Err(error) => return Err(error),
         }
     }
     Ok(())

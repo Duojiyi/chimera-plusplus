@@ -356,6 +356,7 @@ impl Database {
         // 使用 Backup 将临时库原子写回主库
         {
             let mut main_conn = lock_conn!(self.conn);
+            Self::preserve_local_account_pins_on_connection(&main_conn, &temp_conn)?;
             let backup = Backup::new(&temp_conn, &mut main_conn)
                 .map_err(|e| AppError::Database(e.to_string()))?;
             backup
@@ -373,15 +374,24 @@ impl Database {
     /// 创建内存快照以避免长时间持有数据库锁
     pub(crate) fn snapshot_to_memory(&self) -> Result<Connection, AppError> {
         let conn = lock_conn!(self.conn);
+        Self::snapshot_connection_to_memory(&conn)
+    }
+
+    pub(crate) fn snapshot_connection_to_memory(conn: &Connection) -> Result<Connection, AppError> {
         let mut snapshot =
             Connection::open_in_memory().map_err(|e| AppError::Database(e.to_string()))?;
 
         {
             let backup =
-                Backup::new(&conn, &mut snapshot).map_err(|e| AppError::Database(e.to_string()))?;
-            backup
+                Backup::new(conn, &mut snapshot).map_err(|e| AppError::Database(e.to_string()))?;
+            let result = backup
                 .step(-1)
                 .map_err(|e| AppError::Database(e.to_string()))?;
+            if !matches!(result, rusqlite::backup::StepResult::Done) {
+                return Err(AppError::Database(
+                    "Database backup did not complete".into(),
+                ));
+            }
         }
 
         Ok(snapshot)
@@ -611,6 +621,18 @@ impl Database {
         if !db_path.exists() {
             return Ok(None);
         }
+        let snapshot = self.snapshot_to_memory()?;
+        Self::backup_database_snapshot(&snapshot)
+    }
+
+    /// Persist a caller-owned snapshot without reacquiring the live DB mutex.
+    pub(crate) fn backup_database_snapshot(
+        snapshot: &Connection,
+    ) -> Result<Option<PathBuf>, AppError> {
+        let db_path = get_app_config_dir().join(crate::product_policy::PRODUCT_DATABASE_FILE);
+        if !db_path.exists() {
+            return Ok(None);
+        }
 
         let backup_dir = db_path
             .parent()
@@ -624,15 +646,19 @@ impl Database {
         {
             // Stage through an in-memory snapshot so the takeover Live backup
             // (MH-17) is dropped before any page reaches the backup file.
-            let snapshot = self.snapshot_to_memory()?;
-            Self::strip_proxy_live_backup(&snapshot)?;
+            Self::strip_proxy_live_backup(snapshot)?;
             let mut dest_conn =
                 Connection::open(&backup_path).map_err(|e| AppError::Database(e.to_string()))?;
-            let backup = Backup::new(&snapshot, &mut dest_conn)
+            let backup = Backup::new(snapshot, &mut dest_conn)
                 .map_err(|e| AppError::Database(e.to_string()))?;
-            backup
+            let result = backup
                 .step(-1)
                 .map_err(|e| AppError::Database(e.to_string()))?;
+            if !matches!(result, rusqlite::backup::StepResult::Done) {
+                return Err(AppError::Database(
+                    "Database backup did not complete".into(),
+                ));
+            }
         }
 
         #[cfg(unix)]
@@ -1176,6 +1202,7 @@ impl Database {
             let staged_conn =
                 Connection::open(&staging_path).map_err(|e| AppError::Database(e.to_string()))?;
             let mut main_conn = lock_conn!(self.conn);
+            Self::preserve_local_account_pins_on_connection(&main_conn, &staged_conn)?;
             let backup = Backup::new(&staged_conn, &mut main_conn)
                 .map_err(|e| AppError::Database(format!("提交数据库恢复失败: {e}")))?;
             backup
@@ -1189,8 +1216,11 @@ impl Database {
                 let rollback_result = (|| -> Result<(), AppError> {
                     let safety_conn = Connection::open(safety_path)
                         .map_err(|e| AppError::Database(e.to_string()))?;
+                    // Reconcile a private copy, never modify the safety backup.
+                    let safety_snapshot = Self::snapshot_connection_to_memory(&safety_conn)?;
                     let mut main_conn = lock_conn!(self.conn);
-                    let backup = Backup::new(&safety_conn, &mut main_conn)
+                    Self::preserve_local_account_pins_on_connection(&main_conn, &safety_snapshot)?;
+                    let backup = Backup::new(&safety_snapshot, &mut main_conn)
                         .map_err(|e| AppError::Database(format!("恢复安全备份失败: {e}")))?;
                     backup
                         .step(-1)

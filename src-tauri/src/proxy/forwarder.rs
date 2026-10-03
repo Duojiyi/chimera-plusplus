@@ -3480,9 +3480,8 @@ fn headers_contain_proxy_placeholder(headers: &http::HeaderMap) -> bool {
 }
 
 /// Proxy-injected managed accounts (GitHub Copilot and the ChatGPT
-/// subscription `codex_oauth` line) are closed while `managed_accounts` is
-/// off: their stored tokens are never resolved or sent upstream. The
-/// capability is a backend constant, so the renderer cannot reopen this.
+/// subscription `codex_oauth` line) are guarded by the backend capability
+/// before their stored tokens are resolved or sent upstream.
 /// xAI OAuth is not part of it; it backs the live Codex "xAI (Grok) OAuth"
 /// preset and keeps working.
 fn require_managed_accounts(uses_managed_account: bool) -> Result<(), ProxyError> {
@@ -4257,11 +4256,8 @@ value"
     }
 
     #[test]
-    fn managed_account_token_injection_is_rejected_while_managed_accounts_is_off() {
-        assert!(matches!(
-            require_managed_accounts(true),
-            Err(ProxyError::AuthError(_))
-        ));
+    fn managed_account_token_injection_is_available_when_enabled() {
+        assert!(require_managed_accounts(true).is_ok());
         assert!(require_managed_accounts(false).is_ok());
 
         // The providers that feed the gate: Copilot and ChatGPT-subscription

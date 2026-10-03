@@ -3,7 +3,8 @@
 
 use std::str::FromStr;
 
-use tauri::State;
+use tauri::{AppHandle, State};
+use tauri_plugin_opener::OpenerExt;
 
 use crate::app_config::AppType;
 use crate::error::AppError;
@@ -37,6 +38,16 @@ pub async fn list_live_backups(app: String) -> Result<Vec<LiveBackupSummary>, St
     run_blocking(move || live_backup::list_backups(&app)).await
 }
 
+#[tauri::command]
+pub async fn open_live_backup_directory(handle: AppHandle, app: String) -> Result<(), String> {
+    let app = gated_app(Capability::LiveBackups, &app).map_err(String::from)?;
+    let directory = run_blocking(move || live_backup::prepare_backup_dir(&app)).await?;
+    handle
+        .opener()
+        .open_path(directory.to_string_lossy().to_string(), None::<String>)
+        .map_err(|_| "无法打开备份目录，请检查本机文件管理器。".to_string())
+}
+
 /// Returns `None` when the tool has no live file to back up.
 #[tauri::command]
 pub async fn create_live_backup(
@@ -45,8 +56,14 @@ pub async fn create_live_backup(
 ) -> Result<Option<LiveBackupSummary>, String> {
     let app = gated_app(Capability::LiveBackups, &app).map_err(String::from)?;
     let state = state.inner().clone();
-    run_blocking(move || live_backup::create_backup(&state.db, &app, LiveBackupReason::Manual))
-        .await
+    run_blocking(move || {
+        // Manual snapshots must not interleave with this app's managed writes.
+        // Service callers that already hold this lock keep using create_backup directly.
+        let _guard =
+            futures::executor::block_on(state.proxy_service.lock_switch_for_app(app.as_str()));
+        live_backup::create_backup(&state.db, &app, LiveBackupReason::Manual)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -81,11 +98,11 @@ mod tests {
     }
 
     #[test]
-    fn live_backup_commands_are_rejected_while_the_capability_is_off() {
-        assert!(!Capability::LiveBackups.enabled());
+    fn live_backup_commands_are_available_when_the_capability_is_enabled() {
+        assert!(Capability::LiveBackups.enabled());
         for app in AppType::all() {
             assert!(
-                is_capability_rejection(gated_app(Capability::LiveBackups, app.as_str())),
+                !is_capability_rejection(gated_app(Capability::LiveBackups, app.as_str())),
                 "{}",
                 app.as_str()
             );

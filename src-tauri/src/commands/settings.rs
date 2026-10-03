@@ -74,10 +74,34 @@ pub async fn get_settings() -> Result<crate::settings::AppSettings, String> {
     Ok(crate::settings::get_settings_for_frontend())
 }
 
+#[derive(Debug, serde::Deserialize)]
+enum PreferenceLanguage {
+    #[serde(rename = "zh")]
+    SimplifiedChinese,
+    #[serde(rename = "zh-TW")]
+    TraditionalChinese,
+    #[serde(rename = "en")]
+    English,
+    #[serde(rename = "ja")]
+    Japanese,
+}
+
+impl PreferenceLanguage {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::SimplifiedChinese => "zh",
+            Self::TraditionalChinese => "zh-TW",
+            Self::English => "en",
+            Self::Japanese => "ja",
+        }
+    }
+}
+
 /// Only UI preferences are patchable; routing and secrets remain backend-owned.
 #[derive(Debug, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PreferencesPatch {
+    language: Option<PreferenceLanguage>,
     codex_update_source: Option<String>,
     codex_install_mode: Option<String>,
     check_codex_updates_on_start: Option<bool>,
@@ -89,6 +113,9 @@ pub struct PreferencesPatch {
 
 impl PreferencesPatch {
     fn apply(self, settings: &mut crate::settings::AppSettings) {
+        if let Some(value) = self.language {
+            settings.language = Some(value.as_str().into());
+        }
         if let Some(value) = self.codex_update_source {
             settings.codex_update_source = value;
         }
@@ -119,6 +146,63 @@ pub async fn patch_preferences(
 ) -> Result<crate::settings::AppSettings, String> {
     crate::settings::mutate_settings(|current| patch.apply(current)).map_err(|e| e.to_string())?;
     Ok(crate::settings::get_settings_for_frontend())
+}
+
+/// A directory patch is separate from UI preferences and never replays a settings snapshot.
+struct ConfigDirectoryPatch {
+    field: fn(&mut crate::settings::AppSettings) -> &mut Option<String>,
+    path: Option<String>,
+}
+
+impl ConfigDirectoryPatch {
+    fn new(app: &str, path: Option<String>) -> Result<Self, String> {
+        let field: fn(&mut crate::settings::AppSettings) -> &mut Option<String> = match app {
+            "claude" => |s| &mut s.claude_config_dir,
+            "codex" => |s| &mut s.codex_config_dir,
+            "gemini" => |s| &mut s.gemini_config_dir,
+            "grokbuild" => |s| &mut s.grok_config_dir,
+            "opencode" => |s| &mut s.opencode_config_dir,
+            "openclaw" => |s| &mut s.openclaw_config_dir,
+            "hermes" => |s| &mut s.hermes_config_dir,
+            _ => return Err(format!("Unknown config directory tool: {app}")),
+        };
+        let path = path
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+        if let Some(value) = path.as_deref() {
+            // Check syntax across platforms, including Windows drives and WSL UNC paths.
+            let bytes = value.as_bytes();
+            let drive = bytes.len() >= 3
+                && bytes[0].is_ascii_alphabetic()
+                && bytes[1] == b':'
+                && matches!(bytes[2], b'\\' | b'/');
+            let unc = value.strip_prefix("\\\\").is_some_and(|rest| {
+                let mut parts = rest.split('\\');
+                matches!((parts.next(), parts.next()), (Some(server), Some(share))
+                    if !server.is_empty() && !share.is_empty()
+                        && !matches!(server, "." | ".." | "?")
+                        && !matches!(share, "." | ".."))
+            });
+            if value.contains('\0') || !(value.starts_with('/') || drive || unc) {
+                return Err(
+                    "Config directory must be an absolute path (including UNC), or empty to reset"
+                        .into(),
+                );
+            }
+        }
+        Ok(Self { field, path })
+    }
+
+    fn apply(self, settings: &mut crate::settings::AppSettings) {
+        *(self.field)(settings) = self.path;
+    }
+}
+
+#[tauri::command]
+pub async fn patch_config_directory(app: String, path: Option<String>) -> Result<bool, String> {
+    let patch = ConfigDirectoryPatch::new(&app, path)?;
+    crate::settings::mutate_settings(|current| patch.apply(current)).map_err(|e| e.to_string())?;
+    Ok(true)
 }
 
 /// 保存设置
@@ -548,10 +632,101 @@ mod tests {
         VisibleAppsCodexOnlyMigration, WebDavSyncSettings,
     };
 
+    // In-memory isolation: no HOME changes, settings store, or filesystem writes.
+    #[test]
+    fn directory_patches_preserve_concurrent_preferences_routing_and_other_directories() {
+        for (app, key) in [
+            ("claude", "claudeConfigDir"),
+            ("codex", "codexConfigDir"),
+            ("gemini", "geminiConfigDir"),
+            ("grokbuild", "grokConfigDir"),
+            ("opencode", "opencodeConfigDir"),
+            ("openclaw", "openclawConfigDir"),
+            ("hermes", "hermesConfigDir"),
+        ] {
+            let patch = super::ConfigDirectoryPatch::new(app, Some("/config/new".into())).unwrap();
+            let mut current = AppSettings {
+                claude_config_dir: Some("/config/claude".into()),
+                codex_config_dir: Some("/config/codex".into()),
+                gemini_config_dir: Some("/config/gemini".into()),
+                grok_config_dir: Some("/config/grok".into()),
+                opencode_config_dir: Some("/config/opencode".into()),
+                openclaw_config_dir: Some("/config/openclaw".into()),
+                hermes_config_dir: Some("/config/hermes".into()),
+                ..Default::default()
+            };
+            // Changes committed after the directory request was prepared must survive.
+            let prefs: super::PreferencesPatch = serde_json::from_value(serde_json::json!({
+                "showProviderBalance": true, "language": "ja", "lightweightOnClose": true
+            }))
+            .unwrap();
+            prefs.apply(&mut current);
+            current.current_provider_codex = Some("new-route".into());
+            let mut expected = serde_json::to_value(&current).unwrap();
+            expected[key] = serde_json::json!("/config/new");
+            patch.apply(&mut current);
+            assert_eq!(serde_json::to_value(&current).unwrap(), expected, "{app}");
+            for reset in [None, Some(String::new()), Some("  ".into())] {
+                let mut expected = current.clone();
+                *(super::ConfigDirectoryPatch::new(app, None).unwrap().field)(&mut expected) = None;
+                super::ConfigDirectoryPatch::new(app, reset)
+                    .unwrap()
+                    .apply(&mut current);
+                assert_eq!(
+                    serde_json::to_value(&current).unwrap(),
+                    serde_json::to_value(expected).unwrap()
+                );
+            }
+            assert!(
+                serde_json::from_value::<super::PreferencesPatch>(serde_json::json!({
+                    key: "/config/not-a-preference"
+                }))
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn directory_patch_validates_paths_without_accessing_the_filesystem() {
+        for path in [
+            "/config/tool",
+            "C:\\config\\tool",
+            "D:/config/tool",
+            "\\\\server\\share",
+            "\\\\wsl.localhost\\Ubuntu\\home\\user\\.codex",
+        ] {
+            let patch =
+                super::ConfigDirectoryPatch::new("codex", Some(format!("  {path}  "))).unwrap();
+            assert_eq!(patch.path.as_deref(), Some(path));
+        }
+        for path in [
+            "relative",
+            "../tool",
+            "C:tool",
+            "\\tool",
+            "\\\\server",
+            "\\\\server\\",
+            "\\\\\\share",
+            "\\\\?\\C:\\tool",
+            "/bad\0path",
+        ] {
+            assert!(
+                super::ConfigDirectoryPatch::new("codex", Some(path.into())).is_err(),
+                "{path:?}"
+            );
+        }
+        for app in ["", "unknown", "Codex", "claude-desktop", "app"] {
+            assert!(super::ConfigDirectoryPatch::new(app, Some("/config/tool".into())).is_err());
+            assert!(super::ConfigDirectoryPatch::new(app, None).is_err());
+        }
+    }
+
     #[test]
     fn preference_patches_preserve_other_fields_and_reject_authoritative_keys() {
-        let mut current = AppSettings::default();
-        current.current_provider_codex = Some("active".into());
+        let mut current = AppSettings {
+            current_provider_codex: Some("active".into()),
+            ..Default::default()
+        };
         let first: super::PreferencesPatch = serde_json::from_value(serde_json::json!({
             "checkCodexUpdatesOnStart": false
         }))
@@ -571,6 +746,31 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    #[test]
+    fn language_patch_accepts_only_bundled_locales_and_preserves_other_preferences() {
+        let mut current = AppSettings {
+            current_provider_codex: Some("active".into()),
+            check_codex_updates_on_start: false,
+            ..Default::default()
+        };
+        for language in ["zh", "zh-TW", "en", "ja"] {
+            let patch: super::PreferencesPatch =
+                serde_json::from_value(serde_json::json!({ "language": language })).unwrap();
+            patch.apply(&mut current);
+            assert_eq!(current.language.as_deref(), Some(language));
+            assert_eq!(current.current_provider_codex.as_deref(), Some("active"));
+            assert!(!current.check_codex_updates_on_start);
+        }
+        for language in ["", "fr", "../en", "EN"] {
+            assert!(serde_json::from_value::<super::PreferencesPatch>(
+                serde_json::json!({ "language": language })
+            )
+            .is_err());
+        }
+        super::PreferencesPatch::default().apply(&mut current);
+        assert_eq!(current.language.as_deref(), Some("ja"));
     }
 
     fn staged(version: &str, bytes: &[u8]) -> StagedUpdate {

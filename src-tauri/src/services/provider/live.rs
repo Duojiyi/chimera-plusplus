@@ -177,6 +177,42 @@ pub(crate) fn sanitize_claude_settings_for_live(settings: &Value) -> Value {
     v
 }
 
+// Switching a route must not erase unrelated settings added by Claude itself
+// (plugins, permissions, hooks, etc.). Routing/auth fields must come solely from
+// the target provider, especially when returning to the official empty-env row.
+fn preserve_claude_local_settings(mut target: Value, existing: Value) -> Result<Value, AppError> {
+    let target_object = target.as_object_mut().ok_or_else(|| {
+        AppError::Config("Claude provider settings must be a JSON object".to_string())
+    })?;
+    let existing_object = existing.as_object().ok_or_else(|| {
+        AppError::Config("Claude settings.json must be a JSON object".to_string())
+    })?;
+    for (key, value) in existing_object {
+        if matches!(
+            key.as_str(),
+            "env" | "model" | "apiKeyHelper" | "apiBaseUrl" | "primaryModel" | "smallFastModel"
+        ) || super::ProviderService::is_sensitive_config_key(key)
+        {
+            continue;
+        }
+        target_object
+            .entry(key.clone())
+            .or_insert_with(|| value.clone());
+    }
+    Ok(sanitize_claude_settings_for_live(&target))
+}
+
+pub(crate) fn write_claude_provider_settings(target: &Value) -> Result<(), AppError> {
+    let path = get_claude_settings_path();
+    let existing = if path.exists() {
+        read_json_file::<Value>(&path)?
+    } else {
+        json!({})
+    };
+    let settings = preserve_claude_local_settings(target.clone(), existing)?;
+    write_json_file(&path, &settings)
+}
+
 pub(crate) fn provider_exists_in_live_config(
     app_type: &AppType,
     provider_id: &str,
@@ -914,11 +950,7 @@ fn restore_live_settings_for_provider_backfill(
             {
                 if identity.key() == key {
                     if let Ok(vault) = crate::codex_accounts::vault::Vault::open_default() {
-                        let _ = vault.store_slot(
-                            &identity,
-                            auth,
-                            crate::codex_accounts::vault::SlotSource::Live,
-                        );
+                        let _ = vault.refresh_existing_slot(&identity, auth);
                     }
                 }
             }
@@ -1208,9 +1240,7 @@ pub(crate) fn write_live_snapshot(
 ) -> Result<(), AppError> {
     match app_type {
         AppType::Claude => {
-            let path = get_claude_settings_path();
-            let settings = sanitize_claude_settings_for_live(&provider.settings_config);
-            write_json_file(&path, &settings)?;
+            write_claude_provider_settings(&provider.settings_config)?;
         }
         AppType::ClaudeDesktop => {
             return Err(AppError::localized(
@@ -1900,10 +1930,16 @@ pub(crate) fn write_gemini_live(provider: &Provider) -> Result<(), AppError> {
         if config_value.is_object() {
             // Merge with existing settings to preserve mcpServers and other fields
             let mut merged = if settings_path.exists() {
-                read_json_file::<Value>(&settings_path).unwrap_or_else(|_| json!({}))
+                read_json_file::<Value>(&settings_path)?
             } else {
                 json!({})
             };
+
+            if !merged.is_object() {
+                return Err(AppError::Config(
+                    "Gemini settings.json must be a JSON object".to_string(),
+                ));
+            }
 
             // Merge provider config into existing settings
             if let (Some(merged_obj), Some(config_obj)) =
@@ -2265,6 +2301,39 @@ mod tests {
             .to_string();
         assert!(error.contains("bad-one"), "{error}");
         assert!(error.contains("bad-two"), "{error}");
+    }
+
+    #[test]
+    fn claude_switch_preserves_local_settings_without_previous_route_or_secrets() {
+        let existing = json!({
+            "enabledPlugins": { "test-plugin": true },
+            "permissions": { "allow": ["Read"] },
+            "hooks": { "Stop": [] },
+            "env": { "ANTHROPIC_BASE_URL": "https://old.invalid", "ANTHROPIC_AUTH_TOKEN": "old" },
+            "model": "old-model", "apiKeyHelper": "old-helper", "apiKey": "old-secret",
+            "api_format": "openai_chat"
+        });
+        let result = preserve_claude_local_settings(json!({"env": {}}), existing.clone()).unwrap();
+        for field in ["enabledPlugins", "permissions", "hooks"] {
+            assert_eq!(result[field], existing[field]);
+        }
+        assert_eq!(result["env"], json!({}));
+        for field in ["model", "apiKeyHelper", "apiKey", "api_format"] {
+            assert!(result.get(field).is_none(), "{field}");
+        }
+    }
+
+    #[test]
+    fn claude_switch_honors_explicit_target_settings_and_rejects_invalid_live() {
+        let target = json!({"env": {"ANTHROPIC_MODEL": "new"}, "enabledPlugins": {}});
+        let result = preserve_claude_local_settings(
+            target.clone(),
+            json!({"enabledPlugins": {"old": true}}),
+        )
+        .unwrap();
+        assert_eq!(result, target);
+        assert!(preserve_claude_local_settings(target, json!([])).is_err());
+        assert!(preserve_claude_local_settings(json!(null), json!({})).is_err());
     }
 
     #[test]

@@ -110,6 +110,42 @@ pub(crate) fn plan(write: CodexLiveWrite<'_>) -> Result<PlannedCodexLiveWrite, A
     Ok(PlannedCodexLiveWrite { changeset })
 }
 
+/// Plan from the exact bytes the user previewed; never re-read and adopt a
+/// newer config as the CAS baseline. Refuse unrelated sanitizer changes.
+pub(crate) fn plan_observed_config(
+    snapshot: FileSnapshot,
+    config: &str,
+) -> Result<PlannedCodexLiveWrite, AppError> {
+    if snapshot.path() != get_codex_config_path().as_path() {
+        return Err(AppError::InvalidInput("配置快照路径不匹配。".into()));
+    }
+    let prepared = prepare_config_text(config)?;
+    if prepared != config {
+        return Err(AppError::InvalidInput(
+            "配置还有其他待处理设置，请重新检查。".into(),
+        ));
+    }
+    let mut changeset = Changeset::new();
+    changeset.write(snapshot, prepared.into_bytes())?;
+    Ok(PlannedCodexLiveWrite { changeset })
+}
+
+/// Adds a restored config to the caller's atomic multi-file changeset, using
+/// the same validation as every other live write and the already-read CAS baseline.
+pub(crate) fn plan_restored_config(
+    changeset: &mut Changeset,
+    snapshot: FileSnapshot,
+    bytes: &[u8],
+) -> Result<(), AppError> {
+    if snapshot.path() != get_codex_config_path().as_path() {
+        return Err(AppError::InvalidInput("配置快照路径不匹配。".into()));
+    }
+    let config = std::str::from_utf8(bytes)
+        .map_err(|_| AppError::Config("备份中的 config.toml 不是 UTF-8 文本".into()))?;
+    changeset.write(snapshot, prepare_config_text(config)?.into_bytes())?;
+    Ok(())
+}
+
 /// L5 gate: validate model_instructions_file references.
 /// Codex 0.157 fails to start if an instructions file does not exist (line 3957)
 /// or is empty (line 4513).
@@ -132,14 +168,26 @@ pub(crate) fn validate_instruction_refs(toml_text: &str) -> Result<String, AppEr
     let mut modified = false;
 
     let check_ref = |raw_val: &str| -> Result<bool, AppError> {
-        let norm = raw_val.to_ascii_lowercase().replace('\\', "/");
-        let is_owned =
-            norm.starts_with("chimera/instructions/") || norm.contains("/chimera/instructions/");
         let resolved = if std::path::Path::new(raw_val).is_absolute() {
             PathBuf::from(raw_val)
         } else {
             codex_dir.join(raw_val)
         };
+        // Ownership requires a strict descendant of our configured directory,
+        // not a matching substring or a traversal through another directory.
+        let owned_root = codex_dir.join("chimera/instructions");
+        let is_owned = resolved.strip_prefix(&owned_root).is_ok_and(|relative| {
+            !relative.as_os_str().is_empty()
+                && relative
+                    .components()
+                    .all(|part| matches!(part, std::path::Component::Normal(_)))
+                && resolved
+                    .ancestors()
+                    .find(|parent| !matches!(std::fs::symlink_metadata(parent), Err(error) if error.kind() == std::io::ErrorKind::NotFound))
+                    .is_some_and(|parent| {
+                        crate::security_limits::canonicalize_within_root(parent, &codex_dir).is_ok()
+                    })
+        });
         let is_dangling = match std::fs::metadata(&resolved) {
             Ok(meta) => meta.len() == 0,
             Err(_) => true,
@@ -150,9 +198,10 @@ pub(crate) fn validate_instruction_refs(toml_text: &str) -> Result<String, AppEr
                 Ok(true)
             } else {
                 // Fail closed for broken external user paths: Codex 0.157 crashes on missing/empty files
-                Err(AppError::Message(format!(
-                    "指令文件 '{raw_val}' 不存在或为空文件，Codex 0.157 拒载该配置。请修正路径或补充内容。"
-                )))
+                Err(AppError::Message(
+                    "指令文件不存在或为空文件，Codex 0.157 拒载该配置。请修正路径或补充内容。"
+                        .to_string(),
+                ))
             }
         } else {
             Ok(false)
@@ -161,7 +210,7 @@ pub(crate) fn validate_instruction_refs(toml_text: &str) -> Result<String, AppEr
 
     if let Some(val) = doc.get("model_instructions_file").and_then(|v| v.as_str()) {
         if check_ref(val)? {
-            log::warn!("Stripping dangling chimera instructions file pointer: {val}");
+            log::warn!("Stripping dangling chimera instructions file pointer");
             doc.remove("model_instructions_file");
             modified = true;
         }
@@ -175,7 +224,7 @@ pub(crate) fn validate_instruction_refs(toml_text: &str) -> Result<String, AppEr
                     .and_then(|v| v.as_str())
                 {
                     if check_ref(val)? {
-                        log::warn!("Stripping dangling profile instructions file pointer: {val}");
+                        log::warn!("Stripping dangling profile instructions file pointer");
                         table.remove("model_instructions_file");
                         modified = true;
                     }
@@ -359,6 +408,58 @@ model_instructions_file = "{ext_str}"
             output.contains(&ext_str),
             "user external instructions file must be preserved"
         );
+    }
+
+    #[test]
+    #[serial]
+    fn instructions_ownership_rejects_lookalikes_and_traversal() {
+        let _home = TestHome::new();
+        let codex_dir = crate::codex_config::get_codex_config_dir();
+        fs::create_dir_all(codex_dir.join("chimera/instructions")).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let lookalike = outside.path().join("chimera/instructions/missing.md");
+        for path in [
+            lookalike.to_string_lossy().replace('\\', "/"),
+            "chimera/instructions/../../private-missing.md".to_string(),
+            "other/chimera/instructions/missing.md".to_string(),
+        ] {
+            let input = format!("model_instructions_file = '{}'\n", path);
+            let error = validate_instruction_refs(&input).unwrap_err().to_string();
+            assert!(
+                !error.contains(&path),
+                "must not disclose the external path"
+            );
+        }
+        let absolute = codex_dir.join("chimera/instructions/missing.md");
+        let input = format!(
+            "model_instructions_file = '{}'\n",
+            absolute.to_string_lossy()
+        );
+        assert!(!validate_instruction_refs(&input)
+            .unwrap()
+            .contains("model_instructions_file"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial]
+    fn instructions_ownership_rejects_symlink_targets() {
+        let _home = TestHome::new();
+        let owned = crate::codex_config::get_codex_config_dir().join("chimera/instructions");
+        fs::create_dir_all(&owned).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let empty = outside.path().join("empty.md");
+        fs::write(&empty, "").unwrap();
+        std::os::unix::fs::symlink(&empty, owned.join("linked.md")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), owned.join("linked-dir")).unwrap();
+        for path in [
+            "chimera/instructions/linked.md",
+            "chimera/instructions/linked-dir/missing.md",
+        ] {
+            let input = format!("model_instructions_file = '{}'\n", path);
+            assert!(validate_instruction_refs(&input).is_err());
+        }
+        assert_eq!(fs::read_to_string(empty).unwrap(), "");
     }
 
     #[test]

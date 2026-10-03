@@ -78,6 +78,10 @@ impl Database {
 
                 // 处理 meta 和 endpoints
                 let mut meta_clone = provider.meta.clone().unwrap_or_default();
+                // Legacy JSON cannot prove a machine-local vault binding.
+                if app_type == "codex" {
+                    meta_clone.official_account = None;
+                }
                 let endpoints = std::mem::take(&mut meta_clone.custom_endpoints);
 
                 tx.execute(

@@ -1202,6 +1202,24 @@ impl ProxyService {
             .await
     }
 
+    // A selected row (or matching endpoint alone) does not prove that Live
+    // credentials belong to it. External CLI edits must be imported explicitly,
+    // never silently treated as a credential rotation during proxy takeover.
+    fn live_credentials_match_provider(
+        app_type: &AppType,
+        provider: &Provider,
+        live_config: &Value,
+    ) -> bool {
+        let live = Provider::with_id(String::new(), String::new(), live_config.clone(), None);
+        let (stored_url, stored_key) = provider.resolve_usage_credentials(app_type);
+        let (live_url, live_key) = live.resolve_usage_credentials(app_type);
+        !stored_url.is_empty()
+            && stored_url == live_url
+            && !stored_key.trim().is_empty()
+            && stored_key.trim() != PROXY_TOKEN_PLACEHOLDER
+            && stored_key.trim() == live_key.trim()
+    }
+
     async fn sync_live_config_to_provider(
         &self,
         app_type: &AppType,
@@ -1217,6 +1235,14 @@ impl ProxyService {
                     if let Ok(Some(mut provider)) =
                         self.db.get_provider_by_id(&provider_id, "claude")
                     {
+                        if !Self::live_credentials_match_provider(app_type, &provider, live_config)
+                        {
+                            log::warn!(
+                                "Live credential ownership is unproven; keeping stored credentials"
+                            );
+                            return Ok(());
+                        }
+
                         if let Some(env) = live_config.get("env").and_then(|v| v.as_object()) {
                             let token_pair = [
                                 "ANTHROPIC_AUTH_TOKEN",
@@ -1312,6 +1338,14 @@ impl ProxyService {
                     if let Ok(Some(mut provider)) =
                         self.db.get_provider_by_id(&provider_id, "codex")
                     {
+                        if !Self::live_credentials_match_provider(app_type, &provider, live_config)
+                        {
+                            log::warn!(
+                                "Live credential ownership is unproven; keeping stored credentials"
+                            );
+                            return Ok(());
+                        }
+
                         // The built-in official row is a routing capability, not
                         // a credential store. Its auth must remain empty even
                         // when the live Codex login uses OPENAI_API_KEY mode.
@@ -1370,6 +1404,14 @@ impl ProxyService {
                     if let Ok(Some(mut provider)) =
                         self.db.get_provider_by_id(&provider_id, "gemini")
                     {
+                        if !Self::live_credentials_match_provider(app_type, &provider, live_config)
+                        {
+                            log::warn!(
+                                "Live credential ownership is unproven; keeping stored credentials"
+                            );
+                            return Ok(());
+                        }
+
                         if let Some(token) = live_config
                             .get("env")
                             .and_then(|v| v.get("GEMINI_API_KEY"))
@@ -1424,6 +1466,14 @@ impl ProxyService {
                     if let Ok(Some(mut provider)) =
                         self.db.get_provider_by_id(&provider_id, "grokbuild")
                     {
+                        if !Self::live_credentials_match_provider(app_type, &provider, live_config)
+                        {
+                            log::warn!(
+                                "Live credential ownership is unproven; keeping stored credentials"
+                            );
+                            return Ok(());
+                        }
+
                         let live_config_toml = live_config
                             .get("config")
                             .and_then(Value::as_str)
@@ -6512,6 +6562,76 @@ model = "gpt-5.1-codex"
 
     #[tokio::test]
     #[serial]
+    async fn live_sync_preserves_credentials_when_current_row_does_not_own_live() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        let db = Arc::new(Database::memory().expect("init db"));
+        let service = ProxyService::new(db.clone());
+        for app in [
+            AppType::Claude,
+            AppType::Codex,
+            AppType::Gemini,
+            AppType::GrokBuild,
+        ] {
+            let settings = |url: &str, key: &str| match app {
+                AppType::Claude => {
+                    json!({"env": {"ANTHROPIC_BASE_URL": url, "ANTHROPIC_AUTH_TOKEN": key}})
+                }
+                AppType::Codex => {
+                    json!({"auth": {"OPENAI_API_KEY": key}, "config": format!("model_provider = \"custom\"\n[model_providers.custom]\nname = \"Custom\"\nbase_url = {url:?}\n")})
+                }
+                AppType::Gemini => {
+                    json!({"env": {"GOOGLE_GEMINI_BASE_URL": url, "GEMINI_API_KEY": key}})
+                }
+                AppType::GrokBuild => {
+                    json!({"config": format!("[models]\ndefault = \"custom\"\n[model.custom]\nmodel = \"test-model\"\nname = \"Custom\"\nbase_url = {url:?}\napi_key = {key:?}\napi_backend = \"openai\"\ncontext_window = 128000\n")})
+                }
+                _ => unreachable!(),
+            };
+            let original = settings("https://selected.invalid/v1", "selected-key");
+            let provider =
+                Provider::with_id("selected".into(), "Selected".into(), original.clone(), None);
+            db.save_provider(app.as_str(), &provider)
+                .expect("save provider");
+            db.set_current_provider(app.as_str(), "selected")
+                .expect("set current");
+            crate::settings::set_current_provider(&app, Some("selected")).expect("local current");
+            assert!(
+                ProxyService::live_credentials_match_provider(&app, &provider, &original),
+                "matching credentials for {}",
+                app.as_str()
+            );
+            for (url, key) in [
+                ("https://other.invalid/v1", "foreign-key"),
+                ("https://selected.invalid/v1", "foreign-key"),
+                ("https://other.invalid/v1", "selected-key"),
+                ("https://selected.invalid/v1", ""),
+                ("https://selected.invalid/v1", PROXY_TOKEN_PLACEHOLDER),
+            ] {
+                let live = settings(url, key);
+                assert!(!ProxyService::live_credentials_match_provider(
+                    &app, &provider, &live
+                ));
+                service
+                    .sync_live_config_to_provider(&app, &live)
+                    .await
+                    .expect("skip unowned credentials");
+                let stored = db
+                    .get_provider_by_id("selected", app.as_str())
+                    .expect("read provider")
+                    .expect("exists");
+                assert_eq!(
+                    stored.settings_config,
+                    original,
+                    "must preserve {} credentials",
+                    app.as_str()
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
     async fn sync_claude_token_does_not_add_anthropic_api_key() {
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("reload settings");
@@ -6525,7 +6645,7 @@ model = "gpt-5.1-codex"
             json!({
                 "env": {
                     "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
-                    "ANTHROPIC_AUTH_TOKEN": "stale"
+                    "ANTHROPIC_AUTH_TOKEN": "fresh"
                 }
             }),
             None,
@@ -6537,6 +6657,7 @@ model = "gpt-5.1-codex"
 
         let live_config = json!({
             "env": {
+                "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
                 "ANTHROPIC_AUTH_TOKEN": "fresh"
             }
         });
@@ -6581,7 +6702,7 @@ model = "gpt-5.1-codex"
             json!({
                 "env": {
                     "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
-                    "ANTHROPIC_API_KEY": "stale"
+                    "ANTHROPIC_API_KEY": "fresh"
                 }
             }),
             None,
@@ -6593,6 +6714,7 @@ model = "gpt-5.1-codex"
 
         let live_config = json!({
             "env": {
+                "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
                 "ANTHROPIC_AUTH_TOKEN": "fresh"
             }
         });
@@ -8357,9 +8479,14 @@ requires_openai_auth = true
             .expect("seed claude backup");
 
         let codex_good_backup = serde_json::to_string(&json!({
-            "auth": { "OPENAI_API_KEY": "real-codex-token" }
+            "auth": { "OPENAI_API_KEY": "real-codex-token" },
+            "config": "model_provider = \"custom\""
         }))
         .expect("serialize codex good backup");
+        let codex_expected_backup = serde_json::to_string(&json!({
+            "config": "model_provider = \"custom\""
+        }))
+        .expect("serialize stored codex good backup");
         db.save_live_backup("codex", &codex_good_backup)
             .await
             .expect("seed codex backup");
@@ -8416,7 +8543,7 @@ experimental_bearer_token = "PROXY_MANAGED"
         // All three good backups must still be intact
         for (app_type, original) in [
             ("claude", good_backup.as_str()),
-            ("codex", codex_good_backup.as_str()),
+            ("codex", codex_expected_backup.as_str()),
             ("gemini", gemini_good_backup.as_str()),
         ] {
             let backup_after = db

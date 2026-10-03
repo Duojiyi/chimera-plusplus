@@ -1657,7 +1657,10 @@ mod tests {
             crate::settings::get_current_provider(&AppType::Claude).as_deref(),
             Some("claude-a")
         );
-        let imported = providers.get(&result).expect("imported exists");
+        let imported = db
+            .get_provider_by_id(&result, "claude")
+            .expect("read imported provider")
+            .expect("imported exists");
         assert_eq!(imported.id, result);
         assert_ne!(
             db.get_current_provider("claude")
@@ -1786,20 +1789,21 @@ mod tests {
 
     #[tokio::test]
     #[serial]
-    async fn enabled_claude_desktop_import_failure_restores_all_live_files() {
+    async fn enabled_claude_desktop_import_remains_import_only() {
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("reload settings");
         show_claude_family();
-        if crate::claude_desktop_config::capture_live_snapshot()
-            .expect("probe Claude Desktop snapshot support")
-            .is_none()
-        {
+        assert!(!deeplink_import_may_activate(&AppType::ClaudeDesktop));
+
+        let before = crate::claude_desktop_config::capture_live_snapshot()
+            .expect("probe Claude Desktop snapshot support");
+        let Some(before) = before else {
             return;
-        }
+        };
 
         let db = Arc::new(crate::database::Database::memory().expect("create memory db"));
         let state = crate::store::AppState::new(db.clone());
-        let current_id = import_provider_from_deeplink(
+        let imported_id = import_provider_from_deeplink(
             &state,
             DeepLinkImportRequest {
                 resource: "provider".to_string(),
@@ -1813,70 +1817,31 @@ mod tests {
             },
         )
         .await
-        .expect("activate initial Claude Desktop provider");
-
-        let before = crate::claude_desktop_config::capture_live_snapshot()
-            .expect("capture initial Claude Desktop Live")
-            .expect("supported platform snapshot");
-        assert!(before.has_live_data());
-
-        {
-            let conn = db.conn.lock().expect("lock database");
-            conn.execute_batch(
-                "CREATE TRIGGER reject_imported_claude_desktop_current_update
-                 BEFORE UPDATE OF is_current ON providers
-                 WHEN NEW.app_type = 'claude-desktop'
-                   AND NEW.id LIKE 'desktopc-%'
-                   AND NEW.is_current = 1
-                 BEGIN
-                   SELECT RAISE(ABORT, 'forced Claude Desktop enabled-import failure');
-                 END;",
-            )
-            .expect("install Claude Desktop failure trigger");
-        }
-
-        let error = import_provider_from_deeplink(
-            &state,
-            DeepLinkImportRequest {
-                resource: "provider".to_string(),
-                app: Some("claude-desktop".to_string()),
-                name: Some("Desktop C".to_string()),
-                enabled: Some(true),
-                endpoint: Some("https://desktop-c.example.invalid/v1".to_string()),
-                api_key: Some("desktop-c-test-key".to_string()),
-                model: Some("claude-c".to_string()),
-                ..Default::default()
-            },
-        )
-        .await
-        .expect_err("forced current commit failure must abort import");
-        assert!(error
-            .to_string()
-            .contains("forced Claude Desktop enabled-import failure"));
+        .expect("import Claude Desktop provider without activation");
 
         let providers = db
             .get_all_providers("claude-desktop")
-            .expect("read Claude Desktop providers after rollback");
-        assert_eq!(providers.len(), 1);
-        assert!(providers.contains_key(&current_id));
-        assert!(!providers.keys().any(|id| id.starts_with("desktopc-")));
-        assert_eq!(
-            db.get_current_provider("claude-desktop")
-                .expect("read DB current after rollback")
-                .as_deref(),
-            Some(current_id.as_str())
-        );
-        assert_eq!(
-            crate::settings::get_current_provider(&AppType::ClaudeDesktop).as_deref(),
-            Some(current_id.as_str())
-        );
+            .expect("read imported Claude Desktop provider");
+        assert!(providers.contains_key(&imported_id));
+        let flags: (bool, bool) = db
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT is_current, in_failover_queue FROM providers WHERE id = ?1",
+                [&imported_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read imported provider flags");
+        assert_eq!(flags, (false, false));
+        assert_eq!(db.get_current_provider("claude-desktop").unwrap(), None);
 
         let after = crate::claude_desktop_config::capture_live_snapshot()
-            .expect("capture rolled-back Claude Desktop Live")
+            .expect("capture Claude Desktop Live after import")
             .expect("supported platform snapshot");
         assert_eq!(
             after, before,
-            "deployment configs, generated profile, and metadata must all roll back"
+            "import-only deeplink must not write Live files"
         );
     }
 

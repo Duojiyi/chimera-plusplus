@@ -25,13 +25,24 @@ pub async fn read_claude_mcp_config() -> Result<Option<String>, String> {
 
 /// 新增或更新一个 MCP 服务器条目
 #[tauri::command]
-pub async fn upsert_claude_mcp_server(id: String, spec: serde_json::Value) -> Result<bool, String> {
+pub async fn upsert_claude_mcp_server(
+    state: State<'_, AppState>,
+    id: String,
+    spec: serde_json::Value,
+) -> Result<bool, String> {
+    let _client = futures::executor::block_on(state.proxy_service.lock_switch_for_app("claude"));
+    let _guard = crate::services::mcp::lock_operation().map_err(|e| e.to_string())?;
     claude_mcp::upsert_mcp_server(&id, spec).map_err(|e| e.to_string())
 }
 
 /// 删除一个 MCP 服务器条目
 #[tauri::command]
-pub async fn delete_claude_mcp_server(id: String) -> Result<bool, String> {
+pub async fn delete_claude_mcp_server(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<bool, String> {
+    let _client = futures::executor::block_on(state.proxy_service.lock_switch_for_app("claude"));
+    let _guard = crate::services::mcp::lock_operation().map_err(|e| e.to_string())?;
     claude_mcp::delete_mcp_server(&id).map_err(|e| e.to_string())
 }
 
@@ -77,55 +88,8 @@ pub async fn upsert_mcp_server_in_config(
     spec: serde_json::Value,
     sync_other_side: Option<bool>,
 ) -> Result<bool, String> {
-    use crate::app_config::McpServer;
-
     let app_ty = AppType::from_str(&app).map_err(|e| e.to_string())?;
-
-    // 读取现有的服务器（如果存在）
-    let existing_server = {
-        let servers = state.db.get_all_mcp_servers().map_err(|e| e.to_string())?;
-        servers.get(&id).cloned()
-    };
-
-    // 构建新的统一服务器结构
-    let mut new_server = if let Some(mut existing) = existing_server {
-        // 更新现有服务器
-        existing.server = spec.clone();
-        existing.apps.set_enabled_for(&app_ty, true);
-        existing
-    } else {
-        // 创建新服务器
-        let mut apps = crate::app_config::McpApps::default();
-        apps.set_enabled_for(&app_ty, true);
-
-        // 尝试从 spec 中提取 name，否则使用 id
-        let name = spec
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or(&id)
-            .to_string();
-
-        McpServer {
-            id: id.clone(),
-            name,
-            server: spec,
-            apps,
-            description: None,
-            homepage: None,
-            docs: None,
-            tags: Vec::new(),
-        }
-    };
-
-    // 如果 sync_other_side 为 true，也启用其他应用
-    if sync_other_side.unwrap_or(false) {
-        new_server.apps.claude = true;
-        new_server.apps.codex = true;
-        new_server.apps.gemini = true;
-        new_server.apps.opencode = true;
-    }
-
-    McpService::upsert_server(&state, new_server)
+    McpService::upsert_legacy(&state, app_ty, id, spec, sync_other_side.unwrap_or(false))
         .map(|_| true)
         .map_err(|e| e.to_string())
 }
@@ -137,7 +101,7 @@ pub async fn delete_mcp_server_in_config(
     _app: String, // 参数保留用于向后兼容，但在统一结构中不再需要
     id: String,
 ) -> Result<bool, String> {
-    McpService::delete_server(&state, &id).map_err(|e| e.to_string())
+    delete_mcp_server_result(&state, &id)
 }
 
 /// 设置启用状态并同步到客户端配置
@@ -173,13 +137,13 @@ pub async fn upsert_mcp_server(
     state: State<'_, AppState>,
     server: McpServer,
 ) -> Result<(), String> {
-    McpService::upsert_server(&state, server).map_err(|e| e.to_string())
+    upsert_mcp_server_result(&state, server)
 }
 
 /// 删除 MCP 服务器
 #[tauri::command]
 pub async fn delete_mcp_server(state: State<'_, AppState>, id: String) -> Result<bool, String> {
-    McpService::delete_server(&state, &id).map_err(|e| e.to_string())
+    delete_mcp_server_result(&state, &id)
 }
 
 /// 切换 MCP 服务器在指定应用的启用状态
@@ -190,12 +154,30 @@ pub async fn toggle_mcp_app(
     app: String,
     enabled: bool,
 ) -> Result<(), String> {
-    let app_ty = AppType::from_str(&app).map_err(|e| e.to_string())?;
-    McpService::toggle_app(&state, &server_id, app_ty, enabled).map_err(|e| e.to_string())
+    toggle_mcp_app_result(&state, &server_id, &app, enabled)
 }
 
 /// 从所有应用导入 MCP 服务器（复用已有的导入逻辑）
 #[tauri::command]
 pub async fn import_mcp_from_apps(state: State<'_, AppState>) -> Result<usize, String> {
     McpService::import_from_all_apps(&state).map_err(|e| e.to_string())
+}
+
+// Keep the IPC result boundary testable without a GUI runtime or real HOME.
+pub(crate) fn upsert_mcp_server_result(state: &AppState, server: McpServer) -> Result<(), String> {
+    McpService::upsert_server(state, server).map_err(|e| e.to_string())
+}
+
+pub(crate) fn delete_mcp_server_result(state: &AppState, id: &str) -> Result<bool, String> {
+    McpService::delete_server(state, id).map_err(|e| e.to_string())
+}
+
+pub(crate) fn toggle_mcp_app_result(
+    state: &AppState,
+    id: &str,
+    app: &str,
+    enabled: bool,
+) -> Result<(), String> {
+    let app = AppType::from_str(app).map_err(|e| e.to_string())?;
+    McpService::toggle_app(state, id, app, enabled).map_err(|e| e.to_string())
 }

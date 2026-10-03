@@ -110,38 +110,9 @@ impl Capability {
         }
     }
 
-    /// v2.8.0 matrix (plan §2 M2.0). Features that ship behind M5b stay off
-    /// until the release flip (M9); `codex_app_server_delete` stays off until
-    /// it passes a real-machine smoke test.
+    /// Automatic startup behavior remains separately constrained below.
     pub const fn enabled(self) -> bool {
-        match self {
-            // Live features; `local_proxy`, `usage` and `sessions` are live
-            // for Codex (the constants used to misreport them as off).
-            Capability::Providers
-            | Capability::ModelDiscovery
-            | Capability::LocalProxy
-            | Capability::Usage
-            | Capability::Sessions
-            | Capability::CodexRuntimeManager
-            | Capability::CodexThemes => true,
-            Capability::Failover
-            | Capability::ManagedAccounts
-            | Capability::Mcp
-            | Capability::Skills
-            | Capability::Prompts
-            | Capability::WebdavSync
-            | Capability::S3Sync
-            | Capability::OfficialAccounts
-            | Capability::ConfigHealth
-            | Capability::SessionExport
-            | Capability::LiveBackups
-            | Capability::CcSwitchImport
-            | Capability::Context1m
-            | Capability::ThreadUsage
-            | Capability::CustomRequestHeaders
-            | Capability::CodexAppServerDelete
-            | Capability::MultiTool => false,
-        }
+        !matches!(self, Capability::WebdavSync | Capability::S3Sync)
     }
 
     const fn starts_automatically(self) -> bool {
@@ -369,15 +340,16 @@ mod tests {
         assert!(should_autostart_proxy(&AppType::Codex, true, true));
         assert!(!should_autostart_proxy(&AppType::Codex, true, false));
         assert!(!should_autostart_proxy(&AppType::Codex, false, true));
-        // GrokBuild is a candidate but stays hard-hidden while multi_tool is off.
-        assert!(!should_autostart_proxy(&AppType::GrokBuild, true, true));
+        assert!(should_autostart_proxy(&AppType::GrokBuild, true, true));
+        assert!(!should_autostart_proxy(&AppType::GrokBuild, false, true));
+        assert!(!should_autostart_proxy(&AppType::GrokBuild, true, false));
         // Apps outside the set never auto-start, even when visible.
         assert!(!should_autostart_proxy(&AppType::Claude, true, true));
         assert!(!should_autostart_proxy(&AppType::Gemini, true, true));
     }
 
     #[test]
-    fn capability_matrix_matches_the_v2_8_0_table() {
+    fn capability_matrix_exposes_every_implemented_backend_capability() {
         let policy = get_product_capabilities();
         let enabled = |id: &str| {
             policy
@@ -395,17 +367,12 @@ mod tests {
             "sessions",
             "codex_runtime_manager",
             "codex_themes",
-        ] {
-            assert!(enabled(id), "{id} should be on");
-        }
-        for id in [
-            "failover",
-            "managed_accounts",
             "mcp",
             "skills",
             "prompts",
-            "webdav_sync",
-            "s3_sync",
+            "config_health",
+            "failover",
+            "managed_accounts",
             "official_accounts",
             "config_health",
             "session_export",
@@ -417,9 +384,13 @@ mod tests {
             "codex_app_server_delete",
             "multi_tool",
         ] {
-            assert!(!enabled(id), "{id} should be off");
+            assert!(enabled(id), "{id} should be on");
         }
         assert_eq!(policy.capabilities.len(), Capability::ALL.len());
+        for capability in [Capability::WebdavSync, Capability::S3Sync] {
+            assert!(!enabled(capability.id()));
+            assert!(require(capability).is_err());
+        }
         let mut ids: Vec<_> = policy.capabilities.iter().map(|c| c.id).collect();
         ids.sort_unstable();
         ids.dedup();
@@ -449,30 +420,20 @@ mod tests {
     }
 
     #[test]
-    fn non_codex_apps_are_hard_hidden_while_multi_tool_is_off() {
+    fn every_supported_app_is_visible_when_multi_tool_is_enabled() {
         assert!(is_app_visible_by_product(&AppType::Codex));
         for app in AppType::all().filter(|app| *app != AppType::Codex) {
-            assert!(!is_app_visible_by_product(&app), "{}", app.as_str());
+            assert!(is_app_visible_by_product(&app), "{}", app.as_str());
             assert!(!app_visible_when(&app, false), "{}", app.as_str());
             assert!(app_visible_when(&app, true), "{}", app.as_str());
         }
     }
 
     #[test]
-    fn app_scoped_entry_points_reject_non_codex_while_multi_tool_is_off() {
+    fn app_scoped_entry_points_allow_every_supported_app() {
         assert!(require_app(&AppType::Codex).is_ok());
         for app in AppType::all().filter(|app| *app != AppType::Codex) {
-            assert!(
-                matches!(
-                    require_app(&app),
-                    Err(AppError::Localized {
-                        key: "capability.disabled",
-                        ..
-                    })
-                ),
-                "{}",
-                app.as_str()
-            );
+            assert!(require_app(&app).is_ok(), "{}", app.as_str());
             assert!(require_app_when(&app, true).is_ok(), "{}", app.as_str());
         }
     }

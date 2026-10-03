@@ -1311,35 +1311,36 @@ mod first_enable_import_gate_tests {
     use super::import_default_config_command;
     use crate::app_config::AppType;
     use crate::database::Database;
-    use crate::error::AppError;
     use crate::store::AppState;
     use std::sync::Arc;
 
     #[tokio::test]
-    async fn non_codex_first_enable_import_is_rejected_while_multi_tool_is_off() {
+    #[serial_test::serial]
+    async fn supported_tool_first_enable_import_reads_only_its_isolated_live_config() {
+        let home = crate::services::live_backup::tests::TempHome::new();
+        crate::settings::reload_settings().expect("reload isolated settings");
         let db = Arc::new(Database::memory().expect("init db"));
         let state = AppState::new(db.clone());
-        for app in AppType::all().filter(|app| *app != AppType::Codex) {
-            let before = db.get_all_providers(app.as_str()).expect("list").len();
-            let error = import_default_config_command(&state, app.clone())
-                .expect_err("non-Codex import must be gated");
-            assert!(
-                matches!(
-                    error,
-                    AppError::Localized {
-                        key: "capability.disabled",
-                        ..
-                    }
-                ),
-                "{}: {error}",
-                app.as_str()
-            );
-            // Rejected before anything is read or seeded.
-            assert_eq!(
-                db.get_all_providers(app.as_str()).expect("list").len(),
-                before
-            );
-        }
+        let path = crate::config::get_claude_settings_path();
+        crate::config::write_json_file(
+            &path,
+            &serde_json::json!({"env":{"ANTHROPIC_AUTH_TOKEN":"test-only-key"}}),
+        )
+        .unwrap();
+        let before = std::fs::read(&path).unwrap();
+        assert!(import_default_config_command(&state, AppType::Claude).unwrap());
+        let providers = db.get_all_providers("claude").unwrap();
+        assert_eq!(providers.len(), 1);
+        assert_eq!(
+            providers.values().next().unwrap().settings_config["env"]["ANTHROPIC_AUTH_TOKEN"],
+            "test-only-key"
+        );
+        assert!(!import_default_config_command(&state, AppType::Claude).unwrap());
+        assert_eq!(db.get_all_providers("claude").unwrap().len(), 1);
+        assert!(db.get_all_providers("codex").unwrap().is_empty());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        drop(home);
+        crate::settings::reload_settings().expect("restore settings");
     }
 }
 

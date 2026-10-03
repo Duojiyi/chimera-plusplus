@@ -441,9 +441,8 @@ impl AppType {
 impl FromStr for AppType {
     type Err = AppError;
 
-    /// Every renderer-supplied app id passes through here, so this is where
-    /// the tools added in v2.8.0 are gated: while `multi_tool` is off, `pi`
-    /// and `mcode` are rejected exactly as a build that predates them would.
+    /// Every renderer-supplied app id passes through here so unsupported ids
+    /// are rejected before reaching provider services.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let app = Self::parse_id(s)?;
         if matches!(app, AppType::Pi | AppType::Mcode) {
@@ -828,6 +827,7 @@ impl MultiAppConfig {
 
         let id = format!("auto-imported-{timestamp}");
         let prompt = crate::prompt::Prompt {
+            template_id: None,
             id: id.clone(),
             name: format!(
                 "Auto-imported Prompt {}",
@@ -1039,19 +1039,10 @@ mod tests {
     }
 
     #[test]
-    fn new_tool_ids_are_rejected_while_multi_tool_is_off() {
-        assert!(!crate::product_policy::Capability::MultiTool.enabled());
+    fn new_tool_ids_are_available_when_multi_tool_is_enabled() {
+        assert!(crate::product_policy::Capability::MultiTool.enabled());
         for id in ["pi", "mcode"] {
-            assert!(
-                matches!(
-                    id.parse::<AppType>(),
-                    Err(AppError::Localized {
-                        key: "capability.disabled",
-                        ..
-                    })
-                ),
-                "{id}"
-            );
+            assert!(id.parse::<AppType>().is_ok(), "{id}");
         }
         assert_eq!("codex".parse::<AppType>().unwrap(), AppType::Codex);
     }

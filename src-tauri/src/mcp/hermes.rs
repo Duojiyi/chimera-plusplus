@@ -40,15 +40,6 @@ const HERMES_EXTRA_FIELDS: &[&str] = &[
 ];
 
 // ============================================================================
-// Helper Functions
-// ============================================================================
-
-/// Check if Hermes MCP sync should proceed
-fn should_sync_hermes_mcp() -> bool {
-    hermes_config::get_hermes_dir().exists()
-}
-
-// ============================================================================
 // Format Conversion: CC Switch -> Hermes
 // ============================================================================
 
@@ -58,7 +49,7 @@ fn should_sync_hermes_mcp() -> bool {
 /// - `stdio`: output `command`, `args`, `env` (strip `type` field)
 /// - `sse`/`http`: output `url`, `headers` (strip `type` field)
 /// - Always add `enabled: true`
-fn convert_to_hermes_format(spec: &Value) -> Result<Value, AppError> {
+pub(super) fn convert_to_hermes_format(spec: &Value) -> Result<Value, AppError> {
     let obj = spec
         .as_object()
         .ok_or_else(|| AppError::McpValidation("MCP spec must be a JSON object".into()))?;
@@ -166,47 +157,12 @@ fn convert_from_hermes_format(id: &str, spec: &Value) -> Result<Value, AppError>
 // Public API: Sync Functions
 // ============================================================================
 
-/// Sync a single MCP server to Hermes live config (merge-on-write)
-///
-/// Strategy:
-/// 1. Read existing mcp_servers from config.yaml
-/// 2. If server already exists, merge: keep Hermes-specific fields, overwrite core fields
-/// 3. Set `enabled: true`
-/// 4. Write back
-pub fn sync_single_server_to_hermes(
-    _config: &MultiAppConfig,
-    id: &str,
-    server_spec: &Value,
-) -> Result<(), AppError> {
-    if !should_sync_hermes_mcp() {
-        return Ok(());
-    }
-
-    let hermes_spec = convert_to_hermes_format(server_spec)?;
-    let id_owned = id.to_string();
-
-    hermes_config::update_mcp_servers_yaml(|servers| {
-        let id_yaml = serde_yaml::Value::String(id_owned.clone());
-
-        let merged_json = if let Some(existing_yaml) = servers.get(&id_yaml) {
-            let existing_json = hermes_config::yaml_to_json(existing_yaml)?;
-            merge_hermes_spec(&existing_json, &hermes_spec)
-        } else {
-            hermes_spec.clone()
-        };
-
-        let merged_yaml_value = hermes_config::json_to_yaml(&merged_json)?;
-        servers.insert(id_yaml, merged_yaml_value);
-        Ok(())
-    })
-}
-
 /// Merge new spec into existing Hermes spec, preserving Hermes-specific fields.
 ///
 /// Core fields (command, args, env, url, headers) come from `new_spec`.
 /// Hermes-specific fields (enabled, tools, sampling, etc.) are kept from
 /// `existing` — this prevents CC Switch from overwriting user customizations.
-fn merge_hermes_spec(existing: &Value, new_spec: &Value) -> Value {
+pub(super) fn merge_hermes_spec(existing: &Value, new_spec: &Value) -> Value {
     let mut result = serde_json::Map::new();
 
     // Copy Hermes-specific fields from existing config
@@ -230,19 +186,6 @@ fn merge_hermes_spec(existing: &Value, new_spec: &Value) -> Value {
     }
 
     Value::Object(result)
-}
-
-/// Remove a single MCP server from Hermes live config
-pub fn remove_server_from_hermes(id: &str) -> Result<(), AppError> {
-    if !should_sync_hermes_mcp() {
-        return Ok(());
-    }
-
-    let id_owned = id.to_string();
-    hermes_config::update_mcp_servers_yaml(|servers| {
-        servers.remove(serde_yaml::Value::String(id_owned.clone()));
-        Ok(())
-    })
 }
 
 /// Import MCP servers from Hermes config to unified structure

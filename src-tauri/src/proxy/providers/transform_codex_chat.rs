@@ -6,8 +6,8 @@
 
 use super::codex_chat_common::{
     append_reasoning_content, extract_reasoning_field_text, extract_reasoning_summary_text,
-    response_function_call_item, response_function_call_item_with_namespace,
-    split_leading_think_block,
+    normalize_inline_think, response_function_call_item,
+    response_function_call_item_with_namespace,
 };
 use crate::provider::CodexChatReasoningConfig;
 use crate::proxy::{
@@ -1784,6 +1784,8 @@ pub(crate) fn chat_completion_to_response_with_context(
     let created_at = body.get("created").and_then(|v| v.as_u64()).unwrap_or(0);
     let finish_reason = choice.get("finish_reason").and_then(|v| v.as_str());
 
+    let message = normalize_inline_think(message);
+    let message = &message;
     let reasoning = chat_reasoning_text(message);
     let mut output = Vec::new();
     if let Some(reasoning_item) =
@@ -1838,28 +1840,13 @@ fn chat_reasoning_to_response_output_item(
 }
 
 fn chat_reasoning_text(message: &Value) -> Option<String> {
-    if let Some(reasoning) = extract_reasoning_field_text(message) {
-        return Some(reasoning);
-    }
-
-    if let Some(content) = message.get("content").and_then(|v| v.as_str()) {
-        if let Some((reasoning, _answer)) = split_leading_think_block(content) {
-            if !reasoning.is_empty() {
-                return Some(reasoning);
-            }
-        }
-    }
-
-    None
+    extract_reasoning_field_text(message)
 }
 
 fn chat_message_to_response_output_item(message: &Value, response_id: &str) -> Option<Value> {
     let mut content = Vec::new();
 
     if let Some(text) = message.get("content").and_then(|v| v.as_str()) {
-        let text = split_leading_think_block(text)
-            .map(|(_reasoning, answer)| answer)
-            .unwrap_or_else(|| text.to_string());
         if !text.is_empty() {
             content.push(json!({
                 "type": "output_text",
@@ -2317,6 +2304,52 @@ pub fn chat_error_to_response_error(body: Option<&Value>) -> Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn inline_think_non_streaming_separates_reasoning() {
+        for (content, expected_reasoning, expected_text) in [
+            (
+                json!("before<thinking>hidden</thinking>after<think>unfinished"),
+                "hiddenunfinished",
+                "beforeafter",
+            ),
+            (json!("<thinking>hidden"), "hidden", ""),
+            (
+                json!("Use `<think>literal</think>`"),
+                "",
+                "Use `<think>literal</think>`",
+            ),
+            (json!("text <thi"), "", "text <thi"),
+            (
+                json!([{"type": "text", "text": "<thin"}, {"type": "output_text", "text": "king>hidden</thinking>answer"}]),
+                "hidden",
+                "answer",
+            ),
+        ] {
+            let result = chat_completion_to_response(json!({
+                "id": "chatcmpl_inline", "model": "test", "choices": [{
+                    "message": {"role": "assistant", "content": content}, "finish_reason": "stop"
+                }], "usage": {"prompt_tokens": 1, "completion_tokens": 2}
+            }))
+            .unwrap();
+            let text = result["output"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|item| item["content"].as_array().into_iter().flatten())
+                .filter_map(|part| part["text"].as_str())
+                .collect::<String>();
+            let reasoning = result["output"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|item| item["type"] == "reasoning")
+                .filter_map(|item| item["summary"][0]["text"].as_str())
+                .collect::<String>();
+            assert_eq!(text, expected_text);
+            assert_eq!(reasoning, expected_reasoning);
+        }
+    }
+
     #[test]
     fn wrapped_chat_and_anthropic_images_keep_binary_out_of_text() {
         for image in [

@@ -32,13 +32,13 @@ pub use live::{
 };
 
 // Internal re-exports (pub(crate))
-pub(crate) use live::sanitize_claude_settings_for_live;
 pub(crate) use live::{
     build_effective_settings_with_common_config, codex_common_snippet,
     normalize_provider_common_config_for_storage, provider_exists_in_live_config,
     strip_common_config_from_live_settings, sync_current_provider_for_app_to_live,
     write_live_with_common_config, LiveSnapshot,
 };
+pub(crate) use live::{sanitize_claude_settings_for_live, write_claude_provider_settings};
 
 // Internal re-exports
 use live::{
@@ -318,7 +318,7 @@ mod tests {
                 state.db.save_provider(app.as_str(), &provider).unwrap();
                 let guards = futures::executor::block_on(ProviderService::lock_deletion(
                     state,
-                    &[app.clone()],
+                    std::slice::from_ref(&app),
                 ));
                 let switch_state = state.clone();
                 let switch_app = app.clone();
@@ -443,6 +443,40 @@ mod tests {
                 .get_provider_by_id(&child.id, "codex")
                 .unwrap()
                 .is_none());
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn universal_sync_and_deletion_allow_missing_disabled_children() {
+        with_test_home(|state, _| {
+            crate::settings::reload_settings().unwrap();
+            let mut parent = UniversalProvider::new(
+                "empty".into(),
+                "Empty".into(),
+                "openai".into(),
+                "https://example.invalid".into(),
+                "test-only-key".into(),
+            );
+            parent.apps.claude = false;
+            parent.apps.codex = false;
+            parent.apps.gemini = false;
+            state.db.save_universal_provider(&parent).unwrap();
+            assert!(ProviderService::sync_universal_to_apps(state, &parent.id).unwrap());
+            for app in ["claude", "codex", "gemini"] {
+                assert!(state
+                    .db
+                    .get_provider_by_id(&format!("universal-{app}-empty"), app)
+                    .unwrap()
+                    .is_none());
+            }
+            assert!(ProviderService::delete_universal(state, &parent.id).unwrap());
+            assert!(state
+                .db
+                .get_universal_provider(&parent.id)
+                .unwrap()
+                .is_none());
+            assert!(ProviderService::delete(state, AppType::Codex, "missing-line").is_err());
         });
     }
 
@@ -2868,6 +2902,18 @@ impl ProviderService {
         state.db.delete_non_current_provider(app_type.as_str(), id)
     }
 
+    fn delete_universal_child(state: &AppState, app: &AppType, id: &str) -> Result<(), AppError> {
+        let child_id = format!("universal-{}-{id}", app.as_str());
+        if state
+            .db
+            .get_provider_by_id(&child_id, app.as_str())?
+            .is_some()
+        {
+            Self::delete_with_locks_held(state, app.clone(), &child_id)?;
+        }
+        Ok(())
+    }
+
     /// Remove provider from live config only (for additive mode apps like OpenCode, OpenClaw)
     ///
     /// Does NOT delete from database - provider remains in the list.
@@ -4083,7 +4129,10 @@ impl ProviderService {
         Ok(())
     }
 
-    fn validate_provider_settings(app_type: &AppType, provider: &Provider) -> Result<(), AppError> {
+    pub(crate) fn validate_provider_settings(
+        app_type: &AppType,
+        provider: &Provider,
+    ) -> Result<(), AppError> {
         match app_type {
             AppType::Claude => {
                 if !provider.settings_config.is_object() {
@@ -4570,11 +4619,7 @@ impl ProviderService {
             Self::ensure_not_current(state, app, &format!("universal-{}-{id}", app.as_str()))?;
         }
         for app in &apps {
-            Self::delete_with_locks_held(
-                state,
-                app.clone(),
-                &format!("universal-{}-{id}", app.as_str()),
-            )?;
+            Self::delete_universal_child(state, app, id)?;
         }
         state.db.delete_universal_provider(id)?;
 
@@ -4614,8 +4659,7 @@ impl ProviderService {
             state.db.save_provider("claude", &claude_provider)?;
         } else {
             // 如果禁用了 Claude，删除对应的子供应商
-            let claude_id = format!("universal-claude-{id}");
-            Self::delete_with_locks_held(state, AppType::Claude, &claude_id)?;
+            Self::delete_universal_child(state, &AppType::Claude, id)?;
         }
 
         // 同步到 Codex
@@ -4631,8 +4675,7 @@ impl ProviderService {
             }
             state.db.save_provider("codex", &codex_provider)?;
         } else {
-            let codex_id = format!("universal-codex-{id}");
-            Self::delete_with_locks_held(state, AppType::Codex, &codex_id)?;
+            Self::delete_universal_child(state, &AppType::Codex, id)?;
         }
 
         // 同步到 Gemini
@@ -4648,8 +4691,7 @@ impl ProviderService {
             }
             state.db.save_provider("gemini", &gemini_provider)?;
         } else {
-            let gemini_id = format!("universal-gemini-{id}");
-            Self::delete_with_locks_held(state, AppType::Gemini, &gemini_id)?;
+            Self::delete_universal_child(state, &AppType::Gemini, id)?;
         }
 
         Ok(true)

@@ -369,7 +369,7 @@ pub(crate) mod test_support {
     /// Points `MINIMAX_DATA_DIR` (and the app config home) at a temporary
     /// directory until dropped. Callers must be `#[serial]`.
     pub(crate) struct TestDataDir {
-        pub(crate) dir: tempfile::TempDir,
+        _dir: tempfile::TempDir,
         previous: Vec<(&'static str, Option<String>)>,
     }
 
@@ -384,7 +384,10 @@ pub(crate) mod test_support {
             std::env::set_var("MINIMAX_DATA_DIR", dir.path().join(".minimax"));
             std::env::remove_var("MAVIS_DATA_DIR");
             std::env::set_var("CC_SWITCH_TEST_HOME", dir.path());
-            Self { dir, previous }
+            Self {
+                _dir: dir,
+                previous,
+            }
         }
     }
 
@@ -411,13 +414,21 @@ mod tests {
 
     #[test]
     fn native_data_directory_precedence_and_blank_values() {
+        let expected_path = |raw: &str| {
+            let resolved = crate::settings::resolve_override_path(raw);
+            Some(if resolved.is_absolute() {
+                resolved
+            } else {
+                crate::config::get_home_dir().join(resolved)
+            })
+        };
         assert_eq!(
             explicit_data_dir(Some(" /primary "), Some("/legacy")),
-            Some("/primary".into())
+            expected_path("/primary")
         );
         assert_eq!(
             explicit_data_dir(Some(" \t"), Some(" /legacy ")),
-            Some("/legacy".into())
+            expected_path("/legacy")
         );
         assert_eq!(explicit_data_dir(None, Some("")), None);
         assert_eq!(explicit_data_dir(None, None), None);

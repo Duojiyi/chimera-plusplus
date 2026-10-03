@@ -16,10 +16,26 @@ use crate::error::AppError;
 
 use super::validation::validate_server_spec;
 
-fn should_sync_codex_mcp() -> bool {
-    // Codex 未安装/未初始化时：~/.codex 目录不存在。
-    // 按用户偏好：目录缺失时跳过写入/删除，不创建任何文件或目录。
-    crate::codex_config::get_codex_config_dir().exists()
+fn codex_mcp_target() -> Option<std::path::PathBuf> {
+    #[cfg(test)]
+    if let Some(target) = super::projection::TEST_TARGETS.with(|paths| {
+        paths
+            .borrow()
+            .as_ref()
+            .map(|paths| paths.get(&crate::app_config::AppType::Codex).cloned())
+    }) {
+        return target;
+    }
+    // Do not create configuration for an uninitialized client.
+    crate::codex_config::get_codex_config_dir()
+        .exists()
+        .then(crate::codex_config::get_codex_config_path)
+}
+
+fn ownership_conflict(id: &str) -> AppError {
+    AppError::McpValidation(format!(
+        "Codex MCP ownership conflict for '{id}': external configuration was preserved"
+    ))
 }
 
 /// Convert one live `[mcp_servers.<id>]` table into the unified JSON spec.
@@ -342,7 +358,7 @@ fn live_codex_mcp_server<'a>(
 }
 
 /// 将单个 MCP 服务器同步到 Codex live 配置
-/// 始终使用 Codex 官方格式 [mcp_servers]，并清理可能存在的错误格式 [mcp.servers]
+/// 只更新 Codex 官方格式 [mcp_servers]；未纳管的旧格式条目保持不变。
 ///
 /// MH-24: an existing live entry with this id is only overwritten when the
 /// ledger records it (same hash) or it already equals what would be
@@ -352,17 +368,26 @@ pub fn sync_single_server_to_codex(
     id: &str,
     server_spec: &Value,
 ) -> Result<(), AppError> {
-    if !should_sync_codex_mcp() {
+    sync_single_server_to_codex_journal(ledger, id, server_spec, &mut Vec::new())
+}
+
+pub(crate) fn sync_single_server_to_codex_journal(
+    ledger: &mut CodexMcpLedger,
+    id: &str,
+    server_spec: &Value,
+    journal: &mut Vec<crate::config::cas::AppliedChangeset>,
+) -> Result<(), AppError> {
+    let Some(config_path) = codex_mcp_target() else {
         return Ok(());
-    }
+    };
     use toml_edit::Item;
 
     // 读取现有的 config.toml
-    let config_path = crate::codex_config::get_codex_config_path();
 
-    let mut doc = if config_path.exists() {
-        let content =
-            std::fs::read_to_string(&config_path).map_err(|e| AppError::io(&config_path, e))?;
+    let snapshot = crate::config::cas::FileSnapshot::read(&config_path)?;
+    let mut doc = if let Some(bytes) = snapshot.contents() {
+        let content = std::str::from_utf8(bytes)
+            .map_err(|_| AppError::McpValidation("Codex config is not UTF-8".into()))?;
         // 解析失败必须报错而不是用空文档顶替：写回空文档会把用户
         // config.toml 里的其它段落（model/model_providers/注释等）整体清空
         content
@@ -371,16 +396,6 @@ pub fn sync_single_server_to_codex(
     } else {
         toml_edit::DocumentMut::new()
     };
-
-    // 清理可能存在的错误格式 [mcp.servers]
-    if let Some(mcp_item) = doc.get_mut("mcp") {
-        if let Some(tbl) = mcp_item.as_table_like_mut() {
-            if tbl.contains_key("servers") {
-                log::warn!("检测到错误的 MCP 格式 [mcp.servers]，正在清理并迁移到 [mcp_servers]");
-                tbl.remove("servers");
-            }
-        }
-    }
 
     // 确保 [mcp_servers] 表存在
     if !doc.contains_key("mcp_servers") {
@@ -400,7 +415,7 @@ pub fn sync_single_server_to_codex(
             .is_some_and(|recorded| live_hash.as_ref() == Some(recorded));
         if !owned && live_hash.as_deref() != Some(new_hash.as_str()) {
             ledger.conflict(id);
-            return Ok(());
+            return Err(ownership_conflict(id));
         }
     }
 
@@ -409,16 +424,14 @@ pub fn sync_single_server_to_codex(
 
     // 写回文件
     let new_text = doc.to_string();
-    crate::codex_live_write::write_codex_live_files(
-        crate::codex_live_write::CodexLiveWrite::config_only(&new_text),
-    )?;
+    journal.push(crate::codex_live_write::plan_observed_config(snapshot, &new_text)?.commit()?);
     ledger.record(id, new_hash);
 
     Ok(())
 }
 
 /// 从 Codex live 配置中移除单个 MCP 服务器
-/// 从正确的 [mcp_servers] 表中删除，同时清理可能存在于错误位置 [mcp.servers] 的数据
+/// 从正确的 [mcp_servers] 表中删除已纳管条目，不触碰外来旧格式数据。
 ///
 /// MH-24: only an entry the ledger records (unchanged since written), or
 /// one identical to what `server_spec` would write (entries projected
@@ -429,10 +442,18 @@ pub fn remove_server_from_codex(
     id: &str,
     server_spec: Option<&Value>,
 ) -> Result<(), AppError> {
-    if !should_sync_codex_mcp() {
+    remove_server_from_codex_journal(ledger, id, server_spec, &mut Vec::new())
+}
+
+pub(crate) fn remove_server_from_codex_journal(
+    ledger: &mut CodexMcpLedger,
+    id: &str,
+    server_spec: Option<&Value>,
+    journal: &mut Vec<crate::config::cas::AppliedChangeset>,
+) -> Result<(), AppError> {
+    let Some(config_path) = codex_mcp_target() else {
         return Ok(());
-    }
-    let config_path = crate::codex_config::get_codex_config_path();
+    };
 
     if !config_path.exists() {
         ledger.servers.remove(id);
@@ -440,8 +461,9 @@ pub fn remove_server_from_codex(
         return Ok(()); // 文件不存在，无需删除
     }
 
-    let content =
-        std::fs::read_to_string(&config_path).map_err(|e| AppError::io(&config_path, e))?;
+    let snapshot = crate::config::cas::FileSnapshot::read(&config_path)?;
+    let content = std::str::from_utf8(snapshot.contents().unwrap_or_default())
+        .map_err(|_| AppError::McpValidation("Codex config is not UTF-8".into()))?;
 
     // Invalid live config must fail so the service can restore its database record.
     let mut doc = content
@@ -459,8 +481,12 @@ pub fn remove_server_from_codex(
             .and_then(|table| codex_mcp_table_hash(&toml_edit::Item::Table(table)))
             .is_some_and(|expected| live.as_ref() == Some(&expected)),
     };
-    if recorded.is_some() && live_hash.is_some() && !owned {
+    // A requested removal must not silently succeed when the prior managed
+    // projection (including legacy ownership) no longer matches live content.
+    // Unmanaged same-name entries encountered during repair remain untouched.
+    if live_hash.is_some() && !owned && (recorded.is_some() || server_spec.is_some()) {
         ledger.conflict(id);
+        return Err(ownership_conflict(id));
     }
 
     // 从正确的位置删除：[mcp_servers]
@@ -473,20 +499,13 @@ pub fn remove_server_from_codex(
         }
     }
 
-    // 同时清理可能存在于错误位置的数据：[mcp.servers]（如果存在）
-    if let Some(mcp_table) = doc.get_mut("mcp").and_then(|t| t.as_table_mut()) {
-        if let Some(servers) = mcp_table.get_mut("servers").and_then(|s| s.as_table_mut()) {
-            if servers.remove(id).is_some() {
-                log::warn!("从错误的 MCP 格式 [mcp.servers] 中清理了服务器 '{id}'");
-            }
-        }
+    if !owned {
+        return Ok(());
     }
 
     // 写回文件
     let new_text = doc.to_string();
-    crate::codex_live_write::write_codex_live_files(
-        crate::codex_live_write::CodexLiveWrite::config_only(&new_text),
-    )?;
+    journal.push(crate::codex_live_write::plan_observed_config(snapshot, &new_text)?.commit()?);
 
     Ok(())
 }
@@ -837,6 +856,45 @@ pub fn codex_mcp_section_preview(
                 if let Some(text) = value.as_str() {
                     *value = Value::String(mask(text));
                 }
+            }
+        }
+    }
+    if let Some(args) = masked.get_mut("args").and_then(Value::as_array_mut) {
+        let mut mask_next = false;
+        for arg in args.iter_mut() {
+            if let Some(text) = arg.as_str() {
+                if mask_next {
+                    *arg = Value::String(mask(text));
+                    mask_next = false;
+                    continue;
+                }
+                let lower = text.to_ascii_lowercase();
+                if lower == "--key"
+                    || lower == "--api-key"
+                    || lower == "--token"
+                    || lower == "--secret"
+                    || lower == "--password"
+                {
+                    mask_next = true;
+                } else if let Some((flag, val)) = text.split_once('=') {
+                    let flag_lower = flag.to_ascii_lowercase();
+                    if flag_lower.contains("key")
+                        || flag_lower.contains("token")
+                        || flag_lower.contains("secret")
+                        || flag_lower.contains("password")
+                        || flag_lower.contains("auth")
+                    {
+                        *arg = Value::String(format!("{flag}={}", mask(val)));
+                    }
+                }
+            }
+        }
+    }
+    if let Some(url_val) = masked.get("url").and_then(Value::as_str) {
+        if let Ok(mut parsed) = url::Url::parse(url_val) {
+            if parsed.password().is_some() {
+                let _ = parsed.set_password(Some(&mask("***")));
+                masked["url"] = Value::String(parsed.to_string());
             }
         }
     }

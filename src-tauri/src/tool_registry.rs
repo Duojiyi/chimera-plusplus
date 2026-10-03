@@ -1,14 +1,14 @@
 //! The tool registry: the one backend table of every tool Chimera++ can
 //! manage (plan "工具注册表", 10 tools). The renderer reads it through
-//! `get_tool_registry` instead of keeping its own tool lists.
+//! `get_tool_registry`; browser previews consume the same bundled JSON.
 //!
 //! Visibility and capability gating stay in `product_policy`; this table only
 //! describes what each tool is.
 
 use crate::app_config::AppType;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ToolMode {
     /// One current provider is written to the live config.
@@ -17,7 +17,7 @@ pub enum ToolMode {
     Additive,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum DeeplinkPolicy {
     ImportConfirm,
@@ -25,130 +25,25 @@ pub enum DeeplinkPolicy {
     Reject,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolInfo {
     pub id: AppType,
     pub mode: ToolMode,
     /// Default locations; overrides and platform specifics are resolved by
     /// each tool's config module.
-    pub live_files: &'static [&'static str],
+    pub live_files: Vec<String>,
     pub tray: bool,
     pub deeplink: DeeplinkPolicy,
     pub proxy: bool,
 }
 
-const fn tool(
-    id: AppType,
-    mode: ToolMode,
-    live_files: &'static [&'static str],
-    tray: bool,
-    deeplink: DeeplinkPolicy,
-    proxy: bool,
-) -> ToolInfo {
-    ToolInfo {
-        id,
-        mode,
-        live_files,
-        tray,
-        deeplink,
-        proxy,
-    }
-}
-
-use DeeplinkPolicy::{ImportConfirm, ImportOnly, Reject};
-use ToolMode::{Additive, Switch};
-
-/// In plan order.
-pub static TOOLS: [ToolInfo; 10] = [
-    tool(
-        AppType::Codex,
-        Switch,
-        &[
-            "~/.codex/config.toml",
-            "~/.codex/auth.json",
-            "~/.codex/cc-switch-model-catalog.json",
-        ],
-        true,
-        ImportConfirm,
-        true,
-    ),
-    tool(
-        AppType::Claude,
-        Switch,
-        &["~/.claude/settings.json", "~/.claude.json"],
-        true,
-        ImportOnly,
-        false,
-    ),
-    tool(
-        AppType::ClaudeDesktop,
-        Switch,
-        &["<app data>/Claude-3p"],
-        false,
-        ImportOnly,
-        false,
-    ),
-    tool(
-        AppType::Gemini,
-        Switch,
-        &["~/.gemini/.env", "~/.gemini/settings.json"],
-        true,
-        ImportOnly,
-        false,
-    ),
-    tool(
-        AppType::GrokBuild,
-        Switch,
-        &["~/.grok/config.toml"],
-        true,
-        ImportOnly,
-        true,
-    ),
-    tool(
-        AppType::OpenCode,
-        Additive,
-        &[
-            "~/.config/opencode/opencode.json",
-            "~/.config/opencode/.env",
-        ],
-        false,
-        ImportOnly,
-        false,
-    ),
-    tool(
-        AppType::OpenClaw,
-        Additive,
-        &["~/.openclaw/openclaw.json"],
-        false,
-        ImportOnly,
-        false,
-    ),
-    tool(
-        AppType::Hermes,
-        Additive,
-        &["~/.hermes/config.yaml"],
-        false,
-        ImportOnly,
-        false,
-    ),
-    tool(
-        AppType::Pi,
-        Additive,
-        &["~/.pi/agent/models.json"],
-        false,
-        ImportOnly,
-        false,
-    ),
-    tool(
-        AppType::Mcode,
-        Additive,
-        &["~/.minimax/config.yaml"],
-        false,
-        Reject,
-        false,
-    ),
-];
+/// Shared with the renderer so browser previews use the same supported-tool
+/// metadata. It contains no installation detection, user preferences or secrets.
+pub static TOOLS: once_cell::sync::Lazy<[ToolInfo; 10]> = once_cell::sync::Lazy::new(|| {
+    serde_json::from_str(include_str!("../../src/shared/tool-registry.json"))
+        .expect("bundled tool registry must contain ten valid tools")
+});
 
 #[tauri::command]
 pub fn get_tool_registry() -> Vec<ToolInfo> {
@@ -158,11 +53,13 @@ pub fn get_tool_registry() -> Vec<ToolInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use DeeplinkPolicy::{ImportConfirm, Reject};
+    use ToolMode::{Additive, Switch};
 
     fn ids(filter: impl Fn(&ToolInfo) -> bool) -> Vec<&'static str> {
         TOOLS
             .iter()
-            .filter(|tool| filter(*tool))
+            .filter(|tool| filter(tool))
             .map(|tool| tool.id.as_str())
             .collect()
     }
@@ -211,7 +108,7 @@ mod tests {
 
     #[test]
     fn table_agrees_with_the_code_it_describes() {
-        for tool in &TOOLS {
+        for tool in TOOLS.iter() {
             assert_eq!(
                 tool.mode == Additive,
                 tool.id.is_additive_mode(),

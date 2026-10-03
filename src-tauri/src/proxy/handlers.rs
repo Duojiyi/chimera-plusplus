@@ -46,7 +46,6 @@ use super::{
     ProxyError,
 };
 use crate::app_config::AppType;
-use crate::database::PRICING_SOURCE_REQUEST;
 use crate::provider::Provider;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use bytes::Bytes;
@@ -214,7 +213,7 @@ async fn handle_messages_for_app(
             if let Some(provider) = err.provider.take() {
                 ctx.provider = provider;
             }
-            log_forward_error(&state, &ctx, is_stream, &err.error);
+            log_forward_error(&state, &ctx, is_stream, &err.error).await;
             return Err(err.error);
         }
     };
@@ -795,7 +794,7 @@ async fn handle_codex_passthrough(
             if let Some(provider) = err.provider.take() {
                 ctx.provider = provider;
             }
-            log_forward_error(&state, &ctx, is_stream, &err.error);
+            log_forward_error(&state, &ctx, is_stream, &err.error).await;
             return build_codex_proxy_error_response(&ctx, &endpoint, &err.error);
         }
     };
@@ -1415,7 +1414,7 @@ async fn handle_responses_for_app(
                 Some(ctx.request_model.as_str()),
                 CodexModelRequestOutcome::Failed,
             );
-            log_forward_error(&state, &ctx, is_stream, &err.error);
+            log_forward_error(&state, &ctx, is_stream, &err.error).await;
             return build_codex_proxy_error_response(&ctx, &endpoint, &err.error);
         }
     };
@@ -1723,7 +1722,7 @@ async fn handle_responses_compact_for_app(
                 Some(ctx.request_model.as_str()),
                 CodexModelRequestOutcome::Failed,
             );
-            log_forward_error(&state, &ctx, is_stream, &err.error);
+            log_forward_error(&state, &ctx, is_stream, &err.error).await;
             return build_codex_proxy_error_response(&ctx, &endpoint, &err.error);
         }
     };
@@ -2734,7 +2733,7 @@ pub async fn handle_gemini(
             if let Some(provider) = err.provider.take() {
                 ctx.provider = provider;
             }
-            log_forward_error(&state, &ctx, is_stream, &err.error);
+            log_forward_error(&state, &ctx, is_stream, &err.error).await;
             return Err(err.error);
         }
     };
@@ -3323,7 +3322,7 @@ fn merge_tool_call_delta(
 // 使用量记录（保留用于 Claude 转换逻辑）
 // ============================================================================
 
-fn log_forward_error(
+async fn log_forward_error(
     state: &ProxyState,
     ctx: &RequestContext,
     is_streaming: bool,
@@ -3331,24 +3330,37 @@ fn log_forward_error(
 ) {
     use super::usage::logger::UsageLogger;
 
-    let logger = UsageLogger::new(&state.db);
+    if !usage_logging_enabled(state) {
+        return;
+    }
+    let db = state.db.clone();
     let status_code = map_proxy_error_to_status(error);
     let error_message = get_error_message(error);
     let request_id = uuid::Uuid::new_v4().to_string();
-
-    if let Err(e) = logger.log_error_with_context(
-        request_id,
-        ctx.provider.id.clone(),
-        ctx.app_type_str.to_string(),
-        ctx.request_model.clone(),
-        status_code,
-        error_message,
-        ctx.latency_ms(),
-        is_streaming,
-        ctx.usage_session_id(),
-        None,
-    ) {
-        log::warn!("记录失败请求日志失败: {e}");
+    let provider_id = ctx.provider.id.clone();
+    let app_type = ctx.app_type_str.to_string();
+    let request_model = ctx.request_model.clone();
+    let latency_ms = ctx.latency_ms();
+    let session_id = ctx.usage_session_id();
+    match tokio::task::spawn_blocking(move || {
+        UsageLogger::new(&db).log_error_with_context(
+            request_id,
+            provider_id,
+            app_type,
+            request_model,
+            status_code,
+            error_message,
+            latency_ms,
+            is_streaming,
+            session_id,
+            None,
+        )
+    })
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => log::warn!("[USG-001] Failed to record request error: {error}"),
+        Err(error) => log::error!("[USG-001] Usage worker failed: {error}"),
     }
 }
 
@@ -3371,43 +3383,24 @@ async fn log_usage(
     status_code: u16,
     session_id: Option<String>,
 ) {
-    use super::usage::logger::UsageLogger;
-
     if !usage_logging_enabled(state) {
         return;
     }
-
-    let logger = UsageLogger::new(&state.db);
-
-    let (multiplier, pricing_model_source) =
-        logger.resolve_pricing_config(provider_id, app_type).await;
-    let pricing_model = if pricing_model_source == PRICING_SOURCE_REQUEST {
-        outbound_model
-    } else {
-        model
-    };
-
-    let dedup_scope = (app_type != "claude").then_some((app_type, provider_id));
-    let request_id = usage.dedup_request_id(dedup_scope);
-
-    if let Err(e) = logger.log_with_calculation(
-        request_id,
-        provider_id.to_string(),
-        app_type.to_string(),
-        model.to_string(),
-        request_model.to_string(),
-        pricing_model.to_string(),
+    super::response_processor::log_usage_internal(
+        state,
+        provider_id,
+        app_type,
+        model,
+        request_model,
+        outbound_model,
         usage,
-        multiplier,
         latency_ms,
         first_token_ms,
+        is_streaming,
         status_code,
         session_id,
-        None, // provider_type
-        is_streaming,
-    ) {
-        log::warn!("[USG-001] 记录使用量失败: {e}");
-    }
+    )
+    .await;
 }
 
 #[cfg(test)]
@@ -3557,7 +3550,8 @@ mod tests {
                         &ctx,
                         streaming,
                         &ProxyError::Internal("test error".into()),
-                    );
+                    )
+                    .await;
                     assert_usage_log(&db, &ctx, streaming, 500, false).await;
                 }
             }

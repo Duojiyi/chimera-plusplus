@@ -14,17 +14,20 @@ mod codex_live_write;
 mod codex_state_db;
 mod commands;
 mod config;
+mod config_health;
 mod database;
 mod deeplink;
 mod error;
 mod gemini_config;
 mod gemini_mcp;
+mod gemini_session;
 mod grok_config;
 pub mod hermes_config;
 mod init_status;
 mod lightweight;
 #[cfg(target_os = "linux")]
 mod linux_fix;
+mod managed_prompts;
 mod mcode_config;
 mod mcp;
 mod model_capabilities;
@@ -96,11 +99,6 @@ fn apply_windows_rounded_corners(window: &tauri::WebviewWindow) {
         DWMWA_NCRENDERING_POLICY, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
     };
     use windows_sys::Win32::Graphics::Gdi::{CreateRoundRectRgn, DeleteObject, SetWindowRgn};
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_STYLE, SWP_FRAMECHANGED,
-        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_BORDER, WS_CAPTION, WS_DLGFRAME,
-        WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
-    };
 
     let Ok(hwnd) = window.hwnd() else {
         log::warn!("无法取得主窗口句柄，未应用 Windows 圆角");
@@ -149,44 +147,11 @@ fn apply_windows_rounded_corners(window: &tauri::WebviewWindow) {
         log::warn!("关闭 Windows DWM 强调边框失败: HRESULT={result}");
     }
 
-    // Tauri/WebView2 can retain a resize frame on a borderless fixed-size
-    // window. That frame consumes several physical pixels on every edge and
-    // looks like an extra shadow around the transparent shell.
-    let desired_client_size = window.inner_size().ok();
-    let style = unsafe { GetWindowLongPtrW(hwnd.0 as _, GWL_STYLE) };
-    let non_client_frame = (WS_CAPTION
-        | WS_THICKFRAME
-        | WS_BORDER
-        | WS_DLGFRAME
-        | WS_SYSMENU
-        | WS_MINIMIZEBOX
-        | WS_MAXIMIZEBOX) as isize;
-    let borderless_style = (style & !non_client_frame) | WS_POPUP as isize;
-    if borderless_style != style {
-        unsafe {
-            SetWindowLongPtrW(hwnd.0 as _, GWL_STYLE, borderless_style);
-            if let Some(size) = desired_client_size {
-                SetWindowPos(
-                    hwnd.0 as _,
-                    std::ptr::null_mut(),
-                    0,
-                    0,
-                    size.width as i32,
-                    size.height as i32,
-                    SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOZORDER,
-                );
-            } else {
-                SetWindowPos(
-                    hwnd.0 as _,
-                    std::ptr::null_mut(),
-                    0,
-                    0,
-                    0,
-                    0,
-                    SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
-                );
-            }
-        }
+    // Let Tauri keep the native resize/minimize/maximize capabilities.
+    // A maximized window must fill its work area without rounded clipping.
+    if window.is_maximized().unwrap_or(false) {
+        unsafe { SetWindowRgn(hwnd.0 as _, std::ptr::null_mut(), 1) };
+        return;
     }
 
     // Windows 10 and some borderless/transparent window configurations ignore
@@ -235,14 +200,6 @@ fn set_windows_app_user_model_id(app: &tauri::AppHandle) {
         log::warn!("设置 Windows AppUserModelID 失败: 0x{result:08X}");
     } else {
         log::debug!("Windows AppUserModelID 已设置为 {app_id}");
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn enforce_fixed_main_window_size(window: &tauri::WebviewWindow) {
-    let _ = window.unmaximize();
-    if let Err(error) = window.set_size(tauri::LogicalSize::new(1140.0, 816.0)) {
-        log::warn!("设置固定主窗口尺寸失败: {error}");
     }
 }
 
@@ -558,7 +515,9 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             if matches!(
                 event,
-                tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. }
+                tauri::WindowEvent::Resized(_)
+                    | tauri::WindowEvent::ScaleFactorChanged { .. }
+                    | tauri::WindowEvent::Focused(true)
             ) {
                 if let Some(webview_window) = window.app_handle().get_webview_window(window.label()) {
                     apply_windows_rounded_corners(&webview_window);
@@ -1639,8 +1598,6 @@ pub fn run() {
             // 静默启动：根据设置决定是否显示主窗口
             let settings = crate::settings::get_settings();
             if let Some(window) = app.get_webview_window("main") {
-                #[cfg(target_os = "windows")]
-                enforce_fixed_main_window_size(&window);
                 // 在窗口首次显示前同步装饰状态，避免前端加载后再切换导致标题栏闪烁
                 // 仅 Linux 生效：解决 Wayland 下系统窗口按钮不可用的问题
                 #[cfg(target_os = "linux")]
@@ -1696,6 +1653,16 @@ pub fn run() {
             commands::delete_provider,
             commands::remove_provider_from_live_config,
             commands::switch_provider,
+            commands::list_official_accounts,
+            commands::get_official_account_quota,
+            commands::save_current_official_login,
+            commands::start_official_device_login,
+            commands::poll_official_device_login,
+            commands::cancel_official_device_login,
+            commands::remove_official_account,
+            commands::get_notes,
+            commands::set_notes,
+            commands::get_codex_mcp_section_preview,
             commands::import_default_config,
             commands::get_claude_desktop_status,
             commands::get_claude_desktop_default_routes,
@@ -1725,6 +1692,7 @@ pub fn run() {
             commands::get_settings,
             commands::save_settings,
             commands::patch_preferences,
+            commands::patch_config_directory,
             commands::get_codex_runtime_status,
             commands::get_codex_process_status,
             commands::probe_codex_renderer_unlock,
@@ -1734,6 +1702,8 @@ pub fn run() {
             commands::open_codex_runtime_directory,
             commands::check_codex_runtime_update,
             commands::diagnose_codex_runtime,
+            commands::check_codex_config_health,
+            commands::repair_codex_owned_instruction_refs,
             commands::apply_codex_runtime_update,
             commands::repair_codex_runtime,
             commands::rollback_codex_runtime,
@@ -1808,6 +1778,7 @@ pub fn run() {
             commands::enable_prompt,
             commands::import_prompt_from_file,
             commands::get_current_prompt_file_content,
+            commands::adopt_foreign_codex_prompt,
             // Profile management (项目配置方案)
             commands::list_profiles,
             commands::create_profile,
@@ -1858,6 +1829,7 @@ pub fn run() {
             commands::confirm_codex_import_sync,
             // Per-tool live backups (M2.1 ②, `live_backups`)
             commands::list_live_backups,
+            commands::open_live_backup_directory,
             commands::create_live_backup,
             commands::restore_live_backup,
             commands::delete_live_backup,
@@ -1865,6 +1837,9 @@ pub fn run() {
             commands::get_pending_deeplink,
             commands::dismiss_pending_deeplink,
             commands::parse_deeplink,
+            commands::submit_deeplink_import,
+            commands::preview_cc_switch_file,
+            commands::commit_cc_switch_import,
             commands::merge_deeplink_config,
             commands::preview_deeplink_import,
             commands::import_from_deeplink,
@@ -2800,8 +2775,6 @@ mod tests {
             vec!["codex"]
         );
 
-        // Showing GrokBuild in visibleApps is not enough while multi_tool keeps
-        // it hard-hidden; Claude/Gemini are outside the autostart set.
         let everything_visible = VisibleApps {
             claude: true,
             claude_desktop: true,
@@ -2816,7 +2789,7 @@ mod tests {
         };
         assert_eq!(
             enabled_proxy_apps_on_startup(&db, &everything_visible).await,
-            vec!["codex"]
+            vec!["codex", "grokbuild"]
         );
 
         // A hidden Codex does not auto-start either.

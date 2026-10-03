@@ -57,6 +57,7 @@ fn mcp_server(id: &str, claude_enabled: bool) -> McpServer {
 
 fn prompt(id: &str, enabled: bool) -> Prompt {
     Prompt {
+        template_id: Some("writing-technical-docs".into()),
         id: id.to_string(),
         name: id.to_uppercase(),
         content: format!("# prompt {id}\n"),

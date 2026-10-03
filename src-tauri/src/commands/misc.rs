@@ -185,6 +185,64 @@ pub async fn get_tool_versions(
     Ok(results)
 }
 
+// One mutex per tool; acquire in registry order for overlapping multi-tool requests.
+fn lifecycle_locks() -> &'static HashMap<&'static str, std::sync::Mutex<()>> {
+    static LOCKS: std::sync::OnceLock<HashMap<&'static str, std::sync::Mutex<()>>> =
+        std::sync::OnceLock::new();
+    LOCKS.get_or_init(|| {
+        VALID_TOOLS
+            .iter()
+            .map(|&tool| (tool, std::sync::Mutex::new(())))
+            .collect()
+    })
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn lifecycle_script(command_line: &str) -> Result<tempfile::TempDir, String> {
+    let dir = tempfile::Builder::new()
+        .prefix("chimera-lifecycle-")
+        .tempdir()
+        .map_err(|e| format!("创建安装临时目录失败: {e}"))?;
+    std::fs::write(dir.path().join("run.bat"), command_line)
+        .map_err(|e| format!("写入批处理文件失败: {e}"))?;
+    Ok(dir)
+}
+
+// Cache the bounded shell probe so detection and execution share the same PATH.
+#[cfg(not(target_os = "windows"))]
+fn cli_execution_path() -> &'static std::ffi::OsStr {
+    static PATH: std::sync::OnceLock<std::ffi::OsString> = std::sync::OnceLock::new();
+    PATH.get_or_init(|| {
+        let shell = get_user_shell();
+        let mut command = std::process::Command::new(&shell);
+        command.arg(default_flag_for_shell(&shell)).arg("env");
+        let login = bounded_command_output(command, TOOL_PROBE_TIMEOUT)
+            .ok()
+            .filter(|out| out.status.success())
+            .and_then(|out| String::from_utf8(out.stdout).ok())
+            .and_then(|text| {
+                text.lines()
+                    .find_map(|line| line.strip_prefix("PATH=").map(str::to_owned))
+            });
+        let inherited = std::env::var_os("PATH").unwrap_or_default();
+        let mut paths = Vec::new();
+        if let Some(login) = login {
+            for path in std::env::split_paths(&login) {
+                if path.is_absolute() {
+                    push_unique_path(&mut paths, path);
+                }
+            }
+        }
+        for path in std::env::split_paths(&inherited) {
+            if path.is_absolute() {
+                push_unique_path(&mut paths, path);
+            }
+        }
+        std::env::join_paths(paths).unwrap_or(inherited)
+    })
+    .as_os_str()
+}
+
 #[tauri::command]
 pub async fn run_tool_lifecycle_action(
     tools: Vec<String>,
@@ -205,6 +263,14 @@ pub async fn run_tool_lifecycle_action(
     // build 阶段含锚定探测（对每个工具跑 `--version` 定位命令行实际命中那处），
     // 与执行一并放进 blocking 线程，避免阻塞 async runtime。
     tokio::task::spawn_blocking(move || {
+        let _guards = requested
+            .iter()
+            .map(|tool| {
+                lifecycle_locks()[tool]
+                    .lock()
+                    .map_err(|_| format!("{tool} lifecycle lock poisoned"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let command_line =
             build_tool_lifecycle_command(&requested, action, wsl_shell_by_tool.as_ref())?;
         run_tool_lifecycle_silently(&command_line, label)
@@ -219,34 +285,38 @@ pub async fn run_tool_lifecycle_action(
 /// 失败时回传 stderr/stdout 末尾若干行，供前端 toast 提示。
 #[cfg(not(target_os = "windows"))]
 fn run_tool_lifecycle_silently(command_line: &str, _label: &str) -> Result<(), String> {
-    use std::process::Command;
     // command_line 是 bash 风格脚本（含 `set -e` 与多行命令）；强制用 bash 执行，
     // 避免用户默认 shell 为 fish/zsh 时 `set -e` 等语义不一致。
-    let mut command = Command::new("bash");
-    command.arg("-c").arg(command_line);
+    let command = posix_lifecycle_command(command_line, cli_execution_path());
     let output = bounded_command_output(command, TOOL_LIFECYCLE_TIMEOUT)
         .map_err(|e| format!("启动安装进程失败: {e}"))?;
     finish_lifecycle_output(&output)
 }
 
+#[cfg(not(target_os = "windows"))]
+fn posix_lifecycle_command(script: &str, path: &std::ffi::OsStr) -> std::process::Command {
+    let mut command = std::process::Command::new("bash");
+    command.args(["-c", script]).env("PATH", path);
+    command
+}
+
 /// Windows 静默执行：command_line 是 .bat 内容（@echo off + call/wsl 行，CRLF 分隔），
 /// 写临时 .bat 后用 `cmd /C` 执行，`CREATE_NO_WINDOW` 抑制 console 窗口。
 #[cfg(target_os = "windows")]
-fn run_tool_lifecycle_silently(command_line: &str, label: &str) -> Result<(), String> {
+fn run_tool_lifecycle_silently(command_line: &str, _label: &str) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
     use std::process::Command;
 
-    let bat_file =
-        std::env::temp_dir().join(format!("cc_switch_{}_{}.bat", label, std::process::id()));
-    std::fs::write(&bat_file, command_line).map_err(|e| format!("写入批处理文件失败: {e}"))?;
+    let script = lifecycle_script(command_line)?;
+    let bat_file = script.path().join("run.bat");
 
     let mut command = Command::new("cmd");
     command
-        .arg("/C")
+        .args(["/D", "/C"])
         .arg(&bat_file)
         .creation_flags(CREATE_NO_WINDOW);
     let output = bounded_command_output(command, TOOL_LIFECYCLE_TIMEOUT);
-    let _ = std::fs::remove_file(&bat_file);
+    drop(script);
 
     finish_lifecycle_output(&output.map_err(|e| format!("启动安装进程失败: {e}"))?)
 }
@@ -686,8 +756,17 @@ fn build_tool_action_line(
         let command = match action {
             ToolLifecycleAction::Update => {
                 let installs = enumerate_tool_installations(tool);
-                installs_anchored_command(tool, &installs)
-                    .unwrap_or_else(|| static_fallback_command(tool))
+                let command = installs_anchored_command(tool, &installs)
+                    .unwrap_or_else(|| static_fallback_command(tool));
+                match default_install(&installs)
+                    .and_then(|install| Path::new(&install.path).parent())
+                {
+                    Some(parent) => format!(
+                        "(export PATH={}:\"$PATH\"; {command})",
+                        shell_single_quote(&parent.to_string_lossy())
+                    ),
+                    None => command,
+                }
             }
             ToolLifecycleAction::Install => install_command_for(tool),
         };
@@ -771,7 +850,13 @@ async fn get_single_tool_version_impl(
         {
             // Windows 上只执行已经定位到的真实可执行文件，避免 `cmd /C tool`
             // 误触发 App Execution Alias 或协议处理器。
-            scan_cli_version(tool)
+            probe_windows_default_or_fallback(
+                resolve_path_default(tool).as_deref(),
+                &std::env::var_os("PATH")
+                    .unwrap_or_default()
+                    .to_string_lossy(),
+                || scan_cli_version(tool),
+            )
         }
 
         #[cfg(not(target_os = "windows"))]
@@ -1063,13 +1148,10 @@ fn try_get_version(tool: &str) -> ShellProbe {
     use std::process::Command;
 
     let output = {
-        let shell = std::env::var("SHELL")
-            .ok()
-            .filter(|s| is_valid_shell(s))
-            .unwrap_or_else(|| "sh".to_string());
-        let flag = default_flag_for_shell(&shell);
-        let mut command = Command::new(shell);
-        command.arg(flag).arg(format!("{tool} --version"));
+        let mut command = Command::new("bash");
+        command
+            .args(["-c", &format!("{tool} --version")])
+            .env("PATH", cli_execution_path());
         bounded_command_output(command, TOOL_PROBE_TIMEOUT)
     };
 
@@ -1725,7 +1807,10 @@ fn build_tool_search_paths(tool: &str) -> Vec<std::path::PathBuf> {
         }
     }
 
+    #[cfg(target_os = "windows")]
     let path_env = std::env::var_os("PATH");
+    #[cfg(not(target_os = "windows"))]
+    let path_env = Some(cli_execution_path().to_os_string());
     extend_from_cli_path_env(&mut search_paths, path_env);
     search_paths
 }
@@ -1776,12 +1861,65 @@ fn run_windows_tool_version_command(
     bounded_command_output(command, TOOL_PROBE_TIMEOUT)
 }
 
+/// An installed PATH default owns its result, including failure. Alternatives
+/// must not turn a broken default into a healthy version card.
+#[cfg(target_os = "windows")]
+fn probe_windows_default_or_fallback(
+    default: Option<&Path>,
+    execution_path: &str,
+    fallback: impl FnOnce() -> ShellProbe,
+) -> ShellProbe {
+    let Some(path) = default else {
+        return fallback();
+    };
+    if path
+        .parent()
+        .is_some_and(is_windows_app_execution_alias_dir)
+    {
+        return ShellProbe::FoundButFailed(
+            "PATH default is a Windows app execution alias; automatic execution is disabled".into(),
+        );
+    }
+    match run_windows_tool_version_command(path, execution_path) {
+        Ok(output) => {
+            let stdout = decode_command_output(&output.stdout);
+            let stderr = decode_command_output(&output.stderr);
+            let text = if stdout.trim().is_empty() {
+                stderr.trim()
+            } else {
+                stdout.trim()
+            };
+            if output.status.success() && !text.is_empty() {
+                ShellProbe::Found(extract_version(text))
+            } else {
+                let diagnostic = if !stderr.trim().is_empty() {
+                    stderr.trim()
+                } else {
+                    text
+                };
+                ShellProbe::FoundButFailed(if diagnostic.is_empty() {
+                    format!(
+                        "PATH default returned no version (status {})",
+                        output.status
+                    )
+                } else {
+                    last_lines(diagnostic, 4)
+                })
+            }
+        }
+        Err(error) => {
+            ShellProbe::FoundButFailed(format!("PATH default version probe failed: {error}"))
+        }
+    }
+}
+
 /// 扫描常见路径查找 CLI（PATH 主命令未命中时的兜底单探）。
 fn scan_cli_version(tool: &str) -> ShellProbe {
     #[cfg(not(target_os = "windows"))]
     use std::process::Command;
 
     let search_paths = build_tool_search_paths(tool);
+    #[cfg(target_os = "windows")]
     let current_path = std::env::var_os("PATH")
         .map(|value| value.to_string_lossy().into_owned())
         .unwrap_or_default();
@@ -1789,6 +1927,8 @@ fn scan_cli_version(tool: &str) -> ShellProbe {
     // 记录"可执行文件存在、但 `--version` 非零退出"时的首个诊断信息。
     // 典型场景：工具已安装但当前环境跑不起来（如 openclaw 要求 Node v22.19+）。
     // 这类信息比笼统的 "not installed" 有用得多，循环结束未探到版本时回传。
+    #[cfg(not(target_os = "windows"))]
+    let current_path = cli_execution_path().to_string_lossy();
     let mut exec_diagnostic: Option<String> = None;
 
     for path in &search_paths {
@@ -1920,13 +2060,10 @@ fn first_abs_path_line(raw: &str) -> Option<&str> {
 #[cfg(not(target_os = "windows"))]
 fn resolve_path_default(tool: &str) -> Option<std::path::PathBuf> {
     use std::process::Command;
-    let shell = std::env::var("SHELL")
-        .ok()
-        .filter(|s| is_valid_shell(s))
-        .unwrap_or_else(|| "sh".to_string());
-    let flag = default_flag_for_shell(&shell);
-    let mut command = Command::new(shell);
-    command.arg(flag).arg(format!("command -v {tool}"));
+    let mut command = Command::new("bash");
+    command
+        .args(["-c", &format!("command -v {tool}")])
+        .env("PATH", cli_execution_path());
     let out = bounded_command_output(command, TOOL_PROBE_TIMEOUT).ok()?;
     if !out.status.success() {
         return None;
@@ -1969,9 +2106,12 @@ fn enumerate_tool_installations(tool: &str) -> Vec<ToolInstallation> {
     use std::process::Command;
 
     let search_paths = build_tool_search_paths(tool);
+    #[cfg(target_os = "windows")]
     let current_path = std::env::var_os("PATH")
         .map(|value| value.to_string_lossy().into_owned())
         .unwrap_or_default();
+    #[cfg(not(target_os = "windows"))]
+    let current_path = cli_execution_path().to_string_lossy();
     let path_default = resolve_path_default(tool);
 
     let mut seen: std::collections::HashSet<std::path::PathBuf> = std::collections::HashSet::new();
@@ -3683,6 +3823,32 @@ pub async fn set_window_theme(window: tauri::Window, theme: String) -> Result<()
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn path_default_version_and_failure_are_not_masked_by_alternative() {
+        let temp = tempfile::tempdir().unwrap();
+        let default = temp.path().join("default.cmd");
+        std::fs::write(&default, "@echo off\r\necho tool 2.3.4\r\n").unwrap();
+        let probe = super::probe_windows_default_or_fallback(Some(&default), "", || {
+            panic!("must not scan alternative")
+        });
+        assert!(matches!(probe, super::ShellProbe::Found(v) if v == "2.3.4"));
+        std::fs::write(
+            &default,
+            "@echo off\r\necho default broken 1>&2\r\nexit /b 1\r\n",
+        )
+        .unwrap();
+        let probe = super::probe_windows_default_or_fallback(Some(&default), "", || {
+            panic!("must not hide default failure")
+        });
+        assert!(
+            matches!(probe, super::ShellProbe::FoundButFailed(e) if e.contains("default broken"))
+        );
+        assert!(
+            matches!(super::probe_windows_default_or_fallback(None, "", || super::ShellProbe::Found("alternative".into())), super::ShellProbe::Found(v) if v == "alternative")
+        );
+    }
+
     use super::*;
     use std::path::{Path, PathBuf};
 
@@ -5739,5 +5905,69 @@ mod tests {
             command,
             "pushd \"\\\\server\\share\\100%%^&^(test^)\" || exit /b 1\r\n"
         );
+    }
+}
+
+#[cfg(test)]
+mod audit_b05_b07_tests {
+    use super::*;
+
+    #[test]
+    fn requests_own_distinct_scripts_and_cleanup_cannot_remove_peer() {
+        let first = lifecycle_script("echo first\r\n").unwrap();
+        let second = lifecycle_script("echo second\r\n").unwrap();
+        assert_ne!(first.path(), second.path());
+        assert_eq!(
+            std::fs::read_to_string(first.path().join("run.bat")).unwrap(),
+            "echo first\r\n"
+        );
+        let first_path = first.path().to_owned();
+        drop(first);
+        assert!(!first_path.exists());
+        assert_eq!(
+            std::fs::read_to_string(second.path().join("run.bat")).unwrap(),
+            "echo second\r\n"
+        );
+    }
+
+    #[test]
+    fn same_tool_is_exclusive_but_different_tools_are_independent() {
+        let first = lifecycle_locks()["codex"].lock().unwrap();
+        assert!(lifecycle_locks()["codex"].try_lock().is_err());
+        assert!(lifecycle_locks()["claude"].try_lock().is_ok());
+        drop(first);
+        assert!(lifecycle_locks()["codex"].try_lock().is_ok());
+        assert_eq!(
+            normalize_requested_tools(&["codex".into(), "claude".into()]),
+            normalize_requested_tools(&["claude".into(), "codex".into()])
+        );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod audit_b07_posix_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn lifecycle_supplies_path_for_env_node_dependency() {
+        let temp = tempfile::tempdir().unwrap();
+        for (name, content) in [
+            ("node", "#!/bin/sh\nprintf 'fake-node-ok'\n"),
+            ("npm", "#!/usr/bin/env node\n"),
+        ] {
+            let file = temp.path().join(name);
+            std::fs::write(&file, content).unwrap();
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let path =
+            std::env::join_paths([temp.path(), Path::new("/usr/bin"), Path::new("/bin")]).unwrap();
+        let command = posix_lifecycle_command(
+            &shell_single_quote(&temp.path().join("npm").to_string_lossy()),
+            &path,
+        );
+        let output = bounded_command_output(command, TOOL_PROBE_TIMEOUT).unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"fake-node-ok");
     }
 }

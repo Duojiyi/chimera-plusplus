@@ -8,7 +8,7 @@
 //! ```
 //!
 //! ## 与 Claude/Codex 解析器的差异
-//! - JSON 格式（非 JSONL）：每个文件是单个 JSON 对象，包含 messages 数组
+//! - 兼容 JSON 快照与 JSONL 增量记录，共用会话解析入口
 //! - 无需 delta 计算：tokens 字段是 per-message 独立值
 //! - 无需状态恢复：不依赖前一条消息的累计值
 //! - 天然去重：每条消息有唯一 id 字段
@@ -18,10 +18,12 @@ use crate::error::AppError;
 use crate::gemini_config::get_gemini_dir;
 use crate::proxy::usage::calculator::{CostCalculator, ModelPricing};
 use crate::proxy::usage::parser::TokenUsage;
+use crate::security_limits::read_dir_without_links;
 use crate::services::session_usage::{
     get_sync_state, metadata_modified_nanos, update_sync_state, SessionSyncResult,
 };
 use crate::services::usage_stats::{find_model_pricing, should_skip_session_insert, DedupKey};
+use rusqlite::OptionalExtension;
 use rust_decimal::Decimal;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -90,31 +92,26 @@ fn collect_gemini_session_files(gemini_dir: &Path) -> Vec<PathBuf> {
         return files;
     }
 
-    // 遍历 tmp/<project_hash>/chats/session-*.json
-    let project_dirs = match fs::read_dir(&tmp_dir) {
+    // 遍历 tmp/<project_hash>/chats/session-*.json 或 .jsonl
+    let project_dirs = match read_dir_without_links(&tmp_dir) {
         Ok(entries) => entries,
         Err(_) => return files,
     };
 
-    for entry in project_dirs.flatten() {
+    for entry in project_dirs {
         let chats_dir = entry.path().join("chats");
         if !chats_dir.is_dir() {
             continue;
         }
 
-        let chat_files = match fs::read_dir(&chats_dir) {
+        let chat_files = match read_dir_without_links(&chats_dir) {
             Ok(entries) => entries,
             Err(_) => continue,
         };
 
-        for file_entry in chat_files.flatten() {
+        for file_entry in chat_files {
             let path = file_entry.path();
-            let is_session = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .map(|n| n.starts_with("session-") && n.ends_with(".json"))
-                .unwrap_or(false);
-            if is_session {
+            if crate::gemini_session::is_session_file(&path) {
                 files.push(path);
             }
         }
@@ -140,11 +137,7 @@ fn sync_single_gemini_file(db: &Database, file_path: &Path) -> Result<(u32, u32)
         return Ok((0, 0));
     }
 
-    // 读取并解析整个 JSON 文件
-    let content = fs::read_to_string(file_path)
-        .map_err(|e| AppError::Config(format!("无法读取文件: {e}")))?;
-    let value: serde_json::Value = serde_json::from_str(&content)
-        .map_err(|e| AppError::Config(format!("JSON 解析失败: {e}")))?;
+    let value = crate::gemini_session::read_session(file_path).map_err(AppError::Config)?;
 
     // 提取顶层 sessionId
     let session_id = value
@@ -182,7 +175,11 @@ fn sync_single_gemini_file(db: &Database, file_path: &Path) -> Result<(u32, u32)
         gemini_msg_count += 1;
 
         // 提取消息 ID 和模型
-        let message_id = msg.get("id").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let message_id = msg
+            .get("id")
+            .and_then(|v| v.as_str())
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| AppError::Config("Gemini usage message has no id".into()))?;
         let model = msg
             .get("model")
             .and_then(|v| v.as_str())
@@ -218,10 +215,26 @@ fn sync_single_gemini_file(db: &Database, file_path: &Path) -> Result<(u32, u32)
 /// 从 tokens JSON 对象中提取 token 数据
 fn parse_gemini_tokens(tokens: &serde_json::Value) -> GeminiTokens {
     GeminiTokens {
-        input: tokens.get("input").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-        output: tokens.get("output").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-        cached: tokens.get("cached").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-        thoughts: tokens.get("thoughts").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+        input: tokens
+            .get("input")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+            .min(u32::MAX as u64) as u32,
+        output: tokens
+            .get("output")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+            .min(u32::MAX as u64) as u32,
+        cached: tokens
+            .get("cached")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+            .min(u32::MAX as u64) as u32,
+        thoughts: tokens
+            .get("thoughts")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+            .min(u32::MAX as u64) as u32,
     }
 }
 
@@ -250,7 +263,7 @@ fn insert_gemini_session_entry(
         });
 
     // 合并 thoughts 到 output（思考 token 按输出计费）
-    let output_tokens = tokens.output + tokens.thoughts;
+    let output_tokens = tokens.output.saturating_add(tokens.thoughts);
 
     let dedup_key = DedupKey {
         session_id,
@@ -262,7 +275,17 @@ fn insert_gemini_session_entry(
         cache_creation_tokens: 0,
         created_at,
     };
-    if should_skip_session_insert(&conn, request_id, &dedup_key)? {
+    // Only our own unarchived session row may be updated. A proxy row or
+    // archived identity remains authoritative and must never be overwritten.
+    let own_row = conn
+        .query_row(
+            "SELECT COALESCE(data_source, '') = 'gemini_session' FROM proxy_request_logs WHERE request_id = ?1",
+            [request_id],
+            |row| row.get::<_, bool>(0),
+        )
+        .optional()?
+        .unwrap_or(false);
+    if !own_row && should_skip_session_insert(&conn, request_id, &dedup_key)? {
         return Ok(false);
     }
 
@@ -318,10 +341,11 @@ fn insert_gemini_session_entry(
             cache_read_cost_usd = excluded.cache_read_cost_usd,
             cache_creation_cost_usd = excluded.cache_creation_cost_usd,
             total_cost_usd = excluded.total_cost_usd
-        WHERE input_tokens != excluded.input_tokens
+        WHERE proxy_request_logs.data_source = 'gemini_session' AND (
+              input_tokens != excluded.input_tokens
            OR output_tokens != excluded.output_tokens
            OR cache_read_tokens != excluded.cache_read_tokens
-           OR model != excluded.model",
+           OR model != excluded.model)",
         rusqlite::params![
             request_id,
             "_gemini_session",   // provider_id
@@ -395,6 +419,52 @@ mod tests {
                 1
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn repeated_message_updates_tokens_without_duplicate_rows() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let mut tokens = GeminiTokens {
+            input: 10,
+            output: 2,
+            cached: 1,
+            thoughts: 0,
+        };
+        assert!(insert_gemini_session_entry(
+            &db,
+            "gemini_session:s:m",
+            &tokens,
+            "gemini-test",
+            Some("s"),
+            Some("2026-01-01T00:00:00Z")
+        )?);
+        tokens.input = 20;
+        assert!(insert_gemini_session_entry(
+            &db,
+            "gemini_session:s:m",
+            &tokens,
+            "gemini-test",
+            Some("s"),
+            Some("2026-01-01T00:00:00Z")
+        )?);
+        assert!(!insert_gemini_session_entry(
+            &db,
+            "gemini_session:s:m",
+            &tokens,
+            "gemini-test",
+            Some("s"),
+            Some("2026-01-01T00:00:00Z")
+        )?);
+        let conn = lock_conn!(db.conn);
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*), SUM(input_tokens) FROM proxy_request_logs",
+                [],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+            )?,
+            (1, 20)
+        );
         Ok(())
     }
 

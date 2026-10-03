@@ -1203,7 +1203,7 @@ mod tests {
     }
 
     #[test]
-    fn non_codex_tray_sections_are_rejected_while_multi_tool_is_off() {
+    fn tray_sections_follow_explicit_tool_visibility() {
         use crate::settings::VisibleApps;
 
         let everything_visible = VisibleApps {
@@ -1223,7 +1223,18 @@ mod tests {
             .filter(|section| super::tray_app_enabled(&section.app_type, &everything_visible))
             .map(|section| section.app_type.clone())
             .collect();
-        assert_eq!(shown, vec![AppType::Codex]);
+        assert_eq!(
+            shown,
+            vec![
+                AppType::Claude,
+                AppType::Codex,
+                AppType::Gemini,
+                AppType::GrokBuild
+            ]
+        );
+        for app in [AppType::Claude, AppType::Gemini, AppType::GrokBuild] {
+            assert!(!super::tray_app_enabled(&app, &VisibleApps::default()));
+        }
 
         let codex_hidden = VisibleApps {
             codex: false,

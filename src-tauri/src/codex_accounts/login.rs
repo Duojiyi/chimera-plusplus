@@ -1,8 +1,8 @@
 //! Adding an account with the official CLI: `codex login --device-auth` in a
 //! private temporary `CODEX_HOME` with the file credential store. The device
 //! URL and one-time code are what the user types into the browser, so they
-//! are shown; the `auth.json` the CLI writes goes straight into the vault
-//! and the temporary home is scrubbed and removed. Codex's own client id,
+//! are shown; the captured `auth.json` is returned for transactional vault/line
+//! registration and the temporary home is scrubbed and removed. Codex's own client id,
 //! endpoints and file format are used as-is; nothing here reimplements them.
 
 use std::io::Read;
@@ -15,10 +15,9 @@ use chrono::{DateTime, Utc};
 use serde_json::Value;
 
 use super::identity::{classify, AccountIdentity, LoginClass};
-use super::vault::{secure_remove_dir, SlotSource, Vault};
+use super::vault::{secure_remove_dir, Vault};
 use crate::error::AppError;
 
-pub(crate) const LOGIN_COMMAND_LABEL: &str = "codex login --device-auth";
 /// Codex prints "expires in 15 minutes" for the device code.
 const DEVICE_CODE_LIFETIME_SECS: i64 = 15 * 60;
 const PROMPT_WAIT: Duration = Duration::from_secs(30);
@@ -312,13 +311,10 @@ fn start_with_programs(vault: &Vault, programs: &[PathBuf]) -> Result<StartedLog
     Ok(started)
 }
 
-/// Reads the `auth.json` a CLI login wrote into `home` and stores it in the
-/// identity's slot. This and the live `auth.json` are the only sources that
-/// may update a slot.
-pub(crate) fn capture_cli_login(
-    vault: &Vault,
-    home: &Path,
-) -> Result<(AccountIdentity, Value), AppError> {
+/// Reads and validates the CLI login without mutating the vault.
+/// register_cli_login persists it together with its line after the login lock
+/// has been released; no account transaction is acquired under ACTIVE_LOGIN.
+pub(crate) fn capture_cli_login(home: &Path) -> Result<(AccountIdentity, Value), AppError> {
     let path = home.join("auth.json");
     let bytes =
         crate::security_limits::read_limited(&path, crate::security_limits::MAX_CONFIG_FILE_BYTES)
@@ -342,11 +338,10 @@ pub(crate) fn capture_cli_login(
             "The login is not a complete ChatGPT login; nothing was saved",
         ));
     };
-    vault.store_slot(&identity, &auth, SlotSource::Cli)?;
     Ok((identity, auth))
 }
 
-pub(crate) fn poll(vault: &Vault, flow_id: &str) -> Result<LoginPoll, AppError> {
+pub(crate) fn poll(flow_id: &str) -> Result<LoginPoll, AppError> {
     let mut active = active_login()?;
     let Some(login) = active.as_mut().filter(|login| login.flow_id == flow_id) else {
         return Err(AppError::localized(
@@ -359,7 +354,7 @@ pub(crate) fn poll(vault: &Vault, flow_id: &str) -> Result<LoginPoll, AppError> 
     let outcome = match exit {
         Ok(None) if Utc::now() < login.expires_at => return Ok(LoginPoll::Pending),
         Ok(None) => LoginPoll::Expired,
-        Ok(Some(status)) if status.success() => match capture_cli_login(vault, &login.home) {
+        Ok(Some(status)) if status.success() => match capture_cli_login(&login.home) {
             Ok((identity, auth)) => LoginPoll::Completed(identity, auth),
             Err(error) => LoginPoll::Failed(error),
         },
@@ -428,22 +423,20 @@ mod tests {
         assert_eq!(home, Some(dir.path().as_os_str()));
     }
 
-    // ACC-T23: the CLI capture stores a Codex-format auth.json in its own
-    // identity's slot and never touches the live login.
+    // ACC-T23: capture returns credentials without writing a slot or live login.
+    // The registration transaction owns the vault write.
     #[test]
-    fn cli_capture_stores_the_login_in_its_own_slot() {
+    fn cli_capture_defers_the_slot_write_until_registration() {
         let dir = TempDir::new().unwrap();
         let vault = Vault::open_at(dir.path().join("vault")).unwrap();
         let home = vault.new_login_home().unwrap();
         let login = chatgpt_login("new", "2026-09-27T14:20:00Z");
         std::fs::write(home.join("auth.json"), login.to_string()).unwrap();
 
-        let (captured, auth) = capture_cli_login(&vault, &home).unwrap();
+        let (captured, auth) = capture_cli_login(&home).unwrap();
         assert_eq!(captured, identity("new"));
         assert_eq!(auth, login);
-        let slot = vault.read_slot(&captured.key()).unwrap().unwrap();
-        assert_eq!(slot.source, SlotSource::Cli);
-        assert_eq!(slot.auth, login);
+        assert!(vault.slot_keys().is_empty());
 
         // An API-key or partial login is refused and stores nothing.
         let other = vault.new_login_home().unwrap();
@@ -452,9 +445,9 @@ mod tests {
             r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-x"}"#,
         )
         .unwrap();
-        assert!(capture_cli_login(&vault, &other).is_err());
-        assert!(capture_cli_login(&vault, &dir.path().join("missing")).is_err());
-        assert_eq!(vault.slot_keys(), vec![captured.key()]);
+        assert!(capture_cli_login(&other).is_err());
+        assert!(capture_cli_login(&dir.path().join("missing")).is_err());
+        assert!(vault.slot_keys().is_empty());
     }
 
     // ACC-T23 end to end with a stand-in CLI.
@@ -490,20 +483,20 @@ mod tests {
 
         let deadline = Instant::now() + Duration::from_secs(20);
         let captured = loop {
-            match poll(&vault, &started.flow_id).unwrap() {
+            match poll(&started.flow_id).unwrap() {
                 LoginPoll::Pending if Instant::now() < deadline => {
                     std::thread::sleep(Duration::from_millis(100))
                 }
-                LoginPoll::Completed(identity, _) => break identity,
+                LoginPoll::Completed(identity, auth) => {
+                    assert_eq!(auth, login);
+                    break identity;
+                }
                 _ => panic!("device login did not complete"),
             }
         };
         assert_eq!(captured, identity("device"));
-        assert_eq!(
-            vault.read_slot(&captured.key()).unwrap().unwrap().auth,
-            login
-        );
+        assert!(vault.slot_keys().is_empty());
         assert!(vault.stale_login_homes().is_empty());
-        assert!(poll(&vault, &started.flow_id).is_err());
+        assert!(poll(&started.flow_id).is_err());
     }
 }

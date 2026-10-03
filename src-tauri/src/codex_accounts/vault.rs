@@ -39,7 +39,6 @@ const ACCOUNTS_DIR: &str = "accounts";
 const PENDING_DIR: &str = "pending";
 const TOMBSTONES_DIR: &str = "tombstones";
 const LOGIN_HOME_PREFIX: &str = ".login-";
-pub(crate) const WRITE_LOG_FILE: &str = "auth-write-log.json";
 const SLOT_VERSION: u32 = 1;
 
 /// Where a stored login came from. Only `Live` (Codex's own `auth.json`)
@@ -288,6 +287,7 @@ impl Vault {
         Ok(vault)
     }
 
+    #[cfg(test)]
     pub fn root(&self) -> &Path {
         &self.root
     }
@@ -359,7 +359,7 @@ impl Vault {
             }
             match Self::write_entry(snapshot, &VaultSlot::new(identity, auth, source)) {
                 Ok(()) => return Ok(StoreOutcome::Stored),
-                Err(AppError::CasConflict { .. }) => continue,
+                Err(AppError::Conflict(_)) => continue,
                 Err(err) => return Err(err),
             }
         }
@@ -386,9 +386,26 @@ impl Vault {
         Ok(outcome)
     }
 
+    /// Switch-away backfill may refresh a saved login, never recreate a deleted
+    /// account or clear a needs-login marker from a stale provider snapshot.
+    pub fn refresh_existing_slot(
+        &self,
+        identity: &AccountIdentity,
+        auth: &Value,
+    ) -> Result<(), AppError> {
+        let _transaction = super::account_mutation()?;
+        let key = identity.key();
+        if self.has_tombstone(&key) || self.read_slot(&key)?.is_none() {
+            return Ok(());
+        }
+        self.store_slot(identity, auth, SlotSource::Live)?;
+        Ok(())
+    }
+
     /// Records imported material as a candidate for its own identity. A
     /// trusted slot always wins, so a candidate for an identity that already
     /// has one is dropped.
+    #[cfg(test)]
     pub fn store_candidate(
         &self,
         identity: &AccountIdentity,
@@ -407,17 +424,14 @@ impl Vault {
         Ok(Self::read_entry(&self.slot_path(key))?.0)
     }
 
-    pub fn read_candidate(&self, key: &str) -> Result<Option<VaultSlot>, AppError> {
-        validate_account_key(key)?;
-        Ok(Self::read_entry(&self.candidate_path(key))?.0)
-    }
-
+    #[cfg(test)]
     pub fn has_slot(&self, key: &str) -> bool {
         self.slot_path(key).is_file()
     }
 
     /// The user confirmed a candidate: it becomes the slot (unless a trusted
     /// slot appeared meanwhile, which wins) and the candidate is removed.
+    #[cfg(test)]
     pub fn promote_candidate(&self, key: &str) -> Result<VaultSlot, AppError> {
         validate_account_key(key)?;
         let (candidate, _) = Self::read_entry(&self.candidate_path(key))?;
@@ -477,6 +491,7 @@ impl Vault {
         self.keys_in(ACCOUNTS_DIR)
     }
 
+    #[cfg(test)]
     pub fn candidate_keys(&self) -> Vec<String> {
         self.keys_in(PENDING_DIR)
     }
@@ -500,9 +515,26 @@ impl Vault {
 
     pub fn remove_account(&self, key: &str) -> Result<(), AppError> {
         validate_account_key(key)?;
-        remove_if_present(&self.slot_path(key))?;
+        // Keep the visible account until every auxiliary cleanup has succeeded.
         remove_if_present(&self.candidate_path(key))?;
-        remove_if_present(&self.tombstone_path(key))
+        let had_tombstone = self.has_tombstone(key);
+        remove_if_present(&self.tombstone_path(key))?;
+        let slot = self.slot_path(key);
+        // Do not zero the primary slot before unlink: a failed unlink must leave
+        // usable credentials for retry, not a visible but corrupted account.
+        match fs::remove_file(&slot) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => {
+                // Failed deletion must not make a needs-login account applicable again.
+                if had_tombstone {
+                    self.set_tombstone(key).map_err(|restore| AppError::Message(format!(
+                        "Account deletion failed: {error}; needs-login marker restoration failed: {restore}"
+                    )))?;
+                }
+                Err(AppError::io(&slot, error))
+            }
+        }
     }
 
     /// A fresh private directory for one CLI login, inside the protected
@@ -817,6 +849,55 @@ mod tests {
     }
 
     #[test]
+    fn audit_b09_auxiliary_delete_failure_preserves_visible_slot_for_retry() {
+        for block_candidate in [false, true] {
+            let (_dir, vault) = vault();
+            let a = identity("a");
+            let auth = chatgpt_login("a", "2026-09-20T00:00:00Z");
+            vault.store_slot(&a, &auth, SlotSource::Cli).unwrap();
+            let blocked = if block_candidate {
+                vault.candidate_path(&a.key())
+            } else {
+                vault.tombstone_path(&a.key())
+            };
+            // A directory cannot be unlinked as a file on either Windows or Unix.
+            fs::create_dir(&blocked).unwrap();
+            assert!(vault.remove_account(&a.key()).is_err());
+            assert_eq!(vault.slot_keys(), vec![a.key()]);
+            assert_eq!(vault.read_slot(&a.key()).unwrap().unwrap().auth, auth);
+            fs::remove_dir(&blocked).unwrap();
+            vault.remove_account(&a.key()).unwrap();
+            assert!(vault.slot_keys().is_empty());
+            vault.remove_account(&a.key()).unwrap();
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn audit_b09_locked_primary_slot_is_not_wiped_on_failed_delete() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let (_dir, vault) = vault();
+        let a = identity("a");
+        let auth = chatgpt_login("a", "2026-09-20T00:00:00Z");
+        vault.store_slot(&a, &auth, SlotSource::Cli).unwrap();
+        vault.set_tombstone(&a.key()).unwrap();
+        let slot = vault.slot_path(&a.key());
+        let bytes = fs::read(&slot).unwrap();
+        // Permit reads/writes but deny FILE_SHARE_DELETE, reproducing unlink failure.
+        let held = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(3)
+            .open(&slot)
+            .unwrap();
+        assert!(vault.remove_account(&a.key()).is_err());
+        assert_eq!(fs::read(&slot).unwrap(), bytes);
+        assert!(vault.has_tombstone(&a.key()));
+        assert!(vault.applicable_slot(&a.key()).is_err());
+        drop(held);
+        vault.remove_account(&a.key()).unwrap();
+    }
+
+    #[test]
     fn slots_follow_freshness_within_one_identity() {
         let (_dir, vault) = vault();
         let a = identity("a");
@@ -1005,8 +1086,12 @@ mod tests {
 
         let sid = win::current_user_sid().unwrap();
         let owner_only = |sddl: &str| {
+            // Windows may canonicalize the built-in local Administrator
+            // account (RID 500) to the well-known SDDL alias `LA`.
+            let owner_ace = sddl.contains(&format!(";;;{sid})"))
+                || (sid.ends_with("-500") && sddl.contains(";;;LA)"));
             sddl.matches("(A;").count() == 2
-                && sddl.contains(&format!(";;;{sid})"))
+                && owner_ace
                 && sddl.contains(";;;SY)")
                 && !sddl.contains("(D;")
         };

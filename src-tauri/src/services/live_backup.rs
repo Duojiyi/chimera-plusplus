@@ -49,6 +49,10 @@ pub enum LiveBackupReason {
     PreRestore,
     /// Before a cc-switch import.
     PreImport,
+    /// Before managed prompt projection.
+    PrePrompt,
+    /// Before an explicitly confirmed configuration repair.
+    PreRepair,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -82,6 +86,8 @@ pub struct LiveBackupSummary {
     pub reason: LiveBackupReason,
     pub files: Vec<String>,
     pub identity_fingerprint: Option<String>,
+    /// Size of the stored JSON record, absent if it disappeared during listing.
+    pub size_bytes: Option<u64>,
     /// Absolute path of the backup record.
     pub path: String,
 }
@@ -108,6 +114,7 @@ pub fn live_files(app: &AppType) -> Result<Vec<PathBuf>, AppError> {
         AppType::Codex => vec![
             crate::codex_config::get_codex_config_path(),
             crate::codex_config::get_codex_model_catalog_path(),
+            crate::prompt_files::prompt_file_path(app)?,
         ],
         AppType::Gemini => vec![
             crate::gemini_config::get_gemini_env_path(),
@@ -146,6 +153,14 @@ fn backups_root() -> PathBuf {
 
 pub fn backup_dir(app: &AppType) -> PathBuf {
     backups_root().join(app.as_str())
+}
+
+/// Resolve and prepare only the managed backup directory; renderer paths are never accepted.
+pub fn prepare_backup_dir(app: &AppType) -> Result<PathBuf, AppError> {
+    ensure_private_dir(&backups_root())?;
+    let directory = backup_dir(app);
+    ensure_private_dir(&directory)?;
+    Ok(directory)
 }
 
 fn ensure_private_dir(dir: &Path) -> Result<(), AppError> {
@@ -210,6 +225,10 @@ fn summary(record: &BackupRecord, path: &Path) -> LiveBackupSummary {
         reason: record.reason,
         files: record.files.iter().map(|file| file.path.clone()).collect(),
         identity_fingerprint: record.identity_fingerprint.clone(),
+        size_bytes: fs::metadata(path)
+            .ok()
+            .filter(|meta| meta.is_file())
+            .map(|meta| meta.len()),
         path: path.display().to_string(),
     }
 }
@@ -220,12 +239,58 @@ pub fn create_backup(
     app: &AppType,
     reason: LiveBackupReason,
 ) -> Result<Option<LiveBackupSummary>, AppError> {
+    let snapshots = live_files(app)?
+        .into_iter()
+        .map(FileSnapshot::read)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(AppError::from)?;
+    store_backup(db, app, reason, &snapshots)
+}
+
+/// Back up precisely the AGENTS.md bytes used for planning, not a later read.
+pub(crate) fn create_prompt_backup(
+    db: &Database,
+    snapshot: &FileSnapshot,
+) -> Result<Option<LiveBackupSummary>, AppError> {
+    let target = crate::prompt_files::prompt_file_path(&AppType::Codex)?;
+    if snapshot.path() != target.as_path() {
+        return Err(AppError::InvalidInput("提示词备份路径不匹配。".into()));
+    }
+    store_backup(
+        db,
+        &AppType::Codex,
+        LiveBackupReason::PrePrompt,
+        std::slice::from_ref(snapshot),
+    )
+}
+
+/// Back up the exact config bytes observed by the controlled repair planner.
+pub(crate) fn create_config_repair_backup(
+    db: &Database,
+    snapshot: &FileSnapshot,
+) -> Result<Option<LiveBackupSummary>, AppError> {
+    if snapshot.path() != crate::codex_config::get_codex_config_path().as_path() {
+        return Err(AppError::InvalidInput("配置备份路径不匹配。".into()));
+    }
+    store_backup(
+        db,
+        &AppType::Codex,
+        LiveBackupReason::PreRepair,
+        std::slice::from_ref(snapshot),
+    )
+}
+
+fn store_backup(
+    db: &Database,
+    app: &AppType,
+    reason: LiveBackupReason,
+    snapshots: &[FileSnapshot],
+) -> Result<Option<LiveBackupSummary>, AppError> {
     let mut files = Vec::new();
-    for path in live_files(app)? {
-        let snapshot = FileSnapshot::read(&path).map_err(AppError::from)?;
+    for snapshot in snapshots {
         if let Some(bytes) = snapshot.contents() {
             files.push(StoredFile {
-                path: path.display().to_string(),
+                path: snapshot.path().display().to_string(),
                 contents: base64::engine::general_purpose::STANDARD.encode(bytes),
             });
         }
@@ -243,8 +308,7 @@ pub fn create_backup(
         identity_fingerprint: identity_fingerprint(db, app),
         files,
     };
-    ensure_private_dir(&backups_root())?;
-    ensure_private_dir(&backup_dir(app))?;
+    prepare_backup_dir(app)?;
     let path = record_path(app, &record.id);
     let json =
         serde_json::to_vec_pretty(&record).map_err(|source| AppError::JsonSerialize { source })?;
@@ -430,20 +494,47 @@ pub fn restore_backup(
         planned.push((target, bytes));
     }
 
-    let pre_restore = create_backup(&state.db, app, LiveBackupReason::PreRestore)?;
+    // Only AGENTS restores affect the prompt library; config-only backups leave it alone.
+    let prompt_reconciliation = if *app == AppType::Codex {
+        let prompt_path = crate::prompt_files::prompt_file_path(app)?;
+        match planned.iter().find(|(target, _)| target == &prompt_path) {
+            Some((_, bytes)) => {
+                let before = state.db.get_prompts("codex")?;
+                let next = super::prompt::prompts_after_restore(&before, bytes)?;
+                Some((before, next))
+            }
+            None => None,
+        }
+    } else {
+        None
+    };
 
     let codex_config_path = crate::codex_config::get_codex_config_path();
     let mut changeset = Changeset::new();
     for (target, bytes) in planned {
         let snapshot = FileSnapshot::read(&target).map_err(AppError::from)?;
-        let bytes = if *app == AppType::Codex && target == codex_config_path {
-            keep_user_codex_model(snapshot.contents(), bytes)?
+        if *app == AppType::Codex && target == codex_config_path {
+            let bytes = keep_user_codex_model(snapshot.contents(), bytes)?;
+            crate::codex_live_write::plan_restored_config(&mut changeset, snapshot, &bytes)?;
         } else {
-            bytes
-        };
-        changeset.write(snapshot, bytes).map_err(AppError::from)?;
+            changeset.write(snapshot, bytes).map_err(AppError::from)?;
+        }
     }
+    // Finish every validation before creating a backup, whose retention pass
+    // can remove old history even when the restore itself would be rejected.
+    let pre_restore = create_backup(&state.db, app, LiveBackupReason::PreRestore)?;
     let applied = changeset.commit().map_err(AppError::from)?;
+
+    if let Some((before, next)) = prompt_reconciliation {
+        if let Err(error) = state.db.commit_codex_prompts(&before, &next, true) {
+            if applied.rollback().is_err() {
+                return Err(AppError::Message(
+                    "恢复提示词状态失败且文件已被外部修改，无法自动回滚；请检查 Live 备份。".into(),
+                ));
+            }
+            return Err(error);
+        }
+    }
 
     let current_identity = identity_fingerprint(&state.db, app);
     let identity_changed = matches!(
@@ -588,6 +679,7 @@ pub(crate) mod tests {
             .unwrap()
             .unwrap();
         let record = fs::read(&backup.path).unwrap();
+        assert_eq!(backup.size_bytes, Some(record.len() as u64));
         let encoded = base64::engine::general_purpose::STANDARD.encode(AUTH_SECRET);
         let record_text = String::from_utf8_lossy(&record);
         assert!(!record_text.contains(AUTH_SECRET));
@@ -601,6 +693,151 @@ pub(crate) mod tests {
             fs::read_to_string(&auth_path).unwrap(),
             "{\"OPENAI_API_KEY\":\"sk-after\"}"
         );
+    }
+
+    fn set_prompt(state: &AppState, content: &str) {
+        crate::services::PromptService::upsert_prompt(
+            state,
+            AppType::Codex,
+            "template",
+            crate::prompt::Prompt {
+                template_id: Some("writing-technical-docs".into()),
+                id: "template".into(),
+                name: "Original template".into(),
+                content: content.into(),
+                description: None,
+                enabled: true,
+                created_at: Some(1),
+                updated_at: Some(1),
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn restore_reconciles_managed_content_without_overwriting_templates() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().unwrap();
+        let state = state();
+        set_prompt(&state, "Old rules");
+        let prompt_path = crate::prompt_files::prompt_file_path(&AppType::Codex).unwrap();
+        let old = fs::read(&prompt_path).unwrap();
+        let backup = create_backup(&state.db, &AppType::Codex, LiveBackupReason::Manual)
+            .unwrap()
+            .unwrap();
+        set_prompt(&state, "New rules");
+        restore_backup(&state, &AppType::Codex, &backup.id).unwrap();
+        let rows = state.db.get_prompts("codex").unwrap();
+        assert_eq!(rows["template"].content, "New rules");
+        assert_eq!(
+            rows["template"].template_id.as_deref(),
+            Some("writing-technical-docs")
+        );
+        assert!(!rows["template"].enabled);
+        let active: Vec<_> = rows.values().filter(|prompt| prompt.enabled).collect();
+        assert_eq!(active.len(), 1);
+        assert!(active[0].id.starts_with("restored-"));
+        assert_eq!(active[0].content, "Old rules\n");
+        assert_eq!(fs::read(&prompt_path).unwrap(), old);
+        // Repeating the same restore does not create more recovered entries.
+        restore_backup(&state, &AppType::Codex, &backup.id).unwrap();
+        assert_eq!(state.db.get_prompts("codex").unwrap(), rows);
+    }
+
+    #[test]
+    #[serial]
+    fn restore_rolls_back_all_files_if_prompt_database_commit_fails() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().unwrap();
+        let state = state();
+        let config = crate::codex_config::get_codex_config_path();
+        write(&config, "model = 'test'\n[features]\na = true\n");
+        set_prompt(&state, "Old rules");
+        let backup = create_backup(&state.db, &AppType::Codex, LiveBackupReason::Manual)
+            .unwrap()
+            .unwrap();
+        write(&config, "model = 'test'\n[features]\na = false\n");
+        set_prompt(&state, "Current rules");
+        let prompt_path = crate::prompt_files::prompt_file_path(&AppType::Codex).unwrap();
+        let before_config = fs::read(&config).unwrap();
+        let before_prompt = fs::read(&prompt_path).unwrap();
+        let before_rows = state.db.get_prompts("codex").unwrap();
+        state.db.conn.lock().unwrap().execute_batch(
+            "CREATE TRIGGER reject_restore BEFORE UPDATE ON prompts BEGIN SELECT RAISE(ABORT, 'injected failure'); END;"
+        ).unwrap();
+        assert!(restore_backup(&state, &AppType::Codex, &backup.id).is_err());
+        assert_eq!(fs::read(config).unwrap(), before_config);
+        assert_eq!(fs::read(prompt_path).unwrap(), before_prompt);
+        assert_eq!(state.db.get_prompts("codex").unwrap(), before_rows);
+    }
+
+    #[test]
+    #[serial]
+    fn restore_unmanaged_file_disables_library_without_adopting_user_text() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().unwrap();
+        let state = state();
+        let prompt_path = crate::prompt_files::prompt_file_path(&AppType::Codex).unwrap();
+        let user = "User rules\n<!-- CODEX-X:INSTRUCTIONS:BEGIN -->\nForeign rules\n<!-- CODEX-X:INSTRUCTIONS:END -->";
+        write(&prompt_path, user);
+        let backup = create_backup(&state.db, &AppType::Codex, LiveBackupReason::Manual)
+            .unwrap()
+            .unwrap();
+        set_prompt(&state, "Managed rules");
+        restore_backup(&state, &AppType::Codex, &backup.id).unwrap();
+        let rows = state.db.get_prompts("codex").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(!rows["template"].enabled);
+        assert_eq!(rows["template"].content, "Managed rules");
+        assert_eq!(fs::read_to_string(prompt_path).unwrap(), user);
+    }
+
+    #[test]
+    #[serial]
+    fn malformed_prompt_backup_is_rejected_before_any_file_or_library_write() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().unwrap();
+        let state = state();
+        let prompt_path = crate::prompt_files::prompt_file_path(&AppType::Codex).unwrap();
+        write(
+            &prompt_path,
+            "<!-- CHIMERA:INSTRUCTIONS:BEGIN -->\nIncomplete",
+        );
+        let backup = create_backup(&state.db, &AppType::Codex, LiveBackupReason::Manual)
+            .unwrap()
+            .unwrap();
+        write(&prompt_path, "User rules");
+        set_prompt(&state, "Current rules");
+        let before_file = fs::read(&prompt_path).unwrap();
+        let before_rows = state.db.get_prompts("codex").unwrap();
+        let before_backups = list_backups(&AppType::Codex).unwrap();
+        assert!(restore_backup(&state, &AppType::Codex, &backup.id).is_err());
+        assert_eq!(fs::read(prompt_path).unwrap(), before_file);
+        assert_eq!(state.db.get_prompts("codex").unwrap(), before_rows);
+        assert_eq!(list_backups(&AppType::Codex).unwrap(), before_backups);
+    }
+
+    #[test]
+    #[serial]
+    fn config_only_restore_leaves_prompt_state_unchanged() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().unwrap();
+        let state = state();
+        write(
+            &crate::codex_config::get_codex_config_path(),
+            "model = 'test'\n",
+        );
+        let backup = create_backup(&state.db, &AppType::Codex, LiveBackupReason::Manual)
+            .unwrap()
+            .unwrap();
+        set_prompt(&state, "Managed rules");
+        let before = state.db.get_prompts("codex").unwrap();
+        let prompt_path = crate::prompt_files::prompt_file_path(&AppType::Codex).unwrap();
+        let before_file = fs::read(&prompt_path).unwrap();
+        restore_backup(&state, &AppType::Codex, &backup.id).unwrap();
+        assert_eq!(state.db.get_prompts("codex").unwrap(), before);
+        assert_eq!(fs::read(prompt_path).unwrap(), before_file);
     }
 
     #[test]
@@ -630,6 +867,73 @@ pub(crate) mod tests {
             .unwrap()
             .iter()
             .any(|b| b.id == pre && b.reason == LiveBackupReason::PreRestore));
+    }
+
+    #[test]
+    #[serial]
+    fn restore_sanitizes_owned_instruction_refs_and_rejected_settings() {
+        let _home = TempHome::new();
+        let state = state();
+        let config_path = crate::codex_config::get_codex_config_path();
+        write(
+            &config_path,
+            r#"model = "old"
+approval_policy = "untrusted"
+model_instructions_file = "chimera/instructions/missing.md"
+
+[profiles.custom]
+model_instructions_file = "chimera/instructions/also-missing.md"
+"#,
+        );
+        let backup = create_backup(&state.db, &AppType::Codex, LiveBackupReason::Manual)
+            .unwrap()
+            .unwrap();
+        write(&config_path, "model = \"current\"\n");
+        restore_backup(&state, &AppType::Codex, &backup.id).unwrap();
+        let restored: DocumentMut = fs::read_to_string(&config_path).unwrap().parse().unwrap();
+        assert_eq!(restored["model"].as_str(), Some("current"));
+        assert!(restored.get("approval_policy").is_none());
+        assert!(restored.get("model_instructions_file").is_none());
+        assert!(restored["profiles"]["custom"]
+            .get("model_instructions_file")
+            .is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn rejected_config_restore_does_not_prune_backup_history() {
+        let _home = TempHome::new();
+        let state = state();
+        let config_path = crate::codex_config::get_codex_config_path();
+        write(&config_path, "model = \"current\"\n");
+        for _ in 0..MAX_BACKUPS_PER_APP - 1 {
+            create_backup(&state.db, &AppType::Codex, LiveBackupReason::Manual).unwrap();
+        }
+        write(
+            &config_path,
+            "model_instructions_file = \"missing-user-instructions.md\"\n",
+        );
+        let backup = create_backup(&state.db, &AppType::Codex, LiveBackupReason::Manual)
+            .unwrap()
+            .unwrap();
+        write(&config_path, "model = \"current\"\n");
+        let before_config = fs::read(&config_path).unwrap();
+        let ids = || {
+            list_backups(&AppType::Codex)
+                .unwrap()
+                .into_iter()
+                .map(|backup| backup.id)
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        let before_ids = ids();
+        assert_eq!(before_ids.len(), MAX_BACKUPS_PER_APP);
+        assert!(restore_backup(&state, &AppType::Codex, &backup.id).is_err());
+        assert_eq!(fs::read(&config_path).unwrap(), before_config);
+        assert_eq!(
+            ids(),
+            before_ids,
+            "rejected restore must preserve every backup ID"
+        );
     }
 
     #[test]
@@ -748,7 +1052,9 @@ pub(crate) mod tests {
         for app in AppType::all() {
             let files = live_files(&app).unwrap();
             assert!(files.iter().all(|p| !is_codex_auth_file(p)), "{app:?}");
-            if app != AppType::ClaudeDesktop || cfg!(any(target_os = "macos", windows)) {
+            let unsupported = matches!(app, AppType::Pi | AppType::Mcode)
+                || (app == AppType::ClaudeDesktop && !cfg!(any(target_os = "macos", windows)));
+            if !unsupported {
                 assert!(!files.is_empty(), "{app:?} declares no live files");
             }
         }

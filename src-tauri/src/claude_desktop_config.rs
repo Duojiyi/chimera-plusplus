@@ -1,11 +1,16 @@
 use serde::Serialize;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, Weak};
 
+use crate::config::cas::{Changeset, FileSnapshot as CasSnapshot};
 #[cfg(any(target_os = "macos", windows))]
 use crate::config::get_home_dir;
-use crate::config::{atomic_write, delete_file, read_json_file, write_json_file};
+#[cfg(test)]
+use crate::config::write_json_file;
+use crate::config::{json_file_text, read_json_file};
 use crate::database::Database;
 use crate::database::CLAUDE_DESKTOP_OFFICIAL_PROVIDER_ID;
 use crate::error::AppError;
@@ -98,10 +103,30 @@ struct FileSnapshot {
 /// Keeping path resolution in this module ensures rollback covers the normal
 /// deployment config, the 3P deployment config, the generated gateway profile,
 /// and its metadata as one unit on both Windows and macOS.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) struct ClaudeDesktopLiveSnapshot {
     files: Vec<FileSnapshot>,
+    rollback: Arc<Mutex<Vec<CommittedFile>>>,
 }
+
+#[derive(Debug, Clone)]
+struct CommittedFile {
+    before: FileSnapshot,
+    written: Option<Vec<u8>>,
+}
+
+// The public snapshot API cannot accept a commit receipt. Weak observers bind
+// it to the first matching successful transaction without retaining secrets.
+// ponytail: one switch per snapshot, as required by LiveSnapshot callers; pass
+// receipts explicitly if callers ever need multi-switch transactions.
+static LIVE_SNAPSHOTS: Mutex<Vec<Weak<Mutex<Vec<CommittedFile>>>>> = Mutex::new(Vec::new());
+
+impl PartialEq for ClaudeDesktopLiveSnapshot {
+    fn eq(&self, other: &Self) -> bool {
+        self.files == other.files
+    }
+}
+impl Eq for ClaudeDesktopLiveSnapshot {}
 
 impl ClaudeDesktopLiveSnapshot {
     pub(crate) fn has_live_data(&self) -> bool {
@@ -109,13 +134,24 @@ impl ClaudeDesktopLiveSnapshot {
     }
 
     pub(crate) fn restore(&self) -> Result<(), AppError> {
-        restore_snapshots(&self.files)
+        let mut observers = LIVE_SNAPSHOTS
+            .lock()
+            .map_err(|_| AppError::Message("Desktop snapshot lock poisoned".into()))?;
+        let observer = Arc::downgrade(&self.rollback);
+        observers.retain(|entry| !Weak::ptr_eq(entry, &observer));
+        let receipt = self
+            .rollback
+            .lock()
+            .map_err(|_| AppError::Message("Desktop snapshot lock poisoned".into()))?;
+        restore_snapshots(&receipt)
     }
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClaudeDesktopStatus {
+    /// Best-effort executable discovery, independent of configuration presence.
+    pub installation_path: Option<String>,
     pub supported: bool,
     pub configured: bool,
     pub applied_id: Option<String>,
@@ -156,9 +192,7 @@ pub(crate) fn capture_live_snapshot() -> Result<Option<ClaudeDesktopLiveSnapshot
     }
 
     let paths = current_platform_paths()?;
-    Ok(Some(ClaudeDesktopLiveSnapshot {
-        files: snapshot_files(&paths)?,
-    }))
+    Ok(Some(capture_snapshot_at_paths(&paths)?))
 }
 
 /// The files a Claude Desktop switch may write, for per-tool live backups
@@ -176,9 +210,53 @@ pub(crate) fn live_file_paths() -> Result<Vec<PathBuf>, AppError> {
     ])
 }
 
+// Only inspect program files; never infer installation from user configuration.
+#[cfg(any(windows, target_os = "macos", test))]
+fn first_program_file(candidates: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
+    candidates.into_iter().find(|path| path.is_file())
+}
+
+fn detect_standard_installation() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        let mut candidates = Vec::new();
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            let local = PathBuf::from(local);
+            candidates.push(local.join("Programs/Claude/Claude.exe"));
+            candidates.push(local.join("AnthropicClaude/Claude.exe"));
+            candidates.push(local.join("Microsoft/WindowsApps/Claude.exe"));
+            if let Ok(entries) = fs::read_dir(local.join("AnthropicClaude")) {
+                for entry in entries.flatten() {
+                    if entry.file_name().to_string_lossy().starts_with("app-") {
+                        candidates.push(entry.path().join("Claude.exe"));
+                    }
+                }
+            }
+        }
+        for key in ["ProgramFiles", "ProgramFiles(x86)"] {
+            if let Some(root) = std::env::var_os(key) {
+                candidates.push(PathBuf::from(root).join("Claude/Claude.exe"));
+            }
+        }
+        first_program_file(candidates)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        first_program_file([
+            PathBuf::from("/Applications/Claude.app/Contents/MacOS/Claude"),
+            get_home_dir().join("Applications/Claude.app/Contents/MacOS/Claude"),
+        ])
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        None
+    }
+}
+
 pub fn get_status(db: &Database, proxy_running: bool) -> Result<ClaudeDesktopStatus, AppError> {
     if !is_supported_platform() {
         return Ok(ClaudeDesktopStatus {
+            installation_path: None,
             supported: false,
             configured: false,
             applied_id: None,
@@ -240,6 +318,7 @@ pub fn get_status(db: &Database, proxy_running: bool) -> Result<ClaudeDesktopSta
     });
 
     Ok(ClaudeDesktopStatus {
+        installation_path: detect_standard_installation().map(|path| path.display().to_string()),
         supported: true,
         configured,
         applied_id,
@@ -989,39 +1068,15 @@ fn apply_provider_to_paths(
     }
 
     validate_provider(provider)?;
-    with_rollback(paths, |paths| {
-        apply_provider_to_paths_inner(db, provider, paths)
-    })
+    let profile = gateway_profile(db, provider)?;
+    commit_desktop_config(paths, Some(profile))
 }
 
 fn restore_official_at_paths(paths: &ClaudeDesktopPaths) -> Result<(), AppError> {
-    with_rollback(paths, restore_official_at_paths_inner)
+    commit_desktop_config(paths, None)
 }
 
-fn with_rollback<F>(paths: &ClaudeDesktopPaths, op: F) -> Result<(), AppError>
-where
-    F: FnOnce(&ClaudeDesktopPaths) -> Result<(), AppError>,
-{
-    let snapshots = snapshot_files(paths)?;
-    match op(paths) {
-        Ok(()) => Ok(()),
-        Err(err) => match restore_snapshots(&snapshots) {
-            Ok(()) => Err(err),
-            Err(rollback_err) => {
-                log::error!("Failed to rollback Claude Desktop config after error: {rollback_err}");
-                Err(AppError::Message(format!(
-                    "{err}; rollback failed: {rollback_err}"
-                )))
-            }
-        },
-    }
-}
-
-fn apply_provider_to_paths_inner(
-    db: &Database,
-    provider: &Provider,
-    paths: &ClaudeDesktopPaths,
-) -> Result<(), AppError> {
+fn gateway_profile(db: &Database, provider: &Provider) -> Result<Value, AppError> {
     let profile = match provider_mode(provider) {
         ClaudeDesktopMode::Direct => {
             let credentials = direct_gateway_credentials(provider)?;
@@ -1048,24 +1103,126 @@ fn apply_provider_to_paths_inner(
         }
     };
 
-    write_deployment_mode(&paths.normal_config_path, "3p")?;
-    write_deployment_mode(&paths.threep_config_path, "3p")?;
-    write_json_file(&paths.profile_path, &profile)?;
-    write_meta(&paths.meta_path, Some(PROFILE_ID))?;
+    Ok(profile)
+}
 
+const PROFILE_HASH_KEY: &str = "ccSwitchProfileHash";
+
+fn profile_hash(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn snapshot_json(snapshot: &CasSnapshot) -> Result<Value, AppError> {
+    let value: Value = match snapshot.contents() {
+        Some(bytes) => serde_json::from_slice(bytes).map_err(|_| {
+            AppError::Message(format!(
+                "Invalid Desktop JSON: {}",
+                snapshot.path().display()
+            ))
+        })?,
+        None => json!({}),
+    };
+    Ok(if value.is_object() { value } else { json!({}) })
+}
+
+fn commit_desktop_config(
+    paths: &ClaudeDesktopPaths,
+    profile: Option<Value>,
+) -> Result<(), AppError> {
+    let (changes, receipt) = plan_desktop_config(paths, profile)?;
+    // Serialize module commits and receipt attachment; external writers are
+    // guarded by CAS, not by this process-local lock.
+    let mut observers = LIVE_SNAPSHOTS
+        .lock()
+        .map_err(|_| AppError::Message("Desktop snapshot lock poisoned".into()))?;
+    changes.commit()?;
+    observers.retain(|observer| {
+        let Some(observer) = observer.upgrade() else {
+            return false;
+        };
+        let mut expected = observer.lock().unwrap_or_else(|e| e.into_inner());
+        // Unconsumed observers contain their captured files as no-op receipts.
+        // Roll back to the actual pre-write bytes, including edits made after capture.
+        if expected
+            .iter()
+            .any(|old| old.before.path == paths.normal_config_path)
+        {
+            *expected = receipt.clone();
+            return false;
+        }
+        true
+    });
     Ok(())
 }
 
-fn restore_official_at_paths_inner(paths: &ClaudeDesktopPaths) -> Result<(), AppError> {
-    write_deployment_mode(&paths.normal_config_path, "1p")?;
-    write_deployment_mode(&paths.threep_config_path, "1p")?;
-    remove_cc_switch_enterprise_config(&paths.threep_config_path)?;
-
-    if paths.profile_path.exists() {
-        delete_file(&paths.profile_path)?;
+fn plan_desktop_config(
+    paths: &ClaudeDesktopPaths,
+    profile: Option<Value>,
+) -> Result<(Changeset, Vec<CommittedFile>), AppError> {
+    let normal = CasSnapshot::read(&paths.normal_config_path)?;
+    let threep = CasSnapshot::read(&paths.threep_config_path)?;
+    let old_profile = CasSnapshot::read(&paths.profile_path)?;
+    let meta = CasSnapshot::read(&paths.meta_path)?;
+    let mut normal_value = snapshot_json(&normal)?;
+    let mut threep_value = snapshot_json(&threep)?;
+    let mut meta_value = snapshot_json(&meta)?;
+    let mode = if profile.is_some() { "3p" } else { "1p" };
+    normal_value["deploymentMode"] = json!(mode);
+    threep_value["deploymentMode"] = json!(mode);
+    // We never write enterpriseConfig. A matching profile/appliedId does not
+    // prove ownership of any enterpriseConfig field: preserve all of them.
+    let profile_bytes = profile
+        .as_ref()
+        .map(json_file_text)
+        .transpose()?
+        .map(String::into_bytes);
+    let remove_profile = old_profile.contents().is_some_and(|bytes| {
+        meta_value.get(PROFILE_HASH_KEY).and_then(Value::as_str)
+            == Some(profile_hash(bytes).as_str())
+    });
+    update_meta(&mut meta_value, profile.as_ref().map(|_| PROFILE_ID));
+    if let Some(bytes) = &profile_bytes {
+        meta_value[PROFILE_HASH_KEY] = json!(profile_hash(bytes));
+    } else {
+        meta_value
+            .as_object_mut()
+            .expect("object")
+            .remove(PROFILE_HASH_KEY);
     }
-    write_meta(&paths.meta_path, None)?;
+    let mut changes = Changeset::new();
+    let mut receipt = Vec::new();
+    for (snapshot, bytes) in [
+        (normal, Some(json_file_text(&normal_value)?.into_bytes())),
+        (threep, Some(json_file_text(&threep_value)?.into_bytes())),
+        (meta, Some(json_file_text(&meta_value)?.into_bytes())),
+    ] {
+        plan_file(&mut changes, &mut receipt, snapshot, bytes)?;
+    }
+    if profile_bytes.is_some() || remove_profile {
+        plan_file(&mut changes, &mut receipt, old_profile, profile_bytes)?;
+    }
+    Ok((changes, receipt))
+}
 
+fn plan_file(
+    changes: &mut Changeset,
+    receipt: &mut Vec<CommittedFile>,
+    snapshot: CasSnapshot,
+    written: Option<Vec<u8>>,
+) -> Result<(), AppError> {
+    if snapshot.contents() != written.as_deref() {
+        receipt.push(CommittedFile {
+            before: FileSnapshot {
+                path: snapshot.path().to_owned(),
+                content: snapshot.contents().map(<[u8]>::to_vec),
+            },
+            written: written.clone(),
+        });
+    }
+    match written {
+        Some(bytes) => changes.write(snapshot, bytes)?,
+        None => changes.delete(snapshot)?,
+    }
     Ok(())
 }
 
@@ -1105,6 +1262,27 @@ fn read_json_or_empty(path: &Path) -> Result<Value, AppError> {
     }
 }
 
+fn capture_snapshot_at_paths(
+    paths: &ClaudeDesktopPaths,
+) -> Result<ClaudeDesktopLiveSnapshot, AppError> {
+    let mut observers = LIVE_SNAPSHOTS
+        .lock()
+        .map_err(|_| AppError::Message("Desktop snapshot lock poisoned".into()))?;
+    let files = snapshot_files(paths)?;
+    let rollback = Arc::new(Mutex::new(
+        files
+            .iter()
+            .map(|file| CommittedFile {
+                before: file.clone(),
+                written: file.content.clone(),
+            })
+            .collect(),
+    ));
+    observers.retain(|observer| observer.strong_count() > 0);
+    observers.push(Arc::downgrade(&rollback));
+    Ok(ClaudeDesktopLiveSnapshot { files, rollback })
+}
+
 fn snapshot_files(paths: &ClaudeDesktopPaths) -> Result<Vec<FileSnapshot>, AppError> {
     [
         &paths.normal_config_path,
@@ -1114,41 +1292,41 @@ fn snapshot_files(paths: &ClaudeDesktopPaths) -> Result<Vec<FileSnapshot>, AppEr
     ]
     .into_iter()
     .map(|path| {
-        let content = if path.exists() {
-            Some(fs::read(path).map_err(|e| AppError::io(path, e))?)
-        } else {
-            None
-        };
+        let snapshot = CasSnapshot::read(path)?;
         Ok(FileSnapshot {
             path: path.clone(),
-            content,
+            content: snapshot.contents().map(<[u8]>::to_vec),
         })
     })
     .collect()
 }
 
-fn restore_snapshots(snapshots: &[FileSnapshot]) -> Result<(), AppError> {
+fn restore_snapshots(files: &[CommittedFile]) -> Result<(), AppError> {
     let mut errors = Vec::new();
-
-    // These files jointly describe one Claude Desktop deployment. Restore every
-    // component independently so a locked/permission-denied config file cannot
-    // prevent the gateway profile and metadata from returning to the old SSOT.
-    for snapshot in snapshots {
-        let result = match &snapshot.content {
-            Some(content) => (|| {
-                if let Some(parent) = snapshot.path.parent() {
-                    fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
-                }
-                atomic_write(&snapshot.path, content)
-            })(),
-            None => delete_file(&snapshot.path),
-        };
-
+    for file in files {
+        if file.before.content == file.written {
+            continue;
+        }
+        let result = (|| -> Result<(), AppError> {
+            let current = CasSnapshot::read(&file.before.path)?;
+            if current.contents() != file.written.as_deref() {
+                return Err(AppError::Message(format!(
+                    "Desktop rollback conflict: {}",
+                    file.before.path.display()
+                )));
+            }
+            let mut changes = Changeset::new();
+            match &file.before.content {
+                Some(bytes) => changes.write(current, bytes.clone())?,
+                None => changes.delete(current)?,
+            }
+            changes.commit()?;
+            Ok(())
+        })();
         if let Err(error) = result {
-            errors.push(format!("{}: {error}", snapshot.path.display()));
+            errors.push(error.to_string());
         }
     }
-
     if errors.is_empty() {
         Ok(())
     } else {
@@ -1159,59 +1337,14 @@ fn restore_snapshots(snapshots: &[FileSnapshot]) -> Result<(), AppError> {
     }
 }
 
-fn write_deployment_mode(path: &Path, mode: &str) -> Result<(), AppError> {
-    let mut value = read_json_or_empty(path)?;
-    if !value.is_object() {
-        value = json!({});
-    }
-    if let Some(obj) = value.as_object_mut() {
-        obj.insert(
-            "deploymentMode".to_string(),
-            Value::String(mode.to_string()),
-        );
-    }
-    write_json_file(path, &value)
-}
-
-fn remove_cc_switch_enterprise_config(path: &Path) -> Result<(), AppError> {
-    if !path.exists() {
-        return Ok(());
-    }
-
-    let mut value = read_json_or_empty(path)?;
-    let Some(obj) = value.as_object_mut() else {
-        return Ok(());
-    };
-    let Some(enterprise) = obj
-        .get_mut("enterpriseConfig")
-        .and_then(Value::as_object_mut)
-    else {
-        return Ok(());
-    };
-
-    for key in [
-        "disableDeploymentModeChooser",
-        "inferenceGatewayApiKey",
-        "inferenceGatewayAuthScheme",
-        "inferenceGatewayBaseUrl",
-        "inferenceProvider",
-    ] {
-        enterprise.remove(key);
-    }
-
-    if enterprise.is_empty() {
-        obj.remove("enterpriseConfig");
-    }
-
-    write_json_file(path, &value)
-}
-
+#[cfg(test)]
 fn write_meta(path: &Path, applied_profile_id: Option<&str>) -> Result<(), AppError> {
     let mut value = read_json_or_empty(path)?;
-    if !value.is_object() {
-        value = json!({});
-    }
+    update_meta(&mut value, applied_profile_id);
+    write_json_file(path, &value)
+}
 
+fn update_meta(value: &mut Value, applied_profile_id: Option<&str>) {
     let obj = value.as_object_mut().expect("just normalized to object");
     let mut entries = obj
         .get("entries")
@@ -1248,7 +1381,6 @@ fn write_meta(path: &Path, applied_profile_id: Option<&str>) -> Result<(), AppEr
     }
 
     obj.insert("entries".to_string(), Value::Array(entries));
-    write_json_file(path, &value)
 }
 
 fn read_applied_id(path: &Path) -> Option<String> {
@@ -1383,6 +1515,19 @@ fn unsupported_platform_error() -> AppError {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn installation_detection_requires_a_program_file_not_configuration() {
+        let home = tempfile::tempdir().unwrap();
+        let program = home.path().join("Claude.exe");
+        std::fs::write(home.path().join("claude_desktop_config.json"), "{}").unwrap();
+        assert!(super::first_program_file([program.clone()]).is_none());
+        std::fs::create_dir(&program).unwrap();
+        assert!(super::first_program_file([program.clone()]).is_none());
+        std::fs::remove_dir(&program).unwrap();
+        std::fs::write(&program, "test fixture").unwrap();
+        assert_eq!(super::first_program_file([program.clone()]), Some(program));
+    }
+
     use super::*;
     use crate::database::Database;
     use crate::provider::{ClaudeDesktopModelRoute, ProviderMeta};
@@ -2180,7 +2325,14 @@ mod tests {
         fs::remove_file(&paths.normal_config_path).expect("remove normal config");
         fs::create_dir(&paths.normal_config_path).expect("block normal config restore with dir");
 
-        let error = restore_snapshots(&snapshots).expect_err("first file restore must fail");
+        let receipt: Vec<_> = snapshots
+            .into_iter()
+            .map(|before| CommittedFile {
+                before,
+                written: Some(br#"{"state":"new"}"#.to_vec()),
+            })
+            .collect();
+        let error = restore_snapshots(&receipt).expect_err("first file restore must fail");
         assert!(error
             .to_string()
             .contains(&paths.normal_config_path.display().to_string()));
@@ -2226,6 +2378,199 @@ mod tests {
         assert_eq!(normal, json!({"deploymentMode": "1p", "normal": true}));
         assert_eq!(threep, json!({"deploymentMode": "1p", "threep": true}));
         assert!(!paths.profile_path.exists());
+    }
+
+    #[test]
+    fn official_preserves_unowned_enterprise_config_and_profile() {
+        let temp = TempDir::new().unwrap();
+        let paths = test_paths(temp.path());
+        let enterprise = json!({
+            "disableDeploymentModeChooser": true,
+            "inferenceGatewayApiKey": "enterprise-test-key",
+            "inferenceGatewayAuthScheme": "bearer",
+            "inferenceGatewayBaseUrl": "https://enterprise.invalid",
+            "inferenceProvider": "gateway", "other": {"keep": true}
+        });
+        for path in [&paths.normal_config_path, &paths.threep_config_path] {
+            write_json_file(
+                path,
+                &json!({"deploymentMode": "3p", "enterpriseConfig": enterprise, "other": 7}),
+            )
+            .unwrap();
+        }
+        write_json_file(&paths.profile_path, &json!({"foreign": true})).unwrap();
+        let profile = fs::read(&paths.profile_path).unwrap();
+        // Neither a reserved filename nor an appliedId proves ownership.
+        for meta in [
+            json!({}),
+            json!({"appliedId": PROFILE_ID, "entries": [{"id": PROFILE_ID}]}),
+        ] {
+            write_json_file(&paths.meta_path, &meta).unwrap();
+            restore_official_at_paths(&paths).unwrap();
+            assert_eq!(fs::read(&paths.profile_path).unwrap(), profile);
+            for path in [&paths.normal_config_path, &paths.threep_config_path] {
+                let value: Value = read_json_file(path).unwrap();
+                assert_eq!(value["deploymentMode"], "1p");
+                assert_eq!(value["enterpriseConfig"], enterprise);
+                assert_eq!(value["other"], 7);
+            }
+        }
+    }
+
+    #[test]
+    fn official_preserves_edited_owned_profile_and_copied_enterprise_fields() {
+        let temp = TempDir::new().unwrap();
+        let paths = test_paths(temp.path());
+        apply_provider_to_paths(&test_db(), &direct_provider("direct"), &paths).unwrap();
+        let mut profile: Value = read_json_file(&paths.profile_path).unwrap();
+        let mut threep: Value = read_json_file(&paths.threep_config_path).unwrap();
+        threep["enterpriseConfig"] = profile.clone();
+        write_json_file(&paths.threep_config_path, &threep).unwrap();
+        profile["inferenceGatewayApiKey"] = json!("external-new-key");
+        write_json_file(&paths.profile_path, &profile).unwrap();
+        restore_official_at_paths(&paths).unwrap();
+        assert_eq!(
+            read_json_file::<Value>(&paths.profile_path).unwrap(),
+            profile
+        );
+        assert_eq!(
+            read_json_file::<Value>(&paths.threep_config_path).unwrap()["enterpriseConfig"],
+            threep["enterpriseConfig"]
+        );
+        assert!(read_json_file::<Value>(&paths.meta_path)
+            .unwrap()
+            .get(PROFILE_HASH_KEY)
+            .is_none());
+    }
+
+    #[test]
+    fn desktop_plan_rejects_external_edit_or_creation_before_commit() {
+        for existed in [false, true] {
+            let temp = TempDir::new().unwrap();
+            let paths = test_paths(temp.path());
+            if existed {
+                write_json_file(&paths.threep_config_path, &json!({"old": true})).unwrap();
+            }
+            let (changes, _) = plan_desktop_config(&paths, None).unwrap();
+            write_json_file(&paths.threep_config_path, &json!({"external": true})).unwrap();
+            assert!(changes.commit().is_err());
+            assert_eq!(
+                read_json_file::<Value>(&paths.threep_config_path).unwrap(),
+                json!({"external": true})
+            );
+            assert!(!paths.normal_config_path.exists());
+            assert!(!paths.meta_path.exists());
+        }
+    }
+
+    #[test]
+    fn desktop_snapshot_only_restores_committed_files_and_reports_external_edits() {
+        let temp = TempDir::new().unwrap();
+        let paths = test_paths(temp.path());
+        write_json_file(&paths.normal_config_path, &json!({"original": true})).unwrap();
+        let original = fs::read(&paths.normal_config_path).unwrap();
+        let snapshot = capture_snapshot_at_paths(&paths).unwrap();
+        apply_provider_to_paths(&test_db(), &direct_provider("direct"), &paths).unwrap();
+        fs::write(&paths.threep_config_path, b"external-new-content").unwrap();
+        let error = snapshot.restore().unwrap_err();
+        assert!(error.to_string().contains("rollback conflict"));
+        assert_eq!(
+            fs::read(&paths.threep_config_path).unwrap(),
+            b"external-new-content"
+        );
+        assert_eq!(fs::read(&paths.normal_config_path).unwrap(), original);
+        assert!(!paths.profile_path.exists());
+        assert!(!paths.meta_path.exists());
+    }
+
+    #[test]
+    fn desktop_snapshot_without_commit_leaves_external_new_files_alone() {
+        let temp = TempDir::new().unwrap();
+        let paths = test_paths(temp.path());
+        let snapshot = capture_snapshot_at_paths(&paths).unwrap();
+        write_json_file(&paths.profile_path, &json!({"external": true})).unwrap();
+        snapshot.restore().unwrap();
+        assert_eq!(
+            read_json_file::<Value>(&paths.profile_path).unwrap(),
+            json!({"external": true})
+        );
+    }
+
+    #[test]
+    fn desktop_rollback_preserves_external_recreation_after_owned_delete() {
+        let temp = TempDir::new().unwrap();
+        let paths = test_paths(temp.path());
+        apply_provider_to_paths(&test_db(), &direct_provider("direct"), &paths).unwrap();
+        let snapshot = capture_snapshot_at_paths(&paths).unwrap();
+        restore_official_at_paths(&paths).unwrap();
+        assert!(!paths.profile_path.exists());
+        fs::write(&paths.profile_path, b"external-recreated-profile").unwrap();
+        assert!(snapshot.restore().is_err());
+        assert_eq!(
+            fs::read(&paths.profile_path).unwrap(),
+            b"external-recreated-profile"
+        );
+        assert_eq!(
+            read_json_file::<Value>(&paths.normal_config_path).unwrap()["deploymentMode"],
+            "3p"
+        );
+    }
+
+    #[test]
+    fn desktop_rollback_uses_prewrite_bytes_not_stale_capture() {
+        let temp = TempDir::new().unwrap();
+        let paths = test_paths(temp.path());
+        let snapshot = capture_snapshot_at_paths(&paths).unwrap();
+        write_json_file(
+            &paths.normal_config_path,
+            &json!({"external": "before our write"}),
+        )
+        .unwrap();
+        let external = fs::read(&paths.normal_config_path).unwrap();
+        restore_official_at_paths(&paths).unwrap();
+        snapshot.restore().unwrap();
+        assert_eq!(fs::read(&paths.normal_config_path).unwrap(), external);
+        assert!(!paths.threep_config_path.exists());
+    }
+
+    #[test]
+    fn desktop_rollback_preserves_external_deletion_of_preexisting_file() {
+        let temp = TempDir::new().unwrap();
+        let paths = test_paths(temp.path());
+        write_json_file(&paths.normal_config_path, &json!({"old": true})).unwrap();
+        let snapshot = capture_snapshot_at_paths(&paths).unwrap();
+        restore_official_at_paths(&paths).unwrap();
+        fs::remove_file(&paths.normal_config_path).unwrap();
+        assert!(snapshot.restore().is_err());
+        assert!(!paths.normal_config_path.exists());
+        assert!(!paths.threep_config_path.exists());
+    }
+
+    #[test]
+    fn desktop_noop_switch_consumes_snapshot_without_claiming_next_write() {
+        let temp = TempDir::new().unwrap();
+        let paths = test_paths(temp.path());
+        restore_official_at_paths(&paths).unwrap();
+        let snapshot = capture_snapshot_at_paths(&paths).unwrap();
+        restore_official_at_paths(&paths).unwrap(); // no bytes changed
+        apply_provider_to_paths(&test_db(), &direct_provider("direct"), &paths).unwrap();
+        snapshot.restore().unwrap();
+        assert_eq!(
+            read_json_file::<Value>(&paths.normal_config_path).unwrap()["deploymentMode"],
+            "3p"
+        );
+    }
+
+    #[test]
+    fn desktop_snapshot_does_not_claim_a_later_switch() {
+        let temp = TempDir::new().unwrap();
+        let paths = test_paths(temp.path());
+        let snapshot = capture_snapshot_at_paths(&paths).unwrap();
+        apply_provider_to_paths(&test_db(), &direct_provider("direct"), &paths).unwrap();
+        restore_official_at_paths(&paths).unwrap();
+        let official = fs::read(&paths.normal_config_path).unwrap();
+        assert!(snapshot.restore().is_err());
+        assert_eq!(fs::read(&paths.normal_config_path).unwrap(), official);
     }
 
     #[test]

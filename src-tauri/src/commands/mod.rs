@@ -2,6 +2,7 @@
 
 mod auth;
 mod balance;
+mod cc_switch_import;
 mod codex_oauth;
 mod codex_runtime;
 mod coding_plan;
@@ -17,6 +18,7 @@ mod live_tools;
 mod mcp;
 mod misc;
 mod model_fetch;
+mod official_accounts;
 mod omo;
 mod openclaw;
 mod pi;
@@ -57,6 +59,7 @@ pub use live_tools::*;
 pub use mcp::*;
 pub use misc::*;
 pub use model_fetch::*;
+pub use official_accounts::*;
 pub use omo::*;
 pub use openclaw::*;
 pub(crate) use pi::*;
@@ -78,3 +81,8 @@ pub use s3_sync::*;
 pub use usage::*;
 pub use webdav_sync::*;
 pub use workspace::*;
+
+mod config_health;
+pub use config_health::*;
+
+pub use cc_switch_import::*;

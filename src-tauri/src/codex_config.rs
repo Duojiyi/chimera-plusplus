@@ -2576,10 +2576,18 @@ fn set_codex_model_catalog_json_field(
         .unwrap_or(true);
 
     match catalog_path {
-        Some(_) => {
+        Some(path) => {
             if owned_or_absent {
-                doc["model_catalog_json"] =
-                    toml_edit::value(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME);
+                // Strict permission-profile readers require native absolute paths.
+                // WSL/UNC configurations keep a portable filename for Linux consumers.
+                let native = path.is_absolute()
+                    && !(cfg!(windows) && path.to_string_lossy().starts_with(r"\\"));
+                let pointer = if native {
+                    path.to_string_lossy().into_owned()
+                } else {
+                    CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME.to_string()
+                };
+                doc["model_catalog_json"] = toml_edit::value(pointer);
             } else {
                 log::warn!(
                     "model_catalog_json 已被用户指向自定义文件，跳过写入 Chimera++ 生成的模型目录；\
@@ -6265,13 +6273,31 @@ wire_api = "responses"
     }
 
     #[test]
-    fn model_catalog_json_field_writes_relative_filename() {
+    fn model_catalog_pointer_keeps_non_native_paths_portable() {
+        for path in [
+            "relative/cc-switch-model-catalog.json",
+            r"\\wsl.localhost\Ubuntu\home\test\.codex\cc-switch-model-catalog.json",
+        ] {
+            let result = set_codex_model_catalog_json_field("", Some(Path::new(path))).unwrap();
+            let parsed: toml::Value = toml::from_str(&result).unwrap();
+            assert_eq!(
+                parsed["model_catalog_json"].as_str(),
+                Some(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)
+            );
+        }
+    }
+
+    #[test]
+    fn model_catalog_json_field_writes_native_absolute_path() {
         let input = r#"model_provider = "any"
 
 [model_providers.any]
 name = "any"
 "#;
+        #[cfg(not(windows))]
         let catalog_path = Path::new("/tmp/cc-switch-model-catalog.json");
+        #[cfg(windows)]
+        let catalog_path = Path::new(r"C:\Users\test\.codex\cc-switch-model-catalog.json");
 
         let result = set_codex_model_catalog_json_field(input, Some(catalog_path)).unwrap();
         let parsed: toml::Value = toml::from_str(&result).unwrap();
@@ -6279,7 +6305,7 @@ name = "any"
             parsed
                 .get("model_catalog_json")
                 .and_then(|value| value.as_str()),
-            Some(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)
+            catalog_path.to_str()
         );
         assert!(
             parsed
@@ -7129,7 +7155,7 @@ model = "glm-5"
     }
 
     #[test]
-    fn set_catalog_json_field_writes_filename_for_any_path() {
+    fn set_catalog_json_field_respects_platform_path_semantics() {
         let input = r#"model_provider = "custom"
 model = "glm-5"
 "#;
@@ -7140,8 +7166,12 @@ model = "glm-5"
 
         assert_eq!(
             parsed.get("model_catalog_json").and_then(|v| v.as_str()),
-            Some(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME),
-            "should write only the relative filename, not the full path"
+            if regular_path.is_absolute() {
+                regular_path.to_str()
+            } else {
+                Some(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)
+            },
+            "native absolute paths are required by strict permission readers"
         );
     }
 

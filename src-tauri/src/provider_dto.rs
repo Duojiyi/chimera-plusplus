@@ -297,7 +297,7 @@ pub fn resolve_current_provider(
     let Some(live) = live else {
         return match stored {
             Some(stored) => CurrentProviderResolution::of(Some(stored), "stored"),
-            None => CurrentProviderResolution::of(None, "external"),
+            None => CurrentProviderResolution::of(None, "none"),
         };
     };
 
@@ -671,6 +671,15 @@ mod tests {
 
     #[test]
     fn current_provider_reports_external_stored_and_none() {
+        assert_eq!(
+            resolve_current_provider(
+                &rows(vec![routed("saved", "https://one.example/v1", "a", "k")]),
+                "",
+                None
+            )
+            .source,
+            "none"
+        );
         let providers = rows(vec![routed("first", "https://one.example/v1", "a", "k")]);
         let external = json!({
             "config": "model = \"x\"\nmodel_provider = \"custom\"\n[model_providers.custom]\nbase_url = \"https://external.example/v1\"\n",
@@ -856,7 +865,7 @@ mod tests {
             resolve_current_provider(&providers, "", None),
             CurrentProviderResolution {
                 id: None,
-                source: "external"
+                source: "none"
             }
         );
         // Neither side names an endpoint and the models differ: the stored

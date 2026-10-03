@@ -1,4 +1,4 @@
-use super::provider::{sanitize_claude_settings_for_live, ProviderService};
+use super::provider::{write_claude_provider_settings, ProviderService};
 use crate::app_config::{AppType, MultiAppConfig};
 use crate::error::AppError;
 use crate::provider::Provider;
@@ -217,15 +217,14 @@ impl ConfigService {
         provider_id: &str,
         provider: &Provider,
     ) -> Result<(), AppError> {
-        use crate::config::{read_json_file, write_json_file};
+        use crate::config::read_json_file;
 
         let settings_path = crate::config::get_claude_settings_path();
         if let Some(parent) = settings_path.parent() {
             fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
         }
 
-        let settings = sanitize_claude_settings_for_live(&provider.settings_config);
-        write_json_file(&settings_path, &settings)?;
+        write_claude_provider_settings(&provider.settings_config)?;
 
         let live_after = read_json_file::<serde_json::Value>(&settings_path)?;
         if let Some(manager) = config.get_manager_mut(&AppType::Claude) {

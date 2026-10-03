@@ -1072,7 +1072,7 @@ fn preview_reports_full_content_absolute_targets_and_env_verdicts() {
 }
 
 #[test]
-fn non_codex_deeplinks_are_rejected_while_multi_tool_is_off() {
+fn supported_deeplink_targets_are_allowed_but_unknown_targets_are_rejected() {
     use super::ensure_targets_allowed;
 
     let codex_provider = DeepLinkImportRequest {
@@ -1084,40 +1084,36 @@ fn non_codex_deeplinks_are_rejected_while_multi_tool_is_off() {
     // A link without any target (e.g. a skill repo) is not an app-scoped import.
     assert!(ensure_targets_allowed(&DeepLinkImportRequest::default()).is_ok());
 
-    for app in [
-        "claude",
-        "gemini",
-        "grokbuild",
-        "opencode",
-        "openclaw",
-        "hermes",
-    ] {
+    for app in crate::app_config::AppType::all() {
         let request = DeepLinkImportRequest {
             resource: "provider".to_string(),
-            app: Some(app.to_string()),
+            app: Some(app.as_str().to_string()),
             ..Default::default()
         };
-        assert!(
-            matches!(
-                ensure_targets_allowed(&request),
-                Err(crate::error::AppError::Localized {
-                    key: "capability.disabled",
-                    ..
-                })
-            ),
-            "{app} deep link should be rejected"
-        );
+        assert!(ensure_targets_allowed(&request).is_ok(), "{}", app.as_str());
     }
 
-    // One non-Codex entry in an MCP `apps` list is enough to refuse it, and an
-    // unknown target is never treated as Codex.
-    for apps in ["codex,claude", " gemini ", "not-a-tool"] {
+    for apps in ["codex,claude", " gemini "] {
         let request = DeepLinkImportRequest {
             resource: "mcp".to_string(),
             apps: Some(apps.to_string()),
             ..Default::default()
         };
-        assert!(ensure_targets_allowed(&request).is_err(), "{apps}");
+        assert!(ensure_targets_allowed(&request).is_ok(), "{apps}");
+    }
+    for target in ["not-a-tool", "codex,not-a-tool"] {
+        for request in [
+            DeepLinkImportRequest {
+                app: Some(target.into()),
+                ..Default::default()
+            },
+            DeepLinkImportRequest {
+                apps: Some(target.into()),
+                ..Default::default()
+            },
+        ] {
+            assert!(ensure_targets_allowed(&request).is_err(), "{target}");
+        }
     }
     let codex_mcp = DeepLinkImportRequest {
         resource: "mcp".to_string(),
