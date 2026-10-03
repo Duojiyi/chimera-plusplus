@@ -814,7 +814,7 @@ dependencies = [
  "chimera-runtime",
  "chrono",
  "codex-theme-engine",
- "codex-win-engine",
+ "codex-win-engine 0.1.0 (git+https://github.com/Wangnov/Codex-App-Manager.git?rev=6766ec7fe56e2bcd709a41d10fef08d7bc558564)",
  "dirs 5.0.1",
  "flate2",
  "futures",
@@ -885,7 +885,7 @@ dependencies = [
  "anyhow",
  "chimera-domain",
  "chimera-platform",
- "codex-win-engine",
+ "codex-win-engine 0.1.0 (git+https://github.com/Wangnov/Codex-App-Manager.git?rev=296721f429e7359ad6618fdc897412fe6fe4c29b)",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -950,7 +950,7 @@ dependencies = [
 [[package]]
 name = "codex-theme-engine"
 version = "0.1.0"
-source = "git+https://github.com/Wangnov/Codex-App-Manager.git?rev=296721f429e7359ad6618fdc897412fe6fe4c29b#296721f429e7359ad6618fdc897412fe6fe4c29b"
+source = "git+https://github.com/Wangnov/Codex-App-Manager.git?rev=6766ec7fe56e2bcd709a41d10fef08d7bc558564#6766ec7fe56e2bcd709a41d10fef08d7bc558564"
 dependencies = [
  "base64 0.23.1",
  "futures-util",
@@ -971,6 +971,24 @@ name = "codex-win-engine"
 version = "0.1.0"
 source = "git+https://github.com/Wangnov/Codex-App-Manager.git?rev=296721f429e7359ad6618fdc897412fe6fe4c29b#296721f429e7359ad6618fdc897412fe6fe4c29b"
 dependencies = [
+ "log",
+ "roxmltree",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.20",
+ "uuid",
+ "windows 0.62.2",
+ "windows-sys 0.61.2",
+ "zip 8.6.0",
+]
+
+[[package]]
+name = "codex-win-engine"
+version = "0.1.0"
+source = "git+https://github.com/Wangnov/Codex-App-Manager.git?rev=6766ec7fe56e2bcd709a41d10fef08d7bc558564#6766ec7fe56e2bcd709a41d10fef08d7bc558564"
+dependencies = [
+ "libc",
  "log",
  "roxmltree",
  "serde",
@@ -3274,7 +3292,7 @@ dependencies = [
  "png 0.18.1",
  "serde",
  "thiserror 2.0.20",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5436,7 +5454,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6166,7 +6184,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.2",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.59.0",
@@ -6646,7 +6664,7 @@ dependencies = [
  "png 0.18.1",
  "serde",
  "thiserror 2.0.20",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6703,7 +6721,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset",
  "tempfile",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

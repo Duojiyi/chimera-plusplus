@@ -92,8 +92,8 @@ json-five = "0.3.1"
 sys-locale = "0.3"
 chimera-runtime = { git = "https://github.com/Duojiyi/chimera-plusplus.git", rev = "ac846589c9bb3b60cbaec3f7d26287c55afdc493", package = "chimera-runtime" }
 chimera-platform = { git = "https://github.com/Duojiyi/chimera-plusplus.git", rev = "ac846589c9bb3b60cbaec3f7d26287c55afdc493", package = "chimera-platform" }
-codex-win-engine = { git = "https://github.com/Wangnov/Codex-App-Manager.git", rev = "296721f429e7359ad6618fdc897412fe6fe4c29b", package = "codex-win-engine" }
-codex-theme-engine = { git = "https://github.com/Wangnov/Codex-App-Manager.git", rev = "296721f429e7359ad6618fdc897412fe6fe4c29b", package = "codex-theme-engine" }
+codex-win-engine = { git = "https://github.com/Wangnov/Codex-App-Manager.git", rev = "6766ec7fe56e2bcd709a41d10fef08d7bc558564", package = "codex-win-engine" }
+codex-theme-engine = { git = "https://github.com/Wangnov/Codex-App-Manager.git", rev = "6766ec7fe56e2bcd709a41d10fef08d7bc558564", package = "codex-theme-engine" }
 
 [target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = "2"
