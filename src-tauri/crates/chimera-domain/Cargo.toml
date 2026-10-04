@@ -1,0 +1,17 @@
+[package]
+name = "chimera-domain"
+version = "1.2.42-chimera.1"
+edition = "2024"
+license = "AGPL-3.0-only"
+repository = "https://github.com/Duojiyi/chimera-plusplus"
+description = "Chimera++ 2.0 — pure domain types, state machines, error taxonomy (no I/O)"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+url = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+serde_json = "1"

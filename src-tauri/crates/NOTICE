@@ -1,0 +1,88 @@
+Chimera++ Notices
+=================
+
+Copyright (C) 2026 Duojiyi and Chimera++ contributors.
+
+1. Distribution license
+-----------------------
+
+Chimera++ is a modified public fork of BigPizzaV3/CodexPlusPlus. This
+modified combined work is distributed under the GNU Affero General Public
+License v3.0 only (SPDX: AGPL-3.0-only). See LICENSE.
+
+Corresponding source for published Chimera++ releases is available at:
+https://github.com/Duojiyi/chimera-codex
+
+2. Upstream provenance
+----------------------
+
+The initial Chimera++ work was based on upstream release v1.2.34
+(commit c1360294) and subsequent upstream commit a0506ae. At the time this
+baseline was received, the upstream Cargo metadata declared MIT, while the
+repository snapshot did not contain a root LICENSE or NOTICE file.
+
+Upstream commit 7f72aec later added the GNU Affero General Public License
+v3.0 and declared subsequent CodexPlusPlus versions AGPL-3.0-only. Its
+upstream release notes state that versions previously received under another
+license are not retroactively affected. Chimera++ adopts AGPL-3.0-only for
+the modified distribution and for compatibility with future formal upstream
+Release synchronization.
+
+Copyright notices and attribution for BigPizzaV3/CodexPlusPlus are retained.
+Copyright (C) 2026 BigPizzaV3
+
+3. Incorporated MIT material
+----------------------------
+
+3.1 Upstream baseline
+
+MIT-covered upstream baseline: BigPizzaV3/CodexPlusPlus through a0506ae
+Project: https://github.com/BigPizzaV3/CodexPlusPlus
+Copyright (C) 2026 BigPizzaV3
+
+3.2 cc-switch material
+
+The provider preset data in apps/codex-plus-manager/src/presets.ts is based
+on farion1231/cc-switch and is used under the MIT License.
+
+Project: https://github.com/farion1231/cc-switch
+Copyright (c) 2025 Jason Young
+
+3.3 Codex-App-Manager engine
+
+Chimera++ uses the pinned `codex-win-engine` crate from
+Wangnov/Codex-App-Manager under the MIT License.
+
+Project: https://github.com/Wangnov/Codex-App-Manager
+Source commit: 89b542b9299453dcd833757b10cdb15f6d14d527
+Copyright (c) 2026 Wangnov
+
+The MIT terms below apply independently to each work listed above.
+
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+4. Trademarks and external products
+-----------------------------------
+
+OpenAI, ChatGPT, Codex, Microsoft, macOS, and Windows names and marks belong
+to their respective owners. The licenses above do not grant trademark rights
+or rights to third-party application assets. Chimera++ is an independent
+external enhancement tool and is not an official OpenAI or Microsoft product.

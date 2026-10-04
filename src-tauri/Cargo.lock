@@ -112,7 +112,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "parking_lot",
  "percent-encoding",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
  "x11rb",
 ]
 
@@ -777,7 +777,6 @@ dependencies = [
 [[package]]
 name = "chimera-domain"
 version = "1.2.42-chimera.1"
-source = "git+https://github.com/Duojiyi/chimera-plusplus.git?rev=ac846589c9bb3b60cbaec3f7d26287c55afdc493#ac846589c9bb3b60cbaec3f7d26287c55afdc493"
 dependencies = [
  "serde",
  "thiserror 2.0.20",
@@ -788,7 +787,6 @@ dependencies = [
 [[package]]
 name = "chimera-platform"
 version = "1.2.42-chimera.1"
-source = "git+https://github.com/Duojiyi/chimera-plusplus.git?rev=ac846589c9bb3b60cbaec3f7d26287c55afdc493#ac846589c9bb3b60cbaec3f7d26287c55afdc493"
 dependencies = [
  "anyhow",
  "chimera-domain",
@@ -814,7 +812,7 @@ dependencies = [
  "chimera-runtime",
  "chrono",
  "codex-theme-engine",
- "codex-win-engine 0.1.0 (git+https://github.com/Wangnov/Codex-App-Manager.git?rev=6766ec7fe56e2bcd709a41d10fef08d7bc558564)",
+ "codex-win-engine",
  "dirs 5.0.1",
  "flate2",
  "futures",
@@ -880,12 +878,11 @@ dependencies = [
 [[package]]
 name = "chimera-runtime"
 version = "1.2.42-chimera.1"
-source = "git+https://github.com/Duojiyi/chimera-plusplus.git?rev=ac846589c9bb3b60cbaec3f7d26287c55afdc493#ac846589c9bb3b60cbaec3f7d26287c55afdc493"
 dependencies = [
  "anyhow",
  "chimera-domain",
  "chimera-platform",
- "codex-win-engine 0.1.0 (git+https://github.com/Wangnov/Codex-App-Manager.git?rev=296721f429e7359ad6618fdc897412fe6fe4c29b)",
+ "codex-win-engine",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -963,23 +960,6 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "url",
- "zip 8.6.0",
-]
-
-[[package]]
-name = "codex-win-engine"
-version = "0.1.0"
-source = "git+https://github.com/Wangnov/Codex-App-Manager.git?rev=296721f429e7359ad6618fdc897412fe6fe4c29b#296721f429e7359ad6618fdc897412fe6fe4c29b"
-dependencies = [
- "log",
- "roxmltree",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "thiserror 2.0.20",
- "uuid",
- "windows 0.62.2",
- "windows-sys 0.61.2",
  "zip 8.6.0",
 ]
 
@@ -1459,7 +1439,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.2",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1679,7 +1659,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3292,7 +3272,7 @@ dependencies = [
  "png 0.18.1",
  "serde",
  "thiserror 2.0.20",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4363,7 +4343,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4891,7 +4871,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4950,7 +4930,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -5454,7 +5434,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -6184,10 +6164,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -6664,7 +6644,7 @@ dependencies = [
  "png 0.18.1",
  "serde",
  "thiserror 2.0.20",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -6721,7 +6701,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset",
  "tempfile",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]

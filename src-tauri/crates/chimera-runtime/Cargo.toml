@@ -1,0 +1,32 @@
+[package]
+name = "chimera-runtime"
+version = "1.2.42-chimera.1"
+edition = "2024"
+license = "AGPL-3.0-only"
+repository = "https://github.com/Duojiyi/chimera-plusplus"
+description = "Chimera++ 2.0 — managed Codex runtime: install, update, rollback, health, ownership"
+publish = false
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+sha2 = "0.10"
+# `blocking` because PayloadSource yields a std::io::Read: the download is a
+# single streamed file, not something that benefits from an async runtime, and
+# pulling one in here would push it into every caller.
+reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls", "system-proxy", "blocking"], default-features = false }
+# Unpacking the verified payload. `deflate` only: the extra methods are more
+# decoder surface for no benefit, since we control what the mirror publishes.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+chimera-domain = { path = "../chimera-domain" }
+chimera-platform = { path = "../chimera-platform" }
+# Same pinned engine revision as the application itself (src-tauri/Cargo.toml);
+# keep the two in sync so the build links a single copy of the engine.
+codex-win-engine = { git = "https://github.com/Wangnov/Codex-App-Manager.git", rev = "6766ec7fe56e2bcd709a41d10fef08d7bc558564", package = "codex-win-engine" }
+
+[dev-dependencies]
+tempfile = "3"
+sha2 = "0.10"
+zip = { version = "2", default-features = false, features = ["deflate"] }

@@ -624,13 +624,9 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "Failed to extract Cargo.lock revision for $PackageName" }
             return $revision.Trim()
           }
-          $chimeraRuntimeRev = Get-CargoLockRevision 'chimera-runtime'
-          $chimeraPlatformRev = Get-CargoLockRevision 'chimera-platform'
           $codexWinEngineRev = Get-CargoLockRevision 'codex-win-engine'
           $codexThemeEngineRev = Get-CargoLockRevision 'codex-theme-engine'
           $externalGitDependencies = @(
-            [ordered]@{ package = 'chimera-runtime'; repository = 'https://github.com/Duojiyi/chimera-plusplus.git'; revision = $chimeraRuntimeRev },
-            [ordered]@{ package = 'chimera-platform'; repository = 'https://github.com/Duojiyi/chimera-plusplus.git'; revision = $chimeraPlatformRev },
             [ordered]@{ package = 'codex-win-engine'; repository = 'https://github.com/Wangnov/Codex-App-Manager.git'; revision = $codexWinEngineRev },
             [ordered]@{ package = 'codex-theme-engine'; repository = 'https://github.com/Wangnov/Codex-App-Manager.git'; revision = $codexThemeEngineRev }
           )
@@ -683,18 +679,12 @@ jobs:
           # Read the actually-locked revisions out of Cargo.lock instead of hardcoding
           # them here, so this provenance can never silently drift out of sync with
           # what was actually built.
-          chimera_runtime_rev=$(node scripts/extract-cargo-lock-revision.mjs --package chimera-runtime)
-          chimera_platform_rev=$(node scripts/extract-cargo-lock-revision.mjs --package chimera-platform)
           codex_win_engine_rev=$(node scripts/extract-cargo-lock-revision.mjs --package codex-win-engine)
           codex_theme_engine_rev=$(node scripts/extract-cargo-lock-revision.mjs --package codex-theme-engine)
           external_git_dependencies_json=$(jq -n \
-            --arg chimera_runtime_rev "$chimera_runtime_rev" \
-            --arg chimera_platform_rev "$chimera_platform_rev" \
             --arg codex_win_engine_rev "$codex_win_engine_rev" \
             --arg codex_theme_engine_rev "$codex_theme_engine_rev" \
             '[
-              {"package":"chimera-runtime","repository":"https://github.com/Duojiyi/chimera-plusplus.git","revision":$chimera_runtime_rev},
-              {"package":"chimera-platform","repository":"https://github.com/Duojiyi/chimera-plusplus.git","revision":$chimera_platform_rev},
               {"package":"codex-win-engine","repository":"https://github.com/Wangnov/Codex-App-Manager.git","revision":$codex_win_engine_rev},
               {"package":"codex-theme-engine","repository":"https://github.com/Wangnov/Codex-App-Manager.git","revision":$codex_theme_engine_rev}
             ]')
@@ -742,18 +732,12 @@ jobs:
           # Read the actually-locked revisions out of Cargo.lock instead of hardcoding
           # them here, so this provenance can never silently drift out of sync with
           # what was actually built.
-          chimera_runtime_rev=$(node scripts/extract-cargo-lock-revision.mjs --package chimera-runtime)
-          chimera_platform_rev=$(node scripts/extract-cargo-lock-revision.mjs --package chimera-platform)
           codex_win_engine_rev=$(node scripts/extract-cargo-lock-revision.mjs --package codex-win-engine)
           codex_theme_engine_rev=$(node scripts/extract-cargo-lock-revision.mjs --package codex-theme-engine)
           external_git_dependencies_json=$(jq -n \
-            --arg chimera_runtime_rev "$chimera_runtime_rev" \
-            --arg chimera_platform_rev "$chimera_platform_rev" \
             --arg codex_win_engine_rev "$codex_win_engine_rev" \
             --arg codex_theme_engine_rev "$codex_theme_engine_rev" \
             '[
-              {"package":"chimera-runtime","repository":"https://github.com/Duojiyi/chimera-plusplus.git","revision":$chimera_runtime_rev},
-              {"package":"chimera-platform","repository":"https://github.com/Duojiyi/chimera-plusplus.git","revision":$chimera_platform_rev},
               {"package":"codex-win-engine","repository":"https://github.com/Wangnov/Codex-App-Manager.git","revision":$codex_win_engine_rev},
               {"package":"codex-theme-engine","repository":"https://github.com/Wangnov/Codex-App-Manager.git","revision":$codex_theme_engine_rev}
             ]')

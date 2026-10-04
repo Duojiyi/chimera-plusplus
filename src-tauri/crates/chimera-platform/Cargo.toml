@@ -1,0 +1,17 @@
+[package]
+name = "chimera-platform"
+version = "1.2.42-chimera.1"
+edition = "2024"
+license = "AGPL-3.0-only"
+repository = "https://github.com/Duojiyi/chimera-plusplus"
+description = "Chimera++ 2.0 — platform ports: paths, single-instance, cross-process lock, keychain, process identity"
+publish = false
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+chimera-domain = { path = "../chimera-domain" }
+
+fs2 = "0.4"
+tempfile = "3"

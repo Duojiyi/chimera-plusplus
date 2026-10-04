@@ -3,9 +3,9 @@
 // Cargo.lock entries for git dependencies look like:
 //
 //   [[package]]
-//   name = "chimera-runtime"
-//   version = "1.2.42-chimera.1"
-//   source = "git+https://github.com/Duojiyi/chimera-plusplus.git?rev=<sha>#<sha>"
+//   name = "codex-win-engine"
+//   version = "0.1.0"
+//   source = "git+https://github.com/Wangnov/Codex-App-Manager.git?rev=<sha>#<sha>"
 //   dependencies = [...]
 //
 // We deliberately avoid pulling in a full TOML parser dependency: Cargo.lock
