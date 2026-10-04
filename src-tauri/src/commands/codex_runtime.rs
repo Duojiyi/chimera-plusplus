@@ -15,6 +15,7 @@ use chimera_runtime::manager::{
     uninstall_windows_codex, InstallMode, MaintenanceRoute, UpdateSource, WindowsReleasePlan,
 };
 
+use crate::runtime_messages::localize_engine_message;
 use crate::services::codex_install_journal::{InstallJournal, InstallJournalEntry};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
@@ -1369,15 +1370,15 @@ fn install_runtime_release_with_observer(
             false,
             observer,
         )
-        .map_err(|error| error.to_string())?;
-        notes.extend(report.notes);
+        .map_err(|error| localize_engine_message(&error.to_string()))?;
+        notes.extend(localize_notes(report.notes));
         Ok(CodexRuntimeOperation {
             version: report.version,
             requested_mode: mode_label(install_mode),
             actual_mode: "portable".to_string(),
             affected_path: Some(report.install_root),
             backup_path: report.backup_path,
-            message: report.message,
+            message: localize_engine_message(&report.message),
             notes,
         })
     })();
@@ -1413,9 +1414,16 @@ fn operation_dto(value: chimera_runtime::manager::InstallOperationResult) -> Cod
         actual_mode: value.actual_mode,
         affected_path: value.affected_path,
         backup_path: value.backup_path,
-        message: value.message,
-        notes: value.notes,
+        message: localize_engine_message(&value.message),
+        notes: localize_notes(value.notes),
     }
+}
+
+fn localize_notes(notes: Vec<String>) -> Vec<String> {
+    notes
+        .iter()
+        .map(|note| localize_engine_message(note))
+        .collect()
 }
 
 fn require_windows() -> Result<(), String> {
@@ -2272,8 +2280,8 @@ pub async fn install_codex_runtime_offline(
                     actual_mode: "portable".to_string(),
                     affected_path: Some(report.install_root),
                     backup_path: report.backup_path,
-                    message: report.message,
-                    notes: report.notes,
+                    message: localize_engine_message(&report.message),
+                    notes: localize_notes(report.notes),
                 })
             }
             Err(error) => {
