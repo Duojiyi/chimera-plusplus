@@ -23,7 +23,12 @@ const historicalPathPrefixes = ["CHANGELOG.md", "docs/"];
 // MH-10: files whose entire purpose is to correctly attribute upstream code
 // may name farion1231/cc-switch as its source without being flagged as a
 // stale self-reference. This does not extend to legacyContacts.
-const attributionPathPrefixes = ["THIRD_PARTY_NOTICES.md", "LICENSES/"];
+const attributionPathPrefixes = [
+  "THIRD_PARTY_NOTICES.md",
+  "LICENSES/",
+  // Shipped with the vendored AGPL crates; credits the upstream project.
+  "src-tauri/crates/NOTICE",
+];
 const attributionLineMarkers = ["Adapted from", "改写自", "移植自"];
 
 const tracked = spawnSync("git", ["ls-files", "-z"], {
