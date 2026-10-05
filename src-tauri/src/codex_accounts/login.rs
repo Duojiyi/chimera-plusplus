@@ -176,6 +176,7 @@ pub(crate) fn suspend() {
     }
 }
 
+#[cfg(any(target_os = "windows", test))]
 pub(crate) fn resume_after_failed_shutdown() {
     LOGIN_SUSPENDED.store(false, std::sync::atomic::Ordering::SeqCst);
 }
