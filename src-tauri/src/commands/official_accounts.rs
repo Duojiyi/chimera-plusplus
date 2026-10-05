@@ -116,7 +116,7 @@ fn live_official_account_identity(
     codex_dir: &Path,
     official_proxy_active: bool,
 ) -> Option<AccountIdentity> {
-    let config = crate::config::cas::FileSnapshot::read(&codex_dir.join("config.toml")).ok()?;
+    let config = crate::config::cas::FileSnapshot::read(codex_dir.join("config.toml")).ok()?;
     // Missing config uses Codex's built-in official route; unreadable is unknown.
     let config = std::str::from_utf8(config.contents().unwrap_or_default()).ok()?;
     let config = if crate::codex_config::codex_config_has_owned_official_proxy_route(config, |_| {
