@@ -1827,6 +1827,56 @@ const MIRROR_CATALOG_MAX_BYTES: usize = 8 * 1024 * 1024;
 /// 发送给镜像仓库的标准 User-Agent（避免被 GitHub API 当作脚本而拒绝）。
 const MIRROR_USER_AGENT: &str = "chimera-plus-plus";
 
+fn mirror_http_error(status: reqwest::StatusCode, headers: &reqwest::header::HeaderMap) -> String {
+    let rate_limited = status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || (status == reqwest::StatusCode::FORBIDDEN
+            && (headers
+                .get("x-ratelimit-remaining")
+                .is_some_and(|value| value == "0")
+                || headers.contains_key("retry-after")));
+    if rate_limited {
+        let retry = headers
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok()?.parse::<u64>().ok())
+            .map(|seconds| format!("请在 {seconds} 秒后重试"))
+            .or_else(|| {
+                let seconds = headers
+                    .get("x-ratelimit-reset")?
+                    .to_str()
+                    .ok()?
+                    .parse()
+                    .ok()?;
+                let reset = chrono::DateTime::from_timestamp(seconds, 0)?;
+                Some(format!(
+                    "额度预计于 {} 恢复（本机时间）",
+                    reset.with_timezone(&chrono::Local).format("%m-%d %H:%M:%S")
+                ))
+            })
+            .unwrap_or_else(|| "请稍后重试".to_string());
+        return format!(
+            "GitHub API 请求限流（HTTP {status}）；{retry}，也可更换应用代理出口或使用离线安装"
+        );
+    }
+    format!("HTTP {status}；请检查网络与应用代理设置，稍后重试或使用离线安装")
+}
+
+async fn send_mirror_request(
+    method: reqwest::Method,
+    url: &str,
+) -> Result<reqwest::Response, String> {
+    let response = crate::proxy::http_client::get()
+        .request(method, url)
+        .header(reqwest::header::USER_AGENT, MIRROR_USER_AGENT)
+        .timeout(Duration::from_secs(MIRROR_FETCH_TIMEOUT_SECS))
+        .send()
+        .await
+        .map_err(|error| format!("请求失败: {error}"))?;
+    if !response.status().is_success() {
+        return Err(mirror_http_error(response.status(), response.headers()));
+    }
+    Ok(response)
+}
+
 /// 通过应用内 reqwest 客户端抓取镜像仓库的文本资源，跟随全局代理设置。
 ///
 /// 取代进程外 `codex_win_engine::fetch_text`（curl）：后者对大响应体存在
@@ -1834,20 +1884,7 @@ const MIRROR_USER_AGENT: &str = "chimera-plus-plus";
 /// 匿名管道缓冲区仅约 4KB，而 GitHub Releases 目录约 400KB+，curl 写满管道
 /// 后被阻塞、进程无法退出，历史版本目录因此长期卡在“正在加载”。
 async fn fetch_mirror_text(url: &str) -> Result<String, String> {
-    let client = crate::proxy::http_client::get();
-    let mut response = client
-        .get(url)
-        .header(reqwest::header::USER_AGENT, MIRROR_USER_AGENT)
-        .timeout(Duration::from_secs(MIRROR_FETCH_TIMEOUT_SECS))
-        .send()
-        .await
-        .map_err(|error| format!("请求失败: {error}"))?;
-    let status = response.status();
-    if !status.is_success() {
-        return Err(format!(
-            "HTTP {status}；请检查网络与应用代理设置，稍后重试或使用离线安装"
-        ));
-    }
+    let mut response = send_mirror_request(reqwest::Method::GET, url).await?;
     if response
         .content_length()
         .is_some_and(|len| len > MIRROR_CATALOG_MAX_BYTES as u64)
@@ -1869,11 +1906,21 @@ async fn fetch_mirror_text(url: &str) -> Result<String, String> {
 }
 
 async fn fetch_latest_runtime_plan() -> Result<WindowsReleasePlan, String> {
-    let body = fetch_mirror_text(&format!(
+    let body = match fetch_mirror_text(&format!(
         "https://api.github.com/repos/{MIRROR_REPO}/releases/latest"
     ))
     .await
-    .map_err(|error| format!("获取 Codex 安装版本失败：{error}"))?;
+    {
+        Ok(body) => body,
+        Err(api_error) => {
+            log::warn!("Codex release API unavailable, trying pinned release assets: {api_error}");
+            return fetch_latest_runtime_plan_without_api()
+                .await
+                .map_err(|error| {
+                    format!("获取 Codex 安装版本失败：{api_error}；发布清单回退也失败：{error}")
+                });
+        }
+    };
     let release: serde_json::Value =
         serde_json::from_str(&body).map_err(|error| format!("解析 Codex 安装版本失败：{error}"))?;
     let tag = release
@@ -1883,6 +1930,55 @@ async fn fetch_latest_runtime_plan() -> Result<WindowsReleasePlan, String> {
     let plan = plan_codex_runtime_release(tag.to_string()).await?;
     validate_release_asset(&release, &plan)?;
     Ok(plan)
+}
+
+/// Resolve latest once, then use only assets pinned to that trusted release.
+/// This avoids GitHub's shared anonymous API quota without weakening the normal
+/// architecture/checksum checks or downloading a package during update checks.
+async fn fetch_latest_runtime_plan_without_api() -> Result<WindowsReleasePlan, String> {
+    let latest = send_mirror_request(
+        reqwest::Method::HEAD,
+        &format!("https://github.com/{MIRROR_REPO}/releases/latest"),
+    )
+    .await?;
+    let tag = mirror_release_tag_from_url(latest.url())?;
+    let plan = plan_codex_runtime_release(tag).await?;
+    // The API path checks the asset list. Its fallback must also reject a
+    // missing, zero-length or partially published package before offering it.
+    let package = send_mirror_request(reqwest::Method::HEAD, &plan.package_url).await?;
+    validate_mirror_package_size(package.headers(), plan.size_bytes)?;
+    Ok(plan)
+}
+
+fn mirror_release_tag_from_url(url: &reqwest::Url) -> Result<String, String> {
+    let prefix = format!("/{MIRROR_REPO}/releases/tag/");
+    let tag = url.path().strip_prefix(&prefix).unwrap_or_default();
+    if url.scheme() != "https"
+        || url.host_str() != Some("github.com")
+        || url.port().is_some()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err("最新发布跳转不在受信任的镜像仓库内".to_string());
+    }
+    validate_mirror_tag(tag)?;
+    Ok(tag.to_string())
+}
+
+fn validate_mirror_package_size(
+    headers: &reqwest::header::HeaderMap,
+    expected: u64,
+) -> Result<(), String> {
+    let size = headers
+        .get(reqwest::header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok()?.parse::<u64>().ok());
+    if expected > 0 && size == Some(expected) {
+        Ok(())
+    } else {
+        Err("该版本安装包大小与清单不符或无法验证；请稍后重试，或选择其他历史版本".to_string())
+    }
 }
 
 fn validate_release_asset(
@@ -2325,6 +2421,72 @@ mod tests {
         let message = super::msix_launch_error("activation timed out");
         assert!(message.contains("activation timed out"));
         assert!(!message.contains("管理员权限"));
+    }
+
+    #[test]
+    fn mirror_errors_distinguish_rate_limits_from_other_forbidden_responses() {
+        use reqwest::{header::HeaderMap, StatusCode};
+        let mut headers = HeaderMap::new();
+        let forbidden = super::mirror_http_error(StatusCode::FORBIDDEN, &headers);
+        assert!(forbidden.contains("HTTP 403"));
+        assert!(!forbidden.contains("限流"));
+        headers.insert("x-ratelimit-remaining", "0".parse().unwrap());
+        headers.insert("x-ratelimit-reset", "1791239309".parse().unwrap());
+        let limited = super::mirror_http_error(StatusCode::FORBIDDEN, &headers);
+        assert!(limited.contains("限流"));
+        assert!(limited.contains("本机时间"));
+        headers.insert("retry-after", "120".parse().unwrap());
+        assert!(super::mirror_http_error(StatusCode::FORBIDDEN, &headers).contains("120 秒"));
+        headers.clear();
+        headers.insert("x-ratelimit-reset", "invalid".parse().unwrap());
+        let limited = super::mirror_http_error(StatusCode::TOO_MANY_REQUESTS, &headers);
+        assert!(limited.contains("限流"));
+        assert!(limited.contains("稍后重试"));
+    }
+
+    #[test]
+    fn fallback_only_accepts_a_pinned_tag_in_the_trusted_mirror() {
+        let base = format!("https://github.com/{}/releases", super::MIRROR_REPO);
+        let url = reqwest::Url::parse(&format!("{base}/tag/codex-app-26.930.31730")).unwrap();
+        assert_eq!(
+            super::mirror_release_tag_from_url(&url).unwrap(),
+            "codex-app-26.930.31730"
+        );
+        for url in [
+            format!("{base}/latest"),
+            format!("{base}/tag/"),
+            format!("{base}/tag/test/other"),
+            format!("{base}/tag/test?redirect=other"),
+            format!("{base}/tag/test#other"),
+            format!("{base}/tag/test%2Fother"),
+            format!("{base}/tag/test").replace("https:", "http:"),
+            format!("{base}/tag/test").replace("github.com/", "github.com:8443/"),
+            format!("{base}/tag/test").replace("github.com/", "github.com.evil.test/"),
+            format!("{base}/tag/test").replace(super::MIRROR_REPO, "other/repo"),
+        ] {
+            assert!(
+                super::mirror_release_tag_from_url(&reqwest::Url::parse(&url).unwrap()).is_err(),
+                "{url}"
+            );
+        }
+    }
+
+    #[test]
+    fn fallback_requires_a_nonempty_package_matching_the_manifest_size() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        assert!(super::validate_mirror_package_size(&headers, 100).is_err());
+        for (value, expected, valid) in [
+            ("100", 100, true),
+            ("99", 100, false),
+            ("0", 0, false),
+            ("bad", 100, false),
+        ] {
+            headers.insert(reqwest::header::CONTENT_LENGTH, value.parse().unwrap());
+            assert_eq!(
+                super::validate_mirror_package_size(&headers, expected).is_ok(),
+                valid
+            );
+        }
     }
 
     #[test]

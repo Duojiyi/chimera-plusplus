@@ -610,11 +610,7 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={
-                      startingLogin ||
-                      switching ||
-                      (account.isCurrent && !account.needsRelogin)
-                    }
+                    disabled={startingLogin || switching}
                     onClick={(event) => {
                       if (account.needsRelogin) void handleStartLogin();
                       else {
@@ -626,7 +622,7 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
                     {account.needsRelogin
                       ? "重新登录"
                       : account.isCurrent
-                        ? "当前账号"
+                        ? "重新应用"
                         : "切换"}
                   </Button>
                   <Button

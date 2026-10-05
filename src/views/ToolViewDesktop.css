@@ -1,0 +1,236 @@
+.tool-desktop-panel {
+  container-type: inline-size;
+  flex-shrink: 0;
+  min-width: 0;
+}
+.tool-desktop-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.tool-desktop-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+  padding: 20px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  background: var(--bg-surface);
+}
+.tool-desktop-card-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.tool-desktop-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: color-mix(in srgb, #c46d50 12%, var(--bg-surface));
+  color: #c46d50;
+}
+.tool-desktop-icon-route {
+  background: var(--bg-subtle);
+  color: var(--brand-text);
+}
+.tool-desktop-card h2,
+.tool-desktop-card h3,
+.tool-desktop-card p {
+  margin: 0;
+}
+.tool-desktop-card h2 {
+  flex: 1;
+  font-size: 15px;
+  font-weight: 600;
+}
+.tool-desktop-card h3 {
+  margin-top: 2px;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.3px;
+}
+.tool-desktop-badge {
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--bg-subtle);
+  color: var(--text-3);
+  font-size: 11px;
+  line-height: 1.6;
+}
+.tool-desktop-badge[data-tone="success"] {
+  background: var(--success-bg);
+  color: var(--success-fg);
+}
+.tool-desktop-description {
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.8;
+}
+.tool-desktop-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: auto;
+}
+.tool-desktop-hint {
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.tool-desktop-route-control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--bg-subtle);
+}
+.tool-desktop-route-control strong {
+  font-size: 13px;
+  font-weight: 500;
+}
+.tool-desktop-route-control p {
+  margin-top: 3px;
+  color: var(--text-3);
+  font-size: 12px;
+}
+.tool-desktop-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 14px 2px;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.tool-desktop-note svg {
+  flex-shrink: 0;
+  margin-top: 3px;
+}
+.tool-desktop-details {
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.8;
+}
+.tool-desktop-details summary {
+  padding: 10px 14px;
+  border-radius: inherit;
+  cursor: pointer;
+}
+.tool-desktop-details summary:hover {
+  background: var(--bg-subtle);
+}
+.tool-desktop-details summary:focus-visible,
+.tool-desktop-downloads a:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+.tool-desktop-details > div {
+  padding: 0 14px 12px;
+}
+.tool-desktop-details dl {
+  display: grid;
+  grid-template-columns: 80px minmax(0, 1fr);
+  gap: 8px 12px;
+  margin: 8px 0 12px;
+}
+.tool-desktop-details dt {
+  color: var(--text-3);
+}
+.tool-desktop-details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.tool-desktop-details p {
+  margin: 6px 0 0;
+  color: var(--text-3);
+}
+.tool-desktop-feedback {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--bg-subtle);
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.tool-desktop-feedback[data-tone="error"] {
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+}
+.tool-desktop-feedback[data-tone="warning"] {
+  background: var(--warning-bg);
+  color: var(--warning-fg);
+}
+.tool-desktop-install-dialog {
+  width: min(520px, calc(100vw - 32px));
+  border-radius: 12px;
+}
+.tool-desktop-install-body {
+  display: grid;
+  gap: 16px;
+  padding: 20px 24px;
+  overflow-y: auto;
+}
+.tool-desktop-install-steps {
+  margin: 0;
+  padding-left: 20px;
+  list-style: decimal;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.9;
+}
+.tool-desktop-downloads {
+  display: grid;
+  gap: 8px;
+}
+.tool-desktop-downloads a {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-control);
+  border-radius: 8px;
+  color: var(--text-1);
+  text-decoration: none;
+}
+.tool-desktop-downloads a:hover {
+  background: var(--bg-subtle);
+  border-color: var(--brand);
+}
+.tool-desktop-install-dialog a[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: wait;
+}
+.tool-desktop-downloads strong {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+}
+.tool-desktop-downloads small {
+  display: block;
+  margin-top: 3px;
+  color: var(--text-3);
+  font-size: 12px;
+}
+@container (max-width: 760px) {
+  .tool-desktop-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .tool-desktop-card {
+    padding: 16px;
+  }
+}

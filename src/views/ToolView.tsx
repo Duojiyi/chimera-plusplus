@@ -45,6 +45,19 @@ const lifecycleTools: Record<string, readonly ToolName[]> = {
   hermes: ["hermes"],
 };
 
+// Only explicit imports read credentials into Chimera. Pi/MiniMax read their
+// native configuration in getAll; Desktop has its own compatibility import UI.
+const liveConfigImporters: Partial<
+  Record<AppId, () => Promise<boolean | number>>
+> = {
+  claude: () => providersApi.importDefault("claude"),
+  gemini: () => providersApi.importDefault("gemini"),
+  grokbuild: () => providersApi.importDefault("grokbuild"),
+  opencode: () => providersApi.importOpenCodeFromLive(),
+  openclaw: () => providersApi.importOpenClawFromLive(),
+  hermes: () => providersApi.importHermesFromLive(),
+};
+
 type ToolMeta = {
   appId: Exclude<AppId, "codex">;
   name: string;
@@ -104,9 +117,10 @@ const TOOL_META: Record<string, ToolMeta> = {
     name: "Claude Desktop",
     shortName: "CD",
     category: "switch",
-    categoryLabel: "切换类",
-    description: "使用原生配置管理线路；配置状态不代表已安装或已登录。",
-    color: "#2563EB",
+    categoryLabel: "桌面客户端",
+    description:
+      "安装官方客户端，连接已有 API 线路。安装、线路与账号登录分别管理。",
+    color: "#C46D50",
   },
 
   "claude-code": {
@@ -178,6 +192,9 @@ function KnownToolView({
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const importRequest = useRef<symbol | null>(null);
+  const canImport = Boolean(liveConfigImporters[tool.appId]);
 
   useEffect(() => {
     setEditing(null);
@@ -228,8 +245,10 @@ function KnownToolView({
     setProviders([]);
     setCurrentId("");
     setBusyId(null);
+    setImporting(false);
     void load();
     return () => {
+      importRequest.current = null;
       activeApp.current = null;
       loadGeneration.current++;
     };
@@ -251,6 +270,33 @@ function KnownToolView({
     return () =>
       window.removeEventListener("chimera-provider-mutated", handleMutation);
   }, [load, tool.appId]);
+
+  useEffect(() => {
+    if (!native) return;
+    let active = true;
+    let dispose: (() => void) | undefined;
+    const subscribe = async () => {
+      try {
+        const unlisten = await providersApi.onSwitched((event) => {
+          if (active && event.appType === tool.appId) void load();
+        });
+        if (!active) {
+          unlisten();
+          return;
+        }
+        dispose = unlisten;
+        // Close the gap between the initial read and the async subscription.
+        void load();
+      } catch {
+        if (active) toast.error("无法订阅线路切换，请手动刷新或重新加载应用");
+      }
+    };
+    void subscribe();
+    return () => {
+      active = false;
+      dispose?.();
+    };
+  }, [load, native, tool.appId]);
 
   const activeCount = useMemo(
     () =>
@@ -282,13 +328,54 @@ function KnownToolView({
           websiteUrl: officialPreset.websiteUrl,
         }
       : undefined);
+  const hasBuiltInEntry =
+    Boolean(officialProvider) &&
+    !providers.some((p) => p.id === officialProvider?.id);
   const visibleProviders =
-    officialProvider && !providers.some((p) => p.id === officialProvider.id)
+    officialProvider && hasBuiltInEntry
       ? [officialProvider, ...providers]
       : providers;
 
+  const importLocalConfig = async () => {
+    const importConfig = liveConfigImporters[tool.appId];
+    if (!native || !importConfig || loading || busyId || importRequest.current)
+      return;
+    const request = Symbol();
+    importRequest.current = request;
+    setImporting(true);
+    try {
+      const result = await importConfig();
+      if (importRequest.current !== request) return;
+      if (result === false) {
+        toast.warning("未导入本机配置", {
+          description:
+            "已有自定义线路，首次导入不会覆盖已保存的配置。请在现有线路中编辑。",
+        });
+      } else if (result === 0) {
+        toast.warning("没有需要导入的配置", {
+          description: "本机未发现线路，或配置与已保存的线路一致。",
+        });
+      } else {
+        toast.success("已导入本机配置", {
+          description: "已登记到 Chimera，工具的配置文件保持不变。",
+        });
+      }
+      await load();
+    } catch (cause) {
+      if (importRequest.current !== request) return;
+      toast.error("导入本机配置失败", {
+        description: cause instanceof Error ? cause.message : String(cause),
+      });
+    } finally {
+      if (importRequest.current === request) {
+        importRequest.current = null;
+        setImporting(false);
+      }
+    }
+  };
+
   const changeProvider = async (provider: Provider) => {
-    if (busyId || !canMutate) return;
+    if (busyId || importing || !canMutate) return;
     setBusyId(provider.id);
     try {
       if (providers.some((item) => item.id === provider.id)) {
@@ -311,7 +398,7 @@ function KnownToolView({
   };
 
   const toggleProvider = async (provider: Provider) => {
-    if (busyId || !canMutate) return;
+    if (busyId || importing || !canMutate) return;
     setBusyId(provider.id);
     try {
       const enabled = provider.meta?.liveConfigManaged !== false;
@@ -344,16 +431,6 @@ function KnownToolView({
           />
         </Suspense>
       )}
-      {tool.appId === "claude-desktop" && (
-        <Suspense fallback={<p role="status">正在读取 Desktop 状态…</p>}>
-          <DesktopStatusPanel
-            native={native}
-            refreshVersion={refreshVersion + statusRefresh}
-            onChanged={load}
-            onSupported={setDesktopSupported}
-          />
-        </Suspense>
-      )}
       <header className="w-full flex items-center gap-[12px]">
         <div
           className="w-[40px] h-[40px] shrink-0 flex items-center justify-center rounded-[8px] text-white font-bold"
@@ -380,7 +457,7 @@ function KnownToolView({
             setRefreshing(true);
             void load();
           }}
-          disabled={refreshing || loading}
+          disabled={refreshing || loading || importing}
           className="h-[32px] px-[10px] flex items-center gap-[6px] rounded-[4px] border border-[var(--border-control)] bg-transparent cursor-pointer disabled:opacity-50"
         >
           <RefreshCw size={15} className={refreshing ? "animate-spin" : ""} />
@@ -388,76 +465,86 @@ function KnownToolView({
         </button>
         <button
           type="button"
-          disabled={!canMutate}
+          disabled={!canMutate || importing}
           onClick={() => editLine("new")}
-          className="h-[32px] px-[12px] flex items-center gap-[6px] rounded-[4px] border-0 bg-[#006AA0] text-white cursor-pointer"
+          className="h-[32px] px-[12px] flex items-center gap-[6px] rounded-[4px] border-0 bg-[#006AA0] text-white cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <Plus size={16} />
           添加线路
         </button>
       </header>
 
-      <section
-        className="w-full shrink-0"
-        aria-label={`${tool.name} 安装与资源管理`}
-      >
-        {native && lifecycleTools[toolId] ? (
-          <Suspense fallback={<p role="status">正在加载安装检测…</p>}>
-            <AboutSection
-              key={toolId}
-              isPortable={false}
-              toolsOnly
-              tools={lifecycleTools[toolId]}
-            />
-          </Suspense>
-        ) : (
-          <p className="text-[13px] text-[var(--text-3)]">
-            {!native
-              ? "浏览器预览未检测安装状态，请在桌面应用中检测、安装或升级。"
-              : tool.appId === "claude-desktop"
-                ? "Desktop 安装探测结果见配置状态面板；暂无安装、升级或重启管理。"
+      {tool.appId === "claude-desktop" ? (
+        <Suspense fallback={<p role="status">正在读取 Desktop 状态…</p>}>
+          <DesktopStatusPanel
+            native={native}
+            refreshVersion={refreshVersion + statusRefresh}
+            onChanged={load}
+            onSupported={setDesktopSupported}
+          />
+        </Suspense>
+      ) : (
+        <section
+          className="w-full shrink-0"
+          aria-label={`${tool.name} 安装与资源管理`}
+        >
+          {native && lifecycleTools[toolId] ? (
+            <Suspense fallback={<p role="status">正在加载安装检测…</p>}>
+              <AboutSection
+                key={toolId}
+                isPortable={false}
+                toolsOnly
+                tools={lifecycleTools[toolId]}
+              />
+            </Suspense>
+          ) : (
+            <p className="text-[13px] text-[var(--text-3)]">
+              {!native
+                ? "浏览器预览未检测安装状态，请在桌面应用中检测、安装或升级。"
                 : `${tool.name} 的安装检测与托管升级尚未接入，线路配置不代表已安装。`}
-          </p>
-        )}
-        {[
-          "claude",
-          "gemini",
-          "opencode",
-          "grokbuild",
-          "openclaw",
-          "hermes",
-        ].includes(tool.appId) ? (
-          <Button
-            variant="outline"
-            disabled={!onManageResources}
-            onClick={() => onManageResources?.(tool.appId)}
-          >
-            管理 {tool.name} 的{" "}
-            {tool.appId === "openclaw"
-              ? "Skills（MCP 暂不管理）"
-              : "Skills 与 MCP"}
-          </Button>
-        ) : (
-          <p className="text-[13px] text-[var(--text-3)]">
-            {tool.appId === "claude-desktop"
-              ? "Desktop 3P 不支持原生 MCP/扩展与 Skills 受管同步；Claude Code 共享资源不等于 Desktop 原生资源。"
-              : tool.appId === "pi"
+            </p>
+          )}
+          {[
+            "claude",
+            "gemini",
+            "opencode",
+            "grokbuild",
+            "openclaw",
+            "hermes",
+          ].includes(tool.appId) ? (
+            <Button
+              variant="outline"
+              disabled={!onManageResources}
+              onClick={() => onManageResources?.(tool.appId)}
+            >
+              管理 {tool.name} 的{" "}
+              {tool.appId === "openclaw"
+                ? "Skills（MCP 暂不管理）"
+                : "Skills 与 MCP"}
+            </Button>
+          ) : (
+            <p className="text-[13px] text-[var(--text-3)]">
+              {tool.appId === "pi"
                 ? "Pi 暂不支持 Skills 同步；Pi 没有原生 MCP 注册表。"
                 : "MiniMax Code 的 Skills 与 MCP 当前未管理；此处仅管理工具线路。"}
-          </p>
-        )}
-      </section>
+            </p>
+          )}
+        </section>
+      )}
 
-      <div className="w-full flex items-center gap-[20px] px-[12px] py-[9px] rounded-[6px] bg-[var(--bg-subtle)] text-[12px] text-[var(--text-3)]">
+      <div className="w-full flex flex-wrap items-center gap-[20px] px-[12px] py-[9px] rounded-[6px] bg-[var(--bg-subtle)] text-[12px] text-[var(--text-3)]">
         <span className="flex items-center gap-[4px] text-[var(--success-fg)]">
           <Check size={14} />
           {error
             ? "未连接本机配置"
             : loading
               ? "正在读取本机配置"
-              : "本机线路配置"}
+              : tool.appId === "pi" || tool.appId === "mcode"
+                ? "原生配置线路"
+                : "Chimera 已保存线路"}
         </span>
-        <span>{visibleProviders.length} 条线路</span>
+        <span>{providers.length} 条线路</span>
+        {hasBuiltInEntry && <span>另有 1 个内置官方入口</span>}
         {tool.category === "accumulate" && <span>{activeCount} 条已启用</span>}
         <span className="flex items-center gap-[4px]">
           <Minus size={14} />
@@ -465,53 +552,87 @@ function KnownToolView({
         </span>
       </div>
 
-      {officialPreset && officialProvider && !loading && !error && (
-        <section className="tool-official-guide" aria-label="官方账号登录">
+      {canImport && !loading && !error && (
+        <section className="tool-official-guide" aria-label="本机配置导入">
           <div>
-            <strong>
-              {tool.appId === "claude" ? "Claude 官方账号" : "Google 官方账号"}
-            </strong>
+            <strong>已有 {tool.name} 的 API 配置？</strong>
             <p>
-              官方线路无需填写 API 密钥。先切换到官方线路，再在 {tool.name}{" "}
-              中完成登录。
-            </p>
-            <p>
-              {tool.appId === "claude" ? (
-                <>
-                  运行 <code>claude</code>，输入 <code>/login</code> 完成授权。
-                </>
-              ) : (
-                <>
-                  运行 <code>gemini</code>，选择 <code>Login with Google</code>{" "}
-                  完成授权。
-                </>
-              )}{" "}
-              登录状态由工具管理，此处不代表已登录。
+              导入本机配置中的地址、密钥和模型到 Chimera，不改写工具配置文件。
+              {tool.category === "switch"
+                ? "仅在尚未管理自定义线路时导入。"
+                : "已保存的同名线路会按本机配置更新。"}
+              刷新按钮只重新载入已保存的线路。
             </p>
           </div>
-          {currentId === officialProvider.id && (
-            <Button
-              variant="outline"
-              disabled={Boolean(busyId)}
-              onClick={async () => {
-                setBusyId(officialProvider.id);
-                try {
-                  await providersApi.openTerminal(
-                    officialProvider.id,
-                    tool.appId,
-                  );
-                } catch (cause) {
-                  toast.error("无法打开终端", { description: String(cause) });
-                } finally {
-                  if (activeApp.current === tool.appId) setBusyId(null);
-                }
-              }}
-            >
-              打开登录终端
-            </Button>
-          )}
+          <Button
+            variant="outline"
+            disabled={!native || importing || Boolean(busyId)}
+            title={!native ? "请在桌面应用中导入本机配置" : undefined}
+            onClick={() => void importLocalConfig()}
+          >
+            {importing ? "正在导入…" : "导入本机配置"}
+          </Button>
         </section>
       )}
+
+      {officialPreset &&
+        officialProvider &&
+        !loading &&
+        !error &&
+        (!currentId || currentId === officialProvider.id) && (
+          <section className="tool-official-guide" aria-label="官方账号登录">
+            <div>
+              <strong>
+                {tool.appId === "claude"
+                  ? "Claude 官方账号"
+                  : "Google 官方账号"}
+                {hasBuiltInEntry && "（可选入口）"}
+              </strong>
+              {hasBuiltInEntry && (
+                <p>这是内置入口，不是本机配置或登录状态的检测结果。</p>
+              )}
+              <p>
+                官方线路无需填写 API 密钥。先切换到官方线路，再在 {tool.name}{" "}
+                中完成登录。
+              </p>
+              <p>
+                {tool.appId === "claude" ? (
+                  <>
+                    运行 <code>claude</code>，输入 <code>/login</code>{" "}
+                    完成授权。
+                  </>
+                ) : (
+                  <>
+                    运行 <code>gemini</code>，选择{" "}
+                    <code>Login with Google</code> 完成授权。
+                  </>
+                )}{" "}
+                登录状态由工具管理，此处不代表已登录。
+              </p>
+            </div>
+            {currentId === officialProvider.id && (
+              <Button
+                variant="outline"
+                disabled={Boolean(busyId) || importing}
+                onClick={async () => {
+                  setBusyId(officialProvider.id);
+                  try {
+                    await providersApi.openTerminal(
+                      officialProvider.id,
+                      tool.appId,
+                    );
+                  } catch (cause) {
+                    toast.error("无法打开终端", { description: String(cause) });
+                  } finally {
+                    if (activeApp.current === tool.appId) setBusyId(null);
+                  }
+                }}
+              >
+                打开登录终端
+              </Button>
+            )}
+          </section>
+        )}
 
       {error && !loading && (
         <div
@@ -549,6 +670,8 @@ function KnownToolView({
             const enabled = provider.meta?.liveConfigManaged !== false;
             const current = provider.id === currentId;
             const busy = busyId === provider.id;
+            const builtIn =
+              hasBuiltInEntry && provider.id === officialProvider?.id;
             const readOnly =
               tool.appId === "hermes" &&
               isHermesReadOnlyProvider(provider.settingsConfig);
@@ -563,7 +686,7 @@ function KnownToolView({
                       type="button"
                       aria-label={`${enabled ? "停用" : "启用"}${provider.name}`}
                       onClick={() => void toggleProvider(provider)}
-                      disabled={Boolean(busyId) || readOnly}
+                      disabled={Boolean(busyId) || importing || readOnly}
                       title={
                         readOnly ? "此条目由 Hermes Web UI 管理" : undefined
                       }
@@ -586,8 +709,10 @@ function KnownToolView({
                   </span>
                 </div>
                 <div className="flex-1 truncate font-mono text-[12px] text-[var(--text-2)]">
-                  {toolProviderSummary(tool.appId, provider).baseUrl ||
-                    (provider.category === "official" ? "官方默认端点" : "—")}
+                  {builtIn
+                    ? "内置官方入口（未启用）"
+                    : toolProviderSummary(tool.appId, provider).baseUrl ||
+                      (provider.category === "official" ? "官方默认端点" : "—")}
                 </div>
                 <div className="w-[160px] truncate font-mono text-[12px] text-[var(--text-2)]">
                   {toolProviderSummary(tool.appId, provider).model || "—"}
@@ -597,7 +722,9 @@ function KnownToolView({
                     <button
                       type="button"
                       onClick={() => void changeProvider(provider)}
-                      disabled={!canMutate || current || Boolean(busyId)}
+                      disabled={
+                        !canMutate || current || Boolean(busyId) || importing
+                      }
                       className={`h-[27px] px-[8px] rounded border-0 text-[12px] cursor-pointer ${current ? "bg-transparent text-[var(--success-fg)] font-bold" : "bg-[#006AA0] text-white"}`}
                     >
                       {busy ? "处理中…" : current ? "当前线路" : "切换"}
@@ -613,7 +740,7 @@ function KnownToolView({
                     <button
                       type="button"
                       aria-label={`编辑${provider.name}`}
-                      disabled={!canMutate || readOnly}
+                      disabled={!canMutate || readOnly || importing}
                       title={
                         readOnly ? "此条目由 Hermes Web UI 管理" : undefined
                       }

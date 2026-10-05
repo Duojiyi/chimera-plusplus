@@ -1,8 +1,15 @@
 use serde::Serialize;
 use std::collections::HashMap;
+use std::path::Path;
 
 use crate::app_config::AppType;
-use crate::codex_accounts::{self, login::LoginPoll, vault::Vault};
+use crate::codex_accounts::{
+    self,
+    identity::{classify, AccountIdentity, LoginClass},
+    login::LoginPoll,
+    vault::Vault,
+    LiveAuth,
+};
 use crate::error::AppError;
 use crate::services::subscription::{query_codex_quota, SubscriptionQuota};
 use crate::store::AppState;
@@ -44,13 +51,51 @@ pub async fn list_official_accounts(
     let vault = Vault::open_default()?;
     let lines = codex_accounts::official_lines(&state.db)?;
     let current_id = crate::settings::get_effective_current_provider(&state.db, &AppType::Codex)?;
+    // Only the built-in official proxy target passes through live ChatGPT auth.
+    // A failover queue may route elsewhere even while that target stays selected.
+    let official_proxy_active = lines.iter().any(|line| {
+        Some(&line.id) == current_id.as_ref()
+            && crate::proxy::providers::is_codex_official_provider(line)
+    }) && state
+        .db
+        .get_proxy_config_for_app("codex")
+        .await
+        .is_ok_and(|config| !config.auto_failover_enabled)
+        && state.proxy_service.is_running().await
+        && state
+            .proxy_service
+            .live_takeover_matches_current_proxy(&AppType::Codex)
+            .await
+            .unwrap_or(false);
 
+    Ok(list_official_accounts_from(
+        &vault,
+        &lines,
+        current_id.as_deref(),
+        &crate::codex_config::get_codex_config_dir(),
+        official_proxy_active,
+    ))
+}
+
+fn list_official_accounts_from(
+    vault: &Vault,
+    lines: &[crate::provider::Provider],
+    current_id: Option<&str>,
+    codex_dir: &Path,
+    official_proxy_active: bool,
+) -> Vec<OfficialAccountDto> {
+    // A saved line is a selection, not evidence of the login Codex uses now.
+    // Unknown/unreadable live state must leave every account available to apply.
+    let live_identity = live_official_account_identity(codex_dir, official_proxy_active);
     let mut accounts = Vec::new();
     for key in vault.slot_keys() {
         if let Ok(Some(slot)) = vault.read_slot(&key) {
             let display = codex_accounts::identity::auth_display_metadata(&slot.auth);
-            let line = official_account_line(&lines, &key, current_id.as_deref());
-            let is_current = line.is_some_and(|l| Some(&l.id) == current_id.as_ref());
+            let line = official_account_line(lines, &key, current_id);
+            let is_current = live_identity.as_ref().is_some_and(|live| {
+                matches!(classify(&slot.auth), LoginClass::Chatgpt(saved)
+                    if saved == *live && saved.key() == key)
+            });
             let needs_relogin = vault.has_tombstone(&key);
             accounts.push(OfficialAccountDto {
                 key: key.clone(),
@@ -64,7 +109,74 @@ pub async fn list_official_accounts(
             });
         }
     }
-    Ok(accounts)
+    accounts
+}
+
+fn live_official_account_identity(
+    codex_dir: &Path,
+    official_proxy_active: bool,
+) -> Option<AccountIdentity> {
+    let config = crate::config::cas::FileSnapshot::read(&codex_dir.join("config.toml")).ok()?;
+    // Missing config uses Codex's built-in official route; unreadable is unknown.
+    let config = std::str::from_utf8(config.contents().unwrap_or_default()).ok()?;
+    let config = if crate::codex_config::codex_config_has_owned_official_proxy_route(config, |_| {
+        official_proxy_active
+    }) {
+        crate::codex_config::remove_codex_official_proxy_route(config).ok()?
+    } else {
+        config.to_string()
+    };
+    let config = crate::codex_config::strip_codex_unified_session_bucket(&config).ok()?;
+    let doc = config.parse::<toml::Value>().ok()?;
+    if doc
+        .get("model_provider")
+        .is_some_and(|value| value.as_str() != Some("openai"))
+    {
+        return None;
+    }
+    // Do not guess when a profile overrides the route or login policy.
+    if let Some(profile) = doc.get("profile") {
+        let profile = doc.get("profiles")?.get(profile.as_str()?)?.as_table()?;
+        if crate::codex_key_ownership::PROFILE_ROUTE_KEYS
+            .iter()
+            .any(|key| profile.contains_key(*key))
+        {
+            return None;
+        }
+    }
+    if ["base_url", "openai_base_url", "chatgpt_base_url"]
+        .iter()
+        .any(|key| {
+            doc.get(*key).is_some_and(|value| {
+                !value
+                    .as_str()
+                    .is_some_and(crate::codex_key_ownership::is_official_codex_base_url)
+            })
+        })
+        || crate::codex_config::extract_codex_base_url(&config)
+            .is_some_and(|url| !crate::codex_key_ownership::is_official_codex_base_url(&url))
+        || crate::codex_config::extract_codex_experimental_bearer_token(&config).is_some()
+        || doc
+            .get("forced_login_method")
+            .is_some_and(|value| value.as_str() != Some("chatgpt"))
+    {
+        return None;
+    }
+    let (_, LiveAuth::Present(auth)) =
+        codex_accounts::read_live_auth(&codex_dir.join("auth.json")).ok()?
+    else {
+        return None;
+    };
+    match classify(&auth) {
+        LoginClass::Chatgpt(identity)
+            if doc
+                .get("forced_chatgpt_workspace_id")
+                .is_none_or(|value| value.as_str() == Some(identity.account_id.as_str())) =>
+        {
+            Some(identity)
+        }
+        _ => None,
+    }
 }
 
 fn official_account_line<'a>(
@@ -297,6 +409,196 @@ mod account_line_tests {
             assert_eq!(line.id, "first");
         }
         assert!(official_account_line(&lines, "missing-account", Some("second")).is_none());
+    }
+}
+
+#[cfg(test)]
+mod live_account_tests {
+    use super::*;
+    use crate::codex_accounts::identity::test_support::{chatgpt_login, identity, jwt};
+    use crate::codex_accounts::test_support::Fixture;
+    use crate::codex_accounts::vault::SlotSource;
+    use serde_json::{json, Value};
+
+    fn save(fx: &Fixture, line_id: &str, auth: &Value) -> String {
+        let LoginClass::Chatgpt(identity) = classify(auth) else {
+            panic!("fixture must be a complete login");
+        };
+        fx.vault
+            .store_slot(&identity, auth, SlotSource::Live)
+            .unwrap();
+        let key = identity.key();
+        fx.add_line(line_id, Some(&key));
+        key
+    }
+
+    fn list(fx: &Fixture, current_id: Option<&str>, proxy_active: bool) -> Vec<OfficialAccountDto> {
+        list_official_accounts_from(
+            &fx.vault,
+            &codex_accounts::official_lines(&fx.db).unwrap(),
+            current_id,
+            &fx.codex_dir(),
+            proxy_active,
+        )
+    }
+
+    fn current_keys(accounts: &[OfficialAccountDto]) -> Vec<&str> {
+        accounts
+            .iter()
+            .filter(|a| a.is_current)
+            .map(|a| a.key.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn stored_a_live_b_marks_only_the_live_identity_without_changing_either_store() {
+        let fx = Fixture::new();
+        let a = chatgpt_login("a", "2020-01-01T00:00:00Z");
+        let b = chatgpt_login("b", "2020-01-01T00:00:00Z");
+        let a_key = save(&fx, "line-a", &a);
+        let b_key = save(&fx, "line-b", &b);
+        fx.write_live(&b);
+        let before = fx.live_bytes();
+        let accounts = list(&fx, Some("line-a"), false);
+        assert_eq!(current_keys(&accounts), vec![b_key.as_str()]);
+        assert_eq!(
+            accounts
+                .iter()
+                .find(|a| a.key == a_key)
+                .unwrap()
+                .provider_id
+                .as_deref(),
+            Some("line-a")
+        );
+        assert_eq!(fx.live_bytes(), before);
+        assert_eq!(fx.vault.read_slot(&a_key).unwrap().unwrap().auth, a);
+    }
+
+    #[test]
+    fn unsaved_live_account_does_not_leave_the_stored_account_current() {
+        let fx = Fixture::new();
+        save(&fx, "line-a", &chatgpt_login("a", "2020-01-01T00:00:00Z"));
+        fx.write_live(&chatgpt_login("b", "2020-01-01T00:00:00Z"));
+        assert!(current_keys(&list(&fx, Some("line-a"), false)).is_empty());
+    }
+
+    #[test]
+    fn third_party_routes_do_not_mark_retained_official_auth_current() {
+        for config in [
+            "model_provider = 'custom'\n[model_providers.custom]\nbase_url = 'https://relay.example/v1'\n",
+            "openai_base_url = 'https://relay.example/v1'\n",
+            "chatgpt_base_url = 'https://relay.example/backend-api'\n",
+            "model_provider = 'openai'\n[model_providers.openai]\nbase_url = 'https://relay.example/v1'\n",
+            "profile = 'relay'\n[profiles.relay]\nmodel_provider = 'custom'\n",
+            "profile = 'relay'\n[profiles.relay]\nchatgpt_base_url = 'https://relay.example'\n",
+            "experimental_bearer_token = 'third-party-key'\n",
+            "forced_login_method = 'api'\n",
+            "forced_chatgpt_workspace_id = 'other-workspace'\n",
+        ] {
+            let fx = Fixture::new();
+            let a = chatgpt_login("a", "2020-01-01T00:00:00Z");
+            save(&fx, "line-a", &a);
+            fx.write_live(&a);
+            std::fs::write(fx.codex_dir().join("config.toml"), config).unwrap();
+            assert!(current_keys(&list(&fx, Some("line-a"), false)).is_empty(), "{config}");
+        }
+    }
+
+    #[test]
+    fn unreadable_missing_or_incomplete_live_login_never_falls_back_to_stored_selection() {
+        for auth in [
+            None,
+            Some("{"),
+            Some("{}"),
+            Some(r#"{"auth_mode":"apikey","OPENAI_API_KEY":"key"}"#),
+        ] {
+            let fx = Fixture::new();
+            save(&fx, "line-a", &chatgpt_login("a", "2020-01-01T00:00:00Z"));
+            if let Some(auth) = auth {
+                std::fs::write(fx.codex_dir().join("auth.json"), auth).unwrap();
+            }
+            let accounts = list(&fx, Some("line-a"), false);
+            assert_eq!(accounts.len(), 1);
+            assert!(current_keys(&accounts).is_empty());
+        }
+        let fx = Fixture::new();
+        save(&fx, "line-a", &chatgpt_login("a", "2020-01-01T00:00:00Z"));
+        std::fs::create_dir(fx.codex_dir().join("auth.json")).unwrap();
+        assert!(current_keys(&list(&fx, Some("line-a"), false)).is_empty());
+    }
+
+    #[test]
+    fn unreadable_live_route_never_confirms_a_matching_login() {
+        for contents in [b"model_provider = [".as_slice(), b"\xff".as_slice()] {
+            let fx = Fixture::new();
+            let a = chatgpt_login("a", "2020-01-01T00:00:00Z");
+            save(&fx, "line-a", &a);
+            fx.write_live(&a);
+            std::fs::write(fx.codex_dir().join("config.toml"), contents).unwrap();
+            assert!(current_keys(&list(&fx, Some("line-a"), false)).is_empty());
+        }
+    }
+
+    #[test]
+    fn users_sharing_a_workspace_remain_distinct() {
+        let fx = Fixture::new();
+        let a = chatgpt_login("a", "2020-01-01T00:00:00Z");
+        let mut b = chatgpt_login("b", "2020-01-01T00:00:00Z");
+        b["tokens"]["account_id"] = json!(identity("a").account_id);
+        b["tokens"]["id_token"] = json!(jwt(json!({
+            "https://api.openai.com/auth": {
+                "chatgpt_user_id": identity("b").user_id,
+                "chatgpt_account_id": identity("a").account_id,
+            }
+        })));
+        save(&fx, "line-a", &a);
+        let b_key = save(&fx, "line-b", &b);
+        fx.write_live(&b);
+        let accounts = list(&fx, Some("line-a"), false);
+        assert_eq!(accounts[0].account_id, accounts[1].account_id);
+        assert_eq!(current_keys(&accounts), vec![b_key.as_str()]);
+    }
+
+    #[test]
+    fn matching_live_identity_is_current_on_native_and_unified_official_routes() {
+        let fx = Fixture::new();
+        let key = save(&fx, "line-a", &chatgpt_login("a", "2020-01-01T00:00:00Z"));
+        // Token rotation does not change identity; the stored pointer is not proof either way.
+        let mut live = chatgpt_login("a", "2020-01-02T00:00:00Z");
+        live["tokens"]["access_token"] = json!("rotated-access-token");
+        fx.write_live(&live);
+        for config in [
+            String::new(),
+            "model_provider = 'openai'\n".to_string(),
+            "chatgpt_base_url = 'https://chatgpt.com/backend-api/'\n".to_string(),
+            crate::codex_config::inject_codex_unified_session_bucket("model = 'gpt-5.4'\n")
+                .unwrap(),
+        ] {
+            std::fs::write(fx.codex_dir().join("config.toml"), config).unwrap();
+            for current_id in [Some("line-a"), Some("stale-line"), None] {
+                assert_eq!(
+                    current_keys(&list(&fx, current_id, false)),
+                    vec![key.as_str()]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn official_proxy_route_requires_confirmed_proxy_ownership() {
+        let fx = Fixture::new();
+        let a = chatgpt_login("a", "2020-01-01T00:00:00Z");
+        let key = save(&fx, "line-a", &a);
+        fx.write_live(&a);
+        let config =
+            crate::codex_config::apply_codex_official_proxy_route("", "http://127.0.0.1:15721/v1")
+                .unwrap();
+        std::fs::write(fx.codex_dir().join("config.toml"), config).unwrap();
+        assert!(current_keys(&list(&fx, Some("line-a"), false)).is_empty());
+        assert_eq!(
+            current_keys(&list(&fx, Some("line-a"), true)),
+            vec![key.as_str()]
+        );
     }
 }
 

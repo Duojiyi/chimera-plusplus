@@ -117,7 +117,7 @@ impl CodexRendererUnlockProbe {
     }
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct CodexRendererModel {
     model: String,
@@ -128,7 +128,7 @@ struct CodexRendererModel {
     default_reasoning_effort: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct CodexRendererModelUnlockConfig {
     default_model: String,
@@ -167,6 +167,8 @@ struct CodexRendererUnlockRuntimeStatus {
     responses_patched: usize,
     #[serde(default)]
     catalog_verified: bool,
+    #[serde(default)]
+    config: Option<CodexRendererModelUnlockConfig>,
 }
 
 /// Inject the renderer-only model visibility patch into a newly launched
@@ -284,41 +286,48 @@ pub fn probe_codex_renderer_unlock(debug_port: u16) -> CodexRendererUnlockProbe 
             ));
         }
     };
-    let result = send_cdp_command(
-        &mut socket,
-        1,
-        "Runtime.evaluate",
-        json!({
-            "expression": "globalThis.__CHIMERA_CODEX_MODEL_UNLOCK_STATUS__ ?? null",
-            "returnByValue": true,
-        }),
-        IO_TIMEOUT,
-    )
-    .map(|evaluated| parse_model_unlock_status(&evaluated));
+    let result = evaluate_model_unlock_status(&mut socket, 1, IO_TIMEOUT);
     let _ = socket.close(None);
     match result {
-        Ok(Ok(Some(status))) => CodexRendererUnlockProbe {
-            attachable: true,
-            injected: status.installed,
-            model_count: status.model_count,
-            error: None,
-        },
-        Ok(Ok(None)) => CodexRendererUnlockProbe {
+        Ok(Some(status)) => {
+            let (injected, error) = match load_model_unlock_config() {
+                Ok(expected) => {
+                    let injected = model_unlock_matches_config(&status, expected.as_ref());
+                    let error = (status.installed && !injected).then(|| {
+                        "桌面端模型列表尚未与当前线路同步，请完整重启 Codex 以重新加载模型目录。"
+                            .to_string()
+                    });
+                    (injected, error)
+                }
+                Err(error) => (false, Some(error)),
+            };
+            CodexRendererUnlockProbe {
+                attachable: true,
+                injected,
+                model_count: status.model_count,
+                error,
+            }
+        }
+        Ok(None) => CodexRendererUnlockProbe {
             attachable: true,
             injected: false,
             model_count: 0,
             error: None,
-        },
-        Ok(Err(error)) => CodexRendererUnlockProbe {
-            attachable: true,
-            injected: false,
-            model_count: 0,
-            error: Some(format!("读取 renderer 注入状态失败：{error}")),
         },
         Err(error) => {
             CodexRendererUnlockProbe::not_attachable(format!("读取 renderer 注入状态失败：{error}"))
         }
     }
+}
+
+fn model_unlock_matches_config(
+    status: &CodexRendererUnlockRuntimeStatus,
+    expected: Option<&CodexRendererModelUnlockConfig>,
+) -> bool {
+    status.installed
+        && status.catalog_verified
+        && expected.is_some()
+        && status.config.as_ref() == expected
 }
 
 fn load_model_unlock_config() -> Result<Option<CodexRendererModelUnlockConfig>, String> {
@@ -688,7 +697,13 @@ fn evaluate_model_unlock_status(
         id,
         "Runtime.evaluate",
         json!({
-            "expression": "globalThis.__CHIMERA_CODEX_MODEL_UNLOCK_STATUS__ ?? null",
+            "expression": r#"(() => {
+                const status = globalThis.__CHIMERA_CODEX_MODEL_UNLOCK_STATUS__;
+                return status ? {
+                    ...status,
+                    config: globalThis.__CHIMERA_CODEX_MODEL_UNLOCK_CONFIG__ ?? null
+                } : null;
+            })()"#,
             "returnByValue": true,
         }),
         timeout,
@@ -795,9 +810,9 @@ fn send_cdp_command(
 mod tests {
     use super::{
         build_model_unlock_config, build_model_unlock_script, model_catalog_ready_after_reload,
-        parse_model_unlock_status, parse_targets_http_response, pick_codex_page_target,
-        validate_cdp_websocket_url, CodexRendererModelUnlockConfig, CodexRendererUnlockProbe,
-        CodexRendererUnlockRuntimeStatus,
+        model_unlock_matches_config, parse_model_unlock_status, parse_targets_http_response,
+        pick_codex_page_target, validate_cdp_websocket_url, CodexRendererModelUnlockConfig,
+        CodexRendererUnlockProbe, CodexRendererUnlockRuntimeStatus,
     };
     use serde_json::json;
     use std::net::TcpStream;
@@ -907,12 +922,56 @@ mod tests {
             responses_seen: 1,
             responses_patched: 1,
             catalog_verified: true,
+            config: None,
         };
         assert!(!model_catalog_ready_after_reload("before", &status));
         status.document_id = "after".to_string();
         assert!(model_catalog_ready_after_reload("before", &status));
         status.catalog_verified = false;
         assert!(!model_catalog_ready_after_reload("before", &status));
+    }
+
+    #[test]
+    fn renderer_probe_rejects_a_verified_catalog_from_another_line() {
+        let expected: CodexRendererModelUnlockConfig = serde_json::from_value(json!({
+            "defaultModel": "gpt-6-astra",
+            "models": [
+                { "model": "gpt-6-astra", "displayName": "gpt-6-astra" },
+                { "model": "gpt-6-sol", "displayName": "gpt-6-sol" }
+            ]
+        }))
+        .unwrap();
+        let mut status = parse_model_unlock_status(&json!({
+            "result": { "value": {
+                "installed": true,
+                "modelCount": 2,
+                "catalogVerified": true,
+                "config": {
+                    "defaultModel": "grok-4.6",
+                    "models": [
+                        { "model": "grok-4.6", "displayName": "grok-4.6" },
+                        { "model": "grok-4.5", "displayName": "grok-4.5" }
+                    ]
+                }
+            } }
+        }))
+        .unwrap()
+        .unwrap();
+        assert!(!model_unlock_matches_config(&status, Some(&expected)));
+        status.config = Some(expected.clone());
+        assert!(model_unlock_matches_config(&status, Some(&expected)));
+        assert!(!model_unlock_matches_config(&status, None));
+        status.config.as_mut().unwrap().default_model = "gpt-6-sol".to_string();
+        assert!(!model_unlock_matches_config(&status, Some(&expected)));
+        status.config = Some(expected.clone());
+        status.catalog_verified = false;
+        assert!(!model_unlock_matches_config(&status, Some(&expected)));
+        status.catalog_verified = true;
+        status.installed = false;
+        assert!(!model_unlock_matches_config(&status, Some(&expected)));
+        status.installed = true;
+        status.config = None;
+        assert!(!model_unlock_matches_config(&status, Some(&expected)));
     }
 
     #[test]

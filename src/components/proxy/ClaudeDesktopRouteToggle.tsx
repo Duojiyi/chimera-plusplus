@@ -7,14 +7,17 @@ import { cn } from "@/lib/utils";
 
 interface ClaudeDesktopRouteToggleProps {
   className?: string;
+  disabled?: boolean;
 }
 
 export function ClaudeDesktopRouteToggle({
   className,
+  disabled = false,
 }: ClaudeDesktopRouteToggleProps) {
   const { t } = useTranslation();
   const {
     isRunning,
+    isLoading,
     status,
     takeoverStatus,
     startProxyServer,
@@ -34,6 +37,7 @@ export function ClaudeDesktopRouteToggle({
   const routePort = status?.port ?? 15721;
 
   const handleToggle = async (checked: boolean) => {
+    if (isBusy || isLoading || disabled) return;
     try {
       if (checked) {
         await startProxyServer();
@@ -72,12 +76,12 @@ export function ClaudeDesktopRouteToggle({
   return (
     <div
       className={cn(
-        "flex items-center gap-1 px-1.5 h-8 rounded-lg bg-muted/50 transition-all",
+        "flex shrink-0 items-center gap-2 text-xs text-[var(--text-2)]",
         className,
       )}
       title={tooltipText}
     >
-      {isBusy ? (
+      {isBusy || isLoading ? (
         <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
       ) : (
         <Radio
@@ -89,10 +93,20 @@ export function ClaudeDesktopRouteToggle({
           )}
         />
       )}
+      <span>
+        {isBusy
+          ? "处理中…"
+          : isLoading
+            ? "读取中…"
+            : isRunning
+              ? "已开启"
+              : "未开启"}
+      </span>
       <Switch
+        aria-label="Claude Desktop 本地路由"
         checked={isRunning}
         onCheckedChange={handleToggle}
-        disabled={isBusy}
+        disabled={disabled || isBusy || isLoading}
       />
     </div>
   );

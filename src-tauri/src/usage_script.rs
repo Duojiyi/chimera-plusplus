@@ -12,6 +12,10 @@ use crate::error::AppError;
 /// what the script itself allocates.
 const USAGE_SCRIPT_MEMORY_LIMIT_BYTES: usize = 64 * 1024 * 1024;
 
+/// HTTP bodies are collected before the JS sandbox exists. Bound success and
+/// error responses, including chunked bodies, independently of the JS heap cap.
+const MAX_USAGE_RESPONSE_BYTES: usize = 1024 * 1024;
+
 /// Wall-clock budget for one `ctx.eval` call. `execute_usage_script`'s
 /// `timeout_secs` only bounds the HTTP request the script issues
 /// (`send_http_request`) — JS evaluation itself had no bound at all, so a
@@ -259,8 +263,15 @@ struct RequestConfig {
 
 /// 发送 HTTP 请求
 async fn send_http_request(config: &RequestConfig, timeout_secs: u64) -> Result<String, AppError> {
-    // 使用全局 HTTP 客户端（已包含代理配置）
-    let client = crate::proxy::http_client::get();
+    // Retain the configured proxy, but never redirect credentials (including
+    // custom headers such as x-api-key) past the validated initial endpoint.
+    let client = crate::proxy::http_client::get_for_auth_probe().map_err(|error| {
+        AppError::localized(
+            "usage_script.client_create_failed",
+            format!("创建安全 HTTP 客户端失败: {error}"),
+            format!("Failed to create secure HTTP client: {error}"),
+        )
+    })?;
     // 约束超时范围，防止异常配置导致长时间阻塞（最小 2 秒，最大 30 秒）
     let request_timeout = std::time::Duration::from_secs(timeout_secs.clamp(2, 30));
 
@@ -297,11 +308,24 @@ async fn send_http_request(config: &RequestConfig, timeout_secs: u64) -> Result<
     })?;
 
     let status = resp.status();
-    let text = resp.text().await.map_err(|e| {
+    if status.is_redirection() {
+        return Err(AppError::localized(
+            "usage_script.redirect_refused",
+            format!("HTTP {status}：为保护凭据，用量查询不跟随重定向，请填写最终接口地址"),
+            format!("HTTP {status}: usage queries do not follow redirects; configure the final endpoint"),
+        ));
+    }
+    let text = crate::services::model_fetch::read_response_text_limited(
+        resp,
+        MAX_USAGE_RESPONSE_BYTES,
+        "usage response",
+    )
+    .await
+    .map_err(|error| {
         AppError::localized(
             "usage_script.read_response_failed",
-            format!("读取响应失败: {e}"),
-            format!("Failed to read response: {e}"),
+            format!("读取用量响应失败（最大 1 MiB）: {error}"),
+            format!("Failed to read usage response (maximum 1 MiB): {error}"),
         )
     })?;
 
@@ -611,6 +635,126 @@ fn is_loopback_host(url: &Url) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn serve_usage_router(router: axum::Router) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        (url, server)
+    }
+
+    #[tokio::test]
+    async fn usage_requests_never_redirect_custom_credentials() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        const KEY: &str = "audit-dummy-usage-key";
+        for status in [301, 302, 303, 307, 308] {
+            let destination_hits = Arc::new(AtomicUsize::new(0));
+            let hits = destination_hits.clone();
+            let (destination, destination_server) =
+                serve_usage_router(axum::Router::new().fallback(move || {
+                    let hits = hits.clone();
+                    async move {
+                        hits.fetch_add(1, Ordering::SeqCst);
+                        "unexpected destination"
+                    }
+                }))
+                .await;
+            let origin_hits = Arc::new(AtomicUsize::new(0));
+            let hits = origin_hits.clone();
+            let (origin, origin_server) = serve_usage_router(axum::Router::new().fallback(
+                move |headers: axum::http::HeaderMap| {
+                    let hits = hits.clone();
+                    let destination = destination.clone();
+                    async move {
+                        if headers.get("x-api-key").and_then(|v| v.to_str().ok()) == Some(KEY) {
+                            hits.fetch_add(1, Ordering::SeqCst);
+                        }
+                        (
+                            reqwest::StatusCode::from_u16(status).unwrap(),
+                            [(axum::http::header::LOCATION, destination)],
+                            "redirect",
+                        )
+                    }
+                },
+            ))
+            .await;
+            let request = RequestConfig {
+                url: format!("{origin}/usage"),
+                method: "GET".into(),
+                headers: HashMap::from([("x-api-key".into(), KEY.into())]),
+                body: None,
+            };
+            validate_request_url(&request.url, &origin, false).unwrap();
+            let result = send_http_request(&request, 3).await;
+            origin_server.abort();
+            destination_server.abort();
+            let error = result.unwrap_err();
+            assert!(matches!(
+                error,
+                AppError::Localized {
+                    key: "usage_script.redirect_refused",
+                    ..
+                }
+            ));
+            assert_eq!(origin_hits.load(Ordering::SeqCst), 1);
+            assert_eq!(destination_hits.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn usage_response_limit_covers_declared_and_chunked_success_and_error_bodies() {
+        for status in [reqwest::StatusCode::OK, reqwest::StatusCode::BAD_GATEWAY] {
+            for chunked in [false, true] {
+                let (url, server) =
+                    serve_usage_router(axum::Router::new().fallback(move || async move {
+                        let body = if chunked {
+                            axum::body::Body::from_stream(futures::stream::iter((0..3).map(|_| {
+                                Ok::<_, std::io::Error>(vec![b'x'; MAX_USAGE_RESPONSE_BYTES / 2])
+                            })))
+                        } else {
+                            axum::body::Body::from(vec![b'x'; MAX_USAGE_RESPONSE_BYTES + 1])
+                        };
+                        axum::http::Response::builder()
+                            .status(status)
+                            .body(body)
+                            .unwrap()
+                    }))
+                    .await;
+                let result = send_http_request(
+                    &RequestConfig {
+                        url,
+                        method: "GET".into(),
+                        headers: HashMap::new(),
+                        body: None,
+                    },
+                    3,
+                )
+                .await;
+                server.abort();
+                let error = result.unwrap_err().to_string();
+                assert!(error.contains("exceeds the configured limit"), "{error}");
+            }
+        }
+
+        let (url, server) = serve_usage_router(
+            axum::Router::new().fallback(|| async { vec![b'x'; MAX_USAGE_RESPONSE_BYTES] }),
+        )
+        .await;
+        let result = send_http_request(
+            &RequestConfig {
+                url,
+                method: "GET".into(),
+                headers: HashMap::new(),
+                body: None,
+            },
+            3,
+        )
+        .await;
+        server.abort();
+        assert_eq!(result.unwrap().len(), MAX_USAGE_RESPONSE_BYTES);
+    }
 
     #[test]
     fn test_https_bypass_prevention() {

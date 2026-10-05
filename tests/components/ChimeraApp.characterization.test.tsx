@@ -177,6 +177,49 @@ describe("Codex line save path", () => {
     modelUnlockModelCount: 0,
   };
 
+  it("offers a confirmed model reload after switching a running Codex to another line", async () => {
+    routeInvoke({
+      get_codex_process_status: () => runningProcess,
+      probe_codex_renderer_unlock: () => ({
+        attachable: true,
+        injected: true,
+        modelCount: 2,
+      }),
+      restart_codex_for_model_catalog: () => restarted,
+    });
+    mount();
+    fireEvent.click(await screen.findByRole("button", { name: /^Beta，/ }));
+    const dialog = await screen.findByRole("alertdialog", {
+      name: "重新加载模型列表？",
+    });
+    expect(mocks.switchProvider).toHaveBeenCalledWith("Beta", "codex");
+    expect(dialog).toHaveTextContent("上一条线路的模型");
+    expect(dialog).toHaveTextContent("会中断正在进行的任务");
+    expect(calls("restart_codex_for_model_catalog")).toHaveLength(0);
+    fireEvent.click(within(dialog).getByRole("button", { name: "稍后重启" }));
+    expect(screen.getByRole("button", { name: "重启 Codex" })).toBeEnabled();
+    expect(screen.getByText("Codex 运行中 · 线路待重新加载")).toBeVisible();
+    expect(calls("restart_codex_for_model_catalog")).toHaveLength(0);
+  });
+
+  it("shows a catalog mismatch reported by the running renderer even without a new switch", async () => {
+    const error =
+      "桌面端模型列表尚未与当前线路同步，请完整重启 Codex 以重新加载模型目录。";
+    routeInvoke({
+      get_codex_process_status: () => runningProcess,
+      probe_codex_renderer_unlock: () => ({
+        attachable: true,
+        injected: false,
+        modelCount: 2,
+        error,
+      }),
+    });
+    mount();
+    expect(await screen.findByTitle(error)).toBeVisible();
+    expect(screen.getByRole("button", { name: "重启 Codex" })).toBeEnabled();
+    expect(calls("restart_codex_for_model_catalog")).toHaveLength(0);
+  });
+
   it("updates and activates, verifies the catalog, then restarts Codex on request", async () => {
     mocks.fetchModels.mockResolvedValue([
       { id: "gpt-a", ownedBy: null },

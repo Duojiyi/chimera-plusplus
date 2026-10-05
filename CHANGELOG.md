@@ -10,6 +10,31 @@ numbers belong to a separate upstream line.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.8.1] - 2026-10-06
+
+### Security
+
+- Refuse redirects for authenticated usage queries so custom API-key headers cannot escape the validated endpoint. Preserve the configured application proxy without changing installer/CDN redirect behavior.
+- Bound both successful and failed usage responses to 1 MiB, including chunked bodies, before passing data into the JavaScript sandbox.
+
+### Added
+
+- Add explicit local-configuration import for other tools without silently copying credentials or switching the active provider.
+- Add official Claude Desktop download shortcuts for Windows x64, Windows ARM64 and macOS, with clear manual-install instructions and separate installation, routing and login states.
+
+### Changed
+
+- Refine the Claude Desktop setup page and usage breakdown dialogs for clearer actions, dark themes and narrower windows.
+
+### Fixed
+
+- Explain GitHub release rate limits and fall back to the trusted mirror's pinned release URLs while retaining package architecture, size and checksum validation.
+- Avoid presenting the synthetic official-login entry as an existing saved API configuration, and keep provider import actions explicit.
+- Verify the running Codex model catalog against the current provider configuration and prompt for a confirmed restart when a running desktop still uses the previous line.
+- Verify official-account current status against the actual live route and login identity, allowing saved accounts to be reapplied when the live identity cannot be confirmed.
+- Reconcile OpenCode, OpenClaw and Hermes enabled states with native configuration membership instead of trusting stale database flags.
+- Refresh the active tool page after its provider is switched from the tray, ignoring unrelated tools and cleaning up delayed event subscriptions.
+
 ## [2.8.0] - 2026-10-05
 
 ### Added

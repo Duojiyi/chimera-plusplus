@@ -164,6 +164,7 @@ mod tests {
         original_local_app_data: Option<String>,
         original_userprofile: Option<String>,
         original_test_home: Option<String>,
+        original_hermes_home: Option<std::ffi::OsString>,
     }
 
     impl TempHome {
@@ -174,12 +175,14 @@ mod tests {
             let original_local_app_data = env::var("LOCALAPPDATA").ok();
             let original_userprofile = env::var("USERPROFILE").ok();
             let original_test_home = env::var("CC_SWITCH_TEST_HOME").ok();
+            let original_hermes_home = env::var_os("HERMES_HOME");
 
             env::set_var("HOME", dir.path());
             #[cfg(windows)]
             env::set_var("LOCALAPPDATA", dir.path().join("AppData").join("Local"));
             env::set_var("USERPROFILE", dir.path());
             env::set_var("CC_SWITCH_TEST_HOME", dir.path());
+            env::set_var("HERMES_HOME", dir.path().join(".hermes"));
 
             Self {
                 dir,
@@ -188,12 +191,17 @@ mod tests {
                 original_local_app_data,
                 original_userprofile,
                 original_test_home,
+                original_hermes_home,
             }
         }
     }
 
     impl Drop for TempHome {
         fn drop(&mut self) {
+            match &self.original_hermes_home {
+                Some(value) => env::set_var("HERMES_HOME", value),
+                None => env::remove_var("HERMES_HOME"),
+            }
             match &self.original_home {
                 Some(value) => env::set_var("HOME", value),
                 None => env::remove_var("HOME"),
@@ -716,6 +724,170 @@ mod tests {
             icon: None,
             icon_color: None,
             in_failover_queue: false,
+        }
+    }
+
+    fn additive_list_fixture(app_type: &AppType) -> (Provider, PathBuf, Value) {
+        let native = json!({"api_key": "native-only-secret"});
+        match app_type {
+            AppType::OpenCode => (
+                opencode_provider("saved"),
+                crate::opencode_config::get_opencode_config_path(),
+                json!({"provider": {"saved": native, "external": {}}}),
+            ),
+            AppType::OpenClaw => (
+                openclaw_provider("saved"),
+                crate::openclaw_config::get_openclaw_config_path(),
+                json!({"models": {"providers": {"saved": native, "external": {}}}}),
+            ),
+            AppType::Hermes => (
+                hermes_provider("saved"),
+                crate::hermes_config::get_hermes_config_path(),
+                json!({"custom_providers": [
+                    {"name": "saved", "api_key": "native-only-secret"},
+                    {"name": "external", "api_key": "external-secret"}
+                ]}),
+            ),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn list_additive_providers_uses_live_membership_without_importing_or_writing() {
+        let _guard = test_guard();
+        let home = TempHome::new();
+        let state = AppState::new(Arc::new(Database::memory().unwrap()));
+        for app_type in [AppType::OpenCode, AppType::OpenClaw, AppType::Hermes] {
+            let (template, path, native) = additive_list_fixture(&app_type);
+            assert!(
+                path.starts_with(home.dir.path()),
+                "fixture must stay in temp home"
+            );
+            for stored_flag in [None, Some(false), Some(true)] {
+                let mut provider = template.clone();
+                if let Some(flag) = stored_flag {
+                    ProviderService::set_provider_live_config_managed(&mut provider, flag);
+                }
+                state
+                    .db
+                    .save_provider(app_type.as_str(), &provider)
+                    .unwrap();
+                let stored =
+                    serde_json::to_value(state.db.get_all_providers(app_type.as_str()).unwrap())
+                        .unwrap();
+                for present in [true, false] {
+                    // JSON is also valid YAML for Hermes. An empty document models
+                    // a native configuration reset without removing the saved catalog.
+                    let config = if present { native.clone() } else { json!({}) };
+                    write_json_file(&path, &config).unwrap();
+                    let bytes = fs::read(&path).unwrap();
+                    let listed = ProviderService::list(&state, app_type.clone()).unwrap();
+                    assert_eq!(listed.len(), 1, "must not import the external entry");
+                    assert_eq!(
+                        ProviderService::provider_live_config_managed(&listed["saved"]),
+                        Some(present)
+                    );
+                    assert_eq!(
+                        listed["saved"].settings_config, provider.settings_config,
+                        "must not import native credentials"
+                    );
+                    assert_eq!(
+                        serde_json::to_value(
+                            state.db.get_all_providers(app_type.as_str()).unwrap()
+                        )
+                        .unwrap(),
+                        stored,
+                        "listing must not persist derived flags or native entries"
+                    );
+                    assert_eq!(
+                        fs::read(&path).unwrap(),
+                        bytes,
+                        "listing must not rewrite live config"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn list_additive_providers_marks_missing_config_inactive_without_creating_it() {
+        let _guard = test_guard();
+        let home = TempHome::new();
+        let state = AppState::new(Arc::new(Database::memory().unwrap()));
+        for app_type in [AppType::OpenCode, AppType::OpenClaw, AppType::Hermes] {
+            let (mut provider, path, _) = additive_list_fixture(&app_type);
+            assert!(
+                path.starts_with(home.dir.path()),
+                "fixture must stay in temp home"
+            );
+            ProviderService::set_provider_live_config_managed(&mut provider, true);
+            state
+                .db
+                .save_provider(app_type.as_str(), &provider)
+                .unwrap();
+            assert!(!path.exists());
+            let listed = ProviderService::list(&state, app_type).unwrap();
+            assert_eq!(
+                ProviderService::provider_live_config_managed(&listed["saved"]),
+                Some(false)
+            );
+            assert!(!path.exists(), "listing must not create a missing config");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn list_additive_providers_propagates_parse_and_read_errors_even_for_db_only_rows() {
+        let _guard = test_guard();
+        for directory in [false, true] {
+            let home = TempHome::new();
+            let state = AppState::new(Arc::new(Database::memory().unwrap()));
+            for app_type in [AppType::OpenCode, AppType::OpenClaw, AppType::Hermes] {
+                let (mut provider, path, _) = additive_list_fixture(&app_type);
+                assert!(
+                    path.starts_with(home.dir.path()),
+                    "fixture must stay in temp home"
+                );
+                fs::create_dir_all(path.parent().unwrap()).unwrap();
+                if directory {
+                    fs::create_dir(&path).unwrap();
+                } else {
+                    fs::write(&path, "[\n").unwrap();
+                }
+                for stored_flag in [false, true] {
+                    ProviderService::set_provider_live_config_managed(&mut provider, stored_flag);
+                    state
+                        .db
+                        .save_provider(app_type.as_str(), &provider)
+                        .unwrap();
+                    assert!(
+                        ProviderService::list(&state, app_type.clone()).is_err(),
+                        "unreadable live state must not fall back to the stored flag"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn list_opencode_does_not_treat_omo_plugin_rows_as_provider_members() {
+        let _guard = test_guard();
+        let home = TempHome::new();
+        assert!(crate::opencode_config::get_opencode_config_path().starts_with(home.dir.path()));
+        let state = AppState::new(Arc::new(Database::memory().unwrap()));
+        for category in ["omo", "omo-slim"] {
+            let provider = opencode_omo_provider(category, category);
+            state.db.save_provider("opencode", &provider).unwrap();
+        }
+        let listed = ProviderService::list(&state, AppType::OpenCode).unwrap();
+        for provider in listed.values() {
+            assert_eq!(
+                ProviderService::provider_live_config_managed(provider),
+                None
+            );
         }
     }
 
@@ -2423,7 +2595,25 @@ impl ProviderService {
         if app_type == AppType::Mcode {
             return mcode::list(state);
         }
-        state.db.get_all_providers(app_type.as_str())
+        let mut providers = state.db.get_all_providers(app_type.as_str())?;
+        // Read membership once, without importing native credentials or persisting
+        // the derived flags. An unreadable config must not look enabled by default.
+        let live = match app_type {
+            AppType::OpenCode => crate::opencode_config::get_providers()?,
+            AppType::OpenClaw => crate::openclaw_config::get_providers()?,
+            AppType::Hermes => crate::hermes_config::get_providers()?,
+            _ => return Ok(providers),
+        };
+        for (id, provider) in providers.iter_mut() {
+            // OMO variants use separate plugin files, not OpenCode's provider map.
+            if app_type == AppType::OpenCode
+                && matches!(provider.category.as_deref(), Some("omo" | "omo-slim"))
+            {
+                continue;
+            }
+            Self::set_provider_live_config_managed(provider, live.contains_key(id));
+        }
+        Ok(providers)
     }
 
     /// Get current provider ID

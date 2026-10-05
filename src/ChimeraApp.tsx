@@ -1324,6 +1324,12 @@ export default function ChimeraApp({
         loadCodexProcess(),
       ]);
       setCodexRestartRequired(true);
+      const selectedModel = extractCodexModelName(
+        String(selectedProvider?.settingsConfig?.config ?? ""),
+      );
+      if (latestProcess?.running && !isOfficial && selectedModel) {
+        setPendingModelReload(selectedModel);
+      }
       note(
         "切换线路",
         "success",
@@ -2882,6 +2888,8 @@ export default function ChimeraApp({
                 "restart_codex_for_model_catalog",
                 { confirm: true },
               );
+              await loadCodexProcess();
+              await refreshRendererUnlock();
               setPendingModelReload(null);
               setCodexRestartRequired(false);
               toast.success("Codex 已重新加载模型列表");
@@ -4207,12 +4215,14 @@ export function NewProvidersView({
           ? officialLoginRequired
             ? "官方账户需要登录"
             : codexProcess.running
-              ? rendererUnlockPending
-                ? "Codex 运行中 · 解锁状态未确认"
-                : rendererUnlock?.attachable === true &&
-                    rendererUnlock.injected === false
-                  ? "Codex 运行中 · 调试连接可用，模型解锁未确认"
-                  : "Codex 正在运行"
+              ? restartRequired
+                ? "Codex 运行中 · 线路待重新加载"
+                : rendererUnlockPending
+                  ? "Codex 运行中 · 解锁状态未确认"
+                  : rendererUnlock?.attachable === true &&
+                      rendererUnlock.injected === false
+                    ? "Codex 运行中 · 调试连接可用，模型解锁未确认"
+                    : "Codex 正在运行"
               : "Codex 已就绪"
           : "未检测到 Codex"
         : "macOS 暂不支持快速启动";
@@ -4224,7 +4234,11 @@ export function NewProvidersView({
         ? "仅 Windows 支持"
         : codexProcess?.installed === false
           ? "尚未安装"
-          : restartRequired && codexProcess?.running
+          : codexProcess?.running &&
+              (restartRequired ||
+                (rendererUnlock?.attachable &&
+                  rendererUnlock.injected === false &&
+                  Boolean(rendererUnlock.error)))
             ? officialLoginRequired
               ? "重启并登录"
               : "重启 Codex"
@@ -4321,11 +4335,15 @@ export function NewProvidersView({
             designPreview ? "设计预览 · 未检测本机" : codexStatusLabel
           }
           runtimeHint={
-            rendererUnlockPending
-              ? "暂时无法确认模型列表解锁状态，正在重新检测。"
-              : rendererUnlock?.attachable && rendererUnlock.injected === false
-                ? "调试连接可用，模型解锁未确认/未安装。"
-                : undefined
+            restartRequired && codexProcess?.running
+              ? "线路配置已保存，当前 Codex 窗口可能仍显示上一条线路的模型。请完整重启后使用。"
+              : rendererUnlockPending
+                ? "暂时无法确认模型列表解锁状态，正在重新检测。"
+                : rendererUnlock?.attachable &&
+                    rendererUnlock.injected === false
+                  ? rendererUnlock.error ||
+                    "调试连接可用，模型解锁未确认/未安装。"
+                  : undefined
           }
           onOpenCodex={() => void onOpenCodex()}
           openCodexLabel={codexButtonLabel}
@@ -6156,7 +6174,7 @@ function ConfirmModelReload({
         <h2 id="model-reload-title">重新加载模型列表？</h2>
         <p>
           默认模型“{model}”已写入。Codex
-          只在启动时读取模型目录，需要完整重启后才会显示。
+          只在启动时读取模型目录，当前窗口可能仍显示上一条线路的模型。完整重启会中断正在进行的任务，请确认后继续。
         </p>
         <footer>
           <button onClick={onCancel} disabled={restarting}>

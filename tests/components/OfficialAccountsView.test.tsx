@@ -261,8 +261,8 @@ describe("official account onboarding", () => {
       },
     ]);
     render(<OfficialAccountsView />);
-    await screen.findByRole("button", { name: "当前账号" });
-    expect(screen.getByRole("button", { name: "当前账号" })).toBeDisabled();
+    await screen.findByRole("button", { name: "重新应用" });
+    expect(screen.getByRole("button", { name: "重新应用" })).toBeEnabled();
     expect(screen.getByText("使用中")).toBeInTheDocument();
     expect(screen.queryByText("连接第一个官方账号")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "添加官方账号" })).toBeVisible();
@@ -280,6 +280,58 @@ describe("official account onboarding", () => {
     );
     expect(screen.getByRole("button", { name: "添加官方账号" })).toBeVisible();
     expect(screen.queryByText("连接第一个官方账号")).not.toBeInTheDocument();
+  });
+});
+
+describe("official account live identity", () => {
+  it.each([
+    ["stored A but live B", true],
+    ["third-party live route", false],
+    ["unreadable live login", false],
+    ["different user in the same workspace", true],
+  ])("keeps A switchable with %s", async (_scenario, bIsCurrent) => {
+    vi.mocked(officialAccountsApi.list).mockResolvedValue([
+      account("vault-a"),
+      account("vault-b", bIsCurrent),
+    ]);
+    render(<OfficialAccountsView />);
+    await waitFor(() => expect(screen.getAllByRole("article")).toHaveLength(2));
+    const [a, b] = screen.getAllByRole("article");
+    expect(a).toHaveAttribute("data-current", "false");
+    expect(within(a).queryByText("使用中")).not.toBeInTheDocument();
+    expect(within(a).getByRole("button", { name: "切换" })).toBeEnabled();
+    expect(b).toHaveAttribute("data-current", String(bIsCurrent));
+    if (!bIsCurrent) {
+      expect(
+        screen.queryByRole("region", { name: "当前官方账号" }),
+      ).not.toBeInTheDocument();
+    }
+    fireEvent.click(within(a).getByRole("button", { name: "切换" }));
+    const dialog = await screen.findByRole("dialog", {
+      name: "切换到 vault-a？",
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "确认切换" }));
+    await waitFor(() =>
+      expect(officialAccountsApi.switchAccount).toHaveBeenCalledWith("vault-a"),
+    );
+    await waitFor(() => expect(dialog).not.toBeInTheDocument());
+  });
+
+  it("allows reapplying a confirmed account when Codex may have changed since the last read", async () => {
+    vi.mocked(officialAccountsApi.list).mockResolvedValue([
+      account("vault-a", true),
+    ]);
+    render(<OfficialAccountsView />);
+    fireEvent.click(await screen.findByRole("button", { name: "重新应用" }));
+    const dialog = await screen.findByRole("dialog", {
+      name: "切换到 vault-a？",
+    });
+    expect(officialAccountsApi.switchAccount).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole("button", { name: "确认切换" }));
+    await waitFor(() =>
+      expect(officialAccountsApi.switchAccount).toHaveBeenCalledWith("vault-a"),
+    );
+    await waitFor(() => expect(dialog).not.toBeInTheDocument());
   });
 });
 
@@ -408,8 +460,8 @@ describe("official account Vault quotas", () => {
     );
     expect(within(first).queryByText("尚未获取额度")).not.toBeInTheDocument();
     expect(
-      within(first).getByRole("button", { name: "当前账号" }),
-    ).toBeDisabled();
+      within(first).getByRole("button", { name: "重新应用" }),
+    ).toBeEnabled();
     expect(within(second).getByText("75%")).toBeVisible();
     const current = screen.getByRole("region", { name: "当前官方账号" });
     expect(

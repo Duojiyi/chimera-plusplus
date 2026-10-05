@@ -211,6 +211,53 @@ describe("UsageView", () => {
     );
     expect(dialog.getByText("100 词元")).toBeVisible();
     expect(dialog.getByText("400 词元")).toBeVisible();
+    const firstModel = dialog
+      .getByTitle("model-400")
+      .closest(".usage-model-item")!;
+    expect(firstModel.children).toHaveLength(4);
+    expect(firstModel.firstElementChild).toHaveAttribute(
+      "aria-label",
+      "第 1 名",
+    );
+    await user.click(dialog.getByRole("button", { name: "关闭模型排行" }));
+    expect(
+      screen.queryByRole("dialog", { name: "全部模型排行" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("separates daily totals and token categories into labelled table columns", async () => {
+    api.getUsageTrends.mockResolvedValue([
+      day,
+      {
+        ...day,
+        date: "2026-09-19",
+        requestCount: 0,
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalCacheCreationTokens: 0,
+        totalCacheReadTokens: 0,
+      },
+      { ...day, date: "2026-09-20", requestCount: 2 },
+    ]);
+    render(<UsageView />);
+    await loaded();
+    const table = within(screen.getByRole("table", { name: "按日词元汇总" }));
+    expect(
+      table.getAllByRole("columnheader").map((cell) => cell.textContent),
+    ).toEqual(["日期", "请求数", "总词元", "输入", "输出", "缓存"]);
+    expect(
+      table.getAllByRole("rowheader").map((cell) => cell.textContent),
+    ).toEqual(["2026-09-20", "2026-09-18"]);
+    const row = within(
+      table.getByRole("rowheader", { name: "2026-09-18" }).closest("tr")!,
+    );
+    expect(row.getAllByRole("cell").map((cell) => cell.textContent)).toEqual([
+      "4",
+      "2,000",
+      "600",
+      "400",
+      "1,000",
+    ]);
   });
 
   it("shows the existing database result while the historical sync is pending", async () => {

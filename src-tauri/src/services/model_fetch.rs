@@ -320,7 +320,7 @@ async fn read_response_body_limited(
     Ok(body)
 }
 
-async fn read_response_text_limited(
+pub(crate) async fn read_response_text_limited(
     response: reqwest::Response,
     max_bytes: usize,
     label: &str,

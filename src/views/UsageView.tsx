@@ -17,6 +17,7 @@ import {
   RotateCcw,
   ShieldCheck,
   Table2,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -28,6 +29,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogDescription,
   DialogHeader,
@@ -823,30 +825,45 @@ export function UsageView() {
               全部 {summary.totalRequests.toLocaleString("zh-CN")} 次请求
             </span>
           </header>
-          <div className="usage-summary-head">
-            <span>{loadedHourly ? "时段" : "日期"}</span>
-            <span>请求</span>
-            <span>词元</span>
-            <span>输入 / 输出 / 缓存</span>
+          <div className="usage-summary-scroll" tabIndex={0}>
+            <table className="usage-summary-table">
+              <caption className="sr-only">
+                {loadedHourly ? "按小时词元汇总" : "按日词元汇总"}
+              </caption>
+              <thead>
+                <tr>
+                  <th scope="col">{loadedHourly ? "时段" : "日期"}</th>
+                  <th scope="col">请求数</th>
+                  <th scope="col">总词元</th>
+                  <th scope="col">输入</th>
+                  <th scope="col">输出</th>
+                  <th scope="col">缓存</th>
+                </tr>
+              </thead>
+              <tbody>
+                {activeBuckets.map((day) => (
+                  <tr key={day.date}>
+                    <th scope="row">
+                      {loadedHourly
+                        ? usageBucketLabel(day.date, true)
+                        : day.date.slice(0, 10)}
+                    </th>
+                    <td>{day.requestCount.toLocaleString("zh-CN")}</td>
+                    <td>
+                      <b>{formatUsageTokens(totalDailyTokens(day))}</b>
+                    </td>
+                    <td>{formatUsageTokens(day.totalInputTokens)}</td>
+                    <td>{formatUsageTokens(day.totalOutputTokens)}</td>
+                    <td>
+                      {formatUsageTokens(
+                        day.totalCacheCreationTokens + day.totalCacheReadTokens,
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-          {activeBuckets.map((day) => (
-            <div className="usage-summary-row" key={day.date}>
-              <span>
-                {loadedHourly
-                  ? usageBucketLabel(day.date, true)
-                  : day.date.slice(0, 10)}
-              </span>
-              <span>{day.requestCount.toLocaleString("zh-CN")} 次</span>
-              <b>{formatUsageTokens(totalDailyTokens(day))}</b>
-              <span>
-                {formatUsageTokens(day.totalInputTokens)} /{" "}
-                {formatUsageTokens(day.totalOutputTokens)} /{" "}
-                {formatUsageTokens(
-                  day.totalCacheCreationTokens + day.totalCacheReadTokens,
-                )}
-              </span>
-            </div>
-          ))}
         </section>
       )}
 
@@ -855,12 +872,29 @@ export function UsageView() {
           <DialogHeader>
             <DialogTitle>全部模型排行</DialogTitle>
             <DialogDescription>
-              按当前范围内模型的真实词元总量排序。
+              共 {models.length} 个模型 · 按当前范围内的真实词元总量排序。
             </DialogDescription>
+            <DialogClose
+              className="usage-models-close"
+              aria-label="关闭模型排行"
+            >
+              <X size={18} />
+            </DialogClose>
           </DialogHeader>
+          <div className="usage-all-models-head" aria-hidden="true">
+            <span>模型</span>
+            <span>总词元</span>
+            <span>占比</span>
+          </div>
           <div className="usage-all-models-list">
-            {topModelsByTokens(models, models.length).map((model) => (
+            {topModelsByTokens(models, models.length).map((model, index) => (
               <div className="usage-model-item" key={model.model}>
+                <span
+                  className="usage-model-rank"
+                  aria-label={`第 ${index + 1} 名`}
+                >
+                  {index + 1}
+                </span>
                 <div>
                   <strong title={model.model}>{model.model}</strong>
                   <code>{exact(model.totalTokens)}</code>

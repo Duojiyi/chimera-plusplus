@@ -212,7 +212,9 @@ describe("additional native tools", () => {
       screen.getByRole("button", { name: /从 Claude Code 导入/ }),
     ).toBeDisabled();
     expect(screen.queryByText("Desktop route toggle")).not.toBeInTheDocument();
-    expect(screen.getByText(/标准路径未检测到程序/)).toBeVisible();
+    expect(screen.getByText("未检测到")).toBeVisible();
+    expect(screen.getByText("平台不支持")).toBeVisible();
+    expect(screen.getByText("标准路径未检测到")).not.toBeVisible();
   });
   it("keeps Hermes providers_dict entries read only", async () => {
     vi.mocked(providersApi.getAll).mockResolvedValue({
@@ -238,9 +240,13 @@ it("shows an actual Desktop executable independently of configuration", async ()
   } as never);
   render(<ToolView toolId="claude-desktop" native />);
   expect(
-    await screen.findByText("检测到 Desktop 程序：C:/Claude/Claude.exe"),
+    await screen.findByRole("heading", { name: "已找到本机客户端" }),
   ).toBeVisible();
-  expect(screen.getByText("尚未配置 3P")).toBeVisible();
+  expect(screen.getByText("已检测到")).toBeVisible();
+  expect(screen.getByText("尚未配置第三方")).toBeVisible();
+  expect(screen.getByText("C:/Claude/Claude.exe")).not.toBeVisible();
+  fireEvent.click(screen.getByText("诊断信息与使用说明"));
+  expect(screen.getByText("C:/Claude/Claude.exe")).toBeVisible();
 });
 
 it.each(["claude-desktop", "grokbuild"])(
