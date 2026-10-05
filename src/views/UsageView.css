@@ -162,7 +162,7 @@
 
 .usage-design-toolbar > div:first-child,
 .usage-model-card header,
-.usage-conversations header {
+.usage-summary-section > header > div:first-child {
   display: flex;
   align-items: baseline;
   gap: 10px;
@@ -170,14 +170,15 @@
 
 .usage-design-toolbar strong,
 .usage-model-card header strong,
-.usage-conversations header strong {
+.usage-summary-section h2 {
+  margin: 0;
   color: var(--text-1);
   font-size: 14px;
 }
 
 .usage-design-toolbar span,
 .usage-model-card header span,
-.usage-conversations header span {
+.usage-summary-section header span {
   color: var(--text-3);
   font-size: 12px;
 }
@@ -218,7 +219,7 @@
 
 .usage-chart-card,
 .usage-model-card,
-.usage-conversations {
+.usage-summary-section {
   border-top: 1px solid var(--border-subtle);
 }
 
@@ -252,6 +253,8 @@
   color: var(--text-2);
   font-size: 11px;
   font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .usage-bar-column > small {

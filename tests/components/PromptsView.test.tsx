@@ -4,8 +4,9 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bundledPromptTemplates } from "@/config/promptTemplates";
 import { PromptsView } from "@/views/PromptsView";
 import { promptsApi } from "@/lib/api/prompts";
@@ -45,6 +46,11 @@ const item = {
   content: "Real instructions",
   enabled: false,
 };
+// The editor is a lazy chunk; a cold transform on a loaded machine can outlast
+// the 1 s waitFor budgets below, which test behaviour rather than load time.
+beforeAll(async () => {
+  await import("@/components/prompts/PromptFormModal");
+}, 60_000);
 beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(open).mockResolvedValue("D:/templates/rules.md");
@@ -561,6 +567,61 @@ describe("A08 prompt targets and A07 refresh", () => {
     expect(screen.getByLabelText("AGENTS.md 当前内容")).toHaveTextContent(
       "Refreshed live",
     );
+  });
+  it("keeps tool limits on the target selector instead of a page-wide notice", async () => {
+    render(<PromptsView />);
+    await screen.findByText("真实模板");
+    expect(screen.queryByText(/暂不支持/)).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("combobox", { name: "提示词目标工具" }),
+    ).toHaveAccessibleDescription(
+      "Claude Desktop、Pi 和 MiniMax Code 暂不支持提示词",
+    );
+    // Template provenance lives in THIRD_PARTY_NOTICES.md, not in the UI.
+    expect(screen.queryByText(/Codex-X/)).not.toBeInTheDocument();
+    expect(
+      screen.getByText(`${bundledPromptTemplates.length} 个`),
+    ).toBeVisible();
+  });
+  it("shows a single loading line while the library is read", async () => {
+    vi.mocked(promptsApi.getPrompts).mockReturnValue(new Promise(() => {}));
+    render(<PromptsView />);
+    expect(screen.getByRole("status")).toHaveTextContent("正在读取提示词…");
+    expect(screen.getAllByText(/正在读取/)).toHaveLength(1);
+    expect(screen.queryByText("从一条好指令开始")).not.toBeInTheDocument();
+  });
+  it("explains a missing AGENTS.md and that nothing is written before enabling", async () => {
+    vi.mocked(promptsApi.getCurrentFileContent).mockResolvedValue(null);
+    render(<PromptsView />);
+    const preview = await screen.findByRole("region", { name: "提示词预览" });
+    expect(await within(preview).findByText("还没有 AGENTS.md")).toBeVisible();
+    expect(within(preview).getByText("尚未创建")).toBeVisible();
+    expect(
+      within(preview).getByText(/只维护文件中带标记的这一段/),
+    ).toBeVisible();
+    expect(
+      within(preview).getByText("启用提示词之前，不会创建这个文件。"),
+    ).toBeVisible();
+    expect(
+      screen.queryByLabelText("AGENTS.md 当前内容"),
+    ).not.toBeInTheDocument();
+    expect(promptsApi.upsertPrompt).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /代码审查/ }));
+    expect(screen.getByLabelText("模板内容")).toHaveTextContent("#");
+  });
+  it("does not promise a managed block for tools that take the whole file", async () => {
+    vi.mocked(promptsApi.getCurrentFileContent).mockResolvedValue(null);
+    render(<PromptsView initialApp="claude" />);
+    const preview = await screen.findByRole("region", { name: "提示词预览" });
+    expect(await within(preview).findByText("还没有 CLAUDE.md")).toBeVisible();
+    expect(
+      within(preview).getByText(
+        "启用一条提示词时，它的内容会写入整个 CLAUDE.md。",
+      ),
+    ).toBeVisible();
+    expect(
+      within(preview).queryByText(/带标记的这一段/),
+    ).not.toBeInTheDocument();
   });
   it("confirms even inactive non-Codex saves and preserves a cancelled draft", async () => {
     render(<PromptsView initialApp="hermes" />);

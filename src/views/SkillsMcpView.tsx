@@ -9,6 +9,10 @@ import {
   X,
   Trash2 as Trash,
   Edit2 as PencilSimple,
+  FileArchive,
+  GitBranch,
+  Plug,
+  Puzzle,
 } from "lucide-react";
 import { toast } from "sonner";
 import "./SkillsMcpView.css";
@@ -66,7 +70,10 @@ export const SkillsMcpView: React.FC<{
   const [mcpNotes, setMcpNotes] = useState<Record<string, string>>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [installDrawerOpen, setInstallDrawerOpen] = useState(false);
-  const [available, setAvailable] = useState<DiscoverableSkill[]>([]);
+  const installPanelRef = useRef<HTMLDivElement>(null);
+  // null until the configured repositories have been read, so an empty read
+  // can say so instead of leaving the panel silently blank.
+  const [available, setAvailable] = useState<DiscoverableSkill[] | null>(null);
   const [editing, setEditing] = useState<McpServer | "new" | null>(null);
   const [removing, setRemoving] = useState<{ id: string; name: string } | null>(
     null,
@@ -74,6 +81,9 @@ export const SkillsMcpView: React.FC<{
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [noteText, setNoteText] = useState("");
   const [loading, setLoading] = useState(true);
+  // True only while the rows on screen come from a successful read; counts,
+  // the summary card and empty states never speak for data we do not have.
+  const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
@@ -93,6 +103,7 @@ export const SkillsMcpView: React.FC<{
   const reload = useCallback(async () => {
     const request = ++generation.current;
     setLoading(true);
+    setError(null);
     try {
       const [nextSkills, nextServers, sn, mn] = await Promise.all([
         skillsApi.getInstalled(),
@@ -105,10 +116,15 @@ export const SkillsMcpView: React.FC<{
       setServers(Object.values(nextServers));
       setSkillNotes(sn);
       setMcpNotes(mn);
-      setError(null);
+      setLoaded(true);
     } catch {
-      if (request === generation.current)
-        setError("读取失败，请重试。未显示示例数据。");
+      if (request === generation.current) {
+        // Rows from an earlier read may no longer be true; show only the error.
+        setInstalled([]);
+        setServers([]);
+        setLoaded(false);
+        setError("Skills 与 MCP 读取失败，请检查后重试。");
+      }
     } finally {
       if (request === generation.current) setLoading(false);
     }
@@ -119,6 +135,11 @@ export const SkillsMcpView: React.FC<{
       generation.current++;
     };
   }, [reload, refreshVersion]);
+  useEffect(() => {
+    // In the narrow layout the panel opens below the fold; moving focus into
+    // it also scrolls it into view, so the click visibly does something.
+    if (installDrawerOpen) installPanelRef.current?.focus();
+  }, [installDrawerOpen]);
   const run = async (action: () => Promise<unknown>) => {
     if (busyRef.current) return false;
     busyRef.current = true;
@@ -195,6 +216,17 @@ export const SkillsMcpView: React.FC<{
     });
   const enabledSkillsCount = skills.filter((s) => s.enabled).length;
   const enabledMcpCount = mcps.filter((s) => s.enabled).length;
+  const hasCurrentRows =
+    loaded && (tab === "skills" ? skills.length > 0 : mcps.length > 0);
+  // The backend only checks Skills that were installed from a repository.
+  const hasRepoSkills = installed.some(
+    (skill) => skill.repoOwner && skill.repoName,
+  );
+  const installFromZip = () =>
+    void run(async () => {
+      const path = await skillsApi.openZipFileDialog();
+      if (path) await skillsApi.installFromZip(path, targetApp);
+    });
   const exportSafeConfiguration = () => {
     const maskValues = (values?: Record<string, string>) =>
       values
@@ -245,7 +277,7 @@ export const SkillsMcpView: React.FC<{
         <div className="box-border w-fit shrink-0 h-fit flex flex-row gap-[8px] justify-start items-center">
           <button
             type="button"
-            disabled={loading || !!error}
+            disabled={loading || !loaded}
             onClick={exportSafeConfiguration}
             aria-describedby="mcp-export-scope"
             className="box-border w-fit shrink-0 h-[32px] flex flex-row gap-[6px] px-[12px] justify-center items-center bg-[var(--bg-surface)] outline outline-1 outline-[var(--border-control)] -outline-offset-[0.5px] rounded-[4px] border-none cursor-pointer text-[var(--text-1)] hover:bg-[var(--bg-subtle)] transition-colors"
@@ -255,20 +287,23 @@ export const SkillsMcpView: React.FC<{
               导出
             </span>
           </button>
-          <button
-            type="button"
-            disabled={busy || loading || !!error}
-            onClick={() => {
-              if (tab === "skills") setInstallDrawerOpen(true);
-              else setEditing("new");
-            }}
-            className="box-border w-fit shrink-0 h-[32px] flex flex-row gap-[6px] px-[12px] justify-center items-center bg-[#006AA0] hover:bg-[#005a88] active:bg-[#004e76] transition-colors rounded-[4px] border-none cursor-pointer text-[#FDFDFE]"
-          >
-            <Plus size={16} strokeWidth={2.5} />
-            <span className="text-[14px]/[20px] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal whitespace-nowrap">
-              {tab === "skills" ? "安装" : "添加 MCP"}
-            </span>
-          </button>
+          {/* The empty state carries the add action itself; one primary is enough. */}
+          {hasCurrentRows && (
+            <button
+              type="button"
+              disabled={busy || loading}
+              onClick={() => {
+                if (tab === "skills") setInstallDrawerOpen(true);
+                else setEditing("new");
+              }}
+              className="box-border w-fit shrink-0 h-[32px] flex flex-row gap-[6px] px-[12px] justify-center items-center bg-[#006AA0] hover:bg-[#005a88] active:bg-[#004e76] transition-colors rounded-[4px] border-none cursor-pointer text-[#FDFDFE]"
+            >
+              <Plus size={16} strokeWidth={2.5} />
+              <span className="text-[14px]/[20px] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal whitespace-nowrap">
+                {tab === "skills" ? "安装" : "添加 MCP"}
+              </span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -306,7 +341,9 @@ export const SkillsMcpView: React.FC<{
         </select>
       </label>
       {!supportsMcp && (
-        <p role="status">OpenClaw 支持 Skills 同步，暂不支持受管 MCP 配置。</p>
+        <p role="status" className="skills-mcp-status">
+          OpenClaw 支持 Skills 同步，暂不支持受管 MCP 配置。
+        </p>
       )}
 
       <div className="box-border w-full min-h-[36px] shrink-0 flex flex-row gap-[24px] justify-start items-end border-b border-solid border-[var(--border-subtle)]">
@@ -326,9 +363,11 @@ export const SkillsMcpView: React.FC<{
           <span className="text-[14px]/[20px] font-[Overpass,system-ui,sans-serif] whitespace-nowrap">
             Skills
           </span>
-          <span className="text-[13px]/[18px] text-[var(--text-3)] font-[Overpass,system-ui,sans-serif] whitespace-nowrap">
-            {skills.length}
-          </span>
+          {loaded && (
+            <span className="text-[13px]/[18px] text-[var(--text-3)] font-[Overpass,system-ui,sans-serif] whitespace-nowrap">
+              {skills.length}
+            </span>
+          )}
         </button>
 
         <button
@@ -348,9 +387,11 @@ export const SkillsMcpView: React.FC<{
           <span className="text-[14px]/[20px] font-[Overpass,system-ui,sans-serif] whitespace-nowrap">
             MCP
           </span>
-          <span className="text-[13px]/[18px] text-[var(--text-3)] font-[Overpass,system-ui,sans-serif] whitespace-nowrap">
-            {mcps.length}
-          </span>
+          {loaded && (
+            <span className="text-[13px]/[18px] text-[var(--text-3)] font-[Overpass,system-ui,sans-serif] whitespace-nowrap">
+              {mcps.length}
+            </span>
+          )}
         </button>
 
         <div className="[flex:1_1_0]" />
@@ -367,359 +408,144 @@ export const SkillsMcpView: React.FC<{
         </div>
       </div>
 
-      {/* 状态头 (深色石墨灯箱 1:1) */}
-      <div
-        data-pencil-name="状态头"
-        className="box-border w-full h-[97px] shrink-0 flex flex-row gap-[24px] p-[16px_16px_16px_24px] justify-start items-center bg-[#1A1E24] outline outline-1 outline-[#1A1E24] -outline-offset-[0.5px] rounded-[8px] overflow-hidden text-[#F5F7F9]"
-      >
-        {/* 标题区 */}
-        <div className="box-border w-[200px] shrink-0 h-fit flex flex-col gap-[2px] justify-start items-start">
-          <div className="text-[13px]/[18px] box-border text-[#94999E] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left whitespace-nowrap">
-            {tab === "skills" ? "已启用 Skills" : "已启用 MCP"}
-          </div>
-          <div className="text-[22px]/[25px] box-border text-[#F5F7F9] font-[Overpass,system-ui,sans-serif] font-bold text-left whitespace-nowrap">
-            {tab === "skills"
-              ? `${enabledSkillsCount} / ${skills.length}`
-              : `${enabledMcpCount} / ${mcps.length}`}
-          </div>
-          <div className="text-[13px]/[18px] box-border text-[#B4B8BC] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left whitespace-nowrap">
-            {tab === "skills"
-              ? `MCP 另有 ${mcps.length} 个`
-              : `Skills 另有 ${skills.length} 个`}
-          </div>
-        </div>
-
-        {/* 3 节点路径条 */}
-        <div className="box-border [flex:1_1_0] h-fit flex flex-row gap-0 justify-start items-start">
-          {/* 站 1 */}
-          <div className="box-border [flex:1_1_0] h-fit flex flex-col gap-[10px] justify-start items-start">
-            <div className="box-border w-full h-[12px] shrink-0 flex flex-row gap-0 justify-start items-center">
-              <div className="box-border w-[12px] shrink-0 h-[12px] bg-[#1A1E24] border-2 border-solid border-[#B4B8BC] rounded-full" />
-              <div className="box-border [flex:1_1_0] h-[2px] bg-[#94999E]" />
-            </div>
-            <div className="box-border w-full h-fit shrink-0 flex flex-col gap-[2px] pr-[12px] justify-start items-start">
-              <div className="text-[13px]/[18px] text-[#F5F7F9] font-['Noto_Sans_SC',system-ui,sans-serif] font-bold whitespace-nowrap">
-                {tab === "skills" ? "仓库与 ZIP" : "MCP 配置"}
-              </div>
-              <div className="text-[13px]/[18px] w-full text-[#94999E] font-['Noto_Sans_SC',system-ui,sans-serif]">
-                {tab === "skills"
-                  ? `${new Set(skills.map((s) => s.source)).size} 个来源`
-                  : `${mcps.length} 个服务`}
-              </div>
-            </div>
-          </div>
-
-          {/* 站 2 */}
-          <div className="box-border [flex:1_1_0] h-fit flex flex-col gap-[10px] justify-start items-start">
-            <div className="box-border w-full h-[12px] shrink-0 flex flex-row gap-0 justify-start items-center">
-              <div className="box-border w-[12px] shrink-0 h-[12px] bg-[#1A1E24] border-2 border-solid border-[#B4B8BC] rounded-full" />
-              <div className="box-border [flex:1_1_0] h-[2px] bg-[#94999E]" />
-            </div>
-            <div className="box-border w-full h-fit shrink-0 flex flex-col gap-[2px] pr-[12px] justify-start items-start">
-              <div className="text-[13px]/[18px] text-[#F5F7F9] font-['Noto_Sans_SC',system-ui,sans-serif] font-bold whitespace-nowrap">
-                {tab === "skills" ? "skills 目录" : "工具配置"}
-              </div>
-              <div className="text-[13px]/[18px] w-full text-[#94999E] font-['Noto_Sans_SC',system-ui,sans-serif]">
-                {tab === "skills"
-                  ? `${skills.length} 个 Skill · 独立目录`
-                  : `${enabledMcpCount} 个已启用服务`}
-              </div>
-            </div>
-          </div>
-
-          {/* 站 3 */}
-          <div className="box-border [flex:1_1_0] h-fit flex flex-col gap-[10px] justify-start items-start">
-            <div className="box-border w-full h-[12px] shrink-0 flex flex-row gap-0 justify-start items-center">
-              <div className="box-border w-[12px] shrink-0 h-[12px] bg-[#F5F7F9] border-2 border-solid border-[#F5F7F9] rounded-full" />
-            </div>
-            <div className="box-border w-full h-fit shrink-0 flex flex-col gap-[2px] pr-[12px] justify-start items-start">
-              <div className="text-[13px]/[18px] text-[#F5F7F9] font-[Overpass,system-ui,sans-serif] font-bold whitespace-nowrap">
-                {targetName}
-              </div>
-              <div className="text-[13px]/[18px] w-full text-[#94999E] font-['Noto_Sans_SC',system-ui,sans-serif]">
-                {tab === "skills"
-                  ? `新会话加载已启用的 ${enabledSkillsCount} 个`
-                  : `新会话启动已启用的 ${enabledMcpCount} 个`}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* 帮助图标 */}
-        <button
-          aria-label="了解 Skills 与 MCP 配置范围"
-          type="button"
-          onClick={() =>
-            toast.info(
-              tab === "skills"
-                ? "Skills 存放于本地独立文件夹"
-                : `MCP 服务同步到 ${targetName} 的配置，使用该工具的实际配置目录`,
-            )
-          }
-          className="box-border w-[28px] shrink-0 h-[28px] flex justify-center items-center outline outline-1 outline-[#6F757B] -outline-offset-[0.5px] rounded-[4px] bg-transparent text-[#B4B8BC] hover:text-white cursor-pointer"
-        >
-          <Question size={16} />
-        </button>
-      </div>
-
-      {loading && <p role="status">正在读取 Skills 与 MCP…</p>}
+      {loading && !loaded && (
+        <p role="status" className="skills-mcp-status">
+          正在读取 Skills 与 MCP…
+        </p>
+      )}
       {error && (
-        <div role="alert">
-          {error}{" "}
-          <button type="button" onClick={() => void reload()}>
+        <div role="alert" className="skills-mcp-notice">
+          <span>{error}</span>
+          <button
+            type="button"
+            className="skills-mcp-notice-action"
+            onClick={() => void reload()}
+          >
             重试
           </button>
         </div>
       )}
-      {!loading &&
-        !error &&
-        (tab === "skills" ? skills.length === 0 : mcps.length === 0) && (
-          <p>暂无{tab === "skills" ? "已安装的 Skills" : "MCP 服务"}</p>
-        )}
-      {operationError && <p role="alert">{operationError}</p>}
-      {tab === "skills" && (
-        <section className="skills-lifecycle" aria-label="Skills 生命周期">
-          <fieldset
-            disabled={
-              busy || loading || !!error || confirmation !== null || repoOpen
-            }
+      {operationError && (
+        <div role="alert" className="skills-mcp-notice">
+          <span>{operationError}</span>
+          <button
+            type="button"
+            className="skills-mcp-notice-action"
+            disabled={busy || loading}
+            onClick={() => {
+              setOperationError(null);
+              void reload();
+            }}
           >
-            <div className="skills-lifecycle-actions">
-              <button
-                type="button"
-                onClick={() =>
-                  void run(async () => {
-                    setRepos(await skillsApi.getRepos());
-                    setRepoOpen(true);
-                  })
-                }
-              >
-                管理仓库
-              </button>
-              <button
-                type="button"
-                onClick={() =>
-                  void run(async () => {
-                    setUnmanaged(null);
-                    setSelectedImports([]);
-                    setUnmanaged(await skillsApi.scanUnmanaged());
-                  })
-                }
-              >
-                扫描未纳管 Skills
-              </button>
-              <button
-                type="button"
-                onClick={() =>
-                  void run(async () => {
-                    setUpdates(null);
-                    setUpdates(await skillsApi.checkUpdates());
-                  })
-                }
-              >
-                检查 Skills 更新
-              </button>
-              <button
-                type="button"
-                onClick={() =>
-                  void run(async () => {
-                    setBackups(null);
-                    setBackups(await skillsApi.getBackups());
-                  })
-                }
-              >
-                查看可恢复备份
-              </button>
-            </div>
-            {unmanaged !== null && (
-              <div>
-                <h2>扫描结果</h2>
-                <p>
-                  仅纳管所选项目并启用到 {targetName}
-                  ，其他目标不勾选。同目录名的多个来源不支持在此消歧，请先整理来源。
-                </p>
-                {unmanaged.length === 0 && <p>未发现未纳管的 Skills。</p>}
-                {unmanaged.map((skill, index) => (
-                  <label
-                    className="skills-lifecycle-row"
-                    key={`${skill.directory}-${index}`}
-                  >
-                    <input
-                      type="checkbox"
-                      aria-label={`纳管 ${skill.name}`}
-                      checked={selectedImports.includes(skill.directory)}
-                      disabled={
-                        unmanaged.filter(
-                          (item) => item.directory === skill.directory,
-                        ).length !== 1
-                      }
-                      onChange={(event) =>
-                        setSelectedImports((previous) =>
-                          event.target.checked
-                            ? [...previous, skill.directory]
-                            : previous.filter(
-                                (item) => item !== skill.directory,
-                              ),
-                        )
-                      }
-                    />
-                    <span>
-                      {skill.name} · {skill.path} · {skill.foundIn.join(", ")}
-                    </span>
-                  </label>
-                ))}
-                <button
-                  type="button"
-                  disabled={selectedImports.length === 0}
-                  onClick={() => {
-                    const imports = selectedImports.map((directory) => ({
-                      directory,
-                      apps: {
-                        claude: false,
-                        codex: false,
-                        gemini: false,
-                        grokbuild: false,
-                        opencode: false,
-                        openclaw: false,
-                        hermes: false,
-                        [targetApp]: true,
-                      },
-                    }));
-                    setConfirmation({
-                      title: "确认纳管 Skills",
-                      message: `将复制所选 ${imports.length} 个 Skill 到受管目录，并同步到 ${targetName}。请先备份同名目录；失败可能部分完成。`,
-                      action: async () => {
-                        await skillsApi.importFromApps(imports);
-                        setSelectedImports([]);
-                        setUnmanaged(await skillsApi.scanUnmanaged());
-                      },
-                    });
-                  }}
-                >
-                  纳管所选 Skills
-                </button>
-              </div>
-            )}
-            {updates !== null && (
-              <div>
-                <h2>更新检查结果</h2>
-                <p role="note">
-                  更新前会备份当前版本，并按原仓库路径匹配来源；来源不明确时后端会拒绝更新。检查结果不代表所有仓库都已成功访问。
-                </p>
-                {updates.length === 0 ? (
-                  <p>未报告可更新项目。</p>
-                ) : (
-                  updates.map((update) => (
-                    <div key={update.id} className="skills-lifecycle-row">
-                      <span>{update.name} · 检测到更新</span>
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() =>
-                          setConfirmation({
-                            title: "确认更新 Skill",
-                            message: `更新 ${update.name} 将覆盖受管版本并同步到已启用的工具。当前版本会先备份，请确认已保存本地改动。`,
-                            action: async () => {
-                              await skillsApi.updateSkill(update.id);
-                              setUpdates(
-                                (current) =>
-                                  current?.filter(
-                                    (item) => item.id !== update.id,
-                                  ) ?? null,
-                              );
-                            },
-                          })
-                        }
-                      >
-                        更新 {update.name}
-                      </button>
-                    </div>
-                  ))
-                )}
-              </div>
-            )}
-            {backups !== null && (
-              <div>
-                <h2>可恢复备份</h2>
-                {backups.length === 0 && <p>暂无可恢复备份。</p>}
-                {backups.map((backup) => (
-                  <div className="skills-lifecycle-row" key={backup.backupId}>
-                    <span>
-                      {backup.skill.name} ·{" "}
-                      {new Date(backup.createdAt * 1000).toLocaleString()}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setConfirmation({
-                          title: "恢复 Skill",
-                          message: `恢复「${backup.skill.name}」并启用到 ${targetName}。请检查目标目录，避免与手工安装内容冲突。`,
-                          action: async () => {
-                            await skillsApi.restoreBackup(
-                              backup.backupId,
-                              targetApp,
-                            );
-                            setBackups(await skillsApi.getBackups());
-                          },
-                        })
-                      }
-                    >
-                      恢复 {backup.skill.name}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setConfirmation({
-                          title: "删除 Skill 备份",
-                          message: `永久删除「${backup.skill.name}」的此份备份？删除后不能用它恢复。`,
-                          action: async () => {
-                            if (
-                              !(await skillsApi.deleteBackup(backup.backupId))
-                            )
-                              throw new Error("delete rejected");
-                            setBackups(await skillsApi.getBackups());
-                          },
-                        })
-                      }
-                    >
-                      删除备份 {backup.skill.name}
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-            {skills.length > 0 && (
-              <details>
-                <summary>卸载已安装 Skill</summary>
-                <p>卸载会影响所有已启用的工具；备份可从上方恢复入口查看。</p>
-                {skills.map((skill) => (
-                  <button
-                    type="button"
-                    key={skill.id}
-                    onClick={() =>
-                      setConfirmation({
-                        title: "卸载 Skill",
-                        message: `卸载「${skill.name}」并移除所有工具中的投影？此操作不限于 ${targetName}。`,
-                        action: async () => {
-                          await skillsApi.uninstallUnified(skill.id);
-                          setBackups(await skillsApi.getBackups());
-                        },
-                      })
-                    }
-                  >
-                    卸载 {skill.name}
-                  </button>
-                ))}
-              </details>
-            )}
-          </fieldset>
-        </section>
+            重新读取
+          </button>
+        </div>
       )}
+
+      {/* 状态头 (深色石墨灯箱 1:1)：只在有真实条目时出现，空列表不画一条全是 0 的链路。 */}
+      {hasCurrentRows && (
+        <div
+          data-pencil-name="状态头"
+          className="box-border w-full min-h-[97px] shrink-0 flex flex-row gap-[24px] p-[16px_16px_16px_24px] justify-start items-center bg-[#1A1E24] outline outline-1 outline-[#1A1E24] -outline-offset-[0.5px] rounded-[8px] overflow-hidden text-[#F5F7F9]"
+        >
+          {/* 标题区 */}
+          <div className="box-border w-[200px] shrink-0 h-fit flex flex-col gap-[2px] justify-start items-start">
+            <div className="text-[13px]/[18px] box-border text-[#94999E] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left whitespace-nowrap">
+              {tab === "skills" ? "已启用 Skills" : "已启用 MCP"}
+            </div>
+            <div className="text-[22px]/[25px] box-border text-[#F5F7F9] font-[Overpass,system-ui,sans-serif] font-bold text-left whitespace-nowrap">
+              {tab === "skills"
+                ? `${enabledSkillsCount} / ${skills.length}`
+                : `${enabledMcpCount} / ${mcps.length}`}
+            </div>
+            {(tab === "mcp" || supportsMcp) && (
+              <div className="text-[13px]/[18px] box-border text-[#B4B8BC] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left whitespace-nowrap">
+                {tab === "skills"
+                  ? `MCP 另有 ${mcps.length} 个`
+                  : `Skills 另有 ${skills.length} 个`}
+              </div>
+            )}
+          </div>
+
+          {/* 3 节点路径条 */}
+          <div className="box-border [flex:1_1_0] h-fit flex flex-row gap-0 justify-start items-start">
+            {/* 站 1 */}
+            <div className="box-border [flex:1_1_0] h-fit flex flex-col gap-[10px] justify-start items-start">
+              <div className="box-border w-full h-[12px] shrink-0 flex flex-row gap-0 justify-start items-center">
+                <div className="box-border w-[12px] shrink-0 h-[12px] bg-[#1A1E24] border-2 border-solid border-[#B4B8BC] rounded-full" />
+                <div className="box-border [flex:1_1_0] h-[2px] bg-[#94999E]" />
+              </div>
+              <div className="box-border w-full h-fit shrink-0 flex flex-col gap-[2px] pr-[12px] justify-start items-start">
+                <div className="text-[13px]/[18px] text-[#F5F7F9] font-['Noto_Sans_SC',system-ui,sans-serif] font-bold whitespace-nowrap">
+                  {tab === "skills" ? "仓库与 ZIP" : "MCP 配置"}
+                </div>
+                <div className="text-[13px]/[18px] w-full text-[#94999E] font-['Noto_Sans_SC',system-ui,sans-serif]">
+                  {tab === "skills"
+                    ? `${new Set(skills.map((s) => s.source)).size} 个来源`
+                    : `${mcps.length} 个服务`}
+                </div>
+              </div>
+            </div>
+
+            {/* 站 2 */}
+            <div className="box-border [flex:1_1_0] h-fit flex flex-col gap-[10px] justify-start items-start">
+              <div className="box-border w-full h-[12px] shrink-0 flex flex-row gap-0 justify-start items-center">
+                <div className="box-border w-[12px] shrink-0 h-[12px] bg-[#1A1E24] border-2 border-solid border-[#B4B8BC] rounded-full" />
+                <div className="box-border [flex:1_1_0] h-[2px] bg-[#94999E]" />
+              </div>
+              <div className="box-border w-full h-fit shrink-0 flex flex-col gap-[2px] pr-[12px] justify-start items-start">
+                <div className="text-[13px]/[18px] text-[#F5F7F9] font-['Noto_Sans_SC',system-ui,sans-serif] font-bold whitespace-nowrap">
+                  {tab === "skills" ? "skills 目录" : "工具配置"}
+                </div>
+                <div className="text-[13px]/[18px] w-full text-[#94999E] font-['Noto_Sans_SC',system-ui,sans-serif]">
+                  {tab === "skills"
+                    ? `${skills.length} 个 Skill · 独立目录`
+                    : `${enabledMcpCount} 个已启用服务`}
+                </div>
+              </div>
+            </div>
+
+            {/* 站 3 */}
+            <div className="box-border [flex:1_1_0] h-fit flex flex-col gap-[10px] justify-start items-start">
+              <div className="box-border w-full h-[12px] shrink-0 flex flex-row gap-0 justify-start items-center">
+                <div className="box-border w-[12px] shrink-0 h-[12px] bg-[#F5F7F9] border-2 border-solid border-[#F5F7F9] rounded-full" />
+              </div>
+              <div className="box-border w-full h-fit shrink-0 flex flex-col gap-[2px] pr-[12px] justify-start items-start">
+                <div className="text-[13px]/[18px] text-[#F5F7F9] font-[Overpass,system-ui,sans-serif] font-bold whitespace-nowrap">
+                  {targetName}
+                </div>
+                <div className="text-[13px]/[18px] w-full text-[#94999E] font-['Noto_Sans_SC',system-ui,sans-serif]">
+                  {tab === "skills"
+                    ? `新会话加载已启用的 ${enabledSkillsCount} 个`
+                    : `新会话启动已启用的 ${enabledMcpCount} 个`}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* 帮助图标 */}
+          <button
+            aria-label="了解 Skills 与 MCP 配置范围"
+            type="button"
+            onClick={() =>
+              toast.info(
+                tab === "skills"
+                  ? "Skills 存放于本地独立文件夹"
+                  : `MCP 服务同步到 ${targetName} 的配置，使用该工具的实际配置目录`,
+              )
+            }
+            className="box-border w-[28px] shrink-0 h-[28px] flex justify-center items-center outline outline-1 outline-[#6F757B] -outline-offset-[0.5px] rounded-[4px] bg-transparent text-[#B4B8BC] hover:text-white cursor-pointer"
+          >
+            <Question size={16} />
+          </button>
+        </div>
+      )}
+
       {repoOpen && (
         <Suspense fallback={<p role="status">正在加载仓库管理…</p>}>
           <RepoManagerPanel
             repos={repos}
-            skills={available}
+            skills={available ?? []}
             onClose={() => {
               if (!busyRef.current) setRepoOpen(false);
             }}
@@ -728,7 +554,7 @@ export const SkillsMcpView: React.FC<{
                 if (!(await skillsApi.addRepo(repo)))
                   throw new Error("add rejected");
                 setRepos(await skillsApi.getRepos());
-                setAvailable([]);
+                setAvailable(null);
               });
               if (!saved) throw new Error("仓库保存失败，请重试。");
             }}
@@ -740,7 +566,7 @@ export const SkillsMcpView: React.FC<{
                   if (!(await skillsApi.removeRepo(owner, name)))
                     throw new Error("remove rejected");
                   setRepos(await skillsApi.getRepos());
-                  setAvailable([]);
+                  setAvailable(null);
                 },
               });
             }}
@@ -773,6 +599,327 @@ export const SkillsMcpView: React.FC<{
       >
         {/* 左侧：列表 */}
         <div className="skills-mcp-list box-border min-w-0 [flex:1_1_0] h-fit flex flex-col gap-0 justify-start items-start">
+          {loaded && tab === "skills" && skills.length === 0 && (
+            <section
+              className="resource-empty"
+              aria-labelledby="skills-empty-title"
+            >
+              <span className="resource-empty-icon" aria-hidden="true">
+                <Puzzle size={22} strokeWidth={1.6} />
+              </span>
+              <h2 id="skills-empty-title">还没有安装 Skills</h2>
+              <p>
+                Skill 是打包好的任务说明和脚本，启用后 {targetName}
+                会在新会话中按需使用。
+              </p>
+              <div className="resource-empty-paths">
+                <button
+                  type="button"
+                  className="resource-path"
+                  aria-expanded={installDrawerOpen}
+                  aria-controls={
+                    installDrawerOpen ? "skills-install-panel" : undefined
+                  }
+                  onClick={() => setInstallDrawerOpen(true)}
+                >
+                  <GitBranch size={18} aria-hidden="true" />
+                  <span>
+                    <strong>从仓库安装</strong>
+                    <small>从已添加的 Git 仓库中挑选</small>
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  className="resource-path"
+                  onClick={installFromZip}
+                >
+                  <FileArchive size={18} aria-hidden="true" />
+                  <span>
+                    <strong>导入 ZIP</strong>
+                    <small>选择本机的 Skill 压缩包</small>
+                  </span>
+                </button>
+              </div>
+            </section>
+          )}
+          {loaded && tab === "mcp" && mcps.length === 0 && (
+            <section
+              className="resource-empty"
+              aria-labelledby="mcp-empty-title"
+            >
+              <span className="resource-empty-icon" aria-hidden="true">
+                <Plug size={22} strokeWidth={1.6} />
+              </span>
+              <h2 id="mcp-empty-title">还没有 MCP 服务</h2>
+              <p>
+                MCP 服务为 {targetName}
+                接入额外的工具和数据，比如读写本地文件、查询文档。
+              </p>
+              <button
+                type="button"
+                className="resource-empty-primary"
+                onClick={() => setEditing("new")}
+              >
+                <Plus size={16} strokeWidth={2.5} aria-hidden="true" />
+                添加 MCP
+              </button>
+            </section>
+          )}
+          {loaded && tab === "skills" && (
+            <section className="skills-lifecycle" aria-label="Skills 维护">
+              <fieldset
+                disabled={
+                  busy ||
+                  loading ||
+                  !!error ||
+                  confirmation !== null ||
+                  repoOpen
+                }
+              >
+                <div className="skills-maintenance">
+                  <span className="skills-maintenance-label">
+                    {skills.length === 0 ? "也可以" : "维护"}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void run(async () => {
+                        setRepos(await skillsApi.getRepos());
+                        setRepoOpen(true);
+                      })
+                    }
+                  >
+                    管理仓库
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void run(async () => {
+                        setUnmanaged(null);
+                        setSelectedImports([]);
+                        setUnmanaged(await skillsApi.scanUnmanaged());
+                      })
+                    }
+                  >
+                    扫描未纳管 Skills
+                  </button>
+                  {hasRepoSkills && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void run(async () => {
+                          setUpdates(null);
+                          setUpdates(await skillsApi.checkUpdates());
+                        })
+                      }
+                    >
+                      检查 Skills 更新
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void run(async () => {
+                        setBackups(null);
+                        setBackups(await skillsApi.getBackups());
+                      })
+                    }
+                  >
+                    查看可恢复备份
+                  </button>
+                </div>
+                {unmanaged !== null && (
+                  <div className="skills-lifecycle-panel">
+                    <h2>扫描结果</h2>
+                    <p>
+                      仅纳管所选项目并启用到 {targetName}
+                      ，其他目标不勾选。同目录名的多个来源不支持在此消歧，请先整理来源。
+                    </p>
+                    {unmanaged.length === 0 && <p>未发现未纳管的 Skills。</p>}
+                    {unmanaged.map((skill, index) => (
+                      <label
+                        className="skills-lifecycle-row"
+                        key={`${skill.directory}-${index}`}
+                      >
+                        <input
+                          type="checkbox"
+                          aria-label={`纳管 ${skill.name}`}
+                          checked={selectedImports.includes(skill.directory)}
+                          disabled={
+                            unmanaged.filter(
+                              (item) => item.directory === skill.directory,
+                            ).length !== 1
+                          }
+                          onChange={(event) =>
+                            setSelectedImports((previous) =>
+                              event.target.checked
+                                ? [...previous, skill.directory]
+                                : previous.filter(
+                                    (item) => item !== skill.directory,
+                                  ),
+                            )
+                          }
+                        />
+                        <span>
+                          {skill.name} · {skill.path} ·{" "}
+                          {skill.foundIn.join(", ")}
+                        </span>
+                      </label>
+                    ))}
+                    <button
+                      type="button"
+                      disabled={selectedImports.length === 0}
+                      onClick={() => {
+                        const imports = selectedImports.map((directory) => ({
+                          directory,
+                          apps: {
+                            claude: false,
+                            codex: false,
+                            gemini: false,
+                            grokbuild: false,
+                            opencode: false,
+                            openclaw: false,
+                            hermes: false,
+                            [targetApp]: true,
+                          },
+                        }));
+                        setConfirmation({
+                          title: "确认纳管 Skills",
+                          message: `将复制所选 ${imports.length} 个 Skill 到受管目录，并同步到 ${targetName}。请先备份同名目录；失败可能部分完成。`,
+                          action: async () => {
+                            await skillsApi.importFromApps(imports);
+                            setSelectedImports([]);
+                            setUnmanaged(await skillsApi.scanUnmanaged());
+                          },
+                        });
+                      }}
+                    >
+                      纳管所选 Skills
+                    </button>
+                  </div>
+                )}
+                {updates !== null && (
+                  <div className="skills-lifecycle-panel">
+                    <h2>更新检查结果</h2>
+                    <p role="note">
+                      更新前会备份当前版本，并按原仓库路径匹配来源；来源不明确时不会更新。检查结果不代表所有仓库都已成功访问。
+                    </p>
+                    {updates.length === 0 ? (
+                      <p>未报告可更新项目。</p>
+                    ) : (
+                      updates.map((update) => (
+                        <div key={update.id} className="skills-lifecycle-row">
+                          <span>{update.name} · 检测到更新</span>
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() =>
+                              setConfirmation({
+                                title: "确认更新 Skill",
+                                message: `更新 ${update.name} 将覆盖受管版本并同步到已启用的工具。当前版本会先备份，请确认已保存本地改动。`,
+                                action: async () => {
+                                  await skillsApi.updateSkill(update.id);
+                                  setUpdates(
+                                    (current) =>
+                                      current?.filter(
+                                        (item) => item.id !== update.id,
+                                      ) ?? null,
+                                  );
+                                },
+                              })
+                            }
+                          >
+                            更新 {update.name}
+                          </button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                )}
+                {backups !== null && (
+                  <div className="skills-lifecycle-panel">
+                    <h2>可恢复备份</h2>
+                    {backups.length === 0 && <p>暂无可恢复备份。</p>}
+                    {backups.map((backup) => (
+                      <div
+                        className="skills-lifecycle-row"
+                        key={backup.backupId}
+                      >
+                        <span>
+                          {backup.skill.name} ·{" "}
+                          {new Date(backup.createdAt * 1000).toLocaleString()}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setConfirmation({
+                              title: "恢复 Skill",
+                              message: `恢复「${backup.skill.name}」并启用到 ${targetName}。请检查目标目录，避免与手工安装内容冲突。`,
+                              action: async () => {
+                                await skillsApi.restoreBackup(
+                                  backup.backupId,
+                                  targetApp,
+                                );
+                                setBackups(await skillsApi.getBackups());
+                              },
+                            })
+                          }
+                        >
+                          恢复 {backup.skill.name}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setConfirmation({
+                              title: "删除 Skill 备份",
+                              message: `永久删除「${backup.skill.name}」的此份备份？删除后不能用它恢复。`,
+                              action: async () => {
+                                if (
+                                  !(await skillsApi.deleteBackup(
+                                    backup.backupId,
+                                  ))
+                                )
+                                  throw new Error("delete rejected");
+                                setBackups(await skillsApi.getBackups());
+                              },
+                            })
+                          }
+                        >
+                          删除备份 {backup.skill.name}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {skills.length > 0 && (
+                  <details className="skills-lifecycle-panel">
+                    <summary>卸载已安装 Skill</summary>
+                    <p>
+                      卸载会影响所有已启用的工具；备份可从上方恢复入口查看。
+                    </p>
+                    {skills.map((skill) => (
+                      <button
+                        type="button"
+                        key={skill.id}
+                        onClick={() =>
+                          setConfirmation({
+                            title: "卸载 Skill",
+                            message: `卸载「${skill.name}」，并从所有已启用它的工具中移除？此操作不限于 ${targetName}。`,
+                            action: async () => {
+                              await skillsApi.uninstallUnified(skill.id);
+                              setBackups(await skillsApi.getBackups());
+                            },
+                          })
+                        }
+                      >
+                        卸载 {skill.name}
+                      </button>
+                    ))}
+                  </details>
+                )}
+              </fieldset>
+            </section>
+          )}
           {tab === "skills"
             ? /* Skills 列表 */
               skills.map((skill) => (
@@ -983,60 +1130,72 @@ export const SkillsMcpView: React.FC<{
         {tab === "skills"
           ? installDrawerOpen && (
               <div
+                ref={installPanelRef}
+                id="skills-install-panel"
+                tabIndex={-1}
                 role="region"
                 aria-label="安装 Skill"
-                className="skills-mcp-panel box-border w-[380px] min-h-full shrink-0 flex flex-col gap-[12px] pl-[24px] border-l border-solid border-[var(--border-subtle)]"
+                className="skills-mcp-panel skills-install-panel box-border w-[380px] min-h-full shrink-0 flex flex-col gap-[12px] pl-[24px] border-l border-solid border-[var(--border-subtle)]"
               >
-                <div className="flex justify-between w-full">
+                <div className="flex justify-between items-center w-full">
                   <strong>安装 Skill</strong>
                   <button
                     type="button"
                     aria-label="关闭安装"
+                    className="skills-install-close"
                     onClick={() => setInstallDrawerOpen(false)}
                   >
                     <X size={14} />
                   </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={() =>
-                    void run(async () => {
-                      const path = await skillsApi.openZipFileDialog();
-                      if (path) await skillsApi.installFromZip(path, targetApp);
-                    })
-                  }
-                >
-                  从 ZIP 安装…
-                </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    void run(async () =>
-                      setAvailable(await skillsApi.discoverAvailable()),
-                    )
-                  }
-                >
-                  读取已配置仓库
-                </button>
-                <p>复用设置中的仓库来源。安装后启用到 {targetName}。</p>
-                {available.map((skill) => (
-                  <div
-                    key={skill.key}
-                    className="flex gap-2 w-full items-center"
+                <p>安装后启用到 {targetName}，其他工具不受影响。</p>
+                <div className="skills-install-section">
+                  <h3>从仓库</h3>
+                  <p>读取「管理仓库」中添加的 Git 仓库，列出可安装的 Skill。</p>
+                  <button
+                    type="button"
+                    className="skills-install-action"
+                    onClick={() =>
+                      void run(async () =>
+                        setAvailable(await skillsApi.discoverAvailable()),
+                      )
+                    }
                   >
-                    <span className="flex-1">{skill.name}</span>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        void run(() =>
-                          skillsApi.installUnified(skill, targetApp),
-                        )
-                      }
-                    >
-                      安装 {skill.name}
-                    </button>
-                  </div>
-                ))}
+                    读取已配置仓库
+                  </button>
+                  {available?.length === 0 && (
+                    <p role="status">
+                      没有读取到可安装的
+                      Skill。请先在「管理仓库」中添加仓库，再重新读取。
+                    </p>
+                  )}
+                  {available?.map((skill) => (
+                    <div key={skill.key} className="skills-install-result">
+                      <span>{skill.name}</span>
+                      <button
+                        type="button"
+                        className="skills-install-action"
+                        onClick={() =>
+                          void run(() =>
+                            skillsApi.installUnified(skill, targetApp),
+                          )
+                        }
+                      >
+                        安装 {skill.name}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                <div className="skills-install-section">
+                  <h3>从 ZIP 文件</h3>
+                  <button
+                    type="button"
+                    className="skills-install-action"
+                    onClick={installFromZip}
+                  >
+                    从 ZIP 安装…
+                  </button>
+                </div>
               </div>
             )
           : /* MCP 详情面板 (1:1 落地) */

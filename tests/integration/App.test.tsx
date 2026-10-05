@@ -124,15 +124,15 @@ describe("Chimera++ application shell", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "外观" }));
     expect(
-      await screen.findByText(
-        "浏览器预览不读取皮肤目录，请在桌面应用中查看真实皮肤。",
-      ),
+      await screen.findByText("浏览器预览不读取皮肤目录"),
     ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "设置" }));
     expect(
       await screen.findByRole("heading", { name: "设置" }),
     ).toBeInTheDocument();
+    // Settings opens at 工具; the preference rows are one section away.
+    fireEvent.click(screen.getByRole("link", { name: "通用设置" }));
     expect(
       screen.getByRole("button", { name: /^数据与日志/ }),
     ).toBeInTheDocument();

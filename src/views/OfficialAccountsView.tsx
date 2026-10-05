@@ -57,6 +57,8 @@ interface OfficialAccountsViewProps {
   onAccountSwitched?: () => void;
 }
 
+let loginStartupPending = false;
+
 export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
   onAccountSwitched,
 }) => {
@@ -78,6 +80,9 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
 
   // Device Code Login State (03B)
   const [loginModalOpen, setLoginModalOpen] = useState(false);
+  const [loginMethod, setLoginMethod] = useState<"browser" | "device">(
+    "browser",
+  );
   const [startingLogin, setStartingLogin] = useState(false);
   const [activeLogin, setActiveLogin] = useState<StartedLoginDto | null>(null);
   const [loginError, setLoginError] = useState<string | null>(null);
@@ -213,8 +218,14 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
 
   // Each attempt owns its timers and requests. A cancelled attempt cannot close
   // a newer dialog or overwrite its status when a slow IPC response arrives.
-  const handleStartDeviceLogin = async () => {
+  const handleStartLogin = async (method: "browser" | "device" = "browser") => {
     if (startingLoginRef.current) return;
+    if (loginStartupPending) {
+      toast.error("上一登录仍在准备或取消中，请稍后重试");
+      return;
+    }
+    loginStartupPending = true;
+    setLoginMethod(method);
     if (!loginModalOpen)
       dialogTriggerRef.current = document.activeElement as HTMLElement | null;
     startingLoginRef.current = true;
@@ -250,7 +261,9 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
           .cancelDeviceLogin(previousFlow)
           .catch(() => {});
       if (!isCurrent()) return;
-      const started = await officialAccountsApi.startDeviceLogin();
+      const started = await (method === "browser"
+        ? officialAccountsApi.startBrowserLogin()
+        : officialAccountsApi.startDeviceLogin());
       if (!isCurrent()) {
         await officialAccountsApi
           .cancelDeviceLogin(started.flowId)
@@ -272,7 +285,12 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
           Math.ceil((deadline - Date.now()) / 1000),
         );
         setExpiresInSeconds(remaining);
-        if (!remaining) failLogin("一次性代码已过期，请重新获取代码。");
+        if (!remaining)
+          failLogin(
+            method === "device"
+              ? "一次性代码已过期，请重新获取代码。"
+              : "浏览器登录已过期，请重新登录。",
+          );
       };
       updateCountdown();
       if (!isCurrent()) return;
@@ -322,10 +340,9 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
     } catch (cause) {
       failLogin(cause instanceof Error ? cause.message : String(cause));
     } finally {
-      if (isCurrent()) {
-        startingLoginRef.current = false;
-        setStartingLogin(false);
-      }
+      startingLoginRef.current = false;
+      loginStartupPending = false;
+      setStartingLogin(false);
     }
   };
 
@@ -334,8 +351,6 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
     clearPollTimer();
     const flow = activeFlowRef.current;
     activeFlowRef.current = null;
-    startingLoginRef.current = false;
-    setStartingLogin(false);
     setActiveLogin(null);
     setLoginError(null);
     setLoginModalOpen(false);
@@ -424,18 +439,28 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
           <Button
             variant="outline"
             disabled={importingLogin || startingLogin || loginModalOpen}
+            onClick={() => void handleStartLogin("device")}
+          >
+            设备码登录
+          </Button>
+          <Button
+            variant="outline"
+            disabled={importingLogin || startingLogin || loginModalOpen}
             onClick={() => void handleImportLogin()}
           >
             {importingLogin ? "正在导入…" : "导入本机登录"}
           </Button>
-          <Button
-            ref={addAccountRef}
-            onClick={handleStartDeviceLogin}
-            disabled={startingLogin}
-          >
-            <Plus size={16} />
-            {startingLogin ? "正在准备登录…" : "添加官方账号"}
-          </Button>
+          {/* With no account yet, the empty card holds the only add action. */}
+          {(mergedAccounts.length > 0 || loadError) && (
+            <Button
+              ref={addAccountRef}
+              onClick={() => void handleStartLogin()}
+              disabled={startingLogin}
+            >
+              <Plus size={16} />
+              {startingLogin ? "正在准备登录…" : "添加官方账号"}
+            </Button>
+          )}
         </div>
       </header>
       {loading && (
@@ -488,13 +513,17 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
             <br />
             添加后即可查看额度，并将账号切换为当前 Codex 线路。
           </p>
-          <Button onClick={handleStartDeviceLogin} disabled={startingLogin}>
+          <Button
+            ref={addAccountRef}
+            onClick={() => void handleStartLogin()}
+            disabled={startingLogin}
+          >
             <Plus size={16} />
             {startingLogin ? "正在准备登录…" : "登录并添加账号"}
           </Button>
           <div className="accounts-login-steps">
             <span>
-              <b>01</b> 获取一次性代码
+              <b>01</b> 浏览器登录（推荐）
             </span>
             <span>
               <b>02</b> 前往官方网页授权
@@ -587,7 +616,7 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
                       (account.isCurrent && !account.needsRelogin)
                     }
                     onClick={(event) => {
-                      if (account.needsRelogin) void handleStartDeviceLogin();
+                      if (account.needsRelogin) void handleStartLogin();
                       else {
                         dialogTriggerRef.current = event.currentTarget;
                         setConfirmTarget(account);
@@ -645,13 +674,16 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
             </Button>
           </header>
           <DialogDescription className="account-dialog-description">
-            在浏览器中登录
-            ChatGPT，输入下方一次性代码。授权完成后，账号会自动添加到本机。
+            {loginMethod === "browser"
+              ? "在浏览器中登录 ChatGPT，授权后自动返回并添加账号，无需一次性代码。浏览器未自动打开时，可点击下方按钮。"
+              : "在浏览器中登录 ChatGPT，输入下方一次性代码。授权完成后，账号会自动添加到本机。"}
           </DialogDescription>
           {startingLogin && (
             <div className="account-login-wait" role="status">
               <CircleNotch size={16} className="animate-spin" />
-              正在获取一次性代码…
+              {loginMethod === "browser"
+                ? "正在启动浏览器登录…"
+                : "正在获取一次性代码…"}
             </div>
           )}
           {loginError && (
@@ -685,26 +717,28 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
                   打开浏览器
                 </Button>
               </div>
-              <div className="account-login-code">
-                <span>一次性代码</span>
-                <strong>{activeLogin.userCode}</strong>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() =>
-                    void handleCopy(activeLogin.userCode, "一次性代码")
-                  }
-                >
-                  <Copy size={15} />
-                  复制代码
-                </Button>
-              </div>
+              {loginMethod === "device" && (
+                <div className="account-login-code">
+                  <span>一次性代码</span>
+                  <strong>{activeLogin.userCode}</strong>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      void handleCopy(activeLogin.userCode, "一次性代码")
+                    }
+                  >
+                    <Copy size={15} />
+                    复制代码
+                  </Button>
+                </div>
+              )}
               <div className="account-login-wait" role="status">
                 <CircleNotch size={16} className="animate-spin" />
                 <span>
                   {expiresInSeconds > 0
                     ? pollWarning || "等待浏览器授权"
-                    : "代码已过期，请取消后重新登录"}
+                    : "登录已过期，请取消后重新登录"}
                 </span>
                 {expiresInSeconds > 0 && (
                   <small>{formatCountdown(expiresInSeconds)}</small>
@@ -717,6 +751,11 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
             </>
           )}
           <div className="account-login-help">
+            <p>
+              {loginMethod === "device"
+                ? "设备码登录需要在 ChatGPT 安全设置中开启；工作区可能需要管理员授权。未开启时可改用浏览器登录。"
+                : "浏览器登录需要本机回调端口可用；若回调受阻，可改用设备码登录或导入本机登录。"}
+            </p>
             <strong>浏览器报错或无法继续？</strong>
             <p>
               本应用无法读取浏览器中的报错。若显示{" "}
@@ -734,9 +773,19 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
             </Button>
             <Button
               disabled={startingLogin}
-              onClick={() => void handleStartDeviceLogin()}
+              onClick={() =>
+                void handleStartLogin(
+                  loginMethod === "browser" ? "device" : "browser",
+                )
+              }
             >
-              重新获取代码
+              {loginMethod === "browser" ? "改用设备码登录" : "改用浏览器登录"}
+            </Button>
+            <Button
+              disabled={startingLogin}
+              onClick={() => void handleStartLogin(loginMethod)}
+            >
+              {loginMethod === "browser" ? "重新登录" : "重新获取代码"}
             </Button>
           </footer>
         </DialogContent>

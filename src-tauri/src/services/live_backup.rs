@@ -30,7 +30,7 @@ use crate::store::AppState;
 
 /// Retention cap per tool; the oldest records are removed first.
 pub const MAX_BACKUPS_PER_APP: usize = 20;
-const RECORD_VERSION: u32 = 1;
+const RECORD_VERSION: u32 = 2;
 /// A record holds at most a few live files of `MAX_CONFIG_FILE_BYTES` each,
 /// base64-encoded.
 const MAX_RECORD_BYTES: u64 = 6 * MAX_CONFIG_FILE_BYTES;
@@ -60,7 +60,7 @@ pub enum LiveBackupReason {
 struct StoredFile {
     path: String,
     /// Base64 of the file bytes.
-    contents: String,
+    contents: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -288,14 +288,14 @@ fn store_backup(
 ) -> Result<Option<LiveBackupSummary>, AppError> {
     let mut files = Vec::new();
     for snapshot in snapshots {
-        if let Some(bytes) = snapshot.contents() {
-            files.push(StoredFile {
-                path: snapshot.path().display().to_string(),
-                contents: base64::engine::general_purpose::STANDARD.encode(bytes),
-            });
-        }
+        files.push(StoredFile {
+            path: snapshot.path().display().to_string(),
+            contents: snapshot
+                .contents()
+                .map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes)),
+        });
     }
-    if files.is_empty() {
+    if files.iter().all(|file| file.contents.is_none()) {
         return Ok(None);
     }
 
@@ -336,14 +336,14 @@ pub fn ensure_current_backup(
     let mut current = Vec::new();
     for path in live_files(app)? {
         let snapshot = FileSnapshot::read(&path).map_err(AppError::from)?;
-        if let Some(bytes) = snapshot.contents() {
-            current.push((
-                path.display().to_string(),
-                base64::engine::general_purpose::STANDARD.encode(bytes),
-            ));
-        }
+        current.push((
+            path.display().to_string(),
+            snapshot
+                .contents()
+                .map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes)),
+        ));
     }
-    if current.is_empty() {
+    if current.iter().all(|(_, contents)| contents.is_none()) {
         return Ok(None);
     }
     if let Some((record, path)) = load_records(app)?.into_iter().next() {
@@ -463,7 +463,10 @@ pub fn restore_backup(
         return Err(backup_not_found(id));
     }
     let record = load_record_file(&path)?;
-    if record.app != app.as_str() || record.version != RECORD_VERSION {
+    if record.app != app.as_str()
+        || !matches!(record.version, 1 | RECORD_VERSION)
+        || (record.version == 1 && record.files.iter().any(|file| file.contents.is_none()))
+    {
         return Err(AppError::localized(
             "live_backup.mismatch",
             "该备份不属于此工具或版本不受支持",
@@ -488,8 +491,11 @@ pub fn restore_backup(
                 ),
             ));
         }
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(&file.contents)
+        let bytes = file
+            .contents
+            .as_ref()
+            .map(|contents| base64::engine::general_purpose::STANDARD.decode(contents))
+            .transpose()
             .map_err(|e| AppError::Config(format!("备份内容无法解码 ({}): {e}", file.path)))?;
         planned.push((target, bytes));
     }
@@ -500,7 +506,10 @@ pub fn restore_backup(
         match planned.iter().find(|(target, _)| target == &prompt_path) {
             Some((_, bytes)) => {
                 let before = state.db.get_prompts("codex")?;
-                let next = super::prompt::prompts_after_restore(&before, bytes)?;
+                let next = super::prompt::prompts_after_restore(
+                    &before,
+                    bytes.as_deref().unwrap_or_default(),
+                )?;
                 Some((before, next))
             }
             None => None,
@@ -514,10 +523,17 @@ pub fn restore_backup(
     for (target, bytes) in planned {
         let snapshot = FileSnapshot::read(&target).map_err(AppError::from)?;
         if *app == AppType::Codex && target == codex_config_path {
-            let bytes = keep_user_codex_model(snapshot.contents(), bytes)?;
-            crate::codex_live_write::plan_restored_config(&mut changeset, snapshot, &bytes)?;
-        } else {
+            let absent = bytes.is_none();
+            let bytes = keep_user_codex_model(snapshot.contents(), bytes.unwrap_or_default())?;
+            if absent && bytes.is_empty() {
+                changeset.delete(snapshot).map_err(AppError::from)?;
+            } else {
+                crate::codex_live_write::plan_restored_config(&mut changeset, snapshot, &bytes)?;
+            }
+        } else if let Some(bytes) = bytes {
             changeset.write(snapshot, bytes).map_err(AppError::from)?;
+        } else {
+            changeset.delete(snapshot).map_err(AppError::from)?;
         }
     }
     // Finish every validation before creating a backup, whose retention pass
@@ -660,7 +676,21 @@ pub(crate) mod tests {
         let backup = create_backup(&state.db, &AppType::Codex, LiveBackupReason::Manual)
             .unwrap()
             .expect("config.toml is backed up");
-        assert_eq!(backup.files, vec![config_path.display().to_string()]);
+        assert_eq!(
+            backup.files,
+            live_files(&AppType::Codex)
+                .unwrap()
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+        );
+        let record = load_record_file(Path::new(&backup.path)).unwrap();
+        assert!(record.files[0].contents.is_some());
+        assert!(record.files[1..].iter().all(|file| file.contents.is_none()));
+        assert!(record
+            .files
+            .iter()
+            .all(|file| !file.path.ends_with("auth.json")));
         write(
             &config_path,
             "model = \"gpt-a\"\n[tui]\ntheme = \"light\"\n",
@@ -828,7 +858,8 @@ pub(crate) mod tests {
             &crate::codex_config::get_codex_config_path(),
             "model = 'test'\n",
         );
-        let backup = create_backup(&state.db, &AppType::Codex, LiveBackupReason::Manual)
+        let snapshot = FileSnapshot::read(crate::codex_config::get_codex_config_path()).unwrap();
+        let backup = create_config_repair_backup(&state.db, &snapshot)
             .unwrap()
             .unwrap();
         set_prompt(&state, "Managed rules");
@@ -838,6 +869,95 @@ pub(crate) mod tests {
         restore_backup(&state, &AppType::Codex, &backup.id).unwrap();
         assert_eq!(state.db.get_prompts("codex").unwrap(), before);
         assert_eq!(fs::read(prompt_path).unwrap(), before_file);
+    }
+
+    #[test]
+    #[serial]
+    fn full_restore_removes_new_files_and_reconciles_prompts() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().unwrap();
+        let state = state();
+        let config_path = crate::codex_config::get_codex_config_path();
+        let prompt_path = crate::prompt_files::prompt_file_path(&AppType::Codex).unwrap();
+        let catalog_path = crate::codex_config::get_codex_model_catalog_path();
+        write(&config_path, "model = 'before'\n");
+        let backup = create_backup(&state.db, &AppType::Codex, LiveBackupReason::Manual)
+            .unwrap()
+            .unwrap();
+        set_prompt(&state, "New rules");
+        write(&catalog_path, "{}");
+        write(&config_path, "model = 'current'\n");
+        let result = restore_backup(&state, &AppType::Codex, &backup.id).unwrap();
+        assert!(!prompt_path.exists());
+        assert!(!catalog_path.exists());
+        assert!(state
+            .db
+            .get_prompts("codex")
+            .unwrap()
+            .values()
+            .all(|prompt| !prompt.enabled));
+        assert!(fs::read_to_string(&config_path)
+            .unwrap()
+            .contains("current"));
+        restore_backup(
+            &state,
+            &AppType::Codex,
+            &result.pre_restore_backup_id.unwrap(),
+        )
+        .unwrap();
+        assert!(prompt_path.exists());
+        assert!(catalog_path.exists());
+        assert!(state
+            .db
+            .get_prompts("codex")
+            .unwrap()
+            .values()
+            .any(|prompt| prompt.enabled));
+    }
+
+    #[test]
+    #[serial]
+    fn absent_files_restore_rolls_back_when_prompt_commit_fails() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().unwrap();
+        let state = state();
+        write(
+            &crate::codex_config::get_codex_config_path(),
+            "model = 'test'\n",
+        );
+        let backup = create_backup(&state.db, &AppType::Codex, LiveBackupReason::Manual)
+            .unwrap()
+            .unwrap();
+        set_prompt(&state, "Keep rules");
+        let prompt_path = crate::prompt_files::prompt_file_path(&AppType::Codex).unwrap();
+        let before = fs::read(&prompt_path).unwrap();
+        state.db.conn.lock().unwrap().execute_batch(
+            "CREATE TRIGGER reject_restore BEFORE UPDATE ON prompts BEGIN SELECT RAISE(ABORT, 'injected failure'); END;"
+        ).unwrap();
+        assert!(restore_backup(&state, &AppType::Codex, &backup.id).is_err());
+        assert_eq!(fs::read(&prompt_path).unwrap(), before);
+    }
+
+    #[test]
+    #[serial]
+    fn legacy_backup_restores_only_recorded_files() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().unwrap();
+        let state = state();
+        let config_path = crate::codex_config::get_codex_config_path();
+        write(&config_path, "model = 'before'\n");
+        let snapshot = FileSnapshot::read(&config_path).unwrap();
+        let backup = create_config_repair_backup(&state.db, &snapshot)
+            .unwrap()
+            .unwrap();
+        let mut record = load_record_file(Path::new(&backup.path)).unwrap();
+        record.version = 1;
+        fs::write(&backup.path, serde_json::to_vec(&record).unwrap()).unwrap();
+        set_prompt(&state, "Keep rules");
+        let prompt_path = crate::prompt_files::prompt_file_path(&AppType::Codex).unwrap();
+        let before = fs::read(&prompt_path).unwrap();
+        restore_backup(&state, &AppType::Codex, &backup.id).unwrap();
+        assert_eq!(fs::read(&prompt_path).unwrap(), before);
     }
 
     #[test]

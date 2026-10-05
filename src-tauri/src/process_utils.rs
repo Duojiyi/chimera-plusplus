@@ -261,7 +261,7 @@ fn wait_for_exit(child: &mut Child, timeout: Duration) -> io::Result<()> {
 }
 
 #[cfg(target_os = "windows")]
-fn terminate_process_tree(pid: u32) {
+pub(crate) fn terminate_process_tree(pid: u32) {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x08000000;
 

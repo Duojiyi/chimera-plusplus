@@ -61,6 +61,42 @@ function setup(overrides: Partial<ComponentProps<typeof ProviderEditor>> = {}) {
 }
 
 describe("full-page provider editor", () => {
+  it("does not report untested models as failed when reopening persisted protocol results", () => {
+    setup({
+      editor: {
+        ...providerDraft(null, "已有线路"),
+        model: "gpt-current",
+        apiFormat: "auto",
+      },
+      apiFormatDetection: {
+        identity: "persisted-endpoint",
+        formats: { "gpt-previous": { apiFormat: "openai_responses" } },
+        failures: {},
+      },
+    });
+    expect(screen.queryByText("未返回原因")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("也可以直接指定协议保存："),
+    ).not.toBeInTheDocument();
+  });
+
+  it("still reports an explicitly failed model probe without a reason", () => {
+    setup({
+      editor: {
+        ...providerDraft(null, "已有线路"),
+        model: "gpt-current",
+        apiFormat: "auto",
+      },
+      apiFormatDetection: {
+        identity: "persisted-endpoint",
+        formats: {},
+        failures: { "gpt-current": "" },
+      },
+    });
+    expect(screen.getByText("未返回原因")).toBeInTheDocument();
+    expect(screen.getByText("也可以直接指定协议保存：")).toBeInTheDocument();
+  });
+
   it("edits the persisted line color and restores the default without changing credentials", () => {
     const { onDraftChange } = setup();
     fireEvent.click(screen.getByLabelText("修改线路外观"));
@@ -315,4 +351,39 @@ it("gives advanced configuration a visible disclosure action", () => {
   expect(details).toHaveAttribute("open");
   fireEvent.click(summary);
   expect(details).not.toHaveAttribute("open");
+});
+
+describe("1M context switch in the line editor", () => {
+  const openAdvanced = () =>
+    fireEvent.click(screen.getByText("高级配置").closest("summary")!);
+
+  it("is hidden while the capability is off", () => {
+    setup();
+    openAdvanced();
+    expect(
+      screen.queryByRole("switch", { name: "1M 上下文" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("writes the preset into the draft's config and takes it out again", () => {
+    const { onDraftChange } = setup({ context1mEnabled: true });
+    openAdvanced();
+    const toggle = screen.getByRole("switch", { name: "1M 上下文" });
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(toggle);
+    const on = onDraftChange.mock.lastCall![0].config as string;
+    expect(on).toContain("model_context_window = 1000000");
+    expect(on).toContain("model_auto_compact_token_limit = 900000");
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(toggle);
+    const off = onDraftChange.mock.lastCall![0].config as string;
+    expect(off).not.toContain("model_context_window");
+    expect(off).not.toContain("model_auto_compact_token_limit");
+  });
+
+  it("is locked while the line is saving", () => {
+    setup({ context1mEnabled: true, savingProvider: true });
+    openAdvanced();
+    expect(screen.getByRole("switch", { name: "1M 上下文" })).toBeDisabled();
+  });
 });

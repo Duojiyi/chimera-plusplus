@@ -5,9 +5,17 @@ import { useTranslation } from "react-i18next";
 import { useTheme } from "@/components/theme-provider";
 import { LiveBackupsPanel } from "@/components/LiveBackupsPanel";
 import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { toast } from "sonner";
 import {
+  ChevronDown,
   CircleAlert,
   CircleCheck,
   Download,
@@ -50,16 +58,65 @@ const settingsSections = [
   ["settings-general", "通用设置"],
   ["settings-codex", "Codex 偏好"],
   ["settings-updates", "应用更新"],
-];
-const sectionFromLocation = () => {
-  const id = window.location.hash.slice(1);
-  return settingsSections.some(([section]) => section === id)
-    ? id
-    : "settings-backups";
-};
+] as const;
+type SectionId = (typeof settingsSections)[number][0];
+const firstSection: SectionId = settingsSections[0][0];
+// 工具 and 导入 are pages of their own; the other sections share one scroll.
+const isStandalone = (id: SectionId) =>
+  id === "settings-tools" || id === "settings-import";
+const scrolledSections = settingsSections
+  .map(([id]) => id)
+  .filter((id) => !isStandalone(id));
+// A section becomes current once its heading is within this distance of the
+// top edge of the scroll area.
+const SCROLL_SPY_OFFSET = 48;
+const isSectionHash = (hash: string) =>
+  settingsSections.some(([id]) => `#${id}` === hash);
+const sectionFromLocation = (): SectionId =>
+  settingsSections.find(([id]) => `#${id}` === window.location.hash)?.[0] ??
+  firstSection;
 
 const runningInTauri =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+function DisclosureRow({
+  id,
+  title,
+  description,
+  expanded,
+  disabled,
+  onToggle,
+}: {
+  id: string;
+  title: string;
+  description: string;
+  expanded: boolean;
+  disabled?: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="settings-reference-row settings-disclosure-row"
+      aria-expanded={expanded}
+      aria-controls={expanded ? `${id}-panel` : undefined}
+      aria-labelledby={`${id}-title`}
+      aria-describedby={`${id}-description`}
+      disabled={disabled}
+      onClick={onToggle}
+    >
+      <span>
+        <b id={`${id}-title`}>{title}</b>
+        <small id={`${id}-description`}>{description}</small>
+      </span>
+      <ChevronDown
+        className="settings-disclosure-icon"
+        size={16}
+        aria-hidden="true"
+      />
+    </button>
+  );
+}
 
 export function NewSettingsView({
   liveBackupsEnabled = false,
@@ -92,23 +149,34 @@ export function NewSettingsView({
   >(null);
   const [directoriesOpen, setDirectoriesOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const [sectionTarget, setSectionTarget] = useState(sectionFromLocation);
+  // Settings always opens at its first section, whatever an earlier visit left.
+  const [activeSection, setActiveSection] = useState<SectionId>(firstSection);
+  const [scrollRequest, setScrollRequest] = useState<{
+    id: SectionId;
+    focus: boolean;
+  } | null>(null);
+  // Where the last directory jump landed; its own scroll event must not move
+  // the highlight away from the section the user picked.
+  const jumpTop = useRef<number | null>(null);
   const saveQueue = useRef<Promise<void>>(Promise.resolve());
   const [pendingKeys, setPendingKeys] = useState<Set<string>>(new Set());
   const [settings, setSettings] = useState<Settings | null>(null);
-  const [autoLaunch, setAutoLaunch] = useState<boolean | null>(
-    runningInTauri ? null : true,
-  );
+  const [settingsError, setSettingsError] = useState(false);
   const [autoLaunchBusy, setAutoLaunchBusy] = useState(false);
-  const [autoLaunchError, setAutoLaunchError] = useState(false);
-  const [activeSection, setActiveSection] = useState(sectionFromLocation);
   const [appVersion, setAppVersion] = useState("正在读取版本");
 
   useEffect(() => {
+    if (isSectionHash(window.location.hash)) {
+      window.history.replaceState(
+        null,
+        "",
+        window.location.pathname + window.location.search,
+      );
+    }
     const syncSection = () => {
       const section = sectionFromLocation();
       setActiveSection(section);
-      setSectionTarget(section);
+      setScrollRequest({ id: section, focus: false });
     };
     window.addEventListener("hashchange", syncSection);
     window.addEventListener("popstate", syncSection);
@@ -118,16 +186,57 @@ export function NewSettingsView({
     };
   }, []);
 
-  useEffect(() => {
+  // Layout effect: the target may have just been unhidden, and the jump must
+  // land before paint.
+  useLayoutEffect(() => {
     const container = scrollRef.current;
-    const section = document.getElementById(sectionTarget);
-    if (container && section) {
-      container.scrollTop +=
-        section.getBoundingClientRect().top -
-        container.getBoundingClientRect().top;
-    }
-  }, [sectionTarget]);
+    const section = scrollRequest && document.getElementById(scrollRequest.id);
+    if (!container || !section) return;
+    container.scrollTop +=
+      section.getBoundingClientRect().top -
+      container.getBoundingClientRect().top;
+    jumpTop.current = container.scrollTop;
+    if (scrollRequest.focus) section.focus({ preventScroll: true });
+  }, [scrollRequest]);
 
+  const openSection = (id: SectionId) => {
+    if (window.location.hash !== `#${id}`) {
+      window.history.pushState(null, "", `#${id}`);
+    }
+    setActiveSection(id);
+    setScrollRequest({ id, focus: true });
+  };
+
+  const followScroll = () => {
+    const container = scrollRef.current;
+    if (!container || isStandalone(activeSection)) return;
+    if (
+      jumpTop.current !== null &&
+      Math.abs(container.scrollTop - jumpTop.current) < 1
+    )
+      return;
+    jumpTop.current = null;
+    const top = container.getBoundingClientRect().top;
+    let current = scrolledSections[0];
+    for (const id of scrolledSections) {
+      const section = document.getElementById(id);
+      if (
+        section &&
+        section.getBoundingClientRect().top - top <= SCROLL_SPY_OFFSET
+      )
+        current = id;
+    }
+    setActiveSection(current);
+  };
+
+  const loadSettings = async () => {
+    setSettingsError(false);
+    try {
+      setSettings(await settingsApi.get());
+    } catch {
+      setSettingsError(true);
+    }
+  };
   useEffect(() => {
     if (!runningInTauri) {
       setSettings({
@@ -137,15 +246,10 @@ export function NewSettingsView({
       setAppVersion("开发预览");
       return;
     }
-    void getCurrentVersion().then((version) =>
-      setAppVersion(version || "未知版本"),
-    );
-    void settingsApi
-      .get()
-      .then(setSettings)
-      .catch((reason) =>
-        toast.error("无法读取设置", { description: String(reason) }),
-      );
+    void getCurrentVersion()
+      .then((version) => setAppVersion(version || "未知版本"))
+      .catch(() => setAppVersion("未知版本"));
+    void loadSettings();
   }, []);
   const save = (patch: PreferencesPatch) => {
     if (!settings) return;
@@ -173,36 +277,28 @@ export function NewSettingsView({
       }
     });
   };
-  const readAutoLaunch = async () => {
-    setAutoLaunchBusy(true);
-    try {
-      setAutoLaunch(await settingsApi.getAutoLaunchStatus());
-      setAutoLaunchError(false);
-    } catch (reason) {
-      setAutoLaunchError(true);
-      toast.error("无法读取开机自启动状态", { description: String(reason) });
-    } finally {
-      setAutoLaunchBusy(false);
-    }
-  };
-  useEffect(() => {
-    if (runningInTauri) void readAutoLaunch();
-  }, []);
-  const toggleAutoLaunch = async () => {
-    if (autoLaunch === null || autoLaunchBusy) return;
+  // Mirrors the backend default for a preference that was never saved.
+  const launchOnStartup = settings?.launchOnStartup ?? true;
+  const toggleLaunchOnStartup = async () => {
+    if (!settings || autoLaunchBusy) return;
+    const enabled = !launchOnStartup;
     if (!runningInTauri) {
-      setAutoLaunch(!autoLaunch);
+      setSettings((current) =>
+        current ? { ...current, launchOnStartup: enabled } : current,
+      );
       return;
     }
     setAutoLaunchBusy(true);
     try {
-      await settingsApi.setAutoLaunch(!autoLaunch);
-      setAutoLaunch(!autoLaunch);
+      // The backend registers the system entry and saves the preference as one
+      // step and rolls back on failure, so the saved value only changes here.
+      await settingsApi.setAutoLaunch(enabled);
+      setSettings((current) =>
+        current ? { ...current, launchOnStartup: enabled } : current,
+      );
       toast.success("开机自启动设置已保存");
     } catch (reason) {
       toast.error("设置开机自启动失败", { description: String(reason) });
-      // Reconcile the actual OS state even if persistence/rollback failed.
-      await readAutoLaunch();
     } finally {
       setAutoLaunchBusy(false);
     }
@@ -327,18 +423,7 @@ export function NewSettingsView({
               aria-current={activeSection === id ? "location" : undefined}
               onClick={(event) => {
                 event.preventDefault();
-                if (window.location.hash !== `#${id}`) {
-                  window.history.pushState(null, "", `#${id}`);
-                }
-                setActiveSection(id);
-                setSectionTarget(id);
-                if (id === sectionTarget && scrollRef.current) {
-                  const section = document.getElementById(id);
-                  if (section)
-                    scrollRef.current.scrollTop +=
-                      section.getBoundingClientRect().top -
-                      scrollRef.current.getBoundingClientRect().top;
-                }
+                openSection(id);
               }}
             >
               {label}
@@ -350,34 +435,7 @@ export function NewSettingsView({
           ref={scrollRef}
           tabIndex={0}
           aria-label="设置内容"
-          onScroll={() => {
-            if (
-              activeSection === "settings-tools" ||
-              activeSection === "settings-import"
-            )
-              return;
-            const container = scrollRef.current;
-            if (!container) return;
-            if (
-              container.scrollHeight > container.clientHeight &&
-              container.scrollTop + container.clientHeight >=
-                container.scrollHeight - 2
-            ) {
-              setActiveSection("settings-updates");
-              return;
-            }
-            const top = container.getBoundingClientRect().top;
-            const current = settingsSections
-              .slice(2)
-              .filter(([id]) => {
-                const section = document.getElementById(id);
-                return (
-                  section && section.getBoundingClientRect().top <= top + 48
-                );
-              })
-              .at(-1);
-            if (current) setActiveSection(current[0]);
-          }}
+          onScroll={followScroll}
         >
           <div
             id="settings-tools"
@@ -398,39 +456,33 @@ export function NewSettingsView({
             )}
           </div>
           <div
-            hidden={
-              activeSection === "settings-tools" ||
-              activeSection === "settings-import"
-            }
+            hidden={isStandalone(activeSection)}
             className="settings-standard-sections"
           >
+            {settingsError && (
+              <div className="settings-load-error" role="alert">
+                <CircleAlert size={16} aria-hidden="true" />
+                <span>无法读取设置，以下偏好暂时不能修改。</span>
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => void loadSettings()}
+                >
+                  重试
+                </button>
+              </div>
+            )}
             <section
               id="settings-backups"
-              aria-label="备份与恢复"
+              aria-labelledby="settings-backups-heading"
               tabIndex={-1}
             >
-              <button
-                className="secondary"
-                disabled={!runningInTauri || recoveryBusy}
-                onClick={() => setDbOpen((open) => !open)}
-                aria-expanded={dbOpen}
-              >
-                应用数据库备份与恢复
-              </button>
-              {dbOpen && runningInTauri && (
-                <Suspense fallback={<p role="status">正在加载数据库备份…</p>}>
-                  <DatabaseRecoveryPanel
-                    onRestored={onImported}
-                    onBusyChange={setRecoveryBusy}
-                  />
-                </Suspense>
-              )}
+              <h2 id="settings-backups-heading">备份与恢复</h2>
               {liveBackupsEnabled ? (
                 <LiveBackupsPanel onRestored={onImported} />
               ) : (
                 <div className="settings-backups-unavailable">
-                  <div className="settings-backups-header">
-                    <h2>备份与恢复</h2>
+                  <div className="settings-backups-toolbar">
                     <button type="button" className="secondary" disabled>
                       打开备份目录
                     </button>
@@ -454,66 +506,113 @@ export function NewSettingsView({
                   </div>
                 </div>
               )}
+              <div className="settings-reference-list settings-backups-database">
+                <DisclosureRow
+                  id="settings-database"
+                  title="应用数据库"
+                  description="手动备份或恢复 Chimera++ 保存的线路等数据"
+                  expanded={dbOpen}
+                  disabled={!runningInTauri || recoveryBusy}
+                  onToggle={() => setDbOpen((open) => !open)}
+                />
+                {dbOpen && runningInTauri && (
+                  <div
+                    id="settings-database-panel"
+                    className="settings-subpanel"
+                  >
+                    <Suspense
+                      fallback={<p role="status">正在加载数据库备份…</p>}
+                    >
+                      <DatabaseRecoveryPanel
+                        onRestored={onImported}
+                        onBusyChange={setRecoveryBusy}
+                      />
+                    </Suspense>
+                  </div>
+                )}
+              </div>
             </section>
             <section
               id="settings-connections"
-              aria-label="代理与故障转移"
+              aria-labelledby="settings-connections-heading"
               tabIndex={-1}
             >
-              <h2>代理与故障转移</h2>
-              <p>
-                默认不启用代理或后台任务。打开面板只读取状态，保存、测试和启用均需手动操作。
+              <h2 id="settings-connections-heading">代理与故障转移</h2>
+              <p className="settings-section-lead">
+                默认不启用代理或后台任务。展开后只读取状态，保存、测试和启用都需要手动操作。
               </p>
-              <button
-                className="secondary"
-                disabled={!runningInTauri}
-                aria-expanded={connectionPanel === "proxy"}
-                onClick={() =>
-                  setConnectionPanel((panel) =>
-                    panel === "proxy" ? null : "proxy",
-                  )
-                }
-              >
-                全局 HTTP/SOCKS 出站代理
-              </button>{" "}
-              <button
-                className="secondary"
-                disabled={!runningInTauri}
-                aria-expanded={connectionPanel === "failover"}
-                onClick={() =>
-                  setConnectionPanel((panel) =>
-                    panel === "failover" ? null : "failover",
-                  )
-                }
-              >
-                自动故障转移管理
-              </button>
-              {runningInTauri && (
-                <Suspense fallback={<p role="status">正在加载代理设置…</p>}>
-                  {connectionPanel === "proxy" && <OutboundProxyPanel />}
-                  {connectionPanel === "failover" && <FailoverSettingsPanel />}
-                </Suspense>
-              )}
+              <div className="settings-reference-list">
+                <DisclosureRow
+                  id="settings-proxy"
+                  title="全局出站代理"
+                  description="Chimera++ 联网时使用的 HTTP 或 SOCKS 代理，不修改系统代理"
+                  expanded={connectionPanel === "proxy"}
+                  disabled={!runningInTauri}
+                  onToggle={() =>
+                    setConnectionPanel((panel) =>
+                      panel === "proxy" ? null : "proxy",
+                    )
+                  }
+                />
+                {connectionPanel === "proxy" && runningInTauri && (
+                  <div id="settings-proxy-panel" className="settings-subpanel">
+                    <Suspense fallback={<p role="status">正在加载代理设置…</p>}>
+                      <OutboundProxyPanel />
+                    </Suspense>
+                  </div>
+                )}
+                <DisclosureRow
+                  id="settings-failover"
+                  title="自动故障转移"
+                  description="本地代理请求失败时按队列切换线路"
+                  expanded={connectionPanel === "failover"}
+                  disabled={!runningInTauri}
+                  onToggle={() =>
+                    setConnectionPanel((panel) =>
+                      panel === "failover" ? null : "failover",
+                    )
+                  }
+                />
+                {connectionPanel === "failover" && runningInTauri && (
+                  <div
+                    id="settings-failover-panel"
+                    className="settings-subpanel"
+                  >
+                    <Suspense
+                      fallback={<p role="status">正在加载故障转移设置…</p>}
+                    >
+                      <FailoverSettingsPanel />
+                    </Suspense>
+                  </div>
+                )}
+              </div>
             </section>
             <section
               id="settings-directories"
-              aria-label="配置目录设置"
+              aria-labelledby="settings-directories-heading"
               tabIndex={-1}
             >
-              <h2>配置目录</h2>
-              <button
-                className="secondary"
-                disabled={!runningInTauri || directoryBusy}
-                aria-expanded={directoriesOpen}
-                onClick={() => setDirectoriesOpen((open) => !open)}
-              >
-                管理配置目录与 WSL 路径
-              </button>
-              {directoriesOpen && runningInTauri && (
-                <Suspense fallback={<p role="status">正在加载目录设置…</p>}>
-                  <ConfigDirectoriesPanel onBusyChange={setDirectoryBusy} />
-                </Suspense>
-              )}
+              <h2 id="settings-directories-heading">配置目录</h2>
+              <div className="settings-reference-list">
+                <DisclosureRow
+                  id="settings-config-dirs"
+                  title="配置目录与 WSL 路径"
+                  description="自定义各工具和 Chimera++ 读取配置的位置，留空使用默认目录"
+                  expanded={directoriesOpen}
+                  disabled={!runningInTauri || directoryBusy}
+                  onToggle={() => setDirectoriesOpen((open) => !open)}
+                />
+                {directoriesOpen && runningInTauri && (
+                  <div
+                    id="settings-config-dirs-panel"
+                    className="settings-subpanel"
+                  >
+                    <Suspense fallback={<p role="status">正在加载目录设置…</p>}>
+                      <ConfigDirectoriesPanel onBusyChange={setDirectoryBusy} />
+                    </Suspense>
+                  </div>
+                )}
+              </div>
             </section>
             <section
               id="settings-general"
@@ -578,34 +677,20 @@ export function NewSettingsView({
                 <button
                   className="settings-reference-row"
                   role="switch"
-                  aria-checked={autoLaunch === true}
-                  disabled={
-                    autoLaunch === null || autoLaunchBusy || autoLaunchError
-                  }
-                  onClick={() => void toggleAutoLaunch()}
+                  aria-checked={launchOnStartup}
+                  disabled={!settings || autoLaunchBusy}
+                  onClick={() => void toggleLaunchOnStartup()}
                 >
                   <span>
                     <b>开机自启动</b>
-                    <small>
-                      {autoLaunchError
-                        ? "状态读取失败，请重试"
-                        : autoLaunch === null
-                          ? "正在读取系统启动项"
-                          : "登录系统后自动启动 Chimera++，新配置默认开启"}
-                    </small>
+                    <small>登录系统后自动启动 Chimera++</small>
                   </span>
-                  <i className={`settings-switch ${autoLaunch ? "is-on" : ""}`}>
+                  <i
+                    className={`settings-switch ${launchOnStartup ? "is-on" : ""}`}
+                  >
                     <u />
                   </i>
                 </button>
-                {autoLaunchError && (
-                  <button
-                    disabled={autoLaunchBusy}
-                    onClick={() => void readAutoLaunch()}
-                  >
-                    重试读取自启动状态
-                  </button>
-                )}
                 <div className="settings-reference-row">
                   <span>
                     <b id="close-behavior-label">关闭主窗口时</b>
@@ -873,35 +958,34 @@ export function NewSettingsView({
                 )}
               </div>
             </section>
+            {/* Part of the scroll flow, so it can never cover the last rows. */}
+            <footer className="settings-page-footer">
+              <p>
+                将 Codex 偏好、Codex
+                安装方式和「关闭主窗口时」恢复为默认值；主题与开机自启动保持不变。
+              </p>
+              <button
+                type="button"
+                className="secondary"
+                disabled={!settings || pendingKeys.size > 0}
+                onClick={() =>
+                  void save({
+                    codexUpdateSource: "auto",
+                    codexInstallMode: "standard",
+                    checkCodexUpdatesOnStart: true,
+                    checkProviderStatusOnStart: true,
+                    showProviderBalance: false,
+                    minimizeToTrayOnClose: true,
+                    lightweightOnClose: false,
+                  })
+                }
+              >
+                恢复默认设置
+              </button>
+            </footer>
           </div>
         </div>
       </div>
-      <footer
-        className="settings-reference-footer"
-        hidden={
-          activeSection === "settings-tools" ||
-          activeSection === "settings-import"
-        }
-      >
-        <code>Chimera++ {appVersion}</code>
-        <button
-          className="secondary"
-          disabled={!settings || pendingKeys.size > 0}
-          onClick={() =>
-            void save({
-              codexUpdateSource: "auto",
-              codexInstallMode: "standard",
-              checkCodexUpdatesOnStart: true,
-              checkProviderStatusOnStart: true,
-              showProviderBalance: false,
-              minimizeToTrayOnClose: true,
-              lightweightOnClose: false,
-            })
-          }
-        >
-          恢复默认设置
-        </button>
-      </footer>
     </section>
   );
 }

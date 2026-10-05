@@ -281,9 +281,7 @@ impl Vault {
             ensure_private_dir(&root.join(sub))?;
         }
         let vault = Self { root };
-        for stale in vault.stale_login_homes() {
-            secure_remove_dir(&stale);
-        }
+        super::login::cleanup_orphaned_login_homes(&vault)?;
         Ok(vault)
     }
 
@@ -1037,6 +1035,19 @@ mod tests {
         assert_eq!(vault.stale_login_homes(), vec![home.clone()]);
         secure_remove_dir(&home);
         assert!(!home.exists());
+    }
+
+    #[test]
+    fn opening_vault_removes_orphaned_login_homes() {
+        let (_dir, vault) = vault();
+        let home = vault.new_login_home().unwrap();
+        fs::write(home.join("auth.json"), b"orphaned credential").unwrap();
+        let root = vault.root.clone();
+        drop(vault);
+
+        let reopened = Vault::open_at(root).unwrap();
+        assert!(!home.exists());
+        assert!(reopened.stale_login_homes().is_empty());
     }
 
     // ACC-T24

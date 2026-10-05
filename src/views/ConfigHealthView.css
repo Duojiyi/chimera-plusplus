@@ -1,0 +1,231 @@
+.config-health-page {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 24px 24px;
+  color: var(--text-1);
+  background: var(--bg-surface);
+}
+.health-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.health-header > div:first-child {
+  flex: 1;
+  min-width: 0;
+}
+.health-header h1 {
+  margin: 0;
+  font-size: 28px;
+  line-height: 36px;
+  font-weight: 700;
+}
+.health-header p {
+  margin: 2px 0 0;
+  color: var(--text-3);
+  font-size: 13px;
+  line-height: 18px;
+}
+.health-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 8px;
+}
+.health-plate {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 16px 16px 16px 24px;
+  border: 1px solid var(--plate-border);
+  border-radius: 8px;
+  background: var(--plate-bg);
+  color: var(--plate-fg-1);
+}
+.health-plate p {
+  margin: 0;
+}
+.health-plate-summary {
+  flex: 0 0 200px;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.health-plate-label,
+.health-plate-detail {
+  font-size: 13px;
+  line-height: 18px;
+}
+.health-plate-label {
+  color: var(--plate-fg-3);
+}
+.health-plate-detail {
+  color: var(--plate-fg-2);
+}
+.health-plate-title {
+  color: var(--plate-fg-1);
+  font-size: 22px;
+  line-height: 28px;
+  font-weight: 700;
+}
+.health-plate-steps {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.health-plate-steps li {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 2px;
+  padding: 22px 12px 0 0;
+  font-size: 13px;
+  line-height: 18px;
+}
+/* Station dot and the rail that joins it to the next station. */
+.health-plate-steps li::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 1;
+  box-sizing: border-box;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--plate-fg-2);
+  border-radius: 50%;
+  background: var(--plate-bg);
+}
+.health-plate-steps li::after {
+  content: "";
+  position: absolute;
+  top: 5px;
+  left: 12px;
+  right: 0;
+  height: 2px;
+  background: var(--plate-fg-3);
+}
+.health-plate-steps li:last-child::before {
+  border-color: var(--plate-fg-1);
+  background: var(--plate-fg-1);
+}
+.health-plate-steps li:last-child::after {
+  display: none;
+}
+.health-plate-steps b {
+  color: var(--plate-fg-1);
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.health-plate-steps b.is-mono {
+  font-family: var(--font-mono);
+  font-weight: 400;
+}
+.health-plate-steps span {
+  color: var(--plate-fg-3);
+}
+.health-plate-help {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--plate-control-border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--plate-fg-2);
+  cursor: pointer;
+}
+.health-plate-help:hover {
+  background: var(--plate-control-hover);
+  color: var(--plate-fg-1);
+}
+.health-plate-help:focus-visible {
+  outline: 2px solid var(--focus-on-plate);
+  outline-offset: 2px;
+}
+.health-message {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 13px;
+  line-height: 18px;
+}
+.health-message.is-error {
+  color: var(--danger-fg);
+}
+.health-group-title {
+  margin: 0;
+  padding: 16px 0 8px;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 700;
+}
+.health-group:first-child .health-group-title {
+  padding-top: 4px;
+}
+.health-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.health-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 12px 12px 16px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.health-item-icon {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.health-item[data-tone="critical"] .health-item-icon {
+  color: var(--danger-fg);
+}
+.health-item[data-tone="warning"] .health-item-icon {
+  color: var(--warning-fg);
+}
+/* A first-use condition is information, not a fault: neutral icon and ink. */
+.health-item[data-tone="info"] .health-item-icon {
+  color: var(--text-3);
+}
+.health-item-body {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+.health-item-body p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+.health-item-body .health-item-title {
+  color: var(--text-1);
+  font-size: 15px;
+  line-height: 21px;
+}
+.health-item-location {
+  color: var(--text-3);
+}
+.health-item-impact {
+  color: var(--text-2);
+}
+.health-item-solution {
+  color: var(--text-1);
+}
+.health-item > button {
+  flex-shrink: 0;
+}

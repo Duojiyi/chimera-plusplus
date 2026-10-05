@@ -44,7 +44,7 @@ pub struct UsageSummaryByApp {
 
 /// Helper: compute (real_total, hit_rate) from the four token counters.
 /// All inputs must already be cache-normalized (i.e. input excludes cache).
-fn derive_real_total_and_hit_rate(
+pub(crate) fn derive_real_total_and_hit_rate(
     fresh_input: u64,
     output: u64,
     cache_creation: u64,
@@ -96,6 +96,36 @@ pub struct ModelStats {
     pub total_tokens: u64,
     pub total_cost: String,
     pub avg_cost_per_request: String,
+}
+
+/// Effective Codex usage of one conversation thread on one provider line.
+/// `thread_id` is `None` when the rows carry no conversation identity.
+#[derive(Debug, Clone)]
+pub(crate) struct CodexThreadUsageRow {
+    pub thread_id: Option<String>,
+    /// File UUID of the rollout a session row was imported from; a resumed
+    /// rollout keeps the original thread as `thread_id` under a new file name.
+    pub rollout_id: Option<String>,
+    pub provider_id: String,
+    pub provider_name: String,
+    pub request_count: u64,
+    /// Successful requests with tokens but a zero stored cost.
+    pub unpriced_request_count: u64,
+    pub fresh_input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_creation_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub total_cost: f64,
+    pub first_at: i64,
+    pub last_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CodexThreadUsage {
+    pub rows: Vec<CodexThreadUsageRow>,
+    /// Daily rollups in range; they keep no thread identity.
+    pub rollup_requests: u64,
+    pub rollup_tokens: u64,
 }
 
 /// 请求日志过滤器
@@ -207,7 +237,7 @@ fn row_to_request_log_detail(row: &rusqlite::Row<'_>) -> rusqlite::Result<Reques
 /// Session logs use placeholder provider_ids (e.g., `_session`, `_<app>_session`)
 /// that don't exist in the providers table — the CASE expression below is the
 /// authoritative mapping from placeholder to readable name.
-fn provider_name_coalesce(log_alias: &str, provider_alias: &str) -> String {
+pub(crate) fn provider_name_coalesce(log_alias: &str, provider_alias: &str) -> String {
     format!(
         "COALESCE({provider_alias}.name, CASE {log_alias}.provider_id \
          WHEN '_session' THEN 'Claude (Session)' \
@@ -219,13 +249,14 @@ fn provider_name_coalesce(log_alias: &str, provider_alias: &str) -> String {
 }
 
 pub(crate) const SESSION_PROXY_DEDUP_WINDOW_SECONDS: i64 = 10 * 60;
+pub(crate) const CODEX_THREAD_REQUEST_ID_PREFIX: &str = "codex_session:thread-v1";
 
 /// SQL 片段：把指定别名的 `data_source` 包成 COALESCE，NULL 视作 'proxy'。
 ///
 /// 防御 schema v9 之前可能写入的 NULL data_source 行（见
 /// `tests::create_legacy_nullable_logs_table`）。所有用到 data_source 的查询
 /// 都应通过此 helper 生成片段，避免遗漏。
-fn data_source_expr(log_alias: &str) -> String {
+pub(crate) fn data_source_expr(log_alias: &str) -> String {
     format!("COALESCE({log_alias}.data_source, 'proxy')")
 }
 
@@ -244,7 +275,7 @@ fn data_source_expr(log_alias: &str) -> String {
 /// 注意：包裹后该列上的索引在此比较中失效，但这些都是已带时间过滤的聚合扫描，
 /// app_type 本就不是主访问路径，可接受。仅用于读侧；去重匹配（`has_matching_
 /// proxy_usage_log`）与额度检查（`check_provider_limits`）必须保留原始精确比较。
-fn folded_app_type_sql(column: &str) -> String {
+pub(crate) fn folded_app_type_sql(column: &str) -> String {
     format!("CASE WHEN {column} = 'claude-desktop' THEN 'claude' ELSE {column} END")
 }
 
@@ -252,7 +283,7 @@ fn folded_app_type_sql(column: &str) -> String {
 /// `proxy_request_logs` 与 `usage_daily_rollups` 的 (provider_id, app_type)
 /// 形状相同，两者皆可作为 `log_alias`。providers 主键即 (id, app_type)，
 /// 连接至多 1:1，不会放大行数。
-fn providers_join(log_alias: &str, provider_alias: &str) -> String {
+pub(crate) fn providers_join(log_alias: &str, provider_alias: &str) -> String {
     format!(
         "LEFT JOIN providers {provider_alias} \
          ON {log_alias}.provider_id = {provider_alias}.id \
@@ -527,7 +558,7 @@ pub(crate) fn has_suspected_codex_session_duplicate(
 }
 
 #[derive(Debug, Clone, Default)]
-struct RollupDateBounds {
+pub(crate) struct RollupDateBounds {
     start: Option<String>,
     end: Option<String>,
     is_empty: bool,
@@ -540,7 +571,7 @@ fn local_datetime_from_timestamp(ts: i64) -> Result<chrono::DateTime<Local>, App
         .ok_or_else(|| AppError::Database(format!("无法解析本地时间戳: {ts}")))
 }
 
-fn compute_rollup_date_bounds(
+pub(crate) fn compute_rollup_date_bounds(
     start_ts: Option<i64>,
     end_ts: Option<i64>,
 ) -> Result<RollupDateBounds, AppError> {
@@ -581,7 +612,7 @@ fn compute_rollup_date_bounds(
     })
 }
 
-fn push_rollup_date_filters(
+pub(crate) fn push_rollup_date_filters(
     conditions: &mut Vec<String>,
     params: &mut Vec<Box<dyn rusqlite::ToSql>>,
     column: &str,
@@ -1560,7 +1591,6 @@ impl Database {
 
         Ok(stats)
     }
-
     /// 获取请求日志列表（分页）
     pub fn get_request_logs(
         &self,

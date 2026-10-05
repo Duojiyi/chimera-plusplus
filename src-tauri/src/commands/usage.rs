@@ -1,6 +1,7 @@
 //! 使用统计相关命令
 
 use crate::error::AppError;
+use crate::services::session_usage_codex::conversations;
 use crate::services::usage_stats::*;
 use crate::store::AppState;
 use rust_decimal::Decimal;
@@ -98,6 +99,24 @@ pub fn get_model_stats(
         provider_name.as_deref(),
         model.as_deref(),
     )
+}
+
+/// 按根对话汇总 Codex 用量；子代理与分叉的用量并入发起它的对话。
+/// 需要读取会话文件开头，因此放到阻塞线程，不占用主线程。
+#[tauri::command]
+pub async fn get_usage_by_conversation(
+    state: State<'_, AppState>,
+    start_date: Option<i64>,
+    end_date: Option<i64>,
+    query: Option<String>,
+) -> Result<conversations::ConversationUsageReport, AppError> {
+    crate::product_policy::require(crate::product_policy::Capability::ThreadUsage)?;
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        conversations::get_usage_by_conversation(&db, start_date, end_date, query.as_deref())
+    })
+    .await
+    .map_err(|error| AppError::Message(format!("对话用量汇总任务失败: {error}")))?
 }
 
 /// 获取请求日志列表

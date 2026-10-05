@@ -70,6 +70,7 @@ describe("settings application update", () => {
         <NewSettingsView />
       </ThemeProvider>,
     );
+    fireEvent.click(screen.getByRole("link", { name: "应用更新" }));
 
     expect(screen.getByText(/First fix/)).toHaveTextContent(
       "First fix Second fix",
@@ -112,6 +113,7 @@ describe("settings application update", () => {
         <NewSettingsView />
       </ThemeProvider>,
     );
+    fireEvent.click(screen.getByRole("link", { name: "应用更新" }));
 
     expect(
       screen.getByRole("button", { name: /\u5b89\u88c5\u5e76\u91cd\u542f/ }),
@@ -146,6 +148,7 @@ describe("settings application update", () => {
         <NewSettingsView />
       </ThemeProvider>,
     );
+    fireEvent.click(screen.getByRole("link", { name: "应用更新" }));
 
     expect(screen.getByRole("progressbar")).toHaveAttribute(
       "aria-valuenow",
@@ -164,8 +167,9 @@ describe("settings application update", () => {
         <NewSettingsView />
       </ThemeProvider>,
     );
+    fireEvent.click(screen.getByRole("link", { name: "备份与恢复" }));
     expect(
-      screen.queryByRole("region", { name: "Codex Live 备份" }),
+      screen.queryByRole("region", { name: "Codex 配置备份" }),
     ).not.toBeInTheDocument();
     expect(liveBackupsApi.list).not.toHaveBeenCalled();
   });
@@ -176,7 +180,11 @@ describe("settings application update", () => {
         <NewSettingsView liveBackupsEnabled />
       </ThemeProvider>,
     );
-    expect(await screen.findByText("暂无 Live 备份。")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: "备份与恢复" }));
+    expect(await screen.findByText("暂无 Codex 配置备份。")).toBeVisible();
+    expect(
+      screen.getByRole("region", { name: "Codex 配置备份" }),
+    ).toBeInTheDocument();
     expect(liveBackupsApi.list).toHaveBeenCalledWith("codex");
   });
 });

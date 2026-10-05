@@ -49,9 +49,7 @@ pub async fn list_official_accounts(
     for key in vault.slot_keys() {
         if let Ok(Some(slot)) = vault.read_slot(&key) {
             let display = codex_accounts::identity::auth_display_metadata(&slot.auth);
-            let line = lines
-                .iter()
-                .find(|l| l.official_account_key() == Some(key.as_str()));
+            let line = official_account_line(&lines, &key, current_id.as_deref());
             let is_current = line.is_some_and(|l| Some(&l.id) == current_id.as_ref());
             let needs_relogin = vault.has_tombstone(&key);
             accounts.push(OfficialAccountDto {
@@ -67,6 +65,20 @@ pub async fn list_official_accounts(
         }
     }
     Ok(accounts)
+}
+
+fn official_account_line<'a>(
+    lines: &'a [crate::provider::Provider],
+    key: &str,
+    current_id: Option<&str>,
+) -> Option<&'a crate::provider::Provider> {
+    let mut matching = lines
+        .iter()
+        .filter(|line| line.official_account_key() == Some(key));
+    matching
+        .clone()
+        .find(|line| Some(line.id.as_str()) == current_id)
+        .or_else(|| matching.next())
 }
 
 /// Quota-only IPC: credentials stay inside the Vault/live-auth backend path.
@@ -98,8 +110,25 @@ pub async fn save_current_official_login(
 
 #[tauri::command]
 pub async fn start_official_device_login() -> Result<StartedLoginDto, AppError> {
-    let vault = Vault::open_default()?;
-    let started = codex_accounts::login::start(&vault)?;
+    start_official_login(false).await
+}
+
+#[tauri::command]
+pub async fn start_official_browser_login() -> Result<StartedLoginDto, AppError> {
+    start_official_login(true).await
+}
+
+async fn start_official_login(browser: bool) -> Result<StartedLoginDto, AppError> {
+    let started = tauri::async_runtime::spawn_blocking(move || {
+        let vault = Vault::open_default()?;
+        if browser {
+            codex_accounts::login::start_browser(&vault)
+        } else {
+            codex_accounts::login::start(&vault)
+        }
+    })
+    .await
+    .map_err(|_| AppError::Message("登录任务未完成，请重试".to_string()))??;
     Ok(StartedLoginDto {
         flow_id: started.flow_id,
         verification_url: started.prompt.verification_url,
@@ -222,6 +251,52 @@ fn parse_notes_table(table: &str) -> Result<crate::database::NotesTable, AppErro
         "skills" => Ok(crate::database::NotesTable::Skills),
         "mcp_servers" => Ok(crate::database::NotesTable::McpServers),
         _ => Err(AppError::InvalidInput("不支持的备注类型".to_string())),
+    }
+}
+
+#[cfg(test)]
+mod account_line_tests {
+    use super::*;
+    use crate::provider::Provider;
+
+    fn lines() -> Vec<Provider> {
+        [
+            ("other", "other-account"),
+            ("first", "account"),
+            ("second", "account"),
+        ]
+        .into_iter()
+        .map(|(id, key)| {
+            let mut line = Provider::with_id(
+                id.into(),
+                id.into(),
+                serde_json::json!({"auth": {}, "config": ""}),
+                None,
+            );
+            line.category = Some("official".into());
+            codex_accounts::set_pin(&mut line, Some(key));
+            line
+        })
+        .collect()
+    }
+
+    #[test]
+    fn shared_account_prefers_current_line_even_when_it_is_second() {
+        let lines = lines();
+        for current_id in ["second", "first"] {
+            let line = official_account_line(&lines, "account", Some(current_id)).unwrap();
+            assert_eq!(line.id, current_id);
+        }
+    }
+
+    #[test]
+    fn shared_account_falls_back_to_first_matching_line() {
+        let lines = lines();
+        for current_id in [None, Some("other"), Some("missing")] {
+            let line = official_account_line(&lines, "account", current_id).unwrap();
+            assert_eq!(line.id, "first");
+        }
+        assert!(official_account_line(&lines, "missing-account", Some("second")).is_none());
     }
 }
 

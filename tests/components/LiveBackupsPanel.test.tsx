@@ -122,7 +122,7 @@ describe("Live backup panel", () => {
     expect(screen.getByRole("status")).toHaveTextContent("正在读取");
     await act(async () => finish([]));
     expect(screen.getAllByRole("columnheader")).toHaveLength(5);
-    expect(screen.getByText("暂无 Live 备份。")).toBeInTheDocument();
+    expect(screen.getByText("暂无 Codex 配置备份。")).toBeInTheDocument();
   });
   it("does not invent a size for older summaries", async () => {
     vi.mocked(liveBackupsApi.list).mockResolvedValue([
@@ -217,7 +217,9 @@ describe("Live backup panel", () => {
     expect(liveBackupsApi.delete).not.toHaveBeenCalled();
     vi.mocked(liveBackupsApi.list).mockResolvedValue([]);
     fireEvent.click(await screen.findByRole("button", { name: "确认删除" }));
-    expect(await screen.findByText("暂无 Live 备份。")).toBeInTheDocument();
+    expect(
+      await screen.findByText("暂无 Codex 配置备份。"),
+    ).toBeInTheDocument();
     expect(liveBackupsApi.delete).toHaveBeenCalledWith("codex", "backup-1");
   });
   it("clears stale lists on refresh failure and permits retry", async () => {
@@ -237,7 +239,7 @@ describe("multi-tool Live recovery", () => {
   it("uses the selected tool for listing, creating, opening and restoring", async () => {
     render(<LiveBackupsPanel />);
     await screen.findByText("AGENTS.md");
-    fireEvent.change(screen.getByLabelText("Live 备份工具"), {
+    fireEvent.change(screen.getByLabelText("备份的工具"), {
       target: { value: "gemini" },
     });
     await waitFor(() =>
@@ -276,12 +278,33 @@ describe("multi-tool Live recovery", () => {
         : Promise.resolve([]),
     );
     render(<LiveBackupsPanel />);
-    fireEvent.change(screen.getByLabelText("Live 备份工具"), {
+    fireEvent.change(screen.getByLabelText("备份的工具"), {
       target: { value: "claude" },
     });
-    await screen.findByText("暂无 Live 备份。");
+    await screen.findByText("暂无 Claude Code 配置备份。");
     await act(async () => resolve([backup]));
     expect(screen.queryByText("AGENTS.md")).not.toBeInTheDocument();
+  });
+  it("keeps the same focused picker when switching tools", async () => {
+    render(<LiveBackupsPanel />);
+    await screen.findByText("AGENTS.md");
+    const picker = screen.getByLabelText("备份的工具");
+    picker.focus();
+    fireEvent.change(picker, { target: { value: "hermes" } });
+    await waitFor(() =>
+      expect(liveBackupsApi.list).toHaveBeenCalledWith("hermes"),
+    );
+    expect(screen.getByLabelText("备份的工具")).toBe(picker);
+    expect(picker).toHaveFocus();
+    expect(
+      screen.getByRole("region", { name: "Hermes 配置备份" }),
+    ).toBeInTheDocument();
+  });
+  it("describes the tool picker with the tools that have no backups", () => {
+    render(<LiveBackupsPanel />);
+    expect(screen.getByLabelText("备份的工具")).toHaveAccessibleDescription(
+      "Pi 与 MiniMax Code 暂不支持配置备份；Claude Desktop 仅支持 Windows 和 macOS。",
+    );
   });
 });
 
@@ -299,7 +322,7 @@ it("refreshes the owner after a successful Live restore and prevents tool change
   const onRestored = vi.fn();
   render(<LiveBackupsPanel onRestored={onRestored} />);
   await confirmRestore();
-  expect(screen.getByLabelText("Live 备份工具")).toBeDisabled();
+  expect(screen.getByLabelText("备份的工具")).toBeDisabled();
   expect(onRestored).not.toHaveBeenCalled();
   await act(async () =>
     finish({
@@ -309,5 +332,5 @@ it("refreshes the owner after a successful Live restore and prevents tool change
     }),
   );
   expect(onRestored).toHaveBeenCalledOnce();
-  expect(screen.getByLabelText("Live 备份工具")).toBeEnabled();
+  expect(screen.getByLabelText("备份的工具")).toBeEnabled();
 });

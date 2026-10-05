@@ -366,6 +366,18 @@ fn analyze(doc: &DocumentMut, base: &Path, report: &mut HealthReport) {
                     continue;
                 };
                 check_file_refs(profile, base, report);
+                if profile
+                    .get("model")
+                    .is_some_and(|value| value.as_str().is_none_or(|model| model.trim().is_empty()))
+                {
+                    report.issue(
+                        "profile-selector-type",
+                        "critical",
+                        "配置档模型选择格式不正确",
+                        "config.toml · profiles",
+                        "配置档的模型必须是非空文字。",
+                    );
+                }
                 if let Some(item) = profile.get("model_provider") {
                     match item.as_str() {
                         Some(id) if !id.trim().is_empty() => {
@@ -441,17 +453,30 @@ fn check_file_refs(doc: &dyn TableLike, base: &Path, report: &mut HealthReport) 
                     );
                 }
             }
-            Ok(bytes) => {
-                if serde_json::from_slice::<serde_json::Value>(&bytes).is_err() {
+            Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
+                Err(_) => report.issue(
+                    "catalog-json",
+                    "critical",
+                    "模型目录 JSON 无效",
+                    "config.toml · model_catalog_json",
+                    "请重新生成模型目录文件；未回显文件内容。",
+                ),
+                Ok(value)
+                    if value
+                        .get("models")
+                        .and_then(serde_json::Value::as_array)
+                        .is_none() =>
+                {
                     report.issue(
-                        "catalog-json",
+                        "catalog-shape",
                         "critical",
-                        "模型目录 JSON 无效",
+                        "模型目录结构无效",
                         "config.toml · model_catalog_json",
-                        "请重新生成模型目录文件；未回显文件内容。",
+                        "模型目录必须是包含 models 数组的 JSON 对象；请重新生成模型目录文件。",
                     );
                 }
-            }
+                Ok(_) => {}
+            },
             Err(_) => report.issue(
                 "file-ref-unreadable",
                 "critical",
@@ -595,6 +620,55 @@ mod tests {
         assert!(!serde_json::to_string(&report)
             .unwrap()
             .contains("private_profile"));
+    }
+
+    #[test]
+    fn reports_invalid_catalog_containers_without_exposing_contents() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        let auth = dir.path().join("auth.json");
+        let catalog = dir.path().join("catalog.json");
+        std::fs::write(&auth, "{}").unwrap();
+        std::fs::write(&config, "model_catalog_json = 'catalog.json'").unwrap();
+        for text in ["[]", "{}", "null", r#"{"models":"private-token"}"#] {
+            std::fs::write(&catalog, text).unwrap();
+            let report = check_paths(&config, &auth);
+            assert!(report
+                .issues
+                .iter()
+                .any(|issue| issue.id.starts_with("catalog-shape-")));
+            assert!(!serde_json::to_string(&report)
+                .unwrap()
+                .contains("private-token"));
+            assert_eq!(std::fs::read_to_string(&catalog).unwrap(), text);
+        }
+        std::fs::write(&catalog, r#"{"models":[]}"#).unwrap();
+        assert!(check_paths(&config, &auth).issues.is_empty());
+    }
+
+    #[test]
+    fn reports_invalid_profile_models_without_exposing_profile_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        let auth = dir.path().join("auth.json");
+        std::fs::write(&auth, "{}").unwrap();
+        for value in ["42", "true", "''", "'  '"] {
+            std::fs::write(
+                &config,
+                format!("[profiles.private_profile]\nmodel = {value}\n"),
+            )
+            .unwrap();
+            let report = check_paths(&config, &auth);
+            assert!(report
+                .issues
+                .iter()
+                .any(|issue| issue.id.starts_with("profile-selector-type-")));
+            assert!(!serde_json::to_string(&report)
+                .unwrap()
+                .contains("private_profile"));
+        }
+        std::fs::write(&config, "[profiles.work]\nmodel = 'test-model'\n").unwrap();
+        assert!(check_paths(&config, &auth).issues.is_empty());
     }
 
     #[test]

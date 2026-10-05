@@ -5,7 +5,15 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { SkillsMcpView } from "@/views/SkillsMcpView";
 import { skillsApi, type InstalledSkill } from "@/lib/api/skills";
 import { mcpApi } from "@/lib/api/mcp";
@@ -531,8 +539,26 @@ describe("connected Skills/MCP page", () => {
     );
     render(<SkillsMcpView />);
     expect(await screen.findByRole("alert")).toHaveTextContent("读取失败");
+    // A failed read claims nothing: no counts, summary card or empty state.
+    expect(screen.getByRole("button", { name: "Skills" })).toBeInTheDocument();
+    expect(screen.queryByText("已启用 Skills")).not.toBeInTheDocument();
+    expect(screen.queryByText("还没有安装 Skills")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "导出" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "重试" }));
     expect(await screen.findByText("Real Skill")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Skills 1" })).toBeVisible();
+  });
+  it("drops rows and counts when a later refresh fails", async () => {
+    const view = render(<SkillsMcpView refreshVersion={0} />);
+    await screen.findByText("Real Skill");
+    vi.mocked(skillsApi.getInstalled).mockRejectedValueOnce(
+      new Error("offline"),
+    );
+    view.rerender(<SkillsMcpView refreshVersion={1} />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("读取失败");
+    expect(screen.queryByText("Real Skill")).not.toBeInTheDocument();
+    expect(screen.queryByText("已启用 Skills")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Skills" })).toBeInTheDocument();
   });
   it("uses the existing ZIP picker and installer", async () => {
     vi.mocked(skillsApi.openZipFileDialog).mockResolvedValue("D:/skills.zip");
@@ -758,7 +784,23 @@ describe("A06 resource lifecycle and A07 refresh", () => {
     await waitFor(() => expect(toast.error).toHaveBeenCalled());
     expect(screen.getByRole("dialog")).toBeInTheDocument();
   });
+  it("offers the update check only once a Skill came from a repository", async () => {
+    render(<SkillsMcpView />);
+    await screen.findByRole("switch");
+    expect(
+      screen.queryByRole("button", { name: "检查 Skills 更新" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "管理仓库" })).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "查看可恢复备份" }),
+    ).toBeEnabled();
+    expect(skillsApi.checkUpdates).not.toHaveBeenCalled();
+  });
   it("updates only after confirmation and keeps a failed update retryable", async () => {
+    // Only repository-installed Skills can be checked, so the fixture needs a source.
+    vi.mocked(skillsApi.getInstalled).mockResolvedValue([
+      { ...skill, repoOwner: "team", repoName: "skills" },
+    ]);
     vi.mocked(skillsApi.checkUpdates).mockResolvedValue([
       { id: skill.id, name: skill.name, remoteHash: "new" },
     ]);
@@ -823,6 +865,11 @@ describe("A06 resource lifecycle and A07 refresh", () => {
 });
 
 describe("A06 repository management", () => {
+  // The panel is a lazy chunk; transforming it cold can exceed the 5 s budget
+  // of the behaviour checks below on a loaded machine.
+  beforeAll(async () => {
+    await import("@/components/skills/RepoManagerPanel");
+  }, 60_000);
   it("adds a repository through the reused form, preserves its draft on refresh and confirms removal", async () => {
     vi.mocked(skillsApi.getRepos).mockResolvedValue([
       { owner: "team", name: "skills", branch: "main", enabled: true },
@@ -875,5 +922,92 @@ describe("A06 repository management", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("操作失败");
     fireEvent.click(screen.getByRole("button", { name: "管理仓库" }));
     expect(await screen.findByLabelText("skills.repo.url")).toBeInTheDocument();
+  });
+});
+
+describe("empty and loading states", () => {
+  beforeEach(() => {
+    vi.mocked(skillsApi.getInstalled).mockResolvedValue([]);
+  });
+  it("offers two install paths, quiet maintenance and no zero summary", async () => {
+    vi.mocked(skillsApi.openZipFileDialog).mockResolvedValue("D:/skills.zip");
+    vi.mocked(skillsApi.installFromZip).mockResolvedValue([skill]);
+    render(<SkillsMcpView />);
+    expect(
+      await screen.findByRole("heading", { name: "还没有安装 Skills" }),
+    ).toBeVisible();
+    expect(screen.queryByText("已启用 Skills")).not.toBeInTheDocument();
+    expect(screen.queryByText(/0 个来源/)).not.toBeInTheDocument();
+    // The empty state owns the add action; the header does not repeat it.
+    expect(
+      screen.queryByRole("button", { name: "安装" }),
+    ).not.toBeInTheDocument();
+    for (const name of ["管理仓库", "扫描未纳管 Skills", "查看可恢复备份"])
+      expect(screen.getByRole("button", { name })).toBeEnabled();
+    expect(
+      screen.queryByRole("button", { name: "检查 Skills 更新" }),
+    ).not.toBeInTheDocument();
+    const fromRepo = screen.getByRole("button", { name: /从仓库安装/ });
+    fireEvent.click(fromRepo);
+    const panel = screen.getByRole("region", { name: "安装 Skill" });
+    expect(panel).toHaveFocus();
+    expect(fromRepo).toHaveAttribute("aria-expanded", "true");
+    vi.mocked(skillsApi.getInstalled).mockResolvedValue([skill]);
+    fireEvent.click(screen.getByRole("button", { name: /导入 ZIP/ }));
+    await waitFor(() =>
+      expect(skillsApi.installFromZip).toHaveBeenCalledWith(
+        "D:/skills.zip",
+        "codex",
+      ),
+    );
+    expect(await screen.findByText("Real Skill")).toBeVisible();
+    expect(screen.getByRole("button", { name: "安装" })).toBeVisible();
+  });
+  it("says so when the configured repositories offer nothing", async () => {
+    vi.mocked(skillsApi.discoverAvailable).mockResolvedValue([]);
+    render(<SkillsMcpView />);
+    fireEvent.click(await screen.findByRole("button", { name: /从仓库安装/ }));
+    fireEvent.click(screen.getByRole("button", { name: "读取已配置仓库" }));
+    expect(await screen.findByText(/没有读取到可安装的/)).toBeVisible();
+  });
+  it("gives the MCP tab its own empty state with one add action", async () => {
+    render(<SkillsMcpView initialApp="claude" />);
+    await screen.findByRole("heading", { name: "还没有安装 Skills" });
+    fireEvent.click(screen.getByRole("button", { name: "MCP 0" }));
+    expect(
+      screen.getByRole("heading", { name: "还没有 MCP 服务" }),
+    ).toBeVisible();
+    expect(screen.getAllByRole("button", { name: "添加 MCP" })).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "添加 MCP" }));
+    const props = JSON.parse(
+      (await screen.findByTestId("mcp-editor")).textContent!,
+    );
+    expect(props.defaultEnabledApps).toEqual(["claude"]);
+  });
+  it("shows one status line and no counts until the first read finishes", async () => {
+    let finish!: (value: InstalledSkill[]) => void;
+    vi.mocked(skillsApi.getInstalled).mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    render(<SkillsMcpView />);
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "正在读取 Skills 与 MCP…",
+    );
+    expect(screen.getByRole("button", { name: "Skills" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "导出" })).toBeDisabled();
+    expect(screen.queryByText("还没有安装 Skills")).not.toBeInTheDocument();
+    await act(async () => finish([skill]));
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Skills 1" })).toBeVisible();
+    expect(screen.getByText("已启用 Skills")).toBeVisible();
+  });
+  it("does not mention MCP in the summary for a tool without MCP", async () => {
+    vi.mocked(skillsApi.getInstalled).mockResolvedValue([skill]);
+    render(<SkillsMcpView initialApp="openclaw" />);
+    await screen.findByText("Real Skill");
+    expect(screen.getByText("已启用 Skills")).toBeVisible();
+    expect(screen.queryByText(/MCP 另有/)).not.toBeInTheDocument();
   });
 });

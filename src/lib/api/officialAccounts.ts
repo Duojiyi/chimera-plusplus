@@ -46,6 +46,10 @@ export const officialAccountsApi = {
     return invoke<StartedLoginDto>("start_official_device_login");
   },
 
+  startBrowserLogin: async (): Promise<StartedLoginDto> => {
+    return invoke<StartedLoginDto>("start_official_browser_login");
+  },
+
   pollDeviceLogin: async (flowId: string): Promise<PollLoginDto> => {
     return invoke<PollLoginDto>("poll_official_device_login", { flowId });
   },

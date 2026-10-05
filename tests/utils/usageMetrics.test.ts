@@ -107,12 +107,21 @@ describe("usageMetrics", () => {
     expect(usageBucketLabel("2026-11-01T00:00:00-04:00", false)).toBe("11/01");
   });
 
-  it("formats small totals and Chinese units, including a shared model unit", () => {
+  it("formats totals with the shared automatic Chinese units", () => {
     expect(formatUsageTokens(0)).toBe("0");
     expect(formatUsageTokens(9999)).toBe("9,999");
     expect(formatUsageTokens(12345)).toBe("1.2 万");
     expect(formatUsageTokens(123456789)).toBe("1.23 亿");
-    expect(formatUsageTokens(450, "万")).toBe("0.05 万");
-    expect(formatUsageTokens(20000, "万")).toBe("2 万");
+    expect(formatUsageTokens(450)).toBe("450");
+    expect(formatUsageTokens(20000)).toBe("2 万");
+    expect(formatUsageTokens(99999999)).toBe("1.00 亿");
+    expect(formatUsageTokens(9999.6)).toBe("1 万");
   });
+
+  it.each([-1, NaN, Infinity, -Infinity])(
+    "formats invalid token totals as zero: %s",
+    (value) => {
+      expect(formatUsageTokens(value)).toBe("0");
+    },
+  );
 });

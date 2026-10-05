@@ -71,6 +71,15 @@ import {
   type FetchedModel,
 } from "@/lib/api/model-fetch";
 import { getChimeraHubTemplate } from "@/config/codexTemplates";
+import { CodexContextWindowField } from "@/components/providers/CodexContextWindowField";
+import {
+  CodexPresetStart,
+  type StartingPoint,
+} from "@/components/providers/CodexPresetStart";
+import type {
+  PresetDraftSeed,
+  PresetSelection,
+} from "@/utils/codexPresetDraft";
 import {
   extractCodexBaseUrl,
   extractCodexExperimentalBearerToken,
@@ -131,6 +140,7 @@ const browserPreviewCapabilities: ProductCapability[] = [
   { id: "multi_tool", available: true, enabledByDefault: true },
   { id: "live_backups", available: true, enabledByDefault: true },
   { id: "cc_switch_import", available: true, enabledByDefault: true },
+  { id: "context_1m", available: true, enabledByDefault: true },
 ];
 
 // Explicitly opt in to fixtures only in the browser development renderer.
@@ -530,6 +540,19 @@ export function providerDraft(
     original: provider ?? null,
     nativeProtocol: "",
     ...native,
+  };
+}
+
+/** A new-line draft seeded from a preset. Starts from a clean draft so nothing
+ * of the previous starting point survives, and reads the config-derived flags
+ * from the preset's own config rather than the template's. */
+export function providerDraftFromSeed(seed: PresetDraftSeed, id: string) {
+  return {
+    ...providerDraft(null, seed.name),
+    ...seed,
+    goalModeEnabled: isCodexGoalModeEnabled(seed.config),
+    remoteCompactionEnabled: isCodexRemoteCompactionEnabled(seed.config),
+    id,
   };
 }
 
@@ -2762,6 +2785,10 @@ export default function ChimeraApp({
                 if (editor.original) setPendingProviderDelete(editor.original);
               }}
               onRequestClose={requestCloseEditor}
+              context1mEnabled={hasEnabledCapability(
+                capabilities,
+                "context_1m",
+              )}
               escapeDisabled={
                 Boolean(pendingProviderDelete) ||
                 savingProvider ||
@@ -4537,6 +4564,7 @@ export function ProviderEditor({
   onDelete,
   onRequestClose,
   escapeDisabled,
+  context1mEnabled = false,
 }: {
   appId?: AppId;
   editor: ReturnType<typeof providerDraft>;
@@ -4561,6 +4589,8 @@ export function ProviderEditor({
   onDelete: () => void;
   onRequestClose: () => void;
   escapeDisabled: boolean;
+  /** The `context_1m` capability: shows the 1M context switch. */
+  context1mEnabled?: boolean;
 }) {
   const isCodex = appId === "codex";
   const toolName = isNativeToolAppId(appId) ? nativeToolNames[appId] : "Codex";
@@ -4589,6 +4619,9 @@ export function ProviderEditor({
   const advancedRef = useRef<HTMLDetailsElement>(null);
   const [validationAttempted, setValidationAttempted] = useState(false);
   const [restorePending, setRestorePending] = useState(false);
+  const [startingPoint, setStartingPoint] = useState<StartingPoint | null>(
+    null,
+  );
   useEffect(() => {
     headingRef.current?.focus({ preventScroll: true });
   }, []);
@@ -4638,7 +4671,35 @@ export function ProviderEditor({
       ...providerDraft(null, editor.name || "新线路"),
       id: editor.id,
     });
+    setStartingPoint(null);
     setRestorePending(false);
+  };
+  const applyPreset = (selection: PresetSelection) => {
+    setOpenReasoningRow(null);
+    setOpenInstructionsRow(null);
+    setValidationAttempted(false);
+    // A name the user typed survives; one that was filled in for them follows
+    // the preset.
+    const nameIsAuto =
+      !editor.name.trim() ||
+      editor.name === "默认线路" ||
+      editor.name === "新线路" ||
+      editor.name === getChimeraHubTemplate().name ||
+      editor.name === startingPoint?.label;
+    const draft = providerDraftFromSeed(selection.seed, editor.id);
+    setEditor({ ...draft, name: nameIsAuto ? draft.name : editor.name });
+    setStartingPoint(selection);
+    // Leave the caret on the first thing still to fill in. Deferred so it runs
+    // after the picker has handed focus back to the button that opened it.
+    const next =
+      selection.seed.baseUrl && !selection.endpointPlaceholder
+        ? "provider-api-key"
+        : "provider-base-url";
+    window.setTimeout(() => {
+      pageRef.current
+        ?.querySelector<HTMLInputElement>(`[name="${next}"]`)
+        ?.focus();
+    }, 0);
   };
   const submit = () => {
     setValidationAttempted(true);
@@ -4687,7 +4748,11 @@ export function ProviderEditor({
   const detectionFailures = useMemo(() => {
     if (!apiFormatDetection) return [];
     return codexProbeModels(editor.model, editor.catalogModels)
-      .filter((model) => !apiFormatDetection.formats[model])
+      .filter(
+        (model) =>
+          !apiFormatDetection.formats[model] &&
+          Object.hasOwn(apiFormatDetection.failures, model),
+      )
       .map((model) => ({
         model,
         ...describeCodexDetectionFailure(apiFormatDetection.failures[model]),
@@ -4761,19 +4826,12 @@ export function ProviderEditor({
               </p>
             )}
           {isCodex && !editor.original && (
-            <div className="editor-template-actions">
-              <div>
-                <b>默认模板</b>
-                <small>请核对地址、模型和密钥后再保存。</small>
-              </div>
-              <button
-                type="button"
-                className="secondary compact"
-                onClick={() => setRestorePending(true)}
-              >
-                恢复模板
-              </button>
-            </div>
+            <CodexPresetStart
+              applied={startingPoint}
+              dirty={dirty}
+              onPick={applyPreset}
+              onRestore={() => setRestorePending(true)}
+            />
           )}
           <section
             className="editor-basic"
@@ -5424,6 +5482,13 @@ export function ProviderEditor({
                         }
                       />
                     </label>
+                    {context1mEnabled && (
+                      <CodexContextWindowField
+                        value={editor.config}
+                        onChange={(config) => setEditor({ ...editor, config })}
+                        disabled={savingProvider}
+                      />
+                    )}
                     <label className="toggle-field">
                       <span>
                         <b>

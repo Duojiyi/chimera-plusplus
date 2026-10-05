@@ -484,8 +484,10 @@ describe("UsageView", () => {
     render(<UsageView />);
     await loaded();
     expect(screen.getByRole("alert")).toHaveTextContent("尚无可显示的统计");
-    expect(screen.getByText("当前时间范围暂无记录")).toBeVisible();
-    expect(screen.getByText("暂无模型统计")).toBeVisible();
+    expect(
+      screen.queryByRole("region", { name: /没有 Codex 用量记录/ }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("暂无模型统计")).not.toBeInTheDocument();
     api.getUsageSummary.mockResolvedValue({
       ...summary,
       totalRequests: 0,
@@ -500,14 +502,13 @@ describe("UsageView", () => {
     await user.click(screen.getByRole("button", { name: "重试" }));
     await loaded();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expect(screen.getByText("当前时间范围暂无记录")).toBeVisible();
-    expect(screen.getByText("暂无模型统计")).toBeVisible();
     expect(
-      within(
-        screen.getByRole("complementary", { name: "按线路模型排行" }),
-      ).getByRole("button", { name: /查看全部/ }),
-    ).toBeDisabled();
-    expect(screen.getByText("请求 0 · 成功率 100.0%")).toBeVisible();
+      screen.getByRole("region", { name: /没有 Codex 用量记录/ }),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("complementary", { name: "按线路模型排行" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "导出 CSV" })).toBeDisabled();
   });
 });
 
@@ -524,10 +525,10 @@ it("does not paint token bars for zero usage", async () => {
   ]);
   render(<UsageView />);
   await loaded();
-  expect(screen.getByText("当前时间范围暂无记录")).toBeVisible();
-  document
-    .querySelectorAll<HTMLElement>(".usage-bar")
-    .forEach((bar) => expect(bar.style.height).toBe("0%"));
+  expect(screen.getByText(/最近.*没有用量/)).toBeVisible();
+  const bars = document.querySelectorAll<HTMLElement>(".usage-bar");
+  expect(bars.length).toBeGreaterThan(0);
+  bars.forEach((bar) => expect(bar.style.height).toBe("0%"));
 });
 
 it("opens existing cost and request tools only on demand, with polling off", async () => {

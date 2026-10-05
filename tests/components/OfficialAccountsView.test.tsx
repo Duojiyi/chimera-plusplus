@@ -20,6 +20,7 @@ vi.mock("@/lib/api/officialAccounts", () => ({
     saveCurrentLogin: vi.fn(),
     getQuota: vi.fn(),
     startDeviceLogin: vi.fn(),
+    startBrowserLogin: vi.fn(),
     pollDeviceLogin: vi.fn(),
     cancelDeviceLogin: vi.fn(),
     switchAccount: vi.fn(),
@@ -61,6 +62,13 @@ afterEach(() => {
 });
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(officialAccountsApi.startBrowserLogin)
+    .mockReset()
+    .mockResolvedValue({
+      ...startedLogin,
+      userCode: "",
+      verificationUrl: "https://auth.openai.com/oauth/authorize?state=test",
+    });
   vi.mocked(officialAccountsApi.startDeviceLogin)
     .mockReset()
     .mockResolvedValue(startedLogin);
@@ -78,6 +86,121 @@ beforeEach(() => {
   vi.mocked(officialAccountsApi.cancelDeviceLogin).mockResolvedValue();
 });
 describe("official account onboarding", () => {
+  it("keeps the startup guard across unmount and remount", async () => {
+    let resolveStart!: (value: typeof startedLogin) => void;
+    vi.mocked(officialAccountsApi.startBrowserLogin).mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveStart = resolve;
+      }),
+    );
+    const first = render(<OfficialAccountsView />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "登录并添加账号" }),
+    );
+    first.unmount();
+    render(<OfficialAccountsView />);
+    fireEvent.click(await screen.findByRole("button", { name: "设备码登录" }));
+    expect(officialAccountsApi.startDeviceLogin).not.toHaveBeenCalled();
+    await act(async () => {
+      resolveStart(startedLogin);
+    });
+    expect(officialAccountsApi.cancelDeviceLogin).toHaveBeenCalledWith(
+      "flow-a",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "设备码登录" }));
+    await screen.findByText("TEST-1234");
+    expect(officialAccountsApi.startDeviceLogin).toHaveBeenCalledOnce();
+  });
+
+  it("waits for cancelled startup cleanup before permitting another login", async () => {
+    let resolveStart!: (value: typeof startedLogin) => void;
+    vi.mocked(officialAccountsApi.startBrowserLogin).mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveStart = resolve;
+      }),
+    );
+    render(<OfficialAccountsView />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "登录并添加账号" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "取消登录" }));
+    expect(screen.getByRole("button", { name: "设备码登录" })).toBeDisabled();
+    await act(async () => {
+      resolveStart({ ...startedLogin, userCode: "" });
+    });
+    expect(officialAccountsApi.cancelDeviceLogin).toHaveBeenCalledWith(
+      "flow-a",
+    );
+    expect(screen.getByRole("button", { name: "设备码登录" })).toBeEnabled();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("completes browser login through the shared polling and account reload", async () => {
+    vi.mocked(officialAccountsApi.pollDeviceLogin).mockResolvedValueOnce({
+      status: "completed",
+      key: "browser-account",
+    });
+    const onAccountSwitched = vi.fn();
+    render(<OfficialAccountsView onAccountSwitched={onAccountSwitched} />);
+    const button = await screen.findByRole("button", {
+      name: "登录并添加账号",
+    });
+    vi.useFakeTimers();
+    await act(async () => {
+      fireEvent.click(button);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(officialAccountsApi.list).toHaveBeenCalledTimes(2);
+    expect(onAccountSwitched).toHaveBeenCalledOnce();
+  });
+
+  it("defaults to browser login without displaying a device code", async () => {
+    render(<OfficialAccountsView />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "登录并添加账号" }),
+    );
+    await screen.findByText(
+      "https://auth.openai.com/oauth/authorize?state=test",
+    );
+    expect(officialAccountsApi.startBrowserLogin).toHaveBeenCalledOnce();
+    expect(officialAccountsApi.startDeviceLogin).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole("button", { name: "复制代码" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "改用设备码登录" }),
+    ).toBeVisible();
+  });
+
+  it("cancels the browser flow before switching to device login and back", async () => {
+    render(<OfficialAccountsView />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "登录并添加账号" }),
+    );
+    await screen.findByText(
+      "https://auth.openai.com/oauth/authorize?state=test",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "改用设备码登录" }));
+    await screen.findByText("TEST-1234");
+    expect(officialAccountsApi.cancelDeviceLogin).toHaveBeenCalledWith(
+      "flow-a",
+    );
+    expect(
+      screen.getByText(/设备码登录需要在 ChatGPT 安全设置中开启/),
+    ).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "改用浏览器登录" }));
+    await screen.findByText(
+      "https://auth.openai.com/oauth/authorize?state=test",
+    );
+    expect(officialAccountsApi.startBrowserLogin).toHaveBeenCalledTimes(2);
+    expect(
+      screen.queryByRole("button", { name: "复制代码" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("does not let an old list response hide an explicitly imported account", async () => {
     let resolveOld!: (accounts: OfficialAccountDto[]) => void;
     vi.mocked(officialAccountsApi.list)
@@ -97,25 +220,34 @@ describe("official account onboarding", () => {
   it("shows a clear login action without empty quota or placeholder history", async () => {
     render(<OfficialAccountsView />);
     await screen.findByText("连接第一个官方账号");
-    expect(screen.getByRole("button", { name: "添加官方账号" })).toBeVisible();
+    // Exactly one add action while empty; importing stays a secondary option.
+    expect(screen.getByRole("button", { name: "设备码登录" })).toBeVisible();
     expect(
-      screen.getByRole("button", { name: "登录并添加账号" }),
-    ).toBeVisible();
+      screen.queryByRole("button", { name: "添加官方账号" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "导入本机登录" })).toBeVisible();
+    expect(screen.getByText(/登录令牌仅保存在本机/)).toBeVisible();
     expect(screen.queryByLabelText("当前官方账号")).not.toBeInTheDocument();
     expect(screen.queryByText(/auth.json 写入记录/)).not.toBeInTheDocument();
   });
   it("starts the existing device flow only after an explicit click", async () => {
+    let resolveStart!: (value: typeof startedLogin) => void;
     vi.mocked(officialAccountsApi.startDeviceLogin).mockReturnValue(
-      new Promise(() => {}),
+      new Promise((resolve) => {
+        resolveStart = resolve;
+      }),
     );
     render(<OfficialAccountsView />);
-    const add = await screen.findByRole("button", { name: "登录并添加账号" });
+    const add = await screen.findByRole("button", { name: "设备码登录" });
     expect(officialAccountsApi.startDeviceLogin).not.toHaveBeenCalled();
     fireEvent.click(add);
     await waitFor(() =>
       expect(officialAccountsApi.startDeviceLogin).toHaveBeenCalledOnce(),
     );
     expect(add).toBeDisabled();
+    await act(async () => {
+      resolveStart(startedLogin);
+    });
   });
   it("shows real account identity and keeps the current account explicit", async () => {
     vi.mocked(officialAccountsApi.list).mockResolvedValue([
@@ -132,6 +264,21 @@ describe("official account onboarding", () => {
     await screen.findByRole("button", { name: "当前账号" });
     expect(screen.getByRole("button", { name: "当前账号" })).toBeDisabled();
     expect(screen.getByText("使用中")).toBeInTheDocument();
+    expect(screen.queryByText("连接第一个官方账号")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "添加官方账号" })).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "登录并添加账号" }),
+    ).not.toBeInTheDocument();
+  });
+  it("keeps an add action available when the account list cannot be read", async () => {
+    vi.mocked(officialAccountsApi.list).mockRejectedValueOnce(
+      new Error("database locked"),
+    );
+    render(<OfficialAccountsView />);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "database locked",
+    );
+    expect(screen.getByRole("button", { name: "添加官方账号" })).toBeVisible();
     expect(screen.queryByText("连接第一个官方账号")).not.toBeInTheDocument();
   });
 });
@@ -175,7 +322,7 @@ describe("official account dialogs", () => {
     });
     render(<OfficialAccountsView />);
     const loginButton = await screen.findByRole("button", {
-      name: "登录并添加账号",
+      name: "设备码登录",
     });
     loginButton.focus();
     fireEvent.click(loginButton);
@@ -275,7 +422,7 @@ describe("device login recovery", () => {
   const beginTimedLogin = async () => {
     const view = render(<OfficialAccountsView />);
     const button = await screen.findByRole("button", {
-      name: "登录并添加账号",
+      name: "设备码登录",
     });
     vi.useFakeTimers();
     await act(async () => {
@@ -293,9 +440,7 @@ describe("device login recovery", () => {
       new Error("service unavailable"),
     );
     render(<OfficialAccountsView />);
-    fireEvent.click(
-      await screen.findByRole("button", { name: "登录并添加账号" }),
-    );
+    fireEvent.click(await screen.findByRole("button", { name: "设备码登录" }));
     const dialog = await screen.findByRole("dialog", { name: "添加官方账号" });
     expect(await within(dialog).findByRole("alert")).toHaveTextContent(
       "service unavailable",
@@ -361,7 +506,7 @@ describe("device login recovery", () => {
       userCode: "NEW-5678",
     });
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "登录并添加账号" }));
+      fireEvent.click(screen.getByRole("button", { name: "设备码登录" }));
     });
     await act(async () => {
       finish({ status: "completed" });

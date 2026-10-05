@@ -184,4 +184,4 @@ Bug 报告和功能建议请使用 [GitHub Issues](https://github.com/Duojiyi/ch
 
 ## 许可与来源
 
-本项目采用 [MIT License](LICENSE)。Chimera++ 延续了 CC Switch 的部分基础组件，并在此基础上聚焦 Codex 线路与桌面运行时管理；第三方组件分别遵循其原始许可证。
+Chimera++ 自有源码采用 [MIT License](LICENSE)。发行版二进制链接了三个以 AGPL-3.0-only 授权的组件（`chimera-runtime`、`chimera-platform`、`chimera-domain`，来自本仓库的固定提交），因此发行版整体按 AGPL-3.0 条款提供，对应源码以仓库中的发行标签为准；详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。Chimera++ 延续了 CC Switch 的部分基础组件，并在此基础上聚焦 Codex 线路与桌面运行时管理；第三方组件分别遵循其原始许可证。

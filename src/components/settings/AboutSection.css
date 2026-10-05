@@ -1,0 +1,51 @@
+.about-tools-heading {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+.about-tools-status {
+  color: var(--text-3);
+  font-size: 12px;
+}
+/* Fixed-size placeholders: a card keeps the same height before and after its
+   detection result arrives. */
+.about-tool-env {
+  display: flex;
+  align-items: center;
+  width: fit-content;
+  height: 16px;
+  margin-top: 4px;
+  white-space: nowrap;
+}
+.about-tool-skeleton {
+  display: block;
+  border-radius: 4px;
+  background: var(--bg-well);
+  animation: about-tool-pulse 1.4s ease-in-out infinite;
+}
+.about-tool-env.about-tool-skeleton {
+  width: 56px;
+  border-radius: 999px;
+}
+.about-tool-value-skeleton {
+  width: 72px;
+  height: 10px;
+}
+.about-tool-value-skeleton.is-short {
+  width: 48px;
+}
+.about-tool-footer {
+  min-height: 28px;
+}
+@keyframes about-tool-pulse {
+  50% {
+    opacity: 0.45;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .about-tool-skeleton {
+    animation: none;
+  }
+}

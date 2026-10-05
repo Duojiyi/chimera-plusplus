@@ -71,3 +71,32 @@ fn backup() {
     [],
   );
 });
+
+test("production code after a mid-file test module is still scanned", () => {
+  const findings = findConfigWrites(`
+fn first() {}
+
+#[cfg(test)]
+mod tests {
+    fn fixture() { let brace = "}"; let raw = r#"{ not a block"#; }
+}
+
+fn later() {
+    let path = get_codex_config_path();
+    std::fs::write(&path, "next").unwrap();
+}`);
+  assert.equal(findings.length, 1);
+});
+
+test("a test module is not scanned for writes", () => {
+  assert.deepEqual(
+    findConfigWrites(`
+fn production() {}
+
+#[cfg(test)]
+mod tests {
+    fn writes_for_a_test() { std::fs::write(get_codex_config_path(), "x").unwrap(); }
+}`),
+    [],
+  );
+});

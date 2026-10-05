@@ -109,9 +109,5 @@ describe("v2.8 shell keeps existing backend-connected routes", () => {
 it("distinguishes the browser appearance preview from a disabled product capability", async () => {
   renderApp();
   fireEvent.click(screen.getByRole("button", { name: "外观" }));
-  expect(
-    await screen.findByText(
-      "浏览器预览不读取皮肤目录，请在桌面应用中查看真实皮肤。",
-    ),
-  ).toBeVisible();
+  expect(await screen.findByText("浏览器预览不读取皮肤目录")).toBeVisible();
 });

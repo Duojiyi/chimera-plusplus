@@ -10,6 +10,36 @@ numbers belong to a separate upstream line.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.8.0] - 2026-10-05
+
+### Added
+
+- Codex provider presets and an explicit context-window control in the line editor.
+- Capability-gated conversation-level Codex usage implementation, with subagent attribution, provider breakdowns, and explicit coverage limits for archived or unidentified usage. The native feature remains disabled pending acceptance.
+- Tool visibility settings, configuration health checks, managed live-backup actions, and a preview-and-confirm flow for cc-switch imports.
+- Official-account management and a built-in prompt template library with explicit save and activation boundaries.
+- Browser login is the default for official accounts, with device-code login and local-login import retained as explicit alternatives.
+
+### Changed
+
+- Refined the application shell, settings, sessions, prompts, Skills/MCP, usage, and appearance views, including dark-mode and smaller-window layouts.
+- Removed superseded frontend routes and components; added a baseline-enforced backend layering check to CI.
+
+### Fixed
+
+- Official-account polling preserves the active login directory, and failed old flows cannot cancel their replacements; accounts shared by multiple lines correctly identify the current line.
+- Official-account login waits for complete authorization URLs, guards startup across page remounts, cleans up on exit, and keeps update-failure recovery separate from permanent shutdown.
+- Live backups record absent files explicitly, restore them through CAS deletion, and reconcile prompt activation; legacy backups retain their original file scope.
+- Windows-specific window settings match the shared 1140×816 default and 960×640 minimum instead of overriding them with the old dimensions.
+- Architecture baseline updates reject growth, with CI and candidate checks comparing the baseline against a trusted Git reference; initial baseline approval remains required.
+- Repository safety checks tolerate tracked files deleted from the working tree while still rejecting unsafe content and non-missing-file read errors.
+- Preset-picker interaction tests separate cold module loading from UI response deadlines.
+- Conversation usage queries acquire the database connection in the usage DAO rather than adding another service-layer lock.
+
+### Release Status
+
+- Release publication requires successful same-commit CI and native portable checks through the existing release workflow. Local frontend validation and independent source audits do not replace native acceptance; real-account OAuth and installed-package upgrade smoke tests remain unverified.
+
 ## [2.7.10] - 2026-09-22
 
 ### Fixed

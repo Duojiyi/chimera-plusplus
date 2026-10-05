@@ -15,6 +15,23 @@ const account: OfficialAccountDto = {
   providerId: "provider-id",
 };
 beforeEach(() => vi.mocked(invoke).mockReset());
+describe("official account login contract", () => {
+  it.each([
+    ["startBrowserLogin", "start_official_browser_login"],
+    ["startDeviceLogin", "start_official_device_login"],
+  ] as const)("routes %s to its native command", async (method, command) => {
+    const started = {
+      flowId: "flow",
+      verificationUrl: "https://auth.openai.com/",
+      userCode: "",
+      expiresAt: "2099-01-01",
+    };
+    vi.mocked(invoke).mockResolvedValueOnce(started);
+    await expect(officialAccountsApi[method]()).resolves.toBe(started);
+    expect(invoke).toHaveBeenCalledExactlyOnceWith(command);
+  });
+});
+
 describe("official account switch contract", () => {
   it.each(["vault-key", "provider-id"])(
     "resolves %s and uses the registered switch command",

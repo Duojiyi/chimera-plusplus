@@ -47,7 +47,18 @@ const initial = {
   codexUpdateSource: "auto",
   codexInstallMode: "standard",
   currentProviderCodex: "active",
+  launchOnStartup: true,
 } as Settings;
+
+const renderSettings = () =>
+  render(
+    <ThemeProvider>
+      <NewSettingsView />
+    </ThemeProvider>,
+  );
+// Settings opens at 工具; the preference rows live in the scrolled sections.
+const openSection = (name: string) =>
+  fireEvent.click(screen.getByRole("link", { name }));
 
 describe("atomic preference saves", () => {
   beforeEach(async () => {
@@ -64,19 +75,16 @@ describe("atomic preference saves", () => {
       })),
     );
 
-    mocks.get.mockResolvedValue({ ...initial });
+    mocks.get.mockReset().mockResolvedValue({ ...initial });
     mocks.patch.mockReset();
     mocks.error.mockClear();
-    mocks.getAutoLaunch.mockReset().mockResolvedValue(true);
+    mocks.getAutoLaunch.mockReset().mockResolvedValue(false);
     mocks.setAutoLaunch.mockReset().mockResolvedValue(true);
   });
 
   it("keeps backup and four general rows in design order without fabricating backups", async () => {
-    const { container } = render(
-      <ThemeProvider>
-        <NewSettingsView />
-      </ThemeProvider>,
-    );
+    const { container } = renderSettings();
+    openSection("备份与恢复");
     await waitFor(() =>
       expect(screen.getByRole("radio", { name: "退出软件" })).toBeEnabled(),
     );
@@ -91,6 +99,9 @@ describe("atomic preference saves", () => {
       "settings-codex",
       "settings-updates",
     ]);
+    // Every section starts with its own heading, controls follow.
+    for (const section of sections)
+      expect(section.firstElementChild?.tagName).toBe("H2");
     const rows = container.querySelectorAll(
       "#settings-general .settings-reference-row",
     );
@@ -111,14 +122,15 @@ describe("atomic preference saves", () => {
     );
   });
 
-  it("restores the tools section from its URL and follows history changes", async () => {
-    window.history.replaceState(null, "", "#settings-tools");
-    render(
-      <ThemeProvider>
-        <NewSettingsView />
-      </ThemeProvider>,
+  it("always opens at the tools section and follows history changes", async () => {
+    window.history.replaceState(null, "", "#settings-general");
+    renderSettings();
+    expect(screen.getByRole("link", { name: "工具" })).toHaveAttribute(
+      "aria-current",
+      "location",
     );
     await screen.findByText("工具注册表为空。");
+    expect(window.location.hash).toBe("");
     window.history.replaceState(null, "", "#settings-general");
     fireEvent(window, new HashChangeEvent("hashchange"));
     expect(screen.getByRole("region", { name: "通用设置" })).toBeVisible();
@@ -129,12 +141,8 @@ describe("atomic preference saves", () => {
   });
 
   it("opens import separately without showing unrelated reset controls", async () => {
-    render(
-      <ThemeProvider>
-        <NewSettingsView />
-      </ThemeProvider>,
-    );
-    fireEvent.click(screen.getByRole("link", { name: "导入" }));
+    renderSettings();
+    openSection("导入");
     expect(screen.getByLabelText("导入链接")).toBeVisible();
     expect(
       screen.queryByRole("button", { name: "恢复默认设置" }),
@@ -142,7 +150,7 @@ describe("atomic preference saves", () => {
     expect(
       screen.queryByRole("region", { name: "通用设置" }),
     ).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("link", { name: "通用设置" }));
+    openSection("通用设置");
     expect(screen.getByRole("region", { name: "通用设置" })).toBeVisible();
     expect(screen.queryByLabelText("导入链接")).not.toBeInTheDocument();
     await waitFor(() =>
@@ -153,27 +161,20 @@ describe("atomic preference saves", () => {
   });
 
   it("opens tools independently and returns to the standard sections", async () => {
-    render(
-      <ThemeProvider>
-        <NewSettingsView />
-      </ThemeProvider>,
-    );
-    fireEvent.click(screen.getByRole("link", { name: "工具" }));
+    renderSettings();
+    openSection("工具");
     await screen.findByText("工具注册表为空。");
     expect(
       screen.queryByRole("region", { name: "通用设置" }),
     ).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("link", { name: "通用设置" }));
+    openSection("通用设置");
     expect(screen.getByRole("region", { name: "通用设置" })).toBeVisible();
     expect(screen.queryByText("工具注册表为空。")).not.toBeInTheDocument();
   });
 
   it("persists application theme and restores the selected segment on remount", async () => {
-    const view = render(
-      <ThemeProvider>
-        <NewSettingsView />
-      </ThemeProvider>,
-    );
+    const view = renderSettings();
+    openSection("通用设置");
     await waitFor(() =>
       expect(screen.getByRole("switch", { name: /开机自启动/ })).toBeEnabled(),
     );
@@ -186,11 +187,8 @@ describe("atomic preference saves", () => {
     expect(window.localStorage.getItem("cc-switch-theme")).toBe("dark");
     expect(mocks.patch).not.toHaveBeenCalled();
     view.unmount();
-    render(
-      <ThemeProvider>
-        <NewSettingsView />
-      </ThemeProvider>,
-    );
+    renderSettings();
+    openSection("通用设置");
     expect(screen.getByRole("button", { name: "深色" })).toHaveAttribute(
       "aria-pressed",
       "true",
@@ -208,11 +206,8 @@ describe("atomic preference saves", () => {
   it("ignores legacy language preferences without rewriting user settings", async () => {
     mocks.get.mockResolvedValueOnce({ ...initial, language: "en" });
     window.localStorage.setItem("language", "ja");
-    render(
-      <ThemeProvider>
-        <NewSettingsView />
-      </ThemeProvider>,
-    );
+    renderSettings();
+    openSection("通用设置");
     await waitFor(() =>
       expect(screen.getByRole("radio", { name: "退出软件" })).toBeEnabled(),
     );
@@ -222,22 +217,15 @@ describe("atomic preference saves", () => {
     expect(window.localStorage.getItem("language")).toBe("ja");
   });
 
-  it("links the settings directory to real sections and marks unavailable backups", async () => {
-    render(
-      <ThemeProvider>
-        <NewSettingsView />
-      </ThemeProvider>,
-    );
-    await waitFor(() =>
-      expect(screen.getByRole("switch", { name: /开机自启动/ })).toBeEnabled(),
-    );
+  it("links the settings directory to real sections and marks the clicked one", async () => {
+    renderSettings();
     const navigation = screen.getByRole("navigation", { name: "设置目录" });
     const links = navigation.querySelectorAll("a");
     expect(links).toHaveLength(8);
-    expect(links[2]).toHaveAttribute("aria-current", "location");
+    expect(links[0]).toHaveAttribute("aria-current", "location");
     fireEvent.click(links[3]);
     expect(links[3]).toHaveAttribute("aria-current", "location");
-    expect(links[2]).not.toHaveAttribute("aria-current");
+    expect(links[0]).not.toHaveAttribute("aria-current");
     for (const link of links) {
       const target = document.querySelector(link.getAttribute("href")!);
       expect(target).not.toBeNull();
@@ -252,17 +240,21 @@ describe("atomic preference saves", () => {
     expect(
       screen.getByRole("region", { name: "应用更新" }),
     ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("switch", { name: /开机自启动/ })).toBeEnabled(),
+    );
   });
 
-  it("reads the OS startup status and persists toggles through the dedicated command", async () => {
-    render(
-      <ThemeProvider>
-        <NewSettingsView />
-      </ThemeProvider>,
-    );
+  it("shows the saved startup preference and saves toggles through the dedicated command", async () => {
+    renderSettings();
+    openSection("通用设置");
     const toggle = screen.getByRole("switch", { name: /开机自启动/ });
     await waitFor(() => expect(toggle).toBeEnabled());
+    // The saved preference wins over whatever the OS entry currently says.
     expect(toggle).toHaveAttribute("aria-checked", "true");
+    expect(toggle).toHaveTextContent("登录系统后自动启动 Chimera++");
+    expect(toggle).not.toHaveTextContent("默认");
+    expect(mocks.getAutoLaunch).not.toHaveBeenCalled();
     fireEvent.click(toggle);
     await waitFor(() =>
       expect(toggle).toHaveAttribute("aria-checked", "false"),
@@ -272,61 +264,50 @@ describe("atomic preference saves", () => {
   });
 
   it("keeps an existing disabled startup preference", async () => {
-    mocks.getAutoLaunch.mockResolvedValue(false);
-    render(
-      <ThemeProvider>
-        <NewSettingsView />
-      </ThemeProvider>,
-    );
+    mocks.get.mockResolvedValue({ ...initial, launchOnStartup: false });
+    renderSettings();
+    openSection("通用设置");
     const toggle = screen.getByRole("switch", { name: /开机自启动/ });
     await waitFor(() => expect(toggle).toBeEnabled());
     expect(toggle).toHaveAttribute("aria-checked", "false");
     expect(mocks.setAutoLaunch).not.toHaveBeenCalled();
   });
 
-  it("reconciles OS state after a failed startup change", async () => {
+  it("keeps the saved preference when a startup change fails", async () => {
     mocks.setAutoLaunch.mockRejectedValue(new Error("permission denied"));
-    render(
-      <ThemeProvider>
-        <NewSettingsView />
-      </ThemeProvider>,
-    );
+    renderSettings();
+    openSection("通用设置");
     const toggle = screen.getByRole("switch", { name: /开机自启动/ });
     await waitFor(() => expect(toggle).toBeEnabled());
     fireEvent.click(toggle);
-    await waitFor(() => expect(mocks.getAutoLaunch).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(mocks.error).toHaveBeenCalledWith(
+        "设置开机自启动失败",
+        expect.anything(),
+      ),
+    );
     await waitFor(() => expect(toggle).toBeEnabled());
     expect(toggle).toHaveAttribute("aria-checked", "true");
-    expect(mocks.error).toHaveBeenCalledWith(
-      "设置开机自启动失败",
-      expect.anything(),
-    );
   });
 
-  it("disables startup control on read failure and offers retry", async () => {
-    mocks.getAutoLaunch.mockRejectedValueOnce(new Error("read failed"));
-    render(
-      <ThemeProvider>
-        <NewSettingsView />
-      </ThemeProvider>,
-    );
-    const retry = await screen.findByRole("button", {
-      name: "重试读取自启动状态",
-    });
+  it("disables preferences when settings cannot be read and offers a retry", async () => {
+    mocks.get.mockRejectedValueOnce(new Error("read failed"));
+    renderSettings();
+    openSection("通用设置");
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("无法读取设置");
     expect(screen.getByRole("switch", { name: /开机自启动/ })).toBeDisabled();
-    fireEvent.click(retry);
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
     await waitFor(() =>
       expect(screen.getByRole("switch", { name: /开机自启动/ })).toBeEnabled(),
     );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("saves all three close behaviors atomically", async () => {
     mocks.patch.mockImplementation(async (patch) => ({ ...initial, ...patch }));
-    render(
-      <ThemeProvider>
-        <NewSettingsView />
-      </ThemeProvider>,
-    );
+    renderSettings();
+    openSection("通用设置");
     const exit = screen.getByRole("radio", { name: "退出软件" });
     await waitFor(() => expect(exit).toBeEnabled());
     expect(exit).toBeChecked();
@@ -359,11 +340,8 @@ describe("atomic preference saves", () => {
       checkCodexUpdatesOnStart: false,
       showProviderBalance: true,
     });
-    render(
-      <ThemeProvider>
-        <NewSettingsView />
-      </ThemeProvider>,
-    );
+    renderSettings();
+    openSection("Codex 偏好");
     const checks = screen.getByRole("switch", {
       name: /启动时检查 Codex 更新/,
     });
@@ -397,11 +375,8 @@ describe("atomic preference saves", () => {
       ...initial,
       showProviderBalance: true,
     });
-    render(
-      <ThemeProvider>
-        <NewSettingsView />
-      </ThemeProvider>,
-    );
+    renderSettings();
+    openSection("Codex 偏好");
     const balance = screen.getByRole("switch", { name: /显示供应商余额/ });
     await waitFor(() => expect(balance).toBeEnabled());
     fireEvent.click(balance);
@@ -416,11 +391,8 @@ describe("atomic preference saves", () => {
 
   it("resets only the preferences owned by this page", async () => {
     mocks.patch.mockResolvedValueOnce(initial);
-    render(
-      <ThemeProvider>
-        <NewSettingsView />
-      </ThemeProvider>,
-    );
+    renderSettings();
+    openSection("应用更新");
     const reset = screen.getByRole("button", { name: "恢复默认设置" });
     await waitFor(() => expect(reset).toBeEnabled());
     fireEvent.click(reset);

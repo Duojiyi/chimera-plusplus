@@ -1,38 +1,12 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { toolRegistryApi, type ToolInfo } from "@/lib/api/toolRegistry";
-import type { AppId } from "@/lib/api/types";
 import registry from "@/shared/tool-registry.json";
 import type { Settings } from "@/types";
+import { toolBadgeMarks, toolDisplayNames } from "./toolBadges";
 
 const AboutSection = lazy(() =>
   import("./AboutSection").then((module) => ({ default: module.AboutSection })),
 );
-
-const names: Record<AppId, string> = {
-  codex: "Codex",
-  claude: "Claude Code",
-  "claude-desktop": "Claude Desktop",
-  gemini: "Gemini CLI",
-  grokbuild: "GrokBuild",
-  opencode: "OpenCode",
-  openclaw: "OpenClaw",
-  hermes: "Hermes",
-  pi: "Pi",
-  mcode: "MiniMax Code",
-};
-
-const marks: Record<AppId, string> = {
-  codex: "Cx",
-  claude: "CC",
-  "claude-desktop": "CD",
-  gemini: "Gm",
-  grokbuild: "Gk",
-  opencode: "OC",
-  openclaw: "Ow",
-  hermes: "He",
-  pi: "Pi",
-  mcode: "Mc",
-};
 
 export function ToolRegistryPanel({
   settings,
@@ -60,6 +34,8 @@ export function ToolRegistryPanel({
     void toolRegistryApi
       .list()
       .then((rows) => {
+        // Never render a malformed reply as an empty or partial registry.
+        if (!Array.isArray(rows)) throw new Error("invalid tool registry");
         if (!cancelled) setTools(rows);
       })
       .catch(() => {
@@ -77,7 +53,13 @@ export function ToolRegistryPanel({
     <section aria-labelledby="settings-tools-heading" tabIndex={-1}>
       <h2 id="settings-tools-heading">工具</h2>
       {native && (
-        <Suspense fallback={<p role="status">正在加载安装检测…</p>}>
+        <Suspense
+          fallback={
+            <p className="settings-tools-description" role="status">
+              正在检测本机工具…
+            </p>
+          }
+        >
           <AboutSection isPortable={false} toolsOnly />
         </Suspense>
       )}
@@ -112,9 +94,9 @@ export function ToolRegistryPanel({
             <details key={tool.id} className="settings-tool-row">
               <summary>
                 <span className="settings-tool-mark" aria-hidden="true">
-                  {marks[tool.id] ?? "?"}
+                  {toolBadgeMarks[tool.id] ?? "?"}
                 </span>
-                <b>{names[tool.id] ?? tool.id}</b>
+                <b>{toolDisplayNames[tool.id] ?? tool.id}</b>
                 <span className="settings-tool-mode">
                   {tool.mode === "switch" ? "切换型" : "增量型"}
                 </span>

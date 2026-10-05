@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import fs from "node:fs";
+import { readWorktreeFile } from "./lib/read-worktree-file.mjs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -22,8 +22,8 @@ const findings = [];
 
 for (const relativePath of tracked.stdout.split("\0").filter(Boolean)) {
   const absolutePath = path.join(root, relativePath);
-  const content = fs.readFileSync(absolutePath);
-  if (content.includes(0)) continue;
+  const content = readWorktreeFile(absolutePath);
+  if (content === null || content.includes(0)) continue;
 
   const lines = content.toString("utf8").split(/\r?\n/);
   for (let index = 0; index < lines.length; index += 1) {

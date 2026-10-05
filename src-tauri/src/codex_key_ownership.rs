@@ -858,9 +858,71 @@ pub fn codex_line_keys_without_effect(line_text: &str) -> Vec<String> {
     keys
 }
 
+/// Root keys that Codex reads as a number of tokens.
+const POSITIVE_INTEGER_ROOT_KEYS: &[&str] =
+    &["model_context_window", "model_auto_compact_token_limit"];
+
+/// Codex refuses to load a config in which one of the token-count root keys holds
+/// another type or a non-positive number, so a line that would write such a value
+/// is rejected when it is saved instead of breaking the user's Codex later.
+/// Syntax errors are reported by the TOML validation that runs before this.
+pub(crate) fn validate_line_numeric_keys(text: &str) -> Result<(), AppError> {
+    let Ok(doc) = text.parse::<DocumentMut>() else {
+        return Ok(());
+    };
+    for key in POSITIVE_INTEGER_ROOT_KEYS {
+        let Some(item) = doc.get(key) else {
+            continue;
+        };
+        if item.as_integer().is_none_or(|value| value <= 0) {
+            return Err(AppError::localized(
+                "provider.codex.numeric_key.invalid",
+                format!("配置项 {key} 必须是大于 0 的整数"),
+                format!("{key} must be a positive integer"),
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn token_count_root_keys_must_be_positive_integers() {
+        for valid in [
+            "",
+            "model = \"gpt-5.5\"\n",
+            "model_context_window = 1000000\nmodel_auto_compact_token_limit = 900000\n",
+            "model_context_window = 1_000_000\n",
+        ] {
+            assert!(validate_line_numeric_keys(valid).is_ok(), "{valid:?}");
+        }
+        for invalid in [
+            "model_context_window = \"1000000\"\n",
+            "model_context_window = 1e6\n",
+            "model_context_window = 0\n",
+            "model_context_window = -5\n",
+            "model_auto_compact_token_limit = 900000.5\n",
+            "model_auto_compact_token_limit = true\n",
+        ] {
+            let error = validate_line_numeric_keys(invalid).expect_err(invalid);
+            assert!(error.to_string().contains("必须是大于 0 的整数"), "{error}");
+        }
+    }
+
+    #[test]
+    fn token_count_keys_inside_tables_are_not_root_keys() {
+        // Codex ignores them there; the preset data fix moved them to the root.
+        let text = "[model_providers.custom]\nmodel_context_window = \"ignored\"\n";
+        assert!(validate_line_numeric_keys(text).is_ok());
+    }
+
+    #[test]
+    fn invalid_toml_is_left_to_the_syntax_validation() {
+        assert!(validate_line_numeric_keys("model_context_window = ").is_ok());
+    }
 
     #[test]
     fn official_base_url_allowlist_is_exact() {

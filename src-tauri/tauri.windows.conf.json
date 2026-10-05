@@ -6,13 +6,14 @@
         "label": "main",
         "title": "",
         "titleBarStyle": "Overlay",
-        "width": 1440,
-        "height": 960,
+        "width": 1140,
+        "height": 816,
         "visible": false,
-        "minWidth": 1180,
-        "minHeight": 760,
+        "minWidth": 960,
+        "minHeight": 640,
         "decorations": false,
         "resizable": true,
+        "maximizable": true,
         "fullscreen": false,
         "center": true
       }

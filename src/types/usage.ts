@@ -121,6 +121,61 @@ export interface ModelStats {
   avgCostPerRequest: string;
 }
 
+/** One provider line's share of a conversation. */
+export interface ConversationProviderUsage {
+  providerId: string;
+  providerName: string;
+  requestCount: number;
+  totalTokens: number;
+}
+
+/** A sub-agent or fork thread whose usage is counted in its conversation. */
+export interface ConversationThreadUsage {
+  id: string;
+  title: string | null;
+  isFork: boolean;
+  requestCount: number;
+  totalTokens: number;
+  lastActivityAt: number;
+}
+
+/** One root conversation; tokens include cache, like the overview. */
+export interface ConversationUsage {
+  id: string;
+  /** Renamed thread title, else the first user message. */
+  title: string | null;
+  /** Unix seconds of the first and last request inside the queried range. */
+  firstActivityAt: number;
+  lastActivityAt: number;
+  requestCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+  totalTokens: number;
+  /** cache_read / (input + cache_creation + cache_read), range 0–1 */
+  cacheHitRate: number;
+  totalCost: string;
+  /** Successful requests without a price; `totalCost` leaves them out. */
+  unpricedRequestCount: number;
+  /** Exact count; `subagents` lists at most 20 of them. */
+  subagentCount: number;
+  providers: ConversationProviderUsage[];
+  subagents: ConversationThreadUsage[];
+}
+
+export interface ConversationUsageReport {
+  /** Newest activity first, at most 200 rows. */
+  conversations: ConversationUsage[];
+  /** Conversations in range before the title filter. */
+  totalConversations: number;
+  /** Conversations matching the title filter, before the row cap. */
+  matchedConversations: number;
+  /** In the overview totals but not tied to any conversation. */
+  unattributedRequests: number;
+  unattributedTokens: number;
+}
+
 export interface LogFilters {
   appType?: string;
   providerName?: string;

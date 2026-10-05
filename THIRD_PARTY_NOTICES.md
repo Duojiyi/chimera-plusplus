@@ -1,5 +1,25 @@
 # Third-Party Notices
 
+## Components licensed under AGPL-3.0-only
+
+Chimera++ links three crates from this project's own repository: `chimera-runtime`,
+`chimera-platform` and `chimera-domain`, pinned to commit
+`ac846589c9bb3b60cbaec3f7d26287c55afdc493` of
+https://github.com/Duojiyi/chimera-plusplus. Their workspace declares
+`AGPL-3.0-only`; the `LICENSE`, `NOTICE` and `THIRD_PARTY_SOURCES.md` files at that
+commit state the terms and the provenance of the code.
+
+Because the application links these crates, a distributed Chimera++ binary is a combined
+work that is provided under the GNU Affero General Public License v3.0 only. The complete
+corresponding source of every release is published at
+https://github.com/Duojiyi/chimera-plusplus at the release tag. Chimera++'s own code
+outside these crates remains available under the MIT License ([LICENSE](LICENSE)); MIT
+code may be combined into an AGPL-3.0 work.
+
+This section states the licensing facts of the linked components. It is not legal advice.
+
+## MIT-licensed components
+
 Chimera++ 2.0 reuses selected components from the following MIT-licensed projects.
 The original license terms and copyright notices are retained below.
 
@@ -80,6 +100,16 @@ Managed-block bounds validation in `src-tauri/src/managed_prompts.rs` is adapted
 from Codex-X `apps/desktop/src-tauri/src/prompts/managed_agents.rs` at the same
 `8f018fddd3ee1a68464e4df8765eb370ede0c76f` revision (MIT, license above). Chimera
 markers, byte-preserving projection and legacy hash migration are local changes.
+
+### Codex-X 1M context preset (v2.8.0)
+
+The 1M context switch (`src/utils/codexContextWindow.ts`) adapts the preset and the
+turn-off rule of `update_codex_context_window_inner` in Codex-X
+`apps/desktop/src-tauri/src/context_config.rs` at
+`8f018fddd3ee1a68464e4df8765eb370ede0c76f`: a 1,000,000-token window with a
+900,000-token auto-compact limit, where turning the switch off only removes
+values equal to the preset. It is rewritten as a minimal text edit of the root
+keys so comments and key order survive. MIT license reproduced above.
 
 ### Codex-X bundled prompt examples (v2.8.0)
 

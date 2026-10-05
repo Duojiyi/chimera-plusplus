@@ -512,11 +512,7 @@ fn parse_branch_from_source_url(source_url: Option<&str>) -> Option<String> {
 /// 路径检查失败必须向上传播，不能把“不安全/不可读”降级成“目录不存在”。
 fn get_agents_skills_dir() -> Result<Option<PathBuf>> {
     let dir = crate::config::get_home_dir().join(".agents").join("skills");
-    if SkillService::normal_directory_exists(&dir)? {
-        Ok(Some(dir))
-    } else {
-        Ok(None)
-    }
+    SkillService::resolve_scan_root(&dir)
 }
 
 /// 解析 `~/.agents/.skill-lock.json`，返回 skill_name -> 仓库信息
@@ -695,15 +691,18 @@ impl SkillService {
 
     /// 获取 SSOT 目录（根据设置返回 ~/.cc-switch/skills/ 或 ~/.agents/skills/）
     pub fn get_ssot_dir() -> Result<PathBuf> {
-        let location = crate::settings::get_skill_storage_location();
-        let dir = match location {
+        let dir = Self::ssot_path();
+        Self::ensure_normal_directory(&dir)?;
+        Ok(dir)
+    }
+
+    fn ssot_path() -> PathBuf {
+        match crate::settings::get_skill_storage_location() {
             SkillStorageLocation::CcSwitch => get_app_config_dir().join("skills"),
             SkillStorageLocation::Unified => {
                 crate::config::get_home_dir().join(".agents").join("skills")
             }
-        };
-        Self::ensure_normal_directory(&dir)?;
-        Ok(dir)
+        }
     }
 
     /// 获取 Skill 卸载备份目录（~/.cc-switch/skill-backups/）
@@ -1973,12 +1972,16 @@ impl SkillService {
         for app in AppType::all() {
             let dir = Self::get_app_skills_dir(&app)
                 .with_context(|| format!("解析 {:?} Skill 目录失败", app))?;
-            scan_sources.push((dir, app.as_str().to_string()));
+            if let Some(dir) = Self::resolve_scan_root(&dir)? {
+                scan_sources.push((dir, app.as_str().to_string()));
+            }
         }
         if let Some(agents_dir) = get_agents_skills_dir()? {
             scan_sources.push((agents_dir, "agents".to_string()));
         }
-        scan_sources.push((Self::get_ssot_dir()?, "cc-switch".to_string()));
+        if let Some(dir) = Self::resolve_scan_root(&Self::ssot_path())? {
+            scan_sources.push((dir, "cc-switch".to_string()));
+        }
 
         let mut unmanaged: HashMap<String, UnmanagedSkill> = HashMap::new();
 
@@ -1991,12 +1994,12 @@ impl SkillService {
             for entry in entries {
                 let entry = entry
                     .with_context(|| format!("遍历 Skill 扫描目录失败: {}", scan_dir.display()))?;
-                let path = entry.path();
-                if !Self::normal_directory_exists(&path)? {
-                    continue;
-                }
                 let dir_name = entry.file_name().to_string_lossy().to_string();
                 if dir_name.starts_with('.') || managed_dirs.contains(&dir_name) {
+                    continue;
+                }
+                let path = entry.path();
+                if !Self::normal_directory_exists(&path)? {
                     continue;
                 }
 
@@ -2032,7 +2035,7 @@ impl SkillService {
         let _guard = lock_skill_mutation()?;
         let ssot_dir = Self::get_ssot_dir()?;
         let agents_lock = parse_agents_lock();
-        let mut created_ssot_paths = Vec::new();
+        let mut created_paths = Vec::new();
 
         let result: Result<Vec<InstalledSkill>> = (|| {
             let existing_skills = db.get_all_installed_skills()?;
@@ -2049,7 +2052,9 @@ impl SkillService {
             for app in AppType::all() {
                 let dir = Self::get_app_skills_dir(&app)
                     .with_context(|| format!("解析 {:?} Skill 目录失败", app))?;
-                search_sources.push((dir, app.as_str().to_string()));
+                if let Some(dir) = Self::resolve_scan_root(&dir)? {
+                    search_sources.push((dir, app.as_str().to_string()));
+                }
             }
             if let Some(agents_dir) = get_agents_skills_dir()? {
                 search_sources.push((agents_dir, "agents".to_string()));
@@ -2104,7 +2109,7 @@ impl SkillService {
                     ));
                 }
                 if !dest_exists {
-                    created_ssot_paths.push(dest.clone());
+                    created_paths.push(dest.clone());
                     Self::copy_dir_recursive(&source, &dest)
                         .with_context(|| format!("复制 Skill 到 SSOT 失败: {}", dest.display()))?;
                 }
@@ -2115,6 +2120,28 @@ impl SkillService {
 
                 // 启用状态仅信任用户本次显式选择，不再根据“在哪些位置找到”自动推断。
                 let apps = selection.apps;
+                for app in apps.enabled_apps() {
+                    let app_dir = Self::get_app_skills_dir(&app)?;
+                    let existing =
+                        Self::resolve_scan_root(&app_dir)?.map(|root| root.join(&dir_name));
+                    if let Some(existing) = existing {
+                        if Self::normal_directory_exists(&existing)? {
+                            if !Self::normal_file_exists(&existing.join("SKILL.md"))? {
+                                return Err(anyhow!(
+                                    "目标 Skill 目录缺少有效 SKILL.md: {}",
+                                    existing.display()
+                                ));
+                            }
+                            Self::read_skill_name_desc_strict(
+                                &existing.join("SKILL.md"),
+                                &dir_name,
+                            )?;
+                            continue;
+                        }
+                    }
+                    Self::sync_to_app_dir_internal(&dir_name, &app)?;
+                    created_paths.push(app_dir.join(&dir_name));
+                }
 
                 // 从 lock 文件提取仓库信息
                 let (id, repo_owner, repo_name, repo_branch, readme_url) =
@@ -2162,12 +2189,12 @@ impl SkillService {
                 Ok(imported)
             }
             Err(error) => {
-                let cleanup_errors = Self::cleanup_paths(&created_ssot_paths);
+                let cleanup_errors = Self::cleanup_paths(&created_paths);
                 if cleanup_errors.is_empty() {
                     Err(error)
                 } else {
                     Err(anyhow!(
-                        "批量导入失败: {error}；清理新 SSOT 时另有失败: {}",
+                        "批量导入失败: {error}；清理新 Skill 路径时另有失败: {}",
                         cleanup_errors.join("; ")
                     ))
                 }
@@ -2264,6 +2291,23 @@ impl SkillService {
             current = candidate.parent();
         }
         Ok(())
+    }
+
+    fn resolve_scan_root(path: &Path) -> Result<Option<PathBuf>> {
+        match fs::symlink_metadata(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("读取 Skill 扫描根目录失败: {}", path.display()))
+            }
+            Ok(_) => {}
+        }
+        let resolved = fs::canonicalize(path)
+            .with_context(|| format!("解析 Skill 扫描根目录失败: {}", path.display()))?;
+        if !Self::normal_directory_exists(&resolved)? {
+            return Err(anyhow!("Skill 扫描根路径不是目录: {}", path.display()));
+        }
+        Ok(Some(resolved))
     }
 
     fn normal_directory_exists(path: &Path) -> Result<bool> {
@@ -2744,7 +2788,6 @@ impl SkillService {
             .ok_or_else(|| anyhow!("Invalid Skill directory name: {directory}"))?;
         let ssot_dir = Self::get_ssot_dir()?;
         let app_dir = Self::get_app_skills_dir(app)?;
-        Self::validate_path_components(&app_dir)?;
         let skill_path = app_dir.join(&safe_directory);
         match fs::symlink_metadata(&skill_path) {
             Ok(_) => {}
@@ -2754,6 +2797,7 @@ impl SkillService {
                     .with_context(|| format!("读取 Skill 应用目标失败: {}", skill_path.display()))
             }
         }
+        Self::validate_path_components(&app_dir)?;
 
         Self::validate_existing_projection_destination(&skill_path, &ssot_dir)?;
         Self::remove_path(&skill_path)?;
@@ -4879,6 +4923,83 @@ mod tests {
             format!("---\nname: {name}\ndescription: Test skill\n---\n"),
         )
         .expect("write SKILL.md");
+    }
+
+    fn link_skill_directory(target: &Path, link: &Path) {
+        fs::create_dir_all(link.parent().unwrap()).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            let output = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .creation_flags(0x08000000)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn linked_local_skill_roots_can_be_scanned_and_imported_without_relaxing_writes() {
+        let _home = crate::services::live_backup::tests::TempHome::new();
+        crate::settings::reload_settings().unwrap();
+        let home = crate::config::get_home_dir();
+        let shared = home.join("shared-skills");
+        write_skill(&shared.join("linked-skill"), "Linked Skill");
+        let claude = home.join(".claude").join("skills");
+        let agents = home.join(".agents").join("skills");
+        link_skill_directory(&shared, &claude);
+        link_skill_directory(&shared, &agents);
+        let database = Arc::new(Database::memory().unwrap());
+        let rows = SkillService::scan_unmanaged(&database).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].found_in.contains(&"claude".to_string()));
+        assert!(rows[0].found_in.contains(&"agents".to_string()));
+        assert!(!home.join(".chimera-plus-plus/skills").exists());
+        let imported = SkillService::import_from_apps(
+            &database,
+            vec![ImportSkillSelection {
+                directory: "linked-skill".to_string(),
+                apps: SkillApps::default(),
+            }],
+        )
+        .unwrap();
+        assert_eq!(imported.len(), 1);
+        assert!(SkillService::scan_unmanaged(&database).unwrap().is_empty());
+        assert!(shared.join("linked-skill/SKILL.md").exists());
+        assert!(SkillService::ensure_normal_directory(&claude).is_err());
+        assert!(SkillService::ensure_normal_directory(&agents).is_err());
+        assert!(SkillService::remove_from_app("absent-skill", &AppType::Claude).is_ok());
+        assert!(SkillService::remove_from_app("linked-skill", &AppType::Claude).is_err());
+        assert!(shared.join("linked-skill/SKILL.md").exists());
+    }
+
+    #[test]
+    fn resolved_scan_roots_still_reject_unsafe_children_and_invalid_roots() {
+        let temp = tempdir().unwrap();
+        let shared = temp.path().join("shared");
+        let outside = temp.path().join("outside");
+        write_skill(&outside, "Outside");
+        fs::create_dir_all(&shared).unwrap();
+        link_skill_directory(&outside, &shared.join("nested-link"));
+        let alias = temp.path().join("alias");
+        link_skill_directory(&shared, &alias);
+        let resolved = SkillService::resolve_scan_root(&alias).unwrap().unwrap();
+        assert!(SkillService::normal_directory_exists(&resolved.join("nested-link")).is_err());
+        assert!(SkillService::resolve_scan_root(&temp.path().join("absent"))
+            .unwrap()
+            .is_none());
+        fs::write(temp.path().join("file"), "not a directory").unwrap();
+        assert!(SkillService::resolve_scan_root(&temp.path().join("file")).is_err());
     }
 
     #[test]

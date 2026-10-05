@@ -16,6 +16,18 @@ const codexPin = JSON.parse(
   readFileSync(new URL("../.github/codex-portable-pin.json", import.meta.url), "utf8"),
 );
 
+test("CI and every candidate platform enforce backend layering", () => {
+  assert.match(ci, /^          node scripts\/check-architecture\.mjs --baseline-ref "\$ARCHITECTURE_BASE_REF"$/m);
+  assert.match(ci, /node --test [^\n]*scripts\/check-architecture\.test\.mjs/);
+  const gates = [...candidate.matchAll(/- name: Verify candidate gates\n([\s\S]*?)(?=\n      - name:)/g)];
+  assert.equal(gates.length, 3);
+  for (const [, gate] of gates) {
+    assert.match(gate, /node scripts\/check-architecture\.mjs --baseline-ref origin\/main/);
+    assert.match(gate, /^          node scripts\/verify-release-version\.mjs/m);
+    assert.match(gate, /^          node scripts\/check-architecture\.mjs/m);
+  }
+});
+
 test("release requires same-commit main portable validation on both Windows architectures", () => {
   assert.match(portable, /push:\s+branches:\s+- "\*\*"/);
   assert.doesNotMatch(portable, /paths:/);

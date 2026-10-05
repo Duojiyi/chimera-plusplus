@@ -1,5 +1,6 @@
 pub mod auto_sync_suppression;
 pub mod balance;
+pub mod cc_switch_import;
 pub mod codex_install_journal;
 pub mod codex_oauth_models;
 pub mod coding_plan;

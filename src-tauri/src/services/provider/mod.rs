@@ -4183,6 +4183,7 @@ impl ProviderService {
                     }
                     if let Some(cfg_text) = config_value.as_str() {
                         crate::codex_config::validate_config_toml(cfg_text)?;
+                        crate::codex_key_ownership::validate_line_numeric_keys(cfg_text)?;
                     }
                 }
             }

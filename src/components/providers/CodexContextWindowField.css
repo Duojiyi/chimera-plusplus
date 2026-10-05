@@ -1,0 +1,103 @@
+/* "1M 上下文" row of a Codex line (CodexContextWindowField). It is a
+   `.toggle-field` row, so the card, spacing and dividers come from the editor's
+   own toggle rows; only the switch and the notes are styled here. Colours are
+   literal because the editor page is a light sheet in every theme. */
+.codex-context-field {
+  position: relative;
+}
+.codex-context-field-text {
+  min-width: 0;
+}
+.codex-context-field-text b {
+  display: block;
+  font-size: 14px;
+}
+.codex-context-field-help {
+  display: grid;
+  gap: 2px;
+  margin-top: 3px;
+  color: #646970;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.codex-context-field-help p,
+.codex-context-field > p {
+  margin: 0;
+}
+
+/* The whole row is the click target, like the checkbox rows around it. */
+.codex-context-field-switch {
+  display: flex;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.codex-context-field-switch::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 10px;
+}
+.codex-context-field-switch:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.codex-context-field-switch:focus-visible {
+  outline: 2px solid var(--focus, #006aa0);
+  outline-offset: 2px;
+  border-radius: 999px;
+}
+.codex-context-field-track {
+  display: flex;
+  width: 38px;
+  height: 22px;
+  padding: 2px;
+  border: 1px solid #cad2d8;
+  border-radius: 999px;
+  background: #dce2e6;
+  box-shadow: inset 0 1px 2px rgba(32, 40, 48, 0.1);
+  transition:
+    background 180ms var(--ease, ease-out),
+    border-color 180ms var(--ease, ease-out);
+}
+.codex-context-field-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(32, 40, 48, 0.25);
+  transition: transform 180ms var(--ease, ease-out);
+}
+.codex-context-field-switch[aria-checked="true"] .codex-context-field-track {
+  border-color: var(--ch-accent, #006aa0);
+  background: var(--ch-accent, #006aa0);
+}
+.codex-context-field-switch[aria-checked="true"] .codex-context-field-thumb {
+  transform: translateX(16px);
+}
+
+.codex-context-field-note,
+.codex-context-field-error {
+  grid-column: 1 / -1;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.codex-context-field-note {
+  border: 1px solid #c9dcec;
+  background: #eef5fb;
+  color: #2b4766;
+}
+.codex-context-field-error {
+  border: 1px solid #edc2ba;
+  background: #fff0ed;
+  color: #9c3029;
+}
+@media (prefers-reduced-motion: reduce) {
+  .codex-context-field-track,
+  .codex-context-field-thumb {
+    transition: none;
+  }
+}

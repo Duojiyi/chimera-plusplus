@@ -1,3 +1,4 @@
+import "./AboutSection.css";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Download,
@@ -33,7 +34,7 @@ import type {
 } from "@/lib/api/settings";
 import { useUpdate } from "@/contexts/UpdateContext";
 import { Badge } from "@/components/ui/badge";
-import { motion } from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
 import appIcon from "@/assets/icons/app-icon.png";
 import { APP_ICON_MAP } from "@/config/appConfig";
 import type { AppId } from "@/lib/api/types";
@@ -221,6 +222,7 @@ export function AboutSection({
 }: AboutSectionProps) {
   // ... (use hooks as before) ...
   const { t } = useTranslation();
+  const reduceMotion = useReducedMotion();
   // 惰性初始化自模块缓存：重挂时首帧即渲染上次的值，避免 loading 闪烁；首次挂载缓存
   // 为空则回退到原始初值（null / loading）。
   const [version, setVersion] = useState<string | null>(() => appVersionCache);
@@ -851,10 +853,12 @@ export function AboutSection({
     Boolean(batchAction) ||
     Object.keys(toolActions).length > 0 ||
     preflightTools.size > 0;
+  const isDetecting =
+    isLoadingTools || tools.some((toolName) => loadingTools[toolName]);
 
   return (
     <motion.section
-      initial={{ opacity: 0, y: 10 }}
+      initial={reduceMotion ? false : { opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.3 }}
       className="space-y-6"
@@ -1007,7 +1011,15 @@ export function AboutSection({
       )}
       <div className="space-y-3">
         <div className="flex flex-col gap-2 px-1 sm:flex-row sm:items-center sm:justify-between">
-          <h3 className="text-sm font-medium">{t("settings.localEnvCheck")}</h3>
+          <div className="about-tools-heading">
+            <h3 className="text-sm font-medium">
+              {t("settings.localEnvCheck")}
+            </h3>
+            {/* One status line for the whole grid; the cards only show skeletons. */}
+            <span className="about-tools-status" role="status">
+              {isDetecting ? "正在检测本机工具…" : ""}
+            </span>
+          </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button
               size="sm"
@@ -1032,12 +1044,8 @@ export function AboutSection({
               onClick={() => loadAllToolVersions({ force: true })}
               disabled={isLoadingTools || isAnyBusy}
             >
-              <RefreshCw
-                className={
-                  isLoadingTools ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"
-                }
-              />
-              {isLoadingTools ? t("common.refreshing") : t("common.refresh")}
+              <RefreshCw className="h-3.5 w-3.5" />
+              {t("common.refresh")}
             </Button>
             <Button
               size="sm"
@@ -1103,9 +1111,10 @@ export function AboutSection({
             return (
               <motion.div
                 key={toolName}
-                initial={{ opacity: 0, y: 10 }}
+                initial={reduceMotion ? false : { opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.3, delay: 0.15 + index * 0.04 }}
+                aria-busy={isToolVersionLoading}
                 className="flex min-h-[150px] flex-col gap-3 rounded-xl border border-border bg-gradient-to-br from-card/80 to-card/40 p-4 shadow-sm transition-colors hover:border-primary/30"
               >
                 <div className="flex items-start justify-between gap-3">
@@ -1117,19 +1126,27 @@ export function AboutSection({
                       <div className="truncate text-sm font-medium">
                         {displayName}
                       </div>
-                      {tool?.env_type && ENV_BADGE_CONFIG[tool.env_type] && (
+                      {/* The environment line always keeps its height, so the
+                          card does not grow when the badge arrives. */}
+                      {isToolVersionLoading ? (
                         <span
-                          className={`mt-1 inline-flex w-fit text-[9px] px-1.5 py-0.5 rounded-full border ${ENV_BADGE_CONFIG[tool.env_type].className}`}
+                          className="about-tool-env about-tool-skeleton"
+                          aria-hidden="true"
+                        />
+                      ) : tool?.env_type && ENV_BADGE_CONFIG[tool.env_type] ? (
+                        <span
+                          className={`about-tool-env text-[9px] px-1.5 rounded-full border ${ENV_BADGE_CONFIG[tool.env_type].className}`}
                         >
                           {t(ENV_BADGE_CONFIG[tool.env_type].labelKey)}
                           {tool.wsl_distro ? ` · ${tool.wsl_distro}` : ""}
                         </span>
+                      ) : (
+                        <span className="about-tool-env" aria-hidden="true" />
                       )}
                     </div>
                   </div>
-                  {isToolVersionLoading ? (
-                    <Loader2 className="mt-1 h-4 w-4 animate-spin text-muted-foreground" />
-                  ) : !detectionFailed && tool?.version ? (
+                  {isToolVersionLoading ? null : !detectionFailed &&
+                    tool?.version ? (
                     isOutdated ? (
                       <span className="mt-1 shrink-0 rounded-full border border-yellow-500/20 bg-yellow-500/10 px-1.5 py-0.5 text-[10px] text-yellow-600 dark:text-yellow-400">
                         {t("settings.updateAvailableShort")}
@@ -1147,30 +1164,40 @@ export function AboutSection({
                     <span className="text-muted-foreground">
                       {t("settings.currentVersion")}
                     </span>
-                    <span
-                      className="min-w-0 truncate font-mono text-foreground"
-                      title={title}
-                    >
-                      {isToolVersionLoading
-                        ? t("common.loading")
-                        : detectionFailed
+                    {isToolVersionLoading ? (
+                      <span
+                        className="about-tool-skeleton about-tool-value-skeleton"
+                        aria-hidden="true"
+                      />
+                    ) : (
+                      <span
+                        className="min-w-0 truncate font-mono text-foreground"
+                        title={title}
+                      >
+                        {detectionFailed
                           ? "检测失败，请刷新重试"
                           : tool?.version
                             ? tool.version
                             : installedButBroken
                               ? t("settings.installedNotRunnable")
                               : t("common.notInstalled")}
-                    </span>
+                      </span>
+                    )}
                   </div>
                   <div className="flex items-center justify-between gap-3">
                     <span className="text-muted-foreground">
                       {t("settings.latestVersion")}
                     </span>
-                    <span className="min-w-0 truncate font-mono text-foreground">
-                      {isToolVersionLoading
-                        ? t("common.loading")
-                        : tool?.latest_version || t("common.unknown")}
-                    </span>
+                    {isToolVersionLoading ? (
+                      <span
+                        className="about-tool-skeleton about-tool-value-skeleton is-short"
+                        aria-hidden="true"
+                      />
+                    ) : (
+                      <span className="min-w-0 truncate font-mono text-foreground">
+                        {tool?.latest_version || t("common.unknown")}
+                      </span>
+                    )}
                   </div>
                   {!isToolVersionLoading && !tool?.version && tool?.error && (
                     <div className="truncate text-[11px] text-muted-foreground">
@@ -1239,12 +1266,8 @@ export function AboutSection({
                   </div>
                 )}
 
-                <div className="mt-auto flex items-center justify-end">
-                  {isToolVersionLoading ? (
-                    <span className="text-xs text-muted-foreground">
-                      {t("common.loading")}
-                    </span>
-                  ) : detectionFailed ? (
+                <div className="about-tool-footer mt-auto flex items-center justify-end">
+                  {isToolVersionLoading ? null : detectionFailed ? (
                     <span className="text-xs text-muted-foreground">
                       请刷新检测后再操作
                     </span>

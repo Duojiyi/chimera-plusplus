@@ -1660,6 +1660,7 @@ pub fn run() {
             commands::get_official_account_quota,
             commands::save_current_official_login,
             commands::start_official_device_login,
+            commands::start_official_browser_login,
             commands::poll_official_device_login,
             commands::cancel_official_device_login,
             commands::remove_official_account,
@@ -1920,6 +1921,7 @@ pub fn run() {
             commands::get_usage_trends,
             commands::get_provider_stats,
             commands::get_model_stats,
+            commands::get_usage_by_conversation,
             commands::get_request_logs,
             commands::get_request_detail,
             commands::get_model_pricing,
@@ -2069,12 +2071,15 @@ pub fn run() {
                 //   - 100ms 落盘等待：重启前的 DB 写入均为命令驱动、此刻已完成，
                 //     与所有 Tauri 应用默认重启路径的行为一致，无需额外等待
                 ExitRequestAction::DeferToTauriRestart => {
+                    codex_accounts::login::shutdown();
                     log::info!("收到重启请求 (code={code:?})，交由 Tauri 默认重启流程 re-exec");
                     return;
                 }
                 // 其它 Some(_)：用户主动调用 app.exit() 退出（如托盘菜单"退出"），
                 // 此时执行清理后退出。
-                ExitRequestAction::CleanupAndExit => {}
+                ExitRequestAction::CleanupAndExit => {
+                    codex_accounts::login::shutdown();
+                }
             }
 
             log::info!("收到用户主动退出请求 (code={code:?})，开始清理...");
@@ -2166,6 +2171,7 @@ pub fn run() {
 /// 在应用退出前停止本地代理，并恢复产品策略允许管理的 Live 配置。
 /// 保留每个应用的 enabled 状态，以便下次启动时按策略恢复。
 pub async fn cleanup_before_exit(app_handle: &tauri::AppHandle) {
+    codex_accounts::login::suspend();
     if let Some(state) = app_handle.try_state::<store::AppState>() {
         let proxy_service = &state.proxy_service;
         let mut apps_to_restore = Vec::new();
@@ -2610,6 +2616,7 @@ pub fn destroy_single_instance_lock(app_handle: &tauri::AppHandle) {
 /// 图标，而 macOS 的 NSStatusItem 操作要求主线程；`set_visible(false)` 走
 /// `run_item_main_thread` 代理，跨线程安全（见 `remove_tray_icon_before_exit`）。
 pub fn restart_process(app_handle: &tauri::AppHandle) -> ! {
+    codex_accounts::login::shutdown();
     remove_tray_icon_before_exit(app_handle);
     destroy_single_instance_lock(app_handle);
     tauri::process::restart(&app_handle.env());

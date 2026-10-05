@@ -88,8 +88,11 @@
   font-size: 18px;
   font-weight: 700;
 }
-.settings-page-content .live-backups-panel {
-  margin-top: 0;
+.settings-section-lead {
+  margin: 0 0 4px;
+  color: var(--text-3);
+  font-size: 13px;
+  line-height: 1.5;
 }
 .settings-reference-list {
   display: grid;
@@ -109,9 +112,106 @@
   color: inherit;
   text-align: left;
 }
+button.settings-reference-row {
+  cursor: pointer;
+}
 .settings-reference-row:disabled {
   cursor: not-allowed;
   opacity: 0.55;
+}
+.settings-disclosure-icon {
+  flex-shrink: 0;
+  color: var(--text-3);
+  transition: transform var(--dur-fast) ease-out;
+}
+.settings-disclosure-row[aria-expanded="true"] .settings-disclosure-icon {
+  transform: rotate(180deg);
+}
+/* Expanded panels hold older forms built from bare elements; give those a
+   consistent rhythm here instead of restyling each panel. */
+.settings-subpanel {
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+  padding: 12px 0 16px;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.settings-subpanel h3 {
+  margin: 0;
+  color: var(--text-1);
+  font-size: 14px;
+  font-weight: 600;
+}
+.settings-subpanel p {
+  margin: 0;
+}
+.settings-subpanel label:not([class]) {
+  display: grid;
+  gap: 4px;
+  color: var(--text-1);
+}
+.settings-subpanel
+  :is(input:not([type="checkbox"]):not([type="radio"]), select):not([class]) {
+  width: 100%;
+  max-width: 480px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border-control);
+  border-radius: 4px;
+  background: var(--bg-surface);
+  color: var(--text-1);
+  font: inherit;
+  font-size: 13px;
+}
+.settings-subpanel button:not([class]) {
+  min-height: 28px;
+  margin: 2px 0;
+  padding: 0 10px;
+  border: 1px solid var(--border-control);
+  border-radius: 4px;
+  background: var(--bg-surface);
+  color: var(--text-1);
+  font-size: 12px;
+  cursor: pointer;
+}
+.settings-subpanel button:not([class]):hover:not(:disabled) {
+  background: var(--bg-subtle);
+}
+.settings-subpanel button:not([class]):disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.settings-subpanel code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.settings-subpanel fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.settings-load-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--danger-border);
+  border-radius: 6px;
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+  font-size: 13px;
+}
+.settings-load-error span {
+  flex: 1;
+  color: var(--text-1);
+}
+.chimera-shell .settings-load-error button {
+  height: 28px;
 }
 .settings-reference-row:focus-visible,
 .settings-page-nav a:focus-visible {
@@ -245,16 +345,16 @@
   display: grid;
   place-items: center;
   border-radius: 50%;
-  background: #eef8f4;
-  color: var(--success);
+  background: var(--success-bg);
+  color: var(--success-fg);
 }
 .settings-app-update.is-available .settings-app-update-icon {
-  background: #fff0ec;
-  color: var(--ch-accent);
+  background: var(--info-bg);
+  color: var(--info-fg);
 }
 .settings-app-update.is-error .settings-app-update-icon {
-  background: #fff1ef;
-  color: #c53d2d;
+  background: var(--danger-bg);
+  color: var(--danger-fg);
 }
 .settings-app-update-copy,
 .settings-app-update-details > span {
@@ -295,7 +395,7 @@
   gap: 7px;
 }
 .settings-app-update-details {
-  border-top: 1px solid #edf0f2;
+  border-top: 1px solid var(--border-subtle);
   background: var(--bg-subtle);
 }
 .settings-app-update-progress {
@@ -315,7 +415,7 @@
   height: 5px;
   overflow: hidden;
   border-radius: 4px;
-  background: #e8edf0;
+  background: var(--bg-well);
 }
 .settings-app-update-progress u {
   display: block;
@@ -337,7 +437,8 @@
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .settings-app-update-progress u {
+  .settings-app-update-progress u,
+  .settings-disclosure-icon {
     transition: none;
   }
   .settings-app-update-progress u.is-indeterminate {
@@ -345,20 +446,22 @@
     transform: none;
   }
 }
-.settings-reference-footer {
+.settings-page-footer {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  margin-top: 18px;
+  justify-content: space-between;
+  gap: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-subtle);
 }
-.settings-reference-footer code {
-  color: var(--ch-muted);
-  font-size: 10px;
+.settings-page-footer p {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 13px;
+  line-height: 1.5;
 }
-
-.settings-reference-footer > div {
-  display: flex;
-  gap: 8px;
+.settings-page-footer button {
+  flex-shrink: 0;
 }
 
 .settings-theme-segment {
@@ -398,23 +501,21 @@
 }
 
 .settings-backups-unavailable {
-  min-height: 288px;
+  min-height: 248px;
 }
-.settings-backups-header {
+.settings-backups-toolbar {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  min-height: 32px;
+  justify-content: flex-end;
   margin-bottom: 8px;
 }
-.settings-backups-header h2 {
-  margin: 0;
-}
-.settings-backups-header button {
+.chimera-shell .settings-backups-toolbar button {
   height: 32px;
   padding: 0 12px;
-  font-size: 13px;
+  font-size: 12px;
+}
+.settings-backups-database {
+  margin-top: 16px;
+  border-top: 1px solid var(--border-subtle);
 }
 .settings-backups-columns {
   display: grid;
@@ -495,7 +596,7 @@
   font-weight: 700;
 }
 .settings-page-nav a[aria-current="location"]::before {
-  background: var(--p-brand);
+  background: var(--brand-indicator);
 }
 
 .settings-standard-sections:not([hidden]) {
@@ -586,10 +687,6 @@
   color: var(--text-2);
   font-size: 12px;
   line-height: 1.5;
-}
-
-.settings-reference-footer[hidden] {
-  display: none;
 }
 
 .settings-import-form {

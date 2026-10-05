@@ -94,7 +94,6 @@ vi.mock("@/lib/query/queries", () => ({
 }));
 vi.mock("@/contexts/UpdateContext", () => ({ useUpdate: () => ({}) }));
 vi.mock("@/components/WindowControls", () => ({ WindowControls: () => null }));
-vi.mock("@/components/RouteGlobe", () => ({ default: () => null }));
 vi.mock("@/components/settings/AboutSection", () => ({
   AboutSection: () => null,
 }));
@@ -819,7 +818,9 @@ describe("native tool editor ownership", () => {
       expect(
         await screen.findByRole("combobox", { name: "目标工具" }),
       ).toHaveValue(appId);
-      expect(await screen.findByText("暂无已安装的 Skills")).toBeVisible();
+      expect(
+        await screen.findByRole("heading", { name: "还没有安装 Skills" }),
+      ).toBeVisible();
     },
   );
 

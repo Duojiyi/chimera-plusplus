@@ -5,7 +5,11 @@
 use crate::database::{lock_conn, Database};
 use crate::error::AppError;
 use crate::services::sql_helpers::{fresh_input_sql, INPUT_TOKEN_SEMANTICS_FRESH};
-use crate::services::usage_stats::effective_usage_log_filter;
+use crate::services::usage_stats::{
+    compute_rollup_date_bounds, data_source_expr, effective_usage_log_filter, folded_app_type_sql,
+    provider_name_coalesce, providers_join, push_rollup_date_filters, CodexThreadUsage,
+    CodexThreadUsageRow, CODEX_THREAD_REQUEST_ID_PREFIX,
+};
 use chrono::{Duration, Local, TimeZone};
 
 /// Compute the rollup/prune cutoff aligned to a local-day boundary.
@@ -56,6 +60,135 @@ fn compute_local_midnight_cutoff(
 }
 
 impl Database {
+    /// Effective Codex usage in `[start_date, end_date]`, sliced by conversation
+    /// thread and provider line. It shares the overview's dedup and its
+    /// cache-inclusive token semantics, so the slices add up to the same total.
+    pub(crate) fn get_codex_thread_usage(
+        &self,
+        start_date: Option<i64>,
+        end_date: Option<i64>,
+    ) -> Result<CodexThreadUsage, AppError> {
+        let conn = lock_conn!(self.conn);
+
+        let mut conditions = vec![
+            effective_usage_log_filter(&conn, "l")?,
+            format!("{} = 'codex'", folded_app_type_sql("l.app_type")),
+        ];
+        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        if let Some(start) = start_date {
+            conditions.push("l.created_at >= ?".to_string());
+            params_vec.push(Box::new(start));
+        }
+        if let Some(end) = end_date {
+            conditions.push("l.created_at <= ?".to_string());
+            params_vec.push(Box::new(end));
+        }
+        let where_clause = conditions.join(" AND ");
+        let data_source = data_source_expr("l");
+        let fresh_input = fresh_input_sql("l");
+        let provider_name = provider_name_coalesce("l", "p");
+        let join = providers_join("l", "p");
+        // Session rows embed the UUID of their rollout file in the request id.
+        let rollout_prefix = format!("{CODEX_THREAD_REQUEST_ID_PREFIX}:");
+        let prefix_len = rollout_prefix.len();
+        let uuid_start = prefix_len + 1;
+        let rollout_id = format!(
+            "CASE WHEN substr(l.request_id, 1, {prefix_len}) = '{rollout_prefix}'
+                  THEN substr(l.request_id, {uuid_start}, 36) END"
+        );
+        // Proxy rows carry the Codex thread id behind a routing prefix; only a
+        // client-provided (trusted) id identifies a conversation.
+        let sql = format!(
+            "SELECT thread_id, MIN(rollout_id), provider_id, provider_name,
+                    COUNT(*), SUM(unpriced), SUM(fresh_input), SUM(output_tokens),
+                    SUM(cache_creation_tokens), SUM(cache_read_tokens), SUM(cost),
+                    MIN(created_at), MAX(created_at)
+             FROM (
+                 SELECT
+                     CASE
+                         WHEN {data_source} = 'codex_session'
+                             THEN COALESCE(NULLIF(l.session_id, ''), {rollout_id})
+                         WHEN {data_source} = 'proxy'
+                              AND COALESCE(l.session_id_trusted, 0) = 1
+                              AND substr(l.session_id, 1, 6) = 'codex_'
+                             THEN NULLIF(substr(l.session_id, 7), '')
+                     END AS thread_id,
+                     {rollout_id} AS rollout_id,
+                     l.provider_id AS provider_id,
+                     {provider_name} AS provider_name,
+                     CASE WHEN l.status_code >= 200 AND l.status_code < 300
+                               AND CAST(l.total_cost_usd AS REAL) <= 0
+                               AND COALESCE(CAST(l.cost_multiplier AS REAL), 1) <> 0
+                               AND (l.input_tokens > 0 OR l.output_tokens > 0
+                                    OR l.cache_read_tokens > 0 OR l.cache_creation_tokens > 0)
+                          THEN 1 ELSE 0 END AS unpriced,
+                     {fresh_input} AS fresh_input,
+                     l.output_tokens AS output_tokens,
+                     l.cache_creation_tokens AS cache_creation_tokens,
+                     l.cache_read_tokens AS cache_read_tokens,
+                     CAST(l.total_cost_usd AS REAL) AS cost,
+                     l.created_at AS created_at
+                 FROM proxy_request_logs l {join}
+                 WHERE {where_clause}
+             )
+             GROUP BY thread_id, provider_id, provider_name"
+        );
+        let param_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+        let rows = {
+            let mut stmt = conn.prepare(&sql)?;
+            let mapped = stmt.query_map(param_refs.as_slice(), |row| {
+                Ok(CodexThreadUsageRow {
+                    thread_id: row.get(0)?,
+                    rollout_id: row.get(1)?,
+                    provider_id: row.get(2)?,
+                    provider_name: row.get(3)?,
+                    request_count: row.get::<_, i64>(4)? as u64,
+                    unpriced_request_count: row.get::<_, i64>(5)? as u64,
+                    fresh_input_tokens: row.get::<_, i64>(6)? as u64,
+                    output_tokens: row.get::<_, i64>(7)? as u64,
+                    cache_creation_tokens: row.get::<_, i64>(8)? as u64,
+                    cache_read_tokens: row.get::<_, i64>(9)? as u64,
+                    total_cost: row.get(10)?,
+                    first_at: row.get(11)?,
+                    last_at: row.get(12)?,
+                })
+            })?;
+            mapped.collect::<Result<Vec<_>, _>>()?
+        };
+
+        // Archived days keep their totals but lose the identities to split them.
+        let rollup_bounds = compute_rollup_date_bounds(start_date, end_date)?;
+        let rollup_app = format!("{} = 'codex'", folded_app_type_sql("r.app_type"));
+        let mut rollup_conditions = vec![rollup_app];
+        let mut rollup_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        push_rollup_date_filters(
+            &mut rollup_conditions,
+            &mut rollup_params,
+            "r.date",
+            &rollup_bounds,
+        );
+        let rollup_where = rollup_conditions.join(" AND ");
+        let fresh_input_rollup = fresh_input_sql("r");
+        let rollup_sql = format!(
+            "SELECT COALESCE(SUM(r.request_count), 0),
+                    COALESCE(SUM({fresh_input_rollup} + r.output_tokens
+                                 + r.cache_creation_tokens + r.cache_read_tokens), 0)
+             FROM usage_daily_rollups r
+             WHERE {rollup_where}"
+        );
+        let rollup_param_refs: Vec<&dyn rusqlite::ToSql> =
+            rollup_params.iter().map(|param| param.as_ref()).collect();
+        let rollup_totals = conn.query_row(&rollup_sql, rollup_param_refs.as_slice(), |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+        })?;
+
+        Ok(CodexThreadUsage {
+            rows,
+            rollup_requests: rollup_totals.0 as u64,
+            rollup_tokens: rollup_totals.1 as u64,
+        })
+    }
+
     /// Additive storage only: no existing aggregate is rewritten or inferred.
     /// These compact receipts outlive detail retention, not the aggregates they
     /// describe. Keep model dimensions so legacy coverage can be checked exactly.

@@ -11,7 +11,7 @@
 // files are allowed to name it (MH-10), while the old maintainer's personal
 // handle/email have no legitimate reason to appear anywhere going forward and
 // get no such allowance (MH-1).
-import fs from "node:fs";
+import { readWorktreeFile } from "./lib/read-worktree-file.mjs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -40,8 +40,8 @@ for (const relativePath of tracked.stdout.split("\0").filter(Boolean)) {
   if (historicalPathPrefixes.some((prefix) => normalized.startsWith(prefix))) continue;
   if (normalized === "scripts/check-repo-references.mjs") continue;
 
-  const content = fs.readFileSync(path.join(root, relativePath));
-  if (content.includes(0)) continue;
+  const content = readWorktreeFile(path.join(root, relativePath));
+  if (content === null || content.includes(0)) continue;
 
   const isAttributionFile = attributionPathPrefixes.some((prefix) => normalized.startsWith(prefix));
   const lines = content.toString("utf8").split(/\r?\n/);

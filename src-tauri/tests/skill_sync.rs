@@ -73,6 +73,46 @@ fn import_from_apps_respects_explicit_app_selection() {
 }
 
 #[test]
+fn import_from_apps_creates_missing_selected_projection_and_rolls_back_failed_batch() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let home = ensure_test_home();
+    let source = home.join(".claude").join("skills").join("new-target");
+    write_skill(&source, "New Target");
+    let broken = home.join(".claude").join("skills").join("broken-target");
+    write_skill(&broken, "Broken Target");
+    fs::write(broken.join("SKILL.md"), "---\nname: [invalid]\n---\n").unwrap();
+    let state = create_test_state().unwrap();
+    let selection = |directory: &str| ImportSkillSelection {
+        directory: directory.to_string(),
+        apps: SkillApps {
+            codex: true,
+            ..Default::default()
+        },
+    };
+    let target = home.join(".codex").join("skills").join("new-target");
+    let ssot = home
+        .join(chimera_plus_plus_lib::product_policy::PRODUCT_DATA_DIR)
+        .join("skills");
+    assert!(SkillService::import_from_apps(
+        &state.db,
+        vec![selection("new-target"), selection("broken-target")]
+    )
+    .is_err());
+    assert!(state.db.get_all_installed_skills().unwrap().is_empty());
+    assert!(fs::symlink_metadata(&target).is_err());
+    assert!(!ssot.join("new-target").exists());
+    assert!(!ssot.join("broken-target").exists());
+    let imported =
+        SkillService::import_from_apps(&state.db, vec![selection("new-target")]).unwrap();
+    assert!(imported[0].apps.codex);
+    assert_eq!(
+        fs::read(target.join("SKILL.md")).unwrap(),
+        fs::read(source.join("SKILL.md")).unwrap()
+    );
+}
+
+#[test]
 fn import_from_apps_does_not_rewrite_selected_app_directory() {
     let _guard = test_mutex().lock().expect("acquire test mutex");
     reset_test_fs();

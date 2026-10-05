@@ -551,6 +551,7 @@ pub async fn install_update_and_restart(
         crate::destroy_single_instance_lock(&app);
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         update.install(bytes).map_err(|e| {
+            crate::codex_accounts::login::resume_after_failed_shutdown();
             format!(
                 "Windows 更新安装失败: {e}。已执行退出前清理，代理或 Live 接管可能已暂停；请重启应用或重新开启代理后再试。"
             )

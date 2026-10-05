@@ -13,11 +13,13 @@
 // - handing the path to a known external writer (the theme engine's
 //   config-writing functions) counts as a direct write too;
 // - test code is skipped: `tests.rs`, `*_tests.rs`, `tests/` directories,
-//   and everything from a top-level `#[cfg(test)] mod … {` to the end of
-//   the file (where this codebase keeps its test modules).
+//   and every item guarded by `#[cfg(test)]`. Only those items are removed, so
+//   production code that follows a test module in the same file is still scanned.
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+
+import { productionSource } from "./lib/architecture.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const sourceRoot = path.join(root, "src-tauri", "src");
@@ -32,8 +34,6 @@ const pathExpr =
 const binding = /let\s+(?:mut\s+)?(\w+)\s*(?::[^=;]+)?=\s*([^;]*);/g;
 const fnHeader =
   /^[ \t]*(?:pub(?:\([^)]*\))?\s+)?(?:const\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+\w+/gm;
-const testModule =
-  /^#\[cfg\(test\)\]\s*\r?\n(?:#\[[^\n]*\]\s*\r?\n)*(?:pub(?:\([^)]*\))?\s+)?mod\s+\w+\s*\{/m;
 
 function rustFiles(dir) {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -56,13 +56,7 @@ function callArguments(text, open) {
 }
 
 function productionText(content) {
-  const cut = content.search(testModule);
-  const text = cut === -1 ? content : content.slice(0, cut);
-  // Drop whole-line comments (doc comments quote paths and calls).
-  return text
-    .split(/\r?\n/)
-    .map((line) => (line.trimStart().startsWith("//") ? "" : line))
-    .join("\n");
+  return productionSource(content);
 }
 
 function lineOf(text, index) {

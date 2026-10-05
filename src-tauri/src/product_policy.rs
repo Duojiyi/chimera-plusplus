@@ -134,14 +134,15 @@ impl Capability {
             | Capability::LiveBackups
             | Capability::CcSwitchImport
             | Capability::CustomRequestHeaders
+            | Capability::Context1m
             | Capability::MultiTool => true,
             // Out of scope for the local-only edition.
             Capability::WebdavSync | Capability::S3Sync => false,
             // Closed on purpose: the proxy must not inject managed-account
             // (Copilot / ChatGPT OAuth) tokens; guarded in `proxy::forwarder`.
             Capability::ManagedAccounts => false,
-            // No implementation behind these yet; they open together with it.
-            Capability::Context1m | Capability::ThreadUsage => false,
+            // No implementation behind this yet; it opens together with it.
+            Capability::ThreadUsage => false,
             // Needs a real-machine smoke test against the Codex app-server.
             Capability::CodexAppServerDelete => false,
         }
@@ -409,6 +410,7 @@ mod tests {
             "live_backups",
             "cc_switch_import",
             "custom_request_headers",
+            "context_1m",
             "multi_tool",
         ] {
             assert!(enabled(id), "{id} should be on");
@@ -416,11 +418,10 @@ mod tests {
         assert_eq!(policy.capabilities.len(), Capability::ALL.len());
         // Opening one of these is a deliberate edit: the capability needs its
         // implementation (or a real-machine smoke) first, then moves up there.
-        const OFF: [Capability; 6] = [
+        const OFF: [Capability; 5] = [
             Capability::WebdavSync,
             Capability::S3Sync,
             Capability::ManagedAccounts,
-            Capability::Context1m,
             Capability::ThreadUsage,
             Capability::CodexAppServerDelete,
         ];

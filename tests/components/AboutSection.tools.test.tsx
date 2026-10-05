@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ToolName } from "@/components/settings/AboutSection";
 import type { HTMLAttributes } from "react";
@@ -15,6 +21,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/lib/api", () => ({ settingsApi: mocks }));
 vi.mock("@tauri-apps/api/app", () => ({ getVersion: mocks.getVersion }));
 vi.mock("framer-motion", () => ({
+  useReducedMotion: () => false,
   motion: {
     section: ({
       initial,
@@ -84,6 +91,34 @@ async function mount(tools?: readonly ToolName[]) {
 }
 
 describe("shared tool lifecycle management", () => {
+  it("shows one status line and skeleton cards, then reveals each card as its result arrives", async () => {
+    const pending = new Map<string, (rows: unknown[]) => void>();
+    mocks.getToolVersions.mockImplementation(
+      ([tool]: string[]) =>
+        new Promise((resolve) => {
+          pending.set(tool, resolve);
+        }),
+    );
+    const { container } = await mount(["claude", "codex"]);
+    const busyCards = () => container.querySelectorAll('[aria-busy="true"]');
+    expect(screen.getByRole("status")).toHaveTextContent("正在检测本机工具…");
+    expect(busyCards()).toHaveLength(2);
+    expect(screen.queryByText("common.loading")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "common.refresh" }),
+    ).toBeDisabled();
+    await act(async () => pending.get("claude")!([version("claude", "1.0.0")]));
+    expect(screen.getByText("1.0.0")).toBeVisible();
+    expect(busyCards()).toHaveLength(1);
+    expect(screen.getByRole("status")).toHaveTextContent("正在检测本机工具…");
+    await act(async () => pending.get("codex")!([version("codex", "2.0.0")]));
+    expect(busyCards()).toHaveLength(0);
+    expect(screen.getByRole("status")).toBeEmptyDOMElement();
+    expect(
+      screen.getByRole("button", { name: "common.refresh" }),
+    ).toBeEnabled();
+  });
+
   it("detects and installs only the requested tool without loading the app update UI", async () => {
     mocks.getToolVersions
       .mockResolvedValueOnce([version()])

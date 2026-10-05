@@ -1,5 +1,5 @@
 import "./LiveBackupsPanel.css";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
@@ -18,7 +18,6 @@ const reasons: Record<LiveBackup["reason"], string> = {
 };
 const fileName = (path: string) => path.split(/[\\/]/).pop() || "配置文件";
 
-/** Mount only after the live_backups capability is enabled. Native guards remain authoritative. */
 const backupTools = [
   ["codex", "Codex"],
   ["claude", "Claude Code"],
@@ -30,51 +29,12 @@ const backupTools = [
   ["hermes", "Hermes"],
 ] as const;
 
+/** Mount only after the live_backups capability is enabled. Native guards remain authoritative. */
 export function LiveBackupsPanel({
   onRestored,
 }: { onRestored?: () => void } = {}) {
+  const noteId = useId();
   const [app, setApp] = useState<AppId>("codex");
-  const [busy, setBusy] = useState(false);
-  return (
-    <div>
-      <label>
-        Live 备份工具{" "}
-        <select
-          aria-label="Live 备份工具"
-          value={app}
-          disabled={busy}
-          onChange={(event) => setApp(event.target.value as AppId)}
-        >
-          {backupTools.map(([id, label]) => (
-            <option key={id} value={id}>
-              {label}
-            </option>
-          ))}
-        </select>
-      </label>
-      <p>
-        Pi、MiniMax Code 暂无后端 Live 备份清单。Claude Desktop 仅支持
-        Windows/macOS。
-      </p>
-      <ToolLiveBackupsPanel
-        key={app}
-        app={app}
-        onBusyChange={setBusy}
-        onRestored={onRestored}
-      />
-    </div>
-  );
-}
-
-function ToolLiveBackupsPanel({
-  app,
-  onBusyChange,
-  onRestored,
-}: {
-  app: AppId;
-  onBusyChange: (busy: boolean) => void;
-  onRestored?: () => void;
-}) {
   const [backups, setBackups] = useState<LiveBackup[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -86,10 +46,8 @@ function ToolLiveBackupsPanel({
   const pending = useRef(false);
   const mounted = useRef(false);
   const generation = useRef(0);
+  const toolName = backupTools.find(([id]) => id === app)?.[1] ?? app;
   useLightweightCloseBlocker(busy);
-  useEffect(() => {
-    onBusyChange(busy);
-  }, [busy, onBusyChange]);
   const load = useCallback(async () => {
     const request = ++generation.current;
     setLoading(true);
@@ -144,15 +102,32 @@ function ToolLiveBackupsPanel({
   };
   const disabled = loading || busy || error;
   return (
-    <section
-      className="live-backups-panel"
-      aria-label={`${backupTools.find(([id]) => id === app)?.[1]} Live 备份`}
-    >
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="live-backups-heading">备份与恢复</h2>
-        <div className="flex gap-2">
+    <section className="live-backups-panel" aria-label={`${toolName} 配置备份`}>
+      <p className="live-backups-description">
+        仅保存在本机，每个工具最多保留 20 份；不包含登录凭据
+        auth.json。其他工具的配置可能含 API 密钥，请妥善保管备份。
+      </p>
+      <div className="live-backups-toolbar">
+        <label className="live-backups-tool">
+          <span>工具</span>
+          <select
+            aria-label="备份的工具"
+            aria-describedby={noteId}
+            value={app}
+            disabled={busy}
+            onChange={(event) => setApp(event.target.value as AppId)}
+          >
+            {backupTools.map(([id, label]) => (
+              <option key={id} value={id}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="live-backups-actions">
           <Button
             variant="outline"
+            size="sm"
             disabled={busy}
             onClick={() => void openDirectory()}
           >
@@ -160,19 +135,21 @@ function ToolLiveBackupsPanel({
           </Button>
           <Button
             variant="outline"
+            size="sm"
             disabled={loading || busy}
             onClick={() => void load()}
           >
             刷新备份
           </Button>
           <Button
+            size="sm"
             disabled={disabled}
             onClick={() =>
               void run(async () => {
                 const backup = await liveBackupsApi.create(app);
                 if (mounted.current) {
                   if (backup) toast.success("备份已创建");
-                  else toast.info("没有可备份的 Live 文件，未创建备份。");
+                  else toast.info("没有可备份的配置文件，未创建备份。");
                 }
               })
             }
@@ -181,14 +158,14 @@ function ToolLiveBackupsPanel({
           </Button>
         </div>
       </div>
-      <p className="live-backups-description">
-        仅本机保存，最多保留 20 份。不会备份或恢复 auth.json
-        登录凭据。其他工具配置可能包含 API 密钥，请妥善保管备份。
+      <p id={noteId} className="live-backups-note">
+        Pi 与 MiniMax Code 暂不支持配置备份；Claude Desktop 仅支持 Windows 和
+        macOS。
       </p>
-      <div className="overflow-x-auto">
+      <div className="live-backups-table-wrap">
         <table className="live-backups-table">
           <thead>
-            <tr className="border-b">
+            <tr>
               <th scope="col">时间</th>
               <th scope="col">触发</th>
               <th scope="col">包含文件</th>
@@ -203,23 +180,23 @@ function ToolLiveBackupsPanel({
                   {loading ? (
                     <p role="status">正在读取备份…</p>
                   ) : error ? (
-                    <p role="alert">备份读取失败。请刷新重试，未显示旧列表。</p>
+                    <p role="alert">备份读取失败，请刷新重试；未显示旧列表。</p>
                   ) : (
-                    <p>暂无 Live 备份。</p>
+                    <p>暂无 {toolName} 配置备份。</p>
                   )}
                 </td>
               </tr>
             )}
             {backups.map((backup) => (
-              <tr key={backup.id} className="border-b">
-                <td className="p-2">
+              <tr key={backup.id}>
+                <td>
                   <div>{new Date(backup.createdAt).toLocaleString()}</div>
                   <small className="live-backup-id" title={backup.id}>
                     {backup.id}
                   </small>
                 </td>
                 <td>{reasons[backup.reason] || "备份"}</td>
-                <td className="p-2 break-all">
+                <td className="live-backup-files">
                   {backup.files.map(fileName).join("、")}
                 </td>
                 <td className="live-backup-size">
@@ -229,8 +206,8 @@ function ToolLiveBackupsPanel({
                     ? `${(backup.sizeBytes / 1024).toLocaleString(undefined, { maximumFractionDigits: 1 })} KiB`
                     : "—"}
                 </td>
-                <td className="p-2">
-                  <div className="flex gap-2">
+                <td>
+                  <div className="live-backup-actions">
                     <Button
                       variant="ghost"
                       size="sm"
@@ -259,12 +236,12 @@ function ToolLiveBackupsPanel({
       <ConfirmDialog
         isOpen={action !== null}
         busy={busy}
-        title={action?.kind === "restore" ? "恢复 Live 备份" : "删除 Live 备份"}
+        title={action?.kind === "restore" ? "恢复配置备份" : "删除配置备份"}
         message={
           action?.kind === "restore"
             ? app !== "codex"
-              ? "将覆盖所选工具备份中的配置文件（可能含 API 密钥），恢复前会备份现有文件。不是完整登录身份恢复；请先停止该工具及其他程序对配置的修改。"
-              : "将恢复备份中的配置文件，并在恢复前备份现有文件。恢复 AGENTS.md 时会同步提示词启用状态，原模板保留。登录凭据不会修改；可读取的当前 Codex 模型设置将保留。请先停止其他工具对这些文件的修改。"
+              ? "将恢复所选工具备份中的配置状态（可能含 API 密钥），包括删除备份明确记录为不存在的文件；恢复前会备份现有文件。不是完整登录身份恢复；请先停止该工具及其他程序对配置的修改。"
+              : "将恢复备份中的配置状态，包括删除备份明确记录为不存在的文件，并在恢复前备份现有文件。恢复 AGENTS.md 时会同步提示词启用状态，原模板保留。登录凭据不会修改；可读取的当前 Codex 模型设置将保留。请先停止其他工具对这些文件的修改。"
             : "将永久删除这份本地备份，当前配置文件不会改变。"
         }
         confirmText={action?.kind === "restore" ? "确认恢复" : "确认删除"}

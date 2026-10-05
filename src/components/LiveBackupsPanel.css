@@ -1,23 +1,64 @@
 .live-backups-panel {
-  margin-top: 24px;
   display: grid;
   gap: 8px;
-  color: var(--ink);
-}
-.live-backups-heading {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 600;
+  min-width: 0;
+  color: var(--text-1);
 }
 .live-backups-description {
   margin: 0;
-  color: var(--ch-muted);
+  color: var(--text-3);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.live-backups-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  margin-top: 4px;
+}
+.live-backups-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-2);
+  font-size: 13px;
+}
+.live-backups-tool select {
+  height: 32px;
+  min-width: 148px;
+  padding: 0 8px;
+  border: 1px solid var(--border-control);
+  border-radius: 4px;
+  background: var(--bg-surface);
+  color: var(--text-1);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.live-backups-tool select:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.live-backups-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.live-backups-note {
+  margin: 0;
+  color: var(--text-3);
   font-size: 12px;
   line-height: 1.5;
 }
+.live-backups-table-wrap {
+  min-width: 0;
+  overflow-x: auto;
+}
 .live-backups-table {
   width: 100%;
-  min-width: 520px;
+  min-width: 460px;
   border-collapse: collapse;
   text-align: left;
   font-size: 12px;
@@ -25,14 +66,16 @@
 .live-backups-table th {
   height: 28px;
   padding: 0 8px;
-  color: var(--ch-muted);
-  font-size: 11px;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-3);
+  font-size: 12px;
   font-weight: 400;
 }
 .live-backups-table td {
   height: 44px;
   padding: 6px 8px;
-  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--border-subtle);
+  vertical-align: middle;
 }
 .live-backups-table td:first-child {
   white-space: nowrap;
@@ -47,7 +90,10 @@
   padding: 0 8px;
   font-size: 12px;
 }
-
+.live-backup-actions {
+  display: flex;
+  gap: 4px;
+}
 .live-backup-id {
   display: block;
   max-width: 160px;
@@ -55,6 +101,9 @@
   text-overflow: ellipsis;
   color: var(--text-3);
   font-size: 11px;
+}
+.live-backup-files {
+  overflow-wrap: anywhere;
 }
 .live-backup-size {
   white-space: nowrap;
@@ -65,4 +114,7 @@
   text-align: center;
   color: var(--text-2);
   white-space: normal;
+}
+.live-backups-empty p {
+  margin: 0;
 }

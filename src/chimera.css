@@ -122,7 +122,7 @@
     transform 120ms var(--ease);
 }
 .chimera-shell button.primary:hover:not(:disabled) {
-  background: #e84c2b;
+  background: var(--brand-hover);
 }
 .chimera-shell button.primary:active:not(:disabled) {
   transform: scale(0.97);
@@ -2517,7 +2517,7 @@ body.is-mac
     border-color 180ms var(--ease);
 }
 .advanced-options .toggle-field input[type="checkbox"]:checked {
-  border-color: #e56a59;
+  border-color: var(--ch-accent);
   background:
     radial-gradient(circle at 26px 50%, #fff 0 7px, transparent 8px),
     var(--ch-accent);

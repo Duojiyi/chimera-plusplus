@@ -1,48 +1,5 @@
-.skin-list img {
-  grid-row: 1 / 3;
-  width: 56px;
-  height: 38px;
-  border-radius: 5px;
-  object-fit: cover;
-  background: #dfe4e8;
-}
-.skin-tabs button {
-  margin-left: auto;
-  border: 0;
-  background: transparent;
-  color: var(--brand-text);
-  font-size: 10px;
-}
-.skin-preview-image {
-  display: grid;
-  place-items: center;
-  background: #171b1e;
-}
-.skin-preview-image:before {
-  display: none;
-}
-.skin-preview-image img {
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-}
-.skin-preview-fallback {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: center;
-  gap: 12px;
-  padding: 24px;
-  color: var(--text-2);
-}
-.skin-preview-fallback button {
-  padding: 8px 16px;
-  border: 1px solid var(--border-control);
-  border-radius: 6px;
-  background: var(--bg-surface);
-  color: var(--text-1);
-}
 .skin-market-reference {
+  --skin-art-sheen: color-mix(in srgb, var(--bg-surface) 70%, transparent);
   box-sizing: border-box;
   width: 100%;
   height: 100%;
@@ -52,6 +9,10 @@
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
+}
+.dark .skin-market-reference,
+[data-theme="dark"] .skin-market-reference {
+  --skin-art-sheen: color-mix(in srgb, var(--text-1) 7%, transparent);
 }
 .skin-market-heading {
   min-height: 76px;
@@ -95,6 +56,9 @@
   background: transparent;
   color: var(--brand-text);
 }
+.skin-market-reference button.primary:active:not(:disabled) {
+  background: var(--brand-pressed);
+}
 .skin-market-reference .skin-layout {
   min-height: 0;
   height: 100%;
@@ -117,12 +81,10 @@
   background: transparent;
 }
 .skin-market-reference .skin-list > button {
-  /* `display: grid` was missing, so grid-template-columns did nothing and the
-     two child spans laid out inline. */
   display: grid;
   height: auto;
   min-height: 88px;
-  grid-template-columns: 94px minmax(0, 1fr);
+  grid-template-columns: 96px minmax(0, 1fr);
   grid-template-rows: auto;
   align-items: center;
   gap: 10px;
@@ -138,26 +100,114 @@
   background: var(--bg-selected);
   box-shadow: none;
 }
-.skin-card-preview {
-  /* A <span> is inline by default, so width/height here were being ignored and
-     the nested <img width:100%> resolved against the button's content box
-     instead — rendering full-card-width art at its natural aspect ratio and
-     pushing the name/version column out of view. `display: block` is what makes
-     the thumbnail box real. */
+
+/* Image frames hold the catalog's 16:10 ratio, so nothing moves when an
+   image arrives: a skeleton until it decodes, then a short fade. */
+.skin-art {
+  position: relative;
   display: block;
-  flex: none;
-  width: 94px;
-  height: 62px;
+  min-width: 0;
+  min-height: 0;
+  aspect-ratio: 16 / 10;
   overflow: hidden;
-  border-radius: 6px;
-  background: #1b1b1d;
+  background: var(--bg-selected);
 }
+.skin-art img {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  opacity: 0;
+  transition: opacity var(--dur-slow) var(--ease-out);
+}
+.skin-art[data-state="loaded"] {
+  background: transparent;
+}
+.skin-art[data-state="loaded"] img {
+  opacity: 1;
+}
+.skin-art[data-state="failed"] {
+  background: var(--bg-surface);
+  box-shadow: inset 0 0 0 1px var(--border-subtle);
+}
+.skin-art[data-state="loading"]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    100deg,
+    transparent 30%,
+    var(--skin-art-sheen) 50%,
+    transparent 70%
+  );
+  transform: translateX(-100%);
+  animation: skin-art-sheen 1.6s var(--ease-in-out) infinite;
+}
+@keyframes skin-art-sheen {
+  to {
+    transform: translateX(100%);
+  }
+}
+.skin-art-thumb {
+  width: 96px;
+  border-radius: 6px;
+}
+.skin-art-thumb img {
+  object-fit: cover;
+  filter: saturate(0.7);
+}
+.skin-art-stage {
+  /* Fill the width where container units are unsupported. */
+  width: 100%;
+  width: min(100cqw - 32px, (100cqh - 32px) * 1.6);
+  border-radius: 6px;
+}
+.skin-art-failure {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 8px;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+}
+.skin-art-stage .skin-art-failure {
+  gap: 8px;
+  padding: 16px;
+  font-size: 13px;
+}
+.skin-art-failure strong {
+  color: var(--text-1);
+  font-size: 14px;
+  font-weight: 600;
+}
+.skin-art-failure button {
+  margin-top: 4px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .skin-art[data-state="loading"]::after {
+    display: none;
+  }
+  .skin-art img {
+    transition: none;
+  }
+}
+
 .skin-card-miniature {
   position: relative;
   display: grid;
-  width: 100%;
-  height: 100%;
+  width: 96px;
+  aspect-ratio: 16 / 10;
   grid-template-columns: 27% 1fr;
+  overflow: hidden;
+  border-radius: 6px;
   background: var(--skin-canvas);
 }
 .skin-card-miniature:before {
@@ -223,13 +273,6 @@
   --skin-border: #e9bfd0;
   --skin-accent: #d2688c;
 }
-.skin-market-reference .skin-list .skin-card-preview img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  border-radius: 0;
-  filter: saturate(0.7);
-}
 .skin-market-reference .skin-list > button > span:nth-child(2) {
   min-width: 0;
 }
@@ -247,6 +290,8 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 12px;
+  color: var(--text-3);
 }
 .skin-market-reference .skin-list code {
   margin-top: 3px;
@@ -269,22 +314,18 @@
   overflow: hidden;
 }
 .skin-market-reference .skin-preview {
+  position: relative;
+  display: grid;
+  place-items: center;
   width: 100%;
   height: 100%;
   min-height: 0;
   margin: 0;
   overflow: hidden;
+  border: 1px solid var(--border-subtle);
   border-radius: 10px;
-  contain: layout paint;
-}
-.skin-market-reference .skin-preview > .skin-preview-fallback {
-  position: static;
-  inset: auto;
-  width: 100%;
-  height: 100%;
-  min-height: 0;
-  border-radius: 0;
-  background: #171719;
+  background: var(--bg-subtle);
+  container-type: size;
 }
 .skin-detail-footer {
   display: grid;
@@ -293,6 +334,9 @@
   gap: 16px;
   min-height: 72px;
   padding: 10px 0 2px;
+}
+.skin-detail-footer > div:first-child {
+  min-width: 0;
 }
 .skin-detail-footer h2 {
   margin: 0;
@@ -328,51 +372,95 @@
 .skin-market-reference .integrity {
   display: none;
 }
-.skin-market-reference .skin-preview-fallback main > div {
-  position: absolute;
-  left: 14%;
-  right: 12%;
-  top: 105px;
-  width: auto;
-  height: 112px;
-  margin: 0;
-  padding: 18px;
-}
-.skin-market-reference .skin-preview-fallback main footer {
-  position: absolute;
-  left: 8%;
-  right: 8%;
-  bottom: 28px;
-  height: 42px;
-}
-.skin-market-reference .skin-preview-fallback aside span:first-of-type {
-  position: static;
-}
 
-.skin-market-reference .skin-preview-image.has-catalog-image {
-  position: relative;
+/* Whole-area states: catalog failed, empty, filtered out, browser preview. */
+.skin-market-state {
+  align-self: start;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 48px 24px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--bg-surface);
+  text-align: center;
+}
+.skin-market-state-icon {
   display: grid;
   place-items: center;
-  background: var(--bg-subtle);
+  width: 48px;
+  height: 48px;
+  margin-bottom: 8px;
   border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  background: var(--bg-subtle);
+  color: var(--text-2);
 }
-.skin-market-reference .skin-catalog-preview-art {
-  position: absolute;
-  inset: 0;
-  display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  object-position: center;
-  padding: 16px;
-  border-radius: 10px;
+.skin-market-state h2 {
+  margin: 0;
+  font-size: 18px;
+  line-height: 26px;
+  font-weight: 650;
+  color: var(--text-1);
 }
-.skin-detail-footer > div:first-child {
+.skin-market-state p {
+  margin: 0;
+  max-width: 46ch;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text-2);
+}
+.skin-market-state .skin-market-state-detail {
+  display: -webkit-box;
+  max-width: 60ch;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  color: var(--text-3);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.skin-market-state button {
+  margin-top: 12px;
+}
+.skin-card-skeleton {
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 88px;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-surface);
+}
+.skin-lines {
+  display: grid;
+  gap: 8px;
   min-width: 0;
 }
-
-.skin-market-reference .skin-list small {
-  font-size: 12px;
+.skin-lines i {
+  display: block;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--bg-selected);
+}
+.skin-lines i:nth-child(1) {
+  width: 72%;
+  height: 10px;
+}
+.skin-lines i:nth-child(2) {
+  width: 92%;
+}
+.skin-lines i:nth-child(3) {
+  width: 36%;
+}
+.skin-market-status {
+  margin: 0;
+  font-size: 13px;
   color: var(--text-3);
 }
 @media (max-width: 1000px) {

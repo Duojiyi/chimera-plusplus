@@ -36,7 +36,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
-const CODEX_THREAD_REQUEST_ID_PREFIX: &str = "codex_session:thread-v1";
+pub(crate) mod conversations;
+
+pub(crate) use crate::services::usage_stats::CODEX_THREAD_REQUEST_ID_PREFIX;
 
 /// Maximum buffered plaintext line. Compressed files additionally have a hard
 /// total decoded-byte budget, including skipped/oversized lines.

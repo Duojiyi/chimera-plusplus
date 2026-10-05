@@ -1643,18 +1643,20 @@ requires_openai_auth = false`,
     auth: {
       OPENAI_API_KEY: "",
     },
+    // The window keys are Codex root keys; inside a provider table they are
+    // ignored. Compaction starts at 90% of the 1M window.
     config: `model_provider = "custom"
 model = "gpt-5.5"
 model_reasoning_effort = "high"
 personality = "pragmatic"
+model_context_window = 1000000
+model_auto_compact_token_limit = 900000
 
 [model_providers.custom]
 name = "E-FlowCode"
 base_url = "https://e-flowcode.cc/v1"
 wire_api = "responses"
-requires_openai_auth = false
-model_context_window = 1000000
-model_auto_compact_token_limit = 9000000`,
+requires_openai_auth = false`,
     category: "third_party",
     endpointCandidates: ["https://e-flowcode.cc/v1"],
     icon: "eflowcode",

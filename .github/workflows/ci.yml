@@ -19,6 +19,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
@@ -46,7 +48,19 @@ jobs:
         run: node scripts/verify-release-version.mjs
 
       - name: Test release safety guards
-        run: node --test scripts/promote-latest-release.test.mjs scripts/release-workflow-guards.test.mjs scripts/check-single-config-writer.test.mjs
+        run: node --test scripts/promote-latest-release.test.mjs scripts/release-workflow-guards.test.mjs scripts/check-single-config-writer.test.mjs scripts/worktree-checks.test.mjs scripts/check-architecture.test.mjs
+
+      - name: Check backend layering
+        shell: bash
+        env:
+          ARCHITECTURE_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before || 'origin/main' }}
+        run: |
+          set -euo pipefail
+          if [[ "$ARCHITECTURE_BASE_REF" == "0000000000000000000000000000000000000000" ]]; then
+            ARCHITECTURE_BASE_REF=origin/main
+          fi
+          git cat-file -e "$ARCHITECTURE_BASE_REF^{commit}" || git fetch --no-tags origin "$ARCHITECTURE_BASE_REF"
+          node scripts/check-architecture.mjs --baseline-ref "$ARCHITECTURE_BASE_REF"
 
       - name: Check frontend formatting
         run: pnpm format:check

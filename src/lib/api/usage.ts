@@ -5,6 +5,7 @@ import type {
   DailyStats,
   ProviderStats,
   ModelStats,
+  ConversationUsageReport,
   RequestLog,
   LogFilters,
   ModelPricing,
@@ -125,6 +126,15 @@ export const usageApi = {
       providerName,
       model,
     });
+  },
+
+  /** Codex usage per root conversation; rejected while the backend keeps it off. */
+  getUsageByConversation: async (
+    startDate?: number,
+    endDate?: number,
+    query?: string,
+  ): Promise<ConversationUsageReport> => {
+    return invoke("get_usage_by_conversation", { startDate, endDate, query });
   },
 
   getRequestLogs: async (

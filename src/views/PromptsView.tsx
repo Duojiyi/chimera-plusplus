@@ -39,6 +39,10 @@ const PROMPT_TOOLS = [
   { id: "openclaw", name: "OpenClaw", file: "AGENTS.md" },
   { id: "hermes", name: "Hermes", file: "SOUL.md" },
 ] as const;
+// Unsupported tools are absent from the selector, so the selector itself
+// explains why instead of a page-wide notice that is noise for every target.
+const UNSUPPORTED_PROMPT_TOOLS =
+  "Claude Desktop、Pi 和 MiniMax Code 暂不支持提示词";
 
 export const PromptsView: React.FC<{
   initialApp?: AppId;
@@ -144,6 +148,7 @@ export const PromptsView: React.FC<{
   };
   const enabledCount = prompts.filter((p) => p.enabled).length;
   const disabled = loading || busy || error || writeConfirmation !== null;
+  const fileMissing = !previewTemplate && !loading && !error && live === null;
   const handleImportMd = () => {
     void mutate(async () => {
       const path = await open({
@@ -172,6 +177,7 @@ export const PromptsView: React.FC<{
             目标工具{" "}
             <select
               aria-label="提示词目标工具"
+              title={UNSUPPORTED_PROMPT_TOOLS}
               value={targetApp}
               disabled={
                 busy ||
@@ -206,10 +212,6 @@ export const PromptsView: React.FC<{
           </Button>
         </div>
       </header>
-      <p className="prompts-library-note">
-        暂不支持 Claude Desktop、Pi 和 MiniMax Code 提示词。
-      </p>
-      {loading && <p role="status">正在读取提示词…</p>}
       {error && (
         <div className="prompts-notice" role="alert">
           <span>本地提示词暂时无法读取，仍可浏览内置模板。</span>
@@ -248,6 +250,11 @@ export const PromptsView: React.FC<{
                 已启用 {enabledCount} / {prompts.length}
               </span>
             </div>
+            {loading && (
+              <p className="prompts-status" role="status">
+                正在读取提示词…
+              </p>
+            )}
             {!loading && !error && prompts.length === 0 && (
               <div className="prompts-empty">
                 <FileText size={22} />
@@ -300,7 +307,7 @@ export const PromptsView: React.FC<{
           <section aria-label="内置模板">
             <div className="prompts-section-heading">
               <h2>内置模板</h2>
-              <span>{bundledPromptTemplates.length} 个 · 来自 Codex-X</span>
+              <span>{bundledPromptTemplates.length} 个</span>
             </div>
             <p className="prompts-section-description">
               点击预览，使用前可以自由编辑。
@@ -327,7 +334,11 @@ export const PromptsView: React.FC<{
             </p>
           </section>
         </div>
-        <section className="prompt-preview" aria-label="提示词预览">
+        <section
+          className="prompt-preview"
+          aria-label="提示词预览"
+          aria-busy={loading && !previewTemplate}
+        >
           <header>
             <FileText size={17} />
             <div>
@@ -337,7 +348,9 @@ export const PromptsView: React.FC<{
               <span>
                 {previewTemplate
                   ? "内置模板 · 只读预览"
-                  : "当前文件内容（只读）"}
+                  : fileMissing
+                    ? "尚未创建"
+                    : "当前文件内容（只读）"}
               </span>
             </div>
             {previewTemplate && (
@@ -350,22 +363,57 @@ export const PromptsView: React.FC<{
               </Button>
             )}
           </header>
-          <pre
-            tabIndex={0}
-            aria-label={
-              previewTemplate ? "模板内容" : `${target.file} 当前内容`
-            }
-          >
-            {previewTemplate
-              ? previewTemplate.content
-              : loading
-                ? "正在读取文件…"
-                : error
-                  ? "文件预览不可用"
-                  : live === null
-                    ? `尚未创建 ${target.file}`
+          {fileMissing ? (
+            <div className="prompt-file-empty">
+              <strong>还没有 {target.file}</strong>
+              <p>
+                {targetApp === "codex"
+                  ? "Codex 会读取这个文件里的全局指令，在所有项目中生效。"
+                  : `${target.name} 会读取这个文件里的全局指令。`}
+              </p>
+              {targetApp === "codex" && (
+                <div className="prompt-file-anatomy" aria-hidden="true">
+                  <div className="prompt-file-part">
+                    <span className="prompt-file-lines">
+                      <i />
+                      <i />
+                    </span>
+                    <small>你写的内容</small>
+                  </div>
+                  <div className="prompt-file-part is-managed">
+                    <span className="prompt-file-lines">
+                      <i />
+                      <i />
+                    </span>
+                    <small>Chimera++ 区块</small>
+                  </div>
+                </div>
+              )}
+              <ul className="prompt-file-facts">
+                <li>
+                  {targetApp === "codex"
+                    ? "Chimera++ 只维护文件中带标记的这一段，你写的其他内容保持不变。"
+                    : `启用一条提示词时，它的内容会写入整个 ${target.file}。`}
+                </li>
+                <li>启用提示词之前，不会创建这个文件。</li>
+              </ul>
+            </div>
+          ) : (
+            <pre
+              tabIndex={0}
+              aria-label={
+                previewTemplate ? "模板内容" : `${target.file} 当前内容`
+              }
+            >
+              {previewTemplate
+                ? previewTemplate.content
+                : loading
+                  ? ""
+                  : error
+                    ? "文件预览不可用"
                     : live || "文件为空"}
-          </pre>
+            </pre>
+          )}
           <footer>
             {previewTemplate ? (
               <>

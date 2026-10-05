@@ -3,7 +3,7 @@
 // flags and no affiliate, invite or referral links. This check fails CI when
 // any of those markers reappears in the frontend preset config or the Rust
 // sources, so a preset sync from upstream cannot quietly bring them back.
-import fs from "node:fs";
+import { readWorktreeFile } from "./lib/read-worktree-file.mjs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -36,8 +36,8 @@ if (tracked.status !== 0) {
 
 const findings = [];
 for (const relativePath of tracked.stdout.split("\0").filter(Boolean)) {
-  const content = fs.readFileSync(path.join(root, relativePath));
-  if (content.includes(0)) continue;
+  const content = readWorktreeFile(path.join(root, relativePath));
+  if (content === null || content.includes(0)) continue;
 
   const lines = content.toString("utf8").split(/\r?\n/);
   lines.forEach((line, index) => {
