@@ -732,6 +732,7 @@ pub(crate) mod tests {
             "template",
             crate::prompt::Prompt {
                 template_id: Some("writing-technical-docs".into()),
+                category_id: None,
                 id: "template".into(),
                 name: "Original template".into(),
                 content: content.into(),

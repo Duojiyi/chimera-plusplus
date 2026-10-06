@@ -828,6 +828,7 @@ impl MultiAppConfig {
         let id = format!("auto-imported-{timestamp}");
         let prompt = crate::prompt::Prompt {
             template_id: None,
+            category_id: None,
             id: id.clone(),
             name: format!(
                 "Auto-imported Prompt {}",

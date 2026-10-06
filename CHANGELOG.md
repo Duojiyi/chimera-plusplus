@@ -10,6 +10,25 @@ numbers belong to a separate upstream line.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.8.2] - 2026-10-06
+
+### Added
+
+- Add per-tool prompt categories with creation, renaming, deletion and an uncategorized view. Removing a category preserves its prompts and their enabled state; deleted default categories stay deleted.
+- Add a unified prompt preview and editing drawer, searchable prompt cards, Markdown import and editable local template copies.
+
+### Changed
+
+- Simplify the prompt library around category navigation and explicit enable controls. Keep six built-in templates across software development and writing, all disabled by default, without replacing saved copies or changing existing activation states.
+- Explain Codex managed-block merging and other tools' whole-file replacement behavior directly in the interface and README.
+
+### Fixed
+
+- Keep category and other metadata-only edits from rewriting active instruction files.
+- Require confirmation and preserve an inactive local backup before replacing another tool's instruction file.
+- Reject stale editor saves, use the latest saved content when toggling prompts, and preserve other enabled Codex prompts and content outside Chimera's managed block.
+- Preserve saved copies of retired templates and harden failure rollback and concurrent prompt operations with regression coverage.
+
 ## [2.8.1] - 2026-10-06
 
 ### Security

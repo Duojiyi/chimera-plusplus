@@ -1506,6 +1506,7 @@ fn resaving_rows_keeps_v17_columns() {
     let db = Database::memory().expect("memory db");
     let prompt = Prompt {
         template_id: None,
+        category_id: None,
         id: "team".into(),
         name: "Team".into(),
         content: "rules".into(),

@@ -23,6 +23,11 @@ describe("curated bundled prompts", () => {
         .sort(),
     ).toEqual(ids.map((id) => `${id}.md`).sort());
   });
+  it("only includes the software-development and writing categories", () => {
+    expect([
+      ...new Set(bundledPromptTemplates.map((item) => item.categoryId)),
+    ]).toEqual(["software-development", "writing"]);
+  });
   it.each(allowlist)(
     "preserves the pinned bytes and raw imported body: $id",
     ({ id, sha256 }) => {

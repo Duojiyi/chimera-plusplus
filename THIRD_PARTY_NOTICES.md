@@ -120,13 +120,14 @@ under the MIT license reproduced above. `allowlist.json` records their exact
 SHA-256 hashes. Only the three software-development and three writing examples
 listed there are distributed. No upstream default registry or remote sync source
 is included. Attribution stays outside template bodies to avoid injecting it
-into model instructions. Selection creates an editable, disabled local copy;
-updates to bundled examples never replace saved or active user instructions.
-
+into model instructions. Templates are displayed disabled until explicitly enabled.
+Saving a template creates an editable local copy; updates to bundled examples
+never replace saved or active user instructions.
 
 ### Overpass and Overpass Mono fonts
 
 Bundled unmodified variable fonts from Google Fonts (retrieved 2026-10-02):
+
 - `https://github.com/google/fonts/blob/main/ofl/overpass/Overpass[wght].ttf`
 - `https://github.com/google/fonts/blob/main/ofl/overpassmono/OverpassMono[wght].ttf`
 
@@ -136,5 +137,6 @@ in `src/public/licenses/Overpass-OFL.txt` and
 so they accompany the bundled font files. No runtime font CDN is used.
 
 SHA-256 of the vendored files:
+
 - Overpass: `970717df17a7f9911dee45f60695d05bfa9d745fa0a11fc5c348371fa21f0073`
 - Overpass Mono: `49f230e10251608f0ae1a2ce46be768d7b9ddcbe5cdca2e9f6b762fcbce1ae4f`

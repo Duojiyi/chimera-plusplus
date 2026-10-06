@@ -31,6 +31,18 @@ impl PromptService {
         _id: &str,
         prompt: Prompt,
     ) -> Result<(), AppError> {
+        Self::upsert_prompt_checked(state, app, _id, prompt, None)
+    }
+
+    /// UI edits carry the record they started from; reject stale/deleted drafts
+    /// while holding the same app lock used for the eventual file write.
+    pub fn upsert_prompt_checked(
+        state: &AppState,
+        app: AppType,
+        _id: &str,
+        prompt: Prompt,
+        expected: Option<Prompt>,
+    ) -> Result<(), AppError> {
         if prompt.template_id.as_ref().is_some_and(|id| {
             id.is_empty()
                 || id.len() > 128
@@ -40,15 +52,53 @@ impl PromptService {
         }) {
             return Err(AppError::InvalidInput("模板来源标识无效。".into()));
         }
+        if _id != prompt.id || prompt.id.trim().is_empty() {
+            return Err(AppError::InvalidInput("提示词标识不一致或为空。".into()));
+        }
+        validate_prompt_content(&prompt.content, prompt.enabled)?;
         if app == AppType::Codex {
-            if _id != prompt.id || prompt.id.trim().is_empty() {
-                return Err(AppError::InvalidInput("提示词标识不一致或为空。".into()));
-            }
-            if prompt.content.len() as u64 > crate::security_limits::MAX_CONFIG_FILE_BYTES {
-                return Err(AppError::InvalidInput("提示词内容超过大小上限。".into()));
-            }
             return update_codex_prompts(state, |prompts| {
+                check_prompt_baseline(prompts, _id, expected.as_ref())?;
+                state
+                    .db
+                    .validate_prompt_category(app.as_str(), prompt.category_id.as_deref())?;
                 prompts.insert(prompt.id.clone(), prompt);
+                Ok(())
+            });
+        }
+        let _guard =
+            futures::executor::block_on(state.proxy_service.lock_switch_for_app(app.as_str()));
+        state
+            .db
+            .validate_prompt_category(app.as_str(), prompt.category_id.as_deref())?;
+        let before = state.db.get_prompts(app.as_str())?;
+        check_prompt_baseline(&before, _id, expected.as_ref())?;
+        let mut next = before.clone();
+
+        if prompt.enabled {
+            for saved in next.values_mut() {
+                saved.enabled = false;
+            }
+        }
+        next.insert(prompt.id.clone(), prompt);
+        apply_non_codex_prompts(state, &app, &before, next, false)
+    }
+
+    /// Toggle a saved record by ID, never by a potentially stale preview body.
+    pub fn set_prompt_enabled(
+        state: &AppState,
+        app: AppType,
+        id: &str,
+        enabled: bool,
+    ) -> Result<(), AppError> {
+        if app == AppType::Codex {
+            return update_codex_prompts(state, |prompts| {
+                let prompt = prompts
+                    .get_mut(id)
+                    .ok_or_else(|| AppError::InvalidInput("提示词不存在，请刷新后重试。".into()))?;
+                validate_prompt_content(&prompt.content, enabled)?;
+                prompt.enabled = enabled;
+                prompt.updated_at = Some(get_unix_timestamp()?);
                 Ok(())
             });
         }
@@ -56,26 +106,19 @@ impl PromptService {
             futures::executor::block_on(state.proxy_service.lock_switch_for_app(app.as_str()));
         let before = state.db.get_prompts(app.as_str())?;
         let mut next = before.clone();
-        let affects_live = prompt.enabled || before.get(&prompt.id).is_some_and(|old| old.enabled);
-        if prompt.enabled {
-            for saved in next.values_mut() {
-                saved.enabled = false;
+        let prompt = next
+            .get_mut(id)
+            .ok_or_else(|| AppError::InvalidInput("提示词不存在，请刷新后重试。".into()))?;
+        if enabled {
+            validate_prompt_content(&prompt.content, true)?;
+            for value in next.values_mut() {
+                value.enabled = value.id == id;
             }
+        } else {
+            prompt.enabled = false;
+            prompt.updated_at = Some(get_unix_timestamp()?);
         }
-        next.insert(prompt.id.clone(), prompt);
-        let mut changes = crate::config::cas::Changeset::new();
-        if affects_live {
-            let snapshot = crate::config::cas::FileSnapshot::read(prompt_file_path(&app)?)?;
-            let content = next
-                .values()
-                .find(|value| value.enabled)
-                .map(|value| value.content.as_str())
-                .unwrap_or("");
-            if snapshot.contents().is_some() || !content.is_empty() {
-                changes.write(snapshot, content.as_bytes().to_vec())?;
-            }
-        }
-        commit_non_codex_prompt_changes(state, &app, &before, &next, changes)
+        apply_non_codex_prompts(state, &app, &before, next, enabled)
     }
 
     pub fn delete_prompt(state: &AppState, app: AppType, id: &str) -> Result<(), AppError> {
@@ -105,50 +148,7 @@ impl PromptService {
                 Ok(())
             });
         }
-        let _guard =
-            futures::executor::block_on(state.proxy_service.lock_switch_for_app(app.as_str()));
-        let before = state.db.get_prompts(app.as_str())?;
-        if !before.contains_key(id) {
-            return Err(AppError::InvalidInput(format!("提示词 {id} 不存在")));
-        }
-        let snapshot = crate::config::cas::FileSnapshot::read(prompt_file_path(&app)?)?;
-        let live = std::str::from_utf8(snapshot.contents().unwrap_or_default())
-            .map_err(|_| AppError::InvalidInput("提示词文件必须为 UTF-8。".into()))?;
-        let mut next = before.clone();
-        if !live.trim().is_empty() {
-            if let Some(active) = next.values_mut().find(|value| value.enabled) {
-                active.content = live.to_string();
-                active.updated_at = Some(get_unix_timestamp()?);
-            } else if !next
-                .values()
-                .any(|value| value.content.trim() == live.trim())
-            {
-                let timestamp = get_unix_timestamp()?;
-                let backup_id = format!("backup-{}", uuid::Uuid::new_v4());
-                next.insert(
-                    backup_id.clone(),
-                    Prompt {
-                        id: backup_id,
-                        template_id: None,
-                        name: format!(
-                            "原始提示词 {}",
-                            chrono::Local::now().format("%Y-%m-%d %H:%M")
-                        ),
-                        content: live.to_string(),
-                        description: Some("自动备份的原始提示词".into()),
-                        enabled: false,
-                        created_at: Some(timestamp),
-                        updated_at: Some(timestamp),
-                    },
-                );
-            }
-        }
-        for value in next.values_mut() {
-            value.enabled = value.id == id;
-        }
-        let mut changes = crate::config::cas::Changeset::new();
-        changes.write(snapshot, next[id].content.as_bytes().to_vec())?;
-        commit_non_codex_prompt_changes(state, &app, &before, &next, changes)
+        Self::set_prompt_enabled(state, app, id, true)
     }
 
     pub fn import_from_file(state: &AppState, app: AppType) -> Result<String, AppError> {
@@ -165,6 +165,7 @@ impl PromptService {
         let id = format!("imported-{}", uuid::Uuid::new_v4());
         let prompt = Prompt {
             template_id: None,
+            category_id: None,
             id: id.clone(),
             name: format!(
                 "导入的提示词 {}",
@@ -213,6 +214,7 @@ impl PromptService {
         let id = format!("imported-{}", uuid::Uuid::new_v4());
         let prompt = Prompt {
             template_id: None,
+            category_id: None,
             id: id.clone(),
             name: path
                 .file_stem()
@@ -269,6 +271,7 @@ impl PromptService {
             id.clone(),
             Prompt {
                 template_id: None,
+                category_id: None,
                 id: id.clone(),
                 name: "从 Codex-X 接管的提示词".into(),
                 content: body,
@@ -342,6 +345,7 @@ impl PromptService {
         let id = format!("auto-imported-{timestamp}");
         let prompt = Prompt {
             template_id: None,
+            category_id: None,
             id: id.clone(),
             name: format!(
                 "Auto-imported Prompt {}",
@@ -360,6 +364,88 @@ impl PromptService {
         log::info!("自动导入完成: {}", app.as_str());
         Ok(1)
     }
+}
+
+fn validate_prompt_content(content: &str, enabled: bool) -> Result<(), AppError> {
+    if content.len() as u64 > MAX_CONFIG_FILE_BYTES {
+        return Err(AppError::InvalidInput("提示词内容超过大小上限。".into()));
+    }
+    if enabled && content.trim().is_empty() {
+        return Err(AppError::InvalidInput("启用的提示词不能为空。".into()));
+    }
+    Ok(())
+}
+
+fn check_prompt_baseline(
+    prompts: &IndexMap<String, Prompt>,
+    id: &str,
+    expected: Option<&Prompt>,
+) -> Result<(), AppError> {
+    if expected.is_some_and(|expected| prompts.get(id) != Some(expected)) {
+        return Err(AppError::InvalidInput(
+            "这条提示词已更新或被删除，请重新打开后编辑。当前草稿尚未保存。".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Called under the per-app lock. Persist a unique original before touching
+/// the file, so it survives even an external-write conflict during rollback.
+/// A failed operation may leave this inactive recovery copy, never new active state.
+fn apply_non_codex_prompts(
+    state: &AppState,
+    app: &AppType,
+    before: &IndexMap<String, Prompt>,
+    mut next: IndexMap<String, Prompt>,
+    force_write: bool,
+) -> Result<(), AppError> {
+    let mut before = before.clone();
+    let previous = before
+        .values()
+        .find(|p| p.enabled)
+        .map(|p| p.content.as_str());
+    let current = next
+        .values()
+        .find(|p| p.enabled)
+        .map(|p| p.content.as_str());
+    let mut changes = crate::config::cas::Changeset::new();
+    // Metadata-only changes never overwrite external file edits.
+    if force_write || previous != current {
+        let content = current.unwrap_or("").to_owned();
+        let snapshot = crate::config::cas::FileSnapshot::read(prompt_file_path(app)?)?;
+        let live = std::str::from_utf8(snapshot.contents().unwrap_or_default())
+            .map_err(|_| AppError::InvalidInput("提示词文件必须为 UTF-8。".into()))?;
+        let already_preserved = next
+            .values()
+            .any(|p| p.content == live && before.get(&p.id).is_some_and(|old| old.content == live));
+        if !live.is_empty() && live != content && !already_preserved {
+            let timestamp = get_unix_timestamp()?;
+            let id = format!("backup-{}", uuid::Uuid::new_v4());
+            let backup = Prompt {
+                id: id.clone(),
+                template_id: None,
+                category_id: None,
+                name: format!(
+                    "原始提示词 {}",
+                    chrono::Local::now().format("%Y-%m-%d %H:%M")
+                ),
+                content: live.to_owned(),
+                description: Some("整文件修改前自动保留的原始内容".into()),
+                enabled: false,
+                created_at: Some(timestamp),
+                updated_at: Some(timestamp),
+            };
+            // This insert is intentionally durable even if the later file/DB
+            // operation fails. Include it in the final transaction's CAS baseline.
+            state.db.save_prompt(app.as_str(), &backup)?;
+            before.insert(id.clone(), backup.clone());
+            next.insert(id, backup);
+        }
+        if snapshot.contents().is_some() || !content.is_empty() {
+            changes.write(snapshot, content.into_bytes())?;
+        }
+    }
+    commit_non_codex_prompt_changes(state, app, &before, &next, changes)
 }
 
 /// Whole-file clients use the existing per-app switch lock and file CAS rules.
@@ -411,7 +497,7 @@ fn persist_non_codex_prompts(
             let matches: bool = tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM prompts WHERE app_type = ?1 AND id = ?2 AND name IS ?3
                  AND content IS ?4 AND description IS ?5 AND enabled IS ?6 AND created_at IS ?7
-                 AND updated_at IS ?8 AND template_id IS ?9)",
+                 AND updated_at IS ?8 AND template_id IS ?9 AND category_id IS ?10)",
                 params![
                     app,
                     old.id,
@@ -421,7 +507,8 @@ fn persist_non_codex_prompts(
                     old.enabled,
                     old.created_at,
                     old.updated_at,
-                    old.template_id
+                    old.template_id,
+                    old.category_id
                 ],
                 |row| row.get(0),
             )?;
@@ -434,12 +521,12 @@ fn persist_non_codex_prompts(
             .filter(|value| before.get(&value.id) != Some(*value))
         {
             tx.execute(
-                "INSERT INTO prompts (id, app_type, name, content, description, enabled, created_at, updated_at, template_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                "INSERT INTO prompts (id, app_type, name, content, description, enabled, created_at, updated_at, template_id, category_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                  ON CONFLICT(id, app_type) DO UPDATE SET name=excluded.name, content=excluded.content,
                  description=excluded.description, enabled=excluded.enabled, created_at=excluded.created_at,
-                 updated_at=excluded.updated_at, template_id=COALESCE(excluded.template_id, prompts.template_id)",
-                params![prompt.id, app, prompt.name, prompt.content, prompt.description, prompt.enabled, prompt.created_at, prompt.updated_at, prompt.template_id],
+                 updated_at=excluded.updated_at, template_id=COALESCE(excluded.template_id, prompts.template_id), category_id=excluded.category_id",
+                params![prompt.id, app, prompt.name, prompt.content, prompt.description, prompt.enabled, prompt.created_at, prompt.updated_at, prompt.template_id, prompt.category_id],
             )?;
         }
         Ok(())
@@ -500,6 +587,7 @@ pub(crate) fn prompts_after_restore(
             id.clone(),
             Prompt {
                 template_id: None,
+                category_id: None,
                 id,
                 name: "从 Live 备份恢复的提示词".into(),
                 content: body.to_string(),
@@ -601,6 +689,7 @@ mod managed_tests {
     fn prompt(id: &str, content: &str, enabled: bool) -> Prompt {
         Prompt {
             template_id: None,
+            category_id: None,
             id: id.into(),
             name: id.into(),
             content: content.into(),
@@ -947,6 +1036,7 @@ mod audit_a03_tests {
             description: None,
             enabled,
             template_id: None,
+            category_id: None,
             created_at: Some(1),
             updated_at: Some(1),
         }
@@ -959,6 +1049,28 @@ mod audit_a03_tests {
         let path = prompt_file_path(app).unwrap();
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         (home, state, path)
+    }
+
+    #[test]
+    #[serial]
+    fn category_only_edits_never_touch_live_instructions() {
+        for app in [AppType::Codex, AppType::Claude, AppType::Gemini] {
+            let (_home, state, path) = setup(&app);
+            state.db.get_prompt_categories(app.as_str()).unwrap();
+            let mut value = prompt("rules", "saved", true);
+            state.db.save_prompt(app.as_str(), &value).unwrap();
+            fs::write(&path, b"external edits\r\n").unwrap();
+            value.category_id = Some("writing".into());
+            PromptService::upsert_prompt(&state, app.clone(), "rules", value.clone()).unwrap();
+            assert_eq!(fs::read(&path).unwrap(), b"external edits\r\n");
+            assert_eq!(state.db.get_prompts(app.as_str()).unwrap()["rules"], value);
+            value.category_id = None;
+            PromptService::upsert_prompt(&state, app.clone(), "rules", value.clone()).unwrap();
+            assert_eq!(state.db.get_prompts(app.as_str()).unwrap()["rules"], value);
+            value.category_id = Some("missing".into());
+            assert!(PromptService::upsert_prompt(&state, app.clone(), "rules", value).is_err());
+            assert_eq!(fs::read(&path).unwrap(), b"external edits\r\n");
+        }
     }
 
     #[test]
@@ -1005,7 +1117,14 @@ mod audit_a03_tests {
             "CREATE TRIGGER reject_new BEFORE UPDATE ON prompts WHEN NEW.id = 'new' BEGIN SELECT RAISE(ABORT, 'injected'); END;"
         ).unwrap();
         assert!(PromptService::enable_prompt(&state, AppType::Claude, "new").is_err());
-        assert_eq!(state.db.get_prompts("claude").unwrap(), before);
+        let after = state.db.get_prompts("claude").unwrap();
+        for (id, original) in &before {
+            assert_eq!(&after[id], original);
+        }
+        assert_eq!(after.len(), before.len() + 1);
+        assert!(after
+            .values()
+            .any(|p| !p.enabled && p.content == "local edits\r\n"));
         assert_eq!(fs::read(&path).unwrap(), b"local edits\r\n");
         assert!(PromptService::upsert_prompt(
             &state,
@@ -1014,7 +1133,14 @@ mod audit_a03_tests {
             prompt("new", "edited", true)
         )
         .is_err());
-        assert_eq!(state.db.get_prompts("claude").unwrap(), before);
+        let after = state.db.get_prompts("claude").unwrap();
+        for (id, original) in &before {
+            assert_eq!(&after[id], original);
+        }
+        assert_eq!(after.len(), before.len() + 1);
+        assert!(after
+            .values()
+            .any(|p| !p.enabled && p.content == "local edits\r\n"));
         assert_eq!(fs::read(&path).unwrap(), b"local edits\r\n");
     }
 
@@ -1038,7 +1164,7 @@ mod audit_a03_tests {
 
     #[test]
     #[serial]
-    fn inactive_edit_preserves_live_and_enable_backfills_local_edits() {
+    fn inactive_edit_and_enable_preserve_both_saved_and_live_versions() {
         let (_home, state, path) = setup(&AppType::Claude);
         state
             .db
@@ -1056,7 +1182,10 @@ mod audit_a03_tests {
         PromptService::enable_prompt(&state, AppType::Claude, "new").unwrap();
         let rows = state.db.get_prompts("claude").unwrap();
         assert!(!rows["old"].enabled);
-        assert_eq!(rows["old"].content, "local edits");
+        assert_eq!(rows["old"].content, "saved");
+        assert!(rows
+            .values()
+            .any(|p| !p.enabled && p.content == "local edits"));
         assert!(rows["new"].enabled);
         assert_eq!(fs::read_to_string(&path).unwrap(), "replacement");
         PromptService::upsert_prompt(
@@ -1115,5 +1244,201 @@ mod audit_a03_tests {
             state.db.get_prompts("claude").unwrap()["old"].content,
             "newer DB"
         );
+    }
+
+    #[test]
+    #[serial]
+    fn checked_saves_reject_stale_and_deleted_drafts_before_file_changes() {
+        for app in [AppType::Codex, AppType::Claude, AppType::Gemini] {
+            let (_home, state, path) = setup(&app);
+            let baseline = prompt("rules", "opened body", true);
+            let newer = prompt("rules", "newer body", true);
+            state.db.save_prompt(app.as_str(), &newer).unwrap();
+            fs::write(&path, b"external file\r\n").unwrap();
+            let mut draft = baseline.clone();
+            draft.name = "edited name".into();
+            assert!(PromptService::upsert_prompt_checked(
+                &state,
+                app.clone(),
+                "rules",
+                draft.clone(),
+                Some(baseline.clone())
+            )
+            .is_err());
+            assert_eq!(state.db.get_prompts(app.as_str()).unwrap()["rules"], newer);
+            assert_eq!(fs::read(&path).unwrap(), b"external file\r\n");
+            state
+                .db
+                .conn
+                .lock()
+                .unwrap()
+                .execute("DELETE FROM prompts WHERE app_type = ?1", [app.as_str()])
+                .unwrap();
+            assert!(PromptService::upsert_prompt_checked(
+                &state,
+                app.clone(),
+                "rules",
+                draft,
+                Some(baseline)
+            )
+            .is_err());
+            assert!(state.db.get_prompts(app.as_str()).unwrap().is_empty());
+            assert_eq!(fs::read(&path).unwrap(), b"external file\r\n");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn state_only_toggle_preserves_latest_codex_body_and_other_enabled_entries() {
+        let (_home, state, path) = setup(&AppType::Codex);
+        let latest = prompt("rules", "latest body", false);
+        state.db.save_prompt("codex", &latest).unwrap();
+        PromptService::upsert_prompt(
+            &state,
+            AppType::Codex,
+            "other",
+            prompt("other", "other body", true),
+        )
+        .unwrap();
+        PromptService::set_prompt_enabled(&state, AppType::Codex, "rules", true).unwrap();
+        let rows = state.db.get_prompts("codex").unwrap();
+        assert_eq!(rows["rules"].content, latest.content);
+        assert!(rows["rules"].enabled && rows["other"].enabled);
+        let live = fs::read_to_string(&path).unwrap();
+        assert!(live.contains("latest body") && live.contains("other body"));
+    }
+
+    #[test]
+    #[serial]
+    fn whole_file_edit_and_clear_keep_exact_originals_without_duplicates() {
+        for app in [AppType::Claude, AppType::Gemini] {
+            let (_home, state, path) = setup(&app);
+            state
+                .db
+                .save_prompt(app.as_str(), &prompt("rules", "saved", true))
+                .unwrap();
+            let original = "  external edits\r\n";
+            fs::write(&path, &original).unwrap();
+            PromptService::upsert_prompt(
+                &state,
+                app.clone(),
+                "rules",
+                prompt("rules", "replacement", true),
+            )
+            .unwrap();
+            let rows = state.db.get_prompts(app.as_str()).unwrap();
+            assert!(rows.values().any(|p| !p.enabled && p.content == original));
+            assert_eq!(fs::read_to_string(&path).unwrap(), "replacement");
+            fs::write(&path, &original).unwrap();
+            PromptService::set_prompt_enabled(&state, app.clone(), "rules", false).unwrap();
+            let rows = state.db.get_prompts(app.as_str()).unwrap();
+            assert_eq!(rows.values().filter(|p| p.content == original).count(), 1);
+            assert!(rows.values().all(|p| !p.enabled));
+            assert_eq!(fs::read(&path).unwrap(), b"");
+            PromptService::set_prompt_enabled(&state, app.clone(), "rules", true).unwrap();
+            fs::write(&path, "new external body before clearing").unwrap();
+            PromptService::set_prompt_enabled(&state, app.clone(), "rules", false).unwrap();
+            assert!(state
+                .db
+                .get_prompts(app.as_str())
+                .unwrap()
+                .values()
+                .any(|p| !p.enabled && p.content == "new external body before clearing"));
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn invalid_legacy_body_cannot_be_enabled_or_clear_the_live_file() {
+        for app in [AppType::Claude, AppType::Gemini] {
+            let (_home, state, path) = setup(&app);
+            for content in [
+                "   ".to_string(),
+                "x".repeat(MAX_CONFIG_FILE_BYTES as usize + 1),
+            ] {
+                state
+                    .db
+                    .save_prompt(app.as_str(), &prompt("invalid", &content, false))
+                    .unwrap();
+                fs::write(&path, "keep live").unwrap();
+                let before = state.db.get_prompts(app.as_str()).unwrap();
+                assert!(PromptService::enable_prompt(&state, app.clone(), "invalid").is_err());
+                assert!(
+                    PromptService::set_prompt_enabled(&state, app.clone(), "invalid", true)
+                        .is_err()
+                );
+                assert_eq!(state.db.get_prompts(app.as_str()).unwrap(), before);
+                assert_eq!(fs::read_to_string(&path).unwrap(), "keep live");
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn original_backup_failure_aborts_before_edit_or_clear() {
+        for enabled in [true, false] {
+            let (_home, state, path) = setup(&AppType::Claude);
+            state
+                .db
+                .save_prompt("claude", &prompt("rules", "saved", true))
+                .unwrap();
+            fs::write(&path, b"external original\r\n").unwrap();
+            let before = state.db.get_prompts("claude").unwrap();
+            state.db.conn.lock().unwrap().execute_batch(
+                "CREATE TRIGGER reject_backup BEFORE INSERT ON prompts WHEN NEW.id LIKE 'backup-%' BEGIN SELECT RAISE(ABORT, 'injected'); END;"
+            ).unwrap();
+            assert!(PromptService::upsert_prompt(
+                &state,
+                AppType::Claude,
+                "rules",
+                prompt("rules", "replacement", enabled)
+            )
+            .is_err());
+            assert_eq!(state.db.get_prompts("claude").unwrap(), before);
+            assert_eq!(fs::read(&path).unwrap(), b"external original\r\n");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn durable_original_survives_database_failure_and_external_rollback_conflict() {
+        for app in [AppType::Claude, AppType::Gemini] {
+            let (_home, state, path) = setup(&app);
+            state
+                .db
+                .save_prompt(app.as_str(), &prompt("rules", "saved", true))
+                .unwrap();
+            fs::write(&path, b"unique original\r\n").unwrap();
+            let target = path.clone();
+            // The backup insert commits while the file is still original. Veto
+            // the later user-edit commit and simulate an external file writer.
+            state.db.conn.lock().unwrap().commit_hook(Some(move || {
+                if fs::read(&target).ok().as_deref() == Some(b"replacement".as_slice()) {
+                    fs::write(&target, b"replacement\nexternal").unwrap();
+                    true
+                } else {
+                    false
+                }
+            }));
+            assert!(PromptService::upsert_prompt(
+                &state,
+                app.clone(),
+                "rules",
+                prompt("rules", "replacement", true)
+            )
+            .is_err());
+            state
+                .db
+                .conn
+                .lock()
+                .unwrap()
+                .commit_hook(None::<fn() -> bool>);
+            let after = state.db.get_prompts(app.as_str()).unwrap();
+            assert_eq!(after["rules"], prompt("rules", "saved", true));
+            assert!(after
+                .values()
+                .any(|p| !p.enabled && p.content == "unique original\r\n"));
+            assert_eq!(fs::read(&path).unwrap(), b"replacement\nexternal");
+        }
     }
 }

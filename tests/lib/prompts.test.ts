@@ -29,3 +29,55 @@ describe("prompt import command contract", () => {
     });
   });
 });
+
+describe("prompt category command contract", () => {
+  it("scopes every category operation to its target tool", async () => {
+    await promptsApi.getCategories("claude");
+    expect(invoke).toHaveBeenCalledWith("get_prompt_categories", {
+      app: "claude",
+    });
+    await promptsApi.createCategory("codex", "开发");
+    expect(invoke).toHaveBeenCalledWith("create_prompt_category", {
+      app: "codex",
+      name: "开发",
+    });
+    await promptsApi.renameCategory("gemini", "category-1", "写作");
+    expect(invoke).toHaveBeenCalledWith("rename_prompt_category", {
+      app: "gemini",
+      id: "category-1",
+      name: "写作",
+    });
+    await promptsApi.deleteCategory("hermes", "category-1");
+    expect(invoke).toHaveBeenCalledWith("delete_prompt_category", {
+      app: "hermes",
+      id: "category-1",
+    });
+  });
+});
+
+describe("prompt write command contract", () => {
+  const expected = {
+    id: "saved",
+    name: "Name",
+    content: "Old",
+    enabled: false,
+  };
+  it("passes the editor baseline to the backend", async () => {
+    const edited = { ...expected, content: "New" };
+    await promptsApi.upsertPrompt("claude", "saved", edited, expected);
+    expect(invoke).toHaveBeenCalledWith("upsert_prompt", {
+      app: "claude",
+      id: "saved",
+      prompt: edited,
+      expected,
+    });
+  });
+  it("toggles a record without resubmitting its content", async () => {
+    await promptsApi.setPromptEnabled("codex", "saved", true);
+    expect(invoke).toHaveBeenCalledWith("set_prompt_enabled", {
+      app: "codex",
+      id: "saved",
+      enabled: true,
+    });
+  });
+});

@@ -66,6 +66,7 @@ pub fn import_prompt_from_deeplink(
     }
     let prompt = Prompt {
         template_id: None,
+        category_id: None,
         id: id.clone(),
         name: name.clone(),
         content,

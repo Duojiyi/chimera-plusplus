@@ -16,8 +16,20 @@ pub struct Prompt {
         skip_serializing_if = "Option::is_none"
     )]
     pub template_id: Option<String>,
+    #[serde(
+        default,
+        rename = "categoryId",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub category_id: Option<String>,
     #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
     pub created_at: Option<i64>,
     #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PromptCategory {
+    pub id: String,
+    pub name: String,
 }
