@@ -1,5 +1,10 @@
 packages: []
 
+# GHSA-rj75-hqrm-r3gf: Tailwind 3 and postcss-nested 6 still request the
+# vulnerable parser 6.x. Use the patched parser until their ranges are updated.
+overrides:
+  'postcss-selector-parser@<7.1.6': 7.1.6
+
 allowBuilds:
   esbuild: true
   msw: true

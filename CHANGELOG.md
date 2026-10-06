@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.8.2] - 2026-10-06
 
+### Security
+
+- Update `smol-toml`, `source-map-js` and `postcss-selector-parser` to patched releases for parser denial-of-service advisories without relaxing the dependency audit gate.
+
 ### Added
 
 - Add per-tool prompt categories with creation, renaming, deletion and an uncategorized view. Removing a category preserves its prompts and their enabled state; deleted default categories stay deleted.
