@@ -4,12 +4,7 @@ import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import {
-  isWindows,
-  isLinux,
-  DRAG_REGION_ATTR,
-  DRAG_REGION_STYLE,
-} from "@/lib/platform";
+import { DRAG_REGION_ATTR, DRAG_REGION_STYLE } from "@/lib/platform";
 import { isTextEditableTarget } from "@/utils/domUtils";
 import { cn } from "@/lib/utils";
 
@@ -26,7 +21,6 @@ interface FullScreenPanelProps {
   contentClassName?: string;
 }
 
-const DRAG_BAR_HEIGHT = isWindows() || isLinux() ? 0 : 28; // px - match App.tsx
 const HEADER_HEIGHT = 64; // px - match App.tsx
 
 /**
@@ -43,6 +37,33 @@ export const FullScreenPanel: React.FC<FullScreenPanelProps> = ({
   contentClassName,
 }) => {
   const { t } = useTranslation();
+  const panelRef = React.useRef<HTMLDivElement>(null);
+  const titleId = React.useId();
+  React.useEffect(() => {
+    if (!isOpen) return;
+    const previousFocus = document.activeElement;
+    // Native inert excludes covered controls from both tab order and accessibility
+    // APIs, while the shell's real window controls remain usable above the panel.
+    const covered = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        ".chimera-shell > aside, .chimera-content, [data-fullscreen-panel]",
+      ),
+    ).filter(
+      (node) => node !== panelRef.current && !node.contains(panelRef.current),
+    );
+    const states = covered.map((node) => [node, node.inert] as const);
+    covered.forEach((node) => {
+      node.inert = true;
+    });
+    panelRef.current?.focus({ preventScroll: true });
+    return () => {
+      states.forEach(([node, inert]) => {
+        node.inert = inert;
+      });
+      if (previousFocus instanceof HTMLElement && previousFocus.isConnected)
+        previousFocus.focus({ preventScroll: true });
+    };
+  }, [isOpen]);
   React.useEffect(() => {
     if (!isOpen) return;
     const previousOverflow = document.body.style.overflow;
@@ -89,27 +110,19 @@ export const FullScreenPanel: React.FC<FullScreenPanelProps> = ({
     <AnimatePresence>
       {isOpen && (
         <motion.div
+          ref={panelRef}
+          data-fullscreen-panel
+          role="dialog"
+          aria-labelledby={titleId}
+          tabIndex={-1}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           transition={{ duration: 0.2 }}
-          className="fixed inset-0 z-[60] flex flex-col"
+          className="fixed inset-x-0 bottom-0 top-10 z-[60] flex min-h-0 flex-col"
           style={{ backgroundColor: "hsl(var(--background))" }}
         >
-          {/* Drag region - match App.tsx. Linux 上 DRAG_BAR_HEIGHT=0，
-              直接跳过整个元素；macOS 保留 28px 拖拽占位。 */}
-          {DRAG_BAR_HEIGHT > 0 && (
-            <div
-              data-tauri-drag-region
-              style={
-                {
-                  WebkitAppRegion: "drag",
-                  height: DRAG_BAR_HEIGHT,
-                } as React.CSSProperties
-              }
-            />
-          )}
-
+          {/* Keep the shell title bar and native window controls reachable. */}
           {/* Header - match App.tsx */}
           <div
             className="flex-shrink-0 flex items-center"
@@ -138,14 +151,17 @@ export const FullScreenPanel: React.FC<FullScreenPanelProps> = ({
               >
                 <ArrowLeft className="h-4 w-4" />
               </Button>
-              <h2 className="text-lg font-semibold text-foreground select-none">
+              <h2
+                id={titleId}
+                className="text-lg font-semibold text-foreground select-none"
+              >
                 {title}
               </h2>
             </div>
           </div>
 
           {/* Content */}
-          <div className="flex-1 overflow-y-auto scroll-overlay">
+          <div className="min-h-0 flex-1 overflow-y-auto scroll-overlay">
             <div className={cn("px-6 py-6 space-y-6 w-full", contentClassName)}>
               {children}
             </div>

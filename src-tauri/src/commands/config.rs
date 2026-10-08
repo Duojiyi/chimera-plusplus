@@ -118,24 +118,7 @@ pub async fn get_config_status(
 
             Ok(ConfigStatus { exists, path })
         }
-        AppType::OpenClaw => {
-            let config_path = crate::openclaw_config::get_openclaw_config_path();
-            let exists = config_path.exists();
-            let path = crate::openclaw_config::get_openclaw_dir()
-                .to_string_lossy()
-                .to_string();
 
-            Ok(ConfigStatus { exists, path })
-        }
-        AppType::Hermes => {
-            let config_path = crate::hermes_config::get_hermes_config_path();
-            let exists = config_path.exists();
-            let path = crate::hermes_config::get_hermes_dir()
-                .to_string_lossy()
-                .to_string();
-
-            Ok(ConfigStatus { exists, path })
-        }
         AppType::Pi => {
             let dir = crate::pi_config::get_pi_agent_dir().map_err(|e| e.to_string())?;
             Ok(ConfigStatus {
@@ -143,12 +126,6 @@ pub async fn get_config_status(
                 path: dir.to_string_lossy().to_string(),
             })
         }
-        AppType::Mcode => Ok(ConfigStatus {
-            exists: crate::mcode_config::config_path().exists(),
-            path: crate::mcode_config::data_dir()
-                .to_string_lossy()
-                .to_string(),
-        }),
     }
 }
 
@@ -168,10 +145,8 @@ pub async fn get_config_dir(app: String) -> Result<String, String> {
         AppType::Gemini => crate::gemini_config::get_gemini_dir(),
         AppType::GrokBuild => crate::grok_config::get_grok_config_dir(),
         AppType::OpenCode => crate::opencode_config::get_opencode_dir(),
-        AppType::OpenClaw => crate::openclaw_config::get_openclaw_dir(),
-        AppType::Hermes => crate::hermes_config::get_hermes_dir(),
+
         AppType::Pi => crate::pi_config::get_pi_agent_dir().map_err(|e| e.to_string())?,
-        AppType::Mcode => crate::mcode_config::data_dir(),
     };
 
     Ok(dir.to_string_lossy().to_string())
@@ -188,10 +163,8 @@ pub async fn open_config_folder(handle: AppHandle, app: String) -> Result<bool, 
         AppType::Gemini => crate::gemini_config::get_gemini_dir(),
         AppType::GrokBuild => crate::grok_config::get_grok_config_dir(),
         AppType::OpenCode => crate::opencode_config::get_opencode_dir(),
-        AppType::OpenClaw => crate::openclaw_config::get_openclaw_dir(),
-        AppType::Hermes => crate::hermes_config::get_hermes_dir(),
+
         AppType::Pi => crate::pi_config::get_pi_agent_dir().map_err(|e| e.to_string())?,
-        AppType::Mcode => crate::mcode_config::data_dir(),
     };
 
     if !config_dir.exists() {

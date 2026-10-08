@@ -19,23 +19,26 @@ fn lock(state: &AppState) -> tokio::sync::OwnedMutexGuard<()> {
     futures::executor::block_on(state.proxy_service.lock_switch_for_app(PI_APP))
 }
 
-/// Saved catalog, refreshed from `models.json`. A native file that cannot be
-/// read leaves the saved catalog visible instead of failing the list.
+fn native_provider(id: &str, config: &Value) -> Provider {
+    let name = native_provider_name(config).unwrap_or(id).to_string();
+    let mut provider = Provider::with_id(id.to_string(), name, config.clone(), None);
+    provider.category = Some("custom".to_string());
+    provider.icon = Some("pi".to_string());
+    provider
+}
+
+/// Merge native entries and membership in memory only. Reading the list is
+/// not consent to persist credentials; unreadable native state is an error.
 pub(super) fn list(state: &AppState) -> Result<IndexMap<String, Provider>, AppError> {
     let _guard = lock(state);
-    let native = match crate::pi_config::read_pi_native_providers() {
-        Ok(native) => {
-            if let Err(error) = sync_native_locked(state, &native) {
-                log::warn!("Failed to sync Pi providers from native config: {error}");
-            }
-            native
-        }
-        Err(error) => {
-            log::warn!("Failed to read Pi providers; showing saved catalog: {error}");
-            IndexMap::new()
-        }
-    };
+    let native = crate::pi_config::read_pi_native_providers()?;
     let mut providers = state.db.get_all_providers(PI_APP)?;
+    for (id, config) in &native {
+        let provider = providers
+            .entry(id.clone())
+            .or_insert_with(|| native_provider(id, config));
+        merge_native_config(provider, config.clone());
+    }
     for (id, provider) in providers.iter_mut() {
         ProviderService::set_provider_live_config_managed(provider, native.contains_key(id));
     }
@@ -105,10 +108,13 @@ pub(super) fn update(
         ));
     }
 
-    state
-        .db
-        .get_provider_by_id(&original_id, PI_APP)?
-        .ok_or_else(|| AppError::InvalidInput(format!("Pi provider '{original_id}' not found")))?;
+    if state.db.get_provider_by_id(&original_id, PI_APP)?.is_none()
+        && !crate::pi_config::pi_provider_exists(&original_id)?
+    {
+        return Err(AppError::InvalidInput(format!(
+            "Pi provider '{original_id}' not found"
+        )));
+    }
     strip_unsupported_metadata(&mut provider);
     ProviderService::validate_provider_settings(&app_type, &provider)?;
     ProviderService::normalize_usage_script_credential_overrides(&app_type, &mut provider);
@@ -163,14 +169,11 @@ pub(super) fn delete_locked(state: &AppState, id: &str) -> Result<(), AppError> 
 /// the saved catalog so re-enabling restores it exactly.
 pub(super) fn remove(state: &AppState, id: &str) -> Result<(), AppError> {
     let _guard = lock(state);
-    let provider = state
-        .db
-        .get_provider_by_id(id, PI_APP)?
-        .ok_or_else(|| AppError::InvalidInput(format!("Pi provider '{id}' not found")))?;
+    let previous = state.db.get_provider_by_id(id, PI_APP)?;
     let Some(removed) = crate::pi_config::remove_pi_provider(id)? else {
         return Ok(());
     };
-    let mut synced = provider;
+    let mut synced = previous.unwrap_or_else(|| native_provider(id, &removed));
     merge_native_config(&mut synced, removed.clone());
     if let Err(error) = state.db.save_provider(PI_APP, &synced) {
         if let Err(rollback) = crate::pi_config::restore_pi_provider_if_missing(id, &removed) {
@@ -185,54 +188,17 @@ pub(super) fn remove(state: &AppState, id: &str) -> Result<(), AppError> {
 
 pub(super) fn enable_locked(state: &AppState, id: &str) -> Result<SwitchResult, AppError> {
     let app_type = AppType::Pi;
+    if crate::pi_config::pi_provider_exists(id)? {
+        return Ok(SwitchResult::default());
+    }
     let provider = state
         .db
         .get_provider_by_id(id, PI_APP)?
         .ok_or_else(|| AppError::InvalidInput(format!("Pi provider '{id}' not found")))?;
 
-    if let Some(native) = crate::pi_config::read_pi_native_provider(id)? {
-        let mut synced = provider;
-        merge_native_config(&mut synced, native);
-        state.db.save_provider(PI_APP, &synced)?;
-        return Ok(SwitchResult::default());
-    }
-
     ProviderService::validate_provider_settings(&app_type, &provider)?;
     crate::pi_config::insert_pi_provider(id, &provider.settings_config)?;
     Ok(SwitchResult::default())
-}
-
-/// Import every explicit `models.json` node and pull native edits into the
-/// saved rows. Only rows that actually differ are written.
-fn sync_native_locked(
-    state: &AppState,
-    native: &IndexMap<String, Value>,
-) -> Result<usize, AppError> {
-    let saved = state.db.get_all_providers(PI_APP)?;
-    let mut changed = 0;
-
-    for (id, config) in native {
-        let mut provider = saved.get(id).cloned().unwrap_or_else(|| {
-            let name = native_provider_name(config).unwrap_or(id).to_string();
-            let mut imported = Provider::with_id(id.clone(), name, config.clone(), None);
-            imported.category = Some("custom".to_string());
-            imported.icon = Some("pi".to_string());
-            imported
-        });
-        let is_new = !saved.contains_key(id);
-        let previous_name = provider.name.clone();
-        let previous_config = provider.settings_config.clone();
-        merge_native_config(&mut provider, config.clone());
-        if !is_new && provider.name == previous_name && provider.settings_config == previous_config
-        {
-            continue;
-        }
-
-        state.db.save_provider(PI_APP, &provider)?;
-        changed += 1;
-    }
-
-    Ok(changed)
 }
 
 pub(super) fn merge_native_config(provider: &mut Provider, config: Value) {
@@ -258,7 +224,7 @@ pub(super) fn align_native_display_name(provider: &mut Provider) {
     }
 }
 
-/// Pi and MiniMax Code have no proxy, failover, common config or partner
+/// Pi has no proxy, failover, common config or partner
 /// content: keep only the usage script from the renderer-supplied metadata.
 pub(super) fn strip_unsupported_metadata(provider: &mut Provider) {
     provider.in_failover_queue = false;
@@ -370,7 +336,8 @@ mod tests {
         )
         .expect("write explicit provider");
 
-        ProviderService::list(&state, AppType::Pi).expect("import explicit provider");
+        ProviderService::list(&state, AppType::Pi).expect("list explicit provider");
+        assert!(saved(&state, "anthropic").is_none());
         ProviderService::remove_from_live_config(&state, AppType::Pi, "anthropic")
             .expect("remove explicit provider");
         ProviderService::switch(&state, AppType::Pi, "anthropic")
@@ -403,11 +370,15 @@ mod tests {
 
     #[test]
     #[serial]
-    fn native_edits_sync_to_the_saved_provider_and_survive_removal() {
+    fn native_edits_merge_in_memory_and_survive_explicit_removal() {
         let _agent = TestAgentDir::new();
         let state = state();
         ProviderService::add(&state, AppType::Pi, input("model-a"), true).expect("add provider");
-        let baseline = saved(&state, "pi-test").unwrap();
+        let mut baseline = saved(&state, "pi-test").unwrap();
+        baseline.icon = Some("user-icon".to_string());
+        baseline.notes = Some("saved notes".to_string());
+        baseline.meta = input("model-a").meta;
+        state.db.save_provider(PI_APP, &baseline).unwrap();
         let mut external = baseline.settings_config.clone();
         external["name"] = json!("External edit");
         external["models"][0]["contextWindow"] = json!(1_000_000.0);
@@ -417,6 +388,19 @@ mod tests {
         let listed = ProviderService::list(&state, AppType::Pi).expect("sync native providers");
         assert_eq!(listed["pi-test"].name, "External edit");
         assert_eq!(listed["pi-test"].settings_config, external);
+        assert_eq!(listed["pi-test"].icon, baseline.icon);
+        assert_eq!(listed["pi-test"].notes, baseline.notes);
+        let mut expected_meta = baseline.meta.clone().unwrap();
+        expected_meta.live_config_managed = Some(true);
+        assert_eq!(
+            serde_json::to_value(&listed["pi-test"].meta).unwrap(),
+            serde_json::to_value(Some(expected_meta)).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(saved(&state, "pi-test")).unwrap(),
+            serde_json::to_value(Some(&baseline)).unwrap(),
+            "listing must not update saved data"
+        );
 
         ProviderService::remove_from_live_config(&state, AppType::Pi, "pi-test")
             .expect("remove externally edited provider");
@@ -454,13 +438,13 @@ mod tests {
 
     #[test]
     #[serial]
-    fn native_sync_imports_every_explicit_provider_node() {
+    fn listing_native_entries_never_persists_credentials() {
         let _agent = TestAgentDir::new();
         let state = state();
         let path = crate::pi_config::get_pi_models_path().unwrap();
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(
-            path,
+            &path,
             r#"{
                 "providers": {
                     "native-custom": {
@@ -477,7 +461,10 @@ mod tests {
         )
         .unwrap();
 
-        let providers = ProviderService::list(&state, AppType::Pi).expect("sync providers");
+        let before = fs::read(&path).unwrap();
+        let providers = ProviderService::list(&state, AppType::Pi).expect("list providers");
+        assert!(state.db.get_all_providers(PI_APP).unwrap().is_empty());
+        assert_eq!(fs::read(&path).unwrap(), before);
         assert_eq!(providers.len(), 3);
         let imported = &providers["native-custom"];
         assert_eq!(imported.name, "Native custom");
@@ -488,6 +475,60 @@ mod tests {
             providers["deepseek"].settings_config["futureField"],
             json!({ "preserve": true })
         );
+    }
+
+    #[test]
+    #[serial]
+    fn native_only_entries_support_explicit_mutations_without_prior_import() {
+        let _agent = TestAgentDir::new();
+        let path = crate::pi_config::get_pi_models_path().unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        for operation in ["enable", "edit", "remove", "delete"] {
+            let state = state();
+            let config = input("model-a").settings_config;
+            fs::write(
+                &path,
+                serde_json::to_vec(&json!({"providers": {"pi-test": config}})).unwrap(),
+            )
+            .unwrap();
+            // No list call or implicit import is needed before any mutation.
+            match operation {
+                "enable" => {
+                    ProviderService::switch(&state, AppType::Pi, "pi-test").unwrap();
+                    assert!(saved(&state, "pi-test").is_none());
+                    assert_eq!(
+                        crate::pi_config::read_pi_native_provider("pi-test").unwrap(),
+                        Some(config)
+                    );
+                }
+                "edit" => {
+                    ProviderService::update(&state, AppType::Pi, None, input("model-b")).unwrap();
+                    let edited = saved(&state, "pi-test").unwrap();
+                    assert_eq!(edited.settings_config["models"][0]["id"], "model-b");
+                    assert_eq!(
+                        crate::pi_config::read_pi_native_provider("pi-test").unwrap(),
+                        Some(edited.settings_config)
+                    );
+                }
+                "remove" => {
+                    ProviderService::remove_from_live_config(&state, AppType::Pi, "pi-test")
+                        .unwrap();
+                    assert!(!exists("pi-test"));
+                    assert_eq!(saved(&state, "pi-test").unwrap().settings_config, config);
+                    ProviderService::switch(&state, AppType::Pi, "pi-test").unwrap();
+                    assert_eq!(
+                        crate::pi_config::read_pi_native_provider("pi-test").unwrap(),
+                        Some(config)
+                    );
+                }
+                "delete" => {
+                    ProviderService::delete(&state, AppType::Pi, "pi-test").unwrap();
+                    assert!(!exists("pi-test"));
+                    assert!(saved(&state, "pi-test").is_none());
+                }
+                _ => unreachable!(),
+            }
+        }
     }
 
     #[test]
@@ -512,16 +553,20 @@ mod tests {
 
     #[test]
     #[serial]
-    fn malformed_native_file_keeps_the_saved_catalog_visible() {
+    fn malformed_native_file_propagates_without_changing_saved_data() {
         let _agent = TestAgentDir::new();
         let state = state();
         ProviderService::add(&state, AppType::Pi, input("model-a"), false).expect("save provider");
         let path = crate::pi_config::get_pi_models_path().expect("models path");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, "{not-json").expect("write malformed models");
-
-        let providers = ProviderService::list(&state, AppType::Pi).expect("read saved catalog");
-        assert!(providers.contains_key("pi-test"));
+        fs::write(&path, "{not-json").expect("write malformed models");
+        let before = serde_json::to_value(saved(&state, "pi-test")).unwrap();
+        assert!(ProviderService::list(&state, AppType::Pi).is_err());
+        assert_eq!(
+            serde_json::to_value(saved(&state, "pi-test")).unwrap(),
+            before
+        );
+        assert_eq!(fs::read_to_string(path).unwrap(), "{not-json");
     }
 
     #[test]

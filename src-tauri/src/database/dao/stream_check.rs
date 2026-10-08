@@ -16,8 +16,8 @@ impl Database {
         let conn = lock_conn!(self.conn);
 
         conn.execute(
-            "INSERT INTO stream_check_logs 
-             (provider_id, provider_name, app_type, status, success, message, 
+            "INSERT INTO stream_check_logs
+             (provider_id, provider_name, app_type, status, success, message,
               response_time_ms, http_status, model_used, retry_count, tested_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             rusqlite::params![

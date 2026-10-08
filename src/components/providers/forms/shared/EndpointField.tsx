@@ -98,14 +98,20 @@ export function EndpointField({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
+        aria-describedby={effectiveHint ? `${id}-hint` : undefined}
         autoComplete="off"
       />
       {effectiveHint ? (
-        <div className="p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-lg">
-          <p className="text-xs text-amber-600 dark:text-amber-400">
-            {effectiveHint}
-          </p>
-        </div>
+        <p
+          id={`${id}-hint`}
+          className={
+            isFullUrl
+              ? "text-xs text-amber-700 dark:text-amber-400"
+              : "text-xs text-muted-foreground"
+          }
+        >
+          {effectiveHint.replace(/^💡\s*/, "")}
+        </p>
       ) : null}
     </div>
   );

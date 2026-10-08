@@ -285,25 +285,11 @@ describe("multi-tool Live recovery", () => {
     await act(async () => resolve([backup]));
     expect(screen.queryByText("AGENTS.md")).not.toBeInTheDocument();
   });
-  it("keeps the same focused picker when switching tools", async () => {
-    render(<LiveBackupsPanel />);
-    await screen.findByText("AGENTS.md");
-    const picker = screen.getByLabelText("备份的工具");
-    picker.focus();
-    fireEvent.change(picker, { target: { value: "hermes" } });
-    await waitFor(() =>
-      expect(liveBackupsApi.list).toHaveBeenCalledWith("hermes"),
-    );
-    expect(screen.getByLabelText("备份的工具")).toBe(picker);
-    expect(picker).toHaveFocus();
-    expect(
-      screen.getByRole("region", { name: "Hermes 配置备份" }),
-    ).toBeInTheDocument();
-  });
+
   it("describes the tool picker with the tools that have no backups", () => {
     render(<LiveBackupsPanel />);
     expect(screen.getByLabelText("备份的工具")).toHaveAccessibleDescription(
-      "Pi 与 MiniMax Code 暂不支持配置备份；Claude Desktop 仅支持 Windows 和 macOS。",
+      "Pi 暂不支持配置备份；Claude Desktop 仅支持 Windows 和 macOS。",
     );
   });
 });

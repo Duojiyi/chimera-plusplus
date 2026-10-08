@@ -63,11 +63,13 @@ export function ToolRegistryPanel({
           <AboutSection isPortable={false} toolsOnly />
         </Suspense>
       )}
-      <p className="settings-tools-description">
-        切换型工具使用一条当前线路；增量型工具在自身配置中保留多个条目。线路页的切换与启停会直接写入后端管理的
-        live 配置。 下方是配置适配清单，不是已安装客户端清单；Pi、MiniMax Code
-        和 Claude Desktop 暂无安装管理入口。
-      </p>
+      <details className="settings-tools-description">
+        <summary className="cursor-pointer">工具支持范围与配置方式</summary>
+        <p>
+          切换型工具每次使用一条线路；增量型工具可同时启用多条。切换与启停会修改本机配置。
+        </p>
+        <p>Claude Desktop 提供官方下载入口，需手动安装。</p>
+      </details>
       {!native && (
         <p className="settings-tools-preview-note" role="status">
           浏览器预览：以下为应用内置的支持工具清单，尚未读取本机安装状态和显示偏好。

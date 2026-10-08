@@ -150,9 +150,6 @@ export function updateToolProviderConfig(
 export const additionalToolNames = {
   "claude-desktop": "Claude Desktop",
   grokbuild: "Grok Build",
-  openclaw: "OpenClaw",
-  hermes: "Hermes",
-  mcode: "MiniMax Code",
 } as const;
 export type AdditionalToolAppId = keyof typeof additionalToolNames;
 
@@ -164,18 +161,10 @@ export function toolProviderSummary(
   if (isNativeToolAppId(appId)) return toolProviderFields(appId, provider);
   const settings = object(provider.settingsConfig);
   if (appId === "grokbuild") return parseGrokBuildConfig(text(settings.config));
-  if (appId === "mcode")
-    return {
-      baseUrl: text(object(settings.options).baseURL),
-      model: Object.keys(object(settings.models))[0] ?? "",
-    };
-  if (appId === "hermes")
-    return {
-      baseUrl: text(settings.base_url),
-      model: Array.isArray(settings.models)
-        ? text(object(settings.models[0]).id)
-        : (Object.keys(object(settings.models))[0] ?? ""),
-    };
+  {
+  }
+  {
+  }
   if (appId === "claude-desktop")
     return {
       baseUrl:
@@ -184,9 +173,5 @@ export function toolProviderSummary(
         Object.values(provider.meta?.claudeDesktopModelRoutes ?? {})[0]
           ?.model ?? "",
     };
-  if (appId !== "openclaw") throw new Error(`Unsupported tool: ${appId}`);
-  const first = object(
-    Array.isArray(settings.models) ? settings.models[0] : undefined,
-  );
-  return { baseUrl: text(settings.baseUrl), model: text(first.id) };
+  throw new Error(`Unsupported tool: ${appId}`);
 }

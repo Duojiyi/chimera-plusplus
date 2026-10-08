@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
-  CheckCircle2 as CheckCircle,
   Copy,
   ArrowUpRight,
   Loader2 as CircleNotch,
@@ -57,6 +56,21 @@ interface OfficialAccountsViewProps {
   onAccountSwitched?: () => void;
 }
 
+const REFRESH_STORAGE_KEY = "chimera.officialAccounts.refreshMinutes";
+const REFRESH_MINUTES = [0, 1, 5, 15, 30] as const;
+
+function readRefreshMinutes(): number {
+  try {
+    const saved = localStorage.getItem(REFRESH_STORAGE_KEY);
+    const minutes = saved === null ? 5 : Number(saved);
+    return saved !== "" && REFRESH_MINUTES.some((value) => value === minutes)
+      ? minutes
+      : 5;
+  } catch {
+    return 5;
+  }
+}
+
 let loginStartupPending = false;
 
 export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
@@ -65,6 +79,9 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
   const [accounts, setAccounts] = useState<OfficialAccountDto[]>([]);
   const [loading, setLoading] = useState(true);
   const accountsGeneration = useRef(0);
+  const accountsRequest = useRef<Promise<void> | null>(null);
+  const [refreshMinutes, setRefreshMinutes] = useState(readRefreshMinutes);
+  const [refreshError, setRefreshError] = useState(false);
   const addAccountRef = useRef<HTMLButtonElement>(null);
   const dialogTriggerRef = useRef<HTMLElement | null>(null);
   const restoreDialogFocus = (event: Event) => {
@@ -150,49 +167,91 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
     }
   };
 
-  const loadAccounts = async () => {
-    const generation = ++accountsGeneration.current;
-    try {
-      setLoading(true);
-      setLoadError(null);
-      const list = await officialAccountsApi.list();
-      if (generation !== accountsGeneration.current) return;
-      setAccounts(list);
-      setQuotas({});
-      setQuotaErrors(new Set());
-      const queryAccounts = list.filter((account) => !account.needsRelogin);
-      setLoadingQuotas(queryAccounts.length > 0);
-      const quotaResults = await Promise.allSettled(
-        queryAccounts.map((account) =>
-          officialAccountsApi.getQuota(account.key),
-        ),
-      );
-      if (generation !== accountsGeneration.current) return;
-      const nextQuotas: Record<string, SubscriptionQuota> = {};
-      const nextErrors = new Set<string>();
-      quotaResults.forEach((result, index) => {
-        const key = queryAccounts[index].key;
-        if (result.status === "fulfilled") nextQuotas[key] = result.value;
-        else nextErrors.add(key);
-      });
-      setQuotas(nextQuotas);
-      setQuotaErrors(nextErrors);
-    } catch (err: any) {
-      if (generation !== accountsGeneration.current) return;
-      setAccounts([]);
-      const message = err?.message || String(err);
-      setLoadError(
-        message.includes("undefined") && message.includes("invoke")
-          ? "暂未连接本机账号服务，请在桌面应用中重试"
-          : message || "无法读取官方账号，请重试",
-      );
-    } finally {
-      if (generation === accountsGeneration.current) {
-        setLoadingQuotas(false);
-        setLoading(false);
-      }
+  const loadAccounts = async (background = false): Promise<void> => {
+    // Background ticks are skipped; account mutations still get a fresh reload
+    // after the current request, so an older list cannot hide a new account.
+    const waitingGeneration = accountsGeneration.current;
+    while (accountsRequest.current) {
+      if (background) return;
+      await accountsRequest.current;
+      if (waitingGeneration !== accountsGeneration.current) return;
     }
+    const generation = ++accountsGeneration.current;
+    const request = (async () => {
+      try {
+        if (!background) setLoading(true);
+        setLoadingQuotas(true);
+        const list = await officialAccountsApi.list();
+        if (generation !== accountsGeneration.current) return;
+        setAccounts(list);
+        setLoadError(null);
+        const queryAccounts = list.filter((account) => !account.needsRelogin);
+        const quotaResults = await Promise.allSettled(
+          queryAccounts.map((account) =>
+            officialAccountsApi.getQuota(account.key),
+          ),
+        );
+        if (generation !== accountsGeneration.current) return;
+        const nextQuotas: Record<string, SubscriptionQuota> = {};
+        const nextErrors = new Set<string>();
+        quotaResults.forEach((result, index) => {
+          const key = queryAccounts[index].key;
+          if (
+            result.status === "fulfilled" &&
+            (result.value.success ||
+              result.value.credentialStatus === "expired")
+          )
+            nextQuotas[key] = result.value;
+          if (result.status === "rejected" || !result.value.success)
+            nextErrors.add(key);
+        });
+        setQuotas((previous) => {
+          for (const account of queryAccounts) {
+            // Keep last known values on transient failure, but never mask an
+            // explicit expired credential response from the service.
+            if (!nextQuotas[account.key] && previous[account.key])
+              nextQuotas[account.key] = previous[account.key];
+          }
+          return nextQuotas;
+        });
+        setQuotaErrors(nextErrors);
+        setRefreshError(nextErrors.size > 0);
+      } catch (err: any) {
+        if (generation !== accountsGeneration.current) return;
+        if (background) {
+          setRefreshError(true);
+          return;
+        }
+        const message = err?.message || String(err);
+        setLoadError(
+          message.includes("undefined") && message.includes("invoke")
+            ? "暂未连接本机账号服务，请在桌面应用中重试"
+            : message || "无法读取官方账号，请重试",
+        );
+      } finally {
+        if (generation === accountsGeneration.current) {
+          setLoadingQuotas(false);
+          setLoading(false);
+        }
+      }
+    })();
+    accountsRequest.current = request;
+    await request;
+    if (accountsRequest.current === request) accountsRequest.current = null;
   };
+
+  const refreshRef = useRef(loadAccounts);
+  useEffect(() => {
+    refreshRef.current = loadAccounts;
+  });
+
+  useEffect(() => {
+    if (!refreshMinutes) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== "hidden") void refreshRef.current(true);
+    }, refreshMinutes * 60_000);
+    return () => window.clearInterval(timer);
+  }, [refreshMinutes]);
 
   useEffect(() => {
     void loadAccounts();
@@ -433,7 +492,7 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
       <header className="accounts-heading">
         <div>
           <h1>官方账号</h1>
-          <p>连接你的 ChatGPT 账号，在不同账号之间轻松切换。</p>
+          <p>管理 ChatGPT 账号与额度。</p>
         </div>
         <div className="accounts-header-actions">
           <Button
@@ -463,6 +522,33 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
           )}
         </div>
       </header>
+      <div className="accounts-refresh-settings">
+        <label htmlFor="official-accounts-refresh">自动刷新额度</label>
+        <select
+          id="official-accounts-refresh"
+          value={refreshMinutes}
+          onChange={(event) => {
+            const minutes = Number(event.target.value);
+            setRefreshMinutes(minutes);
+            try {
+              localStorage.setItem(REFRESH_STORAGE_KEY, String(minutes));
+            } catch {
+              // Storage may be unavailable; the setting still works this visit.
+            }
+          }}
+        >
+          {REFRESH_MINUTES.map((minutes) => (
+            <option key={minutes} value={minutes}>
+              {minutes ? `每 ${minutes} 分钟` : "关闭"}
+            </option>
+          ))}
+        </select>
+        {refreshError && (
+          <span className="accounts-refresh-error">
+            部分额度未更新，已显示的额度可能不是最新值。可手动刷新重试。
+          </span>
+        )}
+      </div>
       {loading && (
         <div className="accounts-notice" role="status">
           正在读取本机官方账号…
@@ -506,13 +592,8 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
           <div className="accounts-empty-icon">
             <UserRound size={28} strokeWidth={1.5} />
           </div>
-          <span className="account-eyebrow">你的账号，你的工作空间</span>
           <h2>连接第一个官方账号</h2>
-          <p>
-            通过官方网页完成授权，无需在这里输入密码。
-            <br />
-            添加后即可查看额度，并将账号切换为当前 Codex 线路。
-          </p>
+          <p>在浏览器中登录 ChatGPT，返回后即可添加账号。</p>
           <Button
             ref={addAccountRef}
             onClick={() => void handleStartLogin()}
@@ -521,17 +602,6 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
             <Plus size={16} />
             {startingLogin ? "正在准备登录…" : "登录并添加账号"}
           </Button>
-          <div className="accounts-login-steps">
-            <span>
-              <b>01</b> 浏览器登录（推荐）
-            </span>
-            <span>
-              <b>02</b> 前往官方网页授权
-            </span>
-            <span>
-              <b>03</b> 返回这里开始使用
-            </span>
-          </div>
         </section>
       )}
       {mergedAccounts.length > 0 && (
@@ -577,9 +647,9 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
                     {account.needsRelogin ? (
                       <Warning size={12} />
                     ) : (
-                      <CheckCircle size={12} />
+                      <UserRound size={12} />
                     )}
-                    {account.needsRelogin ? "需要重新登录" : "登录有效"}
+                    {account.needsRelogin ? "需要重新登录" : "已保存登录"}
                   </span>
                 </div>
                 <div className="account-row-quota">
@@ -641,10 +711,7 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
       )}
       <footer className="accounts-privacy">
         <ShieldCheck size={16} />
-        <p>
-          登录令牌仅保存在本机。切换官方账号时更新 Codex
-          登录信息，第三方线路不会改写官方账号凭证。
-        </p>
+        <p>登录凭据仅保存在本机。</p>
       </footer>
 
       <Dialog

@@ -1,5 +1,5 @@
 //! The tool registry: the one backend table of every tool Chimera++ can
-//! manage (plan "工具注册表", 10 tools). The renderer reads it through
+//! manage (plan "工具注册表", 7 tools). The renderer reads it through
 //! `get_tool_registry`; browser previews consume the same bundled JSON.
 //!
 //! Visibility and capability gating stay in `product_policy`; this table only
@@ -40,9 +40,9 @@ pub struct ToolInfo {
 
 /// Shared with the renderer so browser previews use the same supported-tool
 /// metadata. It contains no installation detection, user preferences or secrets.
-pub static TOOLS: once_cell::sync::Lazy<[ToolInfo; 10]> = once_cell::sync::Lazy::new(|| {
+pub static TOOLS: once_cell::sync::Lazy<[ToolInfo; 7]> = once_cell::sync::Lazy::new(|| {
     serde_json::from_str(include_str!("../../src/shared/tool-registry.json"))
-        .expect("bundled tool registry must contain ten valid tools")
+        .expect("bundled tool registry must contain seven valid tools")
 });
 
 #[tauri::command]
@@ -53,8 +53,8 @@ pub fn get_tool_registry() -> Vec<ToolInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use DeeplinkPolicy::{ImportConfirm, Reject};
-    use ToolMode::{Additive, Switch};
+    use DeeplinkPolicy::Reject;
+    use ToolMode::Additive;
 
     fn ids(filter: impl Fn(&ToolInfo) -> bool) -> Vec<&'static str> {
         TOOLS
@@ -62,38 +62,6 @@ mod tests {
             .filter(|tool| filter(tool))
             .map(|tool| tool.id.as_str())
             .collect()
-    }
-
-    #[test]
-    fn table_matches_the_plan() {
-        assert_eq!(
-            ids(|_| true),
-            [
-                "codex",
-                "claude",
-                "claude-desktop",
-                "gemini",
-                "grokbuild",
-                "opencode",
-                "openclaw",
-                "hermes",
-                "pi",
-                "mcode"
-            ]
-        );
-        assert_eq!(
-            ids(|tool| tool.mode == Switch),
-            ["codex", "claude", "claude-desktop", "gemini", "grokbuild"]
-        );
-        assert_eq!(
-            ids(|tool| tool.tray),
-            ["codex", "claude", "gemini", "grokbuild"]
-        );
-        assert_eq!(ids(|tool| tool.deeplink == ImportConfirm), ["codex"]);
-        assert_eq!(ids(|tool| tool.deeplink == Reject), ["mcode"]);
-        assert_eq!(ids(|tool| tool.proxy), ["codex", "grokbuild"]);
-        assert_eq!(TOOLS[9].live_files, ["~/.minimax/config.yaml"]);
-        assert_eq!(TOOLS[8].live_files, ["~/.pi/agent/models.json"]);
     }
 
     #[test]
@@ -154,7 +122,7 @@ mod tests {
                 "proxy": false
             })
         );
-        assert_eq!(json[9]["deeplink"], "reject");
-        assert_eq!(json[9]["mode"], "additive");
+        assert_eq!(json[6]["deeplink"], "importOnly");
+        assert_eq!(json[6]["mode"], "additive");
     }
 }

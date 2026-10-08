@@ -112,12 +112,7 @@ pub fn allowed_env_keys(app: &AppType) -> &'static [&'static str] {
         AppType::Claude | AppType::ClaudeDesktop => CLAUDE_ENV_ALLOWLIST,
         AppType::Gemini => GEMINI_ENV_ALLOWLIST,
         AppType::Codex => CODEX_ENV_ALLOWLIST,
-        AppType::GrokBuild
-        | AppType::OpenCode
-        | AppType::OpenClaw
-        | AppType::Hermes
-        | AppType::Pi
-        | AppType::Mcode => &[],
+        AppType::GrokBuild | AppType::OpenCode | AppType::Pi => &[],
     }
 }
 

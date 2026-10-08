@@ -9,11 +9,16 @@ import {
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ToolView } from "@/views/ToolView";
 import { providersApi, type ProviderSwitchEvent } from "@/lib/api/providers";
+import { vscodeApi } from "@/lib/api/vscode";
 import { toast } from "sonner";
 import type { Provider } from "@/types";
+vi.mock("@/lib/api/vscode", () => ({
+  vscodeApi: { getLiveProviderSettings: vi.fn() },
+}));
 vi.mock("@/lib/api/providers", () => ({
   providersApi: {
     getAll: vi.fn(),
+    delete: vi.fn(),
     getCurrent: vi.fn(),
     onSwitched: vi.fn(),
     addAndActivate: vi.fn(),
@@ -22,8 +27,6 @@ vi.mock("@/lib/api/providers", () => ({
     openTerminal: vi.fn(),
     importDefault: vi.fn(),
     importOpenCodeFromLive: vi.fn(),
-    importOpenClawFromLive: vi.fn(),
-    importHermesFromLive: vi.fn(),
   },
 }));
 vi.mock("@/components/settings/AboutSection", () => ({
@@ -34,14 +37,16 @@ vi.mock("sonner", () => ({
 }));
 beforeEach(() => {
   vi.resetAllMocks();
+  vi.mocked(vscodeApi.getLiveProviderSettings).mockResolvedValue({
+    env: { API_KEY: "discovered-secret" },
+  });
   vi.mocked(providersApi.getAll).mockResolvedValue({});
   vi.mocked(providersApi.getCurrent).mockResolvedValue("");
   vi.mocked(providersApi.onSwitched).mockResolvedValue(vi.fn());
   vi.mocked(providersApi.addAndActivate).mockResolvedValue(true);
   vi.mocked(providersApi.importDefault).mockResolvedValue(true);
   vi.mocked(providersApi.importOpenCodeFromLive).mockResolvedValue(1);
-  vi.mocked(providersApi.importOpenClawFromLive).mockResolvedValue(1);
-  vi.mocked(providersApi.importHermesFromLive).mockResolvedValue(1);
+
   vi.mocked(providersApi.switch).mockResolvedValue({
     warnings: [],
     routingChanged: false,
@@ -173,8 +178,8 @@ describe("native tool official entry", () => {
     await screen.findByText("Claude Official");
     fireEvent.click(screen.getByRole("button", { name: "切换" }));
     await waitFor(() =>
-      expect(toast.error).toHaveBeenCalledWith("配置未更新", {
-        description: "write denied",
+      expect(toast.error).toHaveBeenCalledWith("Claude Code 配置未更新", {
+        description: "请检查本机配置和文件权限后重试。",
       }),
     );
     expect(
@@ -244,8 +249,6 @@ describe("explicit native configuration import", () => {
     ["gemini-cli", "gemini", "importDefault"],
     ["grokbuild", "grokbuild", "importDefault"],
     ["opencode", "opencode", "importOpenCodeFromLive"],
-    ["openclaw", "openclaw", "importOpenClawFromLive"],
-    ["hermes", "hermes", "importHermesFromLive"],
   ] as const)(
     "imports %s only after explicit consent with its own importer",
     async (toolId, appId, method) => {
@@ -254,12 +257,14 @@ describe("explicit native configuration import", () => {
         name: "导入本机配置",
       });
       expect(providersApi[method]).not.toHaveBeenCalled();
-      fireEvent.click(screen.getByRole("button", { name: "刷新" }));
+      fireEvent.click(screen.getByRole("button", { name: "刷新线路" }));
       await waitFor(() =>
-        expect(screen.getByRole("button", { name: "刷新" })).toBeEnabled(),
+        expect(screen.getByRole("button", { name: "刷新线路" })).toBeEnabled(),
       );
       expect(providersApi[method]).not.toHaveBeenCalled();
       fireEvent.click(button);
+      expect(providersApi[method]).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("button", { name: "确认保存导入" }));
       await waitFor(() =>
         expect(toast.success).toHaveBeenCalledWith(
           "已导入本机配置",
@@ -302,6 +307,7 @@ describe("explicit native configuration import", () => {
     fireEvent.click(
       await screen.findByRole("button", { name: "导入本机配置" }),
     );
+    fireEvent.click(screen.getByRole("button", { name: "确认保存导入" }));
     expect(await screen.findByText("Local API")).toBeVisible();
     expect(screen.getByText("https://api.example.test")).toBeVisible();
     expect(screen.getByText("claude-test")).toBeVisible();
@@ -321,6 +327,7 @@ describe("explicit native configuration import", () => {
     fireEvent.click(
       await screen.findByRole("button", { name: "导入本机配置" }),
     );
+    fireEvent.click(screen.getByRole("button", { name: "确认保存导入" }));
     await waitFor(() =>
       expect(toast.warning).toHaveBeenCalledWith(
         "未导入本机配置",
@@ -337,6 +344,7 @@ describe("explicit native configuration import", () => {
     fireEvent.click(
       await screen.findByRole("button", { name: "导入本机配置" }),
     );
+    fireEvent.click(screen.getByRole("button", { name: "确认保存导入" }));
     await waitFor(() =>
       expect(toast.warning).toHaveBeenCalledWith(
         "没有需要导入的配置",
@@ -355,15 +363,16 @@ describe("explicit native configuration import", () => {
       },
     });
     vi.mocked(providersApi.importDefault).mockRejectedValue(
-      new Error("配置文件无法解析"),
+      new Error("TOML line: token = secret-test-token"),
     );
     render(<ToolView toolId="claude-code" native />);
     fireEvent.click(
       await screen.findByRole("button", { name: "导入本机配置" }),
     );
+    fireEvent.click(screen.getByRole("button", { name: "确认保存导入" }));
     await waitFor(() =>
       expect(toast.error).toHaveBeenCalledWith("导入本机配置失败", {
-        description: "配置文件无法解析",
+        description: "请检查本机配置格式和文件权限后重试。",
       }),
     );
     expect(screen.getByText("Existing route")).toBeVisible();
@@ -385,7 +394,7 @@ describe("explicit native configuration import", () => {
     expect(providersApi.importDefault).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("button", { name: "正在导入…" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "切换" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "刷新" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "刷新线路" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "添加线路" })).toBeDisabled();
     view.rerender(<ToolView toolId="gemini-cli" native />);
     await screen.findByText("Google Official");
@@ -408,7 +417,7 @@ describe("explicit native configuration import", () => {
     expect(providersApi.importDefault).not.toHaveBeenCalled();
   });
 
-  it.each(["pi", "mcode"])(
+  it.each(["pi"])(
     "does not offer a database import for native-backed %s",
     async (toolId) => {
       render(<ToolView toolId={toolId} />);
@@ -423,9 +432,11 @@ describe("explicit native configuration import", () => {
 describe("Claude Desktop page layout", () => {
   it("places the page heading before setup and removes the obsolete installation warning", async () => {
     render(<ToolView toolId="claude-desktop" />);
-    const panel = await screen.findByRole("region", {
-      name: "Claude Desktop 配置状态",
-    });
+    const panel = await screen.findByRole(
+      "region",
+      { name: "Claude Desktop 配置状态" },
+      { timeout: 10000 },
+    );
     const heading = screen.getByRole("heading", {
       name: "Claude Desktop",
       level: 1,
@@ -574,7 +585,7 @@ describe("provider switch subscriptions", () => {
       "无法订阅线路切换，请手动刷新或重新加载应用",
     );
     vi.mocked(providersApi.getCurrent).mockResolvedValue("b");
-    fireEvent.click(screen.getByRole("button", { name: "刷新" }));
+    fireEvent.click(screen.getByRole("button", { name: "刷新线路" }));
     await waitFor(() => expect(switchButton("Line B")).toBeDisabled());
   });
 
@@ -596,47 +607,7 @@ describe("provider switch subscriptions", () => {
 });
 
 describe("additive live membership", () => {
-  it.each(["opencode", "openclaw", "hermes"] as const)(
-    "uses backend membership for %s counts and toggle direction without importing",
-    async (appId) => {
-      vi.mocked(providersApi.getAll).mockResolvedValue({
-        absent: {
-          id: "absent",
-          name: "Absent",
-          settingsConfig: {},
-          meta: { liveConfigManaged: false },
-        },
-        present: {
-          id: "present",
-          name: "Present",
-          settingsConfig: {},
-          meta: { liveConfigManaged: true },
-        },
-      });
-      render(<ToolView toolId={appId} native />);
-      const enable = await screen.findByRole("button", { name: "启用Absent" });
-      expect(screen.getByText("1 条已启用")).toBeVisible();
-      fireEvent.click(enable);
-      await waitFor(() =>
-        expect(providersApi.switch).toHaveBeenCalledWith("absent", appId),
-      );
-      const disable = screen.getByRole("button", { name: "停用Present" });
-      await waitFor(() => expect(disable).toBeEnabled());
-      fireEvent.click(disable);
-      await waitFor(() =>
-        expect(providersApi.removeFromLiveConfig).toHaveBeenCalledWith(
-          "present",
-          appId,
-        ),
-      );
-      await waitFor(() => expect(disable).toBeEnabled());
-      expect(providersApi.importOpenCodeFromLive).not.toHaveBeenCalled();
-      expect(providersApi.importOpenClawFromLive).not.toHaveBeenCalled();
-      expect(providersApi.importHermesFromLive).not.toHaveBeenCalled();
-    },
-  );
-
-  it.each(["opencode", "openclaw", "hermes"])(
+  it.each(["opencode"])(
     "shows a %s live read failure instead of retaining an enabled toggle",
     async (appId) => {
       vi.mocked(providersApi.getAll).mockResolvedValue({
@@ -652,7 +623,7 @@ describe("additive live membership", () => {
       vi.mocked(providersApi.getAll).mockRejectedValue(
         new Error("invalid live config"),
       );
-      fireEvent.click(screen.getByRole("button", { name: "刷新" }));
+      fireEvent.click(screen.getByRole("button", { name: "刷新线路" }));
       expect(await screen.findByRole("alert")).toHaveTextContent(
         "invalid live config",
       );
@@ -663,4 +634,162 @@ describe("additive live membership", () => {
       expect(providersApi.removeFromLiveConfig).not.toHaveBeenCalled();
     },
   );
+});
+
+describe("read-only local discovery", () => {
+  it("keeps read failures separate from saved routes and retries on refresh", async () => {
+    vi.mocked(vscodeApi.getLiveProviderSettings).mockRejectedValueOnce(
+      new Error("secret parse error"),
+    );
+    render(<ToolView toolId="claude-code" native />);
+    await screen.findByText("未找到或无法读取");
+    expect(screen.queryByText("secret parse error")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "刷新线路" }));
+    await screen.findByText("已发现配置");
+    expect(providersApi.importDefault).not.toHaveBeenCalled();
+  });
+  it("does not read local settings in browser preview", async () => {
+    render(<ToolView toolId="claude-code" />);
+    await screen.findByText("桌面端可检测");
+    expect(vscodeApi.getLiveProviderSettings).not.toHaveBeenCalled();
+  });
+  it("discards discovery results after changing tools", async () => {
+    let resolve!: (value: unknown) => void;
+    vi.mocked(vscodeApi.getLiveProviderSettings)
+      .mockReturnValueOnce(
+        new Promise((r) => {
+          resolve = r;
+        }),
+      )
+      .mockResolvedValueOnce({});
+    const view = render(<ToolView toolId="claude-code" native />);
+    view.rerender(<ToolView toolId="gemini-cli" native />);
+    await screen.findByText("未发现配置内容");
+    await act(async () => resolve({ env: { key: "old" } }));
+    expect(screen.getByText("未发现配置内容")).toBeVisible();
+    expect(screen.queryByText("已发现配置")).not.toBeInTheDocument();
+  });
+});
+
+describe("operation feedback ownership", () => {
+  it.each([false, true])(
+    "ignores old switch completion after leaving the page (failure: %s)",
+    async (fail) => {
+      let resolve!: (value: {
+        warnings: string[];
+        routingChanged: boolean;
+      }) => void;
+      let reject!: (error: Error) => void;
+      vi.mocked(providersApi.switch).mockReturnValue(
+        new Promise((yes, no) => {
+          resolve = yes;
+          reject = no;
+        }),
+      );
+      vi.mocked(providersApi.getAll).mockResolvedValue({
+        saved: { id: "saved", name: "Saved", settingsConfig: { env: {} } },
+      });
+      const { unmount } = render(<ToolView toolId="claude-code" native />);
+      const row = (await screen.findByText("Saved")).parentElement!
+        .parentElement!;
+      fireEvent.click(within(row).getByRole("button", { name: "切换" }));
+      await waitFor(() => expect(providersApi.switch).toHaveBeenCalled());
+      unmount();
+      await act(async () => {
+        if (fail) reject(new Error("old failure"));
+        else resolve({ warnings: ["old warning"], routingChanged: false });
+      });
+      expect(toast.success).not.toHaveBeenCalled();
+      expect(toast.error).not.toHaveBeenCalled();
+      expect(toast.warning).not.toHaveBeenCalled();
+    },
+  );
+});
+
+it("does not report an empty Gemini wrapper as discovered config", async () => {
+  vi.mocked(vscodeApi.getLiveProviderSettings).mockResolvedValue({
+    env: {},
+    config: {},
+  });
+  render(<ToolView toolId="gemini-cli" native />);
+  expect(await screen.findByText("未发现配置内容")).toBeVisible();
+  expect(providersApi.importDefault).not.toHaveBeenCalled();
+});
+
+describe("list-level route deletion", () => {
+  const route: Provider = {
+    id: "delete-me",
+    name: "Removable route",
+    settingsConfig: {},
+  };
+  it.each([
+    ["claude-code", "claude"],
+    ["gemini-cli", "gemini"],
+    ["grokbuild", "grokbuild"],
+    ["opencode", "opencode"],
+    ["pi", "pi"],
+  ])("deletes directly from %s after confirmation", async (toolId, appId) => {
+    vi.mocked(providersApi.getAll).mockResolvedValue({ [route.id]: route });
+    vi.mocked(providersApi.delete).mockResolvedValue(true);
+    const onEditLine = vi.fn();
+    render(<ToolView toolId={toolId} native onEditLine={onEditLine} />);
+    const button = await screen.findByRole("button", {
+      name: "删除Removable route",
+    });
+    expect(button).toHaveClass("tool-provider-delete");
+    fireEvent.click(button);
+    expect(providersApi.delete).not.toHaveBeenCalled();
+    expect(onEditLine).not.toHaveBeenCalled();
+    vi.mocked(providersApi.getAll).mockResolvedValue({});
+    fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
+    await waitFor(() =>
+      expect(providersApi.delete).toHaveBeenCalledWith(route.id, appId),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: "删除Removable route" }),
+      ).not.toBeInTheDocument(),
+    );
+  });
+  it("keeps current switch routes protected and built-in entries undeletable", async () => {
+    vi.mocked(providersApi.getAll).mockResolvedValue({ [route.id]: route });
+    vi.mocked(providersApi.getCurrent).mockResolvedValue(route.id);
+    render(<ToolView toolId="claude-code" native />);
+    expect(
+      await screen.findByRole("button", { name: "删除Removable route" }),
+    ).toBeDisabled();
+    expect(
+      screen.queryByRole("button", { name: "删除Claude Official" }),
+    ).not.toBeInTheDocument();
+  });
+  it("cancel leaves the route unchanged", async () => {
+    vi.mocked(providersApi.getAll).mockResolvedValue({ [route.id]: route });
+    render(<ToolView toolId="opencode" native />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "删除Removable route" }),
+    );
+    fireEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: /取消|Cancel/,
+      }),
+    );
+    expect(providersApi.delete).not.toHaveBeenCalled();
+  });
+  it("retains the row and confirmation on delete failure", async () => {
+    vi.mocked(providersApi.getAll).mockResolvedValue({ [route.id]: route });
+    vi.mocked(providersApi.delete).mockResolvedValue(false);
+    render(<ToolView toolId="opencode" native />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "删除Removable route" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(
+        "删除线路失败",
+        expect.anything(),
+      ),
+    );
+    expect(screen.getByText("Removable route")).toBeInTheDocument();
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
 });

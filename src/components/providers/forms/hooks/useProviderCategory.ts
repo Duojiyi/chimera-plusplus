@@ -5,8 +5,6 @@ import { providerPresets } from "@/config/claudeProviderPresets";
 import { codexProviderPresets } from "@/config/codexProviderPresets";
 import { geminiProviderPresets } from "@/config/geminiProviderPresets";
 import { opencodeProviderPresets } from "@/config/opencodeProviderPresets";
-import { openclawProviderPresets } from "@/config/openclawProviderPresets";
-import { hermesProviderPresets } from "@/config/hermesProviderPresets";
 
 interface UseProviderCategoryProps {
   appId: AppId;
@@ -46,7 +44,7 @@ export function useProviderCategory({
 
     // 从预设 ID 提取索引
     const match = selectedPresetId.match(
-      /^(claude|codex|gemini|opencode|openclaw|hermes)-(\d+)$/,
+      /^(claude|codex|gemini|opencode)-(\d+)$/,
     );
     if (!match) return;
 
@@ -77,16 +75,7 @@ export function useProviderCategory({
       if (preset) {
         setCategory(preset.category || undefined);
       }
-    } else if (type === "openclaw" && appId === "openclaw") {
-      const preset = openclawProviderPresets[index];
-      if (preset) {
-        setCategory(preset.category || undefined);
-      }
-    } else if (type === "hermes" && appId === "hermes") {
-      const preset = hermesProviderPresets[index];
-      if (preset) {
-        setCategory(preset.category || undefined);
-      }
+    } else {
     }
   }, [appId, selectedPresetId, isEditMode, initialCategory]);
 

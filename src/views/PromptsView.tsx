@@ -59,11 +59,8 @@ const PROMPT_TOOLS = [
   { id: "gemini", name: "Gemini CLI", file: "GEMINI.md" },
   { id: "grokbuild", name: "Grok Build", file: "AGENTS.md" },
   { id: "opencode", name: "OpenCode", file: "AGENTS.md" },
-  { id: "openclaw", name: "OpenClaw", file: "AGENTS.md" },
-  { id: "hermes", name: "Hermes", file: "SOUL.md" },
 ] as const;
-const UNSUPPORTED_PROMPT_TOOLS =
-  "Claude Desktop、Pi 和 MiniMax Code 暂不支持提示词";
+const UNSUPPORTED_PROMPT_TOOLS = "Claude Desktop 和 Pi 暂不支持提示词";
 type Template = (typeof bundledPromptTemplates)[number];
 type Entry = { prompt: Prompt; saved: boolean; template?: Template };
 type Editor = { entry?: Entry; readOnly: boolean };

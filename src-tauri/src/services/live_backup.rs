@@ -122,8 +122,7 @@ pub fn live_files(app: &AppType) -> Result<Vec<PathBuf>, AppError> {
         ],
         AppType::GrokBuild => vec![crate::grok_config::get_grok_config_path()],
         AppType::OpenCode => vec![crate::opencode_config::get_opencode_config_path()],
-        AppType::OpenClaw => vec![crate::openclaw_config::get_openclaw_config_path()],
-        AppType::Hermes => vec![crate::hermes_config::get_hermes_config_path()],
+
         _ => Vec::new(),
     };
     Ok(files
@@ -1173,7 +1172,7 @@ model_instructions_file = "chimera/instructions/also-missing.md"
         for app in AppType::all() {
             let files = live_files(&app).unwrap();
             assert!(files.iter().all(|p| !is_codex_auth_file(p)), "{app:?}");
-            let unsupported = matches!(app, AppType::Pi | AppType::Mcode)
+            let unsupported = matches!(app, AppType::Pi)
                 || (app == AppType::ClaudeDesktop && !cfg!(any(target_os = "macos", windows)));
             if !unsupported {
                 assert!(!files.is_empty(), "{app:?} declares no live files");

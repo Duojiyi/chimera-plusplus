@@ -25,8 +25,6 @@ const backupTools = [
   ["gemini", "Gemini"],
   ["grokbuild", "Grok Build"],
   ["opencode", "OpenCode"],
-  ["openclaw", "OpenClaw"],
-  ["hermes", "Hermes"],
 ] as const;
 
 /** Mount only after the live_backups capability is enabled. Native guards remain authoritative. */
@@ -159,8 +157,7 @@ export function LiveBackupsPanel({
         </div>
       </div>
       <p id={noteId} className="live-backups-note">
-        Pi 与 MiniMax Code 暂不支持配置备份；Claude Desktop 仅支持 Windows 和
-        macOS。
+        Pi 暂不支持配置备份；Claude Desktop 仅支持 Windows 和 macOS。
       </p>
       <div className="live-backups-table-wrap">
         <table className="live-backups-table">

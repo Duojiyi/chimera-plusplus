@@ -68,8 +68,8 @@ const TOOL_NAMES = [
   "gemini",
   "grok",
   "opencode",
-  "openclaw",
-  "hermes",
+
+  "pi",
 ] as const;
 export type ToolName = (typeof TOOL_NAMES)[number];
 type ToolLifecycleAction = "install" | "update";
@@ -112,22 +112,6 @@ const ENV_BADGE_CONFIG: Record<
 const posixScriptInstallCommand = (url: string) =>
   `bash -c 'tmp=$(mktemp) && curl -fsSL ${url} -o $tmp && bash $tmp; status=$?; rm -f $tmp; exit $status'`;
 
-const HERMES_WINDOWS_INSTALL_SCRIPT =
-  "irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex";
-
-const powershellEncodedCommand = (script: string): string => {
-  let binary = "";
-  for (let i = 0; i < script.length; i += 1) {
-    const code = script.charCodeAt(i);
-    binary += String.fromCharCode(code & 0xff, code >> 8);
-  }
-  return btoa(binary);
-};
-
-const HERMES_WINDOWS_INSTALL_COMMAND = `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${powershellEncodedCommand(
-  HERMES_WINDOWS_INSTALL_SCRIPT,
-)}`;
-
 const POSIX_ONE_CLICK_INSTALL_COMMANDS = `# Claude Code
 ${posixScriptInstallCommand("https://claude.ai/install.sh")} || npm i -g @anthropic-ai/claude-code@latest
 # Codex
@@ -138,10 +122,8 @@ npm i -g @google/gemini-cli@latest
 npm i -g @xai-official/grok@latest
 # OpenCode
 ${posixScriptInstallCommand("https://opencode.ai/install")} || npm i -g opencode-ai@latest
-# OpenClaw
-npm i -g openclaw@latest
-# Hermes
-${posixScriptInstallCommand("https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh")}`;
+# Pi (Node.js >=22.19.0)
+npm i -g @earendil-works/pi-coding-agent@latest`;
 
 const WINDOWS_ONE_CLICK_INSTALL_COMMANDS = `# Claude Code
 npm i -g @anthropic-ai/claude-code@latest
@@ -153,10 +135,8 @@ npm i -g @google/gemini-cli@latest
 npm i -g @xai-official/grok@latest
 # OpenCode
 npm i -g opencode-ai@latest
-# OpenClaw
-npm i -g openclaw@latest
-# Hermes
-${HERMES_WINDOWS_INSTALL_COMMAND}`;
+# Pi (Node.js >=22.19.0)
+npm i -g @earendil-works/pi-coding-agent@latest`;
 
 const ONE_CLICK_INSTALL_COMMANDS = isWindows()
   ? WINDOWS_ONE_CLICK_INSTALL_COMMANDS
@@ -168,8 +148,8 @@ const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
   gemini: "Gemini CLI",
   grok: "Grok Build",
   opencode: "OpenCode",
-  openclaw: "OpenClaw",
-  hermes: "Hermes",
+
+  pi: "Pi",
 };
 
 // 后端返回的 tool 是 string；这里收敛唯一的 ToolName 断言与兜底，供升级确认
@@ -184,8 +164,8 @@ const TOOL_APP_IDS: Record<ToolName, AppId> = {
   gemini: "gemini",
   grok: "grokbuild",
   opencode: "opencode",
-  openclaw: "openclaw",
-  hermes: "hermes",
+
+  pi: "pi",
 };
 
 // 工具版本探测代价高：每个工具一次 `--version` 子进程 + 一次 npm/github/pypi 网络请求。
@@ -674,7 +654,6 @@ export function AboutSection({
             }
           } else {
             // 命令退出码为 0、但刷新后仍探不到版本：多半是"装上了却跑不起来"
-            // （如 openclaw 要求更高的 Node 版本）。refreshToolVersions 的 merge 已把
             // version 置空并写入后端 error，这里只需归类为软失败并展示原因。
             const detail = tool?.error?.trim() || t("settings.toolNotRunnable");
             failures.push({
@@ -1009,8 +988,8 @@ export function AboutSection({
           </motion.div>
         </>
       )}
-      <div className="space-y-3">
-        <div className="flex flex-col gap-2 px-1 sm:flex-row sm:items-center sm:justify-between">
+      <div className="about-tools">
+        <div className="about-tools-toolbar">
           <div className="about-tools-heading">
             <h3 className="text-sm font-medium">
               {t("settings.localEnvCheck")}
@@ -1067,13 +1046,7 @@ export function AboutSection({
           </div>
         </div>
 
-        <div
-          className={
-            tools.length === 1
-              ? "grid gap-3 px-1"
-              : "grid gap-3 px-1 sm:grid-cols-2 xl:grid-cols-3"
-          }
-        >
+        <div className="about-tools-grid">
           {tools.map((toolName, index) => {
             const tool = toolVersionByName.get(toolName);
             const appConfig = APP_ICON_MAP[TOOL_APP_IDS[toolName]];
@@ -1115,7 +1088,9 @@ export function AboutSection({
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.3, delay: 0.15 + index * 0.04 }}
                 aria-busy={isToolVersionLoading}
-                className="flex min-h-[150px] flex-col gap-3 rounded-xl border border-border bg-gradient-to-br from-card/80 to-card/40 p-4 shadow-sm transition-colors hover:border-primary/30"
+                className="about-tool-card"
+                role="group"
+                aria-label={`${displayName} 安装环境`}
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-2">
@@ -1123,9 +1098,7 @@ export function AboutSection({
                       {appConfig?.icon ?? <Terminal className="h-4 w-4" />}
                     </span>
                     <div className="min-w-0">
-                      <div className="truncate text-sm font-medium">
-                        {displayName}
-                      </div>
+                      <h4 className="about-tool-title">{displayName}</h4>
                       {/* The environment line always keeps its height, so the
                           card does not grow when the badge arrives. */}
                       {isToolVersionLoading ? (
@@ -1159,7 +1132,7 @@ export function AboutSection({
                   )}
                 </div>
 
-                <div className="space-y-1.5 text-xs">
+                <div className="about-tool-versions">
                   <div className="flex items-center justify-between gap-3">
                     <span className="text-muted-foreground">
                       {t("settings.currentVersion")}
@@ -1205,6 +1178,12 @@ export function AboutSection({
                     </div>
                   )}
                 </div>
+
+                {toolName === "pi" && (
+                  <p className="text-[11px] text-muted-foreground">
+                    Node.js ≥ 22.19.0
+                  </p>
+                )}
 
                 {tool?.env_type === "wsl" && (
                   <div className="flex flex-wrap gap-2">

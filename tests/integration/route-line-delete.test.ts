@@ -11,8 +11,8 @@ const css = fs.readFileSync(
   "utf8",
 );
 
-describe("route manager direct deletion", () => {
-  it("deletes from a separate accessible action without opening the editor or closing the manager", () => {
+describe("route manager confirmed deletion", () => {
+  it("requests deletion from a separate accessible action without opening the editor or closing the manager", () => {
     const button = app.slice(
       app.indexOf('className="route-line-edit route-line-delete"'),
       app.indexOf('className="route-line-edit route-line-delete"') + 1000,
@@ -21,12 +21,46 @@ describe("route manager direct deletion", () => {
     expect(button).toContain("onClick={() => void onDelete(provider)}");
     expect(button).not.toContain("setManagerOpen(false)");
     expect(button).not.toContain("onEdit(provider)");
-    expect(app).toContain(
-      'onDelete={(provider) => deleteProvider(provider, "codex")}',
-    );
+    const entry = app.match(/onDelete=\{\(provider\) => \{([\s\S]*?)\}\}/)?.[1];
+    expect(entry).toBeDefined();
+    expect(entry).toContain('setEditorAppId("codex")');
+    expect(entry).toContain("setPendingProviderDelete(provider)");
+    expect(entry).not.toMatch(/\bdeleteProvider\s*\(|providersApi\.delete/);
     expect(app).toMatch(
       /isOfficialLine\(provider\)\s*\?\s*\([\s\S]*?由 Codex 管理[\s\S]*?:\s*\(\s*<div className="route-line-actions">/,
     );
+  });
+
+  it("uses the shared confirmation dialog and deletes only after confirmation", () => {
+    const start = app.indexOf("      {pendingProviderDelete && (");
+    expect(start).toBeGreaterThan(0);
+    const confirmation = app.slice(
+      start,
+      app.indexOf("      {pendingModelReload", start),
+    );
+    expect(confirmation).toContain("<ConfirmProviderDelete");
+    expect(confirmation).toContain("provider={pendingProviderDelete}");
+    expect(confirmation).toContain(
+      "onCancel={() => setPendingProviderDelete(null)}",
+    );
+    expect(confirmation).toMatch(
+      /onConfirm=\{async \(\) => \{\s*if \(await deleteProvider\(pendingProviderDelete, editorAppId\)\) \{\s*setPendingProviderDelete\(null\);/,
+    );
+
+    const dialogStart = app.indexOf("function ConfirmProviderDelete(");
+    expect(dialogStart).toBeGreaterThan(0);
+    const dialog = app.slice(
+      dialogStart,
+      app.indexOf("function ConfirmModelReload(", dialogStart),
+    );
+    expect(dialog).toContain('role="alertdialog"');
+    expect(dialog).toContain('aria-labelledby="provider-delete-title"');
+    expect(dialog).toContain("useDialogFocus<HTMLElement>(onCancel)");
+    expect(dialog).toContain("<button onClick={onCancel}>取消</button>");
+    expect(dialog).toMatch(
+      /<button className="danger" onClick=\{onConfirm\}>\s*删除线路/,
+    );
+    expect(dialog).not.toContain("providersApi.delete");
   });
 
   it("protects the active line and prevents deletion while another operation is running", () => {

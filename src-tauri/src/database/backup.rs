@@ -11,13 +11,54 @@ use rusqlite::types::ValueRef;
 use rusqlite::Connection;
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use tempfile::NamedTempFile;
 
 const CC_SWITCH_SQL_EXPORT_HEADER: &str = "-- CC Switch SQLite 导出";
 
 /// File-name prefix of the snapshots `backup_database_file` generates.
 const DB_BACKUP_PREFIX: &str = "db_backup_";
+
+/// Accept one literal backup filename, never a path or a Windows stream name.
+/// Do not require generated prefixes or restrict historical names to ASCII.
+fn validate_backup_filename(filename: &str) -> Result<(), AppError> {
+    let mut components = Path::new(filename).components();
+    let single_name =
+        matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none();
+    if !single_name || !filename.ends_with(".db") || filename.contains(['/', '\\', ':', '\0']) {
+        return Err(AppError::InvalidInput(
+            "Invalid backup filename".to_string(),
+        ));
+    }
+
+    // Windows resolves device names even with an extension. Keep Unix-only
+    // historical filenames usable on Unix, where these names are ordinary files.
+    if cfg!(windows) {
+        let stem = filename.split('.').next().unwrap_or_default();
+        let stem = stem.trim_end_matches(' ').to_ascii_uppercase();
+        let device = matches!(
+            stem.as_str(),
+            "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+        ) || ["COM", "LPT"].iter().any(|prefix| {
+            stem.strip_prefix(*prefix).is_some_and(|suffix| {
+                matches!(
+                    suffix,
+                    "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+                )
+            })
+        });
+        if device
+            || filename
+                .chars()
+                .any(|c| c < ' ' || matches!(c, '<' | '>' | '"' | '|' | '?' | '*'))
+        {
+            return Err(AppError::InvalidInput(
+                "Invalid backup filename".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
 
 /// File-name prefix of the one-time backup taken before the v17 migration.
 /// It is the 2.8.0 → 2.7.x downgrade path, so it never takes part in
@@ -1125,17 +1166,7 @@ impl Database {
 
     /// Restore database from a backup file. Returns the safety backup ID.
     pub fn restore_from_backup(&self, filename: &str) -> Result<String, AppError> {
-        // Security: validate filename to prevent path traversal and symlink
-        // substitution through the backup directory.
-        if filename.contains("..")
-            || filename.contains('/')
-            || filename.contains('\\')
-            || !filename.ends_with(".db")
-        {
-            return Err(AppError::InvalidInput(
-                "Invalid backup filename".to_string(),
-            ));
-        }
+        validate_backup_filename(filename)?;
 
         let backup_dir = get_app_config_dir().join("backups");
         let backup_path = backup_dir.join(filename);
@@ -1242,16 +1273,7 @@ impl Database {
 
     /// Rename a backup file. Returns the new filename.
     pub fn rename_backup(old_filename: &str, new_name: &str) -> Result<String, AppError> {
-        // Validate old filename (path traversal + .db suffix)
-        if old_filename.contains("..")
-            || old_filename.contains('/')
-            || old_filename.contains('\\')
-            || !old_filename.ends_with(".db")
-        {
-            return Err(AppError::InvalidInput(
-                "Invalid backup filename".to_string(),
-            ));
-        }
+        validate_backup_filename(old_filename)?;
 
         // Clean new name
         let trimmed = new_name.trim();
@@ -1269,18 +1291,8 @@ impl Database {
             ));
         }
 
-        // Prevent path traversal in new name
-        if name_part.contains("..")
-            || name_part.contains('/')
-            || name_part.contains('\\')
-            || name_part.contains('\0')
-        {
-            return Err(AppError::InvalidInput(
-                "Invalid characters in new name".to_string(),
-            ));
-        }
-
         let new_filename = format!("{name_part}.db");
+        validate_backup_filename(&new_filename)?;
 
         let backup_dir = get_app_config_dir().join("backups");
         let old_path = backup_dir.join(old_filename);
@@ -1305,16 +1317,7 @@ impl Database {
 
     /// Delete a backup file permanently.
     pub fn delete_backup(filename: &str) -> Result<(), AppError> {
-        // Validate filename (path traversal + .db suffix)
-        if filename.contains("..")
-            || filename.contains('/')
-            || filename.contains('\\')
-            || !filename.ends_with(".db")
-        {
-            return Err(AppError::InvalidInput(
-                "Invalid backup filename".to_string(),
-            ));
-        }
+        validate_backup_filename(filename)?;
 
         let backup_path = get_app_config_dir().join("backups").join(filename);
         if !backup_path.exists() {
@@ -1331,10 +1334,78 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
-    use super::Database;
+    use super::{validate_backup_filename, Database};
     use crate::error::AppError;
     use crate::settings::{update_settings, AppSettings};
     use serial_test::serial;
+
+    #[test]
+    fn backup_filename_validation_preserves_historical_names() {
+        for filename in [
+            "db_backup_20260101_000000.db",
+            "pre_v17_20260101_000000.db",
+            "before-upgrade.db",
+            "升级前 备份（手动）.db",
+            "backup.v1..v2.db",
+            ".hidden.db",
+            " leading space.db",
+        ] {
+            assert!(validate_backup_filename(filename).is_ok(), "{filename:?}");
+        }
+        // Existing names are not subject to the new-name UI's 100-byte limit.
+        assert!(validate_backup_filename(&format!("{}.db", "a".repeat(120))).is_ok());
+    }
+
+    #[test]
+    fn backup_filename_validation_rejects_paths_and_stream_names() {
+        // Pure validation only: no filesystem access or destructive operations.
+        for filename in [
+            "",
+            ".",
+            "..",
+            "backup.txt",
+            "backup.db ",
+            "backup.db.",
+            "folder/backup.db",
+            "folder\\backup.db",
+            "/backup.db",
+            "C:backup.db",
+            "backup:stream.db",
+            "backup\0.db",
+        ] {
+            assert!(validate_backup_filename(filename).is_err(), "{filename:?}");
+        }
+    }
+
+    #[test]
+    fn backup_filename_validation_handles_windows_device_names() {
+        for filename in [
+            "CON.db",
+            "nul.db",
+            "AUX.notes.db",
+            "COM1.db",
+            "LPT9.db",
+            "COM¹.db",
+            "CON .db",
+            "CONIN$.db",
+        ] {
+            assert_eq!(
+                validate_backup_filename(filename).is_err(),
+                cfg!(windows),
+                "{filename:?}"
+            );
+        }
+        for filename in ["backup?.db", "backup*.db", "backup|copy.db", "backup\n.db"] {
+            assert_eq!(
+                validate_backup_filename(filename).is_err(),
+                cfg!(windows),
+                "{filename:?}"
+            );
+        }
+        for filename in ["console.db", "COM10.db", "LPT-backup.db"] {
+            assert!(validate_backup_filename(filename).is_ok(), "{filename:?}");
+        }
+    }
 
     fn seed_archived_usage(db: &Database, request_id: &str) -> Result<(), AppError> {
         let conn = crate::database::lock_conn!(db.conn);

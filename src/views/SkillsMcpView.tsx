@@ -46,13 +46,9 @@ const RESOURCE_TOOLS = [
   { id: "gemini", name: "Gemini CLI" },
   { id: "grokbuild", name: "Grok Build" },
   { id: "opencode", name: "OpenCode" },
-  { id: "openclaw", name: "OpenClaw" },
-  { id: "hermes", name: "Hermes" },
 ] as const;
 type ResourceApp = (typeof RESOURCE_TOOLS)[number]["id"];
-const MCP_APPS = RESOURCE_TOOLS.filter((tool) => tool.id !== "openclaw").map(
-  (tool) => tool.id,
-);
+const MCP_APPS = RESOURCE_TOOLS.map((tool) => tool.id);
 
 export const SkillsMcpView: React.FC<{
   initialApp?: AppId;
@@ -62,7 +58,7 @@ export const SkillsMcpView: React.FC<{
     () => RESOURCE_TOOLS.find((tool) => tool.id === initialApp)?.id || "codex",
   );
   const targetName = RESOURCE_TOOLS.find((tool) => tool.id === targetApp)!.name;
-  const supportsMcp = targetApp !== "openclaw";
+  const supportsMcp = true;
   const [tab, setTab] = useState<"skills" | "mcp">("skills");
   const [installed, setInstalled] = useState<InstalledSkill[]>([]);
   const [servers, setServers] = useState<McpServer[]>([]);
@@ -91,6 +87,9 @@ export const SkillsMcpView: React.FC<{
   const [repoOpen, setRepoOpen] = useState(false);
   const [repos, setRepos] = useState<SkillRepo[]>([]);
   const [unmanaged, setUnmanaged] = useState<UnmanagedSkill[] | null>(null);
+  const [scanning, setScanning] = useState(true);
+  const [scanError, setScanError] = useState<string | null>(null);
+  const scanGeneration = useRef(0);
   const [selectedImports, setSelectedImports] = useState<string[]>([]);
   const [backups, setBackups] = useState<SkillBackupEntry[] | null>(null);
   const [updates, setUpdates] = useState<SkillUpdateInfo[] | null>(null);
@@ -135,6 +134,35 @@ export const SkillsMcpView: React.FC<{
       generation.current++;
     };
   }, [reload, refreshVersion]);
+  const scanSkills = useCallback(async () => {
+    const request = ++scanGeneration.current;
+    setScanning(true);
+    setScanError(null);
+    try {
+      const found = await skillsApi.scanUnmanaged();
+      if (request !== scanGeneration.current) return;
+      if (!Array.isArray(found))
+        throw new Error("Invalid Skills scan response");
+      setUnmanaged(found);
+      setSelectedImports((previous) =>
+        previous.filter(
+          (directory) =>
+            found.filter((skill) => skill.directory === directory).length === 1,
+        ),
+      );
+    } catch {
+      if (request === scanGeneration.current)
+        setScanError("扫描失败，请检查目录访问权限后重试。");
+    } finally {
+      if (request === scanGeneration.current) setScanning(false);
+    }
+  }, []);
+  useEffect(() => {
+    void scanSkills();
+    return () => {
+      scanGeneration.current++;
+    };
+  }, [scanSkills, refreshVersion]);
   useEffect(() => {
     // In the narrow layout the panel opens below the fold; moving focus into
     // it also scrolls it into view, so the click visibly does something.
@@ -258,20 +286,17 @@ export const SkillsMcpView: React.FC<{
     toast.success(`已导出配置。${MCP_EXPORT_NOTICE}`);
   };
   return (
-    <div className="connected-page text-[var(--text-1)] min-h-full box-border w-full flex flex-col gap-[12px] p-[12px_24px] justify-start items-start bg-[var(--bg-surface)] min-h-0">
+    <div className="skills-mcp-page connected-page text-[var(--text-1)] min-h-full box-border w-full flex flex-col gap-[12px] p-[12px_24px] justify-start items-start bg-[var(--bg-surface)] min-h-0">
       {/* 页头 */}
-      <div
-        data-pencil-name="页头"
-        className="box-border w-full h-[56px] shrink-0 flex flex-row gap-[12px] justify-start items-center"
-      >
+      <div data-pencil-name="页头" className="skills-mcp-header">
         <div className="box-border [flex:1_1_0] h-fit flex flex-col gap-[2px] justify-start items-start">
           <div className="box-border w-fit h-fit shrink-0 flex flex-row gap-[10px] justify-start items-center">
             <h1 className="text-[28px]/[36px] box-border text-[var(--text-1)] font-['Noto_Sans_SC',system-ui,sans-serif] font-bold text-left whitespace-nowrap m-0">
-              Skills 与 MCP
+              {targetName} · Skills 与 MCP
             </h1>
           </div>
-          <div className="text-[13px]/[18px] box-border text-[var(--text-3)] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left whitespace-nowrap">
-            共享资源库 · 启用开关仅作用于 {targetName}，不改变其他工具
+          <div className="skills-mcp-subtitle">
+            管理 Skills 与 MCP · 当前工具 {targetName}
           </div>
         </div>
         <div className="box-border w-fit shrink-0 h-fit flex flex-row gap-[8px] justify-start items-center">
@@ -280,6 +305,7 @@ export const SkillsMcpView: React.FC<{
             disabled={loading || !loaded}
             onClick={exportSafeConfiguration}
             aria-describedby="mcp-export-scope"
+            title={`导出全部工具的共享资源与启用状态。${MCP_EXPORT_NOTICE}`}
             className="box-border w-fit shrink-0 h-[32px] flex flex-row gap-[6px] px-[12px] justify-center items-center bg-[var(--bg-surface)] outline outline-1 outline-[var(--border-control)] -outline-offset-[0.5px] rounded-[4px] border-none cursor-pointer text-[var(--text-1)] hover:bg-[var(--bg-subtle)] transition-colors"
           >
             <Export size={16} />
@@ -296,7 +322,7 @@ export const SkillsMcpView: React.FC<{
                 if (tab === "skills") setInstallDrawerOpen(true);
                 else setEditing("new");
               }}
-              className="box-border w-fit shrink-0 h-[32px] flex flex-row gap-[6px] px-[12px] justify-center items-center bg-[#006AA0] hover:bg-[#005a88] active:bg-[#004e76] transition-colors rounded-[4px] border-none cursor-pointer text-[#FDFDFE]"
+              className="box-border w-fit shrink-0 h-[32px] flex flex-row gap-[6px] px-[12px] justify-center items-center bg-[var(--btn-primary-bg)] hover:bg-[var(--btn-primary-bg-hover)] active:bg-[var(--btn-primary-bg-pressed)] transition-colors rounded-[4px] border-none cursor-pointer text-[var(--btn-primary-fg)]"
             >
               <Plus size={16} strokeWidth={2.5} />
               <span className="text-[14px]/[20px] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal whitespace-nowrap">
@@ -308,7 +334,7 @@ export const SkillsMcpView: React.FC<{
       </div>
 
       {/* 标签栏 (双 Tab 1:1) */}
-      <label className="flex items-center gap-[8px] text-[13px]">
+      <label className="skills-mcp-target">
         目标工具
         <select
           aria-label="目标工具"
@@ -329,7 +355,8 @@ export const SkillsMcpView: React.FC<{
             setSelectedId(null);
             setEditingNoteId(null);
             setInstallDrawerOpen(false);
-            if (next.id === "openclaw") setTab("skills");
+            {
+            }
           }}
           className="bg-[var(--bg-surface)] text-[var(--text-1)] rounded-[4px]"
         >
@@ -340,23 +367,19 @@ export const SkillsMcpView: React.FC<{
           ))}
         </select>
       </label>
-      {!supportsMcp && (
-        <p role="status" className="skills-mcp-status">
-          OpenClaw 支持 Skills 同步，暂不支持受管 MCP 配置。
-        </p>
-      )}
 
-      <div className="box-border w-full min-h-[36px] shrink-0 flex flex-row gap-[24px] justify-start items-end border-b border-solid border-[var(--border-subtle)]">
+      <div className="skills-mcp-tabs">
         <button
           type="button"
           disabled={busy || confirmation !== null || repoOpen}
+          aria-pressed={tab === "skills"}
           onClick={() => {
             if (tab !== "skills") setEditingNoteId(null);
             setTab("skills");
           }}
           className={`box-border h-[35px] flex flex-row gap-[6px] px-[2px] justify-start items-center border-none bg-transparent cursor-pointer ${
             tab === "skills"
-              ? "border-b-2 border-solid border-[#006AA0] text-[var(--text-1)] font-bold"
+              ? "border-b-2 border-solid border-[var(--brand-text)] text-[var(--text-1)] font-bold"
               : "text-[var(--text-2)] font-normal hover:text-[var(--text-1)]"
           }`}
         >
@@ -373,6 +396,7 @@ export const SkillsMcpView: React.FC<{
         <button
           type="button"
           disabled={busy || !supportsMcp}
+          aria-pressed={tab === "mcp"}
           onClick={() => {
             if (!supportsMcp) return;
             if (tab !== "mcp") setEditingNoteId(null);
@@ -380,7 +404,7 @@ export const SkillsMcpView: React.FC<{
           }}
           className={`box-border h-[35px] flex flex-row gap-[6px] px-[2px] justify-start items-center border-none bg-transparent cursor-pointer ${
             tab === "mcp"
-              ? "border-b-2 border-solid border-[#006AA0] text-[var(--text-1)] font-bold"
+              ? "border-b-2 border-solid border-[var(--brand-text)] text-[var(--text-1)] font-bold"
               : "text-[var(--text-2)] font-normal hover:text-[var(--text-1)]"
           }`}
         >
@@ -396,14 +420,14 @@ export const SkillsMcpView: React.FC<{
 
         <div className="[flex:1_1_0]" />
 
-        {/* 常驻导出范围说明 */}
+        {/* 简短隐私提示，完整导出说明见按钮 title。 */}
         <div className="box-border min-w-0 max-w-[520px] py-[4px] flex flex-row gap-[6px] justify-start items-center">
           <ShieldCheck size={14} className="shrink-0 text-[var(--text-3)]" />
           <span
             id="mcp-export-scope"
             className="text-[13px]/[18px] text-[var(--text-3)] font-['Noto_Sans_SC',system-ui,sans-serif]"
           >
-            导出全部工具的共享资源与启用状态。{MCP_EXPORT_NOTICE}
+            导出前请检查敏感信息
           </span>
         </div>
       </div>
@@ -442,91 +466,34 @@ export const SkillsMcpView: React.FC<{
         </div>
       )}
 
-      {/* 状态头 (深色石墨灯箱 1:1)：只在有真实条目时出现，空列表不画一条全是 0 的链路。 */}
       {hasCurrentRows && (
-        <div
-          data-pencil-name="状态头"
-          className="box-border w-full min-h-[97px] shrink-0 flex flex-row gap-[24px] p-[16px_16px_16px_24px] justify-start items-center bg-[#1A1E24] outline outline-1 outline-[#1A1E24] -outline-offset-[0.5px] rounded-[8px] overflow-hidden text-[#F5F7F9]"
+        <section
+          className="skills-mcp-summary"
+          aria-label={`${targetName} 资源概览`}
         >
-          {/* 标题区 */}
-          <div className="box-border w-[200px] shrink-0 h-fit flex flex-col gap-[2px] justify-start items-start">
-            <div className="text-[13px]/[18px] box-border text-[#94999E] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left whitespace-nowrap">
-              {tab === "skills" ? "已启用 Skills" : "已启用 MCP"}
-            </div>
-            <div className="text-[22px]/[25px] box-border text-[#F5F7F9] font-[Overpass,system-ui,sans-serif] font-bold text-left whitespace-nowrap">
+          <div>
+            <span>{tab === "skills" ? "已启用 Skills" : "已启用 MCP"}</span>
+            <strong>
               {tab === "skills"
                 ? `${enabledSkillsCount} / ${skills.length}`
                 : `${enabledMcpCount} / ${mcps.length}`}
-            </div>
-            {(tab === "mcp" || supportsMcp) && (
-              <div className="text-[13px]/[18px] box-border text-[#B4B8BC] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left whitespace-nowrap">
-                {tab === "skills"
-                  ? `MCP 另有 ${mcps.length} 个`
-                  : `Skills 另有 ${skills.length} 个`}
-              </div>
-            )}
+            </strong>
           </div>
-
-          {/* 3 节点路径条 */}
-          <div className="box-border [flex:1_1_0] h-fit flex flex-row gap-0 justify-start items-start">
-            {/* 站 1 */}
-            <div className="box-border [flex:1_1_0] h-fit flex flex-col gap-[10px] justify-start items-start">
-              <div className="box-border w-full h-[12px] shrink-0 flex flex-row gap-0 justify-start items-center">
-                <div className="box-border w-[12px] shrink-0 h-[12px] bg-[#1A1E24] border-2 border-solid border-[#B4B8BC] rounded-full" />
-                <div className="box-border [flex:1_1_0] h-[2px] bg-[#94999E]" />
-              </div>
-              <div className="box-border w-full h-fit shrink-0 flex flex-col gap-[2px] pr-[12px] justify-start items-start">
-                <div className="text-[13px]/[18px] text-[#F5F7F9] font-['Noto_Sans_SC',system-ui,sans-serif] font-bold whitespace-nowrap">
-                  {tab === "skills" ? "仓库与 ZIP" : "MCP 配置"}
-                </div>
-                <div className="text-[13px]/[18px] w-full text-[#94999E] font-['Noto_Sans_SC',system-ui,sans-serif]">
-                  {tab === "skills"
-                    ? `${new Set(skills.map((s) => s.source)).size} 个来源`
-                    : `${mcps.length} 个服务`}
-                </div>
-              </div>
-            </div>
-
-            {/* 站 2 */}
-            <div className="box-border [flex:1_1_0] h-fit flex flex-col gap-[10px] justify-start items-start">
-              <div className="box-border w-full h-[12px] shrink-0 flex flex-row gap-0 justify-start items-center">
-                <div className="box-border w-[12px] shrink-0 h-[12px] bg-[#1A1E24] border-2 border-solid border-[#B4B8BC] rounded-full" />
-                <div className="box-border [flex:1_1_0] h-[2px] bg-[#94999E]" />
-              </div>
-              <div className="box-border w-full h-fit shrink-0 flex flex-col gap-[2px] pr-[12px] justify-start items-start">
-                <div className="text-[13px]/[18px] text-[#F5F7F9] font-['Noto_Sans_SC',system-ui,sans-serif] font-bold whitespace-nowrap">
-                  {tab === "skills" ? "skills 目录" : "工具配置"}
-                </div>
-                <div className="text-[13px]/[18px] w-full text-[#94999E] font-['Noto_Sans_SC',system-ui,sans-serif]">
-                  {tab === "skills"
-                    ? `${skills.length} 个 Skill · 独立目录`
-                    : `${enabledMcpCount} 个已启用服务`}
-                </div>
-              </div>
-            </div>
-
-            {/* 站 3 */}
-            <div className="box-border [flex:1_1_0] h-fit flex flex-col gap-[10px] justify-start items-start">
-              <div className="box-border w-full h-[12px] shrink-0 flex flex-row gap-0 justify-start items-center">
-                <div className="box-border w-[12px] shrink-0 h-[12px] bg-[#F5F7F9] border-2 border-solid border-[#F5F7F9] rounded-full" />
-              </div>
-              <div className="box-border w-full h-fit shrink-0 flex flex-col gap-[2px] pr-[12px] justify-start items-start">
-                <div className="text-[13px]/[18px] text-[#F5F7F9] font-[Overpass,system-ui,sans-serif] font-bold whitespace-nowrap">
-                  {targetName}
-                </div>
-                <div className="text-[13px]/[18px] w-full text-[#94999E] font-['Noto_Sans_SC',system-ui,sans-serif]">
-                  {tab === "skills"
-                    ? `新会话加载已启用的 ${enabledSkillsCount} 个`
-                    : `新会话启动已启用的 ${enabledMcpCount} 个`}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* 帮助图标 */}
+          <p>
+            <b>{targetName}</b>
+            <span>新会话加载已启用的资源</span>
+          </p>
+          {(tab === "mcp" || supportsMcp) && (
+            <span className="skills-mcp-summary-related">
+              {tab === "skills"
+                ? `MCP 另有 ${mcps.length} 个`
+                : `Skills 另有 ${skills.length} 个`}
+            </span>
+          )}
           <button
             aria-label="了解 Skills 与 MCP 配置范围"
             type="button"
+            className="skills-install-close"
             onClick={() =>
               toast.info(
                 tab === "skills"
@@ -534,11 +501,10 @@ export const SkillsMcpView: React.FC<{
                   : `MCP 服务同步到 ${targetName} 的配置，使用该工具的实际配置目录`,
               )
             }
-            className="box-border w-[28px] shrink-0 h-[28px] flex justify-center items-center outline outline-1 outline-[#6F757B] -outline-offset-[0.5px] rounded-[4px] bg-transparent text-[#B4B8BC] hover:text-white cursor-pointer"
           >
             <Question size={16} />
           </button>
-        </div>
+        </section>
       )}
 
       {repoOpen && (
@@ -608,10 +574,7 @@ export const SkillsMcpView: React.FC<{
                 <Puzzle size={22} strokeWidth={1.6} />
               </span>
               <h2 id="skills-empty-title">还没有安装 Skills</h2>
-              <p>
-                Skill 是打包好的任务说明和脚本，启用后 {targetName}
-                会在新会话中按需使用。
-              </p>
+              <p>为 {targetName} 添加技能，新会话即可使用。</p>
               <div className="resource-empty-paths">
                 <button
                   type="button"
@@ -693,15 +656,14 @@ export const SkillsMcpView: React.FC<{
                   </button>
                   <button
                     type="button"
-                    onClick={() =>
-                      void run(async () => {
-                        setUnmanaged(null);
-                        setSelectedImports([]);
-                        setUnmanaged(await skillsApi.scanUnmanaged());
-                      })
-                    }
+                    disabled={scanning}
+                    onClick={() => void scanSkills()}
                   >
-                    扫描未纳管 Skills
+                    {scanning
+                      ? "正在扫描…"
+                      : scanError
+                        ? "重试扫描"
+                        : "刷新扫描"}
                   </button>
                   {hasRepoSkills && (
                     <button
@@ -728,24 +690,58 @@ export const SkillsMcpView: React.FC<{
                     查看可恢复备份
                   </button>
                 </div>
-                {unmanaged !== null && (
-                  <div className="skills-lifecycle-panel">
-                    <h2>扫描结果</h2>
+                {(scanning || scanError || unmanaged !== null) && (
+                  <div
+                    className="skills-lifecycle-panel skills-scan-panel"
+                    role="region"
+                    aria-label="本地 Skills 扫描"
+                    aria-busy={scanning}
+                  >
+                    <div className="skills-scan-heading">
+                      <h2>扫描结果</h2>
+                      {!scanning && !scanError && unmanaged !== null && (
+                        <span>
+                          {unmanaged.length} 个发现 · 已选{" "}
+                          {selectedImports.length} 个
+                        </span>
+                      )}
+                    </div>
                     <p>
-                      仅纳管所选项目并启用到 {targetName}
-                      ，其他目标不勾选。同目录名的多个来源不支持在此消歧，请先整理来源。
+                      自动发现本地 Skills，不会修改文件。确认后添加并启用到{" "}
+                      {targetName}。
                     </p>
-                    {unmanaged.length === 0 && <p>未发现未纳管的 Skills。</p>}
-                    {unmanaged.map((skill, index) => (
+                    {scanning && (
+                      <p role="status">
+                        {unmanaged === null
+                          ? "正在发现本地 Skills…"
+                          : "正在刷新，以下为上次扫描结果。"}
+                      </p>
+                    )}
+                    {scanError && (
+                      <p role="alert">
+                        {scanError}
+                        {unmanaged !== null &&
+                          " 以下为上次扫描结果，暂不可添加。"}
+                      </p>
+                    )}
+                    {!scanning && !scanError && unmanaged?.length === 0 && (
+                      <p>未发现可添加的本地 Skills。</p>
+                    )}
+                    {unmanaged?.map((skill, index) => (
                       <label
-                        className="skills-lifecycle-row"
+                        className="skills-lifecycle-row skills-scan-row"
+                        data-selected={selectedImports.includes(
+                          skill.directory,
+                        )}
                         key={`${skill.directory}-${index}`}
                       >
                         <input
                           type="checkbox"
-                          aria-label={`纳管 ${skill.name}`}
+                          aria-label={`添加 ${skill.name}`}
                           checked={selectedImports.includes(skill.directory)}
                           disabled={
+                            scanning ||
+                            !!scanError ||
                             unmanaged.filter(
                               (item) => item.directory === skill.directory,
                             ).length !== 1
@@ -760,15 +756,34 @@ export const SkillsMcpView: React.FC<{
                             )
                           }
                         />
-                        <span>
-                          {skill.name} · {skill.path} ·{" "}
-                          {skill.foundIn.join(", ")}
+                        <span className="skills-scan-details">
+                          <strong>{skill.name}</strong>
+                          <span className="skills-scan-path" title={skill.path}>
+                            {skill.path}
+                          </span>
+                          <span className="skills-scan-source">
+                            来源：
+                            {skill.foundIn
+                              .map(
+                                (id) =>
+                                  RESOURCE_TOOLS.find((tool) => tool.id === id)
+                                    ?.name || id,
+                              )
+                              .join("、")}
+                          </span>
+                          {unmanaged.filter(
+                            (item) => item.directory === skill.directory,
+                          ).length !== 1 && (
+                            <span>目录名重复，请先整理来源。</span>
+                          )}
                         </span>
                       </label>
                     ))}
                     <button
                       type="button"
-                      disabled={selectedImports.length === 0}
+                      disabled={
+                        scanning || !!scanError || selectedImports.length === 0
+                      }
                       onClick={() => {
                         const imports = selectedImports.map((directory) => ({
                           directory,
@@ -778,23 +793,22 @@ export const SkillsMcpView: React.FC<{
                             gemini: false,
                             grokbuild: false,
                             opencode: false,
-                            openclaw: false,
-                            hermes: false,
+
                             [targetApp]: true,
                           },
                         }));
                         setConfirmation({
-                          title: "确认纳管 Skills",
-                          message: `将复制所选 ${imports.length} 个 Skill 到受管目录，并同步到 ${targetName}。请先备份同名目录；失败可能部分完成。`,
+                          title: "确认添加 Skills",
+                          message: `将添加所选 ${imports.length} 个 Skill 到共享资源库，并启用到 ${targetName}。请先备份同名目录；失败可能部分完成。`,
                           action: async () => {
                             await skillsApi.importFromApps(imports);
                             setSelectedImports([]);
-                            setUnmanaged(await skillsApi.scanUnmanaged());
+                            await scanSkills();
                           },
                         });
                       }}
                     >
-                      纳管所选 Skills
+                      添加所选 Skills
                     </button>
                   </div>
                 )}
@@ -816,7 +830,7 @@ export const SkillsMcpView: React.FC<{
                             onClick={() =>
                               setConfirmation({
                                 title: "确认更新 Skill",
-                                message: `更新 ${update.name} 将覆盖受管版本并同步到已启用的工具。当前版本会先备份，请确认已保存本地改动。`,
+                                message: `更新 ${update.name} 将覆盖已安装版本并同步到已启用的工具。当前版本会先备份，请确认已保存本地改动。`,
                                 action: async () => {
                                   await skillsApi.updateSkill(update.id);
                                   setUpdates(
@@ -968,14 +982,14 @@ export const SkillsMcpView: React.FC<{
                           onKeyDown={(e) =>
                             e.key === "Enter" && handleSaveNote(skill.id, true)
                           }
-                          className="box-border [flex:1_1_0] h-[28px] px-2 text-[13px]/[18px] border border-solid border-[#006AA0] rounded outline-none"
+                          className="box-border [flex:1_1_0] h-[28px] px-2 text-[13px]/[18px] border border-solid border-[var(--brand-text)] rounded outline-none"
                           autoFocus
                         />
                         <button
                           type="button"
                           aria-label="保存备注"
                           onClick={() => handleSaveNote(skill.id, true)}
-                          className="px-2 py-0.5 text-xs bg-[#006AA0] text-white rounded border-none cursor-pointer"
+                          className="px-2 py-0.5 text-xs bg-[var(--btn-primary-bg)] text-white rounded border-none cursor-pointer"
                         >
                           保存
                         </button>
@@ -986,7 +1000,7 @@ export const SkillsMcpView: React.FC<{
                         onClick={() =>
                           handleStartEditNote(skill.id, skill.note || "")
                         }
-                        className="flex items-center gap-[6px] border-none bg-transparent cursor-pointer p-0 text-left hover:text-[#006AA0]"
+                        className="flex items-center gap-[6px] border-none bg-transparent cursor-pointer p-0 text-left hover:text-[var(--brand-text)]"
                       >
                         <NotePencil
                           size={14}
@@ -1077,14 +1091,14 @@ export const SkillsMcpView: React.FC<{
                             onKeyDown={(e) =>
                               e.key === "Enter" && handleSaveNote(mcp.id, false)
                             }
-                            className="box-border [flex:1_1_0] h-[28px] px-2 text-[13px]/[18px] border border-solid border-[#006AA0] rounded outline-none"
+                            className="box-border [flex:1_1_0] h-[28px] px-2 text-[13px]/[18px] border border-solid border-[var(--brand-text)] rounded outline-none"
                             autoFocus
                           />
                           <button
                             type="button"
                             aria-label="保存备注"
                             onClick={() => handleSaveNote(mcp.id, false)}
-                            className="px-2 py-0.5 text-xs bg-[#006AA0] text-white rounded border-none cursor-pointer"
+                            className="px-2 py-0.5 text-xs bg-[var(--btn-primary-bg)] text-white rounded border-none cursor-pointer"
                           >
                             保存
                           </button>
@@ -1096,7 +1110,7 @@ export const SkillsMcpView: React.FC<{
                             e.stopPropagation();
                             handleStartEditNote(mcp.id, mcp.note || "");
                           }}
-                          className="flex items-center gap-[6px] border-none bg-transparent cursor-pointer p-0 text-left hover:text-[#006AA0]"
+                          className="flex items-center gap-[6px] border-none bg-transparent cursor-pointer p-0 text-left hover:text-[var(--brand-text)]"
                         >
                           <NotePencil
                             size={14}

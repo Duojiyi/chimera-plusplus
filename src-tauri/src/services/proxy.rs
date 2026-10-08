@@ -778,9 +778,7 @@ impl ProxyService {
             .await
             .map(|c| c.enabled)
             .unwrap_or(false);
-        // OpenCode and OpenClaw don't support proxy features, always return false
         let opencode_enabled = false;
-        let openclaw_enabled = false;
 
         Ok(ProxyTakeoverStatus {
             claude: claude_enabled,
@@ -788,7 +786,6 @@ impl ProxyService {
             gemini: gemini_enabled,
             grokbuild: grokbuild_enabled,
             opencode: opencode_enabled,
-            openclaw: openclaw_enabled,
         })
     }
 
@@ -1646,7 +1643,6 @@ impl ProxyService {
             || takeover.gemini
             || takeover.grokbuild
             || takeover.opencode
-            || takeover.openclaw
         {
             return Err(
                 "仍有应用处于代理接管状态，请先在设置中关闭对应应用接管后再停止本地路由。"

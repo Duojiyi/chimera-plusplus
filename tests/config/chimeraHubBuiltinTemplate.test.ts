@@ -9,12 +9,11 @@ import {
 } from "@/components/providers/forms/ProviderPresetSelector";
 import { providerPresets } from "@/config/claudeProviderPresets";
 import { claudeDesktopProviderPresets } from "@/config/claudeDesktopProviderPresets";
+import { grokBuildProviderPresets } from "@/config/grokBuildProviderPresets";
 import { codexProviderPresets } from "@/config/codexProviderPresets";
 import { getChimeraHubTemplate } from "@/config/codexTemplates";
 import { geminiProviderPresets } from "@/config/geminiProviderPresets";
-import { hermesProviderPresets } from "@/config/hermesProviderPresets";
-import { openclawProviderPresets } from "@/config/openclawProviderPresets";
-import { opencodeProviderPresets } from "@/config/opencodeProviderPresets";
+
 import { chimeraHubTemplateFixture } from "../msw/handlers";
 
 const CHIMERAHUB_V1 = "https://api.chimerahub.org/v1";
@@ -23,7 +22,16 @@ const t = ((key: string) => key) as TFunction;
 describe("built-in ChimeraHub template (backend-owned)", () => {
   it("serves the backend template to the frontend wrapper", () => {
     // tests/setupTests.ts loads it from `get_chimerahub_template` like main.tsx.
-    expect(getChimeraHubTemplate()).toEqual(chimeraHubTemplateFixture);
+    const draft = getChimeraHubTemplate();
+    expect(draft).toEqual({
+      ...chimeraHubTemplateFixture,
+      config: draft.config,
+    });
+    expect(parseToml(draft.config).model).toBe("gpt-6-astra");
+    expect(draft.model).toBe("gpt-5.6-sol");
+    expect(parseToml(chimeraHubTemplateFixture.config).model).toBe(
+      "gpt-5.6-sol",
+    );
   });
 
   it("hands out copies, so an editor draft cannot change the template", () => {
@@ -57,7 +65,7 @@ describe("built-in ChimeraHub template (backend-owned)", () => {
       model?: string;
       model_providers?: { custom?: Record<string, unknown> };
     };
-    expect(config.model).toBe("gpt-5.6-sol");
+    expect(config.model).toBe("gpt-6-astra");
     expect(config.model_providers?.custom).toMatchObject({
       base_url: CHIMERAHUB_V1,
       wire_api: "responses",
@@ -86,54 +94,26 @@ describe("built-in ChimeraHub template (backend-owned)", () => {
     }
   });
 
-  it("adds OpenAI-compatible /v1 presets for OpenCode, OpenClaw and Hermes", () => {
-    const opencode = opencodeProviderPresets.find(
-      (p) => p.name === "ChimeraHub",
-    );
-    expect(opencode?.settingsConfig).toMatchObject({
-      npm: "@ai-sdk/openai-compatible",
-      options: { baseURL: CHIMERAHUB_V1, apiKey: "" },
-      models: { "gpt-5.6-sol": { name: "GPT-5.6 Sol" } },
-    });
-
-    const openclaw = openclawProviderPresets.find(
-      (p) => p.name === "ChimeraHub",
-    );
-    expect(openclaw?.settingsConfig).toMatchObject({
+  it("uses the Responses adapter for Desktop and Grok instead of inventing native endpoints", () => {
+    const desktop = claudeDesktopProviderPresets.find(
+      (p) => p.isBuiltinTemplate,
+    )!;
+    expect(desktop).toMatchObject({
+      name: "ChimeraHub",
       baseUrl: CHIMERAHUB_V1,
-      apiKey: "",
-      api: "openai-completions",
-      models: [{ id: "gpt-5.6-sol", name: "GPT-5.6 Sol" }],
+      mode: "proxy",
+      apiFormat: "openai_responses",
     });
-    expect(openclaw?.suggestedDefaults?.model).toEqual({
-      primary: "chimerahub/gpt-5.6-sol",
-    });
-
-    const hermes = hermesProviderPresets.find((p) => p.name === "ChimeraHub");
-    expect(hermes?.settingsConfig).toMatchObject({
-      name: "chimerahub",
-      base_url: CHIMERAHUB_V1,
-      api_key: "",
-      api_mode: "chat_completions",
-    });
-    expect(hermes?.suggestedDefaults?.model).toEqual({
-      default: "gpt-5.6-sol",
-      provider: "chimerahub",
-    });
-
-    // Not a default template elsewhere: only the Codex entry is pinned/labelled.
-    for (const preset of [opencode, openclaw, hermes]) {
-      expect(preset).toBeDefined();
-      expect(preset).not.toHaveProperty("isBuiltinTemplate");
-    }
+    expect(desktop.modelRoutes?.[0].upstreamModel).toBe("gpt-5.6-sol");
+    const grok = grokBuildProviderPresets.find((p) => p.isBuiltinTemplate)!;
+    expect(grok.apiFormat).toBe("openai_responses");
+    expect(parseToml(grok.config)).toMatchObject({ model: "gpt-5.6-sol" });
   });
 
   it("offers no Anthropic or Gemini ChimeraHub preset (endpoints unverified)", () => {
-    for (const presets of [
-      providerPresets,
-      claudeDesktopProviderPresets,
-      geminiProviderPresets,
-    ] as { name: string }[][]) {
+    for (const presets of [providerPresets, geminiProviderPresets] as {
+      name: string;
+    }[][]) {
       expect(presets.some((preset) => /chimera/i.test(preset.name))).toBe(
         false,
       );

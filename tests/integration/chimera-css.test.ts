@@ -82,7 +82,7 @@ describe("chimera.css — Bug 2 update banner styles", () => {
 describe("chimera.css — runtime information layout", () => {
   it("reserves readable status columns while allowing the path to shrink", () => {
     expect(extractBlock(".runtime-info-strip")).toContain(
-      "grid-template-columns: minmax(0, 1fr) 110px 110px",
+      "grid-template-columns: minmax(0, 1fr) 86px 86px",
     );
   });
 

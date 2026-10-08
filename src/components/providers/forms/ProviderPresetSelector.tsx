@@ -1,31 +1,12 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { FormLabel } from "@/components/ui/form";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { ClaudeIcon, CodexIcon, GeminiIcon } from "@/components/BrandIcons";
-import {
-  ArrowUpAZ,
-  Search,
-  Zap,
-  Star,
-  Heart,
-  Layers,
-  Settings2,
-} from "lucide-react";
 import type { ProviderPreset } from "@/config/claudeProviderPresets";
 import type { CodexProviderPreset } from "@/config/codexProviderPresets";
 import type { GeminiProviderPreset } from "@/config/geminiProviderPresets";
 import type { ClaudeDesktopProviderPreset } from "@/config/claudeDesktopProviderPresets";
 import type { OpenCodeProviderPreset } from "@/config/opencodeProviderPresets";
-import type { OpenClawProviderPreset } from "@/config/openclawProviderPresets";
-import type { HermesProviderPreset } from "@/config/hermesProviderPresets";
+
 import type { ProviderCategory } from "@/types";
-import {
-  universalProviderPresets,
-  type UniversalProviderPreset,
-} from "@/config/universalProviderPresets";
-import { ProviderIcon } from "@/components/ProviderIcon";
+import type { UniversalProviderPreset } from "@/config/universalProviderPresets";
 
 type PresetTranslator = (key: string) => unknown;
 
@@ -42,9 +23,7 @@ export type AnyPreset =
   | CodexProviderPreset
   | GeminiProviderPreset
   | ClaudeDesktopProviderPreset
-  | OpenCodeProviderPreset
-  | OpenClawProviderPreset
-  | HermesProviderPreset;
+  | OpenCodeProviderPreset;
 
 export type PresetEntry = {
   id: string;
@@ -169,355 +148,55 @@ interface ProviderPresetSelectorProps {
 export function ProviderPresetSelector({
   selectedPresetId,
   presetEntries,
-  presetCategoryLabels,
   onPresetChange,
-  onUniversalPresetSelect,
   onManageUniversalProviders,
-  category,
 }: Readonly<ProviderPresetSelectorProps>) {
   const { t } = useTranslation();
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [sortMode, setSortMode] = useState<PresetSortMode>(
-    PresetSortMode.Original,
+  // Keep legacy helpers available, but never render the provider catalog.
+  const visiblePresetEntries = presetEntries.filter(
+    ({ preset }) => preset.category === "official" || isBuiltinTemplate(preset),
   );
-  const searchContainerRef = useRef<HTMLDivElement>(null);
-  const searchInputRef = useRef<HTMLInputElement>(null);
-
-  // 点击搜索区域外时收起并清空,对齐旧 Popover 的「点击外部关闭」行为
-  useEffect(() => {
-    if (!searchOpen) return;
-
-    const handleClickOutside = (event: MouseEvent) => {
-      if (
-        searchContainerRef.current &&
-        !searchContainerRef.current.contains(event.target as Node)
-      ) {
-        setSearchOpen(false);
-        setSearchQuery("");
-      }
-    };
-
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [searchOpen]);
-
-  // 键盘快捷键: Ctrl/Cmd+F 打开搜索并聚焦输入框。
-  // 使用捕获阶段并阻止冒泡，避免背后 ProviderList 的同名快捷键被意外触发。
-  // 首次打开靠 Input 的 autoFocus 聚焦；若搜索已打开（例如点击 preset 后焦点
-  // 停在按钮上），setSearchOpen(true) 同值不会重渲染、autoFocus 不重触发，
-  // 这里用 rAF 命令式地把焦点移回搜索框（不 select，避免吞掉随后输入的首字符）。
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
-        event.preventDefault();
-        event.stopPropagation();
-        setSearchOpen(true);
-        requestAnimationFrame(() => searchInputRef.current?.focus());
-      }
-    };
-
-    globalThis.addEventListener("keydown", handleKeyDown, true);
-    return () => globalThis.removeEventListener("keydown", handleKeyDown, true);
-  }, []);
-
-  const visiblePresetEntries = useMemo(
-    () =>
-      getVisiblePresetEntries(presetEntries, {
-        query: searchQuery,
-        sortMode,
-        t,
-      }),
-    [presetEntries, searchQuery, sortMode, t],
-  );
-
-  const getCategoryHint = (): ReactNode => {
-    switch (category) {
-      case "official":
-        return t("providerForm.officialHint", {
-          defaultValue: "💡 官方供应商使用浏览器登录，无需配置 API Key",
-        });
-      case "cn_official":
-        return t("providerForm.cnOfficialApiKeyHint", {
-          defaultValue: "💡 国产官方供应商只需填写 API Key，请求地址已预设",
-        });
-      case "aggregator":
-        return t("providerForm.aggregatorApiKeyHint", {
-          defaultValue: "💡 聚合服务供应商只需填写 API Key 即可使用",
-        });
-      case "third_party":
-        return t("providerForm.thirdPartyApiKeyHint", {
-          defaultValue: "💡 第三方供应商需要填写 API Key 和请求地址",
-        });
-      case "custom":
-        return t("providerForm.customApiKeyHint", {
-          defaultValue: "💡 自定义配置需手动填写所有必要字段",
-        });
-      case "omo":
-        return t("providerForm.omoHint", {
-          defaultValue:
-            "💡 OMO 配置管理 Agent 模型分配，兼容 oh-my-openagent.jsonc / oh-my-opencode.jsonc",
-        });
-      default:
-        return t("providerPreset.hint", {
-          defaultValue: "选择预设后可继续调整下方字段。",
-        });
-    }
-  };
-
-  const toggleSortMode = () => {
-    setSortMode((current) =>
-      current === PresetSortMode.Original
-        ? PresetSortMode.NameAsc
-        : PresetSortMode.Original,
-    );
-  };
-
-  const renderPresetIcon = (preset: AnyPreset) => {
-    if (preset.icon) {
-      return (
-        <ProviderIcon
-          icon={preset.icon}
-          name={preset.name}
-          color={preset.iconColor}
-          size={16}
-          className="flex-shrink-0"
-        />
-      );
-    }
-
-    const iconType = preset.theme?.icon;
-    if (iconType) {
-      switch (iconType) {
-        case "claude":
-          return <ClaudeIcon size={14} />;
-        case "codex":
-          return <CodexIcon size={14} />;
-        case "gemini":
-          return <GeminiIcon size={14} />;
-        case "generic":
-          return <Zap size={14} />;
-      }
-    }
-
-    return <span className="inline-block w-4 h-4 flex-shrink-0" aria-hidden />;
-  };
-
-  const getPresetButtonClass = (isSelected: boolean, preset: AnyPreset) => {
-    const baseClass =
-      "inline-flex items-center justify-start gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors w-full";
-
-    if (isSelected) {
-      if (preset.theme?.backgroundColor) {
-        return `${baseClass} text-white`;
-      }
-      return `${baseClass} bg-blue-500 text-white dark:bg-blue-600`;
-    }
-
-    return `${baseClass} bg-accent text-muted-foreground hover:bg-accent/80`;
-  };
-
-  const getPresetButtonStyle = (isSelected: boolean, preset: AnyPreset) => {
-    if (!isSelected || !preset.theme?.backgroundColor) {
-      return undefined;
-    }
-
-    return {
-      backgroundColor: preset.theme.backgroundColor,
-      color: preset.theme.textColor || "#FFFFFF",
-    };
-  };
+  const choices = [
+    { id: "custom", name: t("providerPreset.custom") },
+    ...visiblePresetEntries.map(({ id, preset }) => ({
+      id,
+      name: getPresetDisplayName(preset, t) || "中转站模板",
+    })),
+  ];
 
   return (
-    <div ref={searchContainerRef} className="space-y-3">
-      <div className="flex items-center justify-between gap-2">
-        <FormLabel>{t("providerPreset.label")}</FormLabel>
-        <div className="flex items-center gap-2">
-          {searchOpen && (
-            <Input
-              ref={searchInputRef}
-              value={searchQuery}
-              onChange={(event) => setSearchQuery(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Escape") {
-                  setSearchQuery("");
-                  setSearchOpen(false);
-                }
-              }}
-              placeholder={t("providerPreset.searchPlaceholder", {
-                defaultValue: "Search presets...",
-              })}
-              aria-label={t("providerPreset.searchAriaLabel", {
-                defaultValue: "Search provider presets",
-              })}
-              className="w-60 h-8"
-              autoFocus
-            />
-          )}
-          <Button
+    <fieldset className="min-w-0 space-y-2">
+      <legend className="text-sm font-medium">
+        {t("providerPreset.label")}
+      </legend>
+      <div className="flex flex-wrap gap-2">
+        {choices.map(({ id, name }) => (
+          <button
+            key={id}
             type="button"
-            variant="ghost"
-            size="icon"
-            aria-label={t("providerPreset.searchAriaLabel", {
-              defaultValue: "Search provider presets",
-            })}
-            aria-pressed={searchOpen}
-            onClick={() => {
-              setSearchOpen((v) => !v);
-              if (searchOpen) setSearchQuery("");
-            }}
-            title={t("providerPreset.searchTooltip", {
-              defaultValue: "Search presets",
-            })}
-            className={
-              searchOpen || searchQuery.trim()
-                ? "size-8 bg-accent text-foreground"
-                : "size-8"
-            }
+            aria-pressed={selectedPresetId === id}
+            onClick={() => onPresetChange(id)}
+            className={`max-w-full whitespace-normal break-words rounded-md border px-3 py-2 text-left text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
+              selectedPresetId === id
+                ? "border-primary bg-primary text-primary-foreground"
+                : "border-border bg-background text-foreground hover:bg-accent"
+            }`}
           >
-            <Search className="size-4" />
-          </Button>
-
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            aria-label={t("providerPreset.sortAriaLabel", {
-              defaultValue: "Toggle preset sorting",
-            })}
-            aria-pressed={sortMode === PresetSortMode.NameAsc}
-            onClick={toggleSortMode}
-            title={
-              sortMode === PresetSortMode.NameAsc
-                ? t("providerPreset.sortOriginalTooltip", {
-                    defaultValue: "Restore original order",
-                  })
-                : t("providerPreset.sortNameAscTooltip", {
-                    defaultValue: "Sort A-Z",
-                  })
-            }
-            className={
-              sortMode === PresetSortMode.NameAsc
-                ? "size-8 bg-accent text-foreground"
-                : "size-8"
-            }
-          >
-            <ArrowUpAZ className="size-4" />
-          </Button>
-        </div>
+            {name}
+          </button>
+        ))}
       </div>
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-2">
+      {onManageUniversalProviders && (
         <button
           type="button"
-          onClick={() => onPresetChange("custom")}
-          className={`inline-flex items-center justify-start gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors w-full ${
-            selectedPresetId === "custom"
-              ? "bg-blue-500 text-white dark:bg-blue-600"
-              : "bg-accent text-muted-foreground hover:bg-accent/80"
-          }`}
+          onClick={onManageUniversalProviders}
+          className="max-w-full whitespace-normal break-words rounded-md px-2 py-1 text-left text-sm text-foreground underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <span className="inline-block w-4 h-4 flex-shrink-0" aria-hidden />
-          <span className="truncate">{t("providerPreset.custom")}</span>
+          {t("universalProvider.manage", {
+            defaultValue: "管理统一供应商",
+          })}
         </button>
-
-        {visiblePresetEntries.length === 0 && (
-          <div className="col-span-full rounded-md border border-dashed border-border-default px-3 py-2 text-xs text-muted-foreground">
-            {t("providerPreset.noSearchResults", {
-              defaultValue: "No matching presets.",
-            })}
-          </div>
-        )}
-
-        {visiblePresetEntries.map((entry) => {
-          const isSelected = selectedPresetId === entry.id;
-          const isPartner = entry.preset.isPartner;
-          const isPrimePartner = entry.preset.primePartner;
-          const presetCategory = entry.preset.category ?? "others";
-          return (
-            <button
-              key={entry.id}
-              type="button"
-              onClick={() => onPresetChange(entry.id)}
-              className={`${getPresetButtonClass(isSelected, entry.preset)} relative`}
-              style={getPresetButtonStyle(isSelected, entry.preset)}
-              title={
-                presetCategoryLabels[presetCategory] ??
-                t("providerPreset.other")
-              }
-            >
-              {renderPresetIcon(entry.preset)}
-              <span className="truncate">
-                {getPresetDisplayName(entry.preset, t)}
-              </span>
-              {isBuiltinTemplate(entry.preset) ? (
-                <span className="absolute -top-1 -right-1 rounded-full bg-blue-500 px-1.5 py-0.5 text-[10px] font-bold text-white shadow-md">
-                  {t("providerPreset.builtinTemplate", {
-                    defaultValue: "内置",
-                  })}
-                </span>
-              ) : isPrimePartner ? (
-                <Heart
-                  className="absolute -top-1 -right-1 h-5 w-5 fill-amber-500 text-amber-500 drop-shadow-sm"
-                  strokeWidth={0}
-                  aria-hidden
-                />
-              ) : (
-                isPartner && (
-                  <span className="absolute -top-1 -right-1 flex items-center gap-0.5 rounded-full bg-gradient-to-r from-amber-500 to-yellow-500 px-1.5 py-0.5 text-[10px] font-bold text-white shadow-md">
-                    <Star className="h-2.5 w-2.5 fill-current" />
-                  </span>
-                )
-              )}
-            </button>
-          );
-        })}
-      </div>
-
-      {onUniversalPresetSelect && universalProviderPresets.length > 0 && (
-        <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-2">
-          {universalProviderPresets.map((preset) => (
-            <button
-              key={`universal-${preset.providerType}`}
-              type="button"
-              onClick={() => onUniversalPresetSelect(preset)}
-              className="inline-flex items-center justify-start gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors bg-accent text-muted-foreground hover:bg-accent/80 relative w-full"
-              title={t("universalProvider.hint", {
-                defaultValue: "跨应用统一配置，自动同步到 Claude/Codex/Gemini",
-              })}
-            >
-              <ProviderIcon
-                icon={preset.icon}
-                name={preset.name}
-                size={14}
-                className="flex-shrink-0"
-              />
-              <span className="truncate">{preset.name}</span>
-              <span className="absolute -top-1 -right-1 flex items-center gap-0.5 rounded-full bg-gradient-to-r from-indigo-500 to-purple-500 px-1.5 py-0.5 text-[10px] font-bold text-white shadow-md">
-                <Layers className="h-2.5 w-2.5" />
-              </span>
-            </button>
-          ))}
-          {onManageUniversalProviders && (
-            <button
-              type="button"
-              onClick={onManageUniversalProviders}
-              className="inline-flex items-center justify-start gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors bg-accent text-muted-foreground hover:bg-accent/80 w-full"
-              title={t("universalProvider.manage", {
-                defaultValue: "管理统一供应商",
-              })}
-            >
-              <Settings2 className="h-4 w-4 flex-shrink-0" />
-              <span className="truncate">
-                {t("universalProvider.manage", {
-                  defaultValue: "管理",
-                })}
-              </span>
-            </button>
-          )}
-        </div>
       )}
-
-      <p className="text-xs text-muted-foreground">{getCategoryHint()}</p>
-    </div>
+    </fieldset>
   );
 }

@@ -13,7 +13,12 @@ describe("station signboard uses measured data", () => {
     expect(screen.getByText("未设置端点")).toBeVisible();
     expect(screen.getByText("未设置模型")).toBeVisible();
     expect(screen.getByText("未测速")).toBeVisible();
-    expect(screen.getByRole("button", { name: "切回" })).toBeDisabled();
+    expect(
+      screen.queryByRole("button", { name: "切回" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("暂无本次会话的切换记录"),
+    ).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "测速" })).toBeDisabled();
     expect(document.body.textContent).not.toMatch(
       /DeepSeek|182|0\.61\.0|HTTP 200|128K|#0412/,

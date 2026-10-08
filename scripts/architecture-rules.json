@@ -38,11 +38,8 @@
     "gemini_mcp": 2,
     "gemini_session": 2,
     "grok_config": 2,
-    "hermes_config": 2,
-    "openclaw_config": 2,
     "opencode_config": 2,
     "pi_config": 2,
-    "mcode_config": 2,
     "managed_prompts": 2,
     "prompt_files": 2,
 

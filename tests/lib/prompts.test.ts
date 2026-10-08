@@ -47,9 +47,9 @@ describe("prompt category command contract", () => {
       id: "category-1",
       name: "写作",
     });
-    await promptsApi.deleteCategory("hermes", "category-1");
+    await promptsApi.deleteCategory("opencode", "category-1");
     expect(invoke).toHaveBeenCalledWith("delete_prompt_category", {
-      app: "hermes",
+      app: "opencode",
       id: "category-1",
     });
   });

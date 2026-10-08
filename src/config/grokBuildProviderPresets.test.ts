@@ -7,6 +7,7 @@ import {
   extractCodexBaseUrl,
   extractCodexModelName,
 } from "../utils/providerConfigUtils";
+import { getChimeraHubTemplate } from "./codexTemplates";
 import { GROK_BUILD_DEFAULT_MODEL } from "../utils/grokBuildConfig";
 
 describe("grokBuildProviderPresets", () => {
@@ -47,9 +48,13 @@ describe("grokBuildProviderPresets", () => {
     }
   });
 
-  it("uses a Grok default model on every preset", () => {
+  it("uses Grok defaults on curated presets and the backend model on the builtin", () => {
     for (const preset of grokBuildProviderPresets) {
       const model = extractCodexModelName(preset.config);
+      if (preset.isBuiltinTemplate) {
+        expect(model).toBe(getChimeraHubTemplate().model);
+        continue;
+      }
       expect(
         model === GROK_BUILD_DEFAULT_MODEL || model === "x-ai/grok-4.5",
         `${preset.name}: ${model}`,

@@ -20,18 +20,17 @@ const notes: Partial<Record<ToolId, string>> = {
 // Known gaps, worded as on the tool pages and in Skills 与 MCP.
 const limits: Partial<Record<ToolId, readonly string[]>> = {
   "claude-desktop": ["仅检测标准安装路径"],
-  openclaw: ["暂不支持受管 MCP"],
-  pi: ["无安装管理"],
-  mcode: ["无安装管理"],
 };
 
 const describe = (appId: ToolId) =>
-  [
-    switchesOneLine.has(appId) ? "一次使用一条线路" : "可同时启用多条线路",
-    notes[appId],
-  ]
-    .filter(Boolean)
-    .join("，");
+  appId === "omp"
+    ? "独立管理运行环境、插件与市场源，与 Pi 分开配置"
+    : [
+        switchesOneLine.has(appId) ? "一次使用一条线路" : "可同时启用多条线路",
+        notes[appId],
+      ]
+        .filter(Boolean)
+        .join("，");
 
 const reason = (cause: unknown) =>
   cause instanceof Error ? cause.message : String(cause);
@@ -96,10 +95,7 @@ export function ToolVisibilityPage({ native }: { native: boolean }) {
       </header>
       <div className="tool-visibility-callout" role="note">
         <Info size={16} aria-hidden="true" />
-        <p>
-          启用只是在侧栏显示该工具，并允许 Chimera++
-          管理它的配置；不会安装工具，也不会导入或激活任何线路。关闭后，已写入的配置保持不变。
-        </p>
+        <p>仅调整侧栏显示，隐藏不会删除配置。</p>
       </div>
       {!native && (
         <p className="tool-visibility-notice" role="status">

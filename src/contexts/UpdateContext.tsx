@@ -72,6 +72,46 @@ const LEGACY_DISMISSED_KEYS = [
 const LAST_CHECKED_KEY = "chimera:update:lastCheckedAt";
 const LEGACY_LAST_CHECKED_KEY = "ccswitch:update:lastCheckedAt";
 
+// Persistence is best-effort: unavailable storage must not break updates.
+function readStorage(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeStorage(key: string, value: string): boolean {
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function removeStorage(key: string): void {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // Keep using the in-memory state when storage is unavailable.
+  }
+}
+
+function readDismissedVersion(): string | null {
+  const current = readStorage(DISMISSED_VERSION_KEY);
+  if (current) return current;
+  for (const key of LEGACY_DISMISSED_KEYS) {
+    const legacy = readStorage(key);
+    if (!legacy) continue;
+    if (writeStorage(DISMISSED_VERSION_KEY, legacy)) {
+      LEGACY_DISMISSED_KEYS.forEach(removeStorage);
+    }
+    return legacy;
+  }
+  return null;
+}
+
 /** How stale a successful check may get before we run another one. */
 export const UPDATE_CHECK_INTERVAL_MS = 15 * 60 * 1000;
 
@@ -95,15 +135,25 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
   const [errorOperation, setErrorOperation] =
     useState<UpdateErrorOperation | null>(null);
   const [lastCheckedAt, setLastCheckedAt] = useState<number | null>(() => {
-    const current = localStorage.getItem(LAST_CHECKED_KEY);
-    const legacy = localStorage.getItem(LEGACY_LAST_CHECKED_KEY);
+    const current = readStorage(LAST_CHECKED_KEY);
+    const legacy = readStorage(LEGACY_LAST_CHECKED_KEY);
     const stored = Number(current ?? legacy);
     if (!current && legacy && Number.isFinite(stored) && stored > 0) {
-      localStorage.setItem(LAST_CHECKED_KEY, legacy);
-      localStorage.removeItem(LEGACY_LAST_CHECKED_KEY);
+      if (writeStorage(LAST_CHECKED_KEY, legacy)) {
+        removeStorage(LEGACY_LAST_CHECKED_KEY);
+      }
     }
     return Number.isFinite(stored) && stored > 0 ? stored : null;
   });
+  const lastCheckedAtRef = useRef(lastCheckedAt);
+  const dismissedVersionRef = useRef<string | null | undefined>(undefined);
+  const getDismissedVersion = useCallback(() => {
+    // Once loaded, memory remains authoritative even if persistence fails.
+    if (dismissedVersionRef.current === undefined) {
+      dismissedVersionRef.current = readDismissedVersion();
+    }
+    return dismissedVersionRef.current;
+  }, []);
   const [isDismissed, setIsDismissed] = useState(false);
   const [downloadProgress, setDownloadProgress] =
     useState<UpdateDownloadProgress | null>(null);
@@ -115,21 +165,8 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     const current = updateInfo?.availableVersion;
     if (!current) return;
 
-    // 读取新键；若不存在，尝试迁移旧键
-    let dismissedVersion = localStorage.getItem(DISMISSED_VERSION_KEY);
-    for (const legacyKey of LEGACY_DISMISSED_KEYS) {
-      if (!dismissedVersion) {
-        const legacy = localStorage.getItem(legacyKey);
-        if (legacy) {
-          localStorage.setItem(DISMISSED_VERSION_KEY, legacy);
-          dismissedVersion = legacy;
-        }
-      }
-      localStorage.removeItem(legacyKey);
-    }
-
-    setIsDismissed(dismissedVersion === current);
-  }, [updateInfo?.availableVersion]);
+    setIsDismissed(getDismissedVersion() === current);
+  }, [updateInfo?.availableVersion, getDismissedVersion]);
 
   const isCheckingRef = useRef(false);
   const isInstallingRef = useRef(false);
@@ -162,22 +199,11 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
           current === result.info.availableVersion ? current : null,
         );
 
-        // 检查是否已经关闭过这个版本的提醒
-        let dismissedVersion = localStorage.getItem(DISMISSED_VERSION_KEY);
-        for (const legacyKey of LEGACY_DISMISSED_KEYS) {
-          if (!dismissedVersion) {
-            const legacy = localStorage.getItem(legacyKey);
-            if (legacy) {
-              localStorage.setItem(DISMISSED_VERSION_KEY, legacy);
-              dismissedVersion = legacy;
-            }
-          }
-          localStorage.removeItem(legacyKey);
-        }
-        setIsDismissed(dismissedVersion === result.info.availableVersion);
+        setIsDismissed(getDismissedVersion() === result.info.availableVersion);
         const checkedAt = Date.now();
+        lastCheckedAtRef.current = checkedAt;
         setLastCheckedAt(checkedAt);
-        localStorage.setItem(LAST_CHECKED_KEY, String(checkedAt));
+        writeStorage(LAST_CHECKED_KEY, String(checkedAt));
         return true; // 有更新
       } else {
         setHasUpdate(false);
@@ -186,8 +212,9 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
         stageAttemptedRef.current = null;
         setIsDismissed(false);
         const checkedAt = Date.now();
+        lastCheckedAtRef.current = checkedAt;
         setLastCheckedAt(checkedAt);
-        localStorage.setItem(LAST_CHECKED_KEY, String(checkedAt));
+        writeStorage(LAST_CHECKED_KEY, String(checkedAt));
         return false; // 已是最新
       }
     } catch (err) {
@@ -199,20 +226,23 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       setIsChecking(false);
       isCheckingRef.current = false;
     }
-  }, []);
+  }, [getDismissedVersion]);
 
   const dismissUpdate = useCallback(() => {
     setIsDismissed(true);
     if (updateInfo?.availableVersion) {
-      localStorage.setItem(DISMISSED_VERSION_KEY, updateInfo.availableVersion);
-      LEGACY_DISMISSED_KEYS.forEach((key) => localStorage.removeItem(key));
+      dismissedVersionRef.current = updateInfo.availableVersion;
+      if (writeStorage(DISMISSED_VERSION_KEY, updateInfo.availableVersion)) {
+        LEGACY_DISMISSED_KEYS.forEach(removeStorage);
+      }
     }
   }, [updateInfo?.availableVersion]);
 
   const resetDismiss = useCallback(() => {
     setIsDismissed(false);
-    localStorage.removeItem(DISMISSED_VERSION_KEY);
-    LEGACY_DISMISSED_KEYS.forEach((key) => localStorage.removeItem(key));
+    dismissedVersionRef.current = null;
+    removeStorage(DISMISSED_VERSION_KEY);
+    LEGACY_DISMISSED_KEYS.forEach(removeStorage);
   }, []);
 
   // Pre-download in the background as soon as a version is known, so pressing
@@ -306,9 +336,11 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     if (!isTauri()) return;
     const checkIfDue = () => {
       if (document.visibilityState !== "visible") return;
-      const stored = Number(localStorage.getItem(LAST_CHECKED_KEY));
-      const lastSuccessfulCheck =
-        Number.isFinite(stored) && stored > 0 ? stored : 0;
+      const stored = Number(readStorage(LAST_CHECKED_KEY));
+      const lastSuccessfulCheck = Math.max(
+        lastCheckedAtRef.current ?? 0,
+        Number.isFinite(stored) && stored > 0 ? stored : 0,
+      );
       if (Date.now() - lastSuccessfulCheck >= UPDATE_CHECK_INTERVAL_MS) {
         checkUpdate().catch(console.error);
       }

@@ -100,7 +100,7 @@ beforeEach(() => {
 describe("new-line preset picker", () => {
   it("starts on the default template and offers presets", () => {
     setup();
-    expect(screen.getByText("默认模板")).toBeInTheDocument();
+    expect(screen.getByText("配置模板 · ChimeraHub")).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "选择预设" }),
     ).toBeInTheDocument();
@@ -154,7 +154,7 @@ describe("new-line preset picker", () => {
     expect(
       onDraftChange.mock.lastCall![0].catalogModels.length,
     ).toBeGreaterThan(0);
-    expect(screen.getByText("起点：Kimi")).toBeInTheDocument();
+    expect(screen.getByText("配置模板 · Kimi")).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "更换预设" }),
     ).toBeInTheDocument();
@@ -194,7 +194,7 @@ describe("new-line preset picker", () => {
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
     );
     expect(screen.getByLabelText("线路名称 *")).toHaveValue("Kimi");
-    expect(screen.getByText("起点：Kimi")).toBeInTheDocument();
+    expect(screen.getByText("配置模板 · Kimi")).toBeInTheDocument();
   });
 
   it("moves the caret to the API key after a complete preset", async () => {
@@ -221,7 +221,7 @@ describe("new-line preset picker", () => {
     ).toBeInTheDocument();
     expect(
       screen
-        .getByText("起点：Azure OpenAI")
+        .getByText("配置模板 · Azure OpenAI")
         .closest(".editor-template-actions"),
     ).toHaveClass("has-warning");
   });
@@ -241,7 +241,7 @@ describe("new-line preset picker", () => {
       apiFormat: "auto",
       catalogModels: [],
     });
-    expect(screen.getByText("起点：自定义线路")).toBeInTheDocument();
+    expect(screen.getByText("配置模板 · 自定义线路")).toBeInTheDocument();
   });
 
   it("never offers sign-in presets", async () => {
@@ -353,14 +353,14 @@ describe("new-line preset picker", () => {
     await waitFor(() =>
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
     );
-    expect(screen.getByText("起点：DeepSeek")).toBeInTheDocument();
+    expect(screen.getByText("配置模板 · DeepSeek")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "恢复模板" }));
     fireEvent.click(
       within(screen.getByRole("alertdialog")).getByRole("button", {
         name: "恢复模板",
       }),
     );
-    expect(screen.getByText("默认模板")).toBeInTheDocument();
-    expect(screen.queryByText("起点：DeepSeek")).not.toBeInTheDocument();
+    expect(screen.getByText("配置模板 · ChimeraHub")).toBeInTheDocument();
+    expect(screen.queryByText("配置模板 · DeepSeek")).not.toBeInTheDocument();
   });
 });

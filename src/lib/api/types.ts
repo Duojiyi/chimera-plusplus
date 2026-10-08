@@ -6,7 +6,4 @@ export type AppId =
   | "gemini"
   | "grokbuild"
   | "opencode"
-  | "openclaw"
-  | "hermes"
-  | "pi"
-  | "mcode";
+  | "pi";

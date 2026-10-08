@@ -18,8 +18,8 @@ pub fn ensure_test_home() -> &'static Path {
         std::env::set_var("HOME", &base);
         #[cfg(windows)]
         std::env::set_var("USERPROFILE", &base);
-        // Claude Desktop 与 Hermes 在 Windows 上按 LOCALAPPDATA 定位目录；不覆盖
-        // 它，测试会读写真实用户的 %LOCALAPPDATA%\Claude* 与 %LOCALAPPDATA%\hermes。
+        // Claude Desktop 在 Windows 上按 LOCALAPPDATA 定位目录；不覆盖
+        // 它，测试会读写真实用户的 %LOCALAPPDATA%\Claude*。
         #[cfg(windows)]
         std::env::set_var("LOCALAPPDATA", base.join("AppData").join("Local"));
         base
@@ -38,7 +38,6 @@ pub fn reset_test_fs() {
         ".gemini",
         ".grok",
         ".config",
-        ".openclaw",
         "profiles",
         "AppData",
     ] {

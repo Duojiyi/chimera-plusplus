@@ -156,7 +156,7 @@ fn unsupported_reason(app: &AppType, provider: &Provider) -> Option<&'static str
         return Some("目标工具尚未开放");
     }
     // Their membership lives in their own config files, which an import never writes.
-    if matches!(app, AppType::Pi | AppType::Mcode) {
+    if matches!(app, AppType::Pi) {
         return Some("该工具暂不支持从文件导入");
     }
     let auth_tokens = provider
@@ -443,8 +443,7 @@ fn importable_apps(root: &Value) -> Vec<AppType> {
         .keys()
         .filter_map(|key| AppType::parse_id(key).ok())
         .filter(|app| {
-            !matches!(app, AppType::Pi | AppType::Mcode)
-                && crate::product_policy::require_app(app).is_ok()
+            !matches!(app, AppType::Pi) && crate::product_policy::require_app(app).is_ok()
         })
         .collect()
 }

@@ -22,16 +22,16 @@ mod gemini_config;
 mod gemini_mcp;
 mod gemini_session;
 mod grok_config;
-pub mod hermes_config;
+
 mod init_status;
 mod lightweight;
 #[cfg(target_os = "linux")]
 mod linux_fix;
 mod managed_prompts;
-mod mcode_config;
+
 mod mcp;
 mod model_capabilities;
-mod openclaw_config;
+
 mod opencode_config;
 mod panic_hook;
 mod pi_config;
@@ -92,6 +92,28 @@ use tauri::RunEvent;
 use tauri::{Emitter, Manager};
 use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 
+// Cache only E_INVALIDARG for our fixed, well-formed attribute/value pairs:
+// older Windows versions do not implement every DWM attribute. Other failures
+// (including transient composition/handle errors) must remain visible/retryable.
+#[cfg(any(target_os = "windows", test))]
+fn apply_supported_dwm_attribute(
+    unsupported: &std::sync::Mutex<bool>,
+    name: &str,
+    apply: impl FnOnce() -> i32,
+) {
+    let mut unsupported = unsupported.lock().unwrap_or_else(|e| e.into_inner());
+    if *unsupported {
+        return;
+    }
+    let result = apply();
+    if result == -2147024809 {
+        *unsupported = true;
+        log::debug!("Windows DWM 属性不受支持，停止重试 {name}: HRESULT={result}");
+    } else if result < 0 {
+        log::warn!("Windows DWM {name}失败: HRESULT={result}");
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn apply_windows_rounded_corners(window: &tauri::WebviewWindow) {
     use windows_sys::Win32::Graphics::Dwm::{
@@ -105,47 +127,41 @@ fn apply_windows_rounded_corners(window: &tauri::WebviewWindow) {
         return;
     };
     let preference = DWMWCP_ROUND;
-    let result = unsafe {
+    static CORNER_UNSUPPORTED: std::sync::Mutex<bool> = std::sync::Mutex::new(false);
+    apply_supported_dwm_attribute(&CORNER_UNSUPPORTED, "圆角设置", || unsafe {
         DwmSetWindowAttribute(
             hwnd.0 as _,
             DWMWA_WINDOW_CORNER_PREFERENCE as u32,
             (&preference as *const i32).cast(),
             std::mem::size_of_val(&preference) as u32,
         )
-    };
-    if result < 0 {
-        log::warn!("Windows DWM 圆角设置失败: HRESULT={result}");
-    }
+    });
 
     // A transparent borderless window otherwise keeps DWM's non-client drop
     // shadow even when Tauri's `shadow` option is disabled. The window region
     // below owns the visible rounded outline, so non-client rendering is not
     // needed and would only add a dark halo outside the app surface.
     let nc_rendering_policy = DWMNCRP_DISABLED;
-    let result = unsafe {
+    static NC_UNSUPPORTED: std::sync::Mutex<bool> = std::sync::Mutex::new(false);
+    apply_supported_dwm_attribute(&NC_UNSUPPORTED, "关闭非客户区渲染", || unsafe {
         DwmSetWindowAttribute(
             hwnd.0 as _,
             DWMWA_NCRENDERING_POLICY as u32,
             (&nc_rendering_policy as *const i32).cast(),
             std::mem::size_of_val(&nc_rendering_policy) as u32,
         )
-    };
-    if result < 0 {
-        log::warn!("关闭 Windows DWM 非客户区渲染失败: HRESULT={result}");
-    }
+    });
 
     let border_color = DWMWA_COLOR_NONE;
-    let result = unsafe {
+    static BORDER_UNSUPPORTED: std::sync::Mutex<bool> = std::sync::Mutex::new(false);
+    apply_supported_dwm_attribute(&BORDER_UNSUPPORTED, "关闭强调边框", || unsafe {
         DwmSetWindowAttribute(
             hwnd.0 as _,
             DWMWA_BORDER_COLOR as u32,
             (&border_color as *const u32).cast(),
             std::mem::size_of_val(&border_color) as u32,
         )
-    };
-    if result < 0 {
-        log::warn!("关闭 Windows DWM 强调边框失败: HRESULT={result}");
-    }
+    });
 
     // Let Tauri keep the native resize/minimize/maximize capabilities.
     // A maximized window must fill its work area without rounded clipping.
@@ -1093,10 +1109,7 @@ pub fn run() {
             if !first_run_already_confirmed && fresh_install_at_startup {
                 log::info!("✓ First-run welcome notice pending");
             }
-
-            // 1.6. 自动同步 OpenCode / OpenClaw 的 live providers 到数据库
             //
-            // additive 模式（OpenCode / OpenClaw）的 import 函数按 id 幂等——
             // 新 id 执行导入，已有 id 则更新 settings 和 display name，所以每次
             // 启动都跑是安全的：既保证新装用户开箱可见 live 中的供应商，也让外部
             // 修改的 live 文件能在重启后同步到数据库（与之前依赖前端"导入当前配置"
@@ -1111,20 +1124,6 @@ pub fn run() {
                 }
                 Ok(_) => log::debug!("○ No OpenCode provider changes from live config"),
                 Err(e) => log::warn!("✗ Failed to import OpenCode providers: {e}"),
-            }
-            match crate::services::provider::import_openclaw_providers_from_live(&app_state) {
-                Ok(count) if count > 0 => {
-                    log::info!("✓ Synced {count} OpenClaw provider(s) from live config");
-                }
-                Ok(_) => log::debug!("○ No OpenClaw provider changes from live config"),
-                Err(e) => log::warn!("✗ Failed to import OpenClaw providers: {e}"),
-            }
-            match crate::services::provider::import_hermes_providers_from_live(&app_state) {
-                Ok(count) if count > 0 => {
-                    log::info!("✓ Synced {count} Hermes provider(s) from live config");
-                }
-                Ok(_) => log::debug!("○ No Hermes provider changes from live config"),
-                Err(e) => log::warn!("✗ Failed to import Hermes providers: {e}"),
             }
             }
 
@@ -1224,14 +1223,6 @@ pub fn run() {
                     Ok(_) => log::debug!("○ No OpenCode MCP servers found to import"),
                     Err(e) => log::warn!("✗ Failed to import OpenCode MCP: {e}"),
                 }
-
-                match crate::services::mcp::McpService::import_from_hermes(&app_state) {
-                    Ok(count) if count > 0 => {
-                        log::info!("✓ Imported {count} MCP server(s) from Hermes");
-                    }
-                    Ok(_) => log::debug!("○ No Hermes MCP servers found to import"),
-                    Err(e) => log::warn!("✗ Failed to import Hermes MCP: {e}"),
-                }
             }
 
             // 4. 导入提示词文件（表空时触发）
@@ -1246,8 +1237,6 @@ pub fn run() {
                     crate::app_config::AppType::Gemini,
                     crate::app_config::AppType::GrokBuild,
                     crate::app_config::AppType::OpenCode,
-                    crate::app_config::AppType::OpenClaw,
-                    crate::app_config::AppType::Hermes,
                 ] {
                     match crate::services::prompt::PromptService::import_from_file_on_first_launch(
                         &app_state,
@@ -1646,6 +1635,11 @@ pub fn run() {
             builtin_templates::get_chimerahub_template,
             tool_registry::get_tool_registry,
             commands::get_pi_current_state,
+            commands::get_pi_document,
+            commands::get_omp_models,
+            commands::save_omp_models,
+            commands::save_pi_document,
+            commands::run_pi_plugin_action,
             commands::get_providers,
             commands::get_current_provider,
             commands::get_codex_current_provider_resolution,
@@ -1964,32 +1958,6 @@ pub fn run() {
             // OpenCode specific
             commands::import_opencode_providers_from_live,
             commands::get_opencode_live_provider_ids,
-            // OpenClaw specific
-            commands::import_openclaw_providers_from_live,
-            commands::get_openclaw_live_provider_ids,
-            commands::get_openclaw_live_provider,
-            commands::scan_openclaw_config_health,
-            commands::get_openclaw_default_model,
-            commands::set_openclaw_default_model,
-            commands::get_openclaw_model_catalog,
-            commands::set_openclaw_model_catalog,
-            commands::get_openclaw_agents_defaults,
-            commands::set_openclaw_agents_defaults,
-            commands::get_openclaw_env,
-            commands::set_openclaw_env,
-            commands::get_openclaw_tools,
-            commands::set_openclaw_tools,
-            // Hermes specific
-            commands::import_hermes_providers_from_live,
-            commands::get_hermes_live_provider_ids,
-            commands::get_hermes_live_provider,
-            commands::get_hermes_model_config,
-            commands::open_hermes_web_ui,
-            commands::launch_hermes_dashboard,
-            commands::get_hermes_memory,
-            commands::set_hermes_memory,
-            commands::get_hermes_memory_limits,
-            commands::set_hermes_memory_enabled,
             // Global upstream proxy
             commands::get_global_proxy_url,
             commands::set_global_proxy_url,
@@ -2027,16 +1995,6 @@ pub fn run() {
             commands::read_omo_slim_local_file,
             commands::get_current_omo_slim_provider_id,
             commands::disable_current_omo_slim,
-            // Workspace files (OpenClaw)
-            commands::read_workspace_file,
-            commands::write_workspace_file,
-            // Daily memory files (OpenClaw workspace)
-            commands::list_daily_memory_files,
-            commands::read_daily_memory_file,
-            commands::write_daily_memory_file,
-            commands::delete_daily_memory_file,
-            commands::search_daily_memory_files,
-            commands::open_workspace_directory,
             // lightweight mode (for testing or low-resource environments)
             commands::hide_main_window,
             commands::enter_lightweight_mode,
@@ -2797,10 +2755,9 @@ mod tests {
             gemini: true,
             grokbuild: true,
             opencode: true,
-            openclaw: true,
-            hermes: true,
+
             pi: true,
-            mcode: true,
+            omp: true,
         };
         assert_eq!(
             enabled_proxy_apps_on_startup(&db, &everything_visible).await,
@@ -2815,5 +2772,30 @@ mod tests {
         assert!(enabled_proxy_apps_on_startup(&db, &codex_hidden)
             .await
             .is_empty());
+    }
+}
+
+#[cfg(test)]
+mod dwm_attribute_tests {
+    use super::apply_supported_dwm_attribute;
+    use std::sync::Mutex;
+
+    #[test]
+    fn unsupported_attribute_is_not_retried_but_other_errors_are() {
+        let unsupported = Mutex::new(false);
+        apply_supported_dwm_attribute(&unsupported, "test", || -2147024809);
+        apply_supported_dwm_attribute(&unsupported, "test", || {
+            panic!("retried unsupported attribute")
+        });
+        let other = Mutex::new(false);
+        let mut calls = 0;
+        for result in [-2147467259, 0, 0] {
+            apply_supported_dwm_attribute(&other, "other", || {
+                calls += 1;
+                result
+            });
+        }
+        assert_eq!(calls, 3);
+        assert!(!*other.lock().unwrap());
     }
 }

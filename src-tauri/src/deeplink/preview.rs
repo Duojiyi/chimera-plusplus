@@ -93,12 +93,10 @@ fn provider_live_paths(app_type: &AppType) -> Vec<PathBuf> {
         ],
         AppType::GrokBuild => vec![crate::grok_config::get_grok_config_path()],
         AppType::OpenCode => vec![crate::opencode_config::get_opencode_config_path()],
-        AppType::OpenClaw => vec![crate::openclaw_config::get_openclaw_config_path()],
-        AppType::Hermes => vec![crate::hermes_config::get_hermes_config_path()],
+
         AppType::Pi => crate::pi_config::get_pi_models_path()
             .map(|path| vec![path])
             .unwrap_or_default(),
-        AppType::Mcode => vec![crate::mcode_config::config_path()],
     }
 }
 

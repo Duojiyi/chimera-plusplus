@@ -146,7 +146,6 @@ fn other_app_enable_disable_and_import_preserve_codex_intent() {
         AppType::Gemini,
         AppType::GrokBuild,
         AppType::OpenCode,
-        AppType::Hermes,
     ] {
         let shared = app_toggle_target(&off, &app, true);
         assert!(!is_codex_enabled(&shared));

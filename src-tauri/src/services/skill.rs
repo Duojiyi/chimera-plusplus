@@ -742,17 +742,8 @@ impl SkillService {
                     return Ok(custom.join("skills"));
                 }
             }
-            AppType::OpenClaw => {
-                if let Some(custom) = crate::settings::get_openclaw_override_dir() {
-                    return Ok(custom.join("skills"));
-                }
-            }
-            AppType::Hermes => {
-                if let Some(custom) = crate::settings::get_hermes_override_dir() {
-                    return Ok(custom.join("skills"));
-                }
-            }
-            AppType::Pi | AppType::Mcode => {}
+
+            AppType::Pi => {}
         }
 
         // 默认路径：回退到用户主目录下的标准位置。
@@ -767,12 +758,10 @@ impl SkillService {
             AppType::Gemini => home.join(".gemini").join("skills"),
             AppType::GrokBuild => home.join(".grok").join("skills"),
             AppType::OpenCode => home.join(".config").join("opencode").join("skills"),
-            AppType::OpenClaw => home.join(".openclaw").join("skills"),
-            AppType::Hermes => crate::hermes_config::get_hermes_dir().join("skills"),
+
             // Only ever scanned: Skills are never synced into or removed from
-            // Pi / MiniMax Code in this release (see `sync_to_app` / `remove_from_app`).
+            // Pi in this release (see `sync_to_app` / `remove_from_app`).
             AppType::Pi => home.join(".pi").join("agent").join("skills"),
-            AppType::Mcode => crate::mcode_config::data_dir().join("skills"),
         })
     }
 
@@ -1900,7 +1889,7 @@ impl SkillService {
             .get_installed_skill(id)?
             .ok_or_else(|| anyhow!("Skill not found: {id}"))?;
         Self::validate_managed_skill_directory(&skill.directory)?;
-        if matches!(app, AppType::ClaudeDesktop | AppType::Pi | AppType::Mcode) {
+        if matches!(app, AppType::ClaudeDesktop | AppType::Pi) {
             return Err(anyhow!("Skill projection is unsupported for {app:?}"));
         }
         let app_dir = Self::get_app_skills_dir(app)?;
@@ -1983,7 +1972,7 @@ impl SkillService {
             scan_sources.push((dir, "cc-switch".to_string()));
         }
 
-        let mut unmanaged: HashMap<String, UnmanagedSkill> = HashMap::new();
+        let mut unmanaged: HashMap<(String, PathBuf), UnmanagedSkill> = HashMap::new();
 
         for (scan_dir, label) in &scan_sources {
             if !Self::normal_directory_exists(scan_dir)? {
@@ -2009,8 +1998,11 @@ impl SkillService {
                 }
                 let (name, description) = Self::read_skill_name_desc(&skill_md, &dir_name);
 
+                // 同一物理目录的工具别名合并；不同物理来源保留独立行供界面阻止歧义选择。
+                let physical_path = fs::canonicalize(&path)
+                    .with_context(|| format!("解析 Skill 来源失败: {}", path.display()))?;
                 unmanaged
-                    .entry(dir_name.clone())
+                    .entry((dir_name.clone(), physical_path))
                     .and_modify(|s| s.found_in.push(label.clone()))
                     .or_insert(UnmanagedSkill {
                         directory: dir_name,
@@ -2079,8 +2071,18 @@ impl SkillService {
                 for (base, label) in &search_sources {
                     let skill_path = base.join(&dir_name);
                     if Self::normal_directory_exists(&skill_path)? {
-                        if source_path.is_none() {
-                            source_path = Some(skill_path);
+                        // 不按搜索顺序选源；根目录 symlink/junction 的别名允许指向同一物理目录。
+                        let physical_path = fs::canonicalize(&skill_path).with_context(|| {
+                            format!("解析 Skill 来源失败: {}", skill_path.display())
+                        })?;
+                        if let Some(previous) = &source_path {
+                            if previous != &physical_path {
+                                return Err(anyhow!(
+                                    "Skill '{dir_name}' 存在多个不同物理来源，请先整理同名目录后重试"
+                                ));
+                            }
+                        } else {
+                            source_path = Some(physical_path);
                         }
                         log::debug!("Skill '{dir_name}' found in source '{label}'");
                     }
@@ -2467,7 +2469,7 @@ impl SkillService {
     }
 
     fn sync_to_app_dir_internal(directory: &str, app: &AppType) -> Result<()> {
-        if matches!(app, AppType::ClaudeDesktop | AppType::Pi | AppType::Mcode) {
+        if matches!(app, AppType::ClaudeDesktop | AppType::Pi) {
             return Ok(());
         }
 
@@ -2779,7 +2781,7 @@ impl SkillService {
     }
 
     fn remove_from_app_locked(directory: &str, app: &AppType) -> Result<()> {
-        if matches!(app, AppType::ClaudeDesktop | AppType::Pi | AppType::Mcode) {
+        if matches!(app, AppType::ClaudeDesktop | AppType::Pi) {
             return Ok(());
         }
 
@@ -2813,7 +2815,7 @@ impl SkillService {
     }
 
     fn sync_to_app_locked(db: &Arc<Database>, app: &AppType) -> Result<()> {
-        if matches!(app, AppType::ClaudeDesktop | AppType::Pi | AppType::Mcode) {
+        if matches!(app, AppType::ClaudeDesktop | AppType::Pi) {
             return Ok(());
         }
 
@@ -4981,6 +4983,58 @@ mod tests {
         assert!(SkillService::remove_from_app("absent-skill", &AppType::Claude).is_ok());
         assert!(SkillService::remove_from_app("linked-skill", &AppType::Claude).is_err());
         assert!(shared.join("linked-skill/SKILL.md").exists());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn import_rejects_distinct_sources_even_when_added_after_scan() {
+        let _home = crate::services::live_backup::tests::TempHome::new();
+        crate::settings::reload_settings().unwrap();
+        let home = crate::config::get_home_dir();
+        let shared = home.join("shared-skills");
+        write_skill(&shared.join("same-name"), "Shared Skill");
+        link_skill_directory(&shared, &home.join(".claude/skills"));
+        link_skill_directory(&shared, &home.join(".agents/skills"));
+        let database = Arc::new(Database::memory().unwrap());
+        let rows = SkillService::scan_unmanaged(&database).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].found_in.contains(&"claude".to_string()));
+        assert!(rows[0].found_in.contains(&"agents".to_string()));
+
+        // 新来源在扫描后出现，导入边界也必须阻止歧义，不能只依赖 UI。
+        let other = home.join(".codex/skills/same-name");
+        write_skill(&other, "Other Skill");
+        let error = SkillService::import_from_apps(
+            &database,
+            vec![ImportSkillSelection {
+                directory: "same-name".to_string(),
+                apps: SkillApps::default(),
+            }],
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("多个不同物理来源"));
+        assert!(database.get_all_installed_skills().unwrap().is_empty());
+        assert!(!SkillService::ssot_path().join("same-name").exists());
+        assert!(fs::read_to_string(other.join("SKILL.md"))
+            .unwrap()
+            .contains("Other Skill"));
+        assert!(fs::read_to_string(shared.join("same-name/SKILL.md"))
+            .unwrap()
+            .contains("Shared Skill"));
+
+        let rows = SkillService::scan_unmanaged(&database).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|row| row.directory == "same-name"));
+        let shared_row = rows.iter().find(|row| row.name == "Shared Skill").unwrap();
+        assert!(shared_row.found_in.contains(&"claude".to_string()));
+        assert!(shared_row.found_in.contains(&"agents".to_string()));
+        assert_eq!(
+            rows.iter()
+                .find(|row| row.name == "Other Skill")
+                .unwrap()
+                .found_in,
+            vec!["codex".to_string()]
+        );
     }
 
     #[test]

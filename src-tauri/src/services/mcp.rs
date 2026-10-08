@@ -37,7 +37,6 @@ impl McpService {
                         | AppType::Gemini
                         | AppType::GrokBuild
                         | AppType::OpenCode
-                        | AppType::Hermes
                 )
             })
             .map(|app| {
@@ -392,12 +391,6 @@ impl McpService {
         Self::import_app_locked(state, &AppType::OpenCode)
     }
 
-    /// 从 Hermes 导入 MCP
-    pub fn import_from_hermes(state: &AppState) -> Result<usize, AppError> {
-        let _guard = lock_operation()?;
-        Self::import_app_locked(state, &AppType::Hermes)
-    }
-
     fn import_app_locked(state: &AppState, app: &AppType) -> Result<usize, AppError> {
         let mut imported = crate::app_config::MultiAppConfig::default();
         let count = match app {
@@ -406,7 +399,7 @@ impl McpService {
             AppType::Gemini => mcp::import_from_gemini(&mut imported)?,
             AppType::GrokBuild => mcp::import_from_grokbuild(&mut imported)?,
             AppType::OpenCode => mcp::import_from_opencode(&mut imported)?,
-            AppType::Hermes => mcp::import_from_hermes(&mut imported)?,
+
             _ => return Ok(0),
         };
         Self::save_imported(state, count, &imported, app)
@@ -536,7 +529,6 @@ impl McpService {
             AppType::Gemini,
             AppType::GrokBuild,
             AppType::OpenCode,
-            AppType::Hermes,
         ] {
             let result = Self::import_app_locked(state, &app);
             let app = app.as_str();

@@ -8,8 +8,6 @@ const directories = [
   ["gemini", "Gemini", "geminiConfigDir"],
   ["grokbuild", "Grok Build", "grokConfigDir"],
   ["opencode", "OpenCode", "opencodeConfigDir"],
-  ["openclaw", "OpenClaw", "openclawConfigDir"],
-  ["hermes", "Hermes", "hermesConfigDir"],
 ] as const;
 type DirectoryField = (typeof directories)[number][2];
 

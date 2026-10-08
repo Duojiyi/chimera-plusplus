@@ -16,7 +16,6 @@ pub const TITLE_MAX_CHARS: usize = 80;
 /// ~16 KB for the tail seek), regardless of how large the file on disk is,
 /// so total file size is not a memory-safety concern. A prior version
 /// rejected any file above a fixed byte threshold, which made large-but
-/// -otherwise-healthy session files (Claude/Codex/Hermes/OpenClaw rollouts
 /// can legitimately grow past that) silently disappear from the session
 /// list instead of just being indexed normally.
 pub fn read_head_tail_lines(

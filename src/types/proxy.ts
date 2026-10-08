@@ -48,12 +48,9 @@ export interface ProxyTakeoverStatus {
   gemini: boolean;
   grokbuild: boolean;
   opencode: boolean;
-  openclaw: boolean;
-  hermes: boolean;
+
   /** Pi never goes through the local proxy. */
   pi?: boolean;
-  /** MiniMax Code never goes through the local proxy. */
-  mcode?: boolean;
 }
 
 export interface ProviderHealth {

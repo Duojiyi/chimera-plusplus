@@ -4,8 +4,7 @@ import { providerPresets } from "@/config/claudeProviderPresets";
 import { codexProviderPresets } from "@/config/codexProviderPresets";
 import { geminiProviderPresets } from "@/config/geminiProviderPresets";
 import { grokBuildProviderPresets } from "@/config/grokBuildProviderPresets";
-import { hermesProviderPresets } from "@/config/hermesProviderPresets";
-import { openclawProviderPresets } from "@/config/openclawProviderPresets";
+
 import { opencodeProviderPresets } from "@/config/opencodeProviderPresets";
 
 const lists: Record<string, readonly object[]> = {
@@ -14,8 +13,7 @@ const lists: Record<string, readonly object[]> = {
   codex: codexProviderPresets,
   gemini: geminiProviderPresets,
   grokBuild: grokBuildProviderPresets,
-  hermes: hermesProviderPresets,
-  openclaw: openclawProviderPresets,
+
   opencode: opencodeProviderPresets,
 };
 
@@ -63,14 +61,27 @@ describe("provider preset curation", () => {
     },
   );
 
-  // Claude Code and Claude Desktop do not use the proxy, so only presets that
-  // speak their native Anthropic protocol are offered.
+  // Direct presets use Anthropic; the builtin Desktop template uses its proxy adapter.
   it.each([
     ["claude", providerPresets],
     ["claudeDesktop", claudeDesktopProviderPresets],
   ] as const)("%s offers only native Anthropic presets", (_tool, presets) => {
-    const foreign = (presets as { name: string; apiFormat?: string }[])
-      .filter((preset) => (preset.apiFormat ?? "anthropic") !== "anthropic")
+    const foreign = (
+      presets as {
+        name: string;
+        apiFormat?: string;
+        isBuiltinTemplate?: boolean;
+        mode?: string;
+      }[]
+    )
+      .filter((preset) => {
+        if (_tool === "claudeDesktop" && preset.isBuiltinTemplate) {
+          expect(preset.mode).toBe("proxy");
+          expect(preset.apiFormat).toBe("openai_responses");
+          return false;
+        }
+        return (preset.apiFormat ?? "anthropic") !== "anthropic";
+      })
       .map((preset) => preset.name);
     expect(foreign).toEqual([]);
   });

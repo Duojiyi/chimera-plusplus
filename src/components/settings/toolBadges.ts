@@ -1,13 +1,14 @@
-import type { AppId } from "@/lib/api/types";
+import type { VisibleApps } from "@/types";
 import {
   additionalToolNames,
   nativeToolNames,
 } from "@/utils/toolProviderConfig";
 
-export const toolDisplayNames: Record<AppId, string> = {
+export const toolDisplayNames: Record<keyof VisibleApps, string> = {
   codex: "Codex",
   ...nativeToolNames,
   ...additionalToolNames,
+  omp: "oh-my-pi",
 };
 
 /**
@@ -15,15 +16,14 @@ export const toolDisplayNames: Record<AppId, string> = {
  * and the tool page headers (ToolView) draw the same letters, so a tool is
  * recognisable by its badge everywhere.
  */
-export const toolBadgeMarks: Record<AppId, string> = {
+export const toolBadgeMarks: Record<keyof VisibleApps, string> = {
   codex: "Cx",
   claude: "CC",
   "claude-desktop": "CD",
   gemini: "Gm",
   grokbuild: "Gk",
   opencode: "OC",
-  openclaw: "Cl",
-  hermes: "He",
+
   pi: "Pi",
-  mcode: "MM",
+  omp: "OMP",
 };

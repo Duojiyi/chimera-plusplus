@@ -115,7 +115,7 @@ describe("runtime persisted preferences", () => {
     expect(props.onCheck).not.toHaveBeenCalled();
     await act(async () => load.resolve(initial));
     expect(screen.getByText("已关闭")).toBeInTheDocument();
-    expect(screen.getByText("镜像源")).toBeInTheDocument();
+    expect(screen.getByText("GitHub 镜像")).toBeInTheDocument();
     expect(screen.getByText(runtime.installPath)).toBeInTheDocument();
     fireEvent.click(check);
     expect(props.onCheck).toHaveBeenCalledWith({
@@ -500,7 +500,8 @@ describe("runtime persisted preferences", () => {
       return [];
     });
     const onRuntimeChanged = vi.fn();
-    renderRuntime({ onRuntimeChanged });
+    const onOperationFinished = vi.fn();
+    renderRuntime({ onRuntimeChanged, onOperationFinished });
     await openPreferences();
     fireEvent.click(
       screen.getByRole("button", { name: /安装历史版本 从镜像发布目录/ }),
@@ -519,5 +520,96 @@ describe("runtime persisted preferences", () => {
       source: "mirror",
       installMode: "portable",
     });
+    expect(onOperationFinished).toHaveBeenCalledTimes(1);
+  });
+  it("places determinate installation progress before installed status", async () => {
+    renderRuntime({
+      operation: { action: "update", stage: "downloading" },
+      progress: {
+        downloaded: 52428800,
+        total: 104857600,
+        stage: "downloading",
+      },
+    });
+    const task = screen.getByRole("region", { name: "当前安装任务" });
+    const bar = screen.getByRole("progressbar", { name: "安装进度" });
+    expect(bar).toHaveAttribute("aria-valuenow", "50");
+    expect(task).toHaveTextContent("50.0 MB / 100.0 MB");
+    expect(
+      task.compareDocumentPosition(
+        screen.getByRole("heading", { name: "已安装" }),
+      ) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    await waitFor(() => expect(mocks.get).toHaveBeenCalled());
+  });
+
+  it("does not report a false zero percent when total is unknown or installing", async () => {
+    const { props, rerender } = renderRuntime({
+      operation: { action: "update", stage: "downloading" },
+      progress: { downloaded: 1024, total: 0, stage: "downloading" },
+    });
+    expect(screen.getByRole("progressbar")).not.toHaveAttribute(
+      "aria-valuenow",
+    );
+    expect(screen.getByText("正在下载，等待获取文件大小")).toBeInTheDocument();
+    rerender(
+      <NewRuntimeView
+        {...props}
+        progress={{ downloaded: 1024, total: 1024, stage: "installing" }}
+      />,
+    );
+    expect(screen.getByRole("progressbar")).not.toHaveAttribute(
+      "aria-valuenow",
+    );
+    expect(screen.getByText("下载完成 · 校验并安装")).toBeInTheDocument();
+    await waitFor(() => expect(mocks.get).toHaveBeenCalled());
+  });
+
+  it("opens maintenance as a full workspace instead of a side drawer", async () => {
+    renderRuntime();
+    await openPreferences();
+    expect(screen.getByRole("dialog", { name: "安装与维护" })).toHaveClass(
+      "runtime-maintenance-workspace",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "关闭安装与维护" }));
+    expect(
+      screen.queryByRole("dialog", { name: "安装与维护" }),
+    ).not.toBeInTheDocument();
+  });
+  it("clears historical download progress even when installation fails", async () => {
+    const plan = {
+      version: "1.1.0",
+      packageVersion: "1.1.0",
+      packageMoniker: "Codex",
+      packageUrl: "https://example.com/codex.msix",
+      sha256: "abc",
+      sizeBytes: 0,
+    };
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "list_codex_runtime_releases")
+        return [{ tag: "v1.1.0", installable: true, prerelease: false }];
+      if (command === "plan_codex_runtime_release") return plan;
+      if (command === "install_codex_runtime_release")
+        throw new Error("download interrupted");
+      return [];
+    });
+    const onOperationFinished = vi.fn();
+    renderRuntime({ onOperationFinished });
+    await openPreferences();
+    fireEvent.click(
+      screen.getByRole("button", { name: /安装历史版本 从镜像发布目录/ }),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: /v1.1.0/ }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "确认安装此版本" }),
+    );
+    await waitFor(() => expect(onOperationFinished).toHaveBeenCalledTimes(1));
+    expect(mocks.error).toHaveBeenCalledWith(
+      "安装所选版本失败",
+      expect.anything(),
+    );
+    expect(
+      screen.getByRole("button", { name: "确认安装此版本" }),
+    ).toBeEnabled();
   });
 });

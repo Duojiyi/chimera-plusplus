@@ -41,9 +41,7 @@ fn target(app: &AppType) -> Option<PathBuf> {
         AppType::OpenCode if crate::opencode_config::get_opencode_dir().exists() => {
             Some(crate::opencode_config::get_opencode_config_path())
         }
-        AppType::Hermes if crate::hermes_config::get_hermes_dir().exists() => {
-            Some(crate::hermes_config::get_hermes_config_path())
-        }
+
         _ => None,
     }
 }
@@ -70,15 +68,11 @@ fn client_spec(spec: &Value) -> Value {
     spec
 }
 
-fn projected_spec(app: &AppType, spec: &Value, live: Option<&Value>) -> Result<Value, AppError> {
+fn projected_spec(app: &AppType, spec: &Value) -> Result<Value, AppError> {
     let spec = client_spec(spec);
     match app {
         AppType::OpenCode => super::opencode::convert_to_opencode_format(&spec),
-        AppType::Hermes => super::hermes::convert_to_hermes_format(&spec).map(|new| {
-            live.map_or(new.clone(), |old| {
-                super::hermes::merge_hermes_spec(old, &new)
-            })
-        }),
+
         AppType::GrokBuild => {
             let mut doc = toml_edit::DocumentMut::new();
             doc["server"] = toml_edit::Item::Table(
@@ -103,7 +97,7 @@ fn plan_with_previous(
     let text =
         std::str::from_utf8(snapshot.contents().unwrap_or_default()).map_err(|_| invalid())?;
     let key = match app {
-        AppType::GrokBuild | AppType::Hermes => "mcp_servers",
+        AppType::GrokBuild => "mcp_servers",
         AppType::OpenCode => "mcp",
         _ => "mcpServers",
     };
@@ -120,7 +114,7 @@ fn plan_with_previous(
                 let value: toml::Value = toml::from_str(text).map_err(|_| invalid())?;
                 serde_json::to_value(value).map_err(|_| invalid())?
             }
-            AppType::Hermes => serde_yaml::from_str(text).map_err(|_| invalid())?,
+
             AppType::OpenCode => json5::from_str(text).map_err(|_| invalid())?,
             _ => serde_json::from_str(text).map_err(|_| invalid())?,
         }
@@ -132,14 +126,12 @@ fn plan_with_previous(
         .as_object_mut()
         .ok_or_else(invalid)?;
     let live = entries.get(id);
-    let desired = spec
-        .map(|spec| projected_spec(app, spec, live))
-        .transpose()?;
+    let desired = spec.map(|spec| projected_spec(app, spec)).transpose()?;
     let live_hash = live.map(hash);
     let recorded = owned.get(id);
     let legacy_match = if recorded.is_none() && live.is_some() {
         previous
-            .map(|spec| projected_spec(app, spec, live))
+            .map(|spec| projected_spec(app, spec))
             .transpose()?
             .as_ref()
             == live
@@ -189,10 +181,7 @@ fn plan_with_previous(
             }
             doc.to_string().into_bytes()
         }
-        AppType::Hermes => {
-            let section = crate::hermes_config::json_to_yaml(&root[key])?;
-            crate::hermes_config::replace_yaml_section(text, key, &section)?.into_bytes()
-        }
+
         _ => crate::config::json_file_text(&root)?.into_bytes(),
     };
     let mut changes = Changeset::new();

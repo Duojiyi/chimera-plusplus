@@ -12,6 +12,7 @@ export interface OpenCodeProviderPreset {
   isPartner?: boolean;
   primePartner?: boolean; // 置顶合作伙伴（顶级）：徽章显示为心形
   partnerPromotionKey?: string;
+  isBuiltinTemplate?: boolean;
   category?: ProviderCategory;
   templateValues?: Record<string, TemplateValueConfig>;
   theme?: PresetTheme;
@@ -304,6 +305,7 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
         : {},
     },
     category: "third_party",
+    isBuiltinTemplate: true,
     templateValues: {
       apiKey: {
         label: "API Key",

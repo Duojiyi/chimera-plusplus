@@ -54,7 +54,7 @@ const props = () => ({
   deletingProviderId: null,
   onSwitch: vi.fn().mockResolvedValue(undefined),
   onEdit: vi.fn(),
-  onDelete: vi.fn().mockResolvedValue(true),
+  onDelete: vi.fn(),
 });
 beforeEach(() => vi.clearAllMocks());
 describe("connected provider line table", () => {
@@ -98,7 +98,7 @@ describe("connected provider line table", () => {
   it("keeps design preview filterable without switching, editing, deleting or probing", () => {
     const callbacks = props();
     render(<ProviderLineTable {...callbacks} readOnly />);
-    for (const name of ["全部测速", "切换到Beta", "编辑Beta", "更多Beta操作"]) {
+    for (const name of ["全部测速", "切换到Beta", "编辑Beta", "删除Beta"]) {
       const button = screen.getByRole("button", { name });
       expect(button).toBeDisabled();
       fireEvent.click(button);
@@ -139,16 +139,20 @@ describe("connected provider line table", () => {
     expect(p.onSwitch).toHaveBeenCalledWith(providers[1]);
     fireEvent.click(screen.getByRole("button", { name: "编辑Beta" }));
     expect(p.onEdit).toHaveBeenCalledWith(providers[1]);
-    await user.click(screen.getByRole("button", { name: "更多Beta操作" }));
-    await user.click(screen.getByRole("menuitem", { name: "删除Beta" }));
-    expect(p.onDelete).toHaveBeenCalledWith(providers[1]);
-    await user.click(screen.getByRole("button", { name: "更多Alpha操作" }));
-    expect(screen.getByRole("menuitem", { name: "删除Alpha" })).toHaveAttribute(
-      "aria-disabled",
-      "true",
+    await user.click(screen.getByRole("button", { name: "删除Beta" }));
+
+    expect(p.onDelete).toHaveBeenCalledExactlyOnceWith(providers[1]);
+    const activeDelete = screen.getByRole("button", { name: "删除Alpha" });
+    expect(activeDelete).toBeDisabled();
+    expect(activeDelete).toHaveAttribute(
+      "title",
+      "当前线路正在使用，请先切换到其他线路",
     );
-    await user.keyboard("{Escape}");
-    expect(screen.getByRole("button", { name: "更多Alpha操作" })).toHaveFocus();
+    await user.click(activeDelete);
+    expect(p.onDelete).toHaveBeenCalledTimes(1);
+    expect(
+      screen.queryByRole("button", { name: /更多.*操作/ }),
+    ).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "删除Official" }),
     ).not.toBeInTheDocument();
@@ -201,6 +205,14 @@ describe("connected provider line table", () => {
     fireEvent.click(screen.getByRole("button", { name: "全部测速" }));
     await waitFor(() => expect(screen.getAllByText("失败")).toHaveLength(2));
     expect(screen.getByRole("button", { name: "全部测速" })).toBeEnabled();
+  });
+  it("blocks deletion while another deletion is pending", () => {
+    const p = props();
+    render(<ProviderLineTable {...p} deletingProviderId="real-a" />);
+    const button = screen.getByRole("button", { name: "删除Beta" });
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(p.onDelete).not.toHaveBeenCalled();
   });
   it("blocks row mutations during an in-flight switch", () => {
     render(<ProviderLineTable {...props()} switchingId="real-b" />);

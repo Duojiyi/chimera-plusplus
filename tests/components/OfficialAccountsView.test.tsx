@@ -1,3 +1,4 @@
+import { StrictMode } from "react";
 import {
   act,
   cleanup,
@@ -62,6 +63,7 @@ afterEach(() => {
 });
 beforeEach(() => {
   vi.clearAllMocks();
+  localStorage.removeItem("chimera.officialAccounts.refreshMinutes");
   vi.mocked(officialAccountsApi.startBrowserLogin)
     .mockReset()
     .mockResolvedValue({
@@ -212,8 +214,13 @@ describe("official account onboarding", () => {
       .mockResolvedValueOnce([account("newly-imported")]);
     render(<OfficialAccountsView />);
     fireEvent.click(screen.getByRole("button", { name: "导入本机登录" }));
-    await screen.findByText("newly-imported");
+    await waitFor(() =>
+      expect(officialAccountsApi.saveCurrentLogin).toHaveBeenCalledOnce(),
+    );
+    expect(officialAccountsApi.list).toHaveBeenCalledTimes(1);
     await act(async () => resolveOld([]));
+    await screen.findByText("newly-imported");
+    expect(officialAccountsApi.list).toHaveBeenCalledTimes(2);
     expect(screen.getByText("newly-imported")).toBeVisible();
     expect(screen.queryByText("连接第一个官方账号")).not.toBeInTheDocument();
   });
@@ -226,7 +233,7 @@ describe("official account onboarding", () => {
       screen.queryByRole("button", { name: "添加官方账号" }),
     ).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "导入本机登录" })).toBeVisible();
-    expect(screen.getByText(/登录令牌仅保存在本机/)).toBeVisible();
+    expect(screen.getByText(/登录凭据仅保存在本机/)).toBeVisible();
     expect(screen.queryByLabelText("当前官方账号")).not.toBeInTheDocument();
     expect(screen.queryByText(/auth.json 写入记录/)).not.toBeInTheDocument();
   });
@@ -459,6 +466,8 @@ describe("official account Vault quotas", () => {
       expect(within(first).getByText("额度查询失败，请刷新重试")).toBeVisible(),
     );
     expect(within(first).queryByText("尚未获取额度")).not.toBeInTheDocument();
+    expect(within(first).getByText("已保存登录")).toBeVisible();
+    expect(screen.queryByText("登录有效")).not.toBeInTheDocument();
     expect(
       within(first).getByRole("button", { name: "重新应用" }),
     ).toBeEnabled();
@@ -599,5 +608,202 @@ describe("device login recovery", () => {
       expect(officialAccountsApi.saveCurrentLogin).toHaveBeenCalledOnce(),
     );
     expect(officialAccountsApi.startDeviceLogin).not.toHaveBeenCalled();
+  });
+});
+
+describe("official account automatic quota refresh", () => {
+  const storageKey = "chimera.officialAccounts.refreshMinutes";
+  const advance = async (minutes: number) => {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(minutes * 60_000);
+    });
+  };
+  const open = async () => {
+    vi.useFakeTimers();
+    vi.mocked(officialAccountsApi.list).mockResolvedValue([
+      account("auto", true),
+      { ...account("expired"), needsRelogin: true },
+    ]);
+    let view!: ReturnType<typeof render>;
+    await act(async () => {
+      view = render(<OfficialAccountsView />);
+    });
+    return view;
+  };
+
+  it("fetches on entry, skips expired accounts, refreshes every five minutes and stops on unmount", async () => {
+    const view = await open();
+    expect(officialAccountsApi.getQuota).toHaveBeenCalledExactlyOnceWith(
+      "auto",
+    );
+    await advance(4);
+    expect(officialAccountsApi.getQuota).toHaveBeenCalledTimes(1);
+    await advance(1);
+    expect(officialAccountsApi.getQuota).toHaveBeenCalledTimes(2);
+    view.unmount();
+    await advance(10);
+    expect(officialAccountsApi.getQuota).toHaveBeenCalledTimes(2);
+  });
+
+  it("changes cadence immediately, persists off, and still allows entry and manual refresh", async () => {
+    const view = await open();
+    fireEvent.change(screen.getByLabelText("自动刷新额度"), {
+      target: { value: "1" },
+    });
+    expect(localStorage.getItem(storageKey)).toBe("1");
+    await advance(1);
+    expect(officialAccountsApi.getQuota).toHaveBeenCalledTimes(2);
+    fireEvent.change(screen.getByLabelText("自动刷新额度"), {
+      target: { value: "0" },
+    });
+    await advance(15);
+    expect(officialAccountsApi.getQuota).toHaveBeenCalledTimes(2);
+    view.unmount();
+    await open();
+    expect(screen.getByLabelText("自动刷新额度")).toHaveValue("0");
+    expect(officialAccountsApi.getQuota).toHaveBeenCalledTimes(3);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "刷新" }));
+    });
+    expect(officialAccountsApi.getQuota).toHaveBeenCalledTimes(4);
+  });
+
+  it("does not overlap slow requests or update an unmounted page", async () => {
+    let finish!: (value: SubscriptionQuota) => void;
+    vi.mocked(officialAccountsApi.getQuota).mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const view = await open();
+    await advance(15);
+    expect(officialAccountsApi.list).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "刷新" })).toBeDisabled();
+    view.unmount();
+    await act(async () => {
+      finish(quota());
+    });
+    await advance(5);
+    expect(officialAccountsApi.list).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps last known quotas with one inline warning through repeated failures and recovers", async () => {
+    await open();
+    vi.mocked(officialAccountsApi.getQuota).mockRejectedValue(
+      new Error("offline"),
+    );
+    await advance(15);
+    expect(screen.getAllByText("75%").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/部分额度未更新/)).toHaveLength(1);
+    vi.mocked(officialAccountsApi.list).mockRejectedValueOnce(
+      new Error("offline"),
+    );
+    await advance(5);
+    expect(screen.getByRole("heading", { name: "auto" })).toBeVisible();
+    vi.mocked(officialAccountsApi.getQuota).mockResolvedValue(quota(40));
+    await advance(5);
+    expect(screen.queryByText(/部分额度未更新/)).not.toBeInTheDocument();
+    expect(screen.getAllByText("60%").length).toBeGreaterThan(0);
+  });
+
+  it.each([429, 503])(
+    "retains quotas on fulfilled HTTP %s failures and replaces them after recovery",
+    async (status) => {
+      await open();
+      vi.mocked(officialAccountsApi.getQuota).mockResolvedValue({
+        ...quota(),
+        success: false,
+        credentialStatus: "valid",
+        tiers: [],
+        error: `API error (HTTP ${status})`,
+      });
+      await advance(10);
+      expect(screen.getAllByText("75%")).toHaveLength(2);
+      expect(screen.getAllByText("70%")).toHaveLength(2);
+      expect(screen.getAllByText(/部分额度未更新/)).toHaveLength(1);
+      expect(screen.getByText("已保存登录")).toBeVisible();
+      vi.mocked(officialAccountsApi.getQuota).mockResolvedValue(quota(40));
+      await advance(5);
+      expect(screen.queryByText(/部分额度未更新/)).not.toBeInTheDocument();
+      expect(screen.queryByText("75%")).not.toBeInTheDocument();
+      expect(screen.getAllByText("60%")).toHaveLength(2);
+    },
+  );
+
+  it("uses a safe default for corrupt storage and tolerates unavailable storage", async () => {
+    localStorage.setItem(storageKey, "-1");
+    const view = await open();
+    expect(screen.getByLabelText("自动刷新额度")).toHaveValue("5");
+    view.unmount();
+    const read = vi
+      .spyOn(Storage.prototype, "getItem")
+      .mockImplementation(() => {
+        throw new Error("blocked");
+      });
+    const write = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(() => {
+        throw new Error("blocked");
+      });
+    try {
+      await open();
+      fireEvent.change(screen.getByLabelText("自动刷新额度"), {
+        target: { value: "1" },
+      });
+      await advance(1);
+      expect(screen.getByLabelText("自动刷新额度")).toHaveValue("1");
+    } finally {
+      read.mockRestore();
+      write.mockRestore();
+    }
+  });
+
+  it("serializes StrictMode entry requests and keeps a single timer", async () => {
+    vi.useFakeTimers();
+    vi.mocked(officialAccountsApi.list).mockResolvedValue([account("strict")]);
+    await act(async () => {
+      render(
+        <StrictMode>
+          <OfficialAccountsView />
+        </StrictMode>,
+      );
+    });
+    expect(officialAccountsApi.getQuota).toHaveBeenCalledExactlyOnceWith(
+      "strict",
+    );
+    const calls = vi.mocked(officialAccountsApi.list).mock.calls.length;
+    await advance(5);
+    expect(officialAccountsApi.list).toHaveBeenCalledTimes(calls + 1);
+    expect(officialAccountsApi.getQuota).toHaveBeenCalledTimes(2);
+  });
+
+  it("surfaces unsuccessful quota responses and does not keep an expired quota visible", async () => {
+    await open();
+    vi.mocked(officialAccountsApi.getQuota).mockResolvedValue({
+      ...quota(),
+      success: false,
+      credentialStatus: "expired",
+      tiers: [],
+    });
+    await advance(5);
+    expect(screen.getAllByText(/部分额度未更新/)).toHaveLength(1);
+    expect(screen.queryByText("75%")).not.toBeInTheDocument();
+    expect(screen.getAllByText("需要重新登录")).toHaveLength(2);
+  });
+
+  it("skips background ticks while hidden", async () => {
+    await open();
+    const visibility = vi
+      .spyOn(document, "visibilityState", "get")
+      .mockReturnValue("hidden");
+    try {
+      await advance(10);
+      expect(officialAccountsApi.getQuota).toHaveBeenCalledTimes(1);
+      visibility.mockReturnValue("visible");
+      await advance(5);
+      expect(officialAccountsApi.getQuota).toHaveBeenCalledTimes(2);
+    } finally {
+      visibility.mockRestore();
+    }
   });
 });

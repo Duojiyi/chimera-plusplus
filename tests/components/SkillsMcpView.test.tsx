@@ -73,12 +73,11 @@ const skill: InstalledSkill = {
     codex: false,
     gemini: false,
     opencode: false,
-    openclaw: false,
-    hermes: false,
   },
 };
 beforeEach(() => {
   vi.resetAllMocks();
+  vi.mocked(skillsApi.scanUnmanaged).mockResolvedValue([]);
   vi.mocked(skillsApi.getInstalled).mockResolvedValue([skill]);
   vi.mocked(mcpApi.getAllServers).mockResolvedValue({});
   vi.mocked(officialAccountsApi.getNotes).mockResolvedValue({});
@@ -186,28 +185,6 @@ describe("connected Skills/MCP page", () => {
     },
   );
 
-  it("switches resource context and does not offer unsupported OpenClaw MCP", async () => {
-    render(<SkillsMcpView />);
-    await screen.findByText("Real Skill");
-    fireEvent.click(screen.getByRole("button", { name: "MCP 0" }));
-    fireEvent.change(screen.getByRole("combobox", { name: "目标工具" }), {
-      target: { value: "openclaw" },
-    });
-    expect(screen.getByRole("button", { name: "MCP 0" })).toBeDisabled();
-    expect(screen.getByText(/暂不支持受管 MCP/)).toBeVisible();
-    fireEvent.click(
-      screen.getByRole("switch", { name: "启用 Skill Real Skill" }),
-    );
-    await waitFor(() =>
-      expect(skillsApi.toggleApp).toHaveBeenCalledWith(
-        skill.id,
-        "openclaw",
-        true,
-      ),
-    );
-    expect(mcpApi.toggleApp).not.toHaveBeenCalled();
-  });
-
   it("defaults new MCP to the selected tool and preserves all apps when editing", async () => {
     const server: McpServer = {
       id: "real",
@@ -231,7 +208,6 @@ describe("connected Skills/MCP page", () => {
       "gemini",
       "grokbuild",
       "opencode",
-      "hermes",
     ]);
     expect(screen.getByRole("combobox", { name: "目标工具" })).toBeDisabled();
     unmount();
@@ -308,8 +284,13 @@ describe("connected Skills/MCP page", () => {
       "环境变量与请求头已脱敏；分享前请检查地址、启动参数和备注";
     const exportScope = `导出全部工具的共享资源与启用状态。${exportNotice}`;
     const exportButton = screen.getByRole("button", { name: "导出" });
-    expect(screen.getByText(exportScope)).toBeVisible();
-    expect(exportButton).toHaveAccessibleDescription(exportScope);
+    expect(screen.getByText("导出前请检查敏感信息")).toBeVisible();
+    expect(screen.queryByText(exportScope)).not.toBeInTheDocument();
+    expect(exportButton).toHaveAccessibleDescription("导出前请检查敏感信息");
+    expect(exportButton).toHaveAttribute("title", exportScope);
+    expect(
+      screen.getByText("管理 Skills 与 MCP · 当前工具 Codex"),
+    ).toBeVisible();
     expect(screen.queryByText(/密钥与令牌值已脱敏/)).not.toBeInTheDocument();
     fireEvent.click(exportButton);
     expect(URL.createObjectURL).toHaveBeenCalledOnce();
@@ -370,9 +351,7 @@ describe("connected Skills/MCP page", () => {
       expect(
         screen.getByRole("switch", { name: "启用 MCP Real MCP" }),
       ).toHaveAttribute("aria-checked", String(enabled));
-      expect(
-        screen.getByText(String(enabled ? 1 : 0) + " 个已启用服务"),
-      ).toBeVisible();
+      expect(screen.getByText(`${enabled ? 1 : 0} / 1`)).toBeVisible();
     },
   );
 
@@ -413,15 +392,13 @@ describe("connected Skills/MCP page", () => {
         expect(toggle).toHaveAttribute("aria-checked", String(enabled));
         expect(toggle).toBeEnabled();
       });
-      expect(
-        screen.getByText(String(enabled ? 1 : 0) + " 个已启用服务"),
-      ).toBeVisible();
+      expect(screen.getByText(`${enabled ? 1 : 0} / 1`)).toBeVisible();
       expect(server.apps.codex).toBe(true);
     }
     expect(mcpApi.getAllServers).toHaveBeenCalledTimes(4);
   });
 
-  it.each(["claude", "gemini", "grokbuild", "opencode", "hermes"] as const)(
+  it.each(["claude", "gemini", "grokbuild", "opencode"] as const)(
     "keeps Codex soft-disable isolated while toggling %s on and off",
     async (app) => {
       let server: McpServer = {
@@ -472,9 +449,7 @@ describe("connected Skills/MCP page", () => {
           expect(toggle).toHaveAttribute("aria-checked", String(enabled));
           expect(toggle).toBeEnabled();
         });
-        expect(
-          screen.getByText(`${enabled ? 1 : 0} 个已启用服务`),
-        ).toBeVisible();
+        expect(screen.getByText(`${enabled ? 1 : 0} / 1`)).toBeVisible();
         expect(server.apps[app]).toBe(enabled);
         expect(server.apps.codex).toBe(true);
         expect(server.server.enabled).toBe(false);
@@ -685,7 +660,7 @@ describe("A06 resource lifecycle and A07 refresh", () => {
     createdAt: 1,
     skill,
   };
-  it("scans only on request and imports selected skills only to the chosen target after confirmation", async () => {
+  it("automatically scans read-only and imports selected skills only to the chosen target after confirmation", async () => {
     vi.mocked(skillsApi.scanUnmanaged).mockResolvedValue([
       {
         directory: "local",
@@ -697,12 +672,12 @@ describe("A06 resource lifecycle and A07 refresh", () => {
     vi.mocked(skillsApi.importFromApps).mockResolvedValue([skill]);
     render(<SkillsMcpView initialApp="gemini" />);
     await screen.findByRole("switch");
-    expect(skillsApi.scanUnmanaged).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "扫描未纳管 Skills" }));
+    expect(skillsApi.scanUnmanaged).toHaveBeenCalledTimes(1);
+    expect(skillsApi.importFromApps).not.toHaveBeenCalled();
     fireEvent.click(
-      await screen.findByRole("checkbox", { name: "纳管 Local" }),
+      await screen.findByRole("checkbox", { name: "添加 Local" }),
     );
-    fireEvent.click(screen.getByRole("button", { name: "纳管所选 Skills" }));
+    fireEvent.click(screen.getByRole("button", { name: "添加所选 Skills" }));
     expect(skillsApi.importFromApps).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "确认执行" }));
     await waitFor(() =>
@@ -715,13 +690,60 @@ describe("A06 resource lifecycle and A07 refresh", () => {
             gemini: true,
             grokbuild: false,
             opencode: false,
-            openclaw: false,
-            hermes: false,
           },
         },
       ]),
     );
   });
+  it("accepts one physical source merged across tool aliases", async () => {
+    vi.mocked(skillsApi.scanUnmanaged).mockResolvedValue([
+      {
+        directory: "same",
+        name: "Shared",
+        path: "D:/shared/same",
+        foundIn: ["claude", "agents"],
+      },
+    ]);
+    render(<SkillsMcpView />);
+    const checkbox = await screen.findByRole("checkbox", {
+      name: "添加 Shared",
+    });
+    expect(checkbox).toBeEnabled();
+    expect(screen.getByText("来源：Claude Code、agents")).toBeVisible();
+    fireEvent.click(checkbox);
+    expect(
+      screen.getByRole("button", { name: "添加所选 Skills" }),
+    ).toBeEnabled();
+    expect(skillsApi.importFromApps).not.toHaveBeenCalled();
+  });
+
+  it("blocks a merged alias row when another physical source has the same directory", async () => {
+    vi.mocked(skillsApi.scanUnmanaged).mockResolvedValue([
+      {
+        directory: "same",
+        name: "Shared",
+        path: "D:/shared/same",
+        foundIn: ["claude", "agents"],
+      },
+      {
+        directory: "same",
+        name: "Other",
+        path: "D:/codex/skills/same",
+        foundIn: ["codex"],
+      },
+    ]);
+    render(<SkillsMcpView />);
+    expect(
+      await screen.findByRole("checkbox", { name: "添加 Shared" }),
+    ).toBeDisabled();
+    expect(screen.getByRole("checkbox", { name: "添加 Other" })).toBeDisabled();
+    expect(screen.getAllByText("目录名重复，请先整理来源。")).toHaveLength(2);
+    expect(
+      screen.getByRole("button", { name: "添加所选 Skills" }),
+    ).toBeDisabled();
+    expect(skillsApi.importFromApps).not.toHaveBeenCalled();
+  });
+
   it("blocks ambiguous unmanaged directories", async () => {
     vi.mocked(skillsApi.scanUnmanaged).mockResolvedValue(
       ["one", "two"].map((path) => ({
@@ -733,39 +755,14 @@ describe("A06 resource lifecycle and A07 refresh", () => {
     );
     render(<SkillsMcpView />);
     await screen.findByRole("switch");
-    fireEvent.click(screen.getByRole("button", { name: "扫描未纳管 Skills" }));
     expect(
-      await screen.findByRole("checkbox", { name: "纳管 one" }),
+      await screen.findByRole("checkbox", { name: "添加 one" }),
     ).toBeDisabled();
     expect(
-      screen.getByRole("button", { name: "纳管所选 Skills" }),
+      screen.getByRole("button", { name: "添加所选 Skills" }),
     ).toBeDisabled();
   });
-  it("restores to the selected target, retains failure state and retries", async () => {
-    vi.mocked(skillsApi.getBackups).mockResolvedValue([backup]);
-    vi.mocked(skillsApi.restoreBackup)
-      .mockRejectedValueOnce(new Error("private path"))
-      .mockResolvedValue(skill);
-    render(<SkillsMcpView initialApp="hermes" />);
-    await screen.findByRole("switch");
-    fireEvent.click(screen.getByRole("button", { name: "查看可恢复备份" }));
-    fireEvent.click(
-      await screen.findByRole("button", { name: "恢复 Real Skill" }),
-    );
-    expect(skillsApi.restoreBackup).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "确认执行" }));
-    await waitFor(() => expect(toast.error).toHaveBeenCalled());
-    expect(screen.getByRole("dialog")).toBeInTheDocument();
-    expect(screen.queryByText("private path")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "确认执行" }));
-    await waitFor(() =>
-      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
-    );
-    expect(skillsApi.restoreBackup).toHaveBeenLastCalledWith(
-      "backup-1",
-      "hermes",
-    );
-  });
+
   it("requires confirmation for backup deletion and handles false results", async () => {
     vi.mocked(skillsApi.getBackups).mockResolvedValue([backup]);
     vi.mocked(skillsApi.deleteBackup).mockResolvedValue(false);
@@ -845,13 +842,12 @@ describe("A06 resource lifecycle and A07 refresh", () => {
     ]);
     const view = render(<SkillsMcpView refreshVersion={0} />);
     await screen.findByRole("switch");
-    fireEvent.click(screen.getByRole("button", { name: "扫描未纳管 Skills" }));
     fireEvent.click(
-      await screen.findByRole("checkbox", { name: "纳管 Local" }),
+      await screen.findByRole("checkbox", { name: "添加 Local" }),
     );
     await waitFor(() =>
       expect(
-        screen.getByRole("button", { name: "纳管所选 Skills" }),
+        screen.getByRole("button", { name: "添加所选 Skills" }),
       ).toBeEnabled(),
     );
     const calls = vi.mocked(skillsApi.getInstalled).mock.calls.length;
@@ -859,8 +855,8 @@ describe("A06 resource lifecycle and A07 refresh", () => {
     await waitFor(() =>
       expect(skillsApi.getInstalled).toHaveBeenCalledTimes(calls + 1),
     );
-    expect(screen.getByRole("checkbox", { name: "纳管 Local" })).toBeChecked();
-    expect(skillsApi.scanUnmanaged).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("checkbox", { name: "添加 Local" })).toBeChecked();
+    expect(skillsApi.scanUnmanaged).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -942,7 +938,7 @@ describe("empty and loading states", () => {
     expect(
       screen.queryByRole("button", { name: "安装" }),
     ).not.toBeInTheDocument();
-    for (const name of ["管理仓库", "扫描未纳管 Skills", "查看可恢复备份"])
+    for (const name of ["管理仓库", "刷新扫描", "查看可恢复备份"])
       expect(screen.getByRole("button", { name })).toBeEnabled();
     expect(
       screen.queryByRole("button", { name: "检查 Skills 更新" }),
@@ -1003,11 +999,155 @@ describe("empty and loading states", () => {
     expect(screen.getByRole("button", { name: "Skills 1" })).toBeVisible();
     expect(screen.getByText("已启用 Skills")).toBeVisible();
   });
-  it("does not mention MCP in the summary for a tool without MCP", async () => {
-    vi.mocked(skillsApi.getInstalled).mockResolvedValue([skill]);
-    render(<SkillsMcpView initialApp="openclaw" />);
-    await screen.findByText("Real Skill");
-    expect(screen.getByText("已启用 Skills")).toBeVisible();
-    expect(screen.queryByText(/MCP 另有/)).not.toBeInTheDocument();
+});
+
+describe("automatic local Skills discovery", () => {
+  const local = {
+    directory: "local",
+    name: "Local",
+    path: "D:/a-long-directory/local",
+    foundIn: ["codex"],
+  };
+
+  it("reports a malformed scan response without crashing", async () => {
+    vi.mocked(skillsApi.scanUnmanaged).mockResolvedValue(
+      {} as Awaited<ReturnType<typeof skillsApi.scanUnmanaged>>,
+    );
+    render(<SkillsMcpView />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("扫描失败");
+    expect(screen.getByRole("button", { name: "重试扫描" })).toBeEnabled();
+    expect(screen.getByRole("switch")).toBeEnabled();
+    expect(skillsApi.importFromApps).not.toHaveBeenCalled();
+  });
+
+  it("reports an initial scan failure separately and retries without writing", async () => {
+    vi.mocked(skillsApi.scanUnmanaged)
+      .mockRejectedValueOnce(new Error("private path"))
+      .mockResolvedValue([local]);
+    render(<SkillsMcpView />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("扫描失败");
+    expect(
+      screen.queryByText("未发现可添加的本地 Skills。"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/private path/)).not.toBeInTheDocument();
+    expect(screen.getByRole("switch")).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "重试扫描" }));
+    expect(
+      await screen.findByRole("checkbox", { name: "添加 Local" }),
+    ).toBeEnabled();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(skillsApi.importFromApps).not.toHaveBeenCalled();
+    expect(skillsApi.toggleApp).not.toHaveBeenCalled();
+  });
+
+  it("keeps old results visible but unavailable during refresh and after failure", async () => {
+    vi.mocked(skillsApi.scanUnmanaged).mockResolvedValue([local]);
+    render(<SkillsMcpView />);
+    fireEvent.click(
+      await screen.findByRole("checkbox", { name: "添加 Local" }),
+    );
+    let rejectScan!: (error: Error) => void;
+    vi.mocked(skillsApi.scanUnmanaged).mockImplementationOnce(
+      () =>
+        new Promise((_, reject) => {
+          rejectScan = reject;
+        }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "刷新扫描" }));
+    expect(screen.getByRole("status")).toHaveTextContent("上次扫描结果");
+    expect(screen.getByRole("button", { name: "正在扫描…" })).toBeDisabled();
+    expect(screen.getByRole("checkbox", { name: "添加 Local" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "添加所选 Skills" }),
+    ).toBeDisabled();
+    await act(async () => rejectScan(new Error("unreadable")));
+    expect(screen.getByRole("alert")).toHaveTextContent("暂不可添加");
+    expect(screen.getByRole("checkbox", { name: "添加 Local" })).toBeChecked();
+    expect(
+      screen.getByRole("button", { name: "添加所选 Skills" }),
+    ).toBeDisabled();
+    vi.mocked(skillsApi.scanUnmanaged).mockResolvedValue([]);
+    fireEvent.click(screen.getByRole("button", { name: "重试扫描" }));
+    expect(
+      await screen.findByText("未发现可添加的本地 Skills。"),
+    ).toBeVisible();
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "添加所选 Skills" }),
+    ).toBeDisabled();
+  });
+
+  it("ignores an older scan that finishes after an external refresh", async () => {
+    let finish!: (items: (typeof local)[]) => void;
+    vi.mocked(skillsApi.scanUnmanaged)
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      )
+      .mockResolvedValue([]);
+    const view = render(<SkillsMcpView />);
+    await screen.findByRole("switch");
+    view.rerender(<SkillsMcpView refreshVersion={1} />);
+    await screen.findByText("未发现可添加的本地 Skills。");
+    await act(async () => finish([local]));
+    expect(
+      screen.queryByRole("checkbox", { name: "添加 Local" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("未发现可添加的本地 Skills。")).toBeVisible();
+  });
+});
+
+describe("resource visual hierarchy", () => {
+  it("names the current tool in the heading and summary and exposes the active resource", async () => {
+    render(<SkillsMcpView />);
+    await screen.findByRole("region", { name: "Codex 资源概览" });
+    expect(
+      screen.getByRole("heading", { level: 1, name: "Codex · Skills 与 MCP" }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Skills 1", pressed: true }),
+    ).toBeVisible();
+    expect(screen.getByText("0 / 1")).toBeVisible();
+    fireEvent.change(screen.getByRole("combobox", { name: "目标工具" }), {
+      target: { value: "claude" },
+    });
+    expect(
+      screen.getByRole("heading", {
+        level: 1,
+        name: "Claude Code · Skills 与 MCP",
+      }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("region", { name: "Claude Code 资源概览" }),
+    ).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "MCP 0" }));
+    expect(
+      screen.getByRole("button", { name: "MCP 0", pressed: true }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("heading", { name: "还没有 MCP 服务" }),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("region", { name: "Claude Code 资源概览" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows discovered and selected counts beside the scan heading without importing", async () => {
+    const path = "D:/" + "long-folder/".repeat(30) + "local";
+    vi.mocked(skillsApi.scanUnmanaged).mockResolvedValue([
+      { directory: "local", name: "Local", path, foundIn: ["codex"] },
+    ]);
+    render(<SkillsMcpView />);
+    const checkbox = await screen.findByRole("checkbox", {
+      name: "添加 Local",
+    });
+    expect(screen.getByText("1 个发现 · 已选 0 个")).toBeVisible();
+    expect(screen.getByTitle(path)).toHaveTextContent(path);
+    fireEvent.click(checkbox);
+    expect(screen.getByText("1 个发现 · 已选 1 个")).toBeVisible();
+    expect(checkbox.closest("label")).toHaveAttribute("data-selected", "true");
+    expect(skillsApi.importFromApps).not.toHaveBeenCalled();
   });
 });

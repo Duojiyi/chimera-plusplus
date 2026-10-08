@@ -1,6 +1,7 @@
 import { lazy, Suspense, useState } from "react";
 import { toast } from "sonner";
 import { settingsApi } from "@/lib/api/settings";
+import { getChimeraHubTemplate } from "@/config/codexTemplates";
 import type { PresetSelection } from "@/utils/codexPresetDraft";
 
 // The picker pulls in the whole vendor preset list; it loads only when opened.
@@ -42,9 +43,12 @@ export function CodexPresetStart({
       className={`editor-template-actions${applied?.endpointPlaceholder ? " has-warning" : ""}`}
     >
       <div className="editor-template-text">
-        <b>{applied ? `起点：${applied.label}` : "默认模板"}</b>
+        <b>
+          配置模板 ·{" "}
+          {applied?.label || getChimeraHubTemplate().name || "自定义配置"}
+        </b>
         <small>
-          {applied ? applied.hint : "请核对地址、模型和密钥后再保存。"}
+          {applied?.endpointPlaceholder ? applied.hint : null}
           {applied?.apiKeyUrl && (
             <>
               {" "}

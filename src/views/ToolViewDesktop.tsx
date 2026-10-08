@@ -234,7 +234,7 @@ export default function ToolViewDesktop({
                   ? "暂时无法确认安装状态，请重试检测。"
                   : installed
                     ? "已找到程序文件。账号登录需在 Claude Desktop 中完成。"
-                    : "标准路径暂未发现客户端。已安装到其他位置？可查看下方诊断说明。"}
+                    : "标准路径未发现客户端。"}
           </p>
           <div className="tool-desktop-actions">
             <Dialog
@@ -377,7 +377,7 @@ export default function ToolViewDesktop({
           <p className="tool-desktop-description">
             {status && !status.supported
               ? "当前平台不支持 Desktop 第三方配置，相关操作已禁用。"
-              : "复用 Chimera 已保存的兼容 Claude Code 线路，或添加官方入口。添加后在下方列表中切换。"}
+              : "添加官方入口，或导入已保存的 Claude Code 线路。"}
           </p>
           {native && status?.supported && (
             <div className="tool-desktop-route-control">
@@ -420,9 +420,7 @@ export default function ToolViewDesktop({
               {busy === "official" ? "正在添加…" : "添加官方入口"}
             </Button>
           </div>
-          <p className="tool-desktop-hint">
-            仅添加线路，不自动激活；第三方配置不代表已安装或已登录。
-          </p>
+          <p className="tool-desktop-hint">只保存导入，不切换当前配置。</p>
         </section>
       </div>
       {(error || actionError) && (
@@ -449,13 +447,10 @@ export default function ToolViewDesktop({
       )}
       <div className="tool-desktop-note">
         <Info size={15} aria-hidden="true" />
-        <span>
-          切换线路后需手动重启 Claude
-          Desktop。官方入口只是配置选项，不代表账号已登录。
-        </span>
+        <span>切换后需手动重启 Claude Desktop；登录请在客户端完成。</span>
       </div>
       <details className="tool-desktop-details">
-        <summary>诊断信息与使用说明</summary>
+        <summary>诊断与兼容性</summary>
         <div>
           {status && (
             <dl>

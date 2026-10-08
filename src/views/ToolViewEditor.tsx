@@ -1,6 +1,6 @@
-import ToolViewMiniMaxForm from "./ToolViewMiniMaxForm";
 import { useState } from "react";
 import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
 import { FullScreenPanel } from "@/components/common/FullScreenPanel";
 import {
   ProviderForm,
@@ -81,25 +81,40 @@ export default function ToolViewEditor({
         if (!busy) onClose();
       }}
       title={`${provider ? "编辑" : "添加"} ${additionalToolNames[appId]} 线路`}
+      contentClassName="max-w-5xl mx-auto"
+      footer={
+        <>
+          <p className="mr-auto text-sm text-muted-foreground">
+            {provider
+              ? "保存已启用线路可能同步更新本机配置。"
+              : "仅保存线路，稍后在列表中切换或启用。"}
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={busy}
+            onClick={onClose}
+          >
+            取消
+          </Button>
+          <Button type="submit" form="provider-form" disabled={busy}>
+            {busy ? "正在保存…" : "保存线路"}
+          </Button>
+        </>
+      }
     >
-      {appId === "mcode" ? (
-        <ToolViewMiniMaxForm
-          provider={provider}
-          onSubmit={save}
-          onCancel={onClose}
-          onSubmittingChange={setBusy}
-        />
-      ) : (
+      {
         <ProviderForm
           appId={appId}
           providerId={provider?.id}
           initialData={provider ?? undefined}
           submitLabel="保存线路"
+          showButtons={false}
           onSubmit={save}
           onCancel={onClose}
           onSubmittingChange={setBusy}
         />
-      )}
+      }
     </FullScreenPanel>
   );
 }

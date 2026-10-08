@@ -1,3 +1,4 @@
+import { RetainedToolPage } from "@/components/RetainedToolPage";
 import { ToolVisibilityView } from "./views/ToolVisibilityView";
 import { isProductToolVisible } from "@/lib/productCapabilities";
 import { WindowControls } from "@/components/WindowControls";
@@ -207,13 +208,13 @@ const NewSettingsView = lazy(() =>
   })),
 );
 
+const OmpView = lazy(() => import("./views/OmpView"));
 const AppearanceView = lazy(() => import("./views/AppearanceView"));
 const ToolView = lazy(() =>
   import("./views/ToolView").then(({ ToolView }) => ({
     default: ToolView,
   })),
 );
-import { MiniSignboard } from "@/components/MiniSignboard";
 import {
   canOpenProductView,
   hasEnabledCapability,
@@ -235,11 +236,9 @@ type View =
   | "tool-gemini"
   | "tool-opencode"
   | "tool-pi"
+  | "tool-omp"
   | "tool-claude-desktop"
   | "tool-grokbuild"
-  | "tool-openclaw"
-  | "tool-hermes"
-  | "tool-mcode"
   | "tool-settings";
 type RuntimeStatus = {
   supported: boolean;
@@ -361,14 +360,13 @@ const nav: Array<[View, string, typeof Command]> = [
   ["health", "配置体检", Activity],
   ["settings", "设置", Settings2],
   ["tool-claude", "Claude Code", Route],
+  ["tool-claude-desktop", "Claude Desktop", Route],
   ["tool-gemini", "Gemini CLI", Route],
   ["tool-opencode", "OpenCode", Route],
   ["tool-pi", "Pi", Route],
-  ["tool-claude-desktop", "Claude Desktop", Route],
+  ["tool-omp", "oh-my-pi", Route],
   ["tool-grokbuild", "Grok Build", Route],
-  ["tool-openclaw", "OpenClaw", Route],
-  ["tool-hermes", "Hermes", Route],
-  ["tool-mcode", "MiniMax Code", Route],
+
   ["tool-settings", "管理工具", Settings2],
 ];
 
@@ -384,7 +382,7 @@ const runtimeText = (mode?: string | null) =>
       : "未识别安装方式";
 
 const runtimeChannelText = (source?: string | null) =>
-  source === "mirror" ? "镜像源" : "自动选择";
+  source === "mirror" ? "GitHub 镜像" : "自动（镜像）";
 
 // UTC slicing (`publishedAt.slice(0, 10)`) shows the wrong calendar day in
 // timezones ahead of UTC (e.g. UTC+8 late-evening releases). Format in the
@@ -773,6 +771,9 @@ export default function ChimeraApp({
 
   const editorReturnFocusRef = useRef<HTMLElement | null>(null);
   const contentRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (contentRef.current) contentRef.current.scrollTop = 0;
+  }, [view]);
   const [editorSaveError, setEditorSaveError] = useState<string | null>(null);
   useEffect(() => {
     if (editor || !editorReturnFocusRef.current) return;
@@ -1395,8 +1396,8 @@ export default function ChimeraApp({
         providerName,
         performance.now() - started,
       );
-      toast.success("API 地址可达", {
-        description: `响应时间 ${result.latency}ms；未验证 Key、模型或推理能力。`,
+      toast.success("地址可达", {
+        description: `响应时间 ${result.latency} ms · 未验证密钥或模型`,
       });
       return true;
     } catch (error) {
@@ -2315,14 +2316,12 @@ export default function ChimeraApp({
             {(
               [
                 ["tool-claude", "Claude Code", "CC"],
+                ["tool-claude-desktop", "Claude Desktop", "CD"],
                 ["tool-gemini", "Gemini CLI", "Gm"],
                 ["tool-opencode", "OpenCode", "OC"],
                 ["tool-pi", "Pi", "Pi"],
-                ["tool-claude-desktop", "Claude Desktop", "CD"],
+                ["tool-omp", "oh-my-pi", "OMP"],
                 ["tool-grokbuild", "Grok Build", "Gk"],
-                ["tool-openclaw", "OpenClaw", "Cl"],
-                ["tool-hermes", "Hermes", "He"],
-                ["tool-mcode", "MiniMax Code", "MM"],
               ] as const
             )
               .filter(
@@ -2472,16 +2471,6 @@ export default function ChimeraApp({
                   : "浏览器预览 · 未连接本机"}
               </span>
             )}
-            {(view !== "providers" || editor) && (
-              <MiniSignboard
-                currentProvider={activeProvider}
-                connection={connection}
-                unresolvedLabel={
-                  currentSource === "external" ? "外部配置" : "未选择线路"
-                }
-                onClick={() => setView("providers")}
-              />
-            )}
           </div>
 
           {/* 搜索入口随窗口宽度收缩，始终保留窗口控制。 */}
@@ -2597,7 +2586,10 @@ export default function ChimeraApp({
               onOpenCodex={openCodex}
               onSwitch={switchProvider}
               onEdit={(provider) => openEditor(providerDraft(provider))}
-              onDelete={(provider) => deleteProvider(provider, "codex")}
+              onDelete={(provider) => {
+                setEditorAppId("codex");
+                setPendingProviderDelete(provider);
+              }}
               deletingProviderId={deletingProviderId}
               onAdd={() =>
                 openEditor(
@@ -2620,6 +2612,7 @@ export default function ChimeraApp({
                 setPendingAction({ action, preferences })
               }
               onRuntimeChanged={refreshRuntimeAfterInstall}
+              onOperationFinished={() => setDownloadProgress(null)}
             />
           )}
           <Suspense
@@ -2685,29 +2678,7 @@ export default function ChimeraApp({
                 refreshVersion={providerRefreshVersion}
               />
             )}
-            {view === "tool-openclaw" && (
-              <ToolView
-                toolId="openclaw"
-                onManageResources={manageToolResources}
-                native={runningInTauri}
-                refreshVersion={providerRefreshVersion}
-              />
-            )}
-            {view === "tool-hermes" && (
-              <ToolView
-                toolId="hermes"
-                onManageResources={manageToolResources}
-                native={runningInTauri}
-                refreshVersion={providerRefreshVersion}
-              />
-            )}
-            {view === "tool-mcode" && (
-              <ToolView
-                toolId="mcode"
-                native={runningInTauri}
-                refreshVersion={providerRefreshVersion}
-              />
-            )}
+
             {view === "tool-claude" && (
               <ToolView
                 refreshVersion={providerRefreshVersion}
@@ -2735,15 +2706,18 @@ export default function ChimeraApp({
                 onManageResources={manageToolResources}
               />
             )}
-            {view === "tool-pi" && (
-              <ToolView
-                refreshVersion={providerRefreshVersion}
-                toolId="pi"
-                onEditLine={openToolEditor}
-                native={runningInTauri}
-              />
-            )}
           </Suspense>
+          <RetainedToolPage active={view === "tool-omp"}>
+            <OmpView native={runningInTauri} />
+          </RetainedToolPage>
+          <RetainedToolPage active={view === "tool-pi"}>
+            <ToolView
+              refreshVersion={providerRefreshVersion}
+              toolId="pi"
+              onEditLine={openToolEditor}
+              native={runningInTauri}
+            />
+          </RetainedToolPage>
         </section>
         {editor && (
           <div className="provider-editor-page">
@@ -2947,6 +2921,7 @@ export function NewRuntimeView({
   diagnosing,
   onAction,
   onRuntimeChanged,
+  onOperationFinished,
 }: {
   runtime: RuntimeStatus | null;
   release: ReleaseStatus | null;
@@ -2959,6 +2934,7 @@ export function NewRuntimeView({
     value: RuntimeAction,
     preferences?: RuntimeUpdatePreferences,
   ) => void;
+  onOperationFinished?: () => void;
   onRuntimeChanged?: (
     preferences?: RuntimeUpdatePreferences,
   ) => void | Promise<void>;
@@ -3125,6 +3101,7 @@ export function NewRuntimeView({
       toast.error("安装所选版本失败", { description: String(reason) });
     } finally {
       setInstallingHistory(false);
+      onOperationFinished?.();
     }
   };
 
@@ -3173,6 +3150,7 @@ export function NewRuntimeView({
       toast.error("离线安装失败", { description: String(reason) });
     } finally {
       setInstallingOffline(false);
+      onOperationFinished?.();
     }
   };
   const version = runtime?.version ?? "等待识别";
@@ -3209,7 +3187,9 @@ export function NewRuntimeView({
   const operationLabel = progress
     ? progress.stage === "installing"
       ? "正在校验并安装，请勿关闭窗口"
-      : `正在下载 ${percent}%`
+      : progress.total > 0
+        ? `正在下载 ${percent}%`
+        : "正在下载，等待获取文件大小"
     : operation?.action === "uninstall"
       ? "正在卸载 Codex，请稍候"
       : operation?.action === "rollback"
@@ -3279,6 +3259,74 @@ export function NewRuntimeView({
             {updateAvailable ? "重新检查" : "检查更新"}
           </button>
         </header>
+        {operationLabel && (
+          <section
+            className="runtime-task-card"
+            aria-label="当前安装任务"
+            aria-busy="true"
+          >
+            <div className="runtime-task-heading">
+              <span className="runtime-task-icon">
+                <LoaderCircle size={28} aria-hidden="true" />
+              </span>
+              <div>
+                <span className="runtime-task-eyebrow">CODEX · 正在处理</span>
+                <h2 role="status">{operationLabel}</h2>
+                <p>请保持 Chimera++ 运行。完成后会自动刷新本机安装状态。</p>
+              </div>
+              {progress?.stage !== "installing" &&
+                progress &&
+                progress.total > 0 && (
+                  <strong>
+                    {percent}
+                    <small>%</small>
+                  </strong>
+                )}
+            </div>
+            <div className="runtime-reference-progress">
+              <i
+                role="progressbar"
+                aria-label="安装进度"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={
+                  progress &&
+                  progress.total > 0 &&
+                  progress.stage !== "installing"
+                    ? percent
+                    : undefined
+                }
+                aria-valuetext={operationLabel}
+              >
+                <u
+                  className={
+                    !progress ||
+                    !progress.total ||
+                    progress.stage === "installing"
+                      ? "is-indeterminate"
+                      : ""
+                  }
+                  style={{
+                    width:
+                      progress && progress.total > 0 ? `${percent}%` : "38%",
+                  }}
+                />
+              </i>
+            </div>
+            <div className="runtime-task-detail">
+              <span>
+                {progress && progress.stage !== "installing"
+                  ? `${(progress.downloaded / 1024 / 1024).toFixed(1)} MB${progress.total > 0 ? ` / ${(progress.total / 1024 / 1024).toFixed(1)} MB` : " 已接收"}`
+                  : "本机操作进行中，请勿关闭窗口"}
+              </span>
+              <span>
+                {progress?.stage === "installing"
+                  ? "下载完成 · 校验并安装"
+                  : "完成后自动检查"}
+              </span>
+            </div>
+          </section>
+        )}
         <div className="runtime-status-board">
           <div className="runtime-installed">
             <h2>
@@ -3331,7 +3379,7 @@ export function NewRuntimeView({
               <Download size={14} />
               <span>
                 更新源
-                <b>
+                <b title="GitHub · Duojiyi/codex-app-mirror">
                   {!runningInTauri
                     ? "未读取"
                     : preferences
@@ -3388,29 +3436,32 @@ export function NewRuntimeView({
         {pendingPreferenceKeys.size > 0 && (
           <p role="status">正在保存更新偏好…</p>
         )}
-        {recovery.length > 0 && (
-          <div className="runtime-update-ready" role="alert">
-            <CircleAlert size={16} aria-hidden="true" />
-            <span>
-              <b>检测到 {recovery.length} 个未完成的安装事务</b>
-              <small>
-                上次安装（{recovery[0].version} · {recovery[0].source}
-                ）未正常结束。
-                {recovery[0].backupPath
-                  ? "备份目录仍在，可通过「安装方式与更新源 → 回滚」恢复上一版本，"
-                  : "如 Codex 工作正常可直接忽略，"}
-                处理后点击“我已处理”。
-              </small>
-            </span>
-            <button
-              type="button"
-              className="runtime-update-recheck"
-              onClick={() => void acknowledgeRecovery(recovery[0].id)}
-            >
-              我已处理
-            </button>
-          </div>
-        )}
+        {recovery.length > 0 &&
+          !operationLabel &&
+          !installingHistory &&
+          !installingOffline && (
+            <div className="runtime-update-ready" role="alert">
+              <CircleAlert size={16} aria-hidden="true" />
+              <span>
+                <b>检测到 {recovery.length} 个未完成的安装事务</b>
+                <small>
+                  上次安装（{recovery[0].version} · {recovery[0].source}
+                  ）未正常结束。
+                  {recovery[0].backupPath
+                    ? "备份目录仍在，可通过「安装方式与更新源 → 回滚」恢复上一版本，"
+                    : "如 Codex 工作正常可直接忽略，"}
+                  处理后点击“我已处理”。
+                </small>
+              </span>
+              <button
+                type="button"
+                className="runtime-update-recheck"
+                onClick={() => void acknowledgeRecovery(recovery[0].id)}
+              >
+                我已处理
+              </button>
+            </div>
+          )}
         <div
           className="runtime-release-card"
           role={updateAvailable && runningInTauri ? "status" : undefined}
@@ -3544,32 +3595,17 @@ export function NewRuntimeView({
             </p>
           )}
         </section>
-        {operationLabel && (
-          <div className="runtime-reference-progress">
-            <span>{operationLabel}</span>
-            <i>
-              <u
-                className={
-                  !progress || progress.stage === "installing"
-                    ? "is-indeterminate"
-                    : ""
-                }
-                style={{ width: progress ? `${percent}%` : "38%" }}
-              />
-            </i>
-          </div>
-        )}
       </section>
       {maintenanceOpen && (
         <div
-          className="provider-sheet-backdrop"
+          className="runtime-maintenance-page"
           onMouseDown={(event) => {
             if (event.target === event.currentTarget) setMaintenanceOpen(false);
           }}
         >
           <section
             ref={maintenanceDialogRef}
-            className="runtime-maintenance-drawer"
+            className="runtime-maintenance-workspace"
             role="dialog"
             aria-modal="true"
             aria-label="安装与维护"
@@ -3584,7 +3620,7 @@ export function NewRuntimeView({
                 aria-label="关闭安装与维护"
                 onClick={() => setMaintenanceOpen(false)}
               >
-                <X size={18} />
+                <ChevronLeft size={18} /> 返回 Codex 管理
               </button>
             </header>
             <div className="runtime-maintenance-content">
@@ -3656,6 +3692,10 @@ export function NewRuntimeView({
                   镜像安装
                 </button>
               </div>
+              <p className="runtime-source-note">
+                当前安装包来自 GitHub 镜像：
+                <code>Duojiyi/codex-app-mirror</code>，非 OpenAI 官方下载站。
+              </p>
               <b>维护</b>
               <div className="runtime-maintenance-list">
                 <button onClick={runDiagnostics} disabled={diagnosing}>
@@ -3964,7 +4004,7 @@ export function NewProvidersView({
   onOpenCodex: () => Promise<void>;
   onSwitch: (id: string) => Promise<boolean | void>;
   onEdit: (provider: Provider) => void;
-  onDelete: (provider: Provider) => Promise<boolean>;
+  onDelete: (provider: Provider) => void | Promise<boolean>;
   deletingProviderId: string | null;
   onAdd: () => void;
   onTestSpeed?: (baseUrl: string, providerName?: string) => Promise<boolean>;
@@ -4371,7 +4411,7 @@ export function NewProvidersView({
           undoReceipt={undoReceipt}
         />
       </div>
-      {balanceEnabled && (
+      {balanceEnabled && !balanceNotice && (
         <div className="route-balance-bar">
           <span className="route-balance-bar-label">线路余额</span>
           <span
@@ -4934,7 +4974,7 @@ export function ProviderEditor({
                 }
                 hint={
                   isCodex
-                    ? "经本地路由连接时，仅填域名会自动补 /v1；已带 /v1 不会重复，自定义路径会保留。直连时，请按服务商文档填写完整基础地址。"
+                    ? "本地路由可自动补 /v1；直连请填写完整基础地址。"
                     : `按服务商文档填写 ${toolName} 的完整基础地址，不自动追加路径。`
                 }
               />
@@ -5791,7 +5831,7 @@ export function ProviderEditor({
             </p>
           )}
           <p className="editor-test-scope">
-            地址测试仅验证连通性，不验证 API Key 或模型可用性。
+            仅测试地址连通性，不验证密钥或模型。
           </p>
           {connection.kind === "error" && (
             <p className="editor-feedback" role="alert">
@@ -5799,60 +5839,31 @@ export function ProviderEditor({
             </p>
           )}
         </fieldset>
-        <aside className="editor-preview" aria-label="线路草稿预览">
-          <h3>保存后的线路</h3>
-          <ol className="editor-route-preview">
-            <li>
-              <b>{toolName}</b>
-              <small>客户端</small>
-            </li>
-            <li>
-              <b>{editor.name.trim() || "未命名线路"}</b>
-              <small>
-                {!isCodex
-                  ? "原生配置"
-                  : editor.apiFormat === "auto"
-                    ? "按模型族选择协议"
-                    : codexApiFormatLabel(editor.apiFormat)}
-              </small>
-            </li>
-            <li>
-              <b>{previewOrigin}</b>
-              <small>仅显示服务源，不展示凭据或请求参数</small>
-            </li>
-            <li>
-              <b>{editor.model.trim() || "尚未填写模型"}</b>
-              <small>
-                {isCodex
-                  ? `${editor.catalogModels.length} 条模型映射`
-                  : "保留原有其他模型设置"}
-              </small>
-            </li>
-          </ol>
-          <h3>写入预告</h3>
-          <p>
-            {appId === "opencode" || appId === "pi"
-              ? `保存并启用 ${toolName} 线路，不修改其他已启用线路。`
-              : `保存线路至本地数据库，并将其应用为当前 ${toolName} 线路。`}
-          </p>
-          <dl>
+        <details className="editor-preview" aria-label="线路草稿预览">
+          <summary>保存详情</summary>
+          <dl className="editor-save-summary">
+            <dt>线路</dt>
+            <dd>{editor.name.trim() || "未命名线路"}</dd>
+            <dt>地址</dt>
+            <dd>{previewOrigin}</dd>
+            <dt>模型</dt>
+            <dd>{editor.model.trim() || "由客户端选择"}</dd>
             <dt>协议</dt>
             <dd>
               {!isCodex
                 ? editor.nativeProtocol || `${toolName} 原生协议`
                 : editor.apiFormat === "auto"
-                  ? "按模型族选择"
+                  ? "自动"
                   : codexApiFormatLabel(editor.apiFormat)}
             </dd>
-            <dt>API Key</dt>
-            <dd>{editor.apiKey.trim() ? "已填写 · 预览不展示" : "尚未填写"}</dd>
           </dl>
           <p>
+            {appId === "opencode" || appId === "pi"
+              ? `保存并启用，不影响其他 ${toolName} 线路。`
+              : `保存后设为当前 ${toolName} 线路。`}
             {isCodex && "运行中的 Codex 可能需要重启。"}
-            地址测试仅验证连通性，不验证 API Key 或模型可用性。
           </p>
-          <p>这是当前草稿预览，尚未保存或测试。</p>
-        </aside>
+        </details>
       </div>
       <div className="editor-bottom">
         <footer>

@@ -1,11 +1,6 @@
 import React from "react";
 import type { AppId } from "@/lib/api/types";
-import {
-  ClaudeIcon,
-  CodexIcon,
-  GeminiIcon,
-  OpenClawIcon,
-} from "@/components/BrandIcons";
+import { ClaudeIcon, CodexIcon, GeminiIcon } from "@/components/BrandIcons";
 import { ProviderIcon } from "@/components/ProviderIcon";
 
 export interface AppConfig {
@@ -22,21 +17,18 @@ export const APP_IDS: AppId[] = [
   "gemini",
   "grokbuild",
   "opencode",
-  "openclaw",
-  "hermes",
 ];
 
-/** App IDs shown in Skills panels (excludes OpenClaw — it doesn't support Skills) */
+/** App IDs shown in Skills panels */
 export const SKILLS_APP_IDS: AppId[] = [
   "claude",
   "codex",
   "gemini",
   "grokbuild",
   "opencode",
-  "hermes",
 ];
 
-/** App IDs shown in MCP panels (excludes OpenClaw) */
+/** App IDs shown in MCP panels */
 export const MCP_APP_IDS: AppId[] = [...SKILLS_APP_IDS];
 
 export const APP_ICON_MAP: Record<AppId, AppConfig> = {
@@ -102,29 +94,7 @@ export const APP_ICON_MAP: Record<AppId, AppConfig> = {
     badgeClass:
       "bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-500/20 border-0 gap-1.5",
   },
-  openclaw: {
-    label: "OpenClaw",
-    icon: <OpenClawIcon size={14} />,
-    activeClass:
-      "bg-rose-500/10 ring-1 ring-rose-500/20 hover:bg-rose-500/20 text-rose-600 dark:text-rose-400",
-    badgeClass:
-      "bg-rose-500/10 text-rose-700 dark:text-rose-300 hover:bg-rose-500/20 border-0 gap-1.5",
-  },
-  hermes: {
-    label: "Hermes",
-    icon: (
-      <ProviderIcon
-        icon="hermes"
-        name="Hermes"
-        size={14}
-        showFallback={false}
-      />
-    ),
-    activeClass:
-      "bg-violet-500/10 ring-1 ring-violet-500/20 hover:bg-violet-500/20 text-violet-600 dark:text-violet-400",
-    badgeClass:
-      "bg-violet-500/10 text-violet-700 dark:text-violet-300 hover:bg-violet-500/20 border-0 gap-1.5",
-  },
+
   pi: {
     label: "Pi",
     icon: <ProviderIcon icon="pi" name="Pi" size={14} />,
@@ -132,13 +102,5 @@ export const APP_ICON_MAP: Record<AppId, AppConfig> = {
       "bg-slate-500/10 ring-1 ring-slate-500/20 hover:bg-slate-500/20 text-slate-700 dark:text-slate-300",
     badgeClass:
       "bg-slate-500/10 text-slate-700 dark:text-slate-300 hover:bg-slate-500/20 border-0 gap-1.5",
-  },
-  mcode: {
-    label: "MiniMax Code",
-    icon: <ProviderIcon icon="minimax" name="MiniMax Code" size={14} />,
-    activeClass:
-      "bg-red-500/10 ring-1 ring-red-500/20 hover:bg-red-500/20 text-red-700 dark:text-red-300",
-    badgeClass:
-      "bg-red-500/10 text-red-700 dark:text-red-300 hover:bg-red-500/20 border-0 gap-1.5",
   },
 };

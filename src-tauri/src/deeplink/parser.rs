@@ -105,15 +105,7 @@ fn parse_provider_deeplink(
         .get("app")
         .ok_or_else(|| AppError::InvalidInput("Missing 'app' parameter".to_string()))?
         .clone();
-
-    // MH-4 / D4: Mcode providers are never imported from a deep link, even
-    // once Mcode is a supported tool. Reject by app string, before any
     // app-type parsing can start accepting it.
-    if app.trim().eq_ignore_ascii_case("mcode") {
-        return Err(AppError::InvalidInput(
-            "Mcode provider deep links are not supported".to_string(),
-        ));
-    }
 
     // Validate app type. Pi links are accepted but always import-only
     // (see `deeplink_import_may_activate`).
@@ -126,12 +118,10 @@ fn parse_provider_deeplink(
             | "gemini"
             | "grokbuild"
             | "opencode"
-            | "openclaw"
-            | "hermes"
             | "pi"
     ) {
         return Err(AppError::InvalidInput(format!(
-            "Invalid app type: must be 'claude', 'claude-desktop', 'codex', 'gemini', 'grokbuild', 'opencode', 'openclaw', 'hermes', or 'pi', got '{app}'"
+            "Invalid app type: must be 'claude', 'claude-desktop', 'codex', 'gemini', 'grokbuild', 'opencode', or 'pi', got '{app}'"
         )));
     }
 
@@ -238,10 +228,10 @@ fn parse_prompt_deeplink(
     // Validate app type
     if !matches!(
         app.as_str(),
-        "claude" | "codex" | "gemini" | "grokbuild" | "opencode" | "openclaw" | "hermes"
+        "claude" | "codex" | "gemini" | "grokbuild" | "opencode"
     ) {
         return Err(AppError::InvalidInput(format!(
-            "Invalid app type: must be 'claude', 'codex', 'gemini', 'grokbuild', 'opencode', 'openclaw', or 'hermes', got '{app}'"
+            "Invalid app type: must be 'claude', 'codex', 'gemini', 'grokbuild', 'opencode', got '{app}'"
         )));
     }
 
@@ -311,17 +301,10 @@ fn parse_mcp_deeplink(
         let trimmed = app.trim();
         if !matches!(
             trimmed,
-            "claude"
-                | "codex"
-                | "gemini"
-                | "grokbuild"
-                | "grok"
-                | "opencode"
-                | "openclaw"
-                | "hermes"
+            "claude" | "codex" | "gemini" | "grokbuild" | "grok" | "opencode"
         ) {
             return Err(AppError::InvalidInput(format!(
-                "Invalid app in 'apps': must be 'claude', 'codex', 'gemini', 'grokbuild', 'opencode', 'openclaw', or 'hermes', got '{trimmed}'"
+                "Invalid app in 'apps': must be 'claude', 'codex', 'gemini', 'grokbuild', 'opencode', got '{trimmed}'"
             )));
         }
     }

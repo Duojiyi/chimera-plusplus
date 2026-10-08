@@ -86,12 +86,10 @@ describe("Claude Desktop setup panel", () => {
       screen.getByRole("switch", { name: "Claude Desktop 本地路由" }),
     ).not.toBeChecked();
     expect(screen.getByText("直连模式 · 当前线路无需开启")).toBeVisible();
-    const details = screen.getByText("诊断信息与使用说明").closest("details")!;
+    const details = screen.getByText("诊断与兼容性").closest("details")!;
     expect(details).not.toHaveAttribute("open");
     expect(details).toHaveTextContent("C:/Users/test/Claude/profile.json");
-    expect(
-      screen.getByText(/官方入口只是配置选项，不代表账号已登录/),
-    ).toBeVisible();
+    expect(screen.getByText(/登录请在客户端完成/)).toBeVisible();
     expect(providersApi.importClaudeDesktopFromClaude).not.toHaveBeenCalled();
     expect(
       providersApi.ensureClaudeDesktopOfficialProvider,

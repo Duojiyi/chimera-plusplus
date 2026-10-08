@@ -344,9 +344,7 @@ describe("unified prompt library", () => {
     ).not.toBeInTheDocument();
     expect(
       screen.getByRole("combobox", { name: "提示词目标工具" }),
-    ).toHaveAccessibleDescription(
-      "Claude Desktop、Pi 和 MiniMax Code 暂不支持提示词",
-    );
+    ).toHaveAccessibleDescription("Claude Desktop 和 Pi 暂不支持提示词");
     expect(screen.queryByText(/暂不支持/)).not.toBeInTheDocument();
   });
 });
@@ -750,8 +748,6 @@ describe("tool-specific file semantics", () => {
     ["gemini", "GEMINI.md"],
     ["grokbuild", "AGENTS.md"],
     ["opencode", "AGENTS.md"],
-    ["openclaw", "AGENTS.md"],
-    ["hermes", "SOUL.md"],
   ] as const)(
     "loads and imports for %s without multi-enable switches",
     async (app, file) => {

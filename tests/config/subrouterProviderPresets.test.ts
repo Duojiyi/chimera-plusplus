@@ -3,8 +3,7 @@ import { claudeDesktopProviderPresets } from "@/config/claudeDesktopProviderPres
 import { providerPresets } from "@/config/claudeProviderPresets";
 import { codexProviderPresets } from "@/config/codexProviderPresets";
 import { geminiProviderPresets } from "@/config/geminiProviderPresets";
-import { hermesProviderPresets } from "@/config/hermesProviderPresets";
-import { openclawProviderPresets } from "@/config/openclawProviderPresets";
+
 import { opencodeProviderPresets } from "@/config/opencodeProviderPresets";
 import { hasIcon } from "@/icons/extracted";
 
@@ -72,44 +71,6 @@ describe("SubRouter provider presets", () => {
     );
     expect(preset?.settingsConfig.options?.apiKey).toBe("");
     expect(preset?.settingsConfig.models).toHaveProperty("gpt-5.5");
-  });
-
-  it("uses OpenAI completions config for OpenClaw without hardcoded pricing", () => {
-    const preset = openclawProviderPresets.find(
-      (item) => item.name === "SubRouter",
-    );
-    const [model] = preset?.settingsConfig.models ?? [];
-
-    expect(preset).toBeDefined();
-    expect(preset?.settingsConfig.baseUrl).toBe("https://subrouter.ai/v1");
-    expect(preset?.settingsConfig.api).toBe("openai-completions");
-    expect(model).toMatchObject({
-      id: "gpt-5.5",
-      name: "GPT-5.5",
-      contextWindow: 400000,
-    });
-    expect(model).not.toHaveProperty("cost");
-    expect(preset?.suggestedDefaults?.model).toEqual({
-      primary: "subrouter/gpt-5.5",
-    });
-  });
-
-  it("uses chat completions config for Hermes", () => {
-    const preset = hermesProviderPresets.find(
-      (item) => item.name === "SubRouter",
-    );
-
-    expect(preset).toBeDefined();
-    expect(preset?.settingsConfig).toMatchObject({
-      name: "subrouter",
-      base_url: "https://subrouter.ai/v1",
-      api_key: "",
-      api_mode: "chat_completions",
-    });
-    expect(preset?.suggestedDefaults?.model).toEqual({
-      default: "gpt-5.5",
-      provider: "subrouter",
-    });
   });
 
   it("uses direct Anthropic routing for Claude Desktop", () => {

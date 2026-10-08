@@ -38,7 +38,7 @@ beforeEach(() => {
   vi.resetAllMocks();
 });
 describe("tool registry settings", () => {
-  it("shares the complete ten-tool metadata without installation or user data", () => {
+  it("shares the complete seven-tool metadata without installation or user data", () => {
     expect(registry.map((tool) => tool.id)).toEqual([
       "codex",
       "claude",
@@ -46,10 +46,8 @@ describe("tool registry settings", () => {
       "gemini",
       "grokbuild",
       "opencode",
-      "openclaw",
-      "hermes",
+
       "pi",
-      "mcode",
     ]);
     expect(
       registry
@@ -60,7 +58,7 @@ describe("tool registry settings", () => {
       registry
         .filter((tool) => tool.deeplink === "reject")
         .map((tool) => tool.id),
-    ).toEqual(["mcode"]);
+    ).toEqual([]);
     for (const tool of registry) {
       expect(Object.keys(tool).sort()).toEqual([
         "deeplink",
@@ -79,7 +77,7 @@ describe("tool registry settings", () => {
     expect(screen.getByRole("status")).toHaveTextContent("浏览器预览");
     expect(toolRegistryApi.list).not.toHaveBeenCalled();
     expect(screen.getByText("Codex")).toBeInTheDocument();
-    expect(screen.getAllByText("偏好未读取")).toHaveLength(10);
+    expect(screen.getAllByText("偏好未读取")).toHaveLength(7);
   });
   it("uses backend rows and distinguishes saved visibility from installation", async () => {
     vi.mocked(toolRegistryApi.list).mockResolvedValue(tools);
@@ -90,7 +88,7 @@ describe("tool registry settings", () => {
     expect(
       await screen.findByRole("region", { name: "工具安装管理" }),
     ).toBeInTheDocument();
-    expect(container.querySelectorAll("details")).toHaveLength(2);
+    expect(container.querySelectorAll(".settings-tool-row")).toHaveLength(2);
     expect(screen.getByText("切换型")).toBeInTheDocument();
     expect(screen.getByText("增量型")).toBeInTheDocument();
     expect(screen.getByText("已设为显示")).toBeInTheDocument();
@@ -107,12 +105,12 @@ describe("tool registry settings", () => {
       />,
     );
     await screen.findByText("Codex");
-    expect(container.querySelectorAll("summary")[0]).toHaveTextContent(
-      "未设为显示",
-    );
-    expect(container.querySelectorAll("summary")[1]).toHaveTextContent(
-      "已设为显示",
-    );
+    expect(
+      container.querySelectorAll(".settings-tool-row > summary")[0],
+    ).toHaveTextContent("未设为显示");
+    expect(
+      container.querySelectorAll(".settings-tool-row > summary")[1],
+    ).toHaveTextContent("已设为显示");
   });
   it("shows an error and permits retry without exposing backend error details", async () => {
     vi.mocked(toolRegistryApi.list).mockRejectedValueOnce(
@@ -140,7 +138,7 @@ describe("tool registry settings", () => {
     view.rerender(<ToolRegistryPanel settings={null} native={false} />);
     await act(async () => resolve(tools));
     expect(screen.getByText("Codex")).toBeInTheDocument();
-    expect(screen.getAllByText("偏好未读取")).toHaveLength(10);
+    expect(screen.getAllByText("偏好未读取")).toHaveLength(7);
   });
   it("renders an empty registry explicitly", async () => {
     vi.mocked(toolRegistryApi.list).mockResolvedValue([]);

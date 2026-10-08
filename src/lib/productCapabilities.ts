@@ -1,4 +1,3 @@
-import type { AppId } from "@/lib/api/types";
 import type { VisibleApps } from "@/types";
 
 export const productToolViews = {
@@ -7,11 +6,10 @@ export const productToolViews = {
   "tool-gemini": "gemini",
   "tool-grokbuild": "grokbuild",
   "tool-opencode": "opencode",
-  "tool-openclaw": "openclaw",
-  "tool-hermes": "hermes",
+
   "tool-pi": "pi",
-  "tool-mcode": "mcode",
-} as const satisfies Record<string, AppId>;
+  "tool-omp": "omp",
+} as const satisfies Record<string, keyof VisibleApps>;
 
 export function isProductToolVisible(
   view: string,
@@ -59,11 +57,9 @@ const gatedViews: Record<string, string[]> = {
   "tool-gemini": ["multi_tool"],
   "tool-opencode": ["multi_tool"],
   "tool-pi": ["multi_tool"],
+  "tool-omp": ["multi_tool"],
   "tool-claude-desktop": ["multi_tool"],
   "tool-grokbuild": ["multi_tool"],
-  "tool-openclaw": ["multi_tool"],
-  "tool-hermes": ["multi_tool"],
-  "tool-mcode": ["multi_tool"],
 };
 
 export function canOpenProductView(

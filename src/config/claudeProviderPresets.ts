@@ -112,7 +112,6 @@ export const providerPresets: ProviderPreset[] = [
         ANTHROPIC_BASE_URL: "https://api.kimi.com/coding/",
         ANTHROPIC_AUTH_TOKEN: "",
         // CLAUDE_CODE_MAX_CONTEXT_TOKENS 只对非 claude- 前缀模型 id 生效，
-        // 必须显式路由端点别名 kimi-for-coding（与 codex/hermes/opencode 预设一致）
         ANTHROPIC_MODEL: "kimi-for-coding",
         ANTHROPIC_DEFAULT_HAIKU_MODEL: "kimi-for-coding",
         ANTHROPIC_DEFAULT_SONNET_MODEL: "kimi-for-coding",

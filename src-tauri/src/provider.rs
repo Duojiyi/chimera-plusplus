@@ -183,23 +183,14 @@ impl Provider {
                 .and_then(Value::as_str)
                 .and_then(crate::grok_config::extract_credentials)
                 .unwrap_or_default(),
-            // Hermes (config.yaml) flattens credentials at the top level, snake_case.
-            AppType::Hermes => (
-                str_at(settings.get("base_url")),
-                str_at(settings.get("api_key")),
-            ),
-            // OpenClaw (openclaw.json) flattens credentials at the top level, camelCase.
-            AppType::OpenClaw => (
-                str_at(settings.get("baseUrl")),
-                str_at(settings.get("apiKey")),
-            ),
+
             // Pi custom providers use the native models.json field names.
             AppType::Pi => (
                 crate::pi_config::provider_base_url(settings).unwrap_or_default(),
                 str_at(settings.get("apiKey")),
             ),
-            // OpenCode (OMO) and MiniMax Code nest credentials under `options`.
-            AppType::OpenCode | AppType::Mcode => {
+            // OpenCode (OMO) nests credentials under `options`.
+            AppType::OpenCode => {
                 let options = settings.get("options");
                 (
                     str_at(options.and_then(|o| o.get("baseURL"))),
@@ -1997,36 +1988,6 @@ mod tests {
         }));
         let (_, api_key) = p.resolve_usage_credentials(&AppType::Gemini);
         assert_eq!(api_key, "g-real");
-    }
-
-    #[test]
-    fn resolve_credentials_hermes_snake_case() {
-        let p = provider_with(json!({
-            "base_url": "https://api.deepseek.com",
-            "api_key": "sk-hermes",
-        }));
-        assert_eq!(
-            p.resolve_usage_credentials(&AppType::Hermes),
-            (
-                "https://api.deepseek.com".to_string(),
-                "sk-hermes".to_string()
-            )
-        );
-    }
-
-    #[test]
-    fn resolve_credentials_openclaw_camel_case() {
-        let p = provider_with(json!({
-            "baseUrl": "https://api.deepseek.com",
-            "apiKey": "sk-openclaw",
-        }));
-        assert_eq!(
-            p.resolve_usage_credentials(&AppType::OpenClaw),
-            (
-                "https://api.deepseek.com".to_string(),
-                "sk-openclaw".to_string()
-            )
-        );
     }
 
     #[test]

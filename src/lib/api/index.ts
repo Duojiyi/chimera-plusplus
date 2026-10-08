@@ -10,9 +10,8 @@ export { usageApi } from "./usage";
 export { subscriptionApi } from "./subscription";
 export { vscodeApi } from "./vscode";
 export { proxyApi } from "./proxy";
-export { openclawApi } from "./openclaw";
+
 export { sessionsApi } from "./sessions";
-export { workspaceApi } from "./workspace";
 export { toolRegistryApi } from "./toolRegistry";
 export type { ToolInfo, ToolMode, DeeplinkPolicy } from "./toolRegistry";
 export * as configApi from "./config";

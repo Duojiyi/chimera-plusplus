@@ -103,8 +103,6 @@ it.each([
   ["gemini", "Gemini", "/tmp/gemini"],
   ["grokbuild", "Grok Build", "/tmp/grok"],
   ["opencode", "OpenCode", "/tmp/opencode"],
-  ["openclaw", "OpenClaw", "/tmp/openclaw"],
-  ["hermes", "Hermes", "/tmp/hermes"],
 ])("patches only %s and trims the path", async (app, label, path) => {
   await mount();
   fireEvent.change(screen.getByLabelText(`${label}目录`), {

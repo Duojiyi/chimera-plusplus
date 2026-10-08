@@ -2,7 +2,7 @@
 //! Thin adapter for Pi's native files.
 //!
 //! Pi owns account login and the active provider/model in `settings.json`,
-//! which is only ever read here. Chimera++ manages explicit provider entries
+//! managed with revision checks here. Chimera++ manages explicit provider entries
 //! in `models.json`; `auth.json` is never opened.
 
 use crate::config::get_home_dir;
@@ -91,6 +91,7 @@ pub(crate) fn read_pi_native_providers() -> Result<IndexMap<String, Value>, AppE
         .collect())
 }
 
+#[cfg(test)]
 pub(crate) fn read_pi_native_provider(provider_key: &str) -> Result<Option<Value>, AppError> {
     let _guard = lock_models_file()?;
     let path = get_pi_models_path()?;
@@ -396,7 +397,7 @@ fn ensure_models_revision(path: &Path, expected_revision: &str) -> Result<(), Ap
         Ok(())
     } else {
         Err(AppError::Conflict(format!(
-            "Pi models.json changed outside Chimera++: {}",
+            "Pi configuration changed outside Chimera++: {}",
             path.display()
         )))
     }
@@ -624,5 +625,133 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(&path).expect("read")).expect("json");
         assert_eq!(document["futureRoot"], json!({"keep": true}));
         assert_eq!(document["providers"], json!({"native": {"models": []}}));
+    }
+}
+
+/// Global Pi configuration only. Credentials in auth.json are never opened.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PiDocument {
+    pub value: Value,
+    pub revision: String,
+    pub path: String,
+}
+
+fn management_path(kind: &str) -> Result<PathBuf, AppError> {
+    let filename = match kind {
+        "settings" => "settings.json",
+        "mcp" => "mcp.json",
+        _ => return Err(AppError::InvalidInput("Unsupported Pi document".into())),
+    };
+    Ok(get_pi_agent_dir()?.join(filename))
+}
+
+pub(crate) fn read_management_document(kind: &str) -> Result<PiDocument, AppError> {
+    let _guard = lock_models_file()?;
+    let path = management_path(kind)?;
+    let (value, revision) = read_models_document_with_revision(&path)?;
+    if !value.is_object() {
+        return Err(AppError::Config(
+            "Pi configuration must be an object".into(),
+        ));
+    }
+    Ok(PiDocument {
+        value,
+        revision,
+        path: path.display().to_string(),
+    })
+}
+
+pub(crate) fn save_management_document(
+    kind: &str,
+    value: Value,
+    expected_revision: &str,
+) -> Result<PiDocument, AppError> {
+    let _guard = lock_models_file()?;
+    let path = management_path(kind)?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| AppError::InvalidInput("Pi configuration must be an object".into()))?;
+    if kind == "settings" {
+        for key in ["defaultProvider", "defaultModel", "defaultThinkingLevel"] {
+            if object.get(key).is_some_and(|v| !v.is_string()) {
+                return Err(AppError::InvalidInput(format!("{key} must be a string")));
+            }
+        }
+        if let Some(level) = object.get("defaultThinkingLevel").and_then(Value::as_str) {
+            if !["off", "minimal", "low", "medium", "high", "xhigh", "max"].contains(&level) {
+                return Err(AppError::InvalidInput("Invalid Pi thinking level".into()));
+            }
+        }
+    } else if object.get("mcpServers").is_some_and(|v| !v.is_object()) {
+        return Err(AppError::InvalidInput(
+            "mcpServers must be an object".into(),
+        ));
+    }
+    let mut bytes =
+        serde_json::to_vec_pretty(&value).map_err(|source| AppError::JsonSerialize { source })?;
+    bytes.push(b'\n');
+    if bytes.len() as u64 > MAX_PI_FILE_BYTES {
+        return Err(AppError::InvalidInput(
+            "Pi configuration exceeds 1 MiB".into(),
+        ));
+    }
+    write_models_document(&path, &value, expected_revision)?;
+    Ok(PiDocument {
+        value,
+        revision: revision(&bytes),
+        path: path.display().to_string(),
+    })
+}
+
+#[cfg(test)]
+mod management_tests {
+    use super::*;
+    use serial_test::serial;
+    use test_support::TestAgentDir;
+
+    #[test]
+    #[serial]
+    fn management_rejects_credentials_and_external_edits() {
+        let _dir = TestAgentDir::new();
+        assert!(read_management_document("auth").is_err());
+        let document = read_management_document("settings").unwrap();
+        let saved = save_management_document(
+            "settings",
+            serde_json::json!({"defaultModel":"a", "future":true}),
+            &document.revision,
+        )
+        .unwrap();
+        assert_eq!(
+            saved.revision,
+            read_management_document("settings").unwrap().revision
+        );
+        assert!(save_management_document(
+            "settings",
+            serde_json::json!({"defaultModel":"b"}),
+            &document.revision
+        )
+        .is_err());
+        assert_eq!(
+            read_management_document("settings").unwrap().value["future"],
+            true
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn management_validates_mcp_and_thinking() {
+        let _dir = TestAgentDir::new();
+        assert!(
+            save_management_document("mcp", serde_json::json!({"mcpServers":[]}), "missing")
+                .is_err()
+        );
+        assert!(save_management_document(
+            "settings",
+            serde_json::json!({"defaultThinkingLevel":"invalid"}),
+            "missing"
+        )
+        .is_err());
+        assert!(save_management_document("auth", serde_json::json!({}), "missing").is_err());
     }
 }

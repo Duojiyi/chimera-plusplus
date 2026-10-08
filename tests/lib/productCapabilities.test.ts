@@ -85,3 +85,19 @@ it.each(Object.entries(productToolViews))(
     expect(isProductToolVisible(view, { [appId]: true })).toBe(true);
   },
 );
+
+it.each([
+  [false, false],
+  [false, true],
+  [true, false],
+  [true, true],
+])("keeps Pi (%s) and OMP (%s) visibility independent", (pi, omp) => {
+  expect(productToolViews["tool-omp"]).toBe("omp");
+  expect(isProductToolVisible("tool-pi", { pi, omp })).toBe(pi);
+  expect(isProductToolVisible("tool-omp", { pi, omp })).toBe(omp);
+});
+
+it("does not infer OMP visibility from legacy Pi preferences", () => {
+  expect(isProductToolVisible("tool-omp", { pi: true })).toBe(false);
+  expect(isProductToolVisible("providers", { omp: false })).toBe(true);
+});

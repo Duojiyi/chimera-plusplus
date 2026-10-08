@@ -19,9 +19,11 @@ export function Toaster() {
   return (
     <SonnerToaster
       className="chimera-toaster"
-      position="top-center"
+      position="bottom-right"
+      offset={24}
+      gap={10}
       closeButton
-      visibleToasts={4}
+      visibleToasts={3}
       theme={sonnerTheme}
       icons={{
         success: <CircleCheck aria-hidden="true" />,
@@ -34,7 +36,8 @@ export function Toaster() {
         close: <X aria-hidden="true" />,
       }}
       toastOptions={{
-        duration: 3200,
+        unstyled: true,
+        duration: 4000,
         classNames: {
           toast: "chimera-toast",
           content: "chimera-toast-content",

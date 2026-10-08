@@ -57,8 +57,6 @@ fn merge_settings_for_save(
     incoming.current_provider_gemini = existing.current_provider_gemini.clone();
     incoming.current_provider_grokbuild = existing.current_provider_grokbuild.clone();
     incoming.current_provider_opencode = existing.current_provider_opencode.clone();
-    incoming.current_provider_openclaw = existing.current_provider_openclaw.clone();
-    incoming.current_provider_hermes = existing.current_provider_hermes.clone();
 
     // local_migrations 是纯后端状态（迁移完成标记），前端没有合法的修改场景，
     // 无条件取现有值。若按 incoming 透传：后端清掉 marker（如关闭统一会话
@@ -162,8 +160,7 @@ impl ConfigDirectoryPatch {
             "gemini" => |s| &mut s.gemini_config_dir,
             "grokbuild" => |s| &mut s.grok_config_dir,
             "opencode" => |s| &mut s.opencode_config_dir,
-            "openclaw" => |s| &mut s.openclaw_config_dir,
-            "hermes" => |s| &mut s.hermes_config_dir,
+
             _ => return Err(format!("Unknown config directory tool: {app}")),
         };
         let path = path
@@ -642,8 +639,6 @@ mod tests {
             ("gemini", "geminiConfigDir"),
             ("grokbuild", "grokConfigDir"),
             ("opencode", "opencodeConfigDir"),
-            ("openclaw", "openclawConfigDir"),
-            ("hermes", "hermesConfigDir"),
         ] {
             let patch = super::ConfigDirectoryPatch::new(app, Some("/config/new".into())).unwrap();
             let mut current = AppSettings {
@@ -652,8 +647,6 @@ mod tests {
                 gemini_config_dir: Some("/config/gemini".into()),
                 grok_config_dir: Some("/config/grok".into()),
                 opencode_config_dir: Some("/config/opencode".into()),
-                openclaw_config_dir: Some("/config/openclaw".into()),
-                hermes_config_dir: Some("/config/hermes".into()),
                 ..Default::default()
             };
             // Changes committed after the directory request was prepared must survive.

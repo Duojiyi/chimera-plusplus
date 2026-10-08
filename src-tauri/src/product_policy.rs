@@ -326,27 +326,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_upstream_app_adapters_remain_available() {
-        let policy = get_product_capabilities();
-        assert_eq!(
-            policy.available_apps,
-            vec![
-                "claude",
-                "claude-desktop",
-                "codex",
-                "gemini",
-                "grokbuild",
-                "opencode",
-                "openclaw",
-                "hermes",
-                "pi",
-                "mcode",
-            ]
-        );
-        assert_eq!(policy.default_visible_apps, vec!["codex"]);
-    }
-
-    #[test]
     fn startup_sets_are_split_by_purpose() {
         assert_eq!(
             recovery_apps().collect::<Vec<_>>(),

@@ -326,6 +326,23 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
       </span>
     </button>
     <button
+      aria-label="Claude Desktop"
+      class="w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
+      data-pencil-name="工具 · Claude Desktop"
+      type="button"
+    >
+      <span
+        class="w-[24px] h-[24px] shrink-0 flex items-center justify-center border border-[#8D9398] rounded-[4px] text-[12px] font-bold"
+      >
+        CD
+      </span>
+      <span
+        class="flex-1 text-[14px]"
+      >
+        Claude Desktop
+      </span>
+    </button>
+    <button
       aria-label="Gemini CLI"
       class="w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
       data-pencil-name="工具 · Gemini CLI"
@@ -377,20 +394,20 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
       </span>
     </button>
     <button
-      aria-label="Claude Desktop"
+      aria-label="oh-my-pi"
       class="w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
-      data-pencil-name="工具 · Claude Desktop"
+      data-pencil-name="工具 · oh-my-pi"
       type="button"
     >
       <span
         class="w-[24px] h-[24px] shrink-0 flex items-center justify-center border border-[#8D9398] rounded-[4px] text-[12px] font-bold"
       >
-        CD
+        OMP
       </span>
       <span
         class="flex-1 text-[14px]"
       >
-        Claude Desktop
+        oh-my-pi
       </span>
     </button>
     <button
@@ -408,57 +425,6 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
         class="flex-1 text-[14px]"
       >
         Grok Build
-      </span>
-    </button>
-    <button
-      aria-label="OpenClaw"
-      class="w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
-      data-pencil-name="工具 · OpenClaw"
-      type="button"
-    >
-      <span
-        class="w-[24px] h-[24px] shrink-0 flex items-center justify-center border border-[#8D9398] rounded-[4px] text-[12px] font-bold"
-      >
-        Cl
-      </span>
-      <span
-        class="flex-1 text-[14px]"
-      >
-        OpenClaw
-      </span>
-    </button>
-    <button
-      aria-label="Hermes"
-      class="w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
-      data-pencil-name="工具 · Hermes"
-      type="button"
-    >
-      <span
-        class="w-[24px] h-[24px] shrink-0 flex items-center justify-center border border-[#8D9398] rounded-[4px] text-[12px] font-bold"
-      >
-        He
-      </span>
-      <span
-        class="flex-1 text-[14px]"
-      >
-        Hermes
-      </span>
-    </button>
-    <button
-      aria-label="MiniMax Code"
-      class="w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
-      data-pencil-name="工具 · MiniMax Code"
-      type="button"
-    >
-      <span
-        class="w-[24px] h-[24px] shrink-0 flex items-center justify-center border border-[#8D9398] rounded-[4px] text-[12px] font-bold"
-      >
-        MM
-      </span>
-      <span
-        class="flex-1 text-[14px]"
-      >
-        MiniMax Code
       </span>
     </button>
     <button
@@ -905,6 +871,23 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
       </span>
     </button>
     <button
+      aria-label="Claude Desktop"
+      class="w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
+      data-pencil-name="工具 · Claude Desktop"
+      type="button"
+    >
+      <span
+        class="w-[24px] h-[24px] shrink-0 flex items-center justify-center border border-[#8D9398] rounded-[4px] text-[12px] font-bold"
+      >
+        CD
+      </span>
+      <span
+        class="flex-1 text-[14px]"
+      >
+        Claude Desktop
+      </span>
+    </button>
+    <button
       aria-label="Gemini CLI"
       class="w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
       data-pencil-name="工具 · Gemini CLI"
@@ -956,20 +939,20 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
       </span>
     </button>
     <button
-      aria-label="Claude Desktop"
+      aria-label="oh-my-pi"
       class="w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
-      data-pencil-name="工具 · Claude Desktop"
+      data-pencil-name="工具 · oh-my-pi"
       type="button"
     >
       <span
         class="w-[24px] h-[24px] shrink-0 flex items-center justify-center border border-[#8D9398] rounded-[4px] text-[12px] font-bold"
       >
-        CD
+        OMP
       </span>
       <span
         class="flex-1 text-[14px]"
       >
-        Claude Desktop
+        oh-my-pi
       </span>
     </button>
     <button
@@ -987,57 +970,6 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
         class="flex-1 text-[14px]"
       >
         Grok Build
-      </span>
-    </button>
-    <button
-      aria-label="OpenClaw"
-      class="w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
-      data-pencil-name="工具 · OpenClaw"
-      type="button"
-    >
-      <span
-        class="w-[24px] h-[24px] shrink-0 flex items-center justify-center border border-[#8D9398] rounded-[4px] text-[12px] font-bold"
-      >
-        Cl
-      </span>
-      <span
-        class="flex-1 text-[14px]"
-      >
-        OpenClaw
-      </span>
-    </button>
-    <button
-      aria-label="Hermes"
-      class="w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
-      data-pencil-name="工具 · Hermes"
-      type="button"
-    >
-      <span
-        class="w-[24px] h-[24px] shrink-0 flex items-center justify-center border border-[#8D9398] rounded-[4px] text-[12px] font-bold"
-      >
-        He
-      </span>
-      <span
-        class="flex-1 text-[14px]"
-      >
-        Hermes
-      </span>
-    </button>
-    <button
-      aria-label="MiniMax Code"
-      class="w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
-      data-pencil-name="工具 · MiniMax Code"
-      type="button"
-    >
-      <span
-        class="w-[24px] h-[24px] shrink-0 flex items-center justify-center border border-[#8D9398] rounded-[4px] text-[12px] font-bold"
-      >
-        MM
-      </span>
-      <span
-        class="flex-1 text-[14px]"
-      >
-        MiniMax Code
       </span>
     </button>
     <button
@@ -1174,37 +1106,6 @@ exports[`keeps the shell markup stable across views and the line editor > titleb
     >
       浏览器预览 · 未连接本机
     </span>
-    <button
-      aria-label="当前线路：未选择线路"
-      class="mini-signboard"
-      data-tauri-no-drag="true"
-      title="点击返回线路页"
-      type="button"
-    >
-      <span
-        class="mini-signboard-stripe"
-        style="background-color: var(--plate-fg-3);"
-      />
-      <span
-        class="mini-signboard-tool"
-      >
-        Codex
-      </span>
-      <span
-        aria-hidden="true"
-        class="mini-signboard-track"
-      />
-      <span
-        class="mini-signboard-line"
-      >
-        <span
-          class="mini-signboard-name"
-          data-unresolved="true"
-        >
-          未选择线路
-        </span>
-      </span>
-    </button>
   </div>
   <button
     aria-label="搜索线路、页面或命令"
@@ -1547,37 +1448,6 @@ exports[`keeps the shell markup stable across views and the line editor > titleb
     >
       浏览器预览 · 未连接本机
     </span>
-    <button
-      aria-label="当前线路：未选择线路"
-      class="mini-signboard"
-      data-tauri-no-drag="true"
-      title="点击返回线路页"
-      type="button"
-    >
-      <span
-        class="mini-signboard-stripe"
-        style="background-color: var(--plate-fg-3);"
-      />
-      <span
-        class="mini-signboard-tool"
-      >
-        Codex
-      </span>
-      <span
-        aria-hidden="true"
-        class="mini-signboard-track"
-      />
-      <span
-        class="mini-signboard-line"
-      >
-        <span
-          class="mini-signboard-name"
-          data-unresolved="true"
-        >
-          未选择线路
-        </span>
-      </span>
-    </button>
   </div>
   <button
     aria-label="搜索线路、页面或命令"

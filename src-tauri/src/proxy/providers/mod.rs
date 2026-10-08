@@ -227,11 +227,7 @@ impl ProviderType {
             AppType::GrokBuild => ProviderType::Codex,
             // Additive tools never go through the local proxy; keep the
             // existing Codex-shaped fallback for them.
-            AppType::OpenCode
-            | AppType::OpenClaw
-            | AppType::Hermes
-            | AppType::Pi
-            | AppType::Mcode => ProviderType::Codex,
+            AppType::OpenCode | AppType::Pi => ProviderType::Codex,
         }
     }
 
@@ -285,9 +281,7 @@ pub fn get_adapter(app_type: &AppType) -> Box<dyn ProviderAdapter> {
         AppType::Codex => Box::new(CodexAdapter::new()),
         AppType::Gemini => Box::new(GeminiAdapter::new()),
         AppType::GrokBuild => Box::new(CodexAdapter::new()),
-        AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::Pi | AppType::Mcode => {
-            Box::new(CodexAdapter::new())
-        }
+        AppType::OpenCode | AppType::Pi => Box::new(CodexAdapter::new()),
     }
 }
 

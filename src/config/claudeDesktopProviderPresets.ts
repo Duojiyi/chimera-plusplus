@@ -8,6 +8,7 @@
  *
  * 翻译来源：src/config/claudeProviderPresets.ts（排除 OAuth 与不兼容预设）
  */
+import { chimeraHubPreset } from "./codexTemplates";
 import { ProviderCategory } from "../types";
 import type { PresetTheme } from "./claudeProviderPresets";
 
@@ -42,6 +43,7 @@ export interface ClaudeDesktopProviderPreset {
   nameKey?: string;
   websiteUrl: string;
   apiKeyUrl?: string;
+  isBuiltinTemplate?: boolean;
   category?: ProviderCategory;
   isPartner?: boolean;
   primePartner?: boolean; // 置顶合作伙伴（顶级）：徽章显示为心形
@@ -135,6 +137,25 @@ const brandedRoutes = (
 };
 
 export const claudeDesktopProviderPresets: ClaudeDesktopProviderPreset[] = [
+  chimeraHubPreset<ClaudeDesktopProviderPreset>((template) => ({
+    name: template.name,
+    websiteUrl: template.websiteUrl,
+    baseUrl: template.baseUrl,
+    category: "third_party",
+    isBuiltinTemplate: true,
+    mode: "proxy",
+    apiFormat: "openai_responses",
+    modelRoutes: template.model
+      ? [
+          {
+            routeId: CLAUDE_DESKTOP_ROLE_ROUTE_IDS.sonnet,
+            upstreamModel: template.model,
+            labelOverride: template.model,
+            supports1m: false,
+          },
+        ]
+      : [],
+  })),
   {
     name: "Claude Desktop Official",
     websiteUrl: "https://claude.ai/download",

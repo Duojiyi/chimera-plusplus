@@ -788,9 +788,10 @@ export function CodexFormFields({
             official: t("providerForm.codexOfficialNoApiKey", {
               defaultValue: "官方供应商无需 API Key",
             }),
-            thirdParty: t("providerForm.codexApiKeyAutoFill", {
-              defaultValue: "输入 API Key，将自动填充到配置",
-            }),
+            thirdParty:
+              appId === "codex"
+                ? t("providerForm.codexApiKeyAutoFill")
+                : t("providerForm.apiKeyAutoFill"),
           }}
         />
       )}
@@ -803,7 +804,7 @@ export function CodexFormFields({
           value={codexBaseUrl}
           onChange={onBaseUrlChange}
           placeholder={t("providerForm.codexApiEndpointPlaceholder")}
-          hint={t("providerForm.codexApiHint")}
+          hint={appId === "codex" ? t("providerForm.codexApiHint") : undefined}
           showFullUrlToggle
           isFullUrl={isFullUrl}
           onFullUrlChange={onFullUrlChange}

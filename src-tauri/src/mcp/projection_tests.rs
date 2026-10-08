@@ -30,10 +30,6 @@ fn foreign_disabled_id_is_untouched_in_every_client_format() {
             AppType::GrokBuild,
             "# keep me\n[mcp_servers.foreign]\ncommand = 'external'\n",
         ),
-        (
-            AppType::Hermes,
-            "# keep me\nmcp_servers:\n  foreign:\n    command: external\n",
-        ),
     ] {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config");
@@ -149,7 +145,6 @@ fn codex_soft_disable_does_not_disable_other_clients() {
         AppType::Gemini,
         AppType::OpenCode,
         AppType::GrokBuild,
-        AppType::Hermes,
     ] {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config");

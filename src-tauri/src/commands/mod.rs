@@ -12,7 +12,7 @@ mod deeplink;
 mod env;
 mod failover;
 mod global_proxy;
-mod hermes;
+
 mod import_export;
 mod live_tools;
 mod mcp;
@@ -20,8 +20,10 @@ mod misc;
 mod model_fetch;
 mod official_accounts;
 mod omo;
-mod openclaw;
+
 mod pi;
+mod pi_plugins;
+pub(crate) use pi_plugins::*;
 mod plugin;
 mod profile;
 mod prompt;
@@ -40,7 +42,6 @@ mod lightweight;
 mod s3_sync;
 mod usage;
 mod webdav_sync;
-mod workspace;
 
 pub use auth::*;
 pub use balance::*;
@@ -53,7 +54,7 @@ pub use deeplink::*;
 pub use env::*;
 pub use failover::*;
 pub use global_proxy::*;
-pub use hermes::*;
+
 pub use import_export::*;
 pub use live_tools::*;
 pub use mcp::*;
@@ -61,7 +62,7 @@ pub use misc::*;
 pub use model_fetch::*;
 pub use official_accounts::*;
 pub use omo::*;
-pub use openclaw::*;
+
 pub(crate) use pi::*;
 pub use plugin::*;
 pub use profile::*;
@@ -80,9 +81,11 @@ pub use lightweight::*;
 pub use s3_sync::*;
 pub use usage::*;
 pub use webdav_sync::*;
-pub use workspace::*;
 
 mod config_health;
 pub use config_health::*;
 
 pub use cc_switch_import::*;
+
+mod omp;
+pub(crate) use omp::*;

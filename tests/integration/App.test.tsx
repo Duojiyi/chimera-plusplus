@@ -31,32 +31,6 @@ function renderApp(): RenderResult {
 }
 
 describe("Chimera++ application shell", () => {
-  it("exposes Codex routes and supported OpenClaw navigation", async () => {
-    renderApp();
-
-    expect(screen.getByRole("button", { name: "会话" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "线路" })).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Codex 管理" }),
-    ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "用量" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "外观" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "设置" })).toBeInTheDocument();
-    const openClaw = await screen.findByRole("button", { name: "OpenClaw" });
-    expect(openClaw).toBeEnabled();
-    fireEvent.click(openClaw);
-    expect(
-      await screen.findByRole("heading", { name: "OpenClaw", level: 1 }),
-    ).toBeVisible();
-    expect(
-      screen.queryByRole("heading", { name: "Claude Code" }),
-    ).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "线路" }));
-    expect(
-      await screen.findByRole("button", { name: "开始配置" }),
-    ).toBeVisible();
-  });
-
   it("exposes backend-enabled navigation slots without fixture data", async () => {
     renderApp();
     const backendEnabledLabels = [

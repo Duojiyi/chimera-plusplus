@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { ToolPageActiveContext } from "./RetainedToolPage";
+import { useContext, useEffect, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -45,6 +46,7 @@ export function ConfirmDialog({
   onCancel,
 }: ConfirmDialogProps) {
   const { t } = useTranslation();
+  const pageActive = useContext(ToolPageActiveContext);
   const [checkboxChecked, setCheckboxChecked] = useState(
     checkboxDefaultChecked,
   );
@@ -61,7 +63,7 @@ export function ConfirmDialog({
 
   return (
     <Dialog
-      open={isOpen}
+      open={isOpen && pageActive}
       onOpenChange={(open) => {
         if (!open && !busy) {
           onCancel();

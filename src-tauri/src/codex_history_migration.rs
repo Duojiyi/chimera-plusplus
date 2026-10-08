@@ -25,6 +25,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashSet};
 use std::fs;
 use std::hash::{Hash, Hasher};
+use std::io::{BufRead, BufReader, BufWriter, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 use toml_edit::DocumentMut;
@@ -800,11 +801,25 @@ fn backup_generation_matches_dir(generation: &Path, codex_dir_key: &str) -> bool
 }
 
 fn collect_official_session_ids_from_backup(path: &Path, session_ids: &mut HashSet<String>) {
-    let Ok(content) = read_to_string_limited(path, MAX_SESSION_FILE_BYTES) else {
+    let Ok(file) = open_regular_file_no_symlink(path) else {
         log::debug!("Failed to read unify backup file {}", path.display());
         return;
     };
-    for line in content.lines() {
+    let mut reader = BufReader::new(file);
+    let mut bytes = Vec::new();
+    loop {
+        match read_session_line(&mut reader, &mut bytes) {
+            Ok(true) if !bytes.is_empty() => {}
+            Ok(true) => break,
+            _ => {
+                log::warn!("Cannot finish reading unify backup {}", path.display());
+                break;
+            }
+        }
+        let Ok(line) = std::str::from_utf8(&bytes) else {
+            continue;
+        };
+
         if !line.contains("\"session_meta\"") || !line.contains("\"model_provider\"") {
             continue;
         }
@@ -1394,35 +1409,60 @@ enum SessionRewriteOutcome {
     Rewritten,
 }
 
+/// Bound memory by record size, not rollout size. False means an oversized
+/// record: the caller must not commit a partially parsed file.
+fn read_session_line(reader: &mut impl BufRead, bytes: &mut Vec<u8>) -> std::io::Result<bool> {
+    bytes.clear();
+    reader
+        .take(MAX_SESSION_FILE_BYTES + 1)
+        .read_until(b'\n', bytes)?;
+    Ok(bytes.len() as u64 <= MAX_SESSION_FILE_BYTES)
+}
+
 fn rewrite_codex_session_file_lines(
     path: &Path,
     codex_dir: &Path,
     backup_root: &Path,
     rewrite_line: impl Fn(&str) -> Option<String>,
 ) -> Result<SessionRewriteOutcome, AppError> {
-    let metadata_before = fs::symlink_metadata(path).map_err(|e| AppError::io(path, e))?;
-    if metadata_before.file_type().is_symlink() {
-        return Err(AppError::Config(format!(
-            "拒绝改写符号链接会话文件: {}",
-            path.display()
-        )));
-    }
+    let source = open_regular_file_no_symlink(path).map_err(|e| AppError::io(path, e))?;
+    let metadata_before = source.metadata().map_err(|e| AppError::io(path, e))?;
     let modified_before = metadata_before.modified().ok();
     let len_before = metadata_before.len();
-    let content =
-        read_to_string_limited(path, MAX_SESSION_FILE_BYTES).map_err(|e| AppError::io(path, e))?;
-
-    let mut rewritten = String::with_capacity(content.len());
+    let mut reader = BufReader::new(source);
+    // Read-only preflight: unchanged/active rollouts must not require writable
+    // directories or temporary disk space. Keep this handle for the write pass.
+    let mut bytes = Vec::new();
     let mut changed = false;
     let mut session_ids = BTreeSet::new();
     let mut unidentified_change = false;
-    for segment in content.split_inclusive('\n') {
-        let (line, newline) = segment
-            .strip_suffix('\n')
-            .map(|line| (line, "\n"))
-            .unwrap_or((segment, ""));
-        if let Some(next_line) = rewrite_line(line) {
-            rewritten.push_str(&next_line);
+    let mut oversized_line = false;
+    let mut observed_session_ids = BTreeSet::new();
+    loop {
+        if !read_session_line(&mut reader, &mut bytes).map_err(|e| AppError::io(path, e))? {
+            oversized_line = true;
+            break;
+        }
+        if bytes.is_empty() {
+            break;
+        }
+        let segment = std::str::from_utf8(&bytes)
+            .map_err(|e| AppError::Config(format!("Invalid UTF-8 in {}: {e}", path.display())))?;
+        let line = segment.strip_suffix('\n').unwrap_or(segment);
+        if line.contains("\"session_meta\"") {
+            if let Ok(value) = serde_json::from_str::<Value>(line) {
+                if value.get("type").and_then(Value::as_str) == Some("session_meta") {
+                    if let Some(id) = value
+                        .pointer("/payload/id")
+                        .and_then(Value::as_str)
+                        .filter(|id| !id.trim().is_empty())
+                    {
+                        observed_session_ids.insert(id.to_string());
+                    }
+                }
+            }
+        }
+        if rewrite_line(line).is_some() {
             changed = true;
             let id = serde_json::from_str::<Value>(line).ok().and_then(|value| {
                 value
@@ -1436,10 +1476,26 @@ fn rewrite_codex_session_file_lines(
             } else {
                 unidentified_change = true;
             }
-        } else {
-            rewritten.push_str(line);
         }
-        rewritten.push_str(newline);
+    }
+    ensure_codex_session_file_unchanged(path, modified_before, len_before)?;
+
+    // ponytail: a single >32 MiB record is deferred, not loaded unboundedly.
+    // Supporting such metadata needs a token-stream parser; ordinary large
+    // rollouts (many bounded records) have no total-size limit.
+    if oversized_line {
+        let session_ids = observed_session_ids;
+        if session_ids.is_empty() || unidentified_change {
+            return Err(AppError::Config(format!(
+                "Cannot safely defer oversized session record without an ID: {}",
+                path.display()
+            )));
+        }
+        log::info!(
+            "Deferring oversized Codex session record: {}",
+            path.display()
+        );
+        return Ok(SessionRewriteOutcome::Deferred { session_ids });
     }
 
     if !changed {
@@ -1462,9 +1518,70 @@ fn rewrite_codex_session_file_lines(
     }
 
     ensure_codex_session_file_unchanged(path, modified_before, len_before)?;
+    reader.rewind().map_err(|e| AppError::io(path, e))?;
+    // Only a confirmed inactive rollout needing changes gets a temporary copy.
+    // Same-directory placement permits atomic replacement on Windows and Unix.
+    let mut temporary = tempfile::NamedTempFile::new_in(path.parent().unwrap_or(Path::new(".")))
+        .map_err(|e| AppError::io(path, e))?;
+    let mut output = BufWriter::new(temporary.as_file_mut());
+    loop {
+        if !read_session_line(&mut reader, &mut bytes).map_err(|e| AppError::io(path, e))? {
+            return Err(AppError::Config(format!(
+                "Codex session record grew beyond limit during migration: {}",
+                path.display()
+            )));
+        }
+        if bytes.is_empty() {
+            break;
+        }
+        let segment = std::str::from_utf8(&bytes)
+            .map_err(|e| AppError::Config(format!("Invalid UTF-8 in {}: {e}", path.display())))?;
+        let (line, newline) = segment
+            .strip_suffix('\n')
+            .map(|line| (line, "\n"))
+            .unwrap_or((segment, ""));
+        if let Some(next_line) = rewrite_line(line) {
+            output
+                .write_all(next_line.as_bytes())
+                .map_err(|e| AppError::io(path, e))?;
+            output
+                .write_all(newline.as_bytes())
+                .map_err(|e| AppError::io(path, e))?;
+        } else {
+            output
+                .write_all(&bytes)
+                .map_err(|e| AppError::io(path, e))?;
+        }
+    }
+    output.flush().map_err(|e| AppError::io(path, e))?;
+    drop(output);
+    drop(reader);
+    ensure_codex_session_file_unchanged(path, modified_before, len_before)?;
     backup_codex_jsonl_file(path, codex_dir, backup_root)?;
     ensure_codex_session_file_unchanged(path, modified_before, len_before)?;
-    atomic_write(path, rewritten.as_bytes())?;
+    temporary
+        .as_file()
+        .set_permissions(metadata_before.permissions())
+        .map_err(|e| AppError::io(path, e))?;
+    temporary
+        .as_file()
+        .sync_all()
+        .map_err(|e| AppError::io(path, e))?;
+    // Check after the potentially slow temp-file flush, immediately before
+    // replace. The active-session guard remains necessary for external writers.
+    ensure_codex_session_file_unchanged(path, modified_before, len_before)?;
+    temporary
+        .persist(path)
+        .map_err(|e| AppError::io(path, e.error))?;
+    #[cfg(unix)]
+    if let Some(parent) = path.parent() {
+        if let Err(error) = fs::File::open(parent).and_then(|directory| directory.sync_all()) {
+            log::warn!(
+                "Codex session replaced but directory sync failed ({}): {error}",
+                parent.display()
+            );
+        }
+    }
     Ok(SessionRewriteOutcome::Rewritten)
 }
 
@@ -1491,7 +1608,9 @@ fn ensure_codex_session_file_unchanged(
     modified_before: Option<SystemTime>,
     len_before: u64,
 ) -> Result<(), AppError> {
-    let metadata_after = fs::metadata(path).map_err(|e| AppError::io(path, e))?;
+    let metadata_after = open_regular_file_no_symlink(path)
+        .and_then(|file| file.metadata())
+        .map_err(|e| AppError::io(path, e))?;
     if metadata_after.modified().ok() != modified_before || metadata_after.len() != len_before {
         return Err(AppError::Message(format!(
             "Codex session file changed during migration: {}",
@@ -3813,5 +3932,249 @@ model_provider = "aihubmix"
             1
         );
         assert_eq!(thread_provider(&conn, "s1"), "custom");
+    }
+
+    fn streaming_test_digest(path: &Path) -> Vec<u8> {
+        let mut file = fs::File::open(path).unwrap();
+        let mut digest = Sha256::new();
+        let mut buffer = [0; 65536];
+        loop {
+            let count = file.read(&mut buffer).unwrap();
+            if count == 0 {
+                break;
+            }
+            digest.update(&buffer[..count]);
+        }
+        digest.finalize().to_vec()
+    }
+
+    fn backdate_streaming_fixture(file: &fs::File) {
+        file.set_times(fs::FileTimes::new().set_modified(
+            SystemTime::now() - Duration::from_secs(ACTIVE_SESSION_SKIP_THRESHOLD_SECS + 60),
+        ))
+        .unwrap();
+    }
+
+    #[test]
+    fn large_rollout_streams_backup_and_restore_without_total_size_limit() {
+        let dir = tempdir().unwrap();
+        let sessions = dir.path().join("sessions");
+        fs::create_dir(&sessions).unwrap();
+        let path = sessions.join("large.jsonl");
+        let mut file = fs::File::create(&path).unwrap();
+        let meta = serde_json::json!({"type":"session_meta","payload":{"id":"large","model_provider":"openai"}}).to_string();
+        writeln!(file, "{meta}").unwrap();
+        // Match the reported 75 MB class without allocating the rollout.
+        let record = format!(
+            "{{\"type\":\"event_msg\",\"text\":\"{}\"}}\r\n",
+            "x".repeat(65536)
+        );
+        for _ in 0..1151 {
+            file.write_all(record.as_bytes()).unwrap();
+        }
+        file.write_all(b"tail without newline").unwrap();
+        backdate_streaming_fixture(&file);
+        drop(file);
+        assert!(fs::metadata(&path).unwrap().len() > MAX_SESSION_FILE_BYTES);
+        let original = streaming_test_digest(&path);
+        let backup = dir.path().join("backup");
+        assert_eq!(
+            rewrite_codex_session_file_for_provider_bucket(
+                &path,
+                dir.path(),
+                &HashSet::from(["openai".into()]),
+                &backup
+            )
+            .unwrap(),
+            SessionRewriteOutcome::Rewritten
+        );
+        let backup_path = backup.join("jsonl/sessions/large.jsonl");
+        assert_eq!(streaming_test_digest(&backup_path), original);
+        let mut ids = HashSet::new();
+        collect_official_session_ids_from_backup(&backup_path, &mut ids);
+        assert_eq!(ids, HashSet::from(["large".into()]));
+        backdate_streaming_fixture(&fs::OpenOptions::new().write(true).open(&path).unwrap());
+        assert_eq!(
+            rewrite_codex_session_file_lines(
+                &path,
+                dir.path(),
+                &dir.path().join("restore"),
+                |line| rewrite_codex_session_meta_line_for_restore(line, &ids)
+            )
+            .unwrap(),
+            SessionRewriteOutcome::Rewritten
+        );
+        assert_eq!(streaming_test_digest(&path), original);
+        assert_eq!(fs::read_dir(&sessions).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn streaming_rewrite_rejects_concurrent_append_and_cleans_temporary_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let original = "{\"type\":\"session_meta\",\"payload\":{\"id\":\"s1\",\"model_provider\":\"openai\"}}\n";
+        write_session_fixture(&path, original);
+        let backup = dir.path().join("backup");
+        let sources = HashSet::from(["openai".to_string()]);
+        let error = rewrite_codex_session_file_lines(&path, dir.path(), &backup, |line| {
+            let result = rewrite_codex_session_meta_line(line, &sources);
+            if result.is_some() {
+                let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+                file.write_all(b"concurrent append\n").unwrap();
+            }
+            result
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("changed during migration"));
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            format!("{original}concurrent append\n")
+        );
+        assert!(!backup.exists());
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn oversized_record_defers_its_state_row_but_other_files_still_migrate() {
+        let dir = tempdir().unwrap();
+        let sessions = dir.path().join("sessions");
+        fs::create_dir(&sessions).unwrap();
+        let large = sessions.join("large.jsonl");
+        let mut file = fs::File::create(&large).unwrap();
+        file.write_all(b"{\"type\":\"session_meta\",\"payload\":{\"id\":\"large\",\"model_provider\":\"openai\"}}\n").unwrap();
+        let chunk = [b'x'; 65536];
+        for _ in 0..=(MAX_SESSION_FILE_BYTES / chunk.len() as u64) {
+            file.write_all(&chunk).unwrap();
+        }
+        backdate_streaming_fixture(&file);
+        drop(file);
+        let original = streaming_test_digest(&large);
+        write_session_fixture(&sessions.join("small.jsonl"),
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"small\",\"model_provider\":\"openai\"}}\n");
+        let backup = dir.path().join("backup");
+        let result =
+            migrate_codex_jsonl_files(dir.path(), &source_ids(&["openai"]), &backup).unwrap();
+        assert_eq!((result.migrated_files, result.deferred_files), (1, 1));
+        assert_eq!(result.deferred_session_ids, source_ids(&["large"]));
+        assert_eq!(streaming_test_digest(&large), original);
+        assert!(!backup.join("jsonl/sessions/large.jsonl").exists());
+        assert_eq!(fs::read_dir(&sessions).unwrap().count(), 2);
+        let db_path = dir.path().join(CODEX_STATE_DB_FILENAME);
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT NOT NULL);
+             INSERT INTO threads VALUES ('large', 'openai'), ('small', 'openai');",
+        )
+        .unwrap();
+        assert_eq!(
+            migrate_codex_state_db_provider_bucket(
+                &db_path,
+                dir.path(),
+                &source_ids(&["openai"]),
+                &backup,
+                &result.deferred_session_ids
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(thread_provider(&conn, "large"), "openai");
+        assert_eq!(thread_provider(&conn, "small"), "custom");
+        // A huge record in an already-unified file must not abort the next
+        // reclaim pass either; its known ID can still be safely deferred.
+        let repeated =
+            migrate_codex_jsonl_files(dir.path(), &source_ids(&["unrelated"]), &backup).unwrap();
+        assert_eq!((repeated.migrated_files, repeated.deferred_files), (0, 1));
+        assert_eq!(repeated.deferred_session_ids, source_ids(&["large"]));
+    }
+
+    #[test]
+    fn unchanged_large_rollout_never_creates_a_temporary_copy() {
+        let dir = tempdir().unwrap();
+        let archive = dir.path().join("archived_sessions");
+        fs::create_dir(&archive).unwrap();
+        let path = archive.join("custom.jsonl");
+        let mut file = fs::File::create(&path).unwrap();
+        file.write_all(b"{\"type\":\"session_meta\",\"payload\":{\"id\":\"custom\",\"model_provider\":\"custom\"}}\n").unwrap();
+        let record = format!("{}\n", "x".repeat(65536));
+        for _ in 0..513 {
+            file.write_all(record.as_bytes()).unwrap();
+        }
+        backdate_streaming_fixture(&file);
+        drop(file);
+        let before = streaming_test_digest(&path);
+        let backup = dir.path().join("backup");
+        let sources = HashSet::from(["openai".to_string()]);
+        let result = rewrite_codex_session_file_lines(&path, dir.path(), &backup, |line| {
+            // Checking DURING the scan catches a temporary copy even if it
+            // would be deleted before the function returns, on every platform.
+            assert_eq!(fs::read_dir(&archive).unwrap().count(), 1);
+            rewrite_codex_session_meta_line(line, &sources)
+        })
+        .unwrap();
+        assert_eq!(result, SessionRewriteOutcome::Unchanged);
+        assert!(!backup.exists());
+        assert_eq!(streaming_test_digest(&path), before);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unchanged_read_only_archive_does_not_block_other_migrations() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let archive = dir.path().join("archived_sessions");
+        let sessions = dir.path().join("sessions");
+        fs::create_dir(&archive).unwrap();
+        fs::create_dir(&sessions).unwrap();
+        let unchanged = archive.join("custom.jsonl");
+        write_session_fixture(&unchanged,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"custom\",\"model_provider\":\"custom\"}}\n");
+        write_session_fixture(&sessions.join("old.jsonl"),
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"old\",\"model_provider\":\"openai\"}}\n");
+        let before = streaming_test_digest(&unchanged);
+        let permissions = fs::metadata(&archive).unwrap().permissions();
+        fs::set_permissions(&archive, fs::Permissions::from_mode(0o555)).unwrap();
+        let backup = dir.path().join("backup");
+        let result = migrate_codex_jsonl_files(dir.path(), &source_ids(&["openai"]), &backup);
+        // Restore permissions before assertions so TempDir can always clean up.
+        fs::set_permissions(&archive, permissions).unwrap();
+        let result = result.unwrap();
+        assert_eq!((result.migrated_files, result.deferred_files), (1, 0));
+        assert_eq!(streaming_test_digest(&unchanged), before);
+        assert!(!backup.join("jsonl/archived_sessions").exists());
+    }
+
+    #[test]
+    fn write_pass_still_rejects_concurrent_append_before_backup() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let original = "{\"type\":\"session_meta\",\"payload\":{\"id\":\"s1\",\"model_provider\":\"openai\"}}\n";
+        write_session_fixture(&path, original);
+        let backup = dir.path().join("backup");
+        let calls = std::cell::Cell::new(0);
+        let sources = HashSet::from(["openai".to_string()]);
+        let error = rewrite_codex_session_file_lines(&path, dir.path(), &backup, |line| {
+            let result = rewrite_codex_session_meta_line(line, &sources);
+            if result.is_some() {
+                calls.set(calls.get() + 1);
+                if calls.get() == 2 {
+                    fs::OpenOptions::new()
+                        .append(true)
+                        .open(&path)
+                        .unwrap()
+                        .write_all(b"concurrent append\n")
+                        .unwrap();
+                }
+            }
+            result
+        })
+        .unwrap_err();
+        assert_eq!(calls.get(), 2);
+        assert!(error.to_string().contains("changed during migration"));
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            format!("{original}concurrent append\n")
+        );
+        assert!(!backup.exists());
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 }

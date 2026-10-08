@@ -302,12 +302,6 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> Result<(), AppError> {
     atomic_write_checked(path, data, false, || Ok::<(), AppError>(()))
 }
 
-/// [`atomic_write`] that also forces the result to 0600 on Unix, for files
-/// that hold credentials (Pi `models.json`, MiniMax Code `config.yaml`).
-pub(crate) fn atomic_write_private(path: &Path, data: &[u8]) -> Result<(), AppError> {
-    atomic_write_checked(path, data, true, || Ok::<(), AppError>(()))
-}
-
 /// [`atomic_write`] 的底层实现，供 CAS 变更集（[`cas`]）复用。
 ///
 /// - `private`：Unix 上把结果文件强制设为 0600（否则沿用已有文件的权限，

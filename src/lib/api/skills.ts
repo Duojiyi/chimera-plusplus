@@ -3,14 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { AppId } from "@/lib/api/types";
 
 export type AppType =
-  | "claude"
-  | "claude-desktop"
-  | "codex"
-  | "gemini"
-  | "grokbuild"
-  | "opencode"
-  | "openclaw"
-  | "hermes";
+  "claude" | "claude-desktop" | "codex" | "gemini" | "grokbuild" | "opencode";
 
 /** Skill 应用启用状态 */
 export interface SkillApps {
@@ -20,12 +13,9 @@ export interface SkillApps {
   gemini: boolean;
   grokbuild?: boolean;
   opencode: boolean;
-  openclaw: boolean;
-  hermes: boolean;
+
   /** Skills are not managed for Pi; the backend never sets this. */
   pi?: boolean;
-  /** Skills are not managed for MiniMax Code; the backend never sets this. */
-  mcode?: boolean;
 }
 
 /** 已安装的 Skill（v3.10.0+ 统一结构） */

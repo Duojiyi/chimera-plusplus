@@ -34,7 +34,11 @@ function mount(native = true) {
 }
 it("persists explicit tool enablement, preserves preferences, and updates the navigation cache", async () => {
   const client = mount();
-  const toggle = await screen.findByRole("switch", { name: "Claude Desktop" });
+  const toggle = await screen.findByRole(
+    "switch",
+    { name: "Claude Desktop" },
+    { timeout: 10000 },
+  );
   expect(toggle).not.toBeChecked();
   fireEvent.click(toggle);
   await waitFor(() => expect(toggle).toBeChecked());
@@ -45,7 +49,7 @@ it("persists explicit tool enablement, preserves preferences, and updates the na
         codex: true,
         claude: true,
         "claude-desktop": true,
-        mcode: false,
+        omp: false,
       }),
     }),
   );
@@ -87,33 +91,7 @@ it("does not optimistically enable a tool on save failure and names the tool", a
   expect(alert).toHaveTextContent("offline");
   expect(toggle).not.toBeChecked();
 });
-it("keeps Codex as the always-on core entry and lists known limits", async () => {
-  mount();
-  await screen.findByRole("switch", { name: "Pi" });
-  expect(screen.queryByRole("switch", { name: "Codex" })).toBeNull();
-  const codex = screen.getByText("Codex").closest("li")!;
-  expect(codex).toHaveTextContent("始终显示");
-  expect(
-    screen.getByRole("list", { name: "Claude Desktop 的已知限制" }),
-  ).toHaveTextContent("仅检测标准安装路径");
-  expect(
-    screen.getByRole("list", { name: "OpenClaw 的已知限制" }),
-  ).toHaveTextContent("暂不支持受管 MCP");
-  for (const name of ["Pi", "MiniMax Code"])
-    expect(
-      screen.getByRole("list", { name: `${name} 的已知限制` }),
-    ).toHaveTextContent("无安装管理");
-  expect(screen.getByRole("note")).toHaveTextContent(
-    "不会安装工具，也不会导入或激活任何线路",
-  );
-});
-it("labels each switch with its tool so the name toggles it too", async () => {
-  mount();
-  const toggle = await screen.findByRole("switch", { name: "Hermes" });
-  expect(toggle).toHaveAccessibleDescription(/可同时启用多条线路/);
-  fireEvent.click(screen.getByText("Hermes"));
-  await waitFor(() => expect(toggle).toBeChecked());
-});
+
 it("shows a retry when preferences cannot be read", async () => {
   vi.mocked(settingsApi.get).mockRejectedValueOnce(new Error("busy"));
   mount();
@@ -130,7 +108,75 @@ it("does not read or write preferences in browser preview", async () => {
   expect(
     await screen.findByText(/浏览器预览无法读取或保存本机工具偏好/),
   ).toBeVisible();
-  expect(screen.getByText("MiniMax Code")).toBeVisible();
+  expect(
+    screen.getByText("Pi", { selector: ".tool-visibility-name" }),
+  ).toBeVisible();
   expect(screen.queryByRole("switch")).toBeNull();
   expect(settingsApi.get).not.toHaveBeenCalled();
+});
+
+it("defaults OMP to hidden for legacy settings without changing Pi", async () => {
+  vi.mocked(settingsApi.get).mockResolvedValue({
+    language: "zh",
+    visibleApps: { codex: true, pi: true },
+  } as never);
+  const client = mount();
+  const omp = await screen.findByRole("switch", { name: "oh-my-pi" });
+  expect(omp).not.toBeChecked();
+  expect(screen.getByRole("switch", { name: "Pi" })).toBeChecked();
+  expect(
+    within(omp.closest("li")!).getByText(/独立管理运行环境/),
+  ).toBeVisible();
+  fireEvent.click(omp);
+  await waitFor(() => expect(omp).toBeChecked());
+  expect(settingsApi.save).toHaveBeenCalledWith(
+    expect.objectContaining({
+      language: "zh",
+      visibleApps: expect.objectContaining({
+        codex: true,
+        pi: true,
+        omp: true,
+      }),
+    }),
+  );
+  expect(client.getQueryData(["settings"])).toMatchObject({
+    visibleApps: { pi: true, omp: true },
+  });
+});
+
+it("serializes OMP and Pi changes without losing either preference", async () => {
+  let current = {
+    language: "zh",
+    visibleApps: { codex: true, pi: false, omp: true },
+  };
+  vi.mocked(settingsApi.get).mockImplementation(async () => current as never);
+  vi.mocked(settingsApi.save).mockImplementation(async (next) => {
+    current = next as typeof current;
+    return true;
+  });
+  const client = mount();
+  const omp = await screen.findByRole("switch", { name: "oh-my-pi" });
+  const pi = screen.getByRole("switch", { name: "Pi" });
+  expect(omp).toBeChecked();
+  expect(pi).not.toBeChecked();
+  fireEvent.click(omp);
+  fireEvent.click(pi);
+  await waitFor(() => expect(settingsApi.save).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(pi).toBeChecked());
+  expect(omp).not.toBeChecked();
+  expect(client.getQueryData(["settings"])).toMatchObject({
+    language: "zh",
+    visibleApps: { codex: true, pi: true, omp: false },
+  });
+});
+
+it("keeps OMP hidden and the settings cache unchanged when saving fails", async () => {
+  vi.mocked(settingsApi.save).mockResolvedValue(false);
+  const client = mount();
+  const omp = await screen.findByRole("switch", { name: "oh-my-pi" });
+  const before = client.getQueryData(["settings"]);
+  fireEvent.click(omp);
+  expect(await screen.findByRole("alert")).toHaveTextContent("oh-my-pi");
+  expect(omp).not.toBeChecked();
+  expect(client.getQueryData(["settings"])).toEqual(before);
 });

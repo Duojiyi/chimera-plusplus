@@ -40,3 +40,141 @@
   min-width: 100px;
   flex-shrink: 1;
 }
+
+.tool-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.tool-installation {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border-subtle);
+  font-size: 13px;
+}
+.tool-installation > summary {
+  padding: 12px 0;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.tool-installation > summary:focus-visible {
+  outline: 2px solid var(--text-1);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.tool-installation-hint {
+  margin-left: 12px;
+  color: var(--text-3);
+  font-size: 12px;
+}
+.tool-installation-content {
+  padding-bottom: 12px;
+}
+@media (max-width: 760px) {
+  .tool-actions {
+    width: 100%;
+  }
+  .tool-installation-hint {
+    display: block;
+    margin: 4px 0 0 16px;
+  }
+}
+
+.tool-discovery {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding: 16px 20px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  background: var(--bg-surface);
+  font-size: 13px;
+}
+.tool-discovery-heading,
+.tool-discovery-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.tool-discovery p {
+  margin: 6px 0 0;
+  color: var(--text-3);
+  line-height: 1.7;
+}
+.tool-discovery-badge {
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--bg-subtle);
+  color: var(--text-2);
+  font-size: 12px;
+}
+.tool-discovery-badge[data-found="true"] {
+  background: var(--success-bg);
+  color: var(--success-fg);
+}
+
+.tool-provider-delete {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 27px;
+  padding: 0 8px;
+  border: 1px solid var(--danger-border);
+  border-radius: 4px;
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+  font-size: 12px;
+  cursor: pointer;
+}
+.tool-provider-delete:hover:not(:disabled) {
+  background: var(--danger-bg-hover, var(--danger-bg));
+}
+.tool-provider-delete:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.tool-provider-delete:focus-visible {
+  outline: 2px solid var(--danger-fg);
+  outline-offset: 2px;
+}
+
+.tool-view [hidden] {
+  display: none !important;
+}
+
+.tool-section-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.tool-section-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.tool-section-nav button {
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+}
+
+.tool-section-nav button:hover,
+.tool-section-nav button[aria-current="page"] {
+  background: var(--bg-subtle);
+  color: var(--text-1);
+}
+
+.tool-section-nav button[aria-current="page"] {
+  font-weight: 600;
+}

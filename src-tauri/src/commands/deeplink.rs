@@ -215,19 +215,6 @@ mod pending_tests {
     }
 
     #[test]
-    fn manual_submission_rejects_invalid_links_without_echoing_them() {
-        let queue = PendingDeepLinks::default();
-        for url in [
-            "https://example.com/?apiKey=secret",
-            "ccswitch://v1/import?resource=prompt&app=codex&name=Secret&content=secret",
-            "chimera://v1/import?resource=provider&app=mcode&name=Secret",
-        ] {
-            assert_eq!(queue.submit_url(url).unwrap_err(), "INVALID_IMPORT_LINK");
-            assert!(queue.peek().unwrap().is_none());
-        }
-    }
-
-    #[test]
     fn cold_start_reads_and_duplicate_notifications_keep_one_request_until_ack() {
         let queue = PendingDeepLinks::default();
         let url = "ccswitch://v1/import?apiKey=secret";

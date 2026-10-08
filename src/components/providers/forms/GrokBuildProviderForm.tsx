@@ -496,62 +496,6 @@ export function GrokBuildProviderForm({
 
         {category !== "official" && (
           <>
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-              <FormItem>
-                <FormLabel htmlFor="grokbuild-profile">
-                  {t("grokBuild.profile", { defaultValue: "客户端模型档位" })}
-                </FormLabel>
-                <Input
-                  id="grokbuild-profile"
-                  value={profile}
-                  onChange={(event) => {
-                    const value = event.target.value;
-                    setProfile(value);
-                    syncStructuredConfig({ model: value });
-                  }}
-                  placeholder="grok-4.5"
-                  autoComplete="off"
-                />
-              </FormItem>
-
-              <FormItem>
-                <FormLabel htmlFor="grokbuild-api-backend">
-                  {t("grokBuild.apiBackend", { defaultValue: "API Backend" })}
-                </FormLabel>
-                <Input
-                  id="grokbuild-api-backend"
-                  value={apiBackend}
-                  onChange={(event) => {
-                    const value = event.target.value;
-                    setApiBackend(value);
-                    syncStructuredConfig({ apiBackend: value });
-                  }}
-                  placeholder="responses"
-                  autoComplete="off"
-                />
-              </FormItem>
-
-              <FormItem>
-                <FormLabel htmlFor="grokbuild-context-window">
-                  {t("grokBuild.contextWindow", { defaultValue: "上下文窗口" })}
-                </FormLabel>
-                <Input
-                  id="grokbuild-context-window"
-                  type="number"
-                  min={1}
-                  step={1}
-                  value={contextWindow}
-                  onChange={(event) => {
-                    const value = event.target.value;
-                    setContextWindow(value);
-                    syncStructuredConfig({
-                      contextWindow: Number.parseInt(value, 10),
-                    });
-                  }}
-                />
-              </FormItem>
-            </div>
-
             <CodexFormFields
               appId="grokbuild"
               providerId={providerId}
@@ -611,28 +555,100 @@ export function GrokBuildProviderForm({
               onLocalProxyBodyOverrideChange={setBodyOverride}
             />
 
-            <div className="space-y-2">
-              <FormLabel htmlFor="grokbuild-config-toml">
-                {t("grokBuild.rawConfig", { defaultValue: "config.toml" })}
-              </FormLabel>
-              <JsonEditor
-                value={rawConfig}
-                onChange={handleRawConfigChange}
-                placeholder=""
-                darkMode={isDarkMode}
-                rows={12}
-                showValidation={false}
-                language="javascript"
-              />
-              {rawConfigError && (
-                <p className="text-xs text-destructive">
-                  {t("grokBuild.invalidToml", {
-                    error: rawConfigError,
-                    defaultValue: `Invalid config.toml: ${rawConfigError}`,
-                  })}
-                </p>
-              )}
-            </div>
+            <details
+              className="rounded-lg border border-border-default p-4"
+              open={rawConfigError ? true : undefined}
+            >
+              <summary className="cursor-pointer text-sm font-medium">
+                高级设置：客户端档位与原始配置
+              </summary>
+              <div className="mt-4 space-y-4">
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                  <FormItem>
+                    <FormLabel htmlFor="grokbuild-profile">
+                      {t("grokBuild.profile", {
+                        defaultValue: "客户端模型档位",
+                      })}
+                    </FormLabel>
+                    <Input
+                      id="grokbuild-profile"
+                      value={profile}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        setProfile(value);
+                        syncStructuredConfig({ model: value });
+                      }}
+                      placeholder="grok-4.5"
+                      autoComplete="off"
+                    />
+                  </FormItem>
+
+                  <FormItem>
+                    <FormLabel htmlFor="grokbuild-api-backend">
+                      {t("grokBuild.apiBackend", {
+                        defaultValue: "API Backend",
+                      })}
+                    </FormLabel>
+                    <Input
+                      id="grokbuild-api-backend"
+                      value={apiBackend}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        setApiBackend(value);
+                        syncStructuredConfig({ apiBackend: value });
+                      }}
+                      placeholder="responses"
+                      autoComplete="off"
+                    />
+                  </FormItem>
+
+                  <FormItem>
+                    <FormLabel htmlFor="grokbuild-context-window">
+                      {t("grokBuild.contextWindow", {
+                        defaultValue: "上下文窗口",
+                      })}
+                    </FormLabel>
+                    <Input
+                      id="grokbuild-context-window"
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={contextWindow}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        setContextWindow(value);
+                        syncStructuredConfig({
+                          contextWindow: Number.parseInt(value, 10),
+                        });
+                      }}
+                    />
+                  </FormItem>
+                </div>
+
+                <div className="space-y-2">
+                  <FormLabel htmlFor="grokbuild-config-toml">
+                    {t("grokBuild.rawConfig", { defaultValue: "config.toml" })}
+                  </FormLabel>
+                  <JsonEditor
+                    value={rawConfig}
+                    onChange={handleRawConfigChange}
+                    placeholder=""
+                    darkMode={isDarkMode}
+                    rows={12}
+                    showValidation={false}
+                    language="javascript"
+                  />
+                  {rawConfigError && (
+                    <p className="text-xs text-destructive">
+                      {t("grokBuild.invalidToml", {
+                        error: rawConfigError,
+                        defaultValue: `Invalid config.toml: ${rawConfigError}`,
+                      })}
+                    </p>
+                  )}
+                </div>
+              </div>
+            </details>
           </>
         )}
 

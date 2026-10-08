@@ -17,7 +17,7 @@ export interface ToolInfo {
 }
 
 export const toolRegistryApi = {
-  /** All 10 tools in plan order. */
+  /** All supported tools in plan order. */
   async list(): Promise<ToolInfo[]> {
     return await invoke("get_tool_registry");
   },

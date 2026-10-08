@@ -19,6 +19,7 @@
  * base_url / model / wire_api 三个字段（extractCodex* 工具），再重建
  * Grok CLI 自己的 config.toml。
  */
+import { chimeraHubPreset } from "./codexTemplates";
 import type { ProviderCategory } from "../types";
 import type { CodexApiFormat } from "../types";
 import { GROK_BUILD_DEFAULT_MODEL } from "../utils/grokBuildConfig";
@@ -33,6 +34,7 @@ export interface GrokBuildProviderPreset {
   isOfficial?: boolean;
   isPartner?: boolean;
   partnerPromotionKey?: string;
+  isBuiltinTemplate?: boolean;
   category?: ProviderCategory;
   endpointCandidates?: string[];
   icon?: string;
@@ -77,6 +79,15 @@ requires_openai_auth = false`;
 }
 
 export const grokBuildProviderPresets: GrokBuildProviderPreset[] = [
+  chimeraHubPreset<GrokBuildProviderPreset>((template) => ({
+    name: template.name,
+    websiteUrl: template.websiteUrl,
+    auth: grokAuth(),
+    config: grokPresetConfig(template.name, template.baseUrl, template.model),
+    category: "third_party",
+    isBuiltinTemplate: true,
+    apiFormat: "openai_responses",
+  })),
   {
     name: "PackyCode",
     websiteUrl: "https://www.packyapi.com",

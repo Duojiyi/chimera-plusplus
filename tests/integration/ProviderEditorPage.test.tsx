@@ -147,7 +147,9 @@ describe("full-page provider editor", () => {
 
   it("updates the visible route preview without exposing credentials or URL secrets", () => {
     setup();
-    const preview = screen.getByRole("complementary", { name: "线路草稿预览" });
+    const preview = screen.getByLabelText("线路草稿预览");
+    expect(preview).not.toHaveAttribute("open");
+    fireEvent.click(screen.getByText("保存详情"));
     fireEvent.change(screen.getByLabelText("线路名称 *"), {
       target: { value: "预览线路" },
     });
@@ -188,7 +190,9 @@ describe("full-page provider editor", () => {
     expect(
       within(group).getByRole("radio", { name: "Anthropic" }),
     ).toBeChecked();
-    expect(screen.getByRole("complementary")).toHaveTextContent("Anthropic");
+    expect(screen.getByLabelText("线路草稿预览")).toHaveTextContent(
+      "Anthropic",
+    );
   });
 
   it("places deletion in the editor header and preserves the real save-and-apply operation", () => {

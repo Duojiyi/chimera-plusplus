@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import {
   FormControl,
@@ -36,6 +36,14 @@ export function BasicFormFields({
   const { t } = useTranslation();
   const [iconDialogOpen, setIconDialogOpen] = useState(false);
 
+  const moreInfoRef = useRef<HTMLDetailsElement>(null);
+  const { errors, submitCount } = form.formState;
+  useEffect(() => {
+    if ((errors.websiteUrl || errors.notes) && moreInfoRef.current) {
+      moreInfoRef.current.open = true;
+    }
+  }, [errors.websiteUrl, errors.notes, submitCount]);
+
   const currentIcon = form.watch("icon");
   const currentIconColor = form.watch("iconColor");
   const providerName = form.watch("name") || "Provider";
@@ -51,126 +59,134 @@ export function BasicFormFields({
 
   return (
     <>
-      {/* 图标选择区域 - 顶部居中，可选 */}
-      <div className="flex justify-center mb-6">
-        <Dialog open={iconDialogOpen} onOpenChange={setIconDialogOpen}>
-          <DialogTrigger asChild>
-            <button
-              type="button"
-              className="w-20 h-20 p-3 rounded-xl border-2 border-muted hover:border-primary transition-colors cursor-pointer bg-muted/30 hover:bg-muted/50 flex items-center justify-center"
-              title={
-                currentIcon
-                  ? t("providerIcon.clickToChange", {
-                      defaultValue: "点击更换图标",
-                    })
-                  : t("providerIcon.clickToSelect", {
-                      defaultValue: "点击选择图标",
-                    })
-              }
-            >
-              <ProviderIcon
-                icon={currentIcon}
-                name={providerName}
-                color={effectiveIconColor}
-                size={48}
-              />
-            </button>
-          </DialogTrigger>
-          <DialogContent
-            variant="fullscreen"
-            zIndex="top"
-            overlayClassName="bg-[hsl(var(--background))] backdrop-blur-0"
-            className="p-0 sm:rounded-none"
-          >
-            <div className="flex h-full flex-col">
-              <div className="flex-shrink-0 py-4 border-b border-border-default bg-muted/40">
-                <div className="px-6 flex items-center gap-4">
-                  <DialogClose asChild>
-                    <Button type="button" variant="outline" size="icon">
-                      <ArrowLeft className="h-4 w-4" />
-                    </Button>
-                  </DialogClose>
-                  <p className="text-lg font-semibold leading-tight">
-                    {t("providerIcon.selectIcon", {
-                      defaultValue: "选择图标",
-                    })}
-                  </p>
-                </div>
-              </div>
-              <div className="flex-1 overflow-y-auto">
-                <div className="space-y-2 px-6 py-6 w-full">
-                  <IconPicker
-                    value={currentIcon}
-                    onValueChange={handleIconSelect}
-                    color={effectiveIconColor}
-                  />
-                  <div className="flex justify-end gap-2">
-                    <DialogClose asChild>
-                      <Button type="button" variant="outline">
-                        {t("common.done", { defaultValue: "完成" })}
-                      </Button>
-                    </DialogClose>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </DialogContent>
-        </Dialog>
-      </div>
-
-      {/* Slot for additional fields between icon and name */}
       {beforeNameSlot}
-
-      {/* 基础信息 - 网格布局 */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <FormField
-          control={form.control}
-          name="name"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>{t("provider.name")}</FormLabel>
-              <FormControl>
-                <Input {...field} placeholder={t("provider.namePlaceholder")} />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-
-        <FormField
-          control={form.control}
-          name="notes"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>{t("provider.notes")}</FormLabel>
-              <FormControl>
-                <Input
-                  {...field}
-                  placeholder={t("provider.notesPlaceholder")}
-                />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-      </div>
-
       <FormField
         control={form.control}
-        name="websiteUrl"
+        name="name"
         render={({ field }) => (
           <FormItem>
-            <FormLabel>{t("provider.websiteUrl")}</FormLabel>
+            <FormLabel>{t("provider.name")}</FormLabel>
             <FormControl>
-              <Input
-                {...field}
-                placeholder={t("providerForm.websiteUrlPlaceholder")}
-              />
+              <Input {...field} placeholder="例如：我的工作线路" />
             </FormControl>
             <FormMessage />
           </FormItem>
         )}
       />
+
+      <details
+        ref={moreInfoRef}
+        className="rounded-lg border border-border px-4 py-3"
+      >
+        <summary className="cursor-pointer text-sm text-muted-foreground">
+          更多信息 · 图标、备注、官网
+        </summary>
+        <div className="mt-4 space-y-4">
+          {/* 图标选择区域 - 顶部居中，可选 */}
+          <div className="flex items-center gap-3">
+            <Dialog open={iconDialogOpen} onOpenChange={setIconDialogOpen}>
+              <DialogTrigger asChild>
+                <button
+                  type="button"
+                  className="h-10 w-10 rounded-md border border-input hover:border-primary transition-colors bg-muted/30 flex items-center justify-center"
+                  aria-label="修改线路图标"
+                  title={
+                    currentIcon
+                      ? t("providerIcon.clickToChange", {
+                          defaultValue: "点击更换图标",
+                        })
+                      : t("providerIcon.clickToSelect", {
+                          defaultValue: "点击选择图标",
+                        })
+                  }
+                >
+                  <ProviderIcon
+                    icon={currentIcon}
+                    name={providerName}
+                    color={effectiveIconColor}
+                    size={24}
+                  />
+                </button>
+              </DialogTrigger>
+              <DialogContent
+                variant="fullscreen"
+                zIndex="top"
+                overlayClassName="bg-[hsl(var(--background))] backdrop-blur-0"
+                className="p-0 sm:rounded-none"
+              >
+                <div className="flex h-full flex-col">
+                  <div className="flex-shrink-0 py-4 border-b border-border-default bg-muted/40">
+                    <div className="px-6 flex items-center gap-4">
+                      <DialogClose asChild>
+                        <Button type="button" variant="outline" size="icon">
+                          <ArrowLeft className="h-4 w-4" />
+                        </Button>
+                      </DialogClose>
+                      <p className="text-lg font-semibold leading-tight">
+                        {t("providerIcon.selectIcon", {
+                          defaultValue: "选择图标",
+                        })}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex-1 overflow-y-auto">
+                    <div className="space-y-2 px-6 py-6 w-full">
+                      <IconPicker
+                        value={currentIcon}
+                        onValueChange={handleIconSelect}
+                        color={effectiveIconColor}
+                      />
+                      <div className="flex justify-end gap-2">
+                        <DialogClose asChild>
+                          <Button type="button" variant="outline">
+                            {t("common.done", { defaultValue: "完成" })}
+                          </Button>
+                        </DialogClose>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </DialogContent>
+            </Dialog>
+            <span className="text-sm text-muted-foreground">
+              线路图标（可选）
+            </span>
+          </div>
+
+          <FormField
+            control={form.control}
+            name="notes"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t("provider.notes")}</FormLabel>
+                <FormControl>
+                  <Input
+                    {...field}
+                    placeholder={t("provider.notesPlaceholder")}
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+          <FormField
+            control={form.control}
+            name="websiteUrl"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t("provider.websiteUrl")}</FormLabel>
+                <FormControl>
+                  <Input
+                    {...field}
+                    placeholder={t("providerForm.websiteUrlPlaceholder")}
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+        </div>
+      </details>
     </>
   );
 }

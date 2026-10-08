@@ -51,6 +51,22 @@ describe("Codex model catalog feedback", () => {
     expect(fetchHandler).toContain("fetchModelsForConfig(");
     expect(fetchHandler).not.toContain("detectCodexApiFormats(");
     expect(appSource).toContain("测试地址连通性");
-    expect(appSource).toContain("未验证 Key、模型或推理能力");
+    expect(appSource).toContain("仅测试地址连通性，不验证密钥或模型。");
+  });
+
+  it("address reachability feedback does not imply verified credentials, models, or inference", () => {
+    const start = appSource.indexOf("  const testConnection = async (");
+    expect(start).toBeGreaterThan(0);
+    const handler = appSource.slice(
+      start,
+      appSource.indexOf("  useEffect(() => {", start),
+    );
+    expect(handler).toContain("await vscodeApi.testApiEndpoints([baseUrl]");
+    expect(handler).toContain('toast.success("地址可达"');
+    expect(handler).toContain("未验证密钥或模型");
+    // The shorter copy still describes reachability only, not an inference test.
+    expect(handler).not.toContain("detectCodexApiFormats(");
+    expect(handler).not.toContain("fetchModelsForConfig(");
+    expect(handler).not.toMatch(/\b(?:invoke|fetch)\s*\(/);
   });
 });

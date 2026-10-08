@@ -788,10 +788,9 @@ fn test_parse_mcp_apps() {
     assert!(!apps.codex);
     assert!(apps.gemini);
 
-    let apps = parse_mcp_apps("grokbuild,opencode,hermes").unwrap();
+    let apps = parse_mcp_apps("grokbuild,opencode").unwrap();
     assert!(apps.grokbuild);
     assert!(apps.opencode);
-    assert!(apps.hermes);
 
     let err = parse_mcp_apps("invalid").unwrap_err();
     assert!(err.to_string().contains("Invalid app"));
@@ -945,22 +944,6 @@ fn legacy_scheme_is_provider_only() {
         "resource=provider&app=claude&name=P&endpoint=https%3A%2F%2Fapi.example.com&apiKey=k";
     for scheme in ["ccswitch", "chimera"] {
         parse_deeplink_url(&format!("{scheme}://v1/import?{provider}")).unwrap();
-    }
-}
-
-#[test]
-fn mcode_provider_deeplinks_are_rejected_by_app_string() {
-    for app in ["mcode", "MCode"] {
-        let error = parse_deeplink_url(&format!(
-            "chimera://v1/import?resource=provider&app={app}&name=M&endpoint=https%3A%2F%2Fapi.example.com&apiKey=k"
-        ))
-        .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("Mcode provider deep links are not supported"),
-            "{app}: {error}"
-        );
     }
 }
 

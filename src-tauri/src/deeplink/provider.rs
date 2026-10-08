@@ -244,15 +244,8 @@ pub(crate) fn build_provider_from_request(
         AppType::Gemini => build_gemini_settings(request),
         AppType::GrokBuild => build_grokbuild_settings(request),
         AppType::OpenCode => build_opencode_settings(request),
-        AppType::OpenClaw => build_additive_app_settings(request),
-        AppType::Hermes => build_hermes_settings(request),
+
         AppType::Pi => build_pi_settings(request),
-        // D4: MiniMax Code providers are never imported from a deep link.
-        AppType::Mcode => {
-            return Err(AppError::InvalidInput(
-                "Mcode provider deep links are not supported".to_string(),
-            ))
-        }
     };
 
     // Build usage script configuration if provided
@@ -607,8 +600,6 @@ fn build_opencode_settings(request: &DeepLinkImportRequest) -> serde_json::Value
         "models": models
     })
 }
-
-/// Build settings for OpenClaw (camelCase live config).
 /// Format: { baseUrl, apiKey, api, models }
 fn build_additive_app_settings(request: &DeepLinkImportRequest) -> serde_json::Value {
     let endpoint = get_primary_endpoint(request);
@@ -624,47 +615,6 @@ fn build_additive_app_settings(request: &DeepLinkImportRequest) -> serde_json::V
     }
 
     config.insert("api".to_string(), json!("openai-completions"));
-
-    if let Some(model) = &request.model {
-        config.insert(
-            "models".to_string(),
-            json!([{ "id": model, "name": model }]),
-        );
-    }
-
-    json!(config)
-}
-
-/// Build Hermes provider settings (snake_case YAML-native fields).
-///
-/// Hermes' `custom_providers:` entries use `base_url` / `api_key` / `api_mode`
-/// (see `_VALID_CUSTOM_PROVIDER_FIELDS` in upstream `hermes_cli/config.py`).
-/// Emitting camelCase here — as the OpenClaw path does — would poison the
-/// YAML with unknown root fields the Hermes runtime ignores.
-///
-/// `api_mode` is always written explicitly. Deeplinks have no field to carry
-/// it, so we default to `chat_completions` (the most widely compatible
-/// protocol) and let the user adjust via the UI after import. We never rely
-/// on Hermes' built-in URL heuristics, which only recognize a handful of
-/// official endpoints.
-fn build_hermes_settings(request: &DeepLinkImportRequest) -> serde_json::Value {
-    let endpoint = get_primary_endpoint(request);
-
-    let mut config = serde_json::Map::new();
-
-    if let Some(name) = request.name.as_deref().filter(|s| !s.is_empty()) {
-        config.insert("name".to_string(), json!(name));
-    }
-
-    if !endpoint.is_empty() {
-        config.insert("base_url".to_string(), json!(endpoint));
-    }
-
-    if let Some(api_key) = &request.api_key {
-        config.insert("api_key".to_string(), json!(api_key));
-    }
-
-    config.insert("api_mode".to_string(), json!("chat_completions"));
 
     if let Some(model) = &request.model {
         config.insert(
@@ -752,7 +702,7 @@ pub fn parse_and_merge_config(
         "gemini" => merge_gemini_config(&mut merged, &config_value)?,
         "grokbuild" => merge_grokbuild_config(&mut merged, &config_value)?,
         // Additive mode apps use JSON config directly; pass through as-is
-        "openclaw" | "opencode" | "hermes" | "pi" => {
+        "opencode" | "pi" => {
             merge_additive_config(&mut merged, &config_value)?;
         }
         "" => {
@@ -995,8 +945,6 @@ fn merge_grokbuild_config(
 
     Ok(())
 }
-
-/// Merge configuration for additive mode apps (OpenClaw, OpenCode)
 ///
 /// These apps use JSON config directly, so we only extract common fields
 /// (api_key, endpoint, model) from the config if not already set in URL params.
@@ -1220,38 +1168,6 @@ mod tests {
         );
     }
 
-    fn hermes_request() -> DeepLinkImportRequest {
-        DeepLinkImportRequest {
-            resource: "provider".to_string(),
-            app: Some("hermes".to_string()),
-            name: Some("MyHermes".to_string()),
-            endpoint: Some("https://api.example.com/v1".to_string()),
-            api_key: Some("sk-test".to_string()),
-            model: Some("anthropic/claude-opus-4-8".to_string()),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn build_hermes_settings_emits_snake_case() {
-        let settings = build_hermes_settings(&hermes_request());
-        let obj = settings.as_object().expect("settings must be object");
-
-        assert_eq!(obj.get("name").unwrap(), "MyHermes");
-        assert_eq!(obj.get("base_url").unwrap(), "https://api.example.com/v1");
-        assert_eq!(obj.get("api_key").unwrap(), "sk-test");
-
-        // camelCase and legacy fields must NOT be present
-        assert!(obj.get("baseUrl").is_none(), "no camelCase baseUrl");
-        assert!(obj.get("apiKey").is_none(), "no camelCase apiKey");
-        assert!(obj.get("api").is_none(), "no legacy 'api' field");
-
-        // models array with the deeplink model id
-        let models = obj.get("models").unwrap().as_array().unwrap();
-        assert_eq!(models.len(), 1);
-        assert_eq!(models[0]["id"], "anthropic/claude-opus-4-8");
-    }
-
     #[test]
     #[serial]
     fn pi_deeplink_builds_a_models_json_node_and_is_import_only() {
@@ -1267,57 +1183,19 @@ mod tests {
         // Visible or not, a Pi deep link never adds the entry to models.json.
         assert!(!deeplink_import_may_activate(&AppType::Pi));
 
-        let mut request = hermes_request();
+        let mut request = pi_request();
         request.app = Some("pi".to_string());
         let provider = build_provider_from_request(&AppType::Pi, &request).expect("build");
         assert_eq!(
             provider.settings_config,
             json!({
-                "name": "MyHermes",
+                "name": "MyPi",
                 "baseUrl": "https://api.example.com/v1",
                 "apiKey": "sk-test",
                 "api": "openai-completions",
                 "models": [{ "id": "anthropic/claude-opus-4-8", "name": "anthropic/claude-opus-4-8" }]
             })
         );
-    }
-
-    #[test]
-    fn mcode_deeplink_never_builds_a_provider() {
-        let mut request = hermes_request();
-        request.app = Some("mcode".to_string());
-        assert!(build_provider_from_request(&AppType::Mcode, &request).is_err());
-    }
-
-    #[test]
-    fn build_hermes_settings_writes_default_api_mode() {
-        let settings = build_hermes_settings(&hermes_request());
-        assert_eq!(
-            settings.as_object().unwrap().get("api_mode").unwrap(),
-            "chat_completions",
-            "api_mode must be written explicitly so Hermes never falls back to URL auto-detection"
-        );
-    }
-
-    #[test]
-    fn build_hermes_settings_skips_missing_optional_fields() {
-        let request = DeepLinkImportRequest {
-            resource: "provider".to_string(),
-            app: Some("hermes".to_string()),
-            name: Some("Minimal".to_string()),
-            endpoint: None,
-            api_key: None,
-            model: None,
-            ..Default::default()
-        };
-        let settings = build_hermes_settings(&request);
-        let obj = settings.as_object().unwrap();
-
-        assert_eq!(obj.get("name").unwrap(), "Minimal");
-        assert!(obj.get("base_url").is_none());
-        assert!(obj.get("api_key").is_none());
-        assert!(obj.get("models").is_none());
-        assert_eq!(obj.get("api_mode").unwrap(), "chat_completions");
     }
 
     #[test]
@@ -1901,22 +1779,17 @@ mod tests {
             "failed enabled import must restore the missing Live config"
         );
     }
+}
 
-    #[test]
-    fn openclaw_still_uses_camel_case() {
-        // OpenClaw's live config natively uses camelCase; guard against a
-        // refactor accidentally flipping it to snake_case.
-        let request = DeepLinkImportRequest {
-            resource: "provider".to_string(),
-            app: Some("openclaw".to_string()),
-            name: Some("c".to_string()),
-            endpoint: Some("https://api.example.com".to_string()),
-            api_key: Some("k".to_string()),
-            ..Default::default()
-        };
-        let settings = build_additive_app_settings(&request);
-        let obj = settings.as_object().unwrap();
-        assert!(obj.contains_key("baseUrl"));
-        assert!(obj.contains_key("apiKey"));
+#[cfg(test)]
+fn pi_request() -> DeepLinkImportRequest {
+    DeepLinkImportRequest {
+        resource: "provider".to_string(),
+        app: Some("pi".to_string()),
+        name: Some("MyPi".to_string()),
+        endpoint: Some("https://api.example.com/v1".to_string()),
+        api_key: Some("sk-test".to_string()),
+        model: Some("anthropic/claude-opus-4-8".to_string()),
+        ..Default::default()
     }
 }

@@ -216,7 +216,7 @@ input[type="password"]::-ms-clear {
   --chimera-toast-surface: oklch(0.995 0.002 260);
   --chimera-toast-ink: oklch(0.205 0.018 260);
   --chimera-toast-muted: oklch(0.44 0.015 260);
-  --chimera-toast-accent: oklch(0.61 0.205 32);
+  --chimera-toast-accent: oklch(0.52 0.13 240);
   --chimera-toast-success: oklch(0.62 0.13 165);
   --chimera-toast-warning: oklch(0.66 0.15 75);
   --chimera-toast-error: oklch(0.56 0.2 28);
@@ -233,21 +233,31 @@ input[type="password"]::-ms-clear {
 }
 
 .chimera-toaster .chimera-toast {
+  display: flex;
+  align-items: center;
+  width: 100%;
   min-height: 56px;
   padding: 12px 42px 12px 14px;
   gap: 10px;
-  border: 0;
-  border-radius: 10px;
+  border: 1px solid
+    color-mix(in oklch, var(--chimera-toast-ink) 12%, transparent);
+  border-inline-start: 3px solid var(--chimera-toast-accent);
+  border-radius: 12px;
   background: var(--chimera-toast-surface);
   color: var(--chimera-toast-ink);
   box-shadow: 0 8px 24px rgba(20, 24, 32, 0.14);
 }
 
 .chimera-toaster .chimera-toast-content {
-  gap: 2px;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  gap: 3px;
 }
 
 .chimera-toaster .chimera-toast-icon {
+  flex-shrink: 0;
   width: 18px;
   height: 18px;
   color: var(--chimera-toast-accent);
@@ -287,8 +297,11 @@ input[type="password"]::-ms-clear {
 .chimera-toaster .chimera-toast-close {
   position: absolute;
   top: 10px;
-  right: 10px;
+  right: 8px;
   left: auto;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
   width: 26px;
   height: 26px;
   border: 0;

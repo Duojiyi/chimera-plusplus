@@ -9,7 +9,11 @@ import type {
   PromptCacheRoutingMode,
 } from "../types";
 import type { PresetTheme } from "./claudeProviderPresets";
-import { chimeraHubPreset } from "./codexTemplates";
+import {
+  chimeraHubPreset,
+  getChimeraHubTemplate,
+  CODEX_DEFAULT_MODEL,
+} from "./codexTemplates";
 
 export interface CodexProviderPreset {
   name: string;
@@ -63,7 +67,7 @@ export function generateThirdPartyAuth(apiKey: string): Record<string, any> {
 export function generateThirdPartyConfig(
   providerName: string,
   baseUrl: string,
-  modelName = "gpt-5.5",
+  modelName = CODEX_DEFAULT_MODEL,
 ): string {
   const tomlString = (value: string) => JSON.stringify(value);
 
@@ -125,7 +129,7 @@ export const codexProviderPresets: CodexProviderPreset[] = [
     name: template.name,
     websiteUrl: template.websiteUrl,
     auth: template.auth,
-    config: template.config,
+    config: getChimeraHubTemplate().config,
     category: "third_party",
     isBuiltinTemplate: true,
     apiFormat: "openai_responses",

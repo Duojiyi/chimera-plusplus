@@ -1737,7 +1737,7 @@ body.is-mac
   width: 100%;
   min-height: 0;
   overflow: auto;
-  padding: 8px 24px 24px;
+  padding: 20px 24px 24px;
   text-align: left;
 }
 .runtime-page-heading {
@@ -1793,7 +1793,8 @@ body.is-mac
 }
 .runtime-info-strip {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 110px 110px;
+  grid-template-columns: minmax(0, 1fr) 86px 86px;
+  gap: 20px;
   flex: 1;
   min-width: 0;
 }
@@ -1802,7 +1803,6 @@ body.is-mac
   flex-direction: column;
   min-width: 0;
   gap: 8px;
-  border-top: 1px solid #94999e;
   padding-top: 6px;
 }
 .runtime-info-strip svg {
@@ -2318,40 +2318,44 @@ body.is-mac
   font-size: 13px;
   font-weight: 700;
 }
-.runtime-maintenance-drawer {
-  position: absolute;
-  top: 0;
-  right: 0;
-  width: min(460px, 100%);
+.runtime-maintenance-page {
+  position: fixed;
+  inset: 40px 0 0 216px;
+  z-index: 60;
+  background: var(--bg-surface);
+}
+.runtime-maintenance-workspace {
+  width: min(960px, 100%);
   height: 100%;
+  margin: auto;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
-  padding: 28px 26px 24px;
+  padding: 28px 32px 24px;
   overflow: hidden;
-  background: var(--bg-surface);
   color: var(--text-1);
-  border-left: 1px solid var(--border-subtle);
-  box-shadow: -10px 0 24px #17202a20;
 }
-.runtime-maintenance-drawer > header {
+.runtime-maintenance-workspace > header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   padding-bottom: 18px;
   border-bottom: 1px solid var(--border-subtle);
 }
-.runtime-maintenance-drawer h2 {
+.runtime-maintenance-workspace h2 {
   margin: 0 0 5px;
-  font-size: 19px;
+  font-size: 26px;
 }
-.runtime-maintenance-drawer header p {
+.runtime-maintenance-workspace header p {
   margin: 0;
   color: var(--text-2);
   font-size: 13px;
 }
-.runtime-maintenance-drawer header button {
-  width: 32px;
-  height: 32px;
+.runtime-maintenance-workspace header button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  min-height: 36px;
   border: 0;
   border-radius: 50%;
   background: var(--bg-subtle);
@@ -3237,5 +3241,100 @@ body.is-mac
   .runtime-reference-progress u.is-indeterminate {
     width: 100% !important;
     animation: none;
+  }
+}
+
+.runtime-source-note {
+  margin: 0;
+  color: var(--ch-muted);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+/* Keep active work in the primary reading area, not below maintenance history. */
+.runtime-task-card {
+  padding: 24px;
+  margin-bottom: 20px;
+  border: 1px solid var(--ch-accent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--ch-accent) 7%, var(--bg-surface));
+}
+.runtime-task-heading {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+.runtime-task-icon {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  flex-shrink: 0;
+  border-radius: 16px;
+  color: var(--ch-accent);
+  background: var(--bg-surface);
+}
+.runtime-task-icon svg {
+  animation: runtime-task-spin 1.6s linear infinite;
+}
+.runtime-task-eyebrow {
+  color: var(--ch-accent);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+}
+.runtime-task-heading h2 {
+  margin: 5px 0;
+  font-size: 22px;
+}
+.runtime-task-heading p {
+  margin: 0;
+  color: var(--ch-muted);
+  font-size: 13px;
+}
+.runtime-task-heading > strong {
+  margin-left: auto;
+  font-size: 36px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ch-accent);
+}
+.runtime-task-heading > strong small {
+  font-size: 16px;
+}
+.runtime-task-card .runtime-reference-progress {
+  max-width: none;
+  margin: 22px 0 10px;
+}
+.runtime-task-card .runtime-reference-progress i {
+  height: 8px;
+  background: var(--bg-subtle);
+}
+.runtime-task-detail {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--ch-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+@keyframes runtime-task-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .runtime-task-icon svg {
+    animation: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .runtime-maintenance-workspace {
+    padding: 16px;
+  }
+  .runtime-maintenance-workspace > header {
+    flex-wrap: wrap;
+    gap: 12px;
   }
 }

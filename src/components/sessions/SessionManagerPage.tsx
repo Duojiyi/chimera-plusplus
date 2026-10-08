@@ -81,14 +81,7 @@ const SESSION_GROUP_EXPANSION_STORAGE_KEY =
   "cc-switch.sessionManager.groupExpansionState";
 
 type ProviderFilter =
-  | "all"
-  | "codex"
-  | "grokbuild"
-  | "claude"
-  | "opencode"
-  | "openclaw"
-  | "gemini"
-  | "hermes";
+  "all" | "codex" | "grokbuild" | "claude" | "opencode" | "gemini";
 
 type SessionListViewMode = "flat" | "grouped";
 
@@ -984,12 +977,6 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                 <div className="flex items-center gap-2">
                   <ProviderIcon icon="opencode" name="opencode" size={14} />
                   <span>OpenCode</span>
-                </div>
-              </SelectItem>
-              <SelectItem value="openclaw">
-                <div className="flex items-center gap-2">
-                  <ProviderIcon icon="openclaw" name="openclaw" size={14} />
-                  <span>OpenClaw</span>
                 </div>
               </SelectItem>
               <SelectItem value="gemini">

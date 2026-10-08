@@ -391,3 +391,27 @@
 .account-login-error p {
   margin: 6px 0 0;
 }
+
+.accounts-refresh-settings {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  color: var(--text-3);
+  font-size: 12px;
+}
+.accounts-refresh-settings select {
+  padding: 5px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  background: var(--bg-surface);
+  color: var(--text-2);
+  font: inherit;
+}
+.accounts-refresh-settings select:focus-visible {
+  outline: 2px solid var(--text-2);
+  outline-offset: 2px;
+}
+.accounts-refresh-error {
+  color: var(--warning-fg);
+}

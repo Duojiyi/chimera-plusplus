@@ -160,7 +160,7 @@ export const StationSignboard: React.FC<StationSignboardProps> = ({
             {/* 名称区 */}
             <div
               data-pencil-name="名称区"
-              className="box-border flex-1 h-fit flex flex-col gap-[2px] justify-start items-start"
+              className="box-border flex-1 min-w-0 h-fit flex flex-col gap-[2px] justify-start items-start"
             >
               <div
                 data-pencil-name="标签"
@@ -170,11 +170,12 @@ export const StationSignboard: React.FC<StationSignboardProps> = ({
               </div>
               <div
                 data-pencil-name="名称行"
-                className="box-border w-fit h-fit shrink-0 flex flex-row gap-[10px] justify-start items-center"
+                className="box-border w-full min-w-0 h-fit flex flex-row flex-wrap gap-[10px] justify-start items-center"
               >
                 <div
                   data-pencil-name="名称"
-                  className="text-[32px]/[37px] box-border text-[#F5F7F9] font-[Overpass,system-ui,sans-serif] font-bold text-left whitespace-nowrap"
+                  title={lineName}
+                  className="max-w-full truncate text-[28px]/[34px] box-border text-[#F5F7F9] font-[Overpass,system-ui,sans-serif] font-bold text-left whitespace-nowrap"
                 >
                   {lineName}
                 </div>
@@ -238,7 +239,7 @@ export const StationSignboard: React.FC<StationSignboardProps> = ({
                   data-pencil-name="时间"
                   className="text-[13px]/[18px] box-border text-[#94999E] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal text-left whitespace-nowrap"
                 >
-                  {sample?.testedAt ?? (measured ? "本次测量" : "暂无测速结果")}
+                  {sample?.testedAt ?? ""}
                 </div>
               </div>
             </div>
@@ -457,56 +458,57 @@ export const StationSignboard: React.FC<StationSignboardProps> = ({
         </div>
       </div>
 
-      {/* 换乘回执条 (UndoReceipt) Frame 01 1:1 */}
-      <div
-        aria-live="polite"
-        data-pencil-name="回执行"
-        className="box-border w-full h-[32px] shrink-0 flex flex-row gap-[8px] p-[0px_4px_0px_12px] justify-start items-center bg-[#F5F7F9] dark:bg-[#23282D] rounded-[4px]"
-      >
-        <svg
-          data-pencil-name="图标"
-          viewBox="0 0 14 14"
-          className="box-border w-[14px] shrink-0 h-[14px]"
-          fill="none"
-        >
-          <path
-            d="M7.4375 4.375l0 2.35156 2.07813 1.20313q0.10938 0.05469 0.16406 0.1914 0.05469 0.13672 0.02734 0.30078-0.02734 0.16406-0.16406 0.2461-0.13672 0.08203-0.27344 0.08203-0.13672 0-0.1914-0.05469l-2.40625-1.42187-0.05469-0.05469-0.05469-2.84375q0-0.16406 0.13672-0.30078 0.13672-0.13672 0.30078-0.13672 0.16406 0 0.30078 0.13672 0.13672 0.13672 0.13672 0.30078zm3.28125-1.09375q-1.03906-0.98438-2.37891-1.33984-1.33984-0.35547-2.67968 0-1.33984 0.35547-2.37891 1.33984l-1.09375 1.09375 0-1.09375q0-0.27344-0.21875-0.41016-0.21875-0.13672-0.4375 0-0.21875 0.13672-0.21875 0.41016l0 2.1875 0.16406 0.32813 2.46094 0.05468q0.16406 0 0.30078-0.10937 0.13672-0.10938 0.13672-0.30078 0-0.19141-0.13672-0.32813-0.13672-0.13672-0.30078-0.13672l-1.14844 0 1.09375-1.09375q0.875-0.82031 1.9961-1.12109 1.12109-0.30078 2.24218 0 1.12109 0.30078 1.96875 1.14844 0.84766 0.84766 1.14844 1.96875 0.30078 1.12109 0 2.24218-0.30078 1.12109-1.14844 1.96875-0.84766 0.84766-1.96875 1.14844-1.12109 0.30078-2.24218 0-1.12109-0.30078-1.9961-1.12109-0.10938-0.16406-0.30078-0.16407-0.19141 0-0.30078 0.13672-0.10938 0.13672-0.10938 0.32813 0 0.19141 0.10938 0.30078 1.03906 0.98438 2.37891 1.33984 1.33984 0.35547 2.67968 0 1.33984-0.35547 2.35157-1.36718 1.01172-1.01172 1.36718-2.35157 0.35547-1.33984 0-2.67968-0.35547-1.33984-1.33984-2.37891z"
-            fill="#646970"
-          />
-        </svg>
+      {(sample?.receipt || undoReceipt) && (
         <div
-          data-pencil-name="文字"
-          className="text-[13px]/[18px] box-border flex-1 text-[#484E55] dark:text-[#BABEC3] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal truncate"
+          aria-live="polite"
+          data-pencil-name="回执行"
+          className="box-border w-full h-[32px] shrink-0 flex flex-row gap-[8px] p-[0px_4px_0px_12px] justify-start items-center bg-[#F5F7F9] dark:bg-[#23282D] rounded-[4px]"
         >
-          {sample?.receipt ??
-            (undoReceipt
-              ? `${undoReceipt.timestamp} 从 ${undoReceipt.fromName} 切换到 ${undoReceipt.toName}`
-              : "暂无本次会话的切换记录")}
-        </div>
-        <button
-          type="button"
-          disabled={Boolean(sample) || !undoReceipt || undoing}
-          title={
-            sample ? "设计示例，不执行撤销" : "切回上一线路，不恢复配置快照"
-          }
-          data-pencil-name="撤销"
-          onClick={handleUndoClick}
-          className="box-border w-fit shrink-0 h-[28px] flex flex-row gap-[6px] p-[0px_8px] justify-center items-center rounded-[4px] cursor-pointer hover:bg-[#E7EAED] dark:hover:bg-[#31363D] transition select-none"
-        >
+          <svg
+            data-pencil-name="图标"
+            viewBox="0 0 14 14"
+            className="box-border w-[14px] shrink-0 h-[14px]"
+            fill="none"
+          >
+            <path
+              d="M7.4375 4.375l0 2.35156 2.07813 1.20313q0.10938 0.05469 0.16406 0.1914 0.05469 0.13672 0.02734 0.30078-0.02734 0.16406-0.16406 0.2461-0.13672 0.08203-0.27344 0.08203-0.13672 0-0.1914-0.05469l-2.40625-1.42187-0.05469-0.05469-0.05469-2.84375q0-0.16406 0.13672-0.30078 0.13672-0.13672 0.30078-0.13672 0.16406 0 0.30078 0.13672 0.13672 0.13672 0.13672 0.30078zm3.28125-1.09375q-1.03906-0.98438-2.37891-1.33984-1.33984-0.35547-2.67968 0-1.33984 0.35547-2.37891 1.33984l-1.09375 1.09375 0-1.09375q0-0.27344-0.21875-0.41016-0.21875-0.13672-0.4375 0-0.21875 0.13672-0.21875 0.41016l0 2.1875 0.16406 0.32813 2.46094 0.05468q0.16406 0 0.30078-0.10937 0.13672-0.10938 0.13672-0.30078 0-0.19141-0.13672-0.32813-0.13672-0.13672-0.30078-0.13672l-1.14844 0 1.09375-1.09375q0.875-0.82031 1.9961-1.12109 1.12109-0.30078 2.24218 0 1.12109 0.30078 1.96875 1.14844 0.84766 0.84766 1.14844 1.96875 0.30078 1.12109 0 2.24218-0.30078 1.12109-1.14844 1.96875-0.84766 0.84766-1.96875 1.14844-1.12109 0.30078-2.24218 0-1.12109-0.30078-1.9961-1.12109-0.10938-0.16406-0.30078-0.16407-0.19141 0-0.30078 0.13672-0.10938 0.13672-0.10938 0.32813 0 0.19141 0.10938 0.30078 1.03906 0.98438 2.37891 1.33984 1.33984 0.35547 2.67968 0 1.33984-0.35547 2.35157-1.36718 1.01172-1.01172 1.36718-2.35157 0.35547-1.33984 0-2.67968-0.35547-1.33984-1.33984-2.37891z"
+              fill="#646970"
+            />
+          </svg>
           <div
             data-pencil-name="文字"
-            className="text-[13px]/[18px] box-border text-[#12161C] dark:text-[#EEF0F3] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal whitespace-nowrap"
+            className="text-[13px]/[18px] box-border flex-1 text-[#484E55] dark:text-[#BABEC3] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal truncate"
           >
-            {sample
-              ? "撤销"
-              : undoing
-                ? "切回中…"
-                : undoReceipt
-                  ? `切回 (${undoCountdown}s)`
-                  : "切回"}
+            {sample?.receipt ??
+              (undoReceipt
+                ? `${undoReceipt.timestamp} 从 ${undoReceipt.fromName} 切换到 ${undoReceipt.toName}`
+                : "暂无本次会话的切换记录")}
           </div>
-        </button>
-      </div>
+          <button
+            type="button"
+            disabled={Boolean(sample) || !undoReceipt || undoing}
+            title={
+              sample ? "设计示例，不执行撤销" : "切回上一线路，不恢复配置快照"
+            }
+            data-pencil-name="撤销"
+            onClick={handleUndoClick}
+            className="box-border w-fit shrink-0 h-[28px] flex flex-row gap-[6px] p-[0px_8px] justify-center items-center rounded-[4px] cursor-pointer hover:bg-[#E7EAED] dark:hover:bg-[#31363D] transition select-none"
+          >
+            <div
+              data-pencil-name="文字"
+              className="text-[13px]/[18px] box-border text-[#12161C] dark:text-[#EEF0F3] font-['Noto_Sans_SC',system-ui,sans-serif] font-normal whitespace-nowrap"
+            >
+              {sample
+                ? "撤销"
+                : undoing
+                  ? "切回中…"
+                  : undoReceipt
+                    ? `切回 (${undoCountdown}s)`
+                    : "切回"}
+            </div>
+          </button>
+        </div>
+      )}
     </div>
   );
 };

@@ -43,7 +43,7 @@ describe("GrokBuildProviderForm", () => {
       failures: {},
     });
   });
-  it("offers curated Grok Build presets and applies one", async () => {
+  it("offers custom and official routes without a provider catalog", async () => {
     const user = userEvent.setup();
     const { container } = render(
       <GrokBuildProviderForm
@@ -57,14 +57,15 @@ describe("GrokBuildProviderForm", () => {
     expect(screen.queryByRole("button", { name: /BytePlus/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /Kimi/ })).toBeNull();
 
-    await user.click(screen.getByRole("button", { name: /PatewayAI/ }));
+    expect(screen.queryByRole("button", { name: /PatewayAI/ })).toBeNull();
+    await user.click(screen.getByRole("button", { name: /Grok Official/ }));
 
     const baseUrlInput =
       container.querySelector<HTMLInputElement>("#codexBaseUrl");
     const nameInput =
       container.querySelector<HTMLInputElement>('input[name="name"]');
-    expect(baseUrlInput?.value).toBe("https://api.pateway.ai/v1");
-    expect(nameInput?.value).toBe("PatewayAI");
+    expect(baseUrlInput).toBeNull();
+    expect(nameInput?.value).toBe("Grok Official");
   });
 
   it("submits a complete config.toml payload with Grok defaults", async () => {
@@ -114,7 +115,7 @@ describe("GrokBuildProviderForm", () => {
     });
   });
 
-  it("maps preset API formats into Grok api_backend", async () => {
+  it("maps API formats into Grok api_backend for a custom route", async () => {
     // 预设列表已不含 Chat Completions 条目（国产官方直连被移除），
     // chat/messages 映射分支由纯函数覆盖
     expect(grokApiBackendFromApiFormat("openai_chat")).toBe("chat_completions");
@@ -126,13 +127,19 @@ describe("GrokBuildProviderForm", () => {
     const onSubmit = vi.fn();
     render(
       <GrokBuildProviderForm
+        initialData={{ meta: { apiFormat: "openai_responses" } }}
         submitLabel="Save"
         onSubmit={onSubmit}
         onCancel={() => {}}
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: /APIKEY\.FUN/ }));
+    fireEvent.change(document.querySelector('input[name="name"]')!, {
+      target: { value: "My route" },
+    });
+    fireEvent.change(document.querySelector("#codexBaseUrl")!, {
+      target: { value: "https://relay.example.com/v1" },
+    });
     await user.type(screen.getByLabelText("API Key"), "secret-key");
     await user.click(screen.getByRole("button", { name: "Save" }));
 
@@ -144,7 +151,7 @@ describe("GrokBuildProviderForm", () => {
     const selected = config.model[config.models.default];
     expect(selected.api_backend).toBe("responses");
     expect(selected.model).toBe("grok-4.5");
-    expect(selected.base_url).toBe("https://api.apikey.fun/v1");
+    expect(selected.base_url).toBe("https://relay.example.com/v1");
   }, 15_000);
 
   it("renders localized validation feedback for malformed TOML", async () => {

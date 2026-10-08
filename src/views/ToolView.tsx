@@ -1,4 +1,6 @@
-import { isHermesReadOnlyProvider } from "@/config/hermesProviderPresets";
+import { PiPluginMarket } from "./PiPluginMarket";
+import { PiManagement } from "./PiManagement";
+
 import {
   lazy,
   Suspense,
@@ -8,15 +10,17 @@ import {
   useRef,
   useState,
 } from "react";
-import { Check, Edit2, Loader2, Minus, Plus, RefreshCw } from "lucide-react";
+import { Check, Edit2, Loader2, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { providerPresets } from "@/config/claudeProviderPresets";
 import { geminiProviderPresets } from "@/config/geminiProviderPresets";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
 import "./ToolView.css";
 import type { Provider } from "@/types";
 import type { AppId } from "@/lib/api/types";
 import { providersApi } from "@/lib/api/providers";
+import { vscodeApi } from "@/lib/api/vscode";
 import type { ToolName } from "@/components/settings/AboutSection";
 import {
   toolProviderSummary,
@@ -41,12 +45,12 @@ const lifecycleTools: Record<string, readonly ToolName[]> = {
   "gemini-cli": ["gemini"],
   opencode: ["opencode"],
   grokbuild: ["grok"],
-  openclaw: ["openclaw"],
-  hermes: ["hermes"],
+
+  pi: ["pi"],
 };
 
-// Only explicit imports read credentials into Chimera. Pi/MiniMax read their
-// native configuration in getAll; Desktop has its own compatibility import UI.
+// Discovery only reads live settings; importing requires confirmation.
+// Pi read native configuration in getAll; Desktop uses its status API.
 const liveConfigImporters: Partial<
   Record<AppId, () => Promise<boolean | number>>
 > = {
@@ -54,8 +58,6 @@ const liveConfigImporters: Partial<
   gemini: () => providersApi.importDefault("gemini"),
   grokbuild: () => providersApi.importDefault("grokbuild"),
   opencode: () => providersApi.importOpenCodeFromLive(),
-  openclaw: () => providersApi.importOpenClawFromLive(),
-  hermes: () => providersApi.importHermesFromLive(),
 };
 
 type ToolMeta = {
@@ -72,43 +74,13 @@ const ToolProviderEditor = lazy(() => import("./ToolViewEditor"));
 const DesktopStatusPanel = lazy(() => import("./ToolViewDesktop"));
 
 const TOOL_META: Record<string, ToolMeta> = {
-  mcode: {
-    appId: "mcode",
-    name: "MiniMax Code",
-    shortName: "MM",
-    category: "accumulate",
-    categoryLabel: "累加类",
-    description: "使用原生配置管理线路；配置状态不代表已安装或已登录。",
-    color: "#2563EB",
-  },
-
-  hermes: {
-    appId: "hermes",
-    name: "Hermes",
-    shortName: "He",
-    category: "accumulate",
-    categoryLabel: "累加类",
-    description: "使用原生配置管理线路；配置状态不代表已安装或已登录。",
-    color: "#2563EB",
-  },
-
-  openclaw: {
-    appId: "openclaw",
-    name: "OpenClaw",
-    shortName: "Cl",
-    category: "accumulate",
-    categoryLabel: "累加类",
-    description: "使用原生配置管理线路；配置状态不代表已安装或已登录。",
-    color: "#2563EB",
-  },
-
   grokbuild: {
     appId: "grokbuild",
     name: "Grok Build",
     shortName: "Gk",
     category: "switch",
     categoryLabel: "切换类",
-    description: "使用原生配置管理线路；配置状态不代表已安装或已登录。",
+    description: "管理本机线路，配置不代表已安装或登录。",
     color: "#2563EB",
   },
 
@@ -118,8 +90,7 @@ const TOOL_META: Record<string, ToolMeta> = {
     shortName: "CD",
     category: "switch",
     categoryLabel: "桌面客户端",
-    description:
-      "安装官方客户端，连接已有 API 线路。安装、线路与账号登录分别管理。",
+    description: "连接官方客户端，安装、线路与登录独立管理。",
     color: "#C46D50",
   },
 
@@ -129,7 +100,7 @@ const TOOL_META: Record<string, ToolMeta> = {
     shortName: "CC",
     category: "switch",
     categoryLabel: "切换类",
-    description: "同一时间使用一条线路，保存后写入 Claude Code 的本机设置。",
+    description: "只读发现本机配置，按需导入或切换线路。",
     color: "#D97706",
   },
   "gemini-cli": {
@@ -138,7 +109,7 @@ const TOOL_META: Record<string, ToolMeta> = {
     shortName: "Gm",
     category: "switch",
     categoryLabel: "切换类",
-    description: "同一时间使用一条线路，保存后写入 Gemini CLI 的本机设置。",
+    description: "只读发现本机配置，按需导入或切换线路。",
     color: "#2563EB",
   },
   opencode: {
@@ -178,6 +149,9 @@ function KnownToolView({
   const [statusRefresh, setStatusRefresh] = useState(0);
   const [desktopSupported, setDesktopSupported] = useState(false);
   const canMutate = tool.appId !== "claude-desktop" || desktopSupported;
+  const [piSection, setPiSection] = useState("routes");
+  const [removing, setRemoving] = useState<Provider | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [editing, setEditing] = useState<Provider | "new" | null>(null);
   const editLine = (id: string) => {
     if (isNativeToolAppId(tool.appId)) onEditLine?.(id, tool.appId);
@@ -194,10 +168,52 @@ function KnownToolView({
   const [refreshing, setRefreshing] = useState(false);
   const [importing, setImporting] = useState(false);
   const importRequest = useRef<symbol | null>(null);
+  const mutationRequest = useRef<symbol | null>(null);
+  const [confirmImport, setConfirmImport] = useState(false);
+  const [discovery, setDiscovery] = useState<
+    "scanning" | "found" | "empty" | "unavailable"
+  >("scanning");
+  const scanGeneration = useRef(0);
+  const scan = useCallback(async () => {
+    if (!native || !liveConfigImporters[tool.appId]) return;
+    const request = ++scanGeneration.current;
+    setDiscovery("scanning");
+    try {
+      const config = await vscodeApi.getLiveProviderSettings(tool.appId);
+      if (request !== scanGeneration.current) return;
+      const fields = config as Record<string, unknown> | null;
+      const content =
+        tool.appId === "gemini" && config
+          ? [fields?.env, fields?.config].some(
+              (value) =>
+                value &&
+                typeof value === "object" &&
+                Object.keys(value).length > 0,
+            )
+          : config &&
+            typeof config === "object" &&
+            Object.keys(config).length > 0;
+      setDiscovery(content ? "found" : "empty");
+    } catch {
+      // Missing files and invalid files share an error channel. Do not claim
+      // absence or expose parser errors that might contain credentials.
+      if (request === scanGeneration.current) setDiscovery("unavailable");
+    }
+  }, [native, tool.appId]);
+
+  useEffect(() => {
+    setConfirmImport(false);
+    void scan();
+    return () => {
+      scanGeneration.current++;
+    };
+  }, [scan, refreshVersion]);
   const canImport = Boolean(liveConfigImporters[tool.appId]);
 
   useEffect(() => {
     setEditing(null);
+    setRemoving(null);
+    setDeleting(false);
     setDesktopSupported(false);
   }, [tool.appId]);
 
@@ -249,6 +265,7 @@ function KnownToolView({
     void load();
     return () => {
       importRequest.current = null;
+      mutationRequest.current = null;
       activeApp.current = null;
       loadGeneration.current++;
     };
@@ -340,6 +357,7 @@ function KnownToolView({
     const importConfig = liveConfigImporters[tool.appId];
     if (!native || !importConfig || loading || busyId || importRequest.current)
       return;
+    setConfirmImport(false);
     const request = Symbol();
     importRequest.current = request;
     setImporting(true);
@@ -361,10 +379,10 @@ function KnownToolView({
         });
       }
       await load();
-    } catch (cause) {
+    } catch {
       if (importRequest.current !== request) return;
       toast.error("导入本机配置失败", {
-        description: cause instanceof Error ? cause.message : String(cause),
+        description: "请检查本机配置格式和文件权限后重试。",
       });
     } finally {
       if (importRequest.current === request) {
@@ -375,47 +393,105 @@ function KnownToolView({
   };
 
   const changeProvider = async (provider: Provider) => {
-    if (busyId || importing || !canMutate) return;
+    if (busyId || importing || mutationRequest.current || !canMutate) return;
+    const request = Symbol();
+    mutationRequest.current = request;
     setBusyId(provider.id);
     try {
       if (providers.some((item) => item.id === provider.id)) {
         const result = await providersApi.switch(provider.id, tool.appId);
+        if (mutationRequest.current !== request) return;
         result.warnings?.forEach((warning) => toast.warning(warning));
       } else {
         await providersApi.addAndActivate(provider, tool.appId);
       }
+      if (mutationRequest.current !== request) return;
       toast.success("已切换至「" + provider.name + "」", {
         description: "已打开的 " + tool.name + " 需重新启动后使用新线路。",
       });
       await load();
-    } catch (cause) {
-      toast.error("配置未更新", {
-        description: cause instanceof Error ? cause.message : String(cause),
+    } catch {
+      if (mutationRequest.current !== request) return;
+      toast.error(`${tool.name} 配置未更新`, {
+        description: "请检查本机配置和文件权限后重试。",
       });
     } finally {
-      if (activeApp.current === tool.appId) setBusyId(null);
+      if (mutationRequest.current === request) {
+        mutationRequest.current = null;
+        setBusyId(null);
+      }
     }
   };
 
   const toggleProvider = async (provider: Provider) => {
-    if (busyId || importing || !canMutate) return;
+    if (busyId || importing || mutationRequest.current || !canMutate) return;
+    const request = Symbol();
+    mutationRequest.current = request;
     setBusyId(provider.id);
     try {
       const enabled = provider.meta?.liveConfigManaged !== false;
       if (enabled) {
         await providersApi.removeFromLiveConfig(provider.id, tool.appId);
+        if (mutationRequest.current !== request) return;
         toast.success(`已停用「${provider.name}」`);
       } else {
         await providersApi.switch(provider.id, tool.appId);
+        if (mutationRequest.current !== request) return;
         toast.success(`已启用「${provider.name}」`);
       }
       await load();
-    } catch (cause) {
-      toast.error("配置未更新", {
-        description: cause instanceof Error ? cause.message : String(cause),
+    } catch {
+      if (mutationRequest.current !== request) return;
+      toast.error(`${tool.name} 配置未更新`, {
+        description: "请检查本机配置和文件权限后重试。",
       });
     } finally {
-      if (activeApp.current === tool.appId) setBusyId(null);
+      if (mutationRequest.current === request) {
+        mutationRequest.current = null;
+        setBusyId(null);
+      }
+    }
+  };
+
+  const deleteProvider = async () => {
+    if (
+      !removing ||
+      !native ||
+      !canMutate ||
+      busyId ||
+      importing ||
+      mutationRequest.current
+    )
+      return;
+    if (tool.category === "switch" && removing.id === currentId) return;
+    const provider = removing;
+    const request = Symbol();
+    mutationRequest.current = request;
+    setBusyId(provider.id);
+    setDeleting(true);
+    try {
+      const deleted = await providersApi.delete(provider.id, tool.appId);
+      if (mutationRequest.current !== request) return;
+      if (!deleted) throw new Error("线路未删除，请刷新后重试");
+      setRemoving(null);
+      toast.success(`已删除「${provider.name}」`);
+      window.dispatchEvent(
+        new CustomEvent("chimera-provider-mutated", {
+          detail: { appId: tool.appId },
+        }),
+      );
+      await load();
+    } catch {
+      if (mutationRequest.current !== request) return;
+      toast.error("删除线路失败", {
+        description: "线路可能正在使用，或配置已发生变化。请刷新列表后重试。",
+      });
+    } finally {
+      if (mutationRequest.current === request) {
+        mutationRequest.current = null;
+        setBusyId(null);
+        setDeleting(false);
+      }
     }
   };
 
@@ -451,310 +527,424 @@ function KnownToolView({
             {tool.description}
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => {
-            setRefreshing(true);
-            void load();
-          }}
-          disabled={refreshing || loading || importing}
-          className="h-[32px] px-[10px] flex items-center gap-[6px] rounded-[4px] border border-[var(--border-control)] bg-transparent cursor-pointer disabled:opacity-50"
+        <div
+          className="tool-actions"
+          hidden={tool.appId === "pi" && piSection !== "routes"}
+          role="group"
+          aria-label={`${tool.name} 工具操作`}
         >
-          <RefreshCw size={15} className={refreshing ? "animate-spin" : ""} />
-          刷新
-        </button>
-        <button
-          type="button"
-          disabled={!canMutate || importing}
-          onClick={() => editLine("new")}
-          className="h-[32px] px-[12px] flex items-center gap-[6px] rounded-[4px] border-0 bg-[#006AA0] text-white cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          <Plus size={16} />
-          添加线路
-        </button>
-      </header>
-
-      {tool.appId === "claude-desktop" ? (
-        <Suspense fallback={<p role="status">正在读取 Desktop 状态…</p>}>
-          <DesktopStatusPanel
-            native={native}
-            refreshVersion={refreshVersion + statusRefresh}
-            onChanged={load}
-            onSupported={setDesktopSupported}
-          />
-        </Suspense>
-      ) : (
-        <section
-          className="w-full shrink-0"
-          aria-label={`${tool.name} 安装与资源管理`}
-        >
-          {native && lifecycleTools[toolId] ? (
-            <Suspense fallback={<p role="status">正在加载安装检测…</p>}>
-              <AboutSection
-                key={toolId}
-                isPortable={false}
-                toolsOnly
-                tools={lifecycleTools[toolId]}
-              />
-            </Suspense>
-          ) : (
-            <p className="text-[13px] text-[var(--text-3)]">
-              {!native
-                ? "浏览器预览未检测安装状态，请在桌面应用中检测、安装或升级。"
-                : `${tool.name} 的安装检测与托管升级尚未接入，线路配置不代表已安装。`}
-            </p>
-          )}
-          {[
-            "claude",
-            "gemini",
-            "opencode",
-            "grokbuild",
-            "openclaw",
-            "hermes",
-          ].includes(tool.appId) ? (
+          {["claude", "gemini", "opencode", "grokbuild"].includes(
+            tool.appId,
+          ) ? (
             <Button
               variant="outline"
               disabled={!onManageResources}
               onClick={() => onManageResources?.(tool.appId)}
             >
-              管理 {tool.name} 的{" "}
-              {tool.appId === "openclaw"
-                ? "Skills（MCP 暂不管理）"
-                : "Skills 与 MCP"}
+              管理 {tool.name} 的 {"Skills 与 MCP"}
             </Button>
-          ) : (
-            <p className="text-[13px] text-[var(--text-3)]">
-              {tool.appId === "pi"
-                ? "Pi 暂不支持 Skills 同步；Pi 没有原生 MCP 注册表。"
-                : "MiniMax Code 的 Skills 与 MCP 当前未管理；此处仅管理工具线路。"}
-            </p>
-          )}
-        </section>
-      )}
-
-      <div className="w-full flex flex-wrap items-center gap-[20px] px-[12px] py-[9px] rounded-[6px] bg-[var(--bg-subtle)] text-[12px] text-[var(--text-3)]">
-        <span className="flex items-center gap-[4px] text-[var(--success-fg)]">
-          <Check size={14} />
-          {error
-            ? "未连接本机配置"
-            : loading
-              ? "正在读取本机配置"
-              : tool.appId === "pi" || tool.appId === "mcode"
-                ? "原生配置线路"
-                : "Chimera 已保存线路"}
-        </span>
-        <span>{providers.length} 条线路</span>
-        {hasBuiltInEntry && <span>另有 1 个内置官方入口</span>}
-        {tool.category === "accumulate" && <span>{activeCount} 条已启用</span>}
-        <span className="flex items-center gap-[4px]">
-          <Minus size={14} />
-          此工具暂不支持线路测速
-        </span>
-      </div>
-
-      {canImport && !loading && !error && (
-        <section className="tool-official-guide" aria-label="本机配置导入">
-          <div>
-            <strong>已有 {tool.name} 的 API 配置？</strong>
-            <p>
-              导入本机配置中的地址、密钥和模型到 Chimera，不改写工具配置文件。
-              {tool.category === "switch"
-                ? "仅在尚未管理自定义线路时导入。"
-                : "已保存的同名线路会按本机配置更新。"}
-              刷新按钮只重新载入已保存的线路。
-            </p>
-          </div>
-          <Button
-            variant="outline"
-            disabled={!native || importing || Boolean(busyId)}
-            title={!native ? "请在桌面应用中导入本机配置" : undefined}
-            onClick={() => void importLocalConfig()}
+          ) : null}
+          <button
+            type="button"
+            onClick={() => {
+              setRefreshing(true);
+              void load();
+              void scan();
+            }}
+            disabled={refreshing || loading || importing}
+            className="h-[32px] px-[10px] flex items-center gap-[6px] rounded-[4px] border border-[var(--border-control)] bg-transparent cursor-pointer disabled:opacity-50"
           >
-            {importing ? "正在导入…" : "导入本机配置"}
-          </Button>
-        </section>
-      )}
+            <RefreshCw size={15} className={refreshing ? "animate-spin" : ""} />
+            刷新线路
+          </button>
+          <button
+            type="button"
+            disabled={!canMutate || importing}
+            onClick={() => editLine("new")}
+            className="h-[32px] px-[12px] flex items-center gap-[6px] rounded-[4px] border-0 bg-[#006AA0] text-white cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <Plus size={16} />
+            添加线路
+          </button>
+        </div>
+      </header>
 
-      {officialPreset &&
-        officialProvider &&
-        !loading &&
-        !error &&
-        (!currentId || currentId === officialProvider.id) && (
-          <section className="tool-official-guide" aria-label="官方账号登录">
+      {tool.appId === "pi" && (
+        <nav className="tool-section-nav" aria-label="Pi 管理分区">
+          {[
+            ["routes", "模型线路"],
+            ["settings", "默认模型与 MCP"],
+            ["plugins", "插件市场"],
+            ["install", "安装与更新"],
+          ].map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              aria-current={piSection === id ? "page" : undefined}
+              onClick={() => setPiSection(id)}
+            >
+              {label}
+            </button>
+          ))}
+        </nav>
+      )}
+      <div
+        className="tool-section-content"
+        hidden={tool.appId === "pi" && piSection !== "routes"}
+      >
+        {tool.appId === "claude-desktop" ? (
+          <Suspense fallback={<p role="status">正在读取 Desktop 状态…</p>}>
+            <DesktopStatusPanel
+              native={native}
+              refreshVersion={refreshVersion + statusRefresh}
+              onChanged={load}
+              onSupported={setDesktopSupported}
+            />
+          </Suspense>
+        ) : null}
+
+        <div className="w-full flex flex-wrap items-center gap-[20px] px-[12px] py-[9px] rounded-[6px] bg-[var(--bg-subtle)] text-[12px] text-[var(--text-3)]">
+          <span
+            className={`flex items-center gap-[4px] ${!error && !loading ? "text-[var(--success-fg)]" : ""}`}
+          >
+            {!error && !loading && <Check size={14} />}
+            {error
+              ? "未连接本机配置"
+              : loading
+                ? "正在读取本机配置"
+                : tool.appId === "pi"
+                  ? "原生配置线路"
+                  : "Chimera 已保存线路"}
+          </span>
+          <span>{providers.length} 条线路</span>
+          {hasBuiltInEntry && <span>另有 1 个内置官方入口</span>}
+          {tool.category === "accumulate" && (
+            <span>{activeCount} 条已启用</span>
+          )}
+        </div>
+
+        {canImport && !loading && !error && (
+          <section className="tool-discovery" aria-label="本机配置导入">
             <div>
-              <strong>
-                {tool.appId === "claude"
-                  ? "Claude 官方账号"
-                  : "Google 官方账号"}
-                {hasBuiltInEntry && "（可选入口）"}
-              </strong>
-              {hasBuiltInEntry && (
-                <p>这是内置入口，不是本机配置或登录状态的检测结果。</p>
+              <div className="tool-discovery-heading">
+                <strong>本机配置</strong>
+                <span
+                  className="tool-discovery-badge"
+                  data-found={native && discovery === "found"}
+                  role="status"
+                >
+                  {!native
+                    ? "桌面端可检测"
+                    : discovery === "scanning"
+                      ? "正在扫描…"
+                      : discovery === "found"
+                        ? "已发现配置"
+                        : discovery === "empty"
+                          ? "未发现配置内容"
+                          : "未找到或无法读取"}
+                </span>
+              </div>
+              <p>自动检测只读，不覆盖或切换现有配置。</p>
+              {confirmImport && (
+                <p id="tool-import-warning">
+                  {tool.category === "accumulate"
+                    ? "确认保存到 Chimera？同名线路会按本机配置更新，工具配置文件保持不变。"
+                    : "确认保存到 Chimera？已有自定义线路时会跳过，工具配置文件保持不变。"}
+                </p>
               )}
-              <p>
-                官方线路无需填写 API 密钥。先切换到官方线路，再在 {tool.name}{" "}
-                中完成登录。
-              </p>
-              <p>
-                {tool.appId === "claude" ? (
-                  <>
-                    运行 <code>claude</code>，输入 <code>/login</code>{" "}
-                    完成授权。
-                  </>
-                ) : (
-                  <>
-                    运行 <code>gemini</code>，选择{" "}
-                    <code>Login with Google</code> 完成授权。
-                  </>
-                )}{" "}
-                登录状态由工具管理，此处不代表已登录。
-              </p>
             </div>
-            {currentId === officialProvider.id && (
+            <div className="tool-discovery-actions">
+              {confirmImport && (
+                <Button variant="ghost" onClick={() => setConfirmImport(false)}>
+                  取消
+                </Button>
+              )}
               <Button
                 variant="outline"
-                disabled={Boolean(busyId) || importing}
-                onClick={async () => {
-                  setBusyId(officialProvider.id);
-                  try {
-                    await providersApi.openTerminal(
-                      officialProvider.id,
-                      tool.appId,
-                    );
-                  } catch (cause) {
-                    toast.error("无法打开终端", { description: String(cause) });
-                  } finally {
-                    if (activeApp.current === tool.appId) setBusyId(null);
-                  }
-                }}
+                disabled={!native || importing || Boolean(busyId)}
+                aria-describedby={
+                  confirmImport ? "tool-import-warning" : undefined
+                }
+                onClick={() =>
+                  confirmImport
+                    ? void importLocalConfig()
+                    : setConfirmImport(true)
+                }
               >
-                打开登录终端
+                {importing
+                  ? "正在导入…"
+                  : confirmImport
+                    ? "确认保存导入"
+                    : "导入本机配置"}
               </Button>
-            )}
+            </div>
           </section>
         )}
 
-      {error && !loading && (
-        <div
-          className="w-full rounded-[6px] border border-[var(--danger-border)] bg-[var(--danger-bg)] px-[16px] py-[12px] text-[13px] text-[var(--danger-fg)]"
-          role="alert"
-        >
-          读取 {tool.name} 配置失败：{error}
-        </div>
-      )}
-      {loading && (
-        <div
-          className="w-full py-[28px] text-center text-[13px] text-[var(--text-3)]"
-          role="status"
-        >
-          <Loader2 size={16} className="inline animate-spin mr-[6px]" />
-          正在读取本机配置…
-        </div>
-      )}
-      {!loading && !error && visibleProviders.length === 0 && (
-        <div className="w-full rounded-[6px] border border-dashed border-[var(--border-control)] px-[16px] py-[28px] text-center text-[13px] text-[var(--text-3)]">
-          还没有 {tool.name} 线路。点击“添加线路”开始配置。
-        </div>
-      )}
-
-      {!loading && !error && visibleProviders.length > 0 && (
-        <div className="tool-provider-table w-full border border-[var(--border-subtle)] rounded-[6px] overflow-x-auto">
-          <div className="h-[34px] px-[12px] flex items-center gap-[12px] bg-[var(--bg-subtle)] text-[12px] text-[var(--text-3)] font-bold">
-            <div className="w-[42px]">状态</div>
-            <div className="w-[180px]">名称</div>
-            <div className="flex-1">端点地址</div>
-            <div className="w-[160px]">默认模型</div>
-            <div className="w-[130px] text-right">操作</div>
-          </div>
-          {visibleProviders.map((provider) => {
-            const enabled = provider.meta?.liveConfigManaged !== false;
-            const current = provider.id === currentId;
-            const busy = busyId === provider.id;
-            const builtIn =
-              hasBuiltInEntry && provider.id === officialProvider?.id;
-            const readOnly =
-              tool.appId === "hermes" &&
-              isHermesReadOnlyProvider(provider.settingsConfig);
-            return (
-              <div
-                key={provider.id}
-                className="min-h-[52px] px-[12px] flex items-center gap-[12px] border-t border-[var(--border-subtle)] hover:bg-[var(--bg-subtle)]"
-              >
-                <div className="w-[42px]">
-                  {tool.category === "accumulate" ? (
-                    <button
-                      type="button"
-                      aria-label={`${enabled ? "停用" : "启用"}${provider.name}`}
-                      onClick={() => void toggleProvider(provider)}
-                      disabled={Boolean(busyId) || importing || readOnly}
-                      title={
-                        readOnly ? "此条目由 Hermes Web UI 管理" : undefined
-                      }
-                      className={`w-[28px] h-[16px] p-[2px] flex rounded-full border-0 cursor-pointer ${enabled ? "justify-end bg-[#05773B]" : "justify-start bg-[#81878D]"}`}
-                    >
-                      <span className="w-[12px] h-[12px] rounded-full bg-white" />
-                    </button>
+        {officialPreset &&
+          officialProvider &&
+          !loading &&
+          !error &&
+          (!currentId || currentId === officialProvider.id) && (
+            <section className="tool-official-guide" aria-label="官方账号登录">
+              <div>
+                <strong>
+                  {tool.appId === "claude"
+                    ? "Claude 官方账号"
+                    : "Google 官方账号"}
+                  {hasBuiltInEntry && "（可选入口）"}
+                </strong>
+                {hasBuiltInEntry && (
+                  <p>这是内置入口，不是本机配置或登录状态的检测结果。</p>
+                )}
+                <p>
+                  官方线路无需填写 API 密钥。先切换到官方线路，再在 {tool.name}{" "}
+                  中完成登录。
+                </p>
+                <p>
+                  {tool.appId === "claude" ? (
+                    <>
+                      运行 <code>claude</code>，输入 <code>/login</code>{" "}
+                      完成授权。
+                    </>
                   ) : (
-                    <span
-                      className={`block w-[9px] h-[9px] rounded-full ${current ? "bg-[#05773B]" : "bg-[#C9CDD1]"}`}
-                    />
-                  )}
-                </div>
-                <div className="w-[180px] flex items-center gap-[8px] min-w-0">
-                  <span className="w-[22px] h-[22px] rounded flex items-center justify-center bg-[#1A1E24] text-white text-[11px] font-bold">
-                    {provider.name.trim().slice(0, 1) || "线"}
-                  </span>
-                  <span className="truncate text-[13px] font-bold">
-                    {provider.name}
-                  </span>
-                </div>
-                <div className="flex-1 truncate font-mono text-[12px] text-[var(--text-2)]">
-                  {builtIn
-                    ? "内置官方入口（未启用）"
-                    : toolProviderSummary(tool.appId, provider).baseUrl ||
-                      (provider.category === "official" ? "官方默认端点" : "—")}
-                </div>
-                <div className="w-[160px] truncate font-mono text-[12px] text-[var(--text-2)]">
-                  {toolProviderSummary(tool.appId, provider).model || "—"}
-                </div>
-                <div className="w-[130px] flex justify-end items-center gap-[5px]">
-                  {tool.category === "switch" && (
-                    <button
-                      type="button"
-                      onClick={() => void changeProvider(provider)}
-                      disabled={
-                        !canMutate || current || Boolean(busyId) || importing
-                      }
-                      className={`h-[27px] px-[8px] rounded border-0 text-[12px] cursor-pointer ${current ? "bg-transparent text-[var(--success-fg)] font-bold" : "bg-[#006AA0] text-white"}`}
-                    >
-                      {busy ? "处理中…" : current ? "当前线路" : "切换"}
-                    </button>
-                  )}
-                  {busy && (
-                    <Loader2
-                      size={14}
-                      className="animate-spin text-[var(--text-3)]"
-                    />
-                  )}
-                  {providers.some((item) => item.id === provider.id) && (
-                    <button
-                      type="button"
-                      aria-label={`编辑${provider.name}`}
-                      disabled={!canMutate || readOnly || importing}
-                      title={
-                        readOnly ? "此条目由 Hermes Web UI 管理" : undefined
-                      }
-                      onClick={() => editLine(provider.id)}
-                      className="w-[27px] h-[27px] flex items-center justify-center border-0 bg-transparent cursor-pointer text-[var(--text-3)]"
-                    >
-                      <Edit2 size={14} />
-                    </button>
-                  )}
-                </div>
+                    <>
+                      运行 <code>gemini</code>，选择{" "}
+                      <code>Login with Google</code> 完成授权。
+                    </>
+                  )}{" "}
+                  登录状态由工具管理，此处不代表已登录。
+                </p>
               </div>
-            );
-          })}
-        </div>
+              {currentId === officialProvider.id && (
+                <Button
+                  variant="outline"
+                  disabled={Boolean(busyId) || importing}
+                  onClick={async () => {
+                    setBusyId(officialProvider.id);
+                    try {
+                      await providersApi.openTerminal(
+                        officialProvider.id,
+                        tool.appId,
+                      );
+                    } catch (cause) {
+                      toast.error("无法打开终端", {
+                        description: String(cause),
+                      });
+                    } finally {
+                      if (activeApp.current === tool.appId) setBusyId(null);
+                    }
+                  }}
+                >
+                  打开登录终端
+                </Button>
+              )}
+            </section>
+          )}
+
+        {error && !loading && (
+          <div
+            className="w-full rounded-[6px] border border-[var(--danger-border)] bg-[var(--danger-bg)] px-[16px] py-[12px] text-[13px] text-[var(--danger-fg)]"
+            role="alert"
+          >
+            读取 {tool.name} 配置失败：{error}
+          </div>
+        )}
+        {loading && (
+          <div
+            className="w-full py-[28px] text-center text-[13px] text-[var(--text-3)]"
+            role="status"
+          >
+            <Loader2 size={16} className="inline animate-spin mr-[6px]" />
+            正在读取本机配置…
+          </div>
+        )}
+        {!loading && !error && visibleProviders.length === 0 && (
+          <div className="w-full rounded-[6px] border border-dashed border-[var(--border-control)] px-[16px] py-[28px] text-center text-[13px] text-[var(--text-3)]">
+            还没有 {tool.name} 线路。点击“添加线路”开始配置。
+          </div>
+        )}
+
+        {!loading && !error && visibleProviders.length > 0 && (
+          <div className="tool-provider-table w-full border border-[var(--border-subtle)] rounded-[6px] overflow-x-auto">
+            <div className="h-[34px] px-[12px] flex items-center gap-[12px] bg-[var(--bg-subtle)] text-[12px] text-[var(--text-3)] font-bold">
+              <div className="w-[42px]">状态</div>
+              <div className="w-[180px]">名称</div>
+              <div className="flex-1">端点地址</div>
+              <div className="w-[160px]">默认模型</div>
+              <div className="w-[190px] text-right">操作</div>
+            </div>
+            {visibleProviders.map((provider) => {
+              const enabled = provider.meta?.liveConfigManaged !== false;
+              const current = provider.id === currentId;
+              const busy = busyId === provider.id;
+              const builtIn =
+                hasBuiltInEntry && provider.id === officialProvider?.id;
+              return (
+                <div
+                  key={provider.id}
+                  className="min-h-[52px] px-[12px] flex items-center gap-[12px] border-t border-[var(--border-subtle)] hover:bg-[var(--bg-subtle)]"
+                >
+                  <div className="w-[42px]">
+                    {tool.category === "accumulate" ? (
+                      <button
+                        type="button"
+                        aria-label={`${enabled ? "停用" : "启用"}${provider.name}`}
+                        onClick={() => void toggleProvider(provider)}
+                        disabled={Boolean(busyId) || importing}
+                        className={`w-[28px] h-[16px] p-[2px] flex rounded-full border-0 cursor-pointer ${enabled ? "justify-end bg-[#05773B]" : "justify-start bg-[#81878D]"}`}
+                      >
+                        <span className="w-[12px] h-[12px] rounded-full bg-white" />
+                      </button>
+                    ) : (
+                      <span
+                        className={`block w-[9px] h-[9px] rounded-full ${current ? "bg-[#05773B]" : "bg-[#C9CDD1]"}`}
+                      />
+                    )}
+                  </div>
+                  <div className="w-[180px] flex items-center gap-[8px] min-w-0">
+                    <span className="w-[22px] h-[22px] rounded flex items-center justify-center bg-[#1A1E24] text-white text-[11px] font-bold">
+                      {provider.name.trim().slice(0, 1) || "线"}
+                    </span>
+                    <span className="truncate text-[13px] font-bold">
+                      {provider.name}
+                    </span>
+                  </div>
+                  <div className="flex-1 truncate font-mono text-[12px] text-[var(--text-2)]">
+                    {builtIn
+                      ? "内置官方入口（未启用）"
+                      : toolProviderSummary(tool.appId, provider).baseUrl ||
+                        (provider.category === "official"
+                          ? "官方默认端点"
+                          : "—")}
+                  </div>
+                  <div className="w-[160px] truncate font-mono text-[12px] text-[var(--text-2)]">
+                    {toolProviderSummary(tool.appId, provider).model || "—"}
+                  </div>
+                  <div className="w-[190px] flex justify-end items-center gap-[5px]">
+                    {tool.category === "switch" && (
+                      <button
+                        type="button"
+                        onClick={() => void changeProvider(provider)}
+                        disabled={
+                          !canMutate || current || Boolean(busyId) || importing
+                        }
+                        className={`h-[27px] px-[8px] rounded border-0 text-[12px] cursor-pointer ${current ? "bg-transparent text-[var(--success-fg)] font-bold" : "bg-[#006AA0] text-white"}`}
+                      >
+                        {busy ? "处理中…" : current ? "当前线路" : "切换"}
+                      </button>
+                    )}
+                    {busy && (
+                      <Loader2
+                        size={14}
+                        className="animate-spin text-[var(--text-3)]"
+                      />
+                    )}
+                    {providers.some((item) => item.id === provider.id) && (
+                      <button
+                        type="button"
+                        aria-label={`编辑${provider.name}`}
+                        disabled={!canMutate || Boolean(busyId) || importing}
+                        onClick={() => editLine(provider.id)}
+                        className="w-[27px] h-[27px] flex items-center justify-center border-0 bg-transparent cursor-pointer text-[var(--text-3)]"
+                      >
+                        <Edit2 size={14} />
+                      </button>
+                    )}
+                    {!builtIn && (
+                      <button
+                        type="button"
+                        className="tool-provider-delete"
+                        aria-label={`删除${provider.name}`}
+                        title={
+                          tool.category === "switch" && current
+                            ? "请先切换到其他线路后再删除"
+                            : "删除线路"
+                        }
+                        disabled={
+                          !native ||
+                          !canMutate ||
+                          Boolean(busyId) ||
+                          importing ||
+                          (tool.category === "switch" && current)
+                        }
+                        onClick={() => setRemoving(provider)}
+                      >
+                        <Trash2 size={14} aria-hidden="true" />
+                        删除
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+      <div hidden={tool.appId === "pi" && piSection !== "install"}>
+        {tool.appId !== "claude-desktop" && (
+          <details
+            key={toolId}
+            className="tool-installation"
+            open={tool.appId === "pi" ? true : undefined}
+          >
+            <summary>
+              安装与环境检查
+              <span className="tool-installation-hint">版本与更新</span>
+            </summary>
+            <div className="tool-installation-content">
+              {native && lifecycleTools[toolId] ? (
+                <Suspense fallback={<p role="status">正在加载安装检测…</p>}>
+                  <AboutSection
+                    key={toolId}
+                    isPortable={false}
+                    toolsOnly
+                    tools={lifecycleTools[toolId]}
+                  />
+                </Suspense>
+              ) : (
+                <p className="text-[13px] text-[var(--text-3)]">
+                  {!native
+                    ? "浏览器预览未检测安装状态，请在桌面应用中检测、安装或升级。"
+                    : `${tool.name} 的安装检测与托管升级尚未接入，线路配置不代表已安装。`}
+                </p>
+              )}
+              {tool.appId === "pi" && (
+                <p className="text-[13px] text-[var(--text-3)]">
+                  Pi 支持原生 MCP 和扩展包，可在「默认模型与
+                  MCP」管理全局配置；统一 Skills 同步暂未接入。
+                </p>
+              )}
+            </div>
+          </details>
+        )}
+      </div>
+      <ConfirmDialog
+        isOpen={removing !== null}
+        busy={deleting}
+        title={`删除「${removing?.name ?? ""}」？`}
+        message={
+          tool.category === "accumulate"
+            ? `将删除这条 ${tool.name} 线路及对应的本机供应商配置。如只想暂时停用，请取消并使用停用开关。此操作不可撤销。`
+            : `将从 Chimera++ 删除这条 ${tool.name} 线路，不删除客户端或会话数据。当前使用中的线路不能删除。此操作不可撤销。`
+        }
+        confirmText="确认删除"
+        cancelText="取消"
+        variant="destructive"
+        onCancel={() => {
+          if (!deleting) setRemoving(null);
+        }}
+        onConfirm={() => void deleteProvider()}
+      />
+      {tool.appId === "pi" && (
+        <>
+          <div hidden={piSection !== "plugins"}>
+            <PiPluginMarket native={native} />
+          </div>
+          <div hidden={piSection !== "settings"}>
+            <PiManagement native={native} />
+          </div>
+        </>
       )}
     </div>
   );

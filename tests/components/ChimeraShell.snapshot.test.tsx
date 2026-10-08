@@ -1,14 +1,27 @@
 // Browser-preview markup of the sidebar and titlebar. Moving these regions
 // into their own modules must not change a single attribute; a deliberate
 // visual change updates the snapshot in the same commit.
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { expect, it } from "vitest";
 import ChimeraApp from "@/ChimeraApp";
 import { createTestQueryClient } from "../utils/testQueryClient";
 
 const sidebar = () => document.querySelector('[data-pencil-name="侧栏"]');
-const titlebar = () => document.querySelector('[data-pencil-name="标题栏"]');
+const titlebar = () => {
+  const bar = document.querySelector<HTMLElement>(
+    '[data-pencil-name="标题栏"]',
+  );
+  expect(bar).not.toBeNull();
+  // The simplified titlebar keeps command access, without the old mini signboard.
+  expect(
+    within(bar!).getByRole("button", { name: "搜索线路、页面或命令" }),
+  ).toBeEnabled();
+  expect(
+    within(bar!).queryByRole("button", { name: /^当前线路：/ }),
+  ).not.toBeInTheDocument();
+  return bar;
+};
 
 it("keeps the shell markup stable across views and the line editor", async () => {
   render(

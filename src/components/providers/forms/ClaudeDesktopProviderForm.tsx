@@ -52,7 +52,7 @@ import type {
   ProviderCategory,
   ProviderMeta,
 } from "@/types";
-import type { OpenClawSuggestedDefaults } from "@/config/openclawProviderPresets";
+
 import {
   CLAUDE_DESKTOP_ROLE_ROUTE_IDS,
   claudeDesktopProviderPresets,
@@ -79,7 +79,6 @@ export type ClaudeDesktopProviderFormValues = ProviderFormData & {
   partnerPromotionKey?: string;
   meta?: ProviderMeta;
   providerKey?: string;
-  suggestedDefaults?: OpenClawSuggestedDefaults;
 };
 
 type ApiKeyField = "ANTHROPIC_AUTH_TOKEN" | "ANTHROPIC_API_KEY";
@@ -920,11 +919,11 @@ export function ClaudeDesktopProviderForm({
                     {needsModelMapping
                       ? t("claudeDesktop.modelMappingOnHint", {
                           defaultValue:
-                            "Claude Desktop 只接受 claude-sonnet-* / claude-opus-* / claude-haiku-* 三档角色 ID。开启后 CC Switch 会把这三档映射到供应商的实际模型，并在使用期间保持本地路由开启。",
+                            "将 Desktop 角色映射到上游模型，使用期间需保持本地路由开启。",
                         })
                       : t("claudeDesktop.modelMappingOffHint", {
                           defaultValue:
-                            "仅当供应商直接接受 Claude Desktop 可识别的三档角色 ID（claude-sonnet-* / claude-opus-* / claude-haiku-*）时才适用直连；其他模型名（含 claude-3-5-sonnet-… 等旧式 ID）请打开此开关走映射。",
+                            "上游模型名与 Desktop 角色不一致时，请开启映射。",
                         })}
                   </p>
                 </div>
@@ -1016,7 +1015,7 @@ export function ClaudeDesktopProviderForm({
                     <p className="text-xs leading-relaxed text-muted-foreground">
                       {t("claudeDesktop.routeMapHint", {
                         defaultValue:
-                          "为 Sonnet、Opus、Haiku 三档分别填写实际请求模型；菜单显示名可写 DeepSeek、Kimi 等品牌名。留空的档会自动沿用 Sonnet（或第一个已填档）的模型，确保子 agent 调用的 Haiku 始终可用。",
+                          "填写实际模型 ID；空白角色沿用 Sonnet 或首个已填模型。",
                       })}
                     </p>
                   </div>
@@ -1146,16 +1145,14 @@ export function ClaudeDesktopProviderForm({
                       <ChevronRight className="h-4 w-4" />
                     )}
                     {t("claudeDesktop.directModelListTitle", {
-                      defaultValue:
-                        "手动指定 Claude Desktop 模型列表（高级，可选）",
+                      defaultValue: "手动模型列表（可选）",
                     })}
                   </Button>
                 </CollapsibleTrigger>
                 {!directModelsExpanded && (
                   <p className="ml-1 mt-1 text-xs text-muted-foreground">
                     {t("claudeDesktop.directModelListCollapsedHint", {
-                      defaultValue:
-                        "原生 Claude 模型供应商通常不用填写，Claude Desktop 会自动读取 /v1/models。",
+                      defaultValue: "默认从 /v1/models 自动读取。",
                     })}
                   </p>
                 )}

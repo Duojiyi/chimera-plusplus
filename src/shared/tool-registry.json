@@ -55,35 +55,11 @@
     "proxy": false
   },
   {
-    "id": "openclaw",
-    "mode": "additive",
-    "liveFiles": ["~/.openclaw/openclaw.json"],
-    "tray": false,
-    "deeplink": "importOnly",
-    "proxy": false
-  },
-  {
-    "id": "hermes",
-    "mode": "additive",
-    "liveFiles": ["~/.hermes/config.yaml"],
-    "tray": false,
-    "deeplink": "importOnly",
-    "proxy": false
-  },
-  {
     "id": "pi",
     "mode": "additive",
     "liveFiles": ["~/.pi/agent/models.json"],
     "tray": false,
     "deeplink": "importOnly",
-    "proxy": false
-  },
-  {
-    "id": "mcode",
-    "mode": "additive",
-    "liveFiles": ["~/.minimax/config.yaml"],
-    "tray": false,
-    "deeplink": "reject",
     "proxy": false
   }
 ]

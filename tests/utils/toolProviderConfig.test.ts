@@ -202,24 +202,6 @@ it.each([
     "https://desktop.test",
     "",
   ],
-  [
-    "openclaw",
-    { baseUrl: "https://claw.test", models: [{ id: "claw-model" }] },
-    "https://claw.test",
-    "claw-model",
-  ],
-  [
-    "hermes",
-    { base_url: "https://hermes.test", models: [{ id: "hermes-model" }] },
-    "https://hermes.test",
-    "hermes-model",
-  ],
-  [
-    "mcode",
-    { options: { baseURL: "https://mini.test" }, models: { mini: {} } },
-    "https://mini.test",
-    "mini",
-  ],
 ] as const)(
   "reads %s using its native summary shape",
   (appId, settingsConfig, baseUrl, model) => {

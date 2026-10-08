@@ -56,9 +56,7 @@ pub(crate) fn preservation(app: &AppType) -> FirstWritePreservation {
         AppType::Claude | AppType::Gemini => FirstWritePreservation::SharedSnippet,
         AppType::GrokBuild => FirstWritePreservation::AdoptOnly,
         AppType::Codex => FirstWritePreservation::KeyOwnership,
-        AppType::ClaudeDesktop | AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
-            FirstWritePreservation::MergedByWriter
-        }
+        AppType::ClaudeDesktop | AppType::OpenCode => FirstWritePreservation::MergedByWriter,
         // Tools added later (additive by design) are backed up only.
         _ => FirstWritePreservation::MergedByWriter,
     }

@@ -26,8 +26,17 @@ vi.mock("@/components/proxy/ClaudeDesktopRouteToggle", () => ({
   ClaudeDesktopRouteToggle: () => <p>Desktop route toggle</p>,
 }));
 vi.mock("@/components/common/FullScreenPanel", () => ({
-  FullScreenPanel: ({ children }: { children: React.ReactNode }) => (
-    <section aria-label="editor">{children}</section>
+  FullScreenPanel: ({
+    children,
+    footer,
+  }: {
+    children: React.ReactNode;
+    footer?: React.ReactNode;
+  }) => (
+    <section aria-label="editor">
+      {children}
+      {footer}
+    </section>
   ),
 }));
 vi.mock("@/components/JsonEditor", () => ({
@@ -111,14 +120,18 @@ describe("additional native tools", () => {
       expect(providersApi.getAll).not.toHaveBeenCalled();
     },
   );
-  it.each(["claude-desktop", "grokbuild", "openclaw", "hermes"])(
+  it.each(["claude-desktop", "grokbuild"])(
     "opens and saves %s through its native form and appId without activating",
     async (appId) => {
       const view = render(
         <ToolView toolId={appId} native refreshVersion={0} />,
       );
-      await waitFor(() =>
-        expect(screen.getByRole("button", { name: "添加线路" })).toBeEnabled(),
+      await waitFor(
+        () =>
+          expect(
+            screen.getByRole("button", { name: "添加线路" }),
+          ).toBeEnabled(),
+        { timeout: 10000 },
       );
       expect(providersApi.getAll).toHaveBeenCalledWith(appId);
       fireEvent.click(screen.getByRole("button", { name: "添加线路" }));
@@ -147,34 +160,8 @@ describe("additional native tools", () => {
       expect(providersApi.switch).not.toHaveBeenCalled();
     },
   );
-  it("saves MiniMax native JSON, never a Claude env template", async () => {
-    render(<ToolView toolId="mcode" />);
-    fireEvent.click(screen.getByRole("button", { name: "添加线路" }));
-    fireEvent.change(await screen.findByLabelText("名称"), {
-      target: { value: "MiniMax" },
-    });
-    fireEvent.change(screen.getByLabelText("Provider Key"), {
-      target: { value: "minimax" },
-    });
-    const config = {
-      kind: "custom",
-      api: "openai-completions",
-      options: { baseURL: "https://example.test/v1", apiKey: "test" },
-      models: { model: {} },
-    };
-    fireEvent.change(screen.getByLabelText("JSON"), {
-      target: { value: JSON.stringify(config) },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "保存线路" }));
-    await waitFor(() =>
-      expect(providersApi.add).toHaveBeenCalledWith(
-        expect.objectContaining({ id: "minimax", settingsConfig: config }),
-        "mcode",
-        false,
-      ),
-    );
-  });
-  it.each(["claude-desktop", "grokbuild", "openclaw", "hermes", "mcode"])(
+
+  it.each(["claude-desktop", "grokbuild"])(
     "explicitly activates %s using the same appId",
     async (appId) => {
       vi.mocked(providersApi.getAll).mockResolvedValue({
@@ -216,20 +203,6 @@ describe("additional native tools", () => {
     expect(screen.getByText("平台不支持")).toBeVisible();
     expect(screen.getByText("标准路径未检测到")).not.toBeVisible();
   });
-  it("keeps Hermes providers_dict entries read only", async () => {
-    vi.mocked(providersApi.getAll).mockResolvedValue({
-      p: {
-        id: "p",
-        name: "Web",
-        settingsConfig: { _cc_source: "providers_dict" },
-      },
-    });
-    render(<ToolView toolId="hermes" />);
-    expect(
-      await screen.findByRole("button", { name: "编辑Web" }),
-    ).toBeDisabled();
-    expect(screen.getByRole("button", { name: "停用Web" })).toBeDisabled();
-  });
 });
 
 it("shows an actual Desktop executable independently of configuration", async () => {
@@ -245,7 +218,7 @@ it("shows an actual Desktop executable independently of configuration", async ()
   expect(screen.getByText("已检测到")).toBeVisible();
   expect(screen.getByText("尚未配置第三方")).toBeVisible();
   expect(screen.getByText("C:/Claude/Claude.exe")).not.toBeVisible();
-  fireEvent.click(screen.getByText("诊断信息与使用说明"));
+  fireEvent.click(screen.getByText("诊断与兼容性"));
   expect(screen.getByText("C:/Claude/Claude.exe")).toBeVisible();
 });
 

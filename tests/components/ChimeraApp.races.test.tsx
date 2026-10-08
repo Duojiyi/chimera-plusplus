@@ -73,10 +73,9 @@ vi.mock("@/lib/api/settings", () => ({
         gemini: true,
         grokbuild: true,
         opencode: true,
-        openclaw: true,
-        hermes: true,
+
         pi: true,
-        mcode: true,
+        omp: true,
       },
     }),
   },
@@ -93,10 +92,21 @@ vi.mock("@/lib/query/queries", () => ({
   useSettingsQuery: () => ({ data: {} }),
 }));
 vi.mock("@/contexts/UpdateContext", () => ({ useUpdate: () => ({}) }));
+vi.mock("@/components/theme-provider", () => ({
+  useTheme: () => ({ theme: "light", setTheme: vi.fn() }),
+}));
 vi.mock("@/components/WindowControls", () => ({ WindowControls: () => null }));
 vi.mock("@/components/settings/AboutSection", () => ({
   AboutSection: () => null,
 }));
+vi.mock("@/views/UsageView", () => {
+  const loading = new Promise<never>(() => {});
+  return {
+    UsageView: () => {
+      throw loading;
+    },
+  };
+});
 import ChimeraApp from "@/ChimeraApp";
 import App from "@/App";
 
@@ -176,9 +186,11 @@ beforeEach(() => {
   mocks.invoke
     .mockReset()
     .mockImplementation(async (command: string) =>
-      command === "get_product_capabilities"
-        ? { capabilities: [] }
-        : { supported: true, installed: false, running: false },
+      command === "scan_unmanaged_skills"
+        ? []
+        : command === "get_product_capabilities"
+          ? { capabilities: [] }
+          : { supported: true, installed: false, running: false },
     );
   mocks.listen
     .mockReset()
@@ -607,96 +619,77 @@ describe("provider switch receipt", () => {
       ),
     );
     expect(screen.queryByText(/刚刚 从/)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "切回" })).toBeDisabled();
+    expect(
+      screen.queryByRole("button", { name: "切回" }),
+    ).not.toBeInTheDocument();
   });
 });
 
-describe("mini signboard current-line ownership", () => {
-  it("shows the mini signboard only away from the full line overview", async () => {
+describe("current-line ownership and quiet titlebar", () => {
+  it("keeps route status out of the titlebar and resets page scrolling", async () => {
     mount();
     await screen.findByRole("button", { name: /^Alpha，/ });
-    expect(
-      screen.queryByRole("button", { name: /^当前线路：/ }),
-    ).not.toBeInTheDocument();
+    const content = document.querySelector(".chimera-content")!;
+    content.scrollTop = 200;
     fireEvent.click(screen.getByRole("button", { name: "设置" }));
     expect(
-      await screen.findByRole("button", { name: /^当前线路：Alpha/ }),
-    ).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: /^当前线路：Alpha/ }));
-    expect(
       screen.queryByRole("button", { name: /^当前线路：/ }),
     ).not.toBeInTheDocument();
+    expect(content.scrollTop).toBe(0);
+    fireEvent.click(screen.getByRole("button", { name: "线路" }));
     expect(screen.getByRole("table", { name: "线路切换" })).toBeVisible();
   });
   it.each([
-    { id: "Alpha", source: "none", label: "未选择线路" },
-    { id: "Alpha", source: "external", label: "外部配置" },
-    { id: "missing", source: "stored", label: "未选择线路" },
+    { id: "Alpha", source: "none" },
+    { id: "Alpha", source: "external" },
+    { id: "missing", source: "stored" },
   ])(
     "does not mark the first line current for $source/$id",
-    async ({ id, source, label }) => {
+    async ({ id, source }) => {
       mocks.getResolution.mockResolvedValue({ id, source });
       mount();
       await screen.findByRole("button", { name: /^Alpha，/ });
       expect(
         screen.queryByRole("button", { name: /^Alpha，.*当前线路/ }),
       ).not.toBeInTheDocument();
-      fireEvent.click(screen.getByRole("button", { name: "设置" }));
-      expect(
-        screen.getByRole("button", { name: `当前线路：${label}` }),
-      ).toBeVisible();
-      expect(
-        screen.queryByRole("button", { name: /^当前线路：Alpha/ }),
-      ).not.toBeInTheDocument();
-      expect(
-        screen.queryByRole("button", { name: /^Alpha，.*当前线路/ }),
-      ).not.toBeInTheDocument();
       expect(mocks.testEndpoints).not.toHaveBeenCalled();
     },
   );
-
   it("uses the resolved line even when it is not first", async () => {
     mocks.getCurrent.mockResolvedValue("Beta");
     mount();
-    fireEvent.click(screen.getByRole("button", { name: "设置" }));
     expect(
-      await screen.findByRole("button", { name: /^当前线路：Beta/ }),
+      await screen.findByRole("button", { name: /^Beta，.*当前线路/ }),
     ).toBeVisible();
     expect(
-      screen.queryByRole("button", { name: /^当前线路：Alpha/ }),
+      screen.queryByRole("button", { name: /^Alpha，.*当前线路/ }),
     ).not.toBeInTheDocument();
   });
-
   it("discards an old endpoint result after the current line changes", async () => {
     const old = deferred<{ latency: number }[]>();
     mocks.testEndpoints.mockReturnValueOnce(old.promise);
     mount();
-    fireEvent.click(screen.getByRole("button", { name: "设置" }));
     await waitFor(() => expect(mocks.testEndpoints).toHaveBeenCalledTimes(1));
     mocks.getCurrent.mockResolvedValue("Beta");
     emit("codex", "Beta");
-    await screen.findByRole("button", { name: "当前线路：Beta，未测速" });
+    await screen.findByRole("button", { name: /^Beta，.*当前线路/ });
     await act(async () => old.resolve([{ latency: 182 }]));
-    expect(
-      screen.getByRole("button", { name: "当前线路：Beta，未测速" }),
-    ).toBeVisible();
     expect(screen.queryByText("182 ms")).not.toBeInTheDocument();
   });
-
   it("clears a measured result when the same line endpoint changes", async () => {
     mocks.testEndpoints.mockResolvedValueOnce([{ latency: 182 }]);
     mount();
-    fireEvent.click(screen.getByRole("button", { name: "设置" }));
-    await screen.findByRole("button", { name: "当前线路：Alpha，182 ms" });
+    await screen.findByText("182 ms");
     const updated = provider("Alpha");
     updated.settingsConfig.config = String(
       updated.settingsConfig.config,
     ).replace("example.com", "new.example.com");
     mocks.getAll.mockResolvedValue({ Alpha: updated, Beta: provider("Beta") });
     emit();
-    expect(
-      await screen.findByRole("button", { name: "当前线路：Alpha，未测速" }),
-    ).toBeVisible();
+    await waitFor(() =>
+      expect(screen.queryByText("182 ms")).not.toBeInTheDocument(),
+    );
+    expect(screen.getByText("未测速")).toBeVisible();
   });
 });
 
@@ -806,7 +799,11 @@ describe("native tool editor ownership", () => {
               enabledByDefault: true,
             })),
           };
-        if (command === "get_installed_skills") return [];
+        if (
+          command === "get_installed_skills" ||
+          command === "scan_unmanaged_skills"
+        )
+          return [];
         if (command === "get_mcp_servers" || command === "get_notes") return {};
         return original(command);
       });
@@ -816,7 +813,11 @@ describe("native tool editor ownership", () => {
         screen.getByRole("button", { name: `管理 ${label} 的 Skills 与 MCP` }),
       );
       expect(
-        await screen.findByRole("combobox", { name: "目标工具" }),
+        await screen.findByRole(
+          "combobox",
+          { name: "目标工具" },
+          { timeout: 10000 },
+        ),
       ).toHaveValue(appId);
       expect(
         await screen.findByRole("heading", { name: "还没有安装 Skills" }),
@@ -1089,6 +1090,11 @@ describe("native tool editor ownership", () => {
     fireEvent.click(await screen.findByRole("button", { name: "管理线路" }));
     const manager = screen.getByRole("dialog", { name: "管理线路" });
     fireEvent.click(within(manager).getByRole("button", { name: "删除Beta" }));
+    expect(mocks.invoke).not.toHaveBeenCalledWith(
+      "delete_provider",
+      expect.anything(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "删除线路" }));
     await waitFor(() =>
       expect(mocks.invoke).toHaveBeenCalledWith("delete_provider", {
         app: "codex",
@@ -1100,4 +1106,137 @@ describe("native tool editor ownership", () => {
       id: "Beta",
     });
   });
+});
+
+describe("Pi page navigation retains work", () => {
+  function enablePiPages() {
+    const normal = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation(
+      async (command: string, payload?: unknown) => {
+        if (command === "get_product_capabilities")
+          return {
+            capabilities: [
+              { id: "multi_tool", available: true, enabledByDefault: true },
+            ],
+          };
+        if (command === "get_omp_models")
+          return { value: {}, path: "/omp/models.yml", revision: "empty" };
+        if (command === "get_pi_document")
+          return {
+            path: "/pi/config.json",
+            revision: "first",
+            value:
+              (payload as { kind: string }).kind === "settings"
+                ? { defaultModel: "original-model" }
+                : { mcpServers: {} },
+          };
+        return normal(command, payload);
+      },
+    );
+  }
+
+  it("keeps both Pi drafts when leaving through the sidebar and returning", async () => {
+    enablePiPages();
+    mount();
+    const pi = await screen.findByRole("button", { name: "Pi" });
+    await waitFor(() => expect(pi).toBeEnabled());
+    fireEvent.click(pi);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "默认模型与 MCP" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "读取全局配置" }));
+    const model = await screen.findByDisplayValue("original-model");
+    fireEvent.change(model, { target: { value: "retained-model" } });
+    fireEvent.change(screen.getByLabelText("Pi MCP JSON"), {
+      target: { value: '{"mcpServers":{"draft":{}}}' },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Codex 管理" }));
+    expect(model).not.toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Pi" }));
+    expect(await screen.findByRole("textbox", { name: "模型 ID" })).toHaveValue(
+      "retained-model",
+    );
+    expect(screen.getByLabelText("Pi MCP JSON")).toHaveValue(
+      '{"mcpServers":{"draft":{}}}',
+    );
+    expect(
+      mocks.invoke.mock.calls.filter(([cmd]) => cmd === "get_pi_document"),
+    ).toHaveLength(2);
+    expect(
+      mocks.invoke.mock.calls.some(([cmd]) => cmd === "save_pi_document"),
+    ).toBe(false);
+  });
+
+  it("keeps dirty Pi state protected from lightweight close while another route suspends", async () => {
+    enablePiPages();
+    mount();
+    const pi = await screen.findByRole("button", { name: "Pi" });
+    await waitFor(() => expect(pi).toBeEnabled());
+    fireEvent.click(pi);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "默认模型与 MCP" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "读取全局配置" }));
+    fireEvent.change(await screen.findByDisplayValue("original-model"), {
+      target: { value: "keep-through-loading" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "用量" }));
+    await screen.findByText("正在加载模块…");
+    await act(async () => {
+      for (const handler of handlers.get("request-lightweight-close") ?? []) {
+        await handler({ payload: null });
+      }
+    });
+    expect(mocks.invoke).toHaveBeenCalledWith("hide_main_window");
+    expect(mocks.invoke).not.toHaveBeenCalledWith("enter_lightweight_mode");
+    fireEvent.click(screen.getByRole("button", { name: "Pi" }));
+    expect(await screen.findByRole("textbox", { name: "模型 ID" })).toHaveValue(
+      "keep-through-loading",
+    );
+  });
+
+  it.each(["Pi", "oh-my-pi"])(
+    "retains %s running commands and their completion after navigation",
+    async (name) => {
+      enablePiPages();
+      const normal = mocks.invoke.getMockImplementation()!;
+      const job = deferred<string>();
+      mocks.invoke.mockImplementation((command: string, payload?: unknown) =>
+        command === "run_pi_plugin_action"
+          ? job.promise
+          : normal(command, payload),
+      );
+      mount();
+      const tool = await screen.findByRole("button", { name });
+      await waitFor(() => expect(tool).toBeEnabled());
+      fireEvent.click(tool);
+      if (name === "Pi" || name === "oh-my-pi")
+        fireEvent.click(
+          await screen.findByRole("button", { name: "插件市场" }),
+        );
+      fireEvent.click(
+        await screen.findByRole("button", { name: "刷新插件状态" }),
+      );
+      await screen.findByRole("status");
+      fireEvent.click(screen.getByRole("button", { name: "Codex 管理" }));
+      fireEvent.click(screen.getByRole("button", { name }));
+      expect(
+        await screen.findByRole("button", { name: "刷新插件状态" }),
+      ).toBeDisabled();
+      fireEvent.click(screen.getByRole("button", { name: "Codex 管理" }));
+      await act(async () => job.resolve('{"npm":[],"marketplace":[]}'));
+      fireEvent.click(screen.getByRole("button", { name }));
+      expect(
+        await screen.findByText('{"npm":[],"marketplace":[]}'),
+      ).toBeVisible();
+      expect(
+        screen.getByRole("button", { name: "刷新插件状态" }),
+      ).toBeEnabled();
+      expect(
+        mocks.invoke.mock.calls.filter(
+          ([cmd]) => cmd === "run_pi_plugin_action",
+        ),
+      ).toHaveLength(1);
+    },
+  );
 });

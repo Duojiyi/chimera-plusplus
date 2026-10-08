@@ -3,6 +3,9 @@
  * 用于新建自定义供应商时的默认配置
  */
 import { invoke } from "@tauri-apps/api/core";
+import { setCodexModelName } from "@/utils/providerConfigUtils";
+
+export const CODEX_DEFAULT_MODEL = "gpt-6-astra";
 
 export interface CodexTemplate {
   auth: Record<string, any>;
@@ -22,10 +25,8 @@ export interface ChimeraHubTemplate extends CodexTemplate {
  * @returns Codex 模板配置
  */
 export function getCodexCustomTemplate(): CodexTemplate {
-  // `gpt-5.6-sol` is the built-in Codex slug; a bare `gpt-5.6` is not in any
-  // catalog and made the first request of a fresh custom line fail.
   const config = `model_provider = "custom"
-model = "gpt-5.6-sol"
+model = "${CODEX_DEFAULT_MODEL}"
 model_reasoning_effort = "high"
 
 [model_providers.custom]
@@ -58,7 +59,7 @@ export async function loadChimeraHubTemplate(): Promise<ChimeraHubTemplate> {
  * Until the backend template is loaded (browser preview, or a failed load)
  * this is an empty, still editable draft rather than a second copy.
  */
-export function getChimeraHubTemplate(): ChimeraHubTemplate {
+function getSharedChimeraHubTemplate(): ChimeraHubTemplate {
   const template = chimeraHubTemplate;
   return {
     name: template?.name ?? "",
@@ -67,6 +68,20 @@ export function getChimeraHubTemplate(): ChimeraHubTemplate {
     model: template?.model ?? "",
     auth: { ...(template?.auth ?? { OPENAI_API_KEY: "" }) },
     config: template?.config ?? "",
+  };
+}
+
+/**
+ * Codex editor draft: override only its TOML, never the shared model metadata
+ * consumed by other tools (including the MiniMax new-line form).
+ */
+export function getChimeraHubTemplate(): ChimeraHubTemplate {
+  const template = getSharedChimeraHubTemplate();
+  return {
+    ...template,
+    config: template.config
+      ? setCodexModelName(template.config, CODEX_DEFAULT_MODEL)
+      : "",
   };
 }
 
@@ -85,7 +100,7 @@ export function chimeraHubPreset<T extends object>(
   const resolve = (): T => {
     if (current === undefined || source !== chimeraHubTemplate) {
       source = chimeraHubTemplate;
-      current = build(getChimeraHubTemplate());
+      current = build(getSharedChimeraHubTemplate());
     }
     return current;
   };

@@ -398,8 +398,6 @@ type = "stdio"
           codex: true,
           gemini: false,
           opencode: false,
-          openclaw: false,
-          hermes: false,
         },
       } as McpServer,
     });
@@ -504,8 +502,6 @@ type = "stdio"
       gemini: false,
       grokbuild: false,
       opencode: false,
-      openclaw: false,
-      hermes: false,
     });
     expect(onSave).toHaveBeenCalledTimes(1);
     expect(toastErrorMock).not.toHaveBeenCalled();

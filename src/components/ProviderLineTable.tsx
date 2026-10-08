@@ -5,7 +5,6 @@ import {
   AlertTriangle,
   CircleX,
   LoaderCircle,
-  MoreHorizontal,
   Pencil,
   RefreshCw,
   Search,
@@ -20,12 +19,6 @@ import {
   extractCodexWireApi,
 } from "@/utils/providerConfigUtils";
 import { vscodeApi, type EndpointLatencyResult } from "@/lib/api/vscode";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import "./ProviderLineTable.css";
 
 export function ProviderLineTable({
@@ -58,7 +51,7 @@ export function ProviderLineTable({
   >;
   onSwitch: (provider: Provider) => Promise<void>;
   onEdit: (provider: Provider) => void;
-  onDelete: (provider: Provider) => Promise<boolean>;
+  onDelete: (provider: Provider) => void;
 }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<Record<string, EndpointLatencyResult>>(
@@ -374,32 +367,20 @@ export function ProviderLineTable({
                           >
                             <Pencil size={16} />
                           </button>
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <button
-                                type="button"
-                                disabled={busy}
-                                aria-label={`更多${label.name}操作`}
-                              >
-                                <MoreHorizontal size={18} />
-                              </button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end">
-                              <DropdownMenuItem
-                                onSelect={() => void onDelete(p)}
-                                disabled={busy || active}
-                                aria-label={`删除${label.name}`}
-                                title={
-                                  active
-                                    ? "当前线路正在使用，请先切换到其他线路"
-                                    : undefined
-                                }
-                              >
-                                <Trash2 size={14} />
-                                删除线路
-                              </DropdownMenuItem>
-                            </DropdownMenuContent>
-                          </DropdownMenu>
+                          <button
+                            type="button"
+                            className="provider-row-delete"
+                            onClick={() => onDelete(p)}
+                            disabled={busy || active}
+                            aria-label={`删除${label.name}`}
+                            title={
+                              active
+                                ? "当前线路正在使用，请先切换到其他线路"
+                                : "删除线路"
+                            }
+                          >
+                            <Trash2 size={16} />
+                          </button>
                         </>
                       )}
                     </span>

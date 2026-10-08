@@ -17,16 +17,6 @@ vi.mock("@/lib/api", () => ({
   settingsApi: {},
 }));
 
-vi.mock("@/hooks/useHermes", () => ({
-  invalidateHermesProviderCaches: vi.fn(),
-}));
-
-vi.mock("@/hooks/useOpenClaw", () => ({
-  openclawKeys: {
-    liveProviderIds: ["openclaw", "liveProviderIds"],
-  },
-}));
-
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
@@ -40,29 +30,20 @@ beforeEach(() => {
 });
 
 describe("useRemoveProviderFromLiveMutation", () => {
-  it("refetches MiniMax Code providers after removal (cc-switch #7578)", async () => {
-    const queryClient = new QueryClient({
+  it("removes a Pi line from live config without deleting the saved line", async () => {
+    const client = new QueryClient({
       defaultOptions: { mutations: { retry: false } },
     });
-    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
     const wrapper = ({ children }: { children: ReactNode }) => (
-      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
     );
     const { result } = renderHook(
-      () => useRemoveProviderFromLiveMutation("mcode"),
+      () => useRemoveProviderFromLiveMutation("pi"),
       { wrapper },
     );
-
     await act(async () => {
-      await result.current.mutateAsync("custom");
+      await result.current.mutateAsync("example");
     });
-
-    expect(apiMocks.removeFromLiveConfig).toHaveBeenCalledWith(
-      "custom",
-      "mcode",
-    );
-    expect(invalidateSpy).toHaveBeenCalledWith({
-      queryKey: ["providers", "mcode"],
-    });
+    expect(apiMocks.removeFromLiveConfig).toHaveBeenCalledWith("example", "pi");
   });
 });

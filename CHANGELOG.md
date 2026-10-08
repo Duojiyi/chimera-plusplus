@@ -10,6 +10,25 @@ numbers belong to a separate upstream line.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.8.3] - 2026-10-08
+
+### Added
+
+- Add an embedded Pi plugin marketplace with curated recommendations, installation, updates, removal and native configuration management.
+- Add independent Oh My Pi management with plugin operations, marketplace sources, runtime installation and native YAML model-provider routes.
+
+### Changed
+
+- Separate Pi and Oh My Pi navigation and group related Claude tools together.
+- Simplify tool settings, plugin maintenance and provider-route layouts, with consistent destructive-action styling and directly accessible configuration deletion.
+- Remove support and integration code for Hermes, MiniMax Code and OpenClaw. Existing external tool installations are not uninstalled.
+
+### Fixed
+
+- Preserve page drafts and pending plugin operations across navigation, with close protection and revision checks for external configuration changes.
+- Harden native plugin commands with validated arguments, bounded output, timeouts and operation locking.
+- Correct tool-registry array sizing after retired-tool removal and remove unused integration helpers.
+
 ## [2.8.2] - 2026-10-06
 
 ### Security

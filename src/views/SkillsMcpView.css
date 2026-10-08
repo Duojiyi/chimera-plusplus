@@ -1,3 +1,130 @@
+.skills-mcp-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  width: 100%;
+  padding: 8px 0;
+}
+.skills-mcp-header h1 {
+  font-size: 24px;
+  line-height: 1.4;
+  white-space: normal;
+}
+.skills-mcp-subtitle {
+  color: var(--text-3);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.skills-mcp-target {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  color: var(--text-2);
+  font-size: 13px;
+}
+.skills-mcp-target select {
+  min-height: 32px;
+  padding: 4px 28px 4px 10px;
+  border: 1px solid var(--border-control);
+  font: inherit;
+}
+.skills-mcp-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 20px;
+  width: 100%;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.skills-mcp-tabs button[aria-pressed="true"] {
+  border-bottom: 2px solid var(--brand-text);
+}
+.skills-mcp-tabs button > span + span {
+  min-width: 22px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--bg-subtle);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.skills-mcp-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px 24px;
+  width: 100%;
+  padding: 14px 16px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--bg-subtle);
+  color: var(--text-2);
+  font-size: 12px;
+}
+.skills-mcp-summary > div,
+.skills-mcp-summary p {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+}
+.skills-mcp-summary strong {
+  font-size: 22px;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-1);
+}
+.skills-mcp-summary b {
+  font-size: 14px;
+  color: var(--text-1);
+}
+.skills-mcp-summary-related {
+  margin-left: auto;
+}
+.skills-mcp-page :is(button, select, input):focus-visible {
+  outline: 2px solid var(--brand-text);
+  outline-offset: 3px;
+}
+.skills-scan-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.skills-scan-heading > span {
+  color: var(--text-3);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.skills-scan-panel .skills-scan-row {
+  margin: 0 0 6px;
+  padding: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--bg-sunken);
+  cursor: pointer;
+}
+.skills-scan-panel .skills-scan-row[data-selected="true"] {
+  border-color: var(--brand-text);
+  background: var(--bg-subtle);
+}
+.skills-scan-row > input {
+  accent-color: var(--brand-text);
+}
+@media (max-width: 640px) {
+  .skills-mcp-page.connected-page {
+    padding: 12px;
+  }
+  .skills-mcp-page .resource-empty {
+    padding: 20px 16px;
+  }
+  .skills-mcp-page .resource-empty-paths {
+    grid-template-columns: 1fr;
+  }
+}
+
 .skills-mcp-panel {
   overflow-wrap: anywhere;
 }
@@ -65,11 +192,12 @@
   box-sizing: border-box;
   width: 100%;
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 8px;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
   margin-bottom: 12px;
-  padding: 28px 28px 24px;
+  padding: 16px;
   border: 1px solid var(--border-subtle);
   border-radius: 8px;
   background: var(--bg-sunken);
@@ -77,9 +205,8 @@
 .resource-empty-icon {
   display: grid;
   place-items: center;
-  width: 44px;
-  height: 44px;
-  margin-bottom: 8px;
+  width: 32px;
+  height: 32px;
   border: 1px solid var(--border-subtle);
   border-radius: 10px;
   background: var(--bg-surface);
@@ -101,11 +228,10 @@
 }
 .resource-empty-paths {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr));
   gap: 12px;
   width: 100%;
-  max-width: 600px;
-  margin-top: 12px;
+  margin-top: 4px;
 }
 .resource-path {
   box-sizing: border-box;
@@ -113,8 +239,8 @@
   align-items: flex-start;
   gap: 12px;
   min-width: 0;
-  min-height: 64px;
-  padding: 14px 16px;
+  min-height: 40px;
+  padding: 8px 12px;
   border: 1px solid var(--border-control);
   border-radius: 6px;
   background: var(--bg-surface);
@@ -353,4 +479,30 @@ details.skills-lifecycle-panel > button {
 .skills-install-result > span {
   flex: 1;
   min-width: 0;
+}
+
+.skills-scan-row {
+  flex-wrap: nowrap;
+  align-items: flex-start;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.skills-scan-row > input {
+  flex-shrink: 0;
+  margin-top: 4px;
+}
+.skills-scan-details {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.skills-scan-path {
+  font-family: ui-monospace, monospace;
+  color: var(--text-2);
+}
+.skills-scan-source {
+  color: var(--text-3);
+  font-size: 12px;
 }
