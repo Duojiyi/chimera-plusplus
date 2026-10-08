@@ -2710,10 +2710,10 @@ impl ProviderService {
             let live_managed = existing
                 .as_ref()
                 .and_then(Self::provider_live_config_managed);
-            if Self::check_live_config_exists(&app_type, id, live_managed)? {
-                if app_type == AppType::OpenCode {
-                    remove_opencode_provider_from_live(id)?;
-                }
+            if Self::check_live_config_exists(&app_type, id, live_managed)?
+                && app_type == AppType::OpenCode
+            {
+                remove_opencode_provider_from_live(id)?;
             }
             state.db.delete_provider(app_type.as_str(), id)?;
             return Ok(());
