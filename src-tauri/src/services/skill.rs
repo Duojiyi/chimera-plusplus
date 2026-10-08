@@ -4936,8 +4936,8 @@ mod tests {
             use std::os::windows::process::CommandExt;
             let output = std::process::Command::new("cmd")
                 .args(["/C", "mklink", "/J"])
-                .arg(link)
-                .arg(target)
+                .arg(link.components().collect::<PathBuf>())
+                .arg(target.components().collect::<PathBuf>())
                 .creation_flags(0x08000000)
                 .output()
                 .unwrap();
