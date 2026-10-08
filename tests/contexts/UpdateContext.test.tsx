@@ -150,6 +150,14 @@ function storageFailure(): never {
 }
 
 describe("UpdateProvider storage failures", () => {
+  // jsdom Storage is a proxy: spies must replace inherited methods on its
+  // prototype. The Node storage fallback instead owns its methods directly.
+  const storageMethods = Object.prototype.hasOwnProperty.call(
+    localStorage,
+    "getItem",
+  )
+    ? localStorage
+    : Object.getPrototypeOf(localStorage);
   const storageDescriptor = Object.getOwnPropertyDescriptor(
     globalThis,
     "localStorage",
@@ -181,7 +189,7 @@ describe("UpdateProvider storage failures", () => {
           get: storageFailure,
         });
       } else {
-        vi.spyOn(localStorage, failure).mockImplementation(storageFailure);
+        vi.spyOn(storageMethods, failure).mockImplementation(storageFailure);
       }
       renderUpdate();
       expect(update.lastCheckedAt).toBeNull();
@@ -231,7 +239,7 @@ describe("UpdateProvider storage failures", () => {
       const timestamp = Date.now() - 1000;
       localStorage.setItem(LEGACY_LAST_CHECKED_KEY, String(timestamp));
       if (fails)
-        vi.spyOn(localStorage, "setItem").mockImplementation(storageFailure);
+        vi.spyOn(storageMethods, "setItem").mockImplementation(storageFailure);
       renderUpdate();
       expect(update.lastCheckedAt).toBe(timestamp);
       expect(localStorage.getItem(LAST_CHECKED_KEY)).toBe(
@@ -248,7 +256,7 @@ describe("UpdateProvider storage failures", () => {
     async (key) => {
       localStorage.setItem(key, "2.0.0");
       const write = vi
-        .spyOn(localStorage, "setItem")
+        .spyOn(storageMethods, "setItem")
         .mockImplementation(storageFailure);
       const first = renderUpdate();
       await act(async () => {
@@ -281,7 +289,7 @@ describe("UpdateProvider storage failures", () => {
       await update.checkUpdate();
     });
     expect(update.isDismissed).toBe(true);
-    vi.spyOn(localStorage, "getItem").mockImplementation(storageFailure);
+    vi.spyOn(storageMethods, "getItem").mockImplementation(storageFailure);
     await act(async () => {
       await expect(update.checkUpdate()).resolves.toBe(true);
     });
@@ -302,7 +310,7 @@ describe("UpdateProvider storage failures", () => {
     const timestamp = Date.now() - 1000;
     localStorage.setItem(LEGACY_LAST_CHECKED_KEY, String(timestamp));
     localStorage.setItem(LEGACY_DISMISSED_KEYS[0], "2.0.0");
-    vi.spyOn(localStorage, "removeItem").mockImplementation(storageFailure);
+    vi.spyOn(storageMethods, "removeItem").mockImplementation(storageFailure);
     renderUpdate();
     expect(update.lastCheckedAt).toBe(timestamp);
     expect(localStorage.getItem(LAST_CHECKED_KEY)).toBe(String(timestamp));
