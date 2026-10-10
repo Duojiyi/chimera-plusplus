@@ -1552,7 +1552,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         // macOS temp paths can start at /var, itself a symlink to /private/var.
         #[cfg(windows)]
-        let root = dunce::canonicalize(temp.path()).unwrap();
+        let root = temp.path().to_path_buf();
         #[cfg(not(windows))]
         let root = std::fs::canonicalize(temp.path()).unwrap();
         for relative in ["WindowsApps-backup/Codex", "MyWindowsApps/Codex", "Codex"] {
