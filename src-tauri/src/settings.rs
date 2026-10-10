@@ -1551,7 +1551,10 @@ mod tests {
     fn portable_root_allows_windowsapps_substrings() {
         let temp = tempfile::tempdir().unwrap();
         // macOS temp paths can start at /var, itself a symlink to /private/var.
+        #[cfg(windows)]
         let root = dunce::canonicalize(temp.path()).unwrap();
+        #[cfg(not(windows))]
+        let root = std::fs::canonicalize(temp.path()).unwrap();
         for relative in ["WindowsApps-backup/Codex", "MyWindowsApps/Codex", "Codex"] {
             let path = root.join(relative);
             assert_eq!(
