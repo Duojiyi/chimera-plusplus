@@ -362,6 +362,7 @@ fn matching_proxy_usage_sql(session: &str, ambiguous: bool) -> String {
     };
     // Old Codex proxy rows did not record cache writes. Only legacy semantics
     // may treat zero as unknown; a modern explicit zero must still match exactly.
+    // Old archive receipts have semantics -1 (unknown), never inferred legacy.
     let predicate = format!(
         "COALESCE(p.data_source, 'proxy') = 'proxy'
          AND p.app_type = {session}.app_type
@@ -2487,6 +2488,8 @@ mod tests {
         for (app, semantics, writes, expected) in [
             ("codex", INPUT_TOKEN_SEMANTICS_LEGACY, 0, true),
             ("codex", INPUT_TOKEN_SEMANTICS_TOTAL, 0, false),
+            ("codex", INPUT_TOKEN_SEMANTICS_FRESH, 0, false),
+            ("codex", -1, 0, false),
             ("codex", INPUT_TOKEN_SEMANTICS_TOTAL, 30, true),
             ("codex", INPUT_TOKEN_SEMANTICS_LEGACY, 20, false),
             ("claude", INPUT_TOKEN_SEMANTICS_LEGACY, 0, false),
@@ -2527,11 +2530,71 @@ mod tests {
             }
             assert_eq!(db.rollup_and_prune(30)?, 1);
             let conn = lock_conn!(db.conn);
+            let archived_semantics: i64 = conn.query_row(
+                "SELECT input_token_semantics FROM usage_rollup_dedup WHERE request_id = 'cache-proxy'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(archived_semantics, semantics);
             assert_eq!(
                 has_matching_proxy_usage_log(&conn, "cache-session-row", &key)?,
                 expected
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn old_archive_receipts_upgrade_as_unknown_not_legacy() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let conn = lock_conn!(db.conn);
+        // The old receipt schema intentionally has no semantics column.
+        conn.execute_batch(
+            "DROP TABLE usage_rollup_dedup;
+             CREATE TABLE usage_rollup_dedup (
+                 request_id TEXT PRIMARY KEY, date TEXT NOT NULL,
+                 app_type TEXT NOT NULL, provider_id TEXT NOT NULL,
+                 model TEXT NOT NULL, request_model TEXT NOT NULL, pricing_model TEXT NOT NULL,
+                 session_id TEXT, input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL,
+                 cache_read_tokens INTEGER NOT NULL, cache_creation_tokens INTEGER NOT NULL,
+                 status_code INTEGER NOT NULL, created_at INTEGER NOT NULL,
+                 data_source TEXT NOT NULL, session_id_trusted INTEGER NOT NULL DEFAULT 0
+             );
+             INSERT INTO usage_rollup_dedup VALUES (
+                 'old-proxy', '1970-01-01', 'codex', 'provider', 'cache-test', '', '',
+                 'cache-session', 100, 5, 20, 0, 200, 1000, 'proxy', 1
+             );",
+        )?;
+        Database::create_usage_rollup_dedup_table(&conn)?;
+        Database::create_usage_rollup_dedup_table(&conn)?;
+        let (semantics, writes, count): (i64, i64, i64) = conn.query_row(
+            "SELECT input_token_semantics, cache_creation_tokens, COUNT(*) FROM usage_rollup_dedup",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!((semantics, writes, count), (-1, 0, 1));
+        let key = DedupKey {
+            session_id: Some("cache-session"),
+            app_type: "codex",
+            model: "cache-test",
+            input_tokens: 100,
+            output_tokens: 5,
+            cache_read_tokens: 20,
+            cache_creation_tokens: 30,
+            created_at: 1000,
+        };
+        assert!(!has_matching_proxy_usage_log(&conn, "local-event", &key)?);
+        let exact = DedupKey {
+            cache_creation_tokens: 0,
+            ..key
+        };
+        assert!(has_matching_proxy_usage_log(&conn, "local-event", &exact)?);
+        let filter = effective_usage_log_filter(&conn, "l")?;
+        let _: i64 = conn.query_row(
+            &format!("SELECT COUNT(*) FROM proxy_request_logs l WHERE {filter}"),
+            [],
+            |row| row.get(0),
+        )?;
         Ok(())
     }
 

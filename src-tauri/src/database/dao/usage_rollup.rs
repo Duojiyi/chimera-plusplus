@@ -212,13 +212,29 @@ impl Database {
                 status_code INTEGER NOT NULL,
                 created_at INTEGER NOT NULL,
                 data_source TEXT NOT NULL,
-                session_id_trusted INTEGER NOT NULL DEFAULT 0
+                session_id_trusted INTEGER NOT NULL DEFAULT 0,
+                input_token_semantics INTEGER NOT NULL DEFAULT -1
             );
             CREATE INDEX IF NOT EXISTS idx_rollup_dedup_match
                 ON usage_rollup_dedup(app_type, created_at);
             CREATE INDEX IF NOT EXISTS idx_rollup_dedup_coverage
                 ON usage_rollup_dedup(date, app_type, provider_id, model, request_model, pricing_model);"
-        ).map_err(|e| AppError::Database(format!("创建归档去重凭据失败: {e}")))
+        ).map_err(|e| AppError::Database(format!("创建归档去重凭据失败: {e}")))?;
+        // Old receipts discarded semantics. Unknown (-1) cannot grant the legacy
+        // zero-cache-write fallback; new receipts preserve the original value.
+        let has_semantics: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('usage_rollup_dedup')
+             WHERE name = 'input_token_semantics')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_semantics {
+            conn.execute_batch(
+                "ALTER TABLE usage_rollup_dedup
+                 ADD COLUMN input_token_semantics INTEGER NOT NULL DEFAULT -1;",
+            )?;
+        }
+        Ok(())
     }
 
     /// Aggregate proxy_request_logs older than `retain_days` into usage_daily_rollups,
@@ -342,13 +358,13 @@ impl Database {
                 "INSERT OR IGNORE INTO usage_rollup_dedup (
                     request_id, date, app_type, provider_id, model, request_model, pricing_model,
                     session_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-                    status_code, created_at, data_source, session_id_trusted
+                    status_code, created_at, data_source, session_id_trusted, input_token_semantics
                 ) SELECT l.request_id, date(l.created_at, 'unixepoch', 'localtime'),
                          l.app_type, l.provider_id, l.model,
                          COALESCE(l.request_model, ''), COALESCE(l.pricing_model, ''),
                          l.session_id, l.input_tokens, l.output_tokens, l.cache_read_tokens,
                          l.cache_creation_tokens, l.status_code, l.created_at,
-                         COALESCE(l.data_source, 'proxy'), l.session_id_trusted
+                         COALESCE(l.data_source, 'proxy'), l.session_id_trusted, l.input_token_semantics
                   FROM proxy_request_logs l WHERE l.created_at < ?1 AND {effective_filter}"
             ),
             [cutoff],

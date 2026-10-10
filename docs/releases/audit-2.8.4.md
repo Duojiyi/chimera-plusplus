@@ -29,13 +29,24 @@ independent source review, not exhaustive proof or blind user testing.
 
 ## Local Evidence
 
-- Full frontend: 153 files, 1,483 tests passed. One subsequent Grok semantic regression
-  added; affected two-file suite passed all 12 tests.
+- Final full frontend snapshot: 153 files, 1,484 tests passed. The affected Grok
+  two-file suite also passed all 12 tests.
 - TypeScript, frontend format, renderer build and bundle budgets passed.
 - Release/repository guard suites: 62 tests passed. Upstream theme tests: 19 passed.
 - Version, references, presets, single writer and backend architecture checks passed.
 - Rust formatting checked. Rust compilation, Clippy and tests are delegated to remote
   CI, following the project's no-local-Rust-build rule.
+
+## CI Feedback
+
+The first remote run caught an archive-dedup query referencing a column absent from
+the archive table, plus test-fixture assumptions about default provider metadata and
+macOS temporary-path symlinks. These failures blocked tagging. Follow-up fixes must
+pass a new complete run on their exact source commit, not reuse the earlier green
+frontend or portable jobs as release approval. The archive table now preserves token
+semantics through an idempotent compatibility-column upgrade. Existing receipts with
+missing semantics remain unknown (-1), never treated as legacy for relaxed matching.
+The original failing SQL was replayed successfully with SQLite before resubmission.
 
 ## Release Conditions And Limits
 

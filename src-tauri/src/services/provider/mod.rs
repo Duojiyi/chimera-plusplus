@@ -162,6 +162,12 @@ mod tests {
             let state = AppState::new(Arc::new(Database::memory().unwrap()));
             let before = Provider::with_id("target".into(), "before".into(), json!({}), None);
             state.db.save_provider(app.as_str(), &before).unwrap();
+            // Compare persisted snapshots: the DAO normalizes absent metadata.
+            let before = state
+                .db
+                .get_provider_by_id("target", app.as_str())
+                .unwrap()
+                .unwrap();
             let path = crate::services::live_backup::live_files(&app)
                 .unwrap()
                 .remove(0);
