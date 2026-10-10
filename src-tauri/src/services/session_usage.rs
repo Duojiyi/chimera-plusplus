@@ -13,7 +13,7 @@ use crate::config::get_claude_config_dir;
 use crate::database::{lock_conn, Database};
 use crate::error::AppError;
 use crate::proxy::usage::calculator::{CostCalculator, ModelPricing};
-use crate::proxy::usage::parser::TokenUsage;
+use crate::proxy::usage::parser::{claude_cache_creation_1h_tokens, TokenUsage};
 use crate::services::usage_stats::{
     effective_usage_log_filter, find_model_pricing, should_skip_session_insert, DedupKey,
 };
@@ -133,6 +133,7 @@ struct ParsedAssistantUsage {
     output_tokens: u32,
     cache_read_tokens: u32,
     cache_creation_tokens: u32,
+    cache_creation_1h_tokens: u32,
     stop_reason: Option<String>,
     timestamp: Option<String>,
     session_id: Option<String>,
@@ -359,6 +360,7 @@ fn sync_single_file(db: &Database, file_path: &Path) -> Result<(u32, u32), AppEr
                 .get("cache_creation_input_tokens")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0) as u32,
+            cache_creation_1h_tokens: claude_cache_creation_1h_tokens(usage),
             stop_reason: message
                 .get("stop_reason")
                 .and_then(|v| v.as_str())
@@ -545,6 +547,7 @@ fn insert_session_log_entry(
         output_tokens: msg.output_tokens,
         cache_read_tokens: msg.cache_read_tokens,
         cache_creation_tokens: msg.cache_creation_tokens,
+        cache_creation_1h_tokens: msg.cache_creation_1h_tokens,
         model: Some(msg.model.clone()),
         message_id: None,
     };
@@ -656,6 +659,47 @@ pub fn get_data_source_breakdown(db: &Database) -> Result<Vec<DataSourceSummary>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_session_cache_ttl_persists_combined_cost_and_total() -> Result<(), AppError> {
+        use std::str::FromStr;
+        let db = Database::memory()?;
+        {
+            let conn = lock_conn!(db.conn);
+            conn.execute("INSERT INTO model_pricing (model_id, display_name, input_cost_per_million, output_cost_per_million, cache_creation_cost_per_million) VALUES ('ttl-test', 'TTL test', '3', '15', '3.75')", [])?;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("ttl.jsonl");
+        let rows = [
+            ("mixed", serde_json::json!({"ephemeral_5m_input_tokens": 600_000, "ephemeral_1h_input_tokens": 400_000})),
+            ("legacy", serde_json::Value::Null),
+        ].map(|(id, details)| serde_json::json!({
+            "type": "assistant", "sessionId": "ttl-session", "timestamp": "2026-10-10T00:00:00Z",
+            "message": {"id": id, "model": "ttl-test", "stop_reason": "end_turn", "usage": {
+                "input_tokens": 0, "output_tokens": 0,
+                "cache_creation_input_tokens": 1_000_000, "cache_creation": details
+            }}
+        }).to_string()).join("\n");
+        fs::write(&file, format!("{rows}\n")).unwrap();
+        assert_eq!(sync_single_file(&db, &file)?.0, 2);
+        assert_eq!(sync_single_file(&db, &file)?.0, 0);
+        let conn = lock_conn!(db.conn);
+        for (id, expected) in [("session:mixed", "4.65"), ("session:legacy", "3.75")] {
+            let (tokens, cache_cost, total): (u32, String, String) = conn.query_row(
+                "SELECT cache_creation_tokens, cache_creation_cost_usd, total_cost_usd FROM proxy_request_logs WHERE request_id = ?1",
+                [id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+            assert_eq!(tokens, 1_000_000);
+            assert_eq!(
+                Decimal::from_str(&cache_cost).unwrap(),
+                Decimal::from_str(expected).unwrap()
+            );
+            assert_eq!(
+                Decimal::from_str(&total).unwrap(),
+                Decimal::from_str(expected).unwrap()
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn ambiguous_archive_keeps_claude_file_retryable() -> Result<(), AppError> {
@@ -827,6 +871,7 @@ mod tests {
             output_tokens: 26,
             cache_read_tokens: 5000,
             cache_creation_tokens: 10000,
+            cache_creation_1h_tokens: 0,
             stop_reason: None,
             timestamp: Some("2026-04-05T12:00:00Z".to_string()),
             session_id: None,
@@ -841,6 +886,7 @@ mod tests {
             output_tokens: 1349,
             cache_read_tokens: 5000,
             cache_creation_tokens: 10000,
+            cache_creation_1h_tokens: 0,
             stop_reason: Some("end_turn".to_string()),
             timestamp: Some("2026-04-05T12:00:00Z".to_string()),
             session_id: None,
@@ -892,6 +938,7 @@ mod tests {
             output_tokens: 20,
             cache_read_tokens: 10,
             cache_creation_tokens: 5,
+            cache_creation_1h_tokens: 0,
             stop_reason: Some("end_turn".to_string()),
             timestamp: Some("1970-01-01T00:16:45Z".to_string()),
             session_id: Some("session-1".to_string()),

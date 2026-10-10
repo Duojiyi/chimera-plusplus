@@ -709,6 +709,7 @@ pub(crate) fn create_responses_sse_stream_from_anthropic_with_context<
         let mut state = AnthropicToResponsesState::with_tool_context(tool_context);
         let mut stream_failed = false;
 
+        let stream = crate::proxy::sse::limit_sse_frames(stream);
         tokio::pin!(stream);
 
         while let Some(chunk) = stream.next().await {

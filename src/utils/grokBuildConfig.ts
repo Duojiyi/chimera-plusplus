@@ -82,13 +82,9 @@ export function updateGrokBuildConfig(
 ): string {
   const profile = values.model.trim() || GROK_BUILD_DEFAULT_MODEL;
   const upstreamModel = values.upstreamModel?.trim() || profile;
-  let config: Record<string, unknown> = {};
-
-  try {
-    config = asRecord(configToml?.trim() ? parseToml(configToml) : {}) ?? {};
-  } catch {
-    config = {};
-  }
+  // Never replace an invalid draft with an empty config: it may contain user MCP settings.
+  const config =
+    asRecord(configToml?.trim() ? parseToml(configToml) : {}) ?? {};
 
   const existingModels = asRecord(config.models) ?? {};
   const previousProfile = asString(existingModels.default, profile);

@@ -153,11 +153,10 @@ export function ProviderPresetSelector({
 }: Readonly<ProviderPresetSelectorProps>) {
   const { t } = useTranslation();
   // Keep legacy helpers available, but never render the provider catalog.
-  const visiblePresetEntries = presetEntries.filter(
-    ({ preset }) => preset.category === "official" || isBuiltinTemplate(preset),
+  const visiblePresetEntries = presetEntries.filter(({ preset }) =>
+    isBuiltinTemplate(preset),
   );
   const choices = [
-    { id: "custom", name: t("providerPreset.custom") },
     ...visiblePresetEntries.map(({ id, preset }) => ({
       id,
       name: getPresetDisplayName(preset, t) || "中转站模板",

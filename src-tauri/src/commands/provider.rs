@@ -222,24 +222,21 @@ async fn update_provider_with_automatic_routing_mode(
     let _profile_guard = state.profile_apply_lock.lock().await;
     let auto_manage_routing = matches!(app_type, AppType::Codex | AppType::GrokBuild);
     if !auto_manage_routing {
-        // ProviderService::update is synchronous but may bridge into async
-        // proxy backup refreshes when Live is currently taken over (same
-        // reason the Codex/GrokBuild path below runs on spawn_blocking).
-        // This branch used to call it directly on the async command's own
-        // task: with enough concurrent Claude/Gemini saves to fill the Tokio
-        // runtime's worker pool — one per-app switch lock's owner is enough
-        // on a single-worker runtime — every worker ends up parked inside
-        // this bridge waiting on a lock that only a worker can make progress
-        // on, and the whole backend (proxy included) stops responding.
-        //
-        // Cloned rather than moved: `_profile_guard` above still holds a
-        // live borrow into `state.profile_apply_lock` at this point (it is
-        // only dropped when this function returns), so `state` itself
-        // cannot be moved out from under it.
+        let proxy_service = state.proxy_service.clone();
+        let _lifecycle_guard = proxy_service.lock_lifecycle().await;
+        let _switch_guard = proxy_service.lock_switch_for_app(app_type.as_str()).await;
+        // The service owns compensation for both ordinary saves and save/apply.
+        // Keep async bridges off the runtime workers and do not reacquire app.
         let update_state = state.clone();
         return tauri::async_runtime::spawn_blocking(move || {
-            ProviderService::update(&update_state, app_type, original_id.as_deref(), provider)
-                .map_err(|e| e.to_string())
+            ProviderService::update_direct_with_app_lock_held(
+                &update_state,
+                app_type,
+                original_id.as_deref(),
+                provider,
+                activate_when_inactive,
+            )
+            .map_err(|e| e.to_string())
         })
         .await
         .map_err(|e| format!("供应商更新任务执行失败: {e}"))
@@ -3640,5 +3637,442 @@ mod native_query_credentials_tests {
 
         assert_eq!(base_url, "https://provider.zenmux.example/v1");
         assert_eq!(api_key, "sk-provider");
+    }
+}
+
+#[cfg(test)]
+mod direct_update_tests {
+    use super::update_provider_with_automatic_routing_mode;
+    use crate::{app_config::AppType, database::Database, provider::Provider, store::AppState};
+    use serde_json::json;
+    use serial_test::serial;
+    use std::{ffi::OsString, sync::Arc};
+
+    struct Home {
+        _dir: tempfile::TempDir,
+        old: Option<OsString>,
+        _pi: crate::pi_config::test_support::TestAgentDir,
+    }
+    impl Home {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let old = std::env::var_os("CC_SWITCH_TEST_HOME");
+            std::env::set_var("CC_SWITCH_TEST_HOME", dir.path());
+            crate::settings::reload_settings().unwrap();
+            Self {
+                _dir: dir,
+                old,
+                _pi: crate::pi_config::test_support::TestAgentDir::new(),
+            }
+        }
+    }
+    impl Drop for Home {
+        fn drop(&mut self) {
+            match self.old.as_ref() {
+                Some(old) => std::env::set_var("CC_SWITCH_TEST_HOME", old),
+                None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+            }
+            crate::settings::reload_settings().unwrap();
+        }
+    }
+    fn input(app: &AppType, id: &str, model: &str) -> Provider {
+        let config = match app {
+            AppType::Claude => {
+                json!({"env":{"ANTHROPIC_API_KEY":"test", "ANTHROPIC_BASE_URL":"https://example.invalid", "ANTHROPIC_MODEL":model}})
+            }
+            AppType::Gemini => {
+                json!({"env":{"GEMINI_API_KEY":"test", "GEMINI_MODEL":model}, "config":{}})
+            }
+            AppType::OpenCode => {
+                json!({"npm":"@ai-sdk/openai-compatible", "options":{"baseURL":"https://example.invalid/v1", "apiKey":"test"}, "models":{model:{"name":model}}})
+            }
+            AppType::Pi => {
+                json!({"baseUrl":"https://example.invalid/v1", "apiKey":"test", "api":"openai-completions", "models":[{"id":model}]})
+            }
+            _ => unreachable!(),
+        };
+        Provider::with_id(id.to_owned(), model.to_owned(), config, None)
+    }
+    fn files(app: &AppType) -> Vec<(std::path::PathBuf, Option<Vec<u8>>)> {
+        let paths = if *app == AppType::Pi {
+            vec![crate::pi_config::get_pi_models_path().unwrap()]
+        } else {
+            crate::services::live_backup::live_files(app).unwrap()
+        };
+        paths
+            .into_iter()
+            .map(|p| {
+                let bytes = std::fs::read(&p).ok();
+                (p, bytes)
+            })
+            .collect()
+    }
+    async fn edit(
+        state: &AppState,
+        app: &AppType,
+        provider: Provider,
+        activate: bool,
+    ) -> Result<bool, String> {
+        update_provider_with_automatic_routing_mode(
+            state.clone(),
+            app.clone(),
+            None,
+            provider,
+            activate,
+        )
+        .await
+    }
+    fn saved(state: &AppState, app: &AppType, id: &str) -> serde_json::Value {
+        serde_json::to_value(state.db.get_provider_by_id(id, app.as_str()).unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn direct_save_and_apply_respects_each_tools_activation_semantics() {
+        for app in [
+            AppType::Claude,
+            AppType::Gemini,
+            AppType::OpenCode,
+            AppType::Pi,
+        ] {
+            let _home = Home::new();
+            let state = AppState::new(Arc::new(Database::memory().unwrap()));
+            state
+                .db
+                .save_provider(app.as_str(), &input(&app, "target", "old"))
+                .unwrap();
+            edit(&state, &app, input(&app, "target", "saved"), false)
+                .await
+                .unwrap();
+            assert!(
+                files(&app).iter().all(|(_, bytes)| bytes.is_none()),
+                "ordinary save enabled {app:?}"
+            );
+            edit(&state, &app, input(&app, "target", "applied"), true)
+                .await
+                .unwrap();
+            let native = files(&app);
+            assert!(
+                native.iter().any(|(_, b)| b
+                    .as_ref()
+                    .is_some_and(|b| String::from_utf8_lossy(b).contains("applied"))),
+                "missing edited model for {app:?}"
+            );
+            if app.is_additive_mode() {
+                assert!(state
+                    .db
+                    .get_current_provider(app.as_str())
+                    .unwrap()
+                    .is_none());
+                assert!(crate::settings::get_current_provider(&app).is_none());
+            } else {
+                assert_eq!(
+                    state
+                        .db
+                        .get_current_provider(app.as_str())
+                        .unwrap()
+                        .as_deref(),
+                    Some("target")
+                );
+                assert_eq!(
+                    crate::settings::get_current_provider(&app).as_deref(),
+                    Some("target")
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn failed_direct_switch_preserves_target_live_and_reports_conflict() {
+        for app in [AppType::Claude, AppType::Gemini, AppType::OpenCode] {
+            for prior in [false, true] {
+                let _home = Home::new();
+                let state = AppState::new(Arc::new(Database::memory().unwrap()));
+                let mut target = input(&app, "target", "target-model");
+                if app == AppType::OpenCode {
+                    target.meta = Some(crate::provider::ProviderMeta {
+                        live_config_managed: Some(false),
+                        ..Default::default()
+                    });
+                }
+                state.db.save_provider(app.as_str(), &target).unwrap();
+                if prior {
+                    state
+                        .db
+                        .save_provider(app.as_str(), &input(&app, "previous", "previous-model"))
+                        .unwrap();
+                    super::ProviderService::switch(&state, app.clone(), "previous").unwrap();
+                }
+                let before = files(&app);
+                let before_row = saved(&state, &app, "target");
+                let previous_db = state.db.get_current_provider(app.as_str()).unwrap();
+                let previous_local = crate::settings::get_current_provider(&app);
+                let trigger = if app == AppType::OpenCode {
+                    "CREATE TRIGGER fail_direct_switch BEFORE UPDATE ON providers WHEN NEW.id = 'target' AND json_extract(NEW.meta, '$.liveConfigManaged') = 1 BEGIN SELECT RAISE(ABORT, 'direct switch failure'); END;"
+                } else {
+                    "CREATE TRIGGER fail_direct_switch BEFORE UPDATE OF is_current ON providers WHEN NEW.id = 'target' AND NEW.is_current = 1 BEGIN SELECT RAISE(ABORT, 'direct switch failure'); END;"
+                };
+                state
+                    .db
+                    .conn
+                    .lock()
+                    .unwrap()
+                    .execute_batch(trigger)
+                    .unwrap();
+                let error = super::ProviderService::switch(&state, app.clone(), "target")
+                    .unwrap_err()
+                    .to_string();
+                assert!(error.contains("direct switch failure"), "{error}");
+                assert!(error.contains("Live 回滚冲突"), "{error}");
+                assert_ne!(files(&app), before);
+                // Check the actual target projection, not merely that bytes changed.
+                match app {
+                    AppType::Claude => {
+                        let live: serde_json::Value = crate::config::read_json_file(
+                            &crate::config::get_claude_settings_path(),
+                        )
+                        .unwrap();
+                        assert_eq!(live["env"]["ANTHROPIC_MODEL"], "target-model");
+                    }
+                    AppType::Gemini => {
+                        assert_eq!(
+                            crate::gemini_config::read_gemini_env()
+                                .unwrap()
+                                .get("GEMINI_MODEL")
+                                .map(String::as_str),
+                            Some("target-model")
+                        );
+                    }
+                    AppType::OpenCode => {
+                        let live = crate::opencode_config::read_opencode_config().unwrap();
+                        assert!(live["provider"]["target"]["models"]["target-model"].is_object());
+                        if prior {
+                            assert!(live["provider"]["previous"].is_object());
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+                assert_eq!(saved(&state, &app, "target"), before_row);
+                assert_eq!(
+                    state.db.get_current_provider(app.as_str()).unwrap(),
+                    previous_db
+                );
+                assert_eq!(crate::settings::get_current_provider(&app), previous_local);
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn failed_activation_preserves_live_and_restores_saved_row_and_selection() {
+        for app in [AppType::Claude, AppType::Gemini] {
+            for prior in [false, true] {
+                let _home = Home::new();
+                let state = AppState::new(Arc::new(Database::memory().unwrap()));
+                state
+                    .db
+                    .save_provider(app.as_str(), &input(&app, "target", "old"))
+                    .unwrap();
+                if prior {
+                    state
+                        .db
+                        .save_provider(app.as_str(), &input(&app, "previous", "previous"))
+                        .unwrap();
+                    edit(&state, &app, input(&app, "previous", "previous"), true)
+                        .await
+                        .unwrap();
+                }
+                let before = files(&app);
+                let target = saved(&state, &app, "target");
+                let previous = saved(&state, &app, "previous");
+                state.db.conn.lock().unwrap().execute_batch("CREATE TRIGGER fail_target_activation BEFORE UPDATE OF is_current ON providers WHEN NEW.id = 'target' AND NEW.is_current = 1 BEGIN SELECT RAISE(ABORT, 'activation failure'); END;").unwrap();
+                let error = edit(&state, &app, input(&app, "target", "new"), true)
+                    .await
+                    .unwrap_err();
+                assert!(error.contains("activation failure"), "{error}");
+                assert_ne!(files(&app), before);
+                assert!(error.contains("Live 回滚冲突"), "{error}");
+                assert_eq!(saved(&state, &app, "target"), target);
+                assert_eq!(saved(&state, &app, "previous"), previous);
+                let expected = prior.then_some("previous");
+                assert_eq!(
+                    state
+                        .db
+                        .get_current_provider(app.as_str())
+                        .unwrap()
+                        .as_deref(),
+                    expected
+                );
+                assert_eq!(
+                    crate::settings::get_current_provider(&app).as_deref(),
+                    expected
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn failed_database_save_preserves_enabled_native_config_for_all_direct_tools() {
+        for app in [
+            AppType::Claude,
+            AppType::Gemini,
+            AppType::OpenCode,
+            AppType::Pi,
+        ] {
+            let _home = Home::new();
+            let state = AppState::new(Arc::new(Database::memory().unwrap()));
+            state
+                .db
+                .save_provider(app.as_str(), &input(&app, "target", "old"))
+                .unwrap();
+            edit(&state, &app, input(&app, "target", "old"), true)
+                .await
+                .unwrap();
+            let before = files(&app);
+            let row = saved(&state, &app, "target");
+            state.db.conn.lock().unwrap().execute_batch("CREATE TRIGGER fail_edited_save BEFORE UPDATE ON providers WHEN NEW.name = 'new' BEGIN SELECT RAISE(ABORT, 'save failure'); END;").unwrap();
+            assert!(edit(&state, &app, input(&app, "target", "new"), false)
+                .await
+                .unwrap_err()
+                .contains("save failure"));
+            assert_eq!(saved(&state, &app, "target"), row);
+            assert_eq!(files(&app), before);
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn rename_collision_never_deletes_the_target_or_its_endpoints() {
+        let _home = Home::new();
+        let app = AppType::OpenCode;
+        let state = AppState::new(Arc::new(Database::memory().unwrap()));
+        for id in ["source", "target"] {
+            state
+                .db
+                .save_provider(app.as_str(), &input(&app, id, id))
+                .unwrap();
+        }
+        state
+            .db
+            .add_custom_endpoint(app.as_str(), "target", "https://endpoint.invalid")
+            .unwrap();
+        let source = saved(&state, &app, "source");
+        let target = saved(&state, &app, "target");
+        let error = update_provider_with_automatic_routing_mode(
+            state.clone(),
+            app.clone(),
+            Some("source".into()),
+            input(&app, "target", "renamed"),
+            true,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("already exists"));
+        assert_eq!(saved(&state, &app, "source"), source);
+        assert_eq!(saved(&state, &app, "target"), target);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn failed_live_write_restores_current_provider_row() {
+        for app in [
+            AppType::Claude,
+            AppType::Gemini,
+            AppType::OpenCode,
+            AppType::Pi,
+        ] {
+            let _home = Home::new();
+            let state = AppState::new(Arc::new(Database::memory().unwrap()));
+            state
+                .db
+                .save_provider(app.as_str(), &input(&app, "target", "old"))
+                .unwrap();
+            // A regular file as parent makes the native write impossible on every OS.
+            let path = files(&app)[0].0.clone();
+            let parent = path.parent().unwrap();
+            std::fs::create_dir_all(parent.parent().unwrap()).unwrap();
+            std::fs::write(parent, b"not a directory").unwrap();
+            let before = saved(&state, &app, "target");
+            assert!(edit(&state, &app, input(&app, "target", "new"), true)
+                .await
+                .is_err());
+            assert_eq!(saved(&state, &app, "target"), before);
+            assert!(state
+                .db
+                .get_current_provider(app.as_str())
+                .unwrap()
+                .is_none());
+        }
+    }
+    #[tokio::test]
+    #[serial]
+    async fn failed_opencode_enable_preserves_live_and_restores_database_only_row() {
+        let _home = Home::new();
+        let app = AppType::OpenCode;
+        let state = AppState::new(Arc::new(Database::memory().unwrap()));
+        let mut provider = input(&app, "target", "old");
+        provider.meta = Some(crate::provider::ProviderMeta {
+            live_config_managed: Some(false),
+            ..Default::default()
+        });
+        state.db.save_provider(app.as_str(), &provider).unwrap();
+        crate::opencode_config::write_opencode_config(
+            &json!({"provider":{"sibling":{"npm":"other"}}, "model":"sibling/model"}),
+        )
+        .unwrap();
+        let before = files(&app);
+        let row = saved(&state, &app, "target");
+        state.db.conn.lock().unwrap().execute_batch("CREATE TRIGGER fail_enabled_flag BEFORE UPDATE ON providers WHEN NEW.id = 'target' AND json_extract(NEW.meta, '$.liveConfigManaged') = 1 BEGIN SELECT RAISE(ABORT, 'enable failure'); END;").unwrap();
+        let error = edit(&state, &app, input(&app, "target", "new"), true)
+            .await
+            .unwrap_err();
+        assert!(error.contains("enable failure"), "{error}");
+        assert_ne!(files(&app), before);
+        assert!(error.contains("Live 回滚冲突"), "{error}");
+        let live = crate::opencode_config::read_opencode_config().unwrap();
+        assert_eq!(live["provider"]["sibling"]["npm"], "other");
+        assert!(live["provider"]["target"].is_object());
+        assert_eq!(saved(&state, &app, "target"), row);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn failed_live_backup_refresh_restores_saved_row_and_backup() {
+        for app in [AppType::Claude, AppType::Gemini] {
+            let _home = Home::new();
+            let state = AppState::new(Arc::new(Database::memory().unwrap()));
+            let provider = input(&app, "target", "old");
+            state.db.save_provider(app.as_str(), &provider).unwrap();
+            state
+                .db
+                .set_current_provider(app.as_str(), "target")
+                .unwrap();
+            crate::settings::set_current_provider(&app, Some("target")).unwrap();
+            let original = serde_json::to_string(&provider.settings_config).unwrap();
+            state
+                .db
+                .save_live_backup(app.as_str(), &original)
+                .await
+                .unwrap();
+            let row = saved(&state, &app, "target");
+            state.db.conn.lock().unwrap().execute_batch("CREATE TRIGGER fail_backup BEFORE INSERT ON proxy_live_backup BEGIN SELECT RAISE(ABORT, 'backup failure'); END;").unwrap();
+            let error = edit(&state, &app, input(&app, "target", "new"), false)
+                .await
+                .unwrap_err();
+            assert!(error.contains("backup failure"), "{error}");
+            assert_eq!(saved(&state, &app, "target"), row);
+            assert_eq!(
+                state
+                    .db
+                    .get_live_backup(app.as_str())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .original_config,
+                original
+            );
+        }
     }
 }

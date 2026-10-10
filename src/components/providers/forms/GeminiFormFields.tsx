@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { FormLabel } from "@/components/ui/form";
 import { Download, Info, Loader2 } from "lucide-react";
@@ -75,6 +75,15 @@ export function GeminiFormFields({
 
   const [fetchedModels, setFetchedModels] = useState<FetchedModel[]>([]);
   const [isFetchingModels, setIsFetchingModels] = useState(false);
+  const modelFetchSeq = useRef(0);
+  useEffect(() => {
+    modelFetchSeq.current += 1;
+    setFetchedModels([]);
+    setIsFetchingModels(false);
+    return () => {
+      modelFetchSeq.current += 1;
+    };
+  }, [baseUrl, apiKey]);
 
   const handleFetchModels = useCallback(() => {
     if (!baseUrl || !apiKey) {
@@ -84,9 +93,11 @@ export function GeminiFormFields({
       });
       return;
     }
+    const seq = ++modelFetchSeq.current;
     setIsFetchingModels(true);
     fetchModelsForConfig(baseUrl, apiKey)
       .then((models) => {
+        if (seq !== modelFetchSeq.current) return;
         setFetchedModels(models);
         if (models.length === 0) {
           toast.info(t("providerForm.fetchModelsEmpty"));
@@ -97,10 +108,13 @@ export function GeminiFormFields({
         }
       })
       .catch((err) => {
-        console.warn("[ModelFetch] Failed:", err);
+        if (seq !== modelFetchSeq.current) return;
+
         showFetchModelsError(err, t);
       })
-      .finally(() => setIsFetchingModels(false));
+      .finally(() => {
+        if (seq === modelFetchSeq.current) setIsFetchingModels(false);
+      });
   }, [baseUrl, apiKey, t]);
 
   // 检测是否为 Google 官方（使用 OAuth）

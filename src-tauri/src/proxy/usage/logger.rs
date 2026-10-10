@@ -532,6 +532,7 @@ mod tests {
                 output_tokens: 5,
                 cache_read_tokens: 2,
                 cache_creation_tokens: 0,
+                cache_creation_1h_tokens: 0,
                 model: None,
                 message_id: Some("resp-1".to_string()),
             },
@@ -545,6 +546,39 @@ mod tests {
             is_streaming: true,
             cost_multiplier: "1".to_string(),
         }
+    }
+
+    #[test]
+    fn claude_cache_ttl_logs_combined_cost_without_changing_total() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let mut log = request_log("ttl-request", 0);
+        log.app_type = "claude".into();
+        log.usage = TokenUsage {
+            cache_creation_tokens: 1_000_000,
+            cache_creation_1h_tokens: 400_000,
+            ..Default::default()
+        };
+        let pricing = ModelPricing::from_strings("3", "15", "0.3", "3.75").unwrap();
+        log.cost = Some(CostCalculator::calculate(
+            &log.usage,
+            &pricing,
+            Decimal::ONE,
+        ));
+        let logger = UsageLogger::new(&db);
+        logger.log_request(&log)?;
+        logger.log_request(&log)?;
+        let conn = crate::database::lock_conn!(db.conn);
+        let (count, tokens, cache_cost, total): (u32, u32, String, String) = conn.query_row(
+            "SELECT COUNT(*), cache_creation_tokens, cache_creation_cost_usd, total_cost_usd FROM proxy_request_logs WHERE request_id = 'ttl-request'",
+            [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))?;
+        assert_eq!(count, 1);
+        assert_eq!(tokens, 1_000_000);
+        assert_eq!(
+            Decimal::from_str(&cache_cost).unwrap(),
+            Decimal::new(465, 2)
+        );
+        assert_eq!(Decimal::from_str(&total).unwrap(), Decimal::new(465, 2));
+        Ok(())
     }
 
     #[test]
@@ -610,6 +644,7 @@ mod tests {
             output_tokens: 500,
             cache_read_tokens: 0,
             cache_creation_tokens: 0,
+            cache_creation_1h_tokens: 0,
             model: None,
             message_id: None,
         };

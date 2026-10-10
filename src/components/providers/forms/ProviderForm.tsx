@@ -265,6 +265,7 @@ export interface ProviderFormProps {
   onUniversalPresetSelect?: (preset: UniversalProviderPreset) => void;
   onManageUniversalProviders?: () => void;
   onSubmittingChange?: (isSubmitting: boolean) => void;
+  onDirtyChange?: () => void;
   initialData?: {
     name?: string;
     websiteUrl?: string;

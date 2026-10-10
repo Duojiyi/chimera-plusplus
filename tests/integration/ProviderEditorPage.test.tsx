@@ -185,10 +185,12 @@ describe("full-page provider editor", () => {
     const { onDraftChange } = setup();
     const group = screen.getByRole("radiogroup", { name: "上游格式" });
     expect(group.closest("details")).toBeNull();
-    fireEvent.click(within(group).getByRole("radio", { name: "Anthropic" }));
+    fireEvent.click(
+      within(group).getByRole("radio", { name: "Anthropic Messages" }),
+    );
     expect(onDraftChange.mock.lastCall![0].apiFormat).toBe("anthropic");
     expect(
-      within(group).getByRole("radio", { name: "Anthropic" }),
+      within(group).getByRole("radio", { name: "Anthropic Messages" }),
     ).toBeChecked();
     expect(screen.getByLabelText("线路草稿预览")).toHaveTextContent(
       "Anthropic",
@@ -211,7 +213,7 @@ describe("full-page provider editor", () => {
     fireEvent.click(button);
     expect(onDelete).toHaveBeenCalledOnce();
     expect(
-      screen.getByRole("button", { name: "保存并应用" }),
+      screen.getByRole("button", { name: "保存并切换" }),
     ).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "保存" }),
@@ -248,14 +250,14 @@ describe("full-page provider editor", () => {
     const { onSave } = setup();
     const model = screen.getByLabelText("模型 1 实际请求模型");
     fireEvent.change(model, { target: { value: "" } });
-    fireEvent.click(screen.getByRole("button", { name: "保存并应用" }));
+    fireEvent.click(screen.getByRole("button", { name: "保存并切换" }));
     expect(onSave).not.toHaveBeenCalled();
     expect(model).toHaveFocus();
     expect(model).toHaveAttribute("aria-invalid", "true");
     expect(screen.getByRole("alert")).toHaveTextContent("请填写实际请求模型");
     expect(screen.getByLabelText("模型 1 显示名")).toHaveValue("主力模型");
     fireEvent.change(model, { target: { value: "gpt-5.4-mini" } });
-    fireEvent.click(screen.getByRole("button", { name: "保存并应用" }));
+    fireEvent.click(screen.getByRole("button", { name: "保存并切换" }));
     expect(onSave).toHaveBeenCalledTimes(1);
     expect(onSave).toHaveBeenCalledWith();
   });
@@ -267,7 +269,7 @@ describe("full-page provider editor", () => {
     fireEvent.click(screen.getByRole("button", { name: "删除模型 1 映射" }));
     expect(screen.queryByText("支持等级（可多选）")).not.toBeInTheDocument();
     expect(screen.getByText(/尚未添加自定义映射/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "保存并应用" }));
+    fireEvent.click(screen.getByRole("button", { name: "保存并切换" }));
     expect(onSave).toHaveBeenCalledOnce();
   });
 
@@ -285,7 +287,7 @@ describe("full-page provider editor", () => {
 
   it("requires confirmation to restore a template and Escape only closes that dialog", async () => {
     const { onRequestClose } = setup();
-    fireEvent.click(screen.getByRole("button", { name: "恢复模板" }));
+    fireEvent.click(screen.getByRole("button", { name: "恢复 Chimera 模板" }));
     const dialog = screen.getByRole("alertdialog", { name: "恢复默认模板？" });
     expect(
       within(dialog).getByText(/地址、密钥、模型映射/),
@@ -308,7 +310,7 @@ describe("full-page provider editor", () => {
       target: { value: "before reset" },
     });
     const id = onDraftChange.mock.lastCall![0].id;
-    fireEvent.click(screen.getByRole("button", { name: "恢复模板" }));
+    fireEvent.click(screen.getByRole("button", { name: "恢复 Chimera 模板" }));
     fireEvent.click(
       within(screen.getByRole("alertdialog")).getByRole("button", {
         name: "恢复模板",
@@ -338,7 +340,7 @@ describe("full-page provider editor", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("线路已保存并应用");
     const key = screen.getByLabelText(/API Key \*/);
     fireEvent.change(key, { target: { value: "" } });
-    fireEvent.click(screen.getByRole("button", { name: "保存并应用" }));
+    fireEvent.click(screen.getByRole("button", { name: "保存并切换" }));
     expect(onSave).not.toHaveBeenCalled();
     expect(key).toHaveFocus();
   });

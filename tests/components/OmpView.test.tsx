@@ -114,7 +114,9 @@ describe("OMP native routes and hierarchy", () => {
       "https://draft.example/v1",
     );
     fireEvent.click(screen.getByRole("button", { name: "刷新线路" }));
-    expect(await screen.findByRole("dialog")).toBeVisible();
+    expect(
+      await screen.findByRole("dialog", { name: "放弃当前草稿？" }),
+    ).toBeVisible();
     expect(ompApi.read).toHaveBeenCalledTimes(1);
   });
   it("confirms deletion and writes only the selected provider removal", async () => {
@@ -177,7 +179,9 @@ describe("OMP native routes and hierarchy", () => {
     render(<OmpView native />);
     await edit();
     fireEvent.click(screen.getByRole("button", { name: "保存线路" }));
-    expect(await screen.findByRole("dialog")).toBeVisible();
+    expect(
+      await screen.findByRole("dialog", { name: "保存 OMP 线路？" }),
+    ).toBeVisible();
     // Programmatic navigation covers app/sidebar changes even while a modal is open.
     fireEvent.click(
       screen.getByRole("button", {
@@ -189,7 +193,123 @@ describe("OMP native routes and hierarchy", () => {
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
     );
     fireEvent.click(screen.getByRole("button", { name: "模型线路" }));
-    expect(await screen.findByRole("dialog")).toBeVisible();
-    expect(within(screen.getByRole("dialog")).getByText(/YAML/)).toBeVisible();
+    expect(
+      await screen.findByRole("dialog", { name: "保存 OMP 线路？" }),
+    ).toBeVisible();
+    expect(
+      within(screen.getByRole("dialog", { name: "保存 OMP 线路？" })).getByText(
+        /YAML/,
+      ),
+    ).toBeVisible();
   });
+});
+
+it("prefills Chimera, offers protocol choices and allows checking the credential", async () => {
+  render(<OmpView native />);
+  await screen.findByText("test");
+  fireEvent.click(screen.getByRole("button", { name: "添加线路" }));
+  await waitFor(() =>
+    expect(
+      screen.getByDisplayValue("https://api.chimerahub.org/v1"),
+    ).toBeVisible(),
+  );
+  expect(screen.getByRole("combobox", { name: "API 协议" })).toHaveValue(
+    "openai-completions",
+  );
+  expect(screen.getByLabelText("API Key / 环境变量名")).toHaveAttribute(
+    "type",
+    "password",
+  );
+  fireEvent.click(screen.getByRole("button", { name: "显示 API Key" }));
+  expect(screen.getByLabelText("API Key / 环境变量名")).toHaveAttribute(
+    "type",
+    "text",
+  );
+  expect(
+    screen.queryByRole("button", { name: "添加线路" }),
+  ).not.toBeInTheDocument();
+});
+
+it("uses the shared full-screen editor and confirms closing without losing edits", async () => {
+  render(<OmpView native />);
+  await edit();
+  const panel = screen.getByRole("dialog", { name: "编辑 Oh My Pi 线路" });
+  expect(panel).toHaveAttribute("data-fullscreen-panel");
+  const save = within(panel).getByRole("button", { name: "保存线路" });
+  expect(save).toHaveAttribute("form", "omp-provider-form");
+  expect(save.closest("form")).toBeNull();
+  fireEvent.change(screen.getByLabelText("API 地址"), {
+    target: { value: "https://draft.example/v1" },
+  });
+  fireEvent.click(within(panel).getByRole("button", { name: "取消" }));
+  const confirm = await screen.findByRole("dialog", { name: "放弃当前草稿？" });
+  fireEvent.click(within(confirm).getByRole("button", { name: "放弃草稿" }));
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("dialog", { name: "编辑 Oh My Pi 线路" }),
+    ).not.toBeInTheDocument(),
+  );
+  expect(ompApi.save).not.toHaveBeenCalled();
+});
+
+it("shares route editor structure, inherits the shell and closes unchanged drafts directly", async () => {
+  render(
+    <div className="chimera-shell">
+      <aside>Sidebar</aside>
+      <main className="chimera-main">
+        <div className="chimera-content">
+          <OmpView native />
+        </div>
+      </main>
+    </div>,
+  );
+  await edit();
+  const panel = screen.getByRole("dialog", { name: "编辑 Oh My Pi 线路" });
+  expect(panel.parentElement).toHaveClass("chimera-shell");
+  expect(panel).toHaveClass("provider-editor-page");
+  expect(
+    within(panel).getByRole("heading", { name: "基础" }),
+  ).toBeInTheDocument();
+  expect(
+    within(panel).getByRole("heading", { name: "协议与模型" }),
+  ).toBeInTheDocument();
+  const details = within(panel).getByText("保存详情").closest("details");
+  expect(details).toHaveClass("editor-preview");
+  expect(details).not.toHaveAttribute("open");
+  expect(
+    within(panel)
+      .getByRole("button", { name: "保存线路" })
+      .closest(".editor-bottom"),
+  ).not.toBeNull();
+  fireEvent.click(within(panel).getByRole("button", { name: "返回线路" }));
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+  );
+  expect(ompApi.save).not.toHaveBeenCalled();
+});
+
+it("aligns the route list with tool headers, navigation and endpoint tables", async () => {
+  render(<OmpView native />);
+  const table = await screen.findByRole("table", { name: "OMP 自定义线路" });
+  expect(
+    within(table).getByRole("columnheader", { name: "端点地址" }),
+  ).toBeVisible();
+  expect(within(table).getByText("https://example.com/v1")).toBeVisible();
+  expect(within(table).getByText("1 个自定义模型")).toBeVisible();
+  expect(
+    screen.queryByRole("heading", { name: "模型线路" }),
+  ).not.toBeInTheDocument();
+  const actions = screen.getByRole("group", { name: "oh-my-pi 工具操作" });
+  expect(actions.closest("header")).not.toBeNull();
+  expect(
+    within(actions).getByRole("button", { name: "添加线路" }),
+  ).toBeVisible();
+  expect(
+    screen.getByRole("navigation", { name: "oh-my-pi 管理导航" }),
+  ).toHaveClass("tool-section-nav");
+  fireEvent.click(screen.getByRole("button", { name: "插件市场" }));
+  expect(actions).not.toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "模型线路" }));
+  expect(actions).toBeVisible();
+  expect(table).toBeVisible();
 });

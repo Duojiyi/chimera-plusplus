@@ -1,3 +1,4 @@
+import { isTauri } from "@tauri-apps/api/core";
 import "./ConfigHealthView.css";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -53,6 +54,10 @@ export const ConfigHealthView: React.FC = () => {
   const mutation = useRef(false);
   useLightweightCloseBlocker(repairing);
   const handleRecheck = useCallback(async () => {
+    if (!isTauri()) {
+      setChecking(false);
+      return;
+    }
     const request = ++generation.current;
     setChecking(true);
     setError(false);
@@ -133,6 +138,20 @@ export const ConfigHealthView: React.FC = () => {
         .join(" · ")
     : "尚无有效检测结果";
 
+  if (!isTauri())
+    return (
+      <div className="connected-page config-health-page">
+        <header className="health-header">
+          <div>
+            <h1>配置体检</h1>
+            <p>检查 config.toml、auth.json 与引用文件 · 修复需单独确认</p>
+          </div>
+        </header>
+        <p role="status">
+          浏览器预览未连接本机，无法检查配置。请在桌面应用中运行配置体检。
+        </p>
+      </div>
+    );
   return (
     <div className="connected-page config-health-page">
       <header className="health-header">

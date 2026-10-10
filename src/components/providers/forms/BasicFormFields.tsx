@@ -65,7 +65,7 @@ export function BasicFormFields({
         name="name"
         render={({ field }) => (
           <FormItem>
-            <FormLabel>{t("provider.name")}</FormLabel>
+            <FormLabel>线路名称 *</FormLabel>
             <FormControl>
               <Input {...field} placeholder="例如：我的工作线路" />
             </FormControl>

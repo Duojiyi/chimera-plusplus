@@ -40,16 +40,19 @@ describe("built-in ChimeraHub template (backend-owned)", () => {
     expect(getChimeraHubTemplate().auth).toEqual({ OPENAI_API_KEY: "" });
   });
 
-  it("is an empty editable draft until the backend template is loaded", async () => {
+  it("prefills the public Chimera endpoint before the backend template is loaded", async () => {
     vi.resetModules();
     const fresh = await import("@/config/codexTemplates");
-    expect(fresh.getChimeraHubTemplate()).toEqual({
-      name: "",
-      websiteUrl: "",
-      baseUrl: "",
-      model: "",
+    const draft = fresh.getChimeraHubTemplate();
+    expect(draft).toMatchObject({
+      name: "ChimeraHub",
+      baseUrl: CHIMERAHUB_V1,
+      websiteUrl: chimeraHubTemplateFixture.websiteUrl,
+      model: chimeraHubTemplateFixture.model,
       auth: { OPENAI_API_KEY: "" },
-      config: "",
+    });
+    expect(parseToml(draft.config).model_providers).toMatchObject({
+      custom: { base_url: CHIMERAHUB_V1 },
     });
   });
 

@@ -433,11 +433,16 @@ export function CodexFormFields({
   useEffect(() => {
     fetchModelsSeqRef.current += 1;
     setFetchedModels((prev) => (prev.length === 0 ? prev : []));
+    setIsFetchingModels(false);
+    return () => {
+      fetchModelsSeqRef.current += 1;
+    };
   }, [
     codexBaseUrl,
     isFullUrl,
     codexApiKey,
     customUserAgent,
+    localProxyHeadersOverride,
     isXaiOauthPreset,
     isXaiOauthAuthenticated,
     selectedXaiAccountId,
@@ -572,7 +577,9 @@ export function CodexFormFields({
           console.warn("[XaiOAuth] Failed to fetch models:", err);
           showFetchModelsError(err, t);
         })
-        .finally(() => setIsFetchingModels(false));
+        .finally(() => {
+          if (seq === fetchModelsSeqRef.current) setIsFetchingModels(false);
+        });
       return;
     }
 
@@ -591,6 +598,7 @@ export function CodexFormFields({
       isFullUrl,
       undefined,
       customUserAgent,
+      localProxyHeadersOverride,
     )
       .then((models) => {
         if (seq !== fetchModelsSeqRef.current) return;
@@ -608,12 +616,15 @@ export function CodexFormFields({
         console.warn("[ModelFetch] Failed:", err);
         showFetchModelsError(err, t);
       })
-      .finally(() => setIsFetchingModels(false));
+      .finally(() => {
+        if (seq === fetchModelsSeqRef.current) setIsFetchingModels(false);
+      });
   }, [
     codexBaseUrl,
     codexApiKey,
     isFullUrl,
     customUserAgent,
+    localProxyHeadersOverride,
     isXaiOauthPreset,
     isXaiOauthAuthenticated,
     selectedXaiAccountId,
@@ -852,10 +863,12 @@ export function CodexFormFields({
             )}
           </div>
           <p className="text-xs leading-relaxed text-muted-foreground">
-            {t("codexConfig.defaultModelHint", {
-              defaultValue:
-                "Codex 默认请求的模型，随时可改，无需等待预设更新。留空且配置了模型映射时，默认使用映射第一行。",
-            })}
+            {appId === "grokbuild"
+              ? "Grok Build 默认请求的模型，请填写服务商支持的模型 ID。"
+              : t("codexConfig.defaultModelHint", {
+                  defaultValue:
+                    "Codex 默认请求的模型，随时可改，无需等待预设更新。留空且配置了模型映射时，默认使用映射第一行。",
+                })}
           </p>
           {isDefaultModelOutsideCatalog && (
             <p className="flex flex-wrap items-center gap-x-2 text-xs leading-relaxed text-muted-foreground">

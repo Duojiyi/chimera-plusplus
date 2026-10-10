@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { FormLabel } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
@@ -210,6 +210,16 @@ export function OpenCodeFormFields({
 
   const [fetchedModels, setFetchedModels] = useState<FetchedModel[]>([]);
   const [isFetchingModels, setIsFetchingModels] = useState(false);
+  const headersIdentity = JSON.stringify(headers);
+  const modelFetchSeq = useRef(0);
+  useEffect(() => {
+    modelFetchSeq.current += 1;
+    setFetchedModels([]);
+    setIsFetchingModels(false);
+    return () => {
+      modelFetchSeq.current += 1;
+    };
+  }, [baseUrl, apiKey, headersIdentity]);
   const [extraOptionsOpen, setExtraOptionsOpen] = useState(
     () => Object.keys(extraOptions).length > 0,
   );
@@ -228,9 +238,18 @@ export function OpenCodeFormFields({
       });
       return;
     }
+    const seq = ++modelFetchSeq.current;
     setIsFetchingModels(true);
-    fetchModelsForConfig(baseUrl, apiKey)
+    fetchModelsForConfig(
+      baseUrl,
+      apiKey,
+      undefined,
+      undefined,
+      undefined,
+      headersIdentity,
+    )
       .then((models) => {
+        if (seq !== modelFetchSeq.current) return;
         setFetchedModels(models);
         if (models.length === 0) {
           toast.info(t("providerForm.fetchModelsEmpty"));
@@ -241,11 +260,14 @@ export function OpenCodeFormFields({
         }
       })
       .catch((err) => {
-        console.warn("[ModelFetch] Failed:", err);
+        if (seq !== modelFetchSeq.current) return;
+
         showFetchModelsError(err, t);
       })
-      .finally(() => setIsFetchingModels(false));
-  }, [baseUrl, apiKey, t]);
+      .finally(() => {
+        if (seq === modelFetchSeq.current) setIsFetchingModels(false);
+      });
+  }, [baseUrl, apiKey, headersIdentity, t]);
 
   // Track which models have expanded options panel
   const [expandedModels, setExpandedModels] = useState<Set<string>>(new Set());

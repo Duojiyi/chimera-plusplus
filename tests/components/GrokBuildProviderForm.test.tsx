@@ -43,8 +43,7 @@ describe("GrokBuildProviderForm", () => {
       failures: {},
     });
   });
-  it("offers custom and official routes without a provider catalog", async () => {
-    const user = userEvent.setup();
+  it("only offers Chimera and prefills its address", async () => {
     const { container } = render(
       <GrokBuildProviderForm
         submitLabel="Save"
@@ -58,17 +57,28 @@ describe("GrokBuildProviderForm", () => {
     expect(screen.queryByRole("button", { name: /Kimi/ })).toBeNull();
 
     expect(screen.queryByRole("button", { name: /PatewayAI/ })).toBeNull();
-    await user.click(screen.getByRole("button", { name: /Grok Official/ }));
-
-    const baseUrlInput =
-      container.querySelector<HTMLInputElement>("#codexBaseUrl");
-    const nameInput =
-      container.querySelector<HTMLInputElement>('input[name="name"]');
-    expect(baseUrlInput).toBeNull();
-    expect(nameInput?.value).toBe("Grok Official");
+    expect(screen.queryByRole("button", { name: /Grok Official/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "ChimeraHub" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(
+      container.querySelector<HTMLInputElement>("#codexBaseUrl")?.value,
+    ).toBe("https://api.chimerahub.org/v1");
+    expect(
+      container.querySelector<HTMLInputElement>('input[name="name"]')?.value,
+    ).toBe("ChimeraHub");
+    expect(
+      (screen.getByLabelText("raw-config") as HTMLTextAreaElement).value,
+    ).toContain("gpt-5.6-sol");
+    const configBefore = (
+      screen.getByLabelText("raw-config") as HTMLTextAreaElement
+    ).value;
+    fireEvent.click(screen.getByRole("button", { name: "ChimeraHub" }));
+    expect(screen.getByLabelText("raw-config")).toHaveValue(configBefore);
   });
 
-  it("submits a complete config.toml payload with Grok defaults", async () => {
+  it("submits Chimera defaults under the native Grok profile", async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn();
     const { container } = render(
@@ -102,15 +112,14 @@ describe("GrokBuildProviderForm", () => {
     const config = parseToml(settings.config) as any;
 
     expect(config.models.default).toBe("grok-4.5");
-    expect(submitted.meta.codexModelApiFormats).toEqual({
-      "grok-4.5": "openai_chat",
-    });
+    expect(submitted.meta.apiFormat).toBe("openai_responses");
+    expect(modelFetchApiMock.detectCodexApiFormats).not.toHaveBeenCalled();
     expect(config.model["grok-4.5"]).toEqual({
-      model: "grok-4.5",
+      model: "gpt-5.6-sol",
       base_url: "https://relay.example.com/v1",
       name: "Example Relay",
       api_key: "secret-key",
-      api_backend: "chat_completions",
+      api_backend: "responses",
       context_window: 500000,
     });
   });
@@ -164,12 +173,64 @@ describe("GrokBuildProviderForm", () => {
       />,
     );
 
+    fireEvent.change(screen.getByLabelText("API Key"), {
+      target: { value: "test-key" },
+    });
     fireEvent.change(screen.getByLabelText("raw-config"), {
       target: { value: "[models" },
     });
+    fireEvent.change(screen.getByLabelText("API Key"), {
+      target: { value: "changed-key" },
+    });
+    expect(screen.getByLabelText("raw-config")).toHaveValue("[models");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(screen.getByLabelText("raw-config")).toHaveValue("[models");
 
     expect(screen.getByText(/Invalid config\.toml:/)).toBeInTheDocument();
     expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("preserves semantically invalid raw edits until repaired before saving", async () => {
+    const onSubmit = vi.fn();
+    render(
+      <GrokBuildProviderForm
+        submitLabel="Save"
+        onSubmit={onSubmit}
+        onCancel={() => {}}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("API Key"), {
+      target: { value: "test-key" },
+    });
+    const raw = screen.getByLabelText("raw-config") as HTMLTextAreaElement;
+    const edited = raw.value
+      .replace(
+        'base_url = "https://api.chimerahub.org/v1"',
+        'base_url = "https://edited.example/v1"',
+      )
+      .replace(/context_window = \d+/, "context_window = 0");
+    fireEvent.change(raw, { target: { value: edited } });
+    fireEvent.change(screen.getByLabelText("API Key"), {
+      target: { value: "changed-while-raw-invalid" },
+    });
+    expect(raw).toHaveValue(edited);
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(raw).toHaveValue(edited);
+    fireEvent.change(raw, {
+      target: {
+        value: edited.replace("context_window = 0", "context_window = 123456"),
+      },
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const config = parseToml(
+      JSON.parse(onSubmit.mock.calls[0][0].settingsConfig).config,
+    ) as any;
+    expect(config.model[config.models.default].base_url).toBe(
+      "https://edited.example/v1",
+    );
+    expect(config.model[config.models.default].context_window).toBe(123456);
   });
 
   it("loads edit-mode values and does not resubmit stale custom endpoints", async () => {

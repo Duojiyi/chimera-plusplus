@@ -10,6 +10,28 @@ numbers belong to a separate upstream line.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.8.4] - 2026-10-11
+
+### Changed
+
+- Keep ChimeraHub as the only selectable new-route preset and prefill its API URL, preserving existing providers and legacy metadata.
+- Unify Oh My Pi route lists, editor headers and actions with the other tool pages.
+- Pin the standalone Codex theme engine to App Manager v0.5.16 for visible-page and composer compatibility, without migrating the Windows portable layout.
+
+### Added
+
+- Add Oh My Pi model discovery with search, multi-selection and automatic field filling; retain manual entry and temporary discovery credentials for native environment/command authentication.
+
+### Fixed
+
+- Forward validated custom headers during model discovery and ignore stale responses after endpoint or credential changes.
+- Preserve malformed or invalid Grok raw TOML drafts instead of silently rebuilding and losing custom configuration.
+- Apply saved inactive routes correctly and compensate failed provider updates without overwriting externally changed files.
+- Correct Claude 1-hour cache-write pricing, zero-valued cache fallback counters and Codex rollout cache-write import/deduplication.
+- Reject incomplete oversized SSE frames and propagate upstream streaming errors without reporting normal completion.
+- Require stable visible main windows for MSIX installation/diagnostics, reject WindowsApps portable paths across volumes, and prevent fallback or skin launches from dropping custom CODEX_HOME.
+- Guard native-only health/usage actions in browser previews and retain pending tool operations across navigation.
+
 ## [2.8.3] - 2026-10-08
 
 ### Added

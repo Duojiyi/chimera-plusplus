@@ -152,7 +152,9 @@ const collator = new Intl.Collator("zh-Hans-CN", { sensitivity: "base" });
 
 /** Startable presets: the built-in one first, then by group, then by name. */
 export function startablePresets(
-  source: readonly CodexProviderPreset[] = codexProviderPresets,
+  source: readonly CodexProviderPreset[] = codexProviderPresets.filter(
+    (preset) => preset.isBuiltinTemplate,
+  ),
 ): PresetEntry[] {
   return source
     .filter(isStartablePreset)

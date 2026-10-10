@@ -139,6 +139,10 @@ describe("additional native tools", () => {
       fireEvent.change(screen.getByLabelText("draft"), {
         target: { value: "unsaved" },
       });
+      fireEvent.click(screen.getByRole("button", { name: "取消" }));
+      expect(await screen.findByText("放弃未保存的修改？")).toBeVisible();
+      fireEvent.click(screen.getByRole("button", { name: "继续编辑" }));
+      expect(screen.getByLabelText("draft")).toHaveValue("unsaved");
       const reads = vi.mocked(providersApi.getAll).mock.calls.length;
       view.rerender(<ToolView toolId={appId} native refreshVersion={1} />);
       await waitFor(() =>

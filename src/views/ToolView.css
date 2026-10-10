@@ -178,3 +178,108 @@
 .tool-section-nav button[aria-current="page"] {
   font-weight: 600;
 }
+
+.omp-provider-table {
+  overflow-x: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+}
+.omp-provider-table table {
+  width: 100%;
+  min-width: 660px;
+  table-layout: fixed;
+  border-collapse: collapse;
+  font-size: 12px;
+  text-align: left;
+}
+.omp-provider-table th,
+.omp-provider-table td {
+  padding: 10px 12px;
+  overflow-wrap: anywhere;
+}
+.omp-provider-table thead {
+  height: 34px;
+  background: var(--bg-subtle);
+  color: var(--text-3);
+}
+.omp-provider-table thead th {
+  padding-block: 8px;
+}
+.omp-provider-table th:first-child {
+  width: 22%;
+}
+.omp-provider-table th:nth-child(3) {
+  width: 25%;
+}
+.omp-provider-table th:last-child {
+  width: 128px;
+  text-align: right;
+}
+.omp-provider-table tbody tr {
+  height: 52px;
+  border-top: 1px solid var(--border-subtle);
+}
+.omp-provider-table tbody tr:hover {
+  background: var(--bg-subtle);
+}
+.omp-provider-table td {
+  color: var(--text-2);
+}
+.omp-provider-table small {
+  display: block;
+  margin-top: 3px;
+  color: var(--text-3);
+  font-size: 12px;
+}
+.omp-provider-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.omp-provider-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  background: #1a1e24;
+  color: white;
+  font-size: 11px;
+}
+.omp-provider-endpoint {
+  font-family: monospace;
+}
+.omp-provider-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+}
+.omp-provider-edit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 27px;
+  height: 27px;
+  border: 0;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+}
+.omp-provider-edit:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.omp-provider-edit:focus-visible {
+  outline: 2px solid var(--text-1);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.omp-provider-actions > button {
+  flex-shrink: 0;
+  white-space: nowrap;
+}

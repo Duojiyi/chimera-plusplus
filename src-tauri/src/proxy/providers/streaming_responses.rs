@@ -320,10 +320,10 @@ pub fn create_anthropic_sse_stream_from_responses<E: std::error::Error + Send + 
         // Append an EOF sentinel so the same parser handles a final SSE event that
         // omitted its trailing blank line. The boolean distinguishes the sentinel
         // from a legitimate empty upstream chunk.
-        let stream = stream
+        let stream = crate::proxy::sse::limit_sse_frames(stream)
             .map(|result| (result, false))
             .chain(futures::stream::once(async {
-                (Ok::<Bytes, E>(Bytes::new()), true)
+                (Ok::<Bytes, std::io::Error>(Bytes::new()), true)
             }));
         tokio::pin!(stream);
 

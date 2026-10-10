@@ -112,6 +112,8 @@ import App from "@/App";
 
 beforeAll(async () => {
   await import("@/components/DeepLinkImportDialog");
+  // Keep the race test about retained operations, not cold module-transform timing.
+  await import("@/views/OmpView");
 }, 30000);
 
 function deferred<T>() {
@@ -841,7 +843,14 @@ describe("native tool editor ownership", () => {
       fillField("provider-base-url", "https://new.example/custom");
       fillField("provider-api-key", "new-key");
       fillField("provider-model", "new-model");
-      fireEvent.click(screen.getByRole("button", { name: "保存并应用" }));
+      fireEvent.click(
+        screen.getByRole("button", {
+          name:
+            appId === "pi" || appId === "opencode"
+              ? "保存并启用"
+              : "保存并切换",
+        }),
+      );
       await waitFor(() =>
         expect(mocks.invoke).toHaveBeenCalledWith(
           "add_and_activate_provider",
@@ -897,7 +906,14 @@ describe("native tool editor ownership", () => {
       fillField("provider-base-url", "https://changed.example");
       fillField("provider-api-key", "changed-key");
       fillField("provider-model", "changed-model");
-      fireEvent.click(screen.getByRole("button", { name: "保存并应用" }));
+      fireEvent.click(
+        screen.getByRole("button", {
+          name:
+            appId === "pi" || appId === "opencode"
+              ? "保存并启用"
+              : "保存并切换",
+        }),
+      );
       await waitFor(() =>
         expect(mocks.invoke).toHaveBeenCalledWith(
           "update_and_activate_provider",

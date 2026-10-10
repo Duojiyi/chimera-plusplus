@@ -1,3 +1,4 @@
+import { getChimeraHubTemplate } from "@/config/codexTemplates";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -93,6 +94,7 @@ export interface ClaudeDesktopProviderFormProps {
   onSubmit: (values: ClaudeDesktopProviderFormValues) => Promise<void> | void;
   onCancel: () => void;
   onSubmittingChange?: (isSubmitting: boolean) => void;
+  onDirtyChange?: () => void;
   initialData?: {
     name?: string;
     websiteUrl?: string;
@@ -254,19 +256,24 @@ export function ClaudeDesktopProviderForm({
   onSubmit,
   onCancel,
   onSubmittingChange,
+  onDirtyChange,
   initialData,
   showButtons = true,
 }: ClaudeDesktopProviderFormProps) {
   const { t } = useTranslation();
   const initialMode = isOAuthProviderType(initialData?.meta?.providerType)
     ? "proxy"
-    : (initialData?.meta?.claudeDesktopMode ?? "direct");
+    : (initialData?.meta?.claudeDesktopMode ??
+      (initialData ? "direct" : "proxy"));
   const [mode, setMode] = useState<"direct" | "proxy">(initialMode);
   const [apiFormat, setApiFormat] = useState<ClaudeApiFormat>(
-    initialData?.meta?.apiFormat ?? "anthropic",
+    initialData?.meta?.apiFormat ??
+      (initialData ? "anthropic" : "openai_responses"),
   );
   const [baseUrl, setBaseUrl] = useState(
-    envString(initialData?.settingsConfig, "ANTHROPIC_BASE_URL"),
+    initialData
+      ? envString(initialData.settingsConfig, "ANTHROPIC_BASE_URL")
+      : getChimeraHubTemplate().baseUrl,
   );
   const [apiKey, setApiKey] = useState(
     envString(initialData?.settingsConfig, "ANTHROPIC_AUTH_TOKEN") ||
@@ -290,7 +297,7 @@ export function ClaudeDesktopProviderForm({
     () => initialData?.meta?.codexFastMode ?? false,
   );
   const [selectedPresetId, setSelectedPresetId] = useState<string | null>(
-    "custom",
+    initialData ? null : "claude-desktop-0",
   );
   const [activePreset, setActivePreset] = useState<{
     id: string;
@@ -301,7 +308,16 @@ export function ClaudeDesktopProviderForm({
     requiresOAuth?: boolean;
   } | null>(null);
   const [routes, setRoutes] = useState<RouteRow[]>(() => {
-    const rows = initialRouteRows(initialData?.meta?.claudeDesktopModelRoutes);
+    const rows = initialData
+      ? initialRouteRows(initialData.meta?.claudeDesktopModelRoutes)
+      : (claudeDesktopProviderPresets[0].modelRoutes ?? []).map((r) =>
+          createRouteRow({
+            route: r.routeId,
+            model: r.upstreamModel,
+            labelOverride: r.labelOverride ?? "",
+            supports1m: r.supports1m,
+          }),
+        );
     // proxy 模式归一化成固定三档；但初始无任何 route 时保持空数组，交给 seed
     // effect 用默认路由回填（默认 1M 声明、ANTHROPIC_MODEL 预填），避免过早
     // normalize 成空三档把 routes.length 撑到 3、永久挡住 seed。
@@ -333,7 +349,7 @@ export function ClaudeDesktopProviderForm({
 
   const defaultValues: ProviderFormData = useMemo(
     () => ({
-      name: initialData?.name ?? "",
+      name: initialData?.name ?? getChimeraHubTemplate().name,
       websiteUrl: initialData?.websiteUrl ?? "",
       notes: initialData?.notes ?? "",
       settingsConfig: JSON.stringify(
@@ -356,6 +372,27 @@ export function ClaudeDesktopProviderForm({
   useEffect(() => {
     onSubmittingChange?.(form.formState.isSubmitting || isFetchingModels);
   }, [form.formState.isSubmitting, isFetchingModels, onSubmittingChange]);
+
+  const draftState = JSON.stringify([
+    mode,
+    apiFormat,
+    baseUrl,
+    apiKey,
+    apiKeyField,
+    selectedGitHubAccountId,
+    selectedCodexAccountId,
+    selectedXaiAccountId,
+    codexFastMode,
+    routes,
+    activePreset,
+  ]);
+  const previousDraftState = useRef(draftState);
+  useEffect(() => {
+    if (previousDraftState.current !== draftState) {
+      previousDraftState.current = draftState;
+      onDirtyChange?.();
+    }
+  }, [draftState, onDirtyChange]);
 
   const presetEntries = useMemo<PresetEntry[]>(
     () =>

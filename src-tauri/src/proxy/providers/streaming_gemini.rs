@@ -256,6 +256,7 @@ pub fn create_anthropic_sse_stream_from_gemini<E: std::error::Error + Send + 'st
         let mut latest_usage: Option<Value> = None;
         let mut latest_finish_reason: Option<String> = None;
         let mut blocked_text: Option<String> = None;
+        let stream = crate::proxy::sse::limit_sse_frames(stream);
         tokio::pin!(stream);
 
         while let Some(chunk) = stream.next().await {

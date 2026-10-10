@@ -446,7 +446,9 @@ fn launch_action(was_running: bool) -> &'static str {
     }
 }
 
-fn renderer_unlock_available(installed: &codex_win_engine::InstalledWindowsCodex) -> bool {
+pub(crate) fn renderer_unlock_available(
+    installed: &codex_win_engine::InstalledWindowsCodex,
+) -> bool {
     if installed.source == "portable" {
         return true;
     }
@@ -843,6 +845,9 @@ pub(crate) fn launch_codex_with_config(
     // CDP flags to an MSIX desktop app. This path is used only with the default
     // ~/.codex directory, so no CODEX_HOME environment override is required.
     if options.remote_debugging_port.is_some() {
+        if !renderer_unlock_available(installed) {
+            return Err("标准 MSIX 使用自定义 CODEX_HOME 时无法同时传入 CDP 参数；请恢复默认目录或使用便携版".to_string());
+        }
         match codex_win_engine::launch_codex_with_options(installed, options) {
             Ok(()) => return Ok(()),
             Err(error) => {
@@ -856,10 +861,17 @@ pub(crate) fn launch_codex_with_config(
     }
 
     // Without renderer injection, prefer the environment-aware shell activation.
-    // If PowerShell is policy-blocked, fall back to the audited engine launcher.
+    // The engine fallback cannot propagate CODEX_HOME, so only use it for the
+    // default config directory. Never silently launch against another profile.
     match launch_msix_with_codex_home(&codex_home, options) {
         Ok(()) => Ok(()),
         Err(error) => {
+            let default_home = crate::config::get_home_dir().join(".codex");
+            if !codex_win_engine::same_windows_path(&codex_home, &default_home) {
+                return Err(msix_launch_error(&format!(
+                    "{error}；系统激活无法保留自定义 CODEX_HOME，已停止回退"
+                )));
+            }
             log::warn!("环境注入的 MSIX Codex 启动失败，回退到系统激活：{error}");
             codex_win_engine::launch_codex_with_options(installed, options).map_err(|fallback| {
                 msix_launch_error(&format!("{error}；系统激活也失败：{fallback}"))
@@ -1349,7 +1361,7 @@ fn install_runtime_release_with_observer(
             let report =
                 codex_win_engine::install_msix_sideload(&package_path, &plan.package_moniker)
                     .map_err(|error| msix_launch_error(&error.to_string()))?;
-            if report.success && codex_win_engine::verify_msix_health().healthy {
+            if report.success && verify_msix_health_with_main_window(portable_root).healthy {
                 return Ok(CodexRuntimeOperation {
                     version: plan.version.clone(),
                     requested_mode: "standard".to_string(),
@@ -1535,6 +1547,62 @@ pub async fn check_codex_runtime_update(
     .map_err(|_| "检查 Codex 更新时任务中断".to_string())?
 }
 
+// MSIX keeps its Electron payload in app/, unlike the flattened portable layout.
+fn msix_app_exe(install_root: &Path) -> Option<PathBuf> {
+    codex_win_engine::installed_app_exe(&install_root.join("app"))
+        .or_else(|| codex_win_engine::installed_app_exe(install_root))
+}
+
+/// A live process alone is not proof that an MSIX activation succeeded.
+/// Keep the probe instance running so the existing window classifier can reject
+/// native error dialogs and require a stable main window, without killing a
+/// user's already-running session.
+fn verify_msix_health_with_main_window(portable_root: &Path) -> codex_win_engine::MsixHealthReport {
+    let mut health = codex_win_engine::verify_msix_health_with_options(true);
+    if !health.healthy {
+        return health;
+    }
+    let ready = (|| -> Result<(), String> {
+        let installed = detect_windows_codex(portable_root)
+            .filter(|installed| installed.install_mode == "standard")
+            .ok_or_else(|| "MSIX installation could not be located".to_string())?;
+        let executable = msix_app_exe(Path::new(&installed.path))
+            .ok_or_else(|| "MSIX executable could not be located".to_string())?;
+        let root = executable
+            .parent()
+            .ok_or_else(|| "Invalid MSIX executable path".to_string())?;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut visible_since: Option<Instant> = None;
+        while Instant::now() < deadline {
+            if codex_main_window_ready(root, deadline)? {
+                let since = visible_since.get_or_insert_with(Instant::now);
+                if portable_startup_ready(
+                    true,
+                    true,
+                    since.elapsed() >= Duration::from_secs(3),
+                    Instant::now(),
+                    deadline,
+                ) {
+                    return Ok(());
+                }
+            } else {
+                visible_since = None;
+            }
+            std::thread::sleep(
+                Duration::from_millis(250).min(deadline.saturating_duration_since(Instant::now())),
+            );
+        }
+        Err("Codex MSIX main window did not become stably visible".to_string())
+    })();
+    if let Err(reason) = ready {
+        health.healthy = false;
+        health.activation_ok = false;
+        health.failure_kind = "window-not-ready".to_string();
+        health.reason = reason;
+    }
+    health
+}
+
 /// Run installation diagnostics without killing a running Codex install.
 ///
 /// The shared runtime helper activates MSIX and closes the probe instance. For
@@ -1551,7 +1619,11 @@ fn diagnose_windows_codex_non_destructive(
             result: "fail".to_string(),
         }];
     };
-    let executable = codex_win_engine::installed_app_exe(Path::new(&installed.path));
+    let executable = if installed.install_mode == "standard" {
+        msix_app_exe(Path::new(&installed.path))
+    } else {
+        codex_win_engine::installed_app_exe(Path::new(&installed.path))
+    };
     let mut diagnostics = vec![ManagerDiagnostic {
         name: "executable".to_string(),
         result: if executable.is_some() { "pass" } else { "fail" }.to_string(),
@@ -1561,7 +1633,7 @@ fn diagnose_windows_codex_non_destructive(
         return diagnostics;
     }
 
-    let health = codex_win_engine::verify_msix_health_with_options(true);
+    let health = verify_msix_health_with_main_window(portable_root);
     diagnostics.extend([
         ManagerDiagnostic {
             name: "package integrity".to_string(),
@@ -2410,6 +2482,126 @@ pub async fn acknowledge_codex_install_recovery(id: String) -> Result<(), String
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn msix_executable_prefers_app_payload_and_supports_flat_layout() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        assert!(super::msix_app_exe(root).is_none());
+        std::fs::write(root.join("Codex.exe"), b"fixture").unwrap();
+        assert_eq!(super::msix_app_exe(root), Some(root.join("Codex.exe")));
+        std::fs::create_dir(root.join("app")).unwrap();
+        std::fs::write(root.join("app/ChatGPT.exe"), b"fixture").unwrap();
+        assert_eq!(
+            super::msix_app_exe(root),
+            Some(root.join("app/ChatGPT.exe"))
+        );
+    }
+
+    #[test]
+    fn msix_health_wrapper_requires_stable_main_window_for_both_callers() {
+        // Check the signature without invoking the activation probe or any GUI.
+        let _: fn(&std::path::Path) -> codex_win_engine::MsixHealthReport =
+            super::verify_msix_health_with_main_window;
+        let source = include_str!("codex_runtime.rs")
+            .split("mod tests {")
+            .next()
+            .unwrap();
+        let wrapper = source
+            .split("fn verify_msix_health_with_main_window(")
+            .nth(1)
+            .unwrap()
+            .split("fn ")
+            .next()
+            .unwrap();
+        for required in [
+            "verify_msix_health_with_options(true)",
+            "if !health.healthy {\n        return health;",
+            "installed.install_mode == \"standard\"",
+            "msix_app_exe(Path::new(&installed.path))",
+            "codex_main_window_ready(root, deadline)?",
+            "visible_since.get_or_insert_with(Instant::now)",
+            "since.elapsed() >= Duration::from_secs(3)",
+            "portable_startup_ready(",
+            "} else {\n                visible_since = None;",
+            "deadline.saturating_duration_since(Instant::now())",
+            "if let Err(reason) = ready",
+            "health.healthy = false;",
+            "health.activation_ok = false;",
+            "health.failure_kind = \"window-not-ready\".to_string();",
+            "health.reason = reason;",
+        ] {
+            assert!(
+                wrapper.contains(required),
+                "missing wrapper guard: {required}"
+            );
+        }
+        assert!(source.contains(
+            "report.success && verify_msix_health_with_main_window(portable_root).healthy"
+        ));
+        assert!(source.contains("let health = verify_msix_health_with_main_window(portable_root);"));
+        assert!(!source.contains("codex_win_engine::verify_msix_health().healthy"));
+    }
+
+    #[test]
+    fn msix_engine_fallback_cannot_discard_custom_codex_home() {
+        let source = include_str!("codex_runtime.rs")
+            .split("mod tests {")
+            .next()
+            .unwrap();
+        let launch = source
+            .split("pub(crate) fn launch_codex_with_config(")
+            .nth(1)
+            .unwrap()
+            .split("fn msix_launch_error(")
+            .next()
+            .unwrap();
+        assert!(launch.contains("let codex_home = crate::codex_config::get_codex_config_dir();"));
+        let fallback = launch
+            .split("match launch_msix_with_codex_home(&codex_home, options)")
+            .nth(1)
+            .unwrap();
+        let guard = fallback
+            .find("if !codex_win_engine::same_windows_path(&codex_home, &default_home)")
+            .unwrap();
+        let activation = fallback
+            .find("codex_win_engine::launch_codex_with_options(installed, options)")
+            .unwrap();
+        assert!(guard < activation);
+        assert!(fallback[guard..activation].contains("return Err(msix_launch_error("));
+        assert!(fallback.contains("crate::config::get_home_dir().join(\".codex\")"));
+    }
+
+    #[test]
+    fn skin_injection_checks_custom_home_before_side_effects() {
+        let runtime = include_str!("codex_runtime.rs")
+            .split("mod tests {")
+            .next()
+            .unwrap();
+        let launch = runtime
+            .split("pub(crate) fn launch_codex_with_config(")
+            .nth(1)
+            .unwrap()
+            .split("fn msix_launch_error(")
+            .next()
+            .unwrap();
+        assert!(
+            launch
+                .find("if !renderer_unlock_available(installed)")
+                .unwrap()
+                < launch
+                    .find("codex_win_engine::launch_codex_with_options(installed, options)")
+                    .unwrap()
+        );
+        let skin = include_str!("skin_catalog.rs");
+        for entry in ["fn close_and_launch(", "pub async fn apply_skin_package("] {
+            let body = skin.split(entry).nth(1).expect("skin entry point");
+            assert!(
+                body.find("renderer_unlock_available(&installed)").unwrap()
+                    < body.find("close_codex(&installed,").unwrap()
+            );
+        }
+    }
+
     #[test]
     fn msix_registration_errors_preserve_details_and_offer_non_destructive_recovery() {
         for detail in ["0x80073D28", "registration failed (0x80073CF6)"] {

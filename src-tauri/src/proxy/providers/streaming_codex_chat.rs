@@ -649,6 +649,7 @@ pub fn create_responses_sse_stream_from_chat_with_context<E: std::error::Error +
         let mut state = ChatToResponsesState::with_tool_context(tool_context);
         let mut stream_failed = false;
 
+        let stream = crate::proxy::sse::limit_sse_frames(stream);
         tokio::pin!(stream);
 
         while let Some(chunk) = stream.next().await {
@@ -793,6 +794,29 @@ mod tests {
                 serde_json::from_str(data).ok()
             })
             .collect()
+    }
+
+    #[tokio::test]
+    async fn streaming_chat_conversion_preserves_relay_cache_hits_for_accounting() {
+        let output = collect(vec![
+            "data: {\"id\":\"chatcmpl_cache\",\"model\":\"deepseek-chat\",\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":5,\"cache_read_input_tokens\":0,\"prompt_tokens_details\":{\"cached_tokens\":0},\"input_tokens_details\":{\"cached_tokens\":null},\"prompt_cache_hit_tokens\":64}}\n\n",
+            "data: [DONE]\n\n",
+        ]).await;
+        let events = parse_sse_events(&output);
+        let completed = events
+            .iter()
+            .find(|event| event["type"] == "response.completed")
+            .unwrap();
+        assert_eq!(
+            completed["response"]["usage"]["input_tokens_details"]["cached_tokens"],
+            64
+        );
+        let parsed =
+            crate::proxy::usage::TokenUsage::from_codex_stream_events_auto(&events).unwrap();
+        assert_eq!(parsed.cache_read_tokens, 64);
+        assert_eq!(parsed.input_tokens, 100);
+        assert_eq!(parsed.output_tokens, 5);
     }
 
     #[test]

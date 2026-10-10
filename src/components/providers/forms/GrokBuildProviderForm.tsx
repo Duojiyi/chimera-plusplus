@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { getChimeraHubTemplate } from "@/config/codexTemplates";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useTranslation } from "react-i18next";
@@ -87,6 +88,7 @@ export function GrokBuildProviderForm({
   onSubmit,
   onCancel,
   onSubmittingChange,
+  onDirtyChange,
   initialData,
   showButtons = true,
 }: GrokBuildProviderFormProps) {
@@ -96,16 +98,23 @@ export function GrokBuildProviderForm({
     typeof initialData?.settingsConfig?.config === "string"
       ? initialData.settingsConfig.config
       : undefined;
-  const initialConfig = useMemo(
-    () => parseGrokBuildConfig(initialConfigText, initialData?.name),
-    [initialConfigText, initialData?.name],
-  );
+  const initialConfig = useMemo(() => {
+    const parsed = parseGrokBuildConfig(initialConfigText, initialData?.name);
+    return initialData
+      ? parsed
+      : {
+          ...parsed,
+          upstreamModel: getChimeraHubTemplate().model,
+          baseUrl: getChimeraHubTemplate().baseUrl,
+          name: getChimeraHubTemplate().name,
+        };
+  }, [initialConfigText, initialData?.name]);
 
   const [selectedPresetId, setSelectedPresetId] = useState<string | null>(
-    initialData ? null : "custom",
+    initialData ? null : "grokbuild-0",
   );
   const [category, setCategory] = useState<ProviderCategory | undefined>(
-    initialData?.category ?? "custom",
+    initialData?.category ?? (initialData ? "custom" : "third_party"),
   );
   const [isPartner, setIsPartner] = useState(
     initialData?.meta?.isPartner ?? false,
@@ -130,7 +139,7 @@ export function GrokBuildProviderForm({
     if (savedFormat) return savedFormat;
     return initialData
       ? grokApiFormatFromApiBackend(initialConfig.apiBackend)
-      : "auto";
+      : "openai_responses";
   });
   const [anthropicAuthField, setAnthropicAuthField] =
     useState<ClaudeApiKeyField>(
@@ -199,6 +208,36 @@ export function GrokBuildProviderForm({
     onSubmittingChange?.(isSubmitting);
   }, [isSubmitting, onSubmittingChange]);
 
+  const draftState = JSON.stringify([
+    profile,
+    upstreamModel,
+    baseUrl,
+    apiKey,
+    apiBackend,
+    contextWindow,
+    rawConfig,
+    apiFormat,
+    anthropicAuthField,
+    impersonateClaudeCode,
+    maxOutputTokens,
+    codexChatReasoning,
+    promptCacheRouting,
+    isFullUrl,
+    customUserAgent,
+    headersOverride,
+    bodyOverride,
+    endpointAutoSelect,
+    draftCustomEndpoints,
+    selectedPresetId,
+  ]);
+  const previousDraftState = useRef(draftState);
+  useEffect(() => {
+    if (previousDraftState.current !== draftState) {
+      previousDraftState.current = draftState;
+      onDirtyChange?.();
+    }
+  }, [draftState, onDirtyChange]);
+
   // Grok Build 预设已不含 cn_official（国产官方直连无法在 Grok CLI 使用）
   const presetCategoryLabels = useMemo(
     () => ({
@@ -225,9 +264,14 @@ export function GrokBuildProviderForm({
     return Array.from(urls).map((url) => ({ url }));
   }, [baseUrl, draftCustomEndpoints, presetEndpoints]);
 
+  const invalidRawDraft = useRef(
+    Boolean(initialConfigText && validateGrokBuildConfig(initialConfigText)),
+  );
+
   const syncStructuredConfig = (
     overrides: Partial<ReturnType<typeof parseGrokBuildConfig>>,
   ) => {
+    if (invalidRawDraft.current) return;
     const next = {
       model: profile,
       upstreamModel,
@@ -238,7 +282,11 @@ export function GrokBuildProviderForm({
       contextWindow: Number.parseInt(contextWindow, 10),
       ...overrides,
     };
-    setRawConfig((current) => updateGrokBuildConfig(current, next));
+    try {
+      setRawConfig(updateGrokBuildConfig(rawConfig, next));
+    } catch {
+      // Preserve the draft and inline error until its syntax is repaired.
+    }
   };
 
   const handlePresetChange = (presetId: string) => {
@@ -252,6 +300,7 @@ export function GrokBuildProviderForm({
     }
 
     if (presetId === GROKBUILD_OFFICIAL_PROVIDER_ID) {
+      invalidRawDraft.current = false;
       // 官方登录：无 API Key / 地址 / 模型表可填，提交走 ensure seed 流程
       form.setValue("name", grokBuildOfficialPreset.name);
       form.setValue("websiteUrl", grokBuildOfficialPreset.websiteUrl);
@@ -269,6 +318,7 @@ export function GrokBuildProviderForm({
       (candidate) => candidate.id === presetId,
     );
     if (!entry) return;
+    invalidRawDraft.current = false;
     const preset = entry.preset;
     const presetName = preset.nameKey ? String(t(preset.nameKey)) : preset.name;
     const presetBaseUrl = extractCodexBaseUrl(preset.config) ?? "";
@@ -311,7 +361,8 @@ export function GrokBuildProviderForm({
 
   const handleRawConfigChange = (value: string) => {
     setRawConfig(value);
-    if (validateGrokBuildConfig(value)) return;
+    invalidRawDraft.current = Boolean(validateGrokBuildConfig(value));
+    if (invalidRawDraft.current) return;
     const parsed = parseGrokBuildConfig(value, form.getValues("name"));
     setProfile(parsed.model);
     setUpstreamModel(parsed.upstreamModel ?? parsed.model);
@@ -339,6 +390,17 @@ export function GrokBuildProviderForm({
         isPartner: false,
         meta: initialData?.meta,
       });
+      return;
+    }
+
+    const draftError = validateGrokBuildConfig(rawConfig);
+    if (draftError) {
+      toast.error(
+        t("grokBuild.invalidToml", {
+          error: draftError,
+          defaultValue: `Invalid config.toml: ${draftError}`,
+        }),
+      );
       return;
     }
 

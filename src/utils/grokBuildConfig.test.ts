@@ -9,6 +9,12 @@ import {
 } from "./grokBuildConfig";
 
 describe("Grok Build config", () => {
+  it("refuses to replace malformed TOML with a new config", () => {
+    expect(() =>
+      updateGrokBuildConfig("[models", parseGrokBuildConfig(undefined)),
+    ).toThrow();
+  });
+
   it("builds the expected provider TOML", () => {
     const config = buildGrokBuildConfig({
       model: "grok-4.5",

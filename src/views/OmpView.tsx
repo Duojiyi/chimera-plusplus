@@ -12,38 +12,59 @@ const tabs = [
 type Tab = (typeof tabs)[number][0];
 
 export default function OmpView({ native }: { native: boolean }) {
+  const [actionsHost, setActionsHost] = useState<HTMLDivElement | null>(null);
   const [tab, setTab] = useState<Tab>("routes");
   const [marketVisited, setMarketVisited] = useState(false);
   const active = useContext(ToolPageActiveContext);
   return (
-    <div className="tool-view text-[var(--text-1)] box-border w-full h-full flex flex-col bg-[var(--bg-surface)] overflow-y-auto">
-      <header className="px-6 pt-5 shrink-0">
-        <h1 className="m-0 text-2xl font-bold">oh-my-pi</h1>
-        <p className="mt-1 text-sm text-[var(--text-3)]">独立配置与插件管理</p>
-        <nav
-          aria-label="oh-my-pi 管理导航"
-          className="mt-5 flex gap-6 border-b"
+    <div className="tool-view text-[var(--text-1)] box-border w-full h-full flex flex-col gap-[12px] p-[12px_24px] bg-[var(--bg-surface)] overflow-y-auto">
+      <header className="w-full flex items-center gap-[12px]">
+        <div
+          className="w-[40px] h-[40px] shrink-0 flex items-center justify-center rounded-[8px] bg-[#8B5CF6] text-white text-[12px] font-bold"
+          aria-hidden="true"
         >
-          {tabs.map(([id, label]) => (
-            <button
-              key={id}
-              type="button"
-              aria-current={tab === id ? "page" : undefined}
-              className={`pb-3 text-sm border-b-2 transition-colors ${tab === id ? "border-primary text-[var(--text-1)] font-semibold" : "border-transparent text-[var(--text-3)] hover:text-[var(--text-1)]"}`}
-              onClick={() => {
-                setTab(id);
-                if (id !== "routes") setMarketVisited(true);
-              }}
-            >
-              {label}
-            </button>
-          ))}
-        </nav>
+          OMP
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-[10px]">
+            <h1 className="m-0 text-[28px]/[36px] text-[var(--text-1)] font-bold">
+              oh-my-pi
+            </h1>
+            <span className="px-[8px] py-[2px] rounded-full border border-[var(--border-subtle)] text-[12px] text-[var(--text-2)]">
+              独立配置
+            </span>
+          </div>
+          <p className="m-0 text-[13px] text-[var(--text-3)]">
+            管理 OMP 自定义线路与模型，不影响 Pi；默认模型仍在 OMP 中选择。
+          </p>
+        </div>
+        <div
+          ref={setActionsHost}
+          className="tool-actions"
+          hidden={tab !== "routes"}
+          role="group"
+          aria-label="oh-my-pi 工具操作"
+        />
       </header>
-      <div className="w-full max-w-5xl p-6">
+      <nav aria-label="oh-my-pi 管理导航" className="tool-section-nav">
+        {tabs.map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            aria-current={tab === id ? "page" : undefined}
+            onClick={() => {
+              setTab(id);
+              if (id !== "routes") setMarketVisited(true);
+            }}
+          >
+            {label}
+          </button>
+        ))}
+      </nav>
+      <div className="tool-section-content">
         <ToolPageActiveContext.Provider value={active && tab === "routes"}>
           <div hidden={tab !== "routes"}>
-            <OmpProviders native={native} />
+            <OmpProviders native={native} actionsHost={actionsHost} />
           </div>
         </ToolPageActiveContext.Provider>
         {marketVisited && (

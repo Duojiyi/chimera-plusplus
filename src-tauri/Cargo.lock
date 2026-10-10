@@ -800,7 +800,7 @@ dependencies = [
 
 [[package]]
 name = "chimera-plus-plus"
-version = "2.8.3"
+version = "2.8.4"
 dependencies = [
  "anyhow",
  "arboard",
@@ -950,7 +950,7 @@ dependencies = [
 [[package]]
 name = "codex-theme-engine"
 version = "0.1.0"
-source = "git+https://github.com/Wangnov/Codex-App-Manager.git?rev=296721f429e7359ad6618fdc897412fe6fe4c29b#296721f429e7359ad6618fdc897412fe6fe4c29b"
+source = "git+https://github.com/Wangnov/Codex-App-Manager.git?rev=31bd3f23f74d6e263cbeb86cb210f8fe64e281d4#31bd3f23f74d6e263cbeb86cb210f8fe64e281d4"
 dependencies = [
  "base64 0.23.1",
  "futures-util",

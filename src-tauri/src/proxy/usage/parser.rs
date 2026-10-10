@@ -9,19 +9,41 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Relays may report placeholder zeroes or invalid values before the real cache count.
+/// Keep the caller's field precedence, accepting only positive unsigned integers.
+pub(crate) fn first_nonzero_cache_tokens<'a>(
+    candidates: impl IntoIterator<Item = Option<&'a Value>>,
+) -> u64 {
+    candidates
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_u64)
+        .find(|tokens| *tokens > 0)
+        .unwrap_or(0)
+}
+
 fn openai_cache_read_tokens(usage: &Value) -> u32 {
+    first_nonzero_cache_tokens([
+        usage.get("cache_read_input_tokens"),
+        usage.pointer("/input_tokens_details/cached_tokens"),
+        usage.pointer("/input_token_details/cached_tokens"),
+        usage.pointer("/prompt_tokens_details/cached_tokens"),
+        usage.get("prompt_cache_hit_tokens"),
+    ]) as u32
+}
+
+/// Claude's 1-hour cache writes; retain the legacy total as the authoritative count.
+pub(crate) fn claude_cache_creation_1h_tokens(usage: &Value) -> u32 {
     usage
-        .get("cache_read_input_tokens")
-        .or_else(|| usage.pointer("/input_tokens_details/cached_tokens"))
-        .or_else(|| usage.pointer("/input_token_details/cached_tokens"))
-        .or_else(|| usage.pointer("/prompt_tokens_details/cached_tokens"))
-        // DeepSeek's Chat Completions usage object reports cache hits under
-        // its own top-level field instead of any of the shapes above —
-        // without this, every DeepSeek cache hit was counted as 0, inflating
-        // reported cost (upstream cc-switch, same finding).
-        .or_else(|| usage.get("prompt_cache_hit_tokens"))
+        .pointer("/cache_creation/ephemeral_1h_input_tokens")
         .and_then(Value::as_u64)
-        .unwrap_or(0) as u32
+        .unwrap_or(0)
+        .min(
+            usage
+                .get("cache_creation_input_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+        ) as u32
 }
 
 fn openai_cache_write_tokens(usage: &Value) -> u32 {
@@ -50,6 +72,9 @@ pub struct TokenUsage {
     pub output_tokens: u32,
     pub cache_read_tokens: u32,
     pub cache_creation_tokens: u32,
+    /// 1-hour writes are a subset of cache_creation_tokens, not extra tokens.
+    #[serde(default)]
+    pub cache_creation_1h_tokens: u32,
     /// 从响应中提取的实际模型名称（如果可用）
     pub model: Option<String>,
     /// 从响应中提取的消息 ID（用于跨源去重）
@@ -120,6 +145,7 @@ impl TokenUsage {
                 .get("cache_creation_input_tokens")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0) as u32,
+            cache_creation_1h_tokens: claude_cache_creation_1h_tokens(usage),
             model,
             message_id,
         })
@@ -161,6 +187,8 @@ impl TokenUsage {
                                 .and_then(|v| v.as_u64())
                                 .unwrap_or(0)
                                 as u32;
+                            usage.cache_creation_1h_tokens =
+                                claude_cache_creation_1h_tokens(msg_usage);
                             usage.cache_creation_tokens = msg_usage
                                 .get("cache_creation_input_tokens")
                                 .and_then(|v| v.as_u64())
@@ -208,6 +236,8 @@ impl TokenUsage {
                                     }
                                     if let Some(cache_creation) = delta_cache_creation {
                                         usage.cache_creation_tokens = cache_creation;
+                                        usage.cache_creation_1h_tokens =
+                                            claude_cache_creation_1h_tokens(delta_usage);
                                     }
                                 }
                             }
@@ -223,6 +253,13 @@ impl TokenUsage {
                                 if let Some(cache_creation) = delta_cache_creation {
                                     usage.cache_creation_tokens = cache_creation;
                                 }
+                            }
+                            if let Some(tokens) = delta_usage
+                                .pointer("/cache_creation/ephemeral_1h_input_tokens")
+                                .and_then(Value::as_u64)
+                            {
+                                usage.cache_creation_1h_tokens =
+                                    tokens.min(u64::from(usage.cache_creation_tokens)) as u32;
                             }
                         }
                     }
@@ -253,6 +290,7 @@ impl TokenUsage {
             output_tokens: usage.get("completion_tokens")?.as_u64()? as u32,
             cache_read_tokens: 0,
             cache_creation_tokens: 0,
+            cache_creation_1h_tokens: 0,
             model: None,
             message_id: response_id(body, "id"),
         })
@@ -292,6 +330,7 @@ impl TokenUsage {
             output_tokens: output_tokens? as u32,
             cache_read_tokens: cached_tokens,
             cache_creation_tokens: cache_write_tokens,
+            cache_creation_1h_tokens: 0,
             model,
             message_id: response_id(body, "id"),
         })
@@ -327,6 +366,7 @@ impl TokenUsage {
             output_tokens,
             cache_read_tokens: cached_tokens,
             cache_creation_tokens: cache_write_tokens,
+            cache_creation_1h_tokens: 0,
             model,
             message_id: response_id(body, "id"),
         })
@@ -419,6 +459,7 @@ impl TokenUsage {
             output_tokens: completion_tokens as u32,
             cache_read_tokens: cached_tokens,
             cache_creation_tokens: cache_write_tokens,
+            cache_creation_1h_tokens: 0,
             model,
             message_id: response_id(body, "id"),
         })
@@ -469,6 +510,7 @@ impl TokenUsage {
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0) as u32,
             cache_creation_tokens: 0,
+            cache_creation_1h_tokens: 0,
             model,
             message_id: response_id(body, "responseId"),
         })
@@ -524,6 +566,7 @@ impl TokenUsage {
                 output_tokens: total_output,
                 cache_read_tokens: total_cache_read,
                 cache_creation_tokens: 0,
+                cache_creation_1h_tokens: 0,
                 model,
                 message_id,
             })
@@ -535,6 +578,168 @@ impl TokenUsage {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn claude_cache_ttl_parsing_preserves_total_and_defaults_legacy_usage() {
+        for (details, expected) in [
+            (
+                json!({"ephemeral_5m_input_tokens": 60, "ephemeral_1h_input_tokens": 40}),
+                40,
+            ),
+            (json!({"ephemeral_1h_input_tokens": 200}), 100),
+            (json!({"ephemeral_1h_input_tokens": -1}), 0),
+            (json!({"ephemeral_1h_input_tokens": "40"}), 0),
+            (Value::Null, 0),
+        ] {
+            let body = json!({"usage": {
+                "input_tokens": 10, "output_tokens": 2,
+                "cache_creation_input_tokens": 100, "cache_creation": details
+            }});
+            let usage = TokenUsage::from_claude_response(&body).unwrap();
+            assert_eq!(usage.cache_creation_tokens, 100);
+            assert_eq!(usage.cache_creation_1h_tokens, expected);
+        }
+        let old: TokenUsage = serde_json::from_value(json!({
+            "input_tokens": 10, "output_tokens": 2,
+            "cache_read_tokens": 0, "cache_creation_tokens": 100
+        }))
+        .unwrap();
+        assert_eq!(old.cache_creation_1h_tokens, 0);
+    }
+
+    #[test]
+    fn claude_stream_cache_ttl_follows_usage_snapshot() {
+        let start = json!({"type": "message_start", "message": {"usage": {
+            "input_tokens": 100, "cache_creation_input_tokens": 100,
+            "cache_creation": {"ephemeral_1h_input_tokens": 40}
+        }}});
+        for (delta, total, one_hour) in [
+            (json!({"output_tokens": 2}), 100, 40),
+            (
+                json!({"input_tokens": 50, "cache_creation_input_tokens": 80,
+                "cache_creation": {"ephemeral_1h_input_tokens": 30}}),
+                80,
+                30,
+            ),
+            (
+                json!({"input_tokens": 50, "cache_creation_input_tokens": 80}),
+                80,
+                0,
+            ),
+            (
+                json!({"cache_creation": {"ephemeral_1h_input_tokens": 0}}),
+                100,
+                0,
+            ),
+        ] {
+            let usage = TokenUsage::from_claude_stream_events(&[
+                start.clone(),
+                json!({"type": "message_delta", "usage": delta}),
+            ])
+            .unwrap();
+            assert_eq!(usage.cache_creation_tokens, total);
+            assert_eq!(usage.cache_creation_1h_tokens, one_hour);
+        }
+        let usage =
+            TokenUsage::from_claude_stream_events(&[json!({"type": "message_delta", "usage": {
+                "cache_creation_input_tokens": 100,
+                "cache_creation": {"ephemeral_1h_input_tokens": 40}
+            }})])
+            .unwrap();
+        assert_eq!(usage.cache_creation_tokens, 100);
+        assert_eq!(usage.cache_creation_1h_tokens, 40);
+    }
+
+    #[test]
+    fn cache_read_candidates_skip_zero_and_invalid_values_in_priority_order() {
+        let paths = [
+            "/cache_read_input_tokens",
+            "/input_tokens_details/cached_tokens",
+            "/input_token_details/cached_tokens",
+            "/prompt_tokens_details/cached_tokens",
+            "/prompt_cache_hit_tokens",
+        ];
+        for ignored in [
+            json!(0),
+            Value::Null,
+            json!(-1),
+            json!(1.5),
+            json!("64"),
+            json!(true),
+            json!({}),
+            json!([]),
+        ] {
+            let mut usage = json!({
+                "cache_read_input_tokens": 11,
+                "input_tokens_details": {"cached_tokens": 22},
+                "input_token_details": {"cached_tokens": 33},
+                "prompt_tokens_details": {"cached_tokens": 44},
+                "prompt_cache_hit_tokens": 55
+            });
+            for (index, path) in paths.iter().enumerate() {
+                assert_eq!(
+                    openai_cache_read_tokens(&usage),
+                    (index as u32 + 1) * 11,
+                    "{usage}"
+                );
+                *usage.pointer_mut(path).unwrap() = ignored.clone();
+            }
+            assert_eq!(openai_cache_read_tokens(&usage), 0, "{usage}");
+        }
+        assert_eq!(openai_cache_read_tokens(&json!({})), 0);
+    }
+
+    #[test]
+    fn relay_cache_hits_survive_streaming_and_nonstreaming_parsers() {
+        let usage = json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 5,
+            "cache_read_input_tokens": 0,
+            "input_tokens_details": {"cached_tokens": null},
+            "prompt_tokens_details": {"cached_tokens": 0},
+            "prompt_cache_hit_tokens": 64
+        });
+        let chat = json!({"id": "chatcmpl_cache", "model": "deepseek-chat", "usage": usage});
+        let mut responses = chat.clone();
+        responses["usage"]
+            .as_object_mut()
+            .unwrap()
+            .remove("prompt_tokens");
+        responses["usage"]
+            .as_object_mut()
+            .unwrap()
+            .remove("completion_tokens");
+        responses["usage"]["input_tokens"] = json!(100);
+        responses["usage"]["output_tokens"] = json!(5);
+        let events = [json!({"type": "response.completed", "response": responses})];
+        for parsed in [
+            TokenUsage::from_openai_response(&chat),
+            TokenUsage::from_openai_stream_events(&[chat.clone()]),
+            TokenUsage::from_codex_response_auto(&chat),
+            TokenUsage::from_codex_stream_events_auto(&[chat]),
+            TokenUsage::from_codex_response(&responses),
+            TokenUsage::from_codex_stream_events_auto(&events),
+        ] {
+            let parsed = parsed.unwrap();
+            assert_eq!(parsed.cache_read_tokens, 64);
+            assert_eq!(parsed.input_tokens, 100);
+            assert_eq!(parsed.output_tokens, 5);
+            assert_eq!(parsed.cache_creation_tokens, 0);
+        }
+        // The legacy adjusted path still subtracts cache hits exactly once.
+        assert_eq!(
+            TokenUsage::from_codex_response_adjusted(&responses)
+                .unwrap()
+                .input_tokens,
+            36
+        );
+        assert_eq!(
+            TokenUsage::from_codex_stream_events(&events)
+                .unwrap()
+                .input_tokens,
+            36
+        );
+    }
+
     #[test]
     fn images_usage_reads_singular_token_details() {
         let usage = serde_json::json!({"input_tokens":100,"output_tokens":40,"input_token_details":{"cached_tokens":25}});

@@ -1,94 +1,15 @@
-import { lazy, Suspense, useState } from "react";
-import { toast } from "sonner";
-import { settingsApi } from "@/lib/api/settings";
 import { getChimeraHubTemplate } from "@/config/codexTemplates";
-import type { PresetSelection } from "@/utils/codexPresetDraft";
 
-// The picker pulls in the whole vendor preset list; it loads only when opened.
-const CodexPresetPicker = lazy(() => import("./CodexPresetPicker"));
-
-export type StartingPoint = Pick<
-  PresetSelection,
-  "label" | "hint" | "apiKeyUrl" | "endpointPlaceholder"
->;
-
-export interface CodexPresetStartProps {
-  /** The preset the draft was last seeded from; null for the default template. */
-  applied: StartingPoint | null;
-  /** The draft has edits that applying a preset would replace. */
-  dirty: boolean;
-  onPick: (selection: PresetSelection) => void;
-  onRestore: () => void;
-}
-
-/** Where a new Codex line starts from, with a way to choose another preset. */
-export function CodexPresetStart({
-  applied,
-  dirty,
-  onPick,
-  onRestore,
-}: CodexPresetStartProps) {
-  const [open, setOpen] = useState(false);
-
-  const openKeyPage = async (url: string) => {
-    try {
-      await settingsApi.openExternal(url);
-    } catch {
-      toast.error("无法打开浏览器，请复制地址后访问");
-    }
-  };
-
+export function CodexPresetStart({ onRestore }: { onRestore: () => void }) {
   return (
-    <div
-      className={`editor-template-actions${applied?.endpointPlaceholder ? " has-warning" : ""}`}
-    >
+    <div className="editor-template-actions">
       <div className="editor-template-text">
-        <b>
-          配置模板 ·{" "}
-          {applied?.label || getChimeraHubTemplate().name || "自定义配置"}
-        </b>
-        <small>
-          {applied?.endpointPlaceholder ? applied.hint : null}
-          {applied?.apiKeyUrl && (
-            <>
-              {" "}
-              <button
-                type="button"
-                className="link-button"
-                onClick={() => void openKeyPage(applied.apiKeyUrl!)}
-              >
-                获取 API Key
-              </button>
-            </>
-          )}
-        </small>
+        <b>配置模板 · {getChimeraHubTemplate().name}</b>
+        <small>已预填 Chimera 地址，可手动修改；请填写自己的 API Key。</small>
       </div>
-      <div className="editor-template-buttons">
-        <button
-          type="button"
-          className="secondary compact"
-          aria-haspopup="dialog"
-          onClick={() => setOpen(true)}
-        >
-          {applied ? "更换预设" : "选择预设"}
-        </button>
-        <button type="button" className="secondary compact" onClick={onRestore}>
-          恢复模板
-        </button>
-      </div>
-      {open && (
-        <Suspense fallback={null}>
-          <CodexPresetPicker
-            current={applied?.label ?? null}
-            dirty={dirty}
-            onPick={(selection) => {
-              setOpen(false);
-              onPick(selection);
-            }}
-            onClose={() => setOpen(false)}
-          />
-        </Suspense>
-      )}
+      <button type="button" className="secondary compact" onClick={onRestore}>
+        恢复 Chimera 模板
+      </button>
     </div>
   );
 }

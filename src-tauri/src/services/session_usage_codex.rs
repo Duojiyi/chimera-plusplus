@@ -110,6 +110,7 @@ pub(super) fn read_capped_line(
 struct CumulativeTokens {
     input: u64,
     cached_input: u64,
+    cache_write_input: u64,
     output: u64,
 }
 
@@ -118,12 +119,13 @@ struct CumulativeTokens {
 struct DeltaTokens {
     input: u32,
     cached_input: u32,
+    cache_write_input: u32,
     output: u32,
 }
 
 impl DeltaTokens {
     fn is_zero(&self) -> bool {
-        self.input == 0 && self.cached_input == 0 && self.output == 0
+        self.input == 0 && self.cached_input == 0 && self.cache_write_input == 0 && self.output == 0
     }
 }
 
@@ -131,6 +133,7 @@ impl DeltaTokens {
 struct TokenCountersSignature {
     input: Option<u64>,
     cached_input: Option<u64>,
+    cache_write_input: Option<u64>,
     output: Option<u64>,
     reasoning_output: Option<u64>,
     total: Option<u64>,
@@ -379,6 +382,9 @@ fn parse_signature_counters(value: Option<&serde_json::Value>) -> Option<TokenCo
             .get("cached_input_tokens")
             .or_else(|| value.get("cache_read_input_tokens"))
             .and_then(serde_json::Value::as_u64),
+        cache_write_input: value
+            .get("cache_write_input_tokens")
+            .and_then(serde_json::Value::as_u64),
         output: value
             .get("output_tokens")
             .and_then(serde_json::Value::as_u64),
@@ -530,11 +536,15 @@ fn compute_delta(prev: &Option<CumulativeTokens>, current: &CumulativeTokens) ->
         None => DeltaTokens {
             input: current.input as u32,
             cached_input: current.cached_input as u32,
+            cache_write_input: current.cache_write_input as u32,
             output: current.output as u32,
         },
         Some(p) => DeltaTokens {
             input: current.input.saturating_sub(p.input) as u32,
             cached_input: current.cached_input.saturating_sub(p.cached_input) as u32,
+            cache_write_input: current
+                .cache_write_input
+                .saturating_sub(p.cache_write_input) as u32,
             output: current.output.saturating_sub(p.output) as u32,
         },
     }
@@ -554,6 +564,10 @@ fn parse_cumulative_tokens(total_usage: &serde_json::Value) -> Option<Cumulative
             .get("cached_input_tokens")
             .or_else(|| total_usage.get("cache_read_input_tokens"))
             .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+        cache_write_input: total_usage
+            .get("cache_write_input_tokens")
+            .and_then(serde_json::Value::as_u64)
             .unwrap_or(0),
         output: total_usage
             .get("output_tokens")
@@ -1042,11 +1056,15 @@ fn parse_codex_file(
                     DeltaTokens {
                         input: cumulative.input as u32,
                         cached_input: cumulative.cached_input as u32,
+                        cache_write_input: cumulative.cache_write_input as u32,
                         output: cumulative.output as u32,
                     }
                 };
                 let delta = DeltaTokens {
                     cached_input: delta.cached_input.min(delta.input),
+                    cache_write_input: delta
+                        .cache_write_input
+                        .min(delta.input.saturating_sub(delta.cached_input)),
                     ..delta
                 };
                 let nonzero_index = if delta.is_zero() {
@@ -1489,7 +1507,7 @@ fn insert_codex_session_entry(
         input_tokens: delta.input,
         output_tokens: delta.output,
         cache_read_tokens: delta.cached_input,
-        cache_creation_tokens: 0,
+        cache_creation_tokens: delta.cache_write_input,
         created_at,
     };
     if should_skip_session_insert(conn, request_id, &dedup_key)? {
@@ -1510,7 +1528,8 @@ fn insert_codex_session_entry(
         input_tokens: delta.input,
         output_tokens: delta.output,
         cache_read_tokens: delta.cached_input,
-        cache_creation_tokens: 0,
+        cache_creation_tokens: delta.cache_write_input,
+        cache_creation_1h_tokens: 0,
         model: Some(model.to_string()),
         message_id: None,
     };
@@ -1556,7 +1575,7 @@ fn insert_codex_session_entry(
                 delta.input,
                 delta.output,
                 delta.cached_input,
-                0i64,                // cache_creation_tokens: Codex 日志无此数据
+                delta.cache_write_input,
                 input_cost,
                 output_cost,
                 cache_read_cost,
@@ -1683,6 +1702,123 @@ mod tests {
             .map(|path| path.to_path_buf())
             .collect::<Vec<_>>();
         sync_single_codex_file(db, file, &build_rollout_index(&files), false)
+    }
+
+    #[test]
+    fn cache_write_counters_participate_in_deltas_and_replay_signatures() {
+        let counters = |writes| {
+            serde_json::json!({
+                "input_tokens": 100, "cached_input_tokens": 20,
+                "cache_write_input_tokens": writes, "output_tokens": 5
+            })
+        };
+        let first = parse_cumulative_tokens(&counters(30)).unwrap();
+        assert_eq!(compute_delta(&None, &first).cache_write_input, 30);
+        let next = parse_cumulative_tokens(&counters(50)).unwrap();
+        let delta = compute_delta(&Some(first.clone()), &next);
+        assert_eq!(delta.cache_write_input, 20);
+        assert!(!delta.is_zero());
+        assert_eq!(
+            compute_delta(&Some(next.clone()), &first).cache_write_input,
+            0
+        );
+        assert!(compute_delta(&Some(next.clone()), &next).is_zero());
+        assert_ne!(
+            parse_signature_counters(Some(&counters(30))),
+            parse_signature_counters(Some(&counters(50)))
+        );
+        for invalid in [
+            serde_json::Value::Null,
+            serde_json::json!(-1),
+            serde_json::json!("30"),
+        ] {
+            let mut value = counters(30);
+            value["cache_write_input_tokens"] = invalid;
+            assert_eq!(
+                parse_cumulative_tokens(&value).unwrap().cache_write_input,
+                0
+            );
+        }
+        assert_eq!(
+            parse_cumulative_tokens(&serde_json::json!({"input_tokens": 100}))
+                .unwrap()
+                .cache_write_input,
+            0
+        );
+    }
+
+    #[test]
+    fn rollout_cache_writes_reach_storage_and_costs_for_total_and_last_usage(
+    ) -> Result<(), AppError> {
+        use std::str::FromStr;
+        for (last_only, reported_writes, expected_writes) in [
+            (false, 30, 30),
+            (true, 30, 30),
+            (false, 100, 80),
+            (true, 100, 80),
+        ] {
+            let db = Database::memory()?;
+            {
+                let conn = lock_conn!(db.conn);
+                conn.execute("INSERT OR REPLACE INTO model_pricing (model_id, display_name, input_cost_per_million, output_cost_per_million, cache_read_cost_per_million, cache_creation_cost_per_million) VALUES ('gpt-5.6-sol', 'Test', '1', '0', '0', '2')", [])?;
+            }
+            let temp = tempdir().unwrap();
+            let file = rollout_path(temp.path(), PARENT_ID);
+            let mut first = token_count(100, 20, 0);
+            first["payload"]["info"]["total_token_usage"]["cache_write_input_tokens"] =
+                serde_json::json!(reported_writes);
+            let mut values = vec![session_meta(PARENT_ID), turn_context()];
+            if last_only {
+                let counters = first["payload"]["info"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("total_token_usage")
+                    .unwrap();
+                first["payload"]["info"]["last_token_usage"] = counters;
+                values.push(first);
+            } else {
+                let mut second = token_count_at(200, 40, 0, "2026-07-10T03:00:03Z");
+                second["payload"]["info"]["total_token_usage"]["cache_write_input_tokens"] =
+                    serde_json::json!(reported_writes * 2);
+                values.extend([first, second.clone(), second]);
+            }
+            write_jsonl(&file, &values);
+            let expected = if last_only { 1 } else { 2 };
+            assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, expected);
+            assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 0);
+            let conn = lock_conn!(db.conn);
+            let mut stmt = conn.prepare("SELECT input_tokens, cache_read_tokens, cache_creation_tokens, input_cost_usd, cache_creation_cost_usd, total_cost_usd FROM proxy_request_logs WHERE data_source = 'codex_session'")?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, u32>(0)?,
+                    row.get::<_, u32>(1)?,
+                    row.get::<_, u32>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            })?;
+            let mut count = 0;
+            for row in rows {
+                let (input, read, write, input_cost, write_cost, total) = row?;
+                assert_eq!((input, read, write), (100, 20, expected_writes));
+                assert_eq!(
+                    Decimal::from_str(&input_cost).unwrap(),
+                    Decimal::from(80 - expected_writes) / Decimal::from(1_000_000)
+                );
+                assert_eq!(
+                    Decimal::from_str(&write_cost).unwrap(),
+                    Decimal::from(expected_writes * 2) / Decimal::from(1_000_000)
+                );
+                assert_eq!(
+                    Decimal::from_str(&total).unwrap(),
+                    Decimal::from(80 + expected_writes) / Decimal::from(1_000_000)
+                );
+                count += 1;
+            }
+            assert_eq!(count, expected);
+        }
+        Ok(())
     }
 
     #[test]
@@ -2104,6 +2240,7 @@ mod tests {
         let current = CumulativeTokens {
             input: 17934,
             cached_input: 9600,
+            cache_write_input: 0,
             output: 454,
         };
         let delta = compute_delta(&prev, &current);
@@ -2118,11 +2255,13 @@ mod tests {
         let prev = Some(CumulativeTokens {
             input: 17934,
             cached_input: 9600,
+            cache_write_input: 0,
             output: 454,
         });
         let current = CumulativeTokens {
             input: 36722,
             cached_input: 27904,
+            cache_write_input: 0,
             output: 804,
         };
         let delta = compute_delta(&prev, &current);
@@ -2136,12 +2275,14 @@ mod tests {
         let prev = Some(CumulativeTokens {
             input: 58346,
             cached_input: 46976,
+            cache_write_input: 0,
             output: 1045,
         });
         // task 边界：相同的累计值
         let current = CumulativeTokens {
             input: 58346,
             cached_input: 46976,
+            cache_write_input: 0,
             output: 1045,
         };
         let delta = compute_delta(&prev, &current);
@@ -2154,11 +2295,13 @@ mod tests {
         let prev = Some(CumulativeTokens {
             input: 100,
             cached_input: 50,
+            cache_write_input: 0,
             output: 30,
         });
         let current = CumulativeTokens {
             input: 80,
             cached_input: 40,
+            cache_write_input: 0,
             output: 20,
         };
         let delta = compute_delta(&prev, &current);
@@ -2666,6 +2809,7 @@ mod tests {
         let delta = DeltaTokens {
             input: 10,
             cached_input: 1,
+            cache_write_input: 0,
             output: 2,
         };
         let mut suspected_duplicates = 0;
@@ -2698,6 +2842,7 @@ mod tests {
         let delta = DeltaTokens {
             input: 10,
             cached_input: 1,
+            cache_write_input: 0,
             output: 2,
         };
         let mut suspected_duplicates = 0;
@@ -2862,11 +3007,13 @@ mod tests {
         let prev = Some(CumulativeTokens {
             input: 100,
             cached_input: 0,
+            cache_write_input: 0,
             output: 50,
         });
         let current = CumulativeTokens {
             input: 110,       // delta = 10
             cached_input: 80, // delta = 80（异常：大于 input delta）
+            cache_write_input: 0,
             output: 60,
         };
         let delta = compute_delta(&prev, &current);

@@ -14,6 +14,7 @@ vi.mock("@/lib/api/providers", () => ({
 function renderForm(
   initialData: ComponentProps<typeof ClaudeDesktopProviderForm>["initialData"],
   onSubmit = vi.fn(),
+  onDirtyChange = vi.fn(),
 ) {
   const queryClient = createTestQueryClient();
   const view = render(
@@ -21,15 +22,30 @@ function renderForm(
       <ClaudeDesktopProviderForm
         submitLabel="保存"
         onSubmit={onSubmit}
+        onDirtyChange={onDirtyChange}
         onCancel={vi.fn()}
         initialData={initialData}
       />
     </QueryClientProvider>,
   );
-  return { ...view, onSubmit };
+  return { ...view, onSubmit, onDirtyChange };
 }
 
 describe("ClaudeDesktopProviderForm", () => {
+  it("marks model mapping changes as unsaved", () => {
+    const { onDirtyChange } = renderForm(undefined);
+    expect(onDirtyChange).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("switch", { name: "需要模型映射" }));
+    expect(onDirtyChange).toHaveBeenCalled();
+  });
+  it("prefills the Chimera template for new routes", () => {
+    renderForm(undefined);
+    expect(
+      screen.getByDisplayValue("https://api.chimerahub.org/v1"),
+    ).toBeVisible();
+    expect(screen.getByDisplayValue("ChimeraHub")).toBeVisible();
+    expect(screen.getByRole("switch", { name: "需要模型映射" })).toBeChecked();
+  });
   it.each(["github_copilot", "codex_oauth", "xai_oauth"])(
     "托管 OAuth %s 即使旧数据是 direct 也强制开启模型映射",
     (providerType) => {

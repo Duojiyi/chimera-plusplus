@@ -298,6 +298,9 @@ fn close_codex(
 fn close_and_launch(portable_root: &Path, debug_port: Option<u16>) -> Result<(), String> {
     let installed = codex_win_engine::detect_installed_codex(portable_root)
         .ok_or_else(|| "Install Codex before applying a skin.".to_string())?;
+    if debug_port.is_some() && !super::codex_runtime::renderer_unlock_available(&installed) {
+        return Err("MSIX skin injection cannot preserve a custom CODEX_HOME; use the default directory or portable Codex.".to_string());
+    }
     close_codex(&installed, portable_root)?;
     super::codex_runtime::launch_codex_with_config(
         &installed,
@@ -352,6 +355,9 @@ pub async fn apply_skin_package(skin_id: String, confirm: bool) -> Result<(), St
             codex_theme_engine::theme::load_theme(&dir).map_err(|error| error.to_string())?;
         let installed = codex_win_engine::detect_installed_codex(&portable_root)
             .ok_or_else(|| "Install Codex before applying a skin.".to_string())?;
+        if !super::codex_runtime::renderer_unlock_available(&installed) {
+            return Err("MSIX skin injection cannot preserve a custom CODEX_HOME; use the default directory or portable Codex.".to_string());
+        }
         close_codex(&installed, &portable_root)?;
         if let Some(block) = loaded.codex_theme.as_ref() {
             if block.is_object() {

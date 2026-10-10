@@ -272,6 +272,15 @@ export function ClaudeFormFields({
   // 通用模型获取（非 Copilot 供应商）
   const [fetchedModels, setFetchedModels] = useState<FetchedModel[]>([]);
   const [isFetchingModels, setIsFetchingModels] = useState(false);
+  const modelFetchSeq = useRef(0);
+  useEffect(() => {
+    modelFetchSeq.current += 1;
+    setFetchedModels([]);
+    setIsFetchingModels(false);
+    return () => {
+      modelFetchSeq.current += 1;
+    };
+  }, [baseUrl, apiKey, isFullUrl, customUserAgent, localProxyHeadersOverride]);
 
   const showModelFetchResult = useCallback(
     (count: number) => {
@@ -300,18 +309,38 @@ export function ClaudeFormFields({
     });
     const modelsUrl = matchedPreset?.modelsUrl;
 
+    const seq = ++modelFetchSeq.current;
     setIsFetchingModels(true);
-    fetchModelsForConfig(baseUrl, apiKey, isFullUrl, modelsUrl, customUserAgent)
+    fetchModelsForConfig(
+      baseUrl,
+      apiKey,
+      isFullUrl,
+      modelsUrl,
+      customUserAgent,
+      localProxyHeadersOverride,
+    )
       .then((models) => {
+        if (seq !== modelFetchSeq.current) return;
         setFetchedModels(models);
         showModelFetchResult(models.length);
       })
       .catch((err) => {
-        console.warn("[ModelFetch] Failed:", err);
+        if (seq !== modelFetchSeq.current) return;
+
         showFetchModelsError(err, t);
       })
-      .finally(() => setIsFetchingModels(false));
-  }, [baseUrl, apiKey, isFullUrl, customUserAgent, showModelFetchResult, t]);
+      .finally(() => {
+        if (seq === modelFetchSeq.current) setIsFetchingModels(false);
+      });
+  }, [
+    baseUrl,
+    apiKey,
+    isFullUrl,
+    customUserAgent,
+    localProxyHeadersOverride,
+    showModelFetchResult,
+    t,
+  ]);
 
   const handleFetchCopilotModels = useCallback(() => {
     if (!isCopilotAuthenticated) {

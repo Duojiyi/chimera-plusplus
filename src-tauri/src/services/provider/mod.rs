@@ -8,6 +8,7 @@ mod gemini_auth;
 mod live;
 
 mod pi;
+mod update;
 mod usage;
 
 use indexmap::IndexMap;
@@ -151,6 +152,49 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex, OnceLock};
     use tempfile::TempDir;
+
+    #[test]
+    #[serial]
+    fn failed_update_compensates_database_but_preserves_external_live_write() {
+        for app in [AppType::Claude, AppType::Gemini, AppType::OpenCode] {
+            let _home = TempHome::new();
+            crate::settings::reload_settings().unwrap();
+            let state = AppState::new(Arc::new(Database::memory().unwrap()));
+            let before = Provider::with_id("target".into(), "before".into(), json!({}), None);
+            state.db.save_provider(app.as_str(), &before).unwrap();
+            let path = crate::services::live_backup::live_files(&app)
+                .unwrap()
+                .remove(0);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, b"before").unwrap();
+            let error =
+                update::with_update_rollback(&state, &app, "target", "target", false, || {
+                    let mut edited = before.clone();
+                    edited.name = "edited".into();
+                    state.db.save_provider(app.as_str(), &edited)?;
+                    // Simulate an external writer after the operation's snapshot,
+                    // before the operation reports failure. This is not our receipt.
+                    fs::write(&path, b"external-secret").unwrap();
+                    Err(AppError::Message("injected operation failure".into()))
+                })
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("injected operation failure"), "{error}");
+            assert!(error.contains("Live 回滚冲突"), "{error}");
+            assert!(!error.contains("external-secret"));
+            assert_eq!(fs::read(&path).unwrap(), b"external-secret");
+            let restored = state
+                .db
+                .get_provider_by_id("target", app.as_str())
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                serde_json::to_value(restored).unwrap(),
+                serde_json::to_value(&before).unwrap()
+            );
+        }
+        crate::settings::reload_settings().unwrap();
+    }
 
     struct TempHome {
         #[allow(dead_code)]
@@ -2369,6 +2413,10 @@ impl ProviderService {
         Ok(true)
     }
 
+    fn lock_app(state: &AppState, app: &AppType) -> tokio::sync::OwnedMutexGuard<()> {
+        futures::executor::block_on(state.proxy_service.lock_switch_for_app(app.as_str()))
+    }
+
     /// Update a provider.
     pub fn update(
         state: &AppState,
@@ -2376,6 +2424,16 @@ impl ProviderService {
         original_id: Option<&str>,
         provider: Provider,
     ) -> Result<bool, AppError> {
+        if !matches!(app_type, AppType::Codex | AppType::GrokBuild) {
+            let _guard = Self::lock_app(state, &app_type);
+            return Self::update_direct_with_app_lock_held(
+                state,
+                app_type,
+                original_id,
+                provider,
+                false,
+            );
+        }
         Self::update_internal(state, app_type, original_id, provider, false)
     }
 
@@ -2505,20 +2563,9 @@ impl ProviderService {
                 if is_current {
                     crate::services::OmoService::write_provider_config_to_file(&provider, variant)?;
                 }
-                if let Err(err) = state.db.save_provider(app_type.as_str(), &provider) {
-                    if is_current {
-                        if let Err(rollback_err) =
-                            crate::services::OmoService::write_config_to_file(state, variant)
-                        {
-                            log::warn!(
-                                "Failed to roll back {} config after DB save error: {}",
-                                variant.label,
-                                rollback_err
-                            );
-                        }
-                    }
-                    return Err(err);
-                }
+                // The outer compensated update checks the original file snapshots.
+                // Rebuilding here has no write receipt and could clobber an editor.
+                state.db.save_provider(app_type.as_str(), &provider)?;
                 return Ok(true);
             }
             let live_config_managed = Self::check_live_config_exists(
@@ -2829,9 +2876,7 @@ impl ProviderService {
         // Otherwise a queued switch can resurrect a provider deleted while it waited.
         // Lock-held routing callers already own profile -> lifecycle -> app.
         let _switch_guard = if acquire_app_lock {
-            Some(futures::executor::block_on(
-                state.proxy_service.lock_switch_for_app(app_type.as_str()),
-            ))
+            Some(Self::lock_app(state, &app_type))
         } else {
             None
         };
@@ -3019,15 +3064,34 @@ impl ProviderService {
             }
         }
 
-        // Exclusive-mode switches are committed transactionally: capture the
-        // exact Live files, write the target Live first, and only then advance
-        // local/DB current-provider pointers. Any pointer failure restores Live
-        // and the previous logical selection so UI, DB and client config cannot
-        // split into different providers.
+        // Without a native write receipt, compensation must preserve changed Live
+        // files and report a conflict, including failures inside this switch.
+        let unreceipted_files = if matches!(
+            app_type,
+            AppType::Claude | AppType::Gemini | AppType::OpenCode
+        ) {
+            crate::services::live_backup::live_files(&app_type)?
+                .into_iter()
+                .map(crate::config::cas::FileSnapshot::read)
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            Vec::new()
+        };
         if !app_type.is_additive_mode() {
             let previous_local = crate::settings::get_current_provider(&app_type);
             let previous_db = state.db.get_current_provider(app_type.as_str())?;
-            let live_snapshot = LiveSnapshot::capture(&app_type)?;
+            let live_snapshot = if unreceipted_files.is_empty() {
+                LiveSnapshot::capture(&app_type)?
+            } else {
+                None
+            };
+            let restore_live = || -> Result<(), AppError> {
+                update::verify_unreceipted_files(&unreceipted_files)?;
+                if let Some(snapshot) = live_snapshot.as_ref() {
+                    snapshot.restore()?;
+                }
+                Ok(())
+            };
 
             // We never touch `[profiles.*]` tables — they're the user's own —
             // but Codex's `profile` mechanism lets an active one override the
@@ -3054,11 +3118,7 @@ impl ProviderService {
             if let Err(error) =
                 write_live_with_common_config(state.db.as_ref(), &app_type, &provider_to_write)
             {
-                let rollback = live_snapshot
-                    .as_ref()
-                    .map(LiveSnapshot::restore)
-                    .transpose()
-                    .err();
+                let rollback = restore_live().err();
                 return match rollback {
                     Some(rollback_error) => Err(AppError::Message(format!(
                         "写入目标 Live 配置失败: {error}；恢复原 Live 配置失败: {rollback_error}"
@@ -3068,11 +3128,7 @@ impl ProviderService {
             }
 
             if let Err(error) = crate::settings::set_current_provider(&app_type, Some(id)) {
-                let rollback = live_snapshot
-                    .as_ref()
-                    .map(LiveSnapshot::restore)
-                    .transpose()
-                    .err();
+                let rollback = restore_live().err();
                 return match rollback {
                     Some(rollback_error) => Err(AppError::Message(format!(
                         "更新本地当前供应商失败: {error}；恢复原 Live 配置失败: {rollback_error}"
@@ -3096,10 +3152,8 @@ impl ProviderService {
                         rollback_errors.push(format!("恢复数据库当前供应商失败: {rollback_error}"));
                     }
                 }
-                if let Some(snapshot) = live_snapshot.as_ref() {
-                    if let Err(rollback_error) = snapshot.restore() {
-                        rollback_errors.push(format!("恢复原 Live 配置失败: {rollback_error}"));
-                    }
+                if let Err(rollback_error) = restore_live() {
+                    rollback_errors.push(format!("恢复原 Live 配置失败: {rollback_error}"));
                 }
                 return if rollback_errors.is_empty() {
                     Err(error)
@@ -3130,7 +3184,7 @@ impl ProviderService {
             Self::set_provider_live_config_managed(&mut updated, true);
             if let Err(e) = state.db.save_provider(app_type.as_str(), &updated) {
                 let rollback_result = match app_type {
-                    AppType::OpenCode => remove_opencode_provider_from_live(&provider.id),
+                    AppType::OpenCode => update::verify_unreceipted_files(&unreceipted_files),
 
                     _ => Ok(()),
                 };

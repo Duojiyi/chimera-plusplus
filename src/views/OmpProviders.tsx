@@ -1,6 +1,20 @@
-import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import {
+  ChevronLeft,
+  Eye,
+  EyeOff,
+  RefreshCw,
+  Plus,
+  Edit2,
+  Trash2,
+} from "lucide-react";
+import { OmpModelPicker } from "./OmpModelPicker";
+import { getChimeraHubTemplate } from "@/config/codexTemplates";
+import { useContext, useEffect, useRef, useState } from "react";
+import { FullScreenPanel } from "@/components/common/FullScreenPanel";
+import { ToolPageActiveContext } from "@/components/RetainedToolPage";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import "@/components/ProviderEditorPage.css";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
 import { ompApi, ompApis } from "@/lib/api/omp";
@@ -22,9 +36,18 @@ interface Draft {
   models: string;
 }
 
-export function OmpProviders({ native }: { native: boolean }) {
+export function OmpProviders({
+  native,
+  actionsHost,
+}: {
+  native: boolean;
+  actionsHost?: HTMLDivElement | null;
+}) {
+  const pageActive = useContext(ToolPageActiveContext);
   const [document, setDocument] = useState<PiDocument | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [dirty, setDirty] = useState(false);
+  const [showKey, setShowKey] = useState(false);
   const [busy, setBusy] = useState(false);
   const running = useRef(false);
   const [error, setError] = useState("");
@@ -54,7 +77,7 @@ export function OmpProviders({ native }: { native: boolean }) {
       setDocument(loaded);
       setDraft(null);
     } catch (e) {
-      setError(String(e));
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
       running.current = false;
       setBusy(false);
@@ -68,10 +91,13 @@ export function OmpProviders({ native }: { native: boolean }) {
     const provider = id === null ? {} : object(providers[id]);
     setError("");
     setNotice("");
+    setShowKey(false);
+    setDirty(false);
     setDraft({
       original: id,
       id: id ?? "",
-      baseUrl: text(provider.baseUrl),
+      baseUrl:
+        id === null ? getChimeraHubTemplate().baseUrl : text(provider.baseUrl),
       api: text(provider.api) || (id === null ? "openai-completions" : ""),
       apiKey: text(provider.apiKey),
       auth: text(provider.auth),
@@ -168,47 +194,60 @@ export function OmpProviders({ native }: { native: boolean }) {
           : "线路已保存。请在 OMP 中重新加载并选择模型。",
       );
     } catch (e) {
-      setError(String(e));
+      setError(e instanceof Error ? e.message : String(e));
       setPending(null);
     } finally {
       running.current = false;
       setBusy(false);
     }
   };
-  const field = (key: keyof Draft, value: string) =>
+  const field = (key: keyof Draft, value: string) => {
+    setDirty(true);
     setDraft((current) => (current ? { ...current, [key]: value } : null));
+  };
+  const requestClose = () => {
+    if (busy || pending) return;
+    if (dirty) setPending("discard");
+    else setDraft(null);
+  };
+  const actions = (
+    <>
+      <button
+        type="button"
+        className="h-[32px] px-[10px] flex items-center gap-[6px] rounded-[4px] border border-[var(--border-control)] bg-transparent cursor-pointer disabled:opacity-50"
+        disabled={!native || busy}
+        onClick={() => (draft ? setPending("reload") : void load())}
+      >
+        <RefreshCw size={15} className={busy ? "animate-spin" : ""} />
+        刷新线路
+      </button>
+      {!draft && (
+        <button
+          type="button"
+          className="h-[32px] px-[12px] flex items-center gap-[6px] rounded-[4px] border-0 bg-[#006AA0] text-white cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          disabled={!native || busy || !document}
+          onClick={() => edit(null)}
+        >
+          <Plus size={16} />
+          添加线路
+        </button>
+      )}
+    </>
+  );
   return (
-    <section className="space-y-4" aria-label="OMP 模型线路">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2 className="text-lg font-semibold">模型线路</h2>
-          <p className="text-sm text-[var(--text-3)]">
-            管理 OMP 自定义服务商与模型，不影响 Pi。
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <Button
-            variant="outline"
-            disabled={!native || busy}
-            onClick={() => (draft ? setPending("reload") : void load())}
-          >
-            刷新线路
-          </Button>
-          <Button
-            disabled={!native || busy || !document || !!draft}
-            onClick={() => edit(null)}
-          >
-            添加线路
-          </Button>
-        </div>
-      </div>
+    <section className="tool-section-content" aria-label="OMP 模型线路">
+      {actionsHost ? (
+        createPortal(actions, actionsHost)
+      ) : (
+        <div className="tool-actions">{actions}</div>
+      )}
       {!native && (
         <p className="text-sm text-[var(--text-3)]">
           请在桌面应用中管理本地线路。
         </p>
       )}
       {busy && <p role="status">正在处理线路配置…</p>}
-      {error && (
+      {error && !draft && (
         <p
           role="alert"
           className="text-sm text-destructive whitespace-pre-wrap"
@@ -222,156 +261,295 @@ export function OmpProviders({ native }: { native: boolean }) {
         </p>
       )}
       {draft ? (
-        <form
-          aria-label="编辑 OMP 线路"
-          onSubmit={(e) => {
-            e.preventDefault();
-            try {
-              build();
-              setError("");
-              setPending("save");
-            } catch (e) {
-              setError(String(e));
-            }
-          }}
-          className="rounded-xl border p-5 space-y-4"
-        >
-          <h3 className="font-semibold">
-            {draft.original === null ? "添加线路" : `编辑 ${draft.original}`}
-          </h3>
-          <fieldset disabled={busy} className="grid gap-4 sm:grid-cols-2">
-            <label className="space-y-1 text-sm">
-              线路 ID
-              <Input
-                aria-label="线路 ID"
-                value={draft.id}
-                disabled={draft.original !== null}
-                placeholder="my-provider"
-                onChange={(e) => field("id", e.target.value)}
-              />
-            </label>
-            <label className="space-y-1 text-sm">
-              API 协议
-              <Input
-                aria-label="API 协议"
-                list="omp-api-options"
-                value={draft.api}
-                placeholder="openai-completions"
-                onChange={(e) => field("api", e.target.value)}
-              />
-              <datalist id="omp-api-options">
-                {ompApis.map((api) => (
-                  <option key={api} value={api} />
-                ))}
-              </datalist>
-            </label>
-            <label className="space-y-1 text-sm sm:col-span-2">
-              API 地址
-              <Input
-                aria-label="API 地址"
-                value={draft.baseUrl}
-                placeholder="https://api.example.com/v1"
-                onChange={(e) => field("baseUrl", e.target.value)}
-              />
-            </label>
-            <label className="space-y-1 text-sm">
-              认证方式
-              <select
-                aria-label="认证方式"
-                className="w-full h-9 rounded-md border bg-[var(--bg-surface)] px-3"
-                value={draft.auth}
-                onChange={(e) => field("auth", e.target.value)}
+        <FullScreenPanel
+          isOpen={pageActive}
+          title={`${draft.original === null ? "添加" : "编辑"} Oh My Pi 线路`}
+          onClose={requestClose}
+          editorHeader={
+            <>
+              <button
+                type="button"
+                className="secondary editor-back"
+                aria-label="返回线路"
+                disabled={busy}
+                onClick={requestClose}
               >
-                <option value="">默认（API Key）</option>
-                <option value="apiKey">API Key</option>
-                <option value="none">免认证（本地服务）</option>
-                <option value="oauth">已有 OAuth 授权</option>
-              </select>
-            </label>
-            <label className="space-y-1 text-sm">
-              API Key / 环境变量名
-              <Input
-                aria-label="API Key / 环境变量名"
-                type="password"
-                autoComplete="new-password"
-                value={draft.apiKey}
-                placeholder="推荐填写环境变量名"
-                onChange={(e) => field("apiKey", e.target.value)}
-              />
-            </label>
-            <label className="space-y-1 text-sm sm:col-span-2">
-              模型 ID（每行一个）
-              <textarea
-                aria-label="模型 ID"
-                className="w-full min-h-28 rounded-md border bg-transparent p-3 font-mono text-sm"
-                value={draft.models}
-                placeholder="model-id"
-                onChange={(e) => field("models", e.target.value)}
-              />
-              <span className="block text-xs text-[var(--text-3)]">
-                同 ID 模型的高级参数会保留；移除 ID
-                将移除该模型配置。覆盖内置服务商时可以留空。
+                <ChevronLeft size={16} /> 线路
+              </button>
+              <div className="editor-heading">
+                <h2>{draft.id.trim() || "新线路"}</h2>
+                <span>
+                  Oh My Pi · {draft.original === null ? "新建线路" : "编辑线路"}
+                </span>
+              </div>
+              <span className="editor-draft-status" role="status">
+                {busy ? "正在保存…" : dirty ? "未保存修改" : ""}
               </span>
-            </label>
-          </fieldset>
-          <div className="flex justify-end gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              disabled={busy}
-              onClick={() => setPending("discard")}
-            >
-              取消编辑
-            </Button>
-            <Button type="submit" disabled={busy}>
-              保存线路
-            </Button>
-          </div>
-        </form>
+            </>
+          }
+          footer={
+            <>
+              <span className="editor-test-scope">
+                保存后请在 OMP 中重新加载并选择模型。
+              </span>
+              <div className="editor-save-actions">
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={busy}
+                  onClick={requestClose}
+                >
+                  取消
+                </button>
+                <button
+                  type="submit"
+                  className="primary"
+                  form="omp-provider-form"
+                  disabled={busy}
+                >
+                  {busy ? "正在保存…" : "保存线路"}
+                </button>
+              </div>
+            </>
+          }
+        >
+          <form
+            id="omp-provider-form"
+            aria-label="编辑 OMP 线路"
+            onSubmit={(e) => {
+              e.preventDefault();
+              try {
+                build();
+                setError("");
+                setPending("save");
+              } catch (e) {
+                setError(e instanceof Error ? e.message : String(e));
+              }
+            }}
+            className="editor-form"
+          >
+            {error && (
+              <p className="editor-feedback" role="alert">
+                {error}
+              </p>
+            )}
+            <fieldset className="editor-form" disabled={busy}>
+              <legend className="sr-only">线路配置</legend>
+              <section
+                className="editor-basic"
+                aria-labelledby="omp-basic-title"
+              >
+                <h3 id="omp-basic-title">基础</h3>
+                <div className="editor-basic-grid">
+                  <label>
+                    线路 ID *
+                    <input
+                      aria-label="线路 ID"
+                      value={draft.id}
+                      disabled={draft.original !== null}
+                      placeholder="例如 chimera"
+                      onChange={(e) => field("id", e.target.value)}
+                    />
+                    <small>
+                      OMP 配置中的唯一标识；保存后不可修改，不是显示名称。
+                    </small>
+                  </label>
+                  <label>
+                    API 请求地址{draft.models.trim() ? " *" : ""}
+                    <input
+                      aria-label="API 地址"
+                      value={draft.baseUrl}
+                      placeholder="https://api.example.com/v1"
+                      onChange={(e) => field("baseUrl", e.target.value)}
+                    />
+                    <small>
+                      填写服务商的完整基础地址；配置自定义模型时必填。
+                    </small>
+                  </label>
+                  <label>
+                    API Key / 环境变量名
+                    <div className="password-field">
+                      <input
+                        aria-label="API Key / 环境变量名"
+                        type={showKey ? "text" : "password"}
+                        autoComplete="new-password"
+                        value={draft.apiKey}
+                        placeholder="推荐填写环境变量名"
+                        onChange={(e) => field("apiKey", e.target.value)}
+                      />
+                      <button
+                        type="button"
+                        aria-label={showKey ? "隐藏 API Key" : "显示 API Key"}
+                        onClick={() => setShowKey(!showKey)}
+                      >
+                        {showKey ? <EyeOff size={16} /> : <Eye size={16} />}
+                      </button>
+                    </div>
+                    <small>
+                      可填写密钥或已在 oh-my-pi
+                      运行环境设置的变量名；本页不会创建环境变量。
+                    </small>
+                  </label>
+                </div>
+              </section>
+              <section
+                className="editor-protocol"
+                aria-labelledby="omp-protocol-title"
+              >
+                <h3 id="omp-protocol-title">协议与模型</h3>
+                <label>
+                  API 协议
+                  <select
+                    aria-label="API 协议"
+                    value={draft.api}
+                    onChange={(e) => field("api", e.target.value)}
+                  >
+                    {!ompApis.includes(draft.api) && (
+                      <option value={draft.api}>
+                        {draft.api || "请选择接口类型"}
+                      </option>
+                    )}
+                    {ompApis.map((api) => (
+                      <option key={api} value={api}>
+                        {(
+                          {
+                            "openai-completions": "Chat Completions",
+                            "openai-responses": "Responses",
+                            "anthropic-messages": "Anthropic Messages",
+                            "google-generative-ai": "Gemini",
+                          } as Record<string, string>
+                        )[api] ?? api}
+                      </option>
+                    ))}
+                  </select>
+                  <small>
+                    自定义模型需指定协议，或保留模型自身已有的协议配置。
+                  </small>
+                </label>
+                <label>
+                  认证方式
+                  <select
+                    aria-label="认证方式"
+                    value={draft.auth || "apiKey"}
+                    onChange={(e) => field("auth", e.target.value)}
+                  >
+                    <option value="apiKey">API Key / 环境变量</option>
+                    <option value="none">免认证（本地服务）</option>
+                    <option value="oauth">已有 OAuth 授权</option>
+                  </select>
+                </label>
+                <OmpModelPicker
+                  baseUrl={draft.baseUrl}
+                  apiKey={draft.apiKey}
+                  api={draft.api}
+                  auth={draft.auth}
+                  value={draft.models}
+                  onChange={(value) => field("models", value)}
+                />
+                <label>
+                  已选模型（可手动补充，每行一个）
+                  <textarea
+                    aria-label="模型 ID"
+                    rows={3}
+                    value={draft.models}
+                    placeholder="model-id"
+                    onChange={(e) => field("models", e.target.value)}
+                  />
+                  <small>
+                    同 ID 模型的高级参数会保留；移除 ID
+                    将移除该模型配置。覆盖内置服务商时可以留空。
+                  </small>
+                </label>
+              </section>
+              <details className="editor-preview">
+                <summary>保存详情</summary>
+                <p className="editor-test-scope">
+                  配置模板：ChimeraHub。仅写入当前 OMP profile，不影响
+                  Pi，不自动切换默认模型。
+                </p>
+                <p className="editor-test-scope break-all">
+                  配置位置：{document?.path}
+                </p>
+                <p className="editor-test-scope">
+                  未编辑字段会保留；保存会规范化 YAML 排版并移除注释。不读取
+                  auth 文件，不执行密钥命令。
+                </p>
+              </details>
+            </fieldset>
+          </form>
+        </FullScreenPanel>
       ) : (
         document &&
         (Object.keys(providers).length ? (
-          <div className="divide-y rounded-xl border">
-            {Object.entries(providers).map(([id, raw]) => {
-              const provider = object(raw);
-              const models = Array.isArray(provider.models)
-                ? provider.models
-                : [];
-              return (
-                <article
-                  key={id}
-                  className="flex flex-wrap items-center justify-between gap-3 p-4"
-                >
-                  <div className="min-w-0 flex-1">
-                    <h3 className="font-semibold break-all">{id}</h3>
-                    <p className="mt-1 text-sm text-[var(--text-3)]">
-                      {text(provider.api) || "继承模型协议"} ·{" "}
-                      {models.length
-                        ? `${models.length} 个自定义模型`
-                        : "内置模型覆盖"}
-                    </p>
-                  </div>
-                  <div className="flex gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={busy || !native}
-                      onClick={() => edit(id)}
-                    >
-                      编辑
-                    </Button>
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      disabled={busy || !native}
-                      onClick={() => setPending({ delete: id })}
-                    >
-                      删除
-                    </Button>
-                  </div>
-                </article>
-              );
-            })}
+          <div className="omp-provider-table">
+            <table aria-label="OMP 自定义线路">
+              <thead>
+                <tr>
+                  <th scope="col">名称</th>
+                  <th scope="col">端点地址</th>
+                  <th scope="col">协议 / 模型</th>
+                  <th scope="col">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(providers).map(([id, raw]) => {
+                  const provider = object(raw);
+                  const models = Array.isArray(provider.models)
+                    ? provider.models
+                    : [];
+                  return (
+                    <tr key={id}>
+                      <th scope="row">
+                        <span className="omp-provider-name">
+                          <span
+                            className="omp-provider-icon"
+                            aria-hidden="true"
+                          >
+                            {id.slice(0, 1)}
+                          </span>
+                          <span>{id}</span>
+                        </span>
+                      </th>
+                      <td className="omp-provider-endpoint">
+                        {text(provider.baseUrl) || "继承内置端点"}
+                      </td>
+                      <td>
+                        <span>{text(provider.api) || "继承模型协议"}</span>
+                        <small>
+                          {models.length
+                            ? `${models.length} 个自定义模型`
+                            : "内置模型覆盖"}
+                        </small>
+                      </td>
+                      <td>
+                        <div className="omp-provider-actions">
+                          <button
+                            type="button"
+                            title={`编辑 ${id}`}
+                            aria-label="编辑"
+                            className="omp-provider-edit"
+                            disabled={busy || !native}
+                            onClick={() => edit(id)}
+                          >
+                            <Edit2 size={14} />
+                          </button>
+                          <button
+                            type="button"
+                            title={`删除 ${id}`}
+                            className="tool-provider-delete"
+                            disabled={busy || !native}
+                            onClick={() => setPending({ delete: id })}
+                          >
+                            <Trash2 size={13} />
+                            删除
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         ) : (
           <div className="rounded-xl border border-dashed p-8 text-center">
@@ -391,7 +569,7 @@ export function OmpProviders({ native }: { native: boolean }) {
         ))
       )}
       {document && (
-        <details className="text-xs text-[var(--text-3)]">
+        <details className="tool-installation text-[var(--text-3)]">
           <summary className="cursor-pointer">配置位置与保存说明</summary>
           <p className="mt-2 break-all">{document.path}</p>
           <p className="mt-2">

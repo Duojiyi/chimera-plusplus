@@ -6,7 +6,8 @@ use crate::database::{lock_conn, Database};
 use crate::error::AppError;
 use crate::proxy::usage::calculator::ModelPricing;
 use crate::services::sql_helpers::{
-    fresh_input_sql, INPUT_TOKEN_SEMANTICS_FRESH, INPUT_TOKEN_SEMANTICS_TOTAL,
+    fresh_input_sql, INPUT_TOKEN_SEMANTICS_FRESH, INPUT_TOKEN_SEMANTICS_LEGACY,
+    INPUT_TOKEN_SEMANTICS_TOTAL,
 };
 use chrono::{Local, NaiveDate, TimeZone, Timelike};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -359,6 +360,8 @@ fn matching_proxy_usage_sql(session: &str, ambiguous: bool) -> String {
     } else {
         format!("NOT ({untrusted})")
     };
+    // Old Codex proxy rows did not record cache writes. Only legacy semantics
+    // may treat zero as unknown; a modern explicit zero must still match exactly.
     let predicate = format!(
         "COALESCE(p.data_source, 'proxy') = 'proxy'
          AND p.app_type = {session}.app_type
@@ -370,7 +373,9 @@ fn matching_proxy_usage_sql(session: &str, ambiguous: bool) -> String {
          AND p.cache_read_tokens = {session}.cache_read_tokens
          AND (p.cache_creation_tokens = {session}.cache_creation_tokens
               OR ({session}.cache_creation_tokens = 0
-                  AND {session}.app_type IN ('codex', 'gemini', 'opencode')))
+                  AND {session}.app_type IN ('codex', 'gemini', 'opencode'))
+              OR (p.app_type = 'codex' AND p.cache_creation_tokens = 0
+                  AND p.input_token_semantics = {INPUT_TOKEN_SEMANTICS_LEGACY}))
          AND p.created_at BETWEEN
              {session}.created_at - {SESSION_PROXY_DEDUP_WINDOW_SECONDS}
              AND {session}.created_at + {SESSION_PROXY_DEDUP_WINDOW_SECONDS}
@@ -2469,10 +2474,64 @@ mod tests {
                 created_at INTEGER NOT NULL,
                 data_source TEXT,
                 session_id TEXT,
-                session_id_trusted INTEGER NOT NULL DEFAULT 0
+                session_id_trusted INTEGER NOT NULL DEFAULT 0,
+                input_token_semantics INTEGER NOT NULL DEFAULT 0
             )",
             [],
         )?;
+        Ok(())
+    }
+
+    #[test]
+    fn codex_legacy_unknown_cache_writes_dedup_before_and_after_archival() -> Result<(), AppError> {
+        for (app, semantics, writes, expected) in [
+            ("codex", INPUT_TOKEN_SEMANTICS_LEGACY, 0, true),
+            ("codex", INPUT_TOKEN_SEMANTICS_TOTAL, 0, false),
+            ("codex", INPUT_TOKEN_SEMANTICS_TOTAL, 30, true),
+            ("codex", INPUT_TOKEN_SEMANTICS_LEGACY, 20, false),
+            ("claude", INPUT_TOKEN_SEMANTICS_LEGACY, 0, false),
+        ] {
+            let db = Database::memory()?;
+            let key = DedupKey {
+                session_id: Some("cache-session"),
+                app_type: app,
+                model: "cache-test",
+                input_tokens: 100,
+                output_tokens: 5,
+                cache_read_tokens: 20,
+                cache_creation_tokens: 30,
+                created_at: 1000,
+            };
+            {
+                let conn = lock_conn!(db.conn);
+                insert_usage_log(
+                    &conn,
+                    "cache-proxy",
+                    app,
+                    "provider",
+                    "cache-test",
+                    "proxy",
+                    1000,
+                    100,
+                    5,
+                    20,
+                    writes,
+                    200,
+                    "0.01",
+                )?;
+                conn.execute("UPDATE proxy_request_logs SET input_token_semantics = ?1, session_id = 'cache-session', session_id_trusted = 1", [semantics])?;
+                assert_eq!(
+                    has_matching_proxy_usage_log(&conn, "cache-session-row", &key)?,
+                    expected
+                );
+            }
+            assert_eq!(db.rollup_and_prune(30)?, 1);
+            let conn = lock_conn!(db.conn);
+            assert_eq!(
+                has_matching_proxy_usage_log(&conn, "cache-session-row", &key)?,
+                expected
+            );
+        }
         Ok(())
     }
 

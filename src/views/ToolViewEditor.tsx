@@ -1,3 +1,5 @@
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
 import { useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -26,6 +28,14 @@ export default function ToolViewEditor({
   onSaved: () => void;
 }) {
   const [busy, setBusy] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [confirmClose, setConfirmClose] = useState(false);
+  useLightweightCloseBlocker(busy || dirty);
+  const requestClose = () => {
+    if (busy) return;
+    if (dirty) setConfirmClose(true);
+    else onClose();
+  };
   const save = async (values: ProviderFormValues) => {
     try {
       if (
@@ -77,9 +87,7 @@ export default function ToolViewEditor({
   return (
     <FullScreenPanel
       isOpen
-      onClose={() => {
-        if (!busy) onClose();
-      }}
+      onClose={requestClose}
       title={`${provider ? "编辑" : "添加"} ${additionalToolNames[appId]} 线路`}
       contentClassName="max-w-5xl mx-auto"
       footer={
@@ -93,7 +101,7 @@ export default function ToolViewEditor({
             type="button"
             variant="outline"
             disabled={busy}
-            onClick={onClose}
+            onClick={requestClose}
           >
             取消
           </Button>
@@ -103,7 +111,7 @@ export default function ToolViewEditor({
         </>
       }
     >
-      {
+      <div onChangeCapture={() => setDirty(true)}>
         <ProviderForm
           appId={appId}
           providerId={provider?.id}
@@ -111,10 +119,20 @@ export default function ToolViewEditor({
           submitLabel="保存线路"
           showButtons={false}
           onSubmit={save}
-          onCancel={onClose}
+          onCancel={requestClose}
           onSubmittingChange={setBusy}
+          onDirtyChange={() => setDirty(true)}
         />
-      }
+      </div>
+      <ConfirmDialog
+        isOpen={confirmClose}
+        title="放弃未保存的修改？"
+        message="此线路的修改尚未保存。离开后将丢失这些修改。"
+        confirmText="放弃修改"
+        cancelText="继续编辑"
+        onConfirm={onClose}
+        onCancel={() => setConfirmClose(false)}
+      />
     </FullScreenPanel>
   );
 }

@@ -1,9 +1,15 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import type { ComponentProps, PropsWithChildren } from "react";
 import { useForm } from "react-hook-form";
 import { describe, expect, it, vi } from "vitest";
 import { OpenCodeFormFields } from "@/components/providers/forms/OpenCodeFormFields";
 import { Form } from "@/components/ui/form";
+
+import { fetchModelsForConfig } from "@/lib/api/model-fetch";
+vi.mock("@/lib/api/model-fetch", () => ({
+  fetchModelsForConfig: vi.fn(),
+  showFetchModelsError: vi.fn(),
+}));
 
 type OpenCodeFormFieldsProps = ComponentProps<typeof OpenCodeFormFields>;
 
@@ -200,4 +206,37 @@ describe("OpenCodeFormFields", () => {
       },
     });
   });
+});
+
+it("passes gateway headers and ignores a response after the identity changes", async () => {
+  let resolve!: (models: { id: string; ownedBy: null }[]) => void;
+  vi.mocked(fetchModelsForConfig).mockReturnValueOnce(
+    new Promise((done) => {
+      resolve = done;
+    }),
+  );
+  const { props, rerender } = renderOpenCodeForm({
+    headers: { "X-Tenant": "first" },
+  });
+  fireEvent.click(
+    screen.getByRole("button", { name: "providerForm.fetchModels" }),
+  );
+  expect(fetchModelsForConfig).toHaveBeenLastCalledWith(
+    props.baseUrl,
+    props.apiKey,
+    undefined,
+    undefined,
+    undefined,
+    JSON.stringify(props.headers),
+  );
+  rerender(
+    <FormShell>
+      <OpenCodeFormFields {...props} headers={{ "X-Tenant": "second" }} />
+    </FormShell>,
+  );
+  await act(async () => resolve([{ id: "old-private-model", ownedBy: null }]));
+  expect(screen.queryByText("old-private-model")).not.toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "providerForm.fetchModels" }),
+  ).not.toBeDisabled();
 });

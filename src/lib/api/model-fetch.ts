@@ -1,3 +1,4 @@
+import { parseHeaderOverrideJson } from "@/lib/requestOverrides";
 import { invoke } from "@tauri-apps/api/core";
 import type { TFunction } from "i18next";
 import { toast } from "sonner";
@@ -19,13 +20,24 @@ export async function fetchModelsForConfig(
   isFullUrl?: boolean,
   modelsUrl?: string,
   customUserAgent?: string,
+  customHeaders?: string | Record<string, string>,
 ): Promise<FetchedModel[]> {
+  const parsedHeaders = parseHeaderOverrideJson(
+    typeof customHeaders === "string"
+      ? customHeaders
+      : JSON.stringify(customHeaders ?? {}),
+  );
+  if (parsedHeaders.error)
+    throw new Error("Invalid model discovery request headers");
   return invoke("fetch_models_for_config", {
     baseUrl,
     apiKey,
     isFullUrl,
     modelsUrl,
     customUserAgent,
+    ...(parsedHeaders.headers && Object.keys(parsedHeaders.headers).length
+      ? { customHeaders: parsedHeaders.headers }
+      : {}),
   });
 }
 

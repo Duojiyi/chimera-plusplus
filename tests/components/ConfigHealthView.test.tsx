@@ -1,3 +1,4 @@
+import { isTauri } from "@tauri-apps/api/core";
 import {
   act,
   fireEvent,
@@ -13,6 +14,10 @@ import {
 } from "@/lib/api/configHealth";
 vi.mock("@/lib/api/configHealth", () => ({
   configHealthApi: { check: vi.fn(), repairOwnedInstructions: vi.fn() },
+}));
+vi.mock("@tauri-apps/api/core", async (original) => ({
+  ...(await original<typeof import("@tauri-apps/api/core")>()),
+  isTauri: vi.fn(),
 }));
 vi.mock("sonner", () => ({ toast: { info: vi.fn(), error: vi.fn() } }));
 const report: ConfigHealthReport = {
@@ -31,6 +36,7 @@ const repairableIssue = {
 };
 beforeEach(() => {
   vi.resetAllMocks();
+  vi.mocked(isTauri).mockReturnValue(true);
   vi.mocked(configHealthApi.check).mockResolvedValue(report);
 });
 describe("connected configuration health", () => {
@@ -282,4 +288,12 @@ describe("connected configuration health", () => {
       ).not.toBeDisabled(),
     );
   });
+});
+
+it("explains browser preview without reporting a failed health check", () => {
+  vi.mocked(isTauri).mockReturnValue(false);
+  render(<ConfigHealthView />);
+  expect(screen.getByRole("status")).toHaveTextContent("浏览器预览未连接本机");
+  expect(configHealthApi.check).not.toHaveBeenCalled();
+  expect(screen.queryByText("检查失败")).not.toBeInTheDocument();
 });

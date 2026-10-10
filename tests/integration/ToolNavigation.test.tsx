@@ -64,7 +64,7 @@ it("keeps Claude tools adjacent and opens oh-my-pi as an independent page", asyn
   expect(
     await screen.findByRole("heading", { name: "oh-my-pi" }),
   ).toBeVisible();
-  expect(screen.getByRole("heading", { name: "模型线路" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "模型线路" })).toBeVisible();
   fireEvent.click(screen.getByRole("button", { name: "插件市场" }));
   expect(screen.getByText("原生市场")).toBeVisible();
   expect(screen.queryByText("精选推荐 · 10")).not.toBeInTheDocument();

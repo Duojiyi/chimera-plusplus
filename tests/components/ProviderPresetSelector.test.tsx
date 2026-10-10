@@ -286,51 +286,14 @@ describe("ProviderPresetSelector", () => {
     },
   };
 
-  it("只显示自定义、official 和内置模板，不展示第三方或合作伙伴目录", () => {
-    const entries = [
-      ...presetEntries,
-      builtin,
-      {
-        ...presetEntries[2],
-        id: "partner",
-        preset: { ...presetEntries[2].preset, isPartner: true },
-      },
-      {
-        ...presetEntries[3],
-        id: "prime",
-        preset: { ...presetEntries[3].preset, primePartner: true },
-      },
-    ];
-    renderSelector({ entries });
-    expect(
-      screen.getByRole("group", { name: "providerPreset.label" }),
-    ).toBeInTheDocument();
+  it("only exposes the Chimera built-in template", () => {
+    renderSelector({ entries: [...presetEntries, builtin] });
     expect(
       screen.getAllByRole("button").map((button) => button.textContent),
-    ).toEqual(["providerPreset.custom", "preset.alpha", builtin.preset.name]);
+    ).toEqual([builtin.preset.name]);
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
-    expect(screen.queryByRole("link")).not.toBeInTheDocument();
   });
-
-  it("通过鼠标选择入口，只回传对应 ID", async () => {
-    const user = userEvent.setup();
-    const onPresetChange = vi.fn();
-    renderSelector({ entries: [...presetEntries, builtin], onPresetChange });
-    for (const name of [
-      "preset.alpha",
-      builtin.preset.name,
-      "providerPreset.custom",
-    ]) {
-      await user.click(screen.getByRole("button", { name }));
-    }
-    expect(onPresetChange.mock.calls).toEqual([
-      ["alpha"],
-      ["builtin"],
-      ["custom"],
-    ]);
-  });
-
-  it("提供明确选中状态、键盘操作和可见焦点，不截断长名称", async () => {
+  it("selects the template with a keyboard and preserves accessible selection state", async () => {
     const user = userEvent.setup();
     const onPresetChange = vi.fn();
     renderSelector({
@@ -338,84 +301,29 @@ describe("ProviderPresetSelector", () => {
       selectedPresetId: "builtin",
       onPresetChange,
     });
-    const custom = screen.getByRole("button", {
-      name: "providerPreset.custom",
-      pressed: false,
-    });
-    const button = screen.getByRole("button", {
-      name: builtin.preset.name,
-      pressed: true,
-    });
-    expect(button).toHaveClass(
-      "whitespace-normal",
-      "break-words",
-      "focus-visible:ring-2",
-    );
-    expect(button).not.toHaveClass("truncate");
-    await user.tab();
-    expect(custom).toHaveFocus();
-    await user.keyboard("{Enter}");
+    const button = screen.getByRole("button", { name: builtin.preset.name });
+    expect(button).toHaveAttribute("aria-pressed", "true");
     await user.tab();
     expect(button).toHaveFocus();
-    await user.keyboard(" ");
-    expect(onPresetChange.mock.calls).toEqual([["custom"], ["builtin"]]);
+    await user.keyboard("{Enter}");
+    expect(onPresetChange).toHaveBeenCalledWith("builtin");
   });
-
-  it.each([
-    { entries: [] },
-    {
-      entries: presetEntries.filter(
-        ({ preset }) => preset.category !== "official",
-      ),
-    },
-  ])("没有允许的预设时仍可使用自定义入口", ({ entries }) => {
-    renderSelector({ entries });
+  it("does not expose legacy presets when the template is unavailable", () => {
+    renderSelector();
+    expect(screen.queryAllByRole("button")).toHaveLength(0);
+  });
+  it("retains user-owned configuration management without the provider catalog", async () => {
+    const user = userEvent.setup();
+    const onManageUniversalProviders = vi.fn();
+    const onUniversalPresetSelect = vi.fn();
+    renderSelector({
+      entries: [],
+      onManageUniversalProviders,
+      onUniversalPresetSelect,
+    });
     expect(screen.getAllByRole("button")).toHaveLength(1);
-    expect(
-      screen.getByRole("button", {
-        name: "providerPreset.custom",
-        pressed: true,
-      }),
-    ).toBeInTheDocument();
-  });
-
-  it("隐藏已选中的第三方预设，但不擅自改变表单选择", () => {
-    const onPresetChange = vi.fn();
-    renderSelector({ selectedPresetId: "delta", onPresetChange });
-    expect(
-      screen.queryByRole("button", { pressed: true }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Delta Mirror" }),
-    ).not.toBeInTheDocument();
-    expect(onPresetChange).not.toHaveBeenCalled();
-  });
-
-  it.each([false, true])(
-    "用户自建通用配置管理独立保留，不展示广告目录（目录回调：%s）",
-    async (withCatalogCallback) => {
-      const user = userEvent.setup();
-      const onManageUniversalProviders = vi.fn();
-      const onUniversalPresetSelect = vi.fn();
-      renderSelector({
-        entries: [],
-        onManageUniversalProviders,
-        onUniversalPresetSelect: withCatalogCallback
-          ? onUniversalPresetSelect
-          : undefined,
-      });
-      expect(screen.getAllByRole("button")).toHaveLength(2);
-      await user.click(screen.getByRole("button", { name: "管理统一供应商" }));
-      expect(onManageUniversalProviders).toHaveBeenCalledOnce();
-      expect(onUniversalPresetSelect).not.toHaveBeenCalled();
-    },
-  );
-
-  it("仅传目录回调也不会暴露通用供应商广告", () => {
-    renderSelector({ entries: [], onUniversalPresetSelect: vi.fn() });
-    expect(screen.getAllByRole("button")).toHaveLength(1);
-    expect(
-      screen.queryByRole("button", { name: "管理统一供应商" }),
-    ).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "管理统一供应商" }));
+    expect(onManageUniversalProviders).toHaveBeenCalledOnce();
+    expect(onUniversalPresetSelect).not.toHaveBeenCalled();
   });
 });

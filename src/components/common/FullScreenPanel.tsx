@@ -14,6 +14,7 @@ interface FullScreenPanelProps {
   onClose: () => void;
   children: React.ReactNode;
   footer?: React.ReactNode;
+  editorHeader?: React.ReactNode;
   /**
    * 覆盖内容区滚动容器的内边距/间距类。默认 `px-6 py-6 space-y-6`。
    * 通过 `cn`(twMerge) 合并，传入如 `pt-3` 只覆盖顶部内边距，其余保持默认。
@@ -35,6 +36,7 @@ export const FullScreenPanel: React.FC<FullScreenPanelProps> = ({
   children,
   footer,
   contentClassName,
+  editorHeader,
 }) => {
   const { t } = useTranslation();
   const panelRef = React.useRef<HTMLDivElement>(null);
@@ -113,74 +115,96 @@ export const FullScreenPanel: React.FC<FullScreenPanelProps> = ({
           ref={panelRef}
           data-fullscreen-panel
           role="dialog"
-          aria-labelledby={titleId}
+          aria-labelledby={editorHeader ? undefined : titleId}
+          aria-label={editorHeader ? title : undefined}
           tabIndex={-1}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           transition={{ duration: 0.2 }}
-          className="fixed inset-x-0 bottom-0 top-10 z-[60] flex min-h-0 flex-col"
+          className={cn(
+            "fixed inset-x-0 bottom-0 top-10 z-[60] flex min-h-0 flex-col",
+            editorHeader && "provider-editor-page",
+          )}
           style={{ backgroundColor: "hsl(var(--background))" }}
         >
-          {/* Keep the shell title bar and native window controls reachable. */}
-          {/* Header - match App.tsx */}
-          <div
-            className="flex-shrink-0 flex items-center"
-            {...DRAG_REGION_ATTR}
-            style={
-              {
-                ...DRAG_REGION_STYLE,
-                backgroundColor: "hsl(var(--background))",
-                height: HEADER_HEIGHT,
-              } as React.CSSProperties
-            }
-          >
-            <div
-              className="px-6 w-full flex items-center gap-4"
-              {...DRAG_REGION_ATTR}
-              style={{ ...DRAG_REGION_STYLE } as React.CSSProperties}
-            >
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                aria-label={t("common.back", { defaultValue: "返回" })}
-                onClick={onClose}
-                className="rounded-lg select-none"
-                style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+          {editorHeader ? (
+            <section className="provider-editor">
+              <header className="editor-page-header">{editorHeader}</header>
+              <div className="editor-scroll">{children}</div>
+              {footer && (
+                <div className="editor-bottom">
+                  <footer>{footer}</footer>
+                </div>
+              )}
+            </section>
+          ) : (
+            <>
+              {/* Keep the shell title bar and native window controls reachable. */}
+              {/* Header - match App.tsx */}
+              <div
+                className="flex-shrink-0 flex items-center"
+                {...DRAG_REGION_ATTR}
+                style={
+                  {
+                    ...DRAG_REGION_STYLE,
+                    backgroundColor: "hsl(var(--background))",
+                    height: HEADER_HEIGHT,
+                  } as React.CSSProperties
+                }
               >
-                <ArrowLeft className="h-4 w-4" />
-              </Button>
-              <h2
-                id={titleId}
-                className="text-lg font-semibold text-foreground select-none"
-              >
-                {title}
-              </h2>
-            </div>
-          </div>
-
-          {/* Content */}
-          <div className="min-h-0 flex-1 overflow-y-auto scroll-overlay">
-            <div className={cn("px-6 py-6 space-y-6 w-full", contentClassName)}>
-              {children}
-            </div>
-          </div>
-
-          {/* Footer */}
-          {footer && (
-            <div
-              className="flex-shrink-0 py-4 border-t border-border-default"
-              style={{ backgroundColor: "hsl(var(--background))" }}
-            >
-              <div className="px-6 flex items-center justify-end gap-3">
-                {footer}
+                <div
+                  className="px-6 w-full flex items-center gap-4"
+                  {...DRAG_REGION_ATTR}
+                  style={{ ...DRAG_REGION_STYLE } as React.CSSProperties}
+                >
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    aria-label={t("common.back", { defaultValue: "返回" })}
+                    onClick={onClose}
+                    className="rounded-lg select-none"
+                    style={
+                      { WebkitAppRegion: "no-drag" } as React.CSSProperties
+                    }
+                  >
+                    <ArrowLeft className="h-4 w-4" />
+                  </Button>
+                  <h2
+                    id={titleId}
+                    className="text-lg font-semibold text-foreground select-none"
+                  >
+                    {title}
+                  </h2>
+                </div>
               </div>
-            </div>
+
+              {/* Content */}
+              <div className="min-h-0 flex-1 overflow-y-auto scroll-overlay">
+                <div
+                  className={cn("px-6 py-6 space-y-6 w-full", contentClassName)}
+                >
+                  {children}
+                </div>
+              </div>
+
+              {/* Footer */}
+              {footer && (
+                <div
+                  className="flex-shrink-0 py-4 border-t border-border-default"
+                  style={{ backgroundColor: "hsl(var(--background))" }}
+                >
+                  <div className="px-6 flex items-center justify-end gap-3">
+                    {footer}
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </motion.div>
       )}
     </AnimatePresence>,
-    document.body,
+    (editorHeader && document.querySelector(".chimera-shell")) || document.body,
   );
 };

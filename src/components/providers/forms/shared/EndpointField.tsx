@@ -47,7 +47,10 @@ export function EndpointField({
           defaultValue:
             "💡 请填写完整请求 URL，并且必须开启代理后使用；代理将直接使用此 URL，不拼接路径",
         })
-      : hint;
+      : hint ||
+        (showFullUrlToggle
+          ? "填写基础地址（例如 https://api.chimerahub.org/v1）。仅在服务商提供包含 /responses 等请求路径的完整地址时开启完整 URL。"
+          : undefined);
 
   return (
     <div className="space-y-2">

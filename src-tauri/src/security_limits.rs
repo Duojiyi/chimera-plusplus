@@ -18,6 +18,9 @@ pub const MAX_IMPORT_BYTES: u64 = 4 * 1024 * 1024;
 pub const MAX_PROXY_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
 /// Maximum size for a decoded proxy response.
 pub const MAX_DECOMPRESSED_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
+/// Maximum serialized SSE frame size (including its delimiter), not total stream size.
+/// Large final response snapshots remain supported without unbounded partial frames.
+pub const MAX_SSE_FRAME_BYTES: usize = 64 * 1024 * 1024;
 /// Maximum combined stdout/stderr captured from an external helper process.
 pub const MAX_PROCESS_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 /// Maximum number of nested content codings accepted in one response.

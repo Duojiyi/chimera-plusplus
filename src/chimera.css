@@ -1637,7 +1637,7 @@ body.is-mac
   padding: 26px;
   background: #fff;
 }
-.provider-editor header {
+.provider-editor > header {
   /* Badge sits beside the title, not above it. The outer .provider-editor
      padding is the single source of inset, so the V1 `padding: 22px` on this
      element is zeroed here rather than compounding to 48px. */
@@ -1647,15 +1647,15 @@ body.is-mac
   padding: 0;
   margin-bottom: 18px;
 }
-.provider-editor header > div {
+.provider-editor > header > div {
   min-width: 0;
 }
-.provider-editor header h2 {
+.provider-editor > header h2 {
   margin: 0;
   font-size: 17px;
   line-height: 1.25;
 }
-.provider-editor header p {
+.provider-editor > header p {
   margin: 4px 0 0;
   color: var(--ch-muted);
   font-size: 11px;
@@ -1716,7 +1716,7 @@ body.is-mac
   background: #eef1f3;
   color: var(--ink);
 }
-.provider-editor footer {
+.provider-editor > footer {
   position: sticky;
   bottom: -26px;
   margin: 12px -26px -26px;
@@ -1728,7 +1728,7 @@ body.is-mac
   background: #fff;
   border-top: 1px solid var(--line);
 }
-.provider-editor footer > div {
+.provider-editor > footer > div {
   display: flex;
   align-items: center;
   gap: 8px;

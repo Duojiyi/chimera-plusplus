@@ -194,6 +194,17 @@ fn validate_portable_root_path(path: &Path, strict: bool) -> Result<PathBuf, Str
     }
 
     let normalized = lexical_normalize_path(path);
+    // Store packages can live on any drive, outside the known Program Files roots.
+    if normalized
+        .to_string_lossy()
+        .split(['\\', '/'])
+        .any(|component| component.eq_ignore_ascii_case("WindowsApps"))
+    {
+        return Err(format!(
+            "Codex portable root 不能包含 WindowsApps/MSIX 路径组件，请选择可写的便携目录: {}",
+            normalized.display()
+        ));
+    }
     if is_filesystem_root(&normalized) {
         return Err(format!(
             "Codex portable root 不能是文件系统根目录: {}",
@@ -1499,6 +1510,54 @@ pub fn update_s3_sync_status(status: WebDavSyncStatus) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn portable_root_rejects_windowsapps_components_in_all_modes() {
+        let temp = tempfile::tempdir().unwrap();
+        for relative in [
+            "WindowsApps",
+            "windowsapps/Codex",
+            "store/WiNdOwSaPpS/Codex",
+        ] {
+            for strict in [false, true] {
+                let error = validate_portable_root_path(&temp.path().join(relative), strict)
+                    .expect_err("WindowsApps must never be a portable root");
+                assert!(error.contains("WindowsApps/MSIX"), "{error}");
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn portable_root_rejects_cross_drive_and_unc_windowsapps() {
+        for raw in [
+            r"D:\WindowsApps\OpenAI.Codex",
+            r"E:\store\wInDoWsApPs\Codex",
+            r"F:/WindowsApps/Codex",
+            r"G:\store/WindowsApps\Codex",
+            r"\\?\D:\WindowsApps\Codex",
+            r"\\server\share\WindowsApps\Codex",
+            r"\\?\UNC\server\share\WindowsApps\Codex",
+        ] {
+            for strict in [false, true] {
+                let error = validate_portable_root_path(Path::new(raw), strict)
+                    .expect_err("cross-drive and UNC Store packages must be rejected");
+                assert!(error.contains("WindowsApps/MSIX"), "{raw}: {error}");
+            }
+        }
+    }
+
+    #[test]
+    fn portable_root_allows_windowsapps_substrings() {
+        let temp = tempfile::tempdir().unwrap();
+        for relative in ["WindowsApps-backup/Codex", "MyWindowsApps/Codex", "Codex"] {
+            let path = temp.path().join(relative);
+            assert_eq!(
+                validate_portable_root_path(&path, false).unwrap(),
+                lexical_normalize_path(&path)
+            );
+        }
+    }
 
     #[test]
     fn startup_defaults_enabled_but_preserves_explicit_false() {

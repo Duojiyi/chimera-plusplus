@@ -94,9 +94,15 @@ impl CostCalculator {
             Decimal::from(usage.output_tokens) * pricing.output_cost_per_million / million;
         let cache_read_cost =
             Decimal::from(usage.cache_read_tokens) * pricing.cache_read_cost_per_million / million;
-        let cache_creation_cost = Decimal::from(usage.cache_creation_tokens)
-            * pricing.cache_creation_cost_per_million
-            / million;
+        let one_hour = usage
+            .cache_creation_1h_tokens
+            .min(usage.cache_creation_tokens);
+        // Existing cache-write pricing is the 5-minute rate (1.25x input).
+        // The 1-hour subset costs 1.6x that rate (2x input), not an extra bucket.
+        let weighted_cache_writes = Decimal::from(usage.cache_creation_tokens - one_hour)
+            + Decimal::from(one_hour) * Decimal::new(16, 1);
+        let cache_creation_cost =
+            weighted_cache_writes * pricing.cache_creation_cost_per_million / million;
 
         // 总成本 = 各项基础成本之和 × 倍率
         let base_total = input_cost + output_cost + cache_read_cost + cache_creation_cost;
@@ -153,12 +159,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn claude_cache_ttl_prices_subset_without_double_counting() {
+        let pricing = ModelPricing::from_strings("3", "15", "0.3", "3.75").unwrap();
+        for (one_hour, expected) in [
+            (0, "3.75"),
+            (400_000, "4.65"),
+            (1_000_000, "6"),
+            (2_000_000, "6"),
+        ] {
+            let usage = TokenUsage {
+                cache_creation_tokens: 1_000_000,
+                cache_creation_1h_tokens: one_hour,
+                ..Default::default()
+            };
+            let cost = CostCalculator::calculate(&usage, &pricing, Decimal::from(2));
+            let expected = Decimal::from_str(expected).unwrap();
+            assert_eq!(cost.cache_creation_cost, expected);
+            assert_eq!(cost.input_cost, Decimal::ZERO);
+            assert_eq!(cost.total_cost, expected * Decimal::from(2));
+        }
+    }
+
+    #[test]
     fn test_cost_calculation() {
         let usage = TokenUsage {
             input_tokens: 1000,
             output_tokens: 500,
             cache_read_tokens: 200,
             cache_creation_tokens: 100,
+            cache_creation_1h_tokens: 0,
             model: None,
             message_id: None,
         };
@@ -191,6 +220,7 @@ mod tests {
             output_tokens: 500,
             cache_read_tokens: 200,
             cache_creation_tokens: 100,
+            cache_creation_1h_tokens: 0,
             model: None,
             message_id: None,
         };
@@ -218,6 +248,7 @@ mod tests {
             output_tokens: 0,
             cache_read_tokens: 600,
             cache_creation_tokens: 0,
+            cache_creation_1h_tokens: 0,
             model: None,
             message_id: None,
         };
@@ -237,6 +268,7 @@ mod tests {
             output_tokens: 0,
             cache_read_tokens: 0,
             cache_creation_tokens: 0,
+            cache_creation_1h_tokens: 0,
             model: None,
             message_id: None,
         };
@@ -259,6 +291,7 @@ mod tests {
             output_tokens: 500,
             cache_read_tokens: 0,
             cache_creation_tokens: 0,
+            cache_creation_1h_tokens: 0,
             model: None,
             message_id: None,
         };
@@ -276,6 +309,7 @@ mod tests {
             output_tokens: 1,
             cache_read_tokens: 1,
             cache_creation_tokens: 1,
+            cache_creation_1h_tokens: 0,
             model: None,
             message_id: None,
         };

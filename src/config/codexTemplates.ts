@@ -57,17 +57,21 @@ export async function loadChimeraHubTemplate(): Promise<ChimeraHubTemplate> {
  * The only customer-facing built-in provider template. Its endpoint remains
  * editable in the provider editor for users with a dedicated relay address.
  * Until the backend template is loaded (browser preview, or a failed load)
- * this is an empty, still editable draft rather than a second copy.
+ * use the same public endpoint for an editable browser/offline draft.
+ * A contract test keeps these fallback fields aligned with the backend.
  */
 function getSharedChimeraHubTemplate(): ChimeraHubTemplate {
   const template = chimeraHubTemplate;
   return {
-    name: template?.name ?? "",
-    websiteUrl: template?.websiteUrl ?? "",
-    baseUrl: template?.baseUrl ?? "",
-    model: template?.model ?? "",
+    name: template?.name ?? "ChimeraHub",
+    websiteUrl: template?.websiteUrl ?? "https://api.chimerahub.org/",
+    baseUrl: template?.baseUrl ?? "https://api.chimerahub.org/v1",
+    model: template?.model ?? "gpt-5.6-sol",
     auth: { ...(template?.auth ?? { OPENAI_API_KEY: "" }) },
-    config: template?.config ?? "",
+    config:
+      template?.config ??
+      `${getCodexCustomTemplate().config}
+base_url = "https://api.chimerahub.org/v1"`,
   };
 }
 

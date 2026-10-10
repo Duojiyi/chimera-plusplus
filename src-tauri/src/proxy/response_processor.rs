@@ -813,6 +813,7 @@ pub fn create_logged_passthrough_stream(
             None
         };
 
+        let stream = crate::proxy::sse::limit_sse_frames(stream);
         tokio::pin!(stream);
 
         loop {
@@ -1384,6 +1385,7 @@ pub(crate) mod tests {
             output_tokens: 0,
             cache_read_tokens: 0,
             cache_creation_tokens: 0,
+            cache_creation_1h_tokens: 0,
             model: None,
             message_id: None,
         };
@@ -1452,6 +1454,7 @@ pub(crate) mod tests {
             output_tokens: 0,
             cache_read_tokens: 0,
             cache_creation_tokens: 0,
+            cache_creation_1h_tokens: 0,
             model: None,
             message_id: None,
         };
@@ -1534,6 +1537,7 @@ pub(crate) mod tests {
             output_tokens: 0,
             cache_read_tokens: 0,
             cache_creation_tokens: 0,
+            cache_creation_1h_tokens: 0,
             model: None,
             message_id: None,
         };

@@ -16,6 +16,7 @@ use crate::proxy::{
         canonical_json_string, canonicalize_json_string_if_parseable, canonicalize_tool_arguments,
         short_sha256_hex,
     },
+    usage::parser::first_nonzero_cache_tokens,
 };
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -2162,16 +2163,13 @@ pub(crate) fn chat_usage_to_responses_usage(usage: Option<&Value>) -> Value {
         "total_tokens": total_tokens
     });
 
-    let cached = usage
-        .pointer("/prompt_tokens_details/cached_tokens")
-        .or_else(|| usage.pointer("/input_tokens_details/cached_tokens"))
-        // DeepSeek's Chat Completions usage object reports cache hits under
-        // its own top-level field instead of either shape above — without
-        // this, DeepSeek cache hits normalize to 0 cached tokens (upstream
-        // cc-switch, same finding; mirrors the parser.rs fallback).
-        .or_else(|| usage.get("prompt_cache_hit_tokens"))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
+    let cached = first_nonzero_cache_tokens([
+        usage.pointer("/prompt_tokens_details/cached_tokens"),
+        usage.pointer("/input_tokens_details/cached_tokens"),
+        usage.get("prompt_cache_hit_tokens"),
+        usage.get("cache_read_input_tokens"),
+        usage.pointer("/input_token_details/cached_tokens"),
+    ]);
     let cache_write = usage
         .pointer("/prompt_tokens_details/cache_write_tokens")
         .or_else(|| usage.pointer("/input_tokens_details/cache_write_tokens"))
@@ -2475,6 +2473,84 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn chat_cache_normalization_skips_invalid_candidates_without_changing_priority() {
+        for ignored in [
+            json!(0),
+            Value::Null,
+            json!(-1),
+            json!(1.5),
+            json!("64"),
+            json!(true),
+            json!({}),
+            json!([]),
+        ] {
+            let mut usage = json!({
+                "prompt_tokens_details": {"cached_tokens": 11},
+                "input_tokens_details": {"cached_tokens": 22},
+                "prompt_cache_hit_tokens": 33,
+                "cache_read_input_tokens": 44,
+                "input_token_details": {"cached_tokens": 55}
+            });
+            for (path, expected) in [
+                ("/prompt_tokens_details/cached_tokens", 11),
+                ("/input_tokens_details/cached_tokens", 22),
+                ("/prompt_cache_hit_tokens", 33),
+                ("/cache_read_input_tokens", 44),
+                ("/input_token_details/cached_tokens", 55),
+            ] {
+                let normalized = chat_usage_to_responses_usage(Some(&usage));
+                assert_eq!(
+                    normalized["input_tokens_details"]["cached_tokens"], expected,
+                    "{usage}"
+                );
+                *usage.pointer_mut(path).unwrap() = ignored.clone();
+            }
+            assert!(chat_usage_to_responses_usage(Some(&usage))
+                .get("input_tokens_details")
+                .is_none());
+        }
+        assert!(chat_usage_to_responses_usage(Some(&json!({})))
+            .get("input_tokens_details")
+            .is_none());
+    }
+
+    #[test]
+    fn nonstreaming_chat_conversion_preserves_relay_cache_hits_for_accounting() {
+        for usage in [
+            json!({
+                "prompt_tokens": 100, "completion_tokens": 5,
+                "cache_read_input_tokens": 0,
+                "prompt_tokens_details": {"cached_tokens": 0},
+                "input_tokens_details": {"cached_tokens": null},
+                "prompt_cache_hit_tokens": 64
+            }),
+            json!({
+                "prompt_tokens": 100, "completion_tokens": 5,
+                "cache_read_input_tokens": 64
+            }),
+            json!({
+                "prompt_tokens": 100, "completion_tokens": 5,
+                "input_token_details": {"cached_tokens": 64}
+            }),
+        ] {
+            let response = chat_completion_to_response(json!({
+                "id": "chatcmpl_cache",
+                "model": "deepseek-chat",
+                "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+                "usage": usage
+            })).unwrap();
+            assert_eq!(
+                response["usage"]["input_tokens_details"]["cached_tokens"],
+                64
+            );
+            let parsed = crate::proxy::usage::TokenUsage::from_codex_response(&response).unwrap();
+            assert_eq!(parsed.cache_read_tokens, 64);
+            assert_eq!(parsed.input_tokens, 100);
+            assert_eq!(parsed.output_tokens, 5);
+        }
+    }
 
     #[test]
     fn chat_usage_normalization_reads_deepseek_prompt_cache_hit_tokens() {

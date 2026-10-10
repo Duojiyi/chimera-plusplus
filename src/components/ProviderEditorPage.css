@@ -113,9 +113,11 @@
   font-size: 14px;
   line-height: 20px;
 }
-.provider-editor-page input:not([type="checkbox"]):not([type="radio"]),
-.provider-editor-page select,
-.provider-editor-page textarea {
+.provider-editor-page
+  .editor-form
+  input:not([type="checkbox"]):not([type="radio"]),
+.provider-editor-page .editor-form select,
+.provider-editor-page .editor-form textarea {
   min-width: 0;
   width: 100%;
   min-height: 36px;
@@ -374,6 +376,12 @@
   gap: 12px;
   justify-content: space-between;
 }
+.provider-editor-page .editor-test-actions,
+.provider-editor-page .editor-save-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .provider-editor-page .editor-test-actions {
   min-width: 0;
   flex-wrap: wrap;
@@ -615,6 +623,7 @@
 .provider-editor-page .editor-template-actions small {
   display: block;
   margin-top: 2px;
+  font-size: 12px;
   line-height: 1.5;
 }
 .provider-editor-page .editor-template-actions small .link-button {
@@ -698,7 +707,9 @@
 }
 
 .provider-editor-page .editor-basic input,
-.provider-editor-page .editor-protocol input:not([type="radio"]) {
+.provider-editor-page
+  .editor-protocol
+  input:not([type="radio"]):not([type="checkbox"]) {
   height: 36px;
   line-height: 20px;
 }
@@ -737,4 +748,37 @@
 }
 .provider-editor-page .editor-save-summary dd {
   margin: 0;
+}
+
+/* Portal editors use the same shell typography and titlebar width as route pages. */
+.chimera-shell:has(> .provider-editor-page[data-fullscreen-panel]) > aside {
+  display: none;
+}
+
+.provider-editor-page .omp-model-picker,
+.provider-editor-page .omp-discovery-key {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.provider-editor-page .omp-discovery-key small {
+  color: #646970;
+  font-size: 13px;
+}
+.provider-editor-page .omp-model-options {
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 8px 12px;
+}
+.provider-editor-page .omp-model-options label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  overflow-wrap: anywhere;
+}
+.provider-editor-page .omp-model-options input {
+  flex-shrink: 0;
 }

@@ -172,9 +172,10 @@ pub fn create_anthropic_sse_stream<E: std::error::Error + Send + 'static>(
         let mut tool_blocks_by_index: HashMap<usize, ToolBlockState> = HashMap::new();
         let mut open_tool_block_indices: HashSet<u32> = HashSet::new();
 
+        let stream = crate::proxy::sse::limit_sse_frames(stream);
         tokio::pin!(stream);
 
-        while let Some(chunk) = stream.next().await {
+        'upstream: while let Some(chunk) = stream.next().await {
             match chunk {
                 Ok(bytes) => {
                     crate::proxy::sse::append_utf8_safe(&mut buffer, &mut utf8_remainder, &bytes);
@@ -182,6 +183,38 @@ pub fn create_anthropic_sse_stream<E: std::error::Error + Send + 'static>(
                     while let Some(line) = take_sse_block(&mut buffer) {
                         if line.trim().is_empty() {
                             continue;
+                        }
+
+                        let event_name = line.lines().find_map(|l| strip_sse_field(l, "event"));
+                        let data = line.lines()
+                            .filter_map(|l| strip_sse_field(l, "data"))
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        let value = serde_json::from_str::<Value>(&data).ok();
+                        let error = value.as_ref().and_then(|v| v.get("error"));
+                        let has_error = error.is_some_and(|error| match error {
+                            Value::Null => false,
+                            Value::Object(object) => !object.is_empty(),
+                            Value::String(message) => !message.trim().is_empty(),
+                            _ => true,
+                        });
+                        if event_name.map(str::trim) == Some("error") || has_error {
+                            let detail = error.filter(|_| has_error).or(value.as_ref());
+                            let message = detail
+                                .and_then(|v| v.get("message").and_then(Value::as_str).or_else(|| v.as_str()))
+                                .map(str::to_owned)
+                                .unwrap_or_else(|| data.clone());
+                            let error_type = detail
+                                .and_then(|v| v.get("type"))
+                                .and_then(Value::as_str)
+                                .filter(|value| !value.is_empty())
+                                .unwrap_or("api_error");
+                            stream_ended_with_error = true;
+                            yield Ok(anthropic_sse(json!({
+                                "type": "error",
+                                "error": { "type": error_type, "message": message }
+                            })));
+                            break 'upstream;
                         }
 
                         for l in line.lines() {
@@ -734,6 +767,68 @@ mod tests {
                 serde_json::from_str::<Value>(data).ok()
             })
             .collect()
+    }
+
+    #[tokio::test]
+    async fn upstream_sse_errors_terminate_without_success() {
+        let partial = "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n";
+        let finish = "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+        for prefix in [
+            String::new(),
+            partial.to_string(),
+            format!("{partial}{finish}"),
+        ] {
+            for error in [
+                "data: {\"error\":{\"message\":\"quota exceeded\",\"type\":\"rate_limit_error\"}}\n\n",
+                "event: error\r\ndata: {\"message\":\"quota exceeded\"}\r\n\r\n",
+                "event:error\ndata: quota exceeded\n\n",
+                "event: error\ndata: {\"error\": {\ndata: \"message\": \"quota exceeded\"}}\n\n",
+            ] {
+                for suffix in ["", "data: [DONE]\n\n"] {
+                    let events = collect_anthropic_events(&format!("{prefix}{error}{suffix}")).await;
+                    let errors: Vec<_> = events.iter().filter(|v| event_type(v) == Some("error")).collect();
+                    assert_eq!(errors.len(), 1);
+                    assert_eq!(errors[0]["error"]["message"], "quota exceeded");
+                    if error.contains("rate_limit_error") {
+                        assert_eq!(errors[0]["error"]["type"], "rate_limit_error");
+                    }
+                    assert!(!events.iter().any(|v| matches!(event_type(v), Some("message_delta" | "message_stop"))));
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn upstream_sse_error_stops_consuming_later_chunks() {
+        let source = futures::stream::iter([Ok::<_, std::io::Error>(Bytes::from_static(
+            b"data: {\"error\":\"quota exceeded\"}\n\n",
+        ))])
+        .chain(futures::stream::poll_fn(
+            |_| -> std::task::Poll<Option<Result<Bytes, std::io::Error>>> {
+                panic!("must not poll upstream after its error event");
+            },
+        ));
+        let chunks: Vec<_> = create_anthropic_sse_stream(source).collect().await;
+        assert_eq!(chunks.len(), 1);
+        assert!(String::from_utf8_lossy(chunks[0].as_ref().unwrap()).contains("quota exceeded"));
+    }
+
+    #[tokio::test]
+    async fn empty_error_fields_do_not_reject_normal_chunks() {
+        for error in [json!(null), json!({}), json!("")] {
+            let chunk = json!({
+                "error": error,
+                "choices": [{ "delta": { "content": "normal" }, "finish_reason": "stop" }]
+            });
+            let events =
+                collect_anthropic_events(&format!("data: {chunk}\n\ndata: [DONE]\n\n")).await;
+            assert!(!events
+                .iter()
+                .any(|event| event_type(event) == Some("error")));
+            assert!(events
+                .iter()
+                .any(|event| event_type(event) == Some("message_stop")));
+        }
     }
 
     fn event_type(event: &Value) -> Option<&str> {

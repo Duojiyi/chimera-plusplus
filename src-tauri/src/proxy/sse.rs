@@ -1,3 +1,56 @@
+use bytes::Bytes;
+use futures::{Stream, StreamExt};
+
+/// Bound each raw SSE frame before a converter or usage inspector buffers it.
+/// Split at frame boundaries so a chunk containing many frames does not become
+/// one large parser buffer. No total response size limit applies.
+pub(crate) fn limit_sse_frames<E: std::error::Error + Send + 'static>(
+    stream: impl Stream<Item = Result<Bytes, E>> + Send + 'static,
+) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send {
+    limit_sse_frames_with_limit(stream, crate::security_limits::MAX_SSE_FRAME_BYTES)
+}
+
+fn limit_sse_frames_with_limit<E: std::error::Error + Send + 'static>(
+    stream: impl Stream<Item = Result<Bytes, E>> + Send + 'static,
+    limit: usize,
+) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send {
+    async_stream::stream! {
+        tokio::pin!(stream);
+        let mut frame_bytes = 0usize;
+        let mut tail = 0u32;
+        while let Some(chunk) = stream.next().await {
+            let bytes = match chunk {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    yield Err(std::io::Error::other(error.to_string()));
+                    return;
+                }
+            };
+            let mut start = 0;
+            for (index, byte) in bytes.iter().enumerate() {
+                if frame_bytes == limit {
+                    yield Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("SSE frame exceeds configured limit of {limit} bytes"),
+                    ));
+                    return;
+                }
+                frame_bytes += 1;
+                tail = (tail << 8) | u32::from(*byte);
+                if tail & 0xffff == 0x0a0a || tail == 0x0d0a0d0a {
+                    yield Ok(bytes.slice(start..index + 1));
+                    start = index + 1;
+                    frame_bytes = 0;
+                    tail = 0;
+                }
+            }
+            if start < bytes.len() {
+                yield Ok(bytes.slice(start..));
+            }
+        }
+    }
+}
+
 #[inline]
 pub(crate) fn strip_sse_field<'a>(line: &'a str, field: &str) -> Option<&'a str> {
     line.strip_prefix(&format!("{field}: "))
@@ -341,5 +394,156 @@ mod tests {
             replacement_count, 4,
             "each invalid byte should produce one U+FFFD"
         );
+    }
+
+    #[tokio::test]
+    async fn frame_limit_is_per_frame_including_split_delimiters() {
+        use super::limit_sse_frames_with_limit;
+        use bytes::Bytes;
+        use futures::{stream, StreamExt};
+
+        // Each frame is exactly ten bytes; total stream size exceeds the limit.
+        // CRLF, UTF-8 and LF delimiters are all split across network chunks.
+        let input = "data:x\r\n\r\ndata:中\n\ndata:x\r\n\r\n";
+        for chunk_size in [1, 2, 3, input.len()] {
+            let chunks: Vec<_> = input
+                .as_bytes()
+                .chunks(chunk_size)
+                .map(|chunk| Ok::<_, std::io::Error>(Bytes::copy_from_slice(chunk)))
+                .collect();
+            let output = limit_sse_frames_with_limit(stream::iter(chunks), 10);
+            let output: Vec<_> = output.collect().await;
+            let mut buffer = String::new();
+            let mut remainder = Vec::new();
+            let mut frames = Vec::new();
+            for chunk in output {
+                append_utf8_safe(&mut buffer, &mut remainder, &chunk.unwrap());
+                while let Some(frame) = take_sse_block(&mut buffer) {
+                    frames.push(frame);
+                }
+                assert!(buffer.len() <= 10);
+            }
+            assert_eq!(frames, ["data:x", "data:中", "data:x"]);
+            assert!(buffer.is_empty());
+            assert!(remainder.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn oversized_partial_frame_stops_polling_upstream() {
+        use super::limit_sse_frames_with_limit;
+        use bytes::Bytes;
+        use futures::{stream, StreamExt};
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        let polls = Arc::new(AtomicUsize::new(0));
+        let observed = polls.clone();
+        let source = stream::iter(["data:ok\n\n", "123456789", "0", "must not be polled"]).map(
+            move |chunk| {
+                observed.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, std::io::Error>(Bytes::from_static(chunk.as_bytes()))
+            },
+        );
+        // First frame is 9 bytes, then the unfinished frame exceeds nine bytes.
+        let output: Vec<_> = limit_sse_frames_with_limit(source, 9).collect().await;
+        assert_eq!(
+            output.last().unwrap().as_ref().unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+        assert_eq!(polls.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn frame_limit_error_is_not_converted_to_success() {
+        use super::limit_sse_frames_with_limit;
+        use bytes::Bytes;
+        use futures::{stream, StreamExt};
+
+        let source = stream::iter([Ok::<_, std::io::Error>(Bytes::from_static(
+            b"data: too large",
+        ))]);
+        let guarded = limit_sse_frames_with_limit(source, 8);
+        let converted = crate::proxy::providers::streaming::create_anthropic_sse_stream(guarded);
+        let chunks: Vec<_> = converted.collect().await;
+        let body = String::from_utf8(
+            chunks
+                .into_iter()
+                .map(Result::unwrap)
+                .collect::<Vec<_>>()
+                .concat(),
+        )
+        .unwrap();
+        assert!(body.contains("SSE frame exceeds"));
+        assert!(body.contains("event: error"));
+        assert!(!body.contains("event: message_stop"));
+
+        let source = stream::iter([Ok::<_, std::io::Error>(Bytes::from_static(
+            b"data: too large",
+        ))]);
+        let guarded = limit_sse_frames_with_limit(source, 8);
+        let converted =
+            crate::proxy::providers::streaming_codex_chat::create_responses_sse_stream_from_chat(
+                guarded,
+            );
+        let chunks: Vec<_> = converted.collect().await;
+        let body = String::from_utf8(
+            chunks
+                .into_iter()
+                .map(Result::unwrap)
+                .collect::<Vec<_>>()
+                .concat(),
+        )
+        .unwrap();
+        assert!(body.contains("SSE frame exceeds"));
+        assert!(body.contains("response.failed"));
+        assert!(!body.contains("response.completed"));
+    }
+
+    #[tokio::test]
+    async fn oversized_complete_frame_is_rejected_even_in_one_chunk() {
+        use super::limit_sse_frames_with_limit;
+        use bytes::Bytes;
+        use futures::{stream, StreamExt};
+
+        for input in ["123456789\n\n", "1234567\r\n\r\n"] {
+            let source = stream::iter([Ok::<_, std::io::Error>(Bytes::copy_from_slice(
+                input.as_bytes(),
+            ))]);
+            let chunks: Vec<_> = limit_sse_frames_with_limit(source, 10).collect().await;
+            assert_eq!(chunks.len(), 1);
+            assert!(chunks[0].is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn passthrough_propagates_frame_limit_failure() {
+        use super::limit_sse_frames_with_limit;
+        use bytes::Bytes;
+        use futures::{stream, StreamExt};
+
+        let source = stream::iter([Ok::<_, std::io::Error>(Bytes::from_static(
+            b"data: too large",
+        ))]);
+        let guarded = limit_sse_frames_with_limit(source, 8);
+        let output = crate::proxy::response_processor::create_logged_passthrough_stream(
+            guarded,
+            "test",
+            None,
+            crate::proxy::handler_context::StreamingTimeoutConfig {
+                first_byte_timeout: 0,
+                idle_timeout: 0,
+            },
+            None,
+        );
+        let chunks: Vec<_> = output.collect().await;
+        assert_eq!(chunks.len(), 1);
+        assert!(chunks[0]
+            .as_ref()
+            .unwrap_err()
+            .to_string()
+            .contains("SSE frame exceeds"));
     }
 }

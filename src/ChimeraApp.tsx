@@ -73,14 +73,8 @@ import {
 } from "@/lib/api/model-fetch";
 import { getChimeraHubTemplate } from "@/config/codexTemplates";
 import { CodexContextWindowField } from "@/components/providers/CodexContextWindowField";
-import {
-  CodexPresetStart,
-  type StartingPoint,
-} from "@/components/providers/CodexPresetStart";
-import type {
-  PresetDraftSeed,
-  PresetSelection,
-} from "@/utils/codexPresetDraft";
+import { CodexPresetStart } from "@/components/providers/CodexPresetStart";
+import type { PresetDraftSeed } from "@/utils/codexPresetDraft";
 import {
   extractCodexBaseUrl,
   extractCodexExperimentalBearerToken,
@@ -538,6 +532,9 @@ export function providerDraft(
     original: provider ?? null,
     nativeProtocol: "",
     ...native,
+    ...(!provider && native
+      ? { baseUrl: getChimeraHubTemplate().baseUrl }
+      : {}),
   };
 }
 
@@ -3345,7 +3342,7 @@ export function NewRuntimeView({
             </code>
             <small>
               {!runningInTauri
-                ? "请在桌面 DEV 中验证安装状态"
+                ? "请在桌面应用中查看安装状态"
                 : runtime?.installed
                   ? runtimeText(runtime.installMode)
                   : "安装状态以本机检测为准"}
@@ -3591,7 +3588,7 @@ export function NewRuntimeView({
             <p>
               {runningInTauri
                 ? "尚无已确认的本机版本记录。"
-                : "桌面 DEV 检测后显示，不使用示例版本或安装时间。"}
+                : "连接本机后显示实际版本和安装时间。"}
             </p>
           )}
         </section>
@@ -4658,13 +4655,13 @@ export function ProviderEditor({
       ? [
           ["@ai-sdk/openai-compatible", "Chat Completions"],
           ["@ai-sdk/openai", "Responses"],
-          ["@ai-sdk/anthropic", "Anthropic"],
+          ["@ai-sdk/anthropic", "Anthropic Messages"],
           ["@ai-sdk/google", "Gemini"],
         ]
       : [
           ["openai-completions", "Chat Completions"],
           ["openai-responses", "Responses"],
-          ["anthropic-messages", "Anthropic"],
+          ["anthropic-messages", "Anthropic Messages"],
           ["google-generative-ai", "Gemini"],
         ];
   const [commonConfigOpen, setCommonConfigOpen] = useState(false);
@@ -4677,9 +4674,6 @@ export function ProviderEditor({
   const advancedRef = useRef<HTMLDetailsElement>(null);
   const [validationAttempted, setValidationAttempted] = useState(false);
   const [restorePending, setRestorePending] = useState(false);
-  const [startingPoint, setStartingPoint] = useState<StartingPoint | null>(
-    null,
-  );
   useEffect(() => {
     headingRef.current?.focus({ preventScroll: true });
   }, []);
@@ -4729,35 +4723,7 @@ export function ProviderEditor({
       ...providerDraft(null, editor.name || "新线路"),
       id: editor.id,
     });
-    setStartingPoint(null);
     setRestorePending(false);
-  };
-  const applyPreset = (selection: PresetSelection) => {
-    setOpenReasoningRow(null);
-    setOpenInstructionsRow(null);
-    setValidationAttempted(false);
-    // A name the user typed survives; one that was filled in for them follows
-    // the preset.
-    const nameIsAuto =
-      !editor.name.trim() ||
-      editor.name === "默认线路" ||
-      editor.name === "新线路" ||
-      editor.name === getChimeraHubTemplate().name ||
-      editor.name === startingPoint?.label;
-    const draft = providerDraftFromSeed(selection.seed, editor.id);
-    setEditor({ ...draft, name: nameIsAuto ? draft.name : editor.name });
-    setStartingPoint(selection);
-    // Leave the caret on the first thing still to fill in. Deferred so it runs
-    // after the picker has handed focus back to the button that opened it.
-    const next =
-      selection.seed.baseUrl && !selection.endpointPlaceholder
-        ? "provider-api-key"
-        : "provider-base-url";
-    window.setTimeout(() => {
-      pageRef.current
-        ?.querySelector<HTMLInputElement>(`[name="${next}"]`)
-        ?.focus();
-    }, 0);
   };
   const submit = () => {
     setValidationAttempted(true);
@@ -4884,12 +4850,7 @@ export function ProviderEditor({
               </p>
             )}
           {isCodex && !editor.original && (
-            <CodexPresetStart
-              applied={startingPoint}
-              dirty={dirty}
-              onPick={applyPreset}
-              onRestore={() => setRestorePending(true)}
-            />
+            <CodexPresetStart onRestore={() => setRestorePending(true)} />
           )}
           <section
             className="editor-basic"
@@ -4997,7 +4958,11 @@ export function ProviderEditor({
                     {showKey ? <EyeOff size={16} /> : <Eye size={16} />}
                   </button>
                 </div>
-                <small>预览仅显示填写状态，不展示密钥内容。</small>
+                <small>
+                  {isCodex
+                    ? "密钥仅用于此线路，不会显示在保存详情中。"
+                    : "需要密钥的服务请填写 API Key；仅本地免认证服务或工具已有有效认证时可留空。"}
+                </small>
               </label>
             </div>
           </section>
@@ -5019,8 +4984,8 @@ export function ProviderEditor({
                       [
                         ["auto", "自动"],
                         ["openai_responses", "Responses"],
-                        ["openai_chat", "Chat"],
-                        ["anthropic", "Anthropic"],
+                        ["openai_chat", "Chat Completions"],
+                        ["anthropic", "Anthropic Messages"],
                       ] as const
                     ).map(([value, label]) => (
                       <label key={value}>
@@ -5821,13 +5786,18 @@ export function ProviderEditor({
           {!isCodex && (
             <p className="editor-test-scope">
               {appId === "opencode" || appId === "pi"
-                ? "编辑此线路的首个模型，其他模型与高级设置会保留；默认模型仍在工具中选择。"
+                ? "配置此线路的首个模型；已有的其他模型与高级设置会保留。保存后仍需在工具中选择默认模型。"
                 : "使用工具原生协议。模型留空时由工具选择，未填写密钥时沿用工具自身的登录方式。"}
             </p>
           )}
           {modelFetchError && (
             <p className="editor-model-error" role="status">
               <CircleAlert size={15} /> {modelFetchError}
+            </p>
+          )}
+          {(appId === "pi" || appId === "opencode") && (
+            <p className="editor-test-scope">
+              启用此线路不会停用其他线路，也不会切换工具的默认模型。
             </p>
           )}
           <p className="editor-test-scope">
@@ -5902,8 +5872,10 @@ export function ProviderEditor({
                 <>
                   <LoaderCircle className="spin" size={15} /> 正在保存…
                 </>
+              ) : appId === "pi" || appId === "opencode" ? (
+                "保存并启用"
               ) : (
-                "保存并应用"
+                "保存并切换"
               )}
             </button>
           </div>
@@ -6319,7 +6291,8 @@ function Onboarding({ onAdd }: { onAdd: () => void }) {
       </div>
       <h2>开始配置你的 Codex</h2>
       <p>
-        粘贴 Chimera 中转站密钥，Chimera++ 会获取模型列表并写入 Codex 配置。
+        已预填 Chimera 请求地址。填写密钥和模型，确认保存并切换后才会写入 Codex
+        配置。
       </p>
       <ol>
         <li>

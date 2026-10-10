@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  codexProviderPresets,
-  type CodexProviderPreset,
-} from "@/config/codexProviderPresets";
+import { type CodexProviderPreset } from "@/config/codexProviderPresets";
 import {
   BLANK_LINE_LABEL,
   blankSelection,
@@ -285,10 +282,10 @@ describe("blankSelection", () => {
 });
 
 describe("the bundled Codex presets", () => {
-  const entries = startablePresets(codexProviderPresets);
+  const entries = startablePresets();
 
-  it("offers a useful number of starting points", () => {
-    expect(entries.length).toBeGreaterThanOrEqual(40);
+  it("only offers the Chimera template", () => {
+    expect(entries.map((entry) => entry.id)).toEqual(["ChimeraHub"]);
   });
 
   it("gives every starting point a unique name", () => {
@@ -314,7 +311,7 @@ describe("the bundled Codex presets", () => {
     const placeholders = entries
       .filter((e) => endpointPlaceholder(e.baseUrl))
       .map((e) => e.id);
-    expect(placeholders).toEqual(["Azure OpenAI"]);
+    expect(placeholders).toEqual([]);
   });
 
   it("is a model catalog that stays inside its own list: the default model is mapped or built in", () => {

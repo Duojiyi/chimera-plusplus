@@ -16,7 +16,71 @@ type OmoProviderRow = (
     String,
 );
 
+/// Selection and takeover backup touched by a compensated provider update.
+pub(crate) struct ProviderUpdateSelection {
+    current_ids: Vec<String>,
+    backup: Option<(String, String)>,
+}
+
 impl Database {
+    pub(crate) fn snapshot_provider_update_selection(
+        &self,
+        app: &str,
+    ) -> Result<ProviderUpdateSelection, AppError> {
+        let conn = lock_conn!(self.conn);
+        let mut stmt = conn.prepare(
+            "SELECT id FROM providers WHERE app_type = ?1 AND is_current = 1 ORDER BY id",
+        )?;
+        let current_ids = stmt
+            .query_map([app], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        let backup = conn
+            .query_row(
+                "SELECT original_config, backed_up_at FROM proxy_live_backup WHERE app_type = ?1",
+                [app],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        Ok(ProviderUpdateSelection {
+            current_ids,
+            backup,
+        })
+    }
+
+    pub(crate) fn restore_provider_update_selection(
+        &self,
+        app: &str,
+        before: &ProviderUpdateSelection,
+    ) -> Result<(), AppError> {
+        let now = self.snapshot_provider_update_selection(app)?;
+        let mut conn = lock_conn!(self.conn);
+        let tx = conn.transaction()?;
+        if now.current_ids != before.current_ids {
+            tx.execute(
+                "UPDATE providers SET is_current = 0 WHERE app_type = ?1 AND is_current = 1",
+                [app],
+            )?;
+            for id in &before.current_ids {
+                tx.execute(
+                    "UPDATE providers SET is_current = 1 WHERE app_type = ?1 AND id = ?2",
+                    [app, id.as_str()],
+                )?;
+            }
+        }
+        if now.backup != before.backup {
+            match &before.backup {
+                Some((config, timestamp)) => {
+                    tx.execute("INSERT OR REPLACE INTO proxy_live_backup (app_type, original_config, backed_up_at) VALUES (?1, ?2, ?3)", params![app, config, timestamp])?;
+                }
+                None => {
+                    tx.execute("DELETE FROM proxy_live_backup WHERE app_type = ?1", [app])?;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn get_all_providers(
         &self,
         app_type: &str,

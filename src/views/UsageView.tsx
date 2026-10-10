@@ -392,7 +392,7 @@ export function UsageView() {
                 : "30"}{" "}
             天&nbsp; · &nbsp;{rangeLabel}
           </span>
-          <strong>{formatUsageTokens(total)}</strong>
+          <strong>{summary ? formatUsageTokens(total) : "—"}</strong>
           <small>
             {syncing
               ? "正在后台同步本机会话记录，已有数据仍可查看…"

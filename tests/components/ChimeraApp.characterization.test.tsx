@@ -136,7 +136,7 @@ function fillField(name: string, value: string) {
     target: { value },
   });
 }
-const saveButton = () => screen.getByRole("button", { name: "保存并应用" });
+const saveButton = () => screen.getByRole("button", { name: "保存并切换" });
 
 beforeEach(() => {
   window.localStorage.clear();
