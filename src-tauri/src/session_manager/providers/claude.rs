@@ -62,41 +62,62 @@ pub fn load_messages(path: &Path) -> Result<Vec<SessionMessage>, String> {
             None => continue,
         };
 
-        let mut role = message
+        let role = message
             .get("role")
             .and_then(Value::as_str)
             .unwrap_or("unknown")
             .to_string();
+        let ts = value.get("timestamp").and_then(parse_timestamp_to_ms);
 
-        // Claude wraps tool_result inside user messages; reclassify as "tool" role
+        // Claude wraps tool_result inside user messages, sometimes next to the
+        // user's own text. Split those items out as "tool" entries so command
+        // and file output is never filed under the user's turn.
         if role == "user" {
             if let Some(Value::Array(items)) = message.get("content") {
-                let all_tool_results = !items.is_empty()
-                    && items.iter().all(|item| {
-                        item.get("type").and_then(Value::as_str) == Some("tool_result")
-                    });
-                if all_tool_results {
-                    role = "tool".to_string();
+                for (role, run) in tool_result_runs(items) {
+                    push_message(&mut messages, role, &Value::Array(run), ts);
                 }
+                continue;
             }
         }
 
-        let content = message.get("content").map(extract_text).unwrap_or_default();
-        if content.trim().is_empty() {
-            continue;
+        if let Some(content) = message.get("content") {
+            push_message(&mut messages, &role, content, ts);
         }
-
-        let ts = value.get("timestamp").and_then(parse_timestamp_to_ms);
-
-        messages.push(SessionMessage {
-            role,
-            content,
-            ts,
-            truncated: false,
-        });
     }
 
     Ok(messages)
+}
+
+/// Consecutive items of a user message, grouped by whether they are tool
+/// results, in their original order.
+fn tool_result_runs(items: &[Value]) -> Vec<(&'static str, Vec<Value>)> {
+    let mut runs: Vec<(&'static str, Vec<Value>)> = Vec::new();
+    for item in items {
+        let role = if item.get("type").and_then(Value::as_str) == Some("tool_result") {
+            "tool"
+        } else {
+            "user"
+        };
+        match runs.last_mut() {
+            Some((last, run)) if *last == role => run.push(item.clone()),
+            _ => runs.push((role, vec![item.clone()])),
+        }
+    }
+    runs
+}
+
+fn push_message(messages: &mut Vec<SessionMessage>, role: &str, content: &Value, ts: Option<i64>) {
+    let content = extract_text(content);
+    if content.trim().is_empty() {
+        return;
+    }
+    messages.push(SessionMessage {
+        role: role.to_string(),
+        content,
+        ts,
+        truncated: false,
+    });
 }
 
 pub fn delete_session(_root: &Path, path: &Path, session_id: &str) -> Result<bool, String> {
@@ -345,6 +366,25 @@ mod tests {
         assert!(msgs[0].content.contains("[Tool: Write]"));
         assert_eq!(msgs[1].role, "tool");
         assert_eq!(msgs[1].content, "File written");
+    }
+
+    #[test]
+    fn load_messages_splits_tool_results_out_of_a_mixed_user_turn() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("session.jsonl");
+        std::fs::write(
+            &path,
+            "{\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_1\",\"content\":\"SECRET=abc\"},{\"type\":\"text\",\"text\":\"Now fix it.\"}]},\"timestamp\":\"2026-03-06T10:00:00Z\"}\n",
+        )
+        .expect("write");
+
+        let msgs = load_messages(&path).expect("load");
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].role, "tool");
+        assert_eq!(msgs[0].content, "SECRET=abc");
+        assert_eq!(msgs[1].role, "user");
+        assert_eq!(msgs[1].content, "Now fix it.");
+        assert_eq!(msgs[0].ts, msgs[1].ts);
     }
 
     #[test]

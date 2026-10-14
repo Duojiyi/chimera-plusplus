@@ -10,6 +10,30 @@ numbers belong to a separate upstream line.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.8.5] - 2026-10-14
+
+### Changed
+
+- Redesign the home, line editor, tools, usage, settings and runtime pages page by page, with shared help tips, line badges and operation receipts.
+- Speed-test every saved line in one batch and show each result in its own row instead of on the current line's signboard.
+- Download runtime and skin assets through the same HTTP client as update checks, so the configured system proxy applies.
+
+### Added
+
+- Show Codex prompt status (missing, edited, malformed, overridden, linked) with rewrite and keep-edits actions.
+- Explain configuration health problems with line and column, and announce loading and progress to screen readers.
+- Recognise Codex desktop-bundled CLIs and keep `[agents]` / `[memories]` model keys with their line.
+
+### Fixed
+
+- Refuse deep-link values that expand files, environment variables or commands, ignore remote `configUrl`, allowlist Codex and Grok link config keys, and require consent before enabling usage scripts.
+- Proxy: reject compaction items, handle hosted `tool_choice`, orphan tool outputs, xAI outputs without `call_id` and Anthropic orphan text.
+- Stop double counting forked Codex sessions in usage and handle zero balances as valid.
+- Open session records larger than 32 MiB, remove duplicate rows, and back up Codex input history before deleting a session's prompts from it.
+- Keep Claude tool output out of the user's turn so session exports exclude it by default.
+- Keep unreadable account slots and retain tokens when an account refresh fails.
+- Show the error inside the runtime history dialog when installing a selected version fails.
+
 ## [2.8.4] - 2026-10-11
 
 ### Changed

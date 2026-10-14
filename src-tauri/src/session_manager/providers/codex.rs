@@ -719,7 +719,37 @@ impl SessionCleanup {
                     .map_err(|error| failed(error.to_string()))?;
             }
         }
-        Ok(())
+        self.backup_history(&backup_dir)
+    }
+
+    /// The input history is rewritten in place, so keep a copy first: a crash
+    /// mid-write must not lose prompts. A file too large to rewrite is left
+    /// alone by the cleanup and needs no copy.
+    fn backup_history(&self, backup_dir: &Path) -> Result<(), String> {
+        let history = self.config_dir.join(CODEX_HISTORY_FILENAME);
+        let failed = |error: String| {
+            format!(
+                "Failed to back up {} before deleting the session: {error}",
+                history.display()
+            )
+        };
+        match std::fs::metadata(&history) {
+            Ok(metadata) if metadata.len() <= MAX_HISTORY_REWRITE_BYTES => {}
+            Ok(_) => return Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(failed(error.to_string())),
+        }
+        let content = read_limited(&history, MAX_HISTORY_REWRITE_BYTES)
+            .map_err(|error| failed(error.to_string()))?;
+        if !content
+            .split_inclusive(|&byte| byte == b'\n')
+            .any(|line| line_names_one_of(line, "session_id", &self.thread_ids))
+        {
+            return Ok(());
+        }
+        std::fs::create_dir_all(backup_dir).map_err(|error| failed(error.to_string()))?;
+        std::fs::write(backup_dir.join(CODEX_HISTORY_FILENAME), &content)
+            .map_err(|error| failed(error.to_string()))
     }
 
     fn run(self) -> SessionDeleteResult {
@@ -3386,6 +3416,17 @@ mod tests {
             result.error
         );
         assert_eq!(std::fs::read_to_string(&history).unwrap(), other_line);
+
+        // The rewrite is in place, so the original was copied aside first.
+        let backups: Vec<_> = std::fs::read_dir(home.join("session-delete-backups"))
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path().join(CODEX_HISTORY_FILENAME))
+            .filter(|path| path.exists())
+            .collect();
+        assert_eq!(backups.len(), 1, "{backups:?}");
+        let saved = std::fs::read_to_string(&backups[0]).unwrap();
+        assert!(saved.contains("root prompt") && saved.contains("child prompt"));
     }
 
     #[test]

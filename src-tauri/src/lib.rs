@@ -1784,6 +1784,8 @@ pub fn run() {
             commands::import_prompt_from_file,
             commands::get_current_prompt_file_content,
             commands::adopt_foreign_codex_prompt,
+            commands::get_codex_prompt_status,
+            commands::resolve_codex_prompt_file,
             // Profile management (项目配置方案)
             commands::list_profiles,
             commands::create_profile,
