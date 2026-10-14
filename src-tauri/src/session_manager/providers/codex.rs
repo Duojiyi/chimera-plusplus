@@ -620,6 +620,8 @@ struct SessionCleanup {
     /// edges and thread rows so a retry can find the same subtree.
     unreadable_graph_homes: Vec<PathBuf>,
     errors: Vec<String>,
+    /// Where this delete keeps its copies of the stores it rewrites.
+    backup_dir: PathBuf,
 }
 
 impl SessionCleanup {
@@ -673,12 +675,18 @@ impl SessionCleanup {
             }
         }
 
+        let backup_dir = session_delete_backup_root(&config_dir).join(format!(
+            "{}_{}",
+            chrono::Local::now().format("%Y%m%d_%H%M%S"),
+            uuid::Uuid::new_v4()
+        ));
         Ok(Self {
             config_dir,
             homes,
             thread_ids,
             unreadable_graph_homes,
             errors,
+            backup_dir,
         })
     }
 
@@ -686,11 +694,7 @@ impl SessionCleanup {
     /// online backup API (Codex keeps them open in WAL mode). DBs without
     /// matching rows are left out so an unrelated large log DB is not copied.
     fn backup(&self) -> Result<(), String> {
-        let backup_dir = session_delete_backup_root(&self.config_dir).join(format!(
-            "{}_{}",
-            chrono::Local::now().format("%Y%m%d_%H%M%S"),
-            uuid::Uuid::new_v4()
-        ));
+        let backup_dir = &self.backup_dir;
         for (index, home) in self.homes.iter().enumerate() {
             for db in CodexRuntimeDb::DELETE_ORDER {
                 let db_path = home.join(db.filename());
@@ -719,37 +723,10 @@ impl SessionCleanup {
                     .map_err(|error| failed(error.to_string()))?;
             }
         }
-        self.backup_history(&backup_dir)
-    }
-
-    /// The input history is rewritten in place, so keep a copy first: a crash
-    /// mid-write must not lose prompts. A file too large to rewrite is left
-    /// alone by the cleanup and needs no copy.
-    fn backup_history(&self, backup_dir: &Path) -> Result<(), String> {
-        let history = self.config_dir.join(CODEX_HISTORY_FILENAME);
-        let failed = |error: String| {
-            format!(
-                "Failed to back up {} before deleting the session: {error}",
-                history.display()
-            )
-        };
-        match std::fs::metadata(&history) {
-            Ok(metadata) if metadata.len() <= MAX_HISTORY_REWRITE_BYTES => {}
-            Ok(_) => return Ok(()),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => return Err(failed(error.to_string())),
-        }
-        let content = read_limited(&history, MAX_HISTORY_REWRITE_BYTES)
-            .map_err(|error| failed(error.to_string()))?;
-        if !content
-            .split_inclusive(|&byte| byte == b'\n')
-            .any(|line| line_names_one_of(line, "session_id", &self.thread_ids))
-        {
-            return Ok(());
-        }
-        std::fs::create_dir_all(backup_dir).map_err(|error| failed(error.to_string()))?;
-        std::fs::write(backup_dir.join(CODEX_HISTORY_FILENAME), &content)
-            .map_err(|error| failed(error.to_string()))
+        // history.jsonl is copied by its rewrite, under the same lock: Codex
+        // holds that lock while it appends, and Windows refuses reads of a
+        // locked range.
+        Ok(())
     }
 
     fn run(self) -> SessionDeleteResult {
@@ -777,6 +754,7 @@ impl SessionCleanup {
         if let Err(error) = remove_sessions_from_history(
             &self.config_dir.join(CODEX_HISTORY_FILENAME),
             &self.thread_ids,
+            Some(&self.backup_dir),
         ) {
             errors.push(format!("{CODEX_HISTORY_FILENAME}: {error}"));
         }
@@ -1205,7 +1183,13 @@ fn commit_index_rewrite(index_path: &Path, plan: LinesRewrite) -> Result<(), Str
 /// for every append (`codex-rs/message-history`), so the rewrite happens in
 /// place under the same lock instead of by replacing the file. A held lock or
 /// a file that changed underneath is reported for a retry with Codex closed.
-fn remove_sessions_from_history(history_path: &Path, session_ids: &[String]) -> Result<(), String> {
+/// With `backup_dir`, the bytes about to be replaced are copied there first,
+/// so a crash mid-write cannot lose prompts.
+fn remove_sessions_from_history(
+    history_path: &Path,
+    session_ids: &[String],
+    backup_dir: Option<&Path>,
+) -> Result<(), String> {
     let Some(mut file) = open_history_for_rewrite(history_path).map_err(|e| e.to_string())? else {
         return Ok(());
     };
@@ -1215,7 +1199,16 @@ fn remove_sessions_from_history(history_path: &Path, session_ids: &[String]) -> 
         Err(std::fs::TryLockError::Error(error)) => return Err(error.to_string()),
     }
     let result = plan_history_rewrite(&mut file, session_ids).and_then(|plan| match plan {
-        Some(plan) => commit_history_rewrite(&mut file, plan),
+        Some(plan) => {
+            if let Some(dir) = backup_dir {
+                std::fs::create_dir_all(dir)
+                    .and_then(|_| {
+                        std::fs::write(dir.join(CODEX_HISTORY_FILENAME), &plan.1.original)
+                    })
+                    .map_err(|error| format!("备份输入历史失败，未清理其中的记录: {error}"))?;
+            }
+            commit_history_rewrite(&mut file, plan)
+        }
         None => Ok(()),
     });
     // Closing the handle would release the lock too; do it now so a waiting
@@ -3320,7 +3313,7 @@ mod tests {
         let path = temp.path().join(CODEX_HISTORY_FILENAME);
         std::fs::write(&path, HISTORY_FIXTURE).unwrap();
 
-        remove_sessions_from_history(&path, &ids(&["drop", "drop-child"])).unwrap();
+        remove_sessions_from_history(&path, &ids(&["drop", "drop-child"]), None).unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             concat!(
@@ -3334,7 +3327,7 @@ mod tests {
 
         // A missing history means Codex never saved one: nothing to clean.
         let missing = temp.path().join("missing").join(CODEX_HISTORY_FILENAME);
-        remove_sessions_from_history(&missing, &ids(&["drop"])).unwrap();
+        remove_sessions_from_history(&missing, &ids(&["drop"]), None).unwrap();
         assert!(!history_mentions(&missing, &ids(&["drop"])).unwrap());
     }
 
@@ -3373,7 +3366,7 @@ mod tests {
             .open(&path)
             .unwrap();
         holder.try_lock().unwrap();
-        let error = remove_sessions_from_history(&path, &ids(&["drop"])).unwrap_err();
+        let error = remove_sessions_from_history(&path, &ids(&["drop"]), None).unwrap_err();
         assert!(error.contains("请关闭 Codex 后重试"), "{error}");
         drop(holder);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), HISTORY_FIXTURE);

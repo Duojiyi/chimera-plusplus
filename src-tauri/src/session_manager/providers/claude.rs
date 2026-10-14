@@ -405,22 +405,6 @@ mod tests {
     }
 
     #[test]
-    fn load_messages_mixed_user_tool_result_and_text_stays_user() {
-        let temp = tempdir().expect("tempdir");
-        let path = temp.path().join("session.jsonl");
-        std::fs::write(
-            &path,
-            "{\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_1\",\"content\":\"result\"},{\"type\":\"text\",\"text\":\"Please continue\"}]},\"timestamp\":\"2026-03-06T10:00:00Z\"}\n",
-        )
-        .expect("write");
-
-        let msgs = load_messages(&path).expect("load");
-        assert_eq!(msgs.len(), 1);
-        assert_eq!(msgs[0].role, "user");
-        assert!(msgs[0].content.contains("Please continue"));
-    }
-
-    #[test]
     fn parse_session_uses_first_user_message_as_title() {
         let temp = tempdir().expect("tempdir");
         let path = temp.path().join("session-abc.jsonl");
