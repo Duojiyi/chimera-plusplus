@@ -25,13 +25,17 @@ import {
   type UsageRangeSelection,
 } from "@/types/usage";
 import { ChevronLeft, ChevronRight } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { UsageDateRangePicker } from "./UsageDateRangePicker";
 import {
   fmtInt,
   fmtUsd,
+  formatSeconds,
   getLocaleFromLanguage,
   parseFiniteNumber,
+  usageSourceLabel,
 } from "./format";
+import { usageTable } from "./usageTable";
 
 interface RequestLogTableProps {
   range: UsageRangeSelection;
@@ -147,39 +151,41 @@ export function RequestLogTable({
       </div>
 
       {isLoading ? (
-        <div className="h-[400px] animate-pulse rounded bg-gray-100" />
+        <>
+          <div className={usageTable.skeleton} aria-hidden="true" />
+          <p className="sr-only" role="status">
+            正在读取请求记录…
+          </p>
+        </>
       ) : (
         <>
           <div className="rounded-lg border border-border/50 bg-card/40 backdrop-blur-sm overflow-x-auto">
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="text-center whitespace-nowrap">
+                  <TableHead className={usageTable.th}>
                     {t("usage.time")}
                   </TableHead>
-                  <TableHead className="text-center whitespace-nowrap">
-                    {t("usage.provider")}
-                  </TableHead>
-                  <TableHead className="text-center whitespace-nowrap">
+                  <TableHead className={usageTable.th}>线路</TableHead>
+                  <TableHead className={usageTable.th}>
                     {t("usage.billingModel")}
                   </TableHead>
-                  <TableHead className="text-center whitespace-nowrap">
+                  <TableHead className={usageTable.thNum}>
                     {t("usage.inputTokens")}
                   </TableHead>
-                  <TableHead className="text-center whitespace-nowrap">
+                  <TableHead className={usageTable.thNum}>
                     {t("usage.outputTokens")}
                   </TableHead>
-                  <TableHead className="text-center whitespace-nowrap">
+                  <TableHead className={usageTable.thNum}>
                     {t("usage.totalCost")}
                   </TableHead>
-                  <TableHead className="text-center whitespace-nowrap">
-                    {t("usage.timingInfo")}
-                  </TableHead>
-                  <TableHead className="text-center whitespace-nowrap">
+                  <TableHead className={usageTable.thNum}>用时</TableHead>
+                  <TableHead className={usageTable.thNum}>首字</TableHead>
+                  <TableHead className={usageTable.th}>
                     {t("usage.status")}
                   </TableHead>
-                  <TableHead className="text-center whitespace-nowrap">
-                    {t("usage.source", { defaultValue: "Source" })}
+                  <TableHead className={usageTable.th}>
+                    {t("usage.source", { defaultValue: "来源" })}
                   </TableHead>
                 </TableRow>
               </TableHeader>
@@ -187,18 +193,42 @@ export function RequestLogTable({
                 {logs.length === 0 ? (
                   <TableRow>
                     <TableCell
-                      colSpan={9}
-                      className="text-center text-muted-foreground"
+                      colSpan={10}
+                      className={cn(
+                        usageTable.td,
+                        "py-8 text-muted-foreground",
+                      )}
                     >
-                      {t("usage.noData")}
+                      所选范围内没有请求记录
                     </TableCell>
                   </TableRow>
                 ) : (
                   logs.map((log) => {
                     const unpriced = isUnpricedUsage(log);
+                    const freshInput = getFreshInputTokens(log);
+                    const multiplier = parseFiniteNumber(log.costMultiplier);
+                    const cacheNote = [
+                      log.cacheReadTokens > 0 &&
+                        `缓存命中 ${fmtInt(log.cacheReadTokens, locale)}`,
+                      log.cacheCreationTokens > 0 &&
+                        `缓存写入 ${fmtInt(log.cacheCreationTokens, locale)}`,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ");
+                    const modelTitle =
+                      log.requestModel && log.requestModel !== log.model
+                        ? `${log.requestModel} → ${log.model}`
+                        : log.model;
+                    const provider =
+                      log.providerName || t("usage.unknownProvider");
                     return (
                       <TableRow key={log.requestId}>
-                        <TableCell className="text-center whitespace-nowrap text-xs px-1.5">
+                        <TableCell
+                          className={cn(
+                            usageTable.td,
+                            "whitespace-nowrap text-xs tabular-nums",
+                          )}
+                        >
                           {new Date(log.createdAt * 1000).toLocaleString(
                             locale,
                             {
@@ -209,18 +239,20 @@ export function RequestLogTable({
                             },
                           )}
                         </TableCell>
-                        <TableCell className="text-center">
-                          {log.providerName || t("usage.unknownProvider")}
+                        <TableCell
+                          className={cn(usageTable.td, "max-w-[160px]")}
+                        >
+                          <div className="truncate" title={provider}>
+                            {provider}
+                          </div>
                         </TableCell>
-                        <TableCell className="text-center font-mono text-xs max-w-[200px]">
-                          <div
-                            className="truncate"
-                            title={
-                              log.requestModel && log.requestModel !== log.model
-                                ? `${log.requestModel} → ${log.model}`
-                                : log.model
-                            }
-                          >
+                        <TableCell
+                          className={cn(
+                            usageTable.td,
+                            "max-w-[220px] font-mono text-xs",
+                          )}
+                        >
+                          <div className="truncate" title={modelTitle}>
                             {log.requestModel &&
                             log.requestModel !== log.model ? (
                               <span>
@@ -235,82 +267,72 @@ export function RequestLogTable({
                             )}
                           </div>
                         </TableCell>
-                        <TableCell className="text-center px-1.5">
-                          {(() => {
-                            const freshInput = getFreshInputTokens(log);
-                            const isCacheInclusive =
-                              log.inputTokens !== freshInput;
-                            return (
-                              <div
-                                className="tabular-nums"
-                                title={
-                                  isCacheInclusive
-                                    ? `Raw: ${log.inputTokens.toLocaleString()}`
-                                    : undefined
-                                }
-                              >
-                                {fmtInt(freshInput, locale)}
-                              </div>
-                            );
-                          })()}
-                          {(log.cacheReadTokens > 0 ||
-                            log.cacheCreationTokens > 0) && (
-                            <div className="text-[10px] text-muted-foreground whitespace-nowrap">
-                              {[
-                                log.cacheReadTokens > 0 &&
-                                  `R${fmtInt(log.cacheReadTokens, locale)}`,
-                                log.cacheCreationTokens > 0 &&
-                                  `W${fmtInt(log.cacheCreationTokens, locale)}`,
-                              ]
-                                .filter(Boolean)
-                                .join("·")}
+                        <TableCell
+                          className={usageTable.tdNum}
+                          title={
+                            log.inputTokens !== freshInput
+                              ? `含缓存的原始输入 ${fmtInt(log.inputTokens, locale)}`
+                              : undefined
+                          }
+                        >
+                          <div>{fmtInt(freshInput, locale)}</div>
+                          {cacheNote && (
+                            <div className="text-[11px] text-muted-foreground">
+                              {cacheNote}
                             </div>
                           )}
                         </TableCell>
-                        <TableCell className="text-center">
+                        <TableCell className={usageTable.tdNum}>
                           {fmtInt(log.outputTokens, locale)}
                         </TableCell>
-                        <TableCell className="text-center px-1.5">
+                        <TableCell className={usageTable.tdNum}>
                           <div
-                            className={`font-medium tabular-nums ${
-                              unpriced ? "text-muted-foreground" : ""
-                            }`}
+                            className={cn(
+                              "font-medium",
+                              unpriced && "text-muted-foreground",
+                            )}
                           >
                             {unpriced
                               ? t("usage.unpriced", "未定价")
                               : fmtUsd(log.totalCostUsd, 4)}
                           </div>
-                          {parseFiniteNumber(log.costMultiplier) != null &&
-                            parseFiniteNumber(log.costMultiplier) !== 1 && (
-                              <div className="text-[11px] text-muted-foreground">
-                                ×
-                                {parseFiniteNumber(log.costMultiplier)?.toFixed(
-                                  2,
-                                )}
-                              </div>
-                            )}
-                        </TableCell>
-                        <TableCell className="text-center whitespace-nowrap text-xs tabular-nums">
-                          {(log.latencyMs / 1000).toFixed(1)}s
-                          {log.firstTokenMs != null && (
-                            <span className="text-muted-foreground">
-                              /{(log.firstTokenMs / 1000).toFixed(1)}s
-                            </span>
+                          {multiplier != null && multiplier !== 1 && (
+                            <div className="text-[11px] text-muted-foreground">
+                              倍率 ×{multiplier.toFixed(2)}
+                            </div>
                           )}
                         </TableCell>
-                        <TableCell className="text-center">
+                        <TableCell className={cn(usageTable.tdNum, "text-xs")}>
+                          {formatSeconds(log.latencyMs)}
+                        </TableCell>
+                        <TableCell
+                          className={cn(
+                            usageTable.tdNum,
+                            "text-xs text-muted-foreground",
+                          )}
+                        >
+                          {formatSeconds(log.firstTokenMs)}
+                        </TableCell>
+                        <TableCell
+                          className={cn(usageTable.td, "tabular-nums")}
+                        >
                           <span
                             className={
                               log.statusCode >= 200 && log.statusCode < 300
-                                ? "text-green-600"
-                                : "text-red-600"
+                                ? "text-[var(--success-fg)]"
+                                : "text-[var(--danger-fg)]"
                             }
                           >
                             {log.statusCode}
                           </span>
                         </TableCell>
-                        <TableCell className="text-center text-xs text-muted-foreground">
-                          {log.dataSource || "proxy"}
+                        <TableCell
+                          className={cn(
+                            usageTable.td,
+                            "whitespace-nowrap text-xs text-muted-foreground",
+                          )}
+                        >
+                          {usageSourceLabel(log.dataSource)}
                         </TableCell>
                       </TableRow>
                     );
@@ -326,6 +348,7 @@ export function RequestLogTable({
               <Button
                 size="sm"
                 variant="outline"
+                aria-label="上一页"
                 disabled={page === 0}
                 onClick={() => setPage((p) => Math.max(0, p - 1))}
               >
@@ -375,6 +398,7 @@ export function RequestLogTable({
               <Button
                 size="sm"
                 variant="outline"
+                aria-label="下一页"
                 disabled={page >= totalPages - 1}
                 onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
               >

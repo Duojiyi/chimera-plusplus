@@ -2,8 +2,12 @@
 //!
 //! Handles importing provider configurations via ccswitch:// URLs.
 
+use super::codex_link::{self, CodexLinkConfig};
 use super::env_allowlist::retain_permitted_env;
-use super::utils::{decode_base64_param, infer_homepage_from_endpoint};
+use super::link_guard::check_link_values;
+use super::utils::{
+    decode_base64_param, infer_homepage_from_endpoint, validate_url, REMOTE_CONFIG_UNSUPPORTED,
+};
 use super::DeepLinkImportRequest;
 use crate::error::AppError;
 use crate::provider::{ClaudeDesktopMode, Provider, ProviderMeta, UsageScript};
@@ -117,11 +121,16 @@ pub async fn import_provider_from_deeplink(
     // Responses instead. `api_key_field` is left unset (deep links carry
     // no explicit auth-header-field override); requests default to the
     // standard `x-api-key` header, same as the manual path's "auto" mode.
+    // A protocol the link's own config declares (`wire_api` / `api_backend`,
+    // set by `build_provider_from_request`) wins over the model family.
     if matches!(app_type, AppType::Codex | AppType::GrokBuild) {
         if let Some(model) = merged_request.model.as_deref() {
             let meta = provider.meta.get_or_insert_with(ProviderMeta::default);
-            meta.api_format =
-                Some(crate::proxy::providers::codex_model_default_api_format(model).to_string());
+            if meta.api_format.is_none() {
+                meta.api_format = Some(
+                    crate::proxy::providers::codex_model_default_api_format(model).to_string(),
+                );
+            }
         }
     }
 
@@ -238,14 +247,18 @@ pub(crate) fn build_provider_from_request(
     app_type: &AppType,
     request: &DeepLinkImportRequest,
 ) -> Result<Provider, AppError> {
-    let settings_config = match app_type {
-        AppType::Claude | AppType::ClaudeDesktop => build_claude_settings(request),
-        AppType::Codex => build_codex_settings(request),
-        AppType::Gemini => build_gemini_settings(request),
-        AppType::GrokBuild => build_grokbuild_settings(request),
-        AppType::OpenCode => build_opencode_settings(request),
+    // The frontend can send a request that never went through the parser,
+    // so link values are checked once more right before they are used.
+    check_link_values(app_type, request)?;
 
-        AppType::Pi => build_pi_settings(request),
+    // The second value is the protocol a link's own config declares.
+    let (settings_config, declared_api_format) = match app_type {
+        AppType::Claude | AppType::ClaudeDesktop => (build_claude_settings(request), None),
+        AppType::Codex => build_codex_settings(request)?,
+        AppType::Gemini => (build_gemini_settings(request), None),
+        AppType::GrokBuild => build_grokbuild_settings(request)?,
+        AppType::OpenCode => (build_opencode_settings(request), None),
+        AppType::Pi => (build_pi_settings(request), None),
     };
 
     // Build usage script configuration if provided
@@ -253,6 +266,9 @@ pub(crate) fn build_provider_from_request(
     if matches!(app_type, AppType::ClaudeDesktop) {
         meta.get_or_insert_with(ProviderMeta::default)
             .claude_desktop_mode = Some(ClaudeDesktopMode::Direct);
+    }
+    if let Some(api_format) = declared_api_format {
+        meta.get_or_insert_with(ProviderMeta::default).api_format = Some(api_format.to_string());
     }
 
     let provider = Provider {
@@ -274,7 +290,7 @@ pub(crate) fn build_provider_from_request(
 }
 
 /// Get primary endpoint from request (first one if comma-separated)
-fn get_primary_endpoint(request: &DeepLinkImportRequest) -> String {
+pub(super) fn get_primary_endpoint(request: &DeepLinkImportRequest) -> String {
     request
         .endpoint
         .as_ref()
@@ -348,8 +364,10 @@ fn build_provider_meta(request: &DeepLinkImportRequest) -> Result<Option<Provide
         String::new()
     };
 
-    // Determine enabled state: explicit param > has code > false
-    let enabled = request.usage_enabled.unwrap_or(!code.is_empty());
+    // The script would run periodically on this computer and talk to the
+    // link's host, so only the confirm dialog's switch turns it on. The
+    // link's own `usageEnabled` is shown there as a request, nothing more.
+    let enabled = request.confirmed_usage_enabled.unwrap_or(false) && !code.trim().is_empty();
 
     let usage_script = UsageScript {
         enabled,
@@ -469,7 +487,14 @@ fn extract_claude_config_env(
 }
 
 /// Build Codex settings configuration
-fn build_codex_settings(request: &DeepLinkImportRequest) -> serde_json::Value {
+///
+/// Without a `config` in the link this is the fixed template, byte for byte.
+/// A link that carries a `config.toml` keeps its provider table under an
+/// allowlist ([`codex_link`]); the second value is then the protocol that
+/// table declares.
+fn build_codex_settings(
+    request: &DeepLinkImportRequest,
+) -> Result<(serde_json::Value, Option<&'static str>), AppError> {
     let provider_display_name = request
         .name
         .as_deref()
@@ -498,6 +523,28 @@ fn build_codex_settings(request: &DeepLinkImportRequest) -> serde_json::Value {
         .trim_end_matches('/')
         .to_string();
 
+    let link_text = match decode_link_config(request)? {
+        Some(config) => codex_link::config_text(&config)?,
+        None => None,
+    };
+    if let Some(text) = link_text {
+        let link = CodexLinkConfig::parse(&text)?;
+        let rendered = link.render(&provider_display_name, &endpoint, &model_name_raw)?;
+        // The same last pass every untrusted Codex config goes through.
+        let (config_toml, _) =
+            crate::codex_key_ownership::sanitize_untrusted_codex_config(&rendered, false)?;
+        let settings = json!({
+            "auth": {
+                "OPENAI_API_KEY": request.api_key,
+            },
+            "config": config_toml,
+            "modelCatalog": {
+                "models": [{ "model": model_name_raw }]
+            }
+        });
+        return Ok((settings, link.declared_api_format()));
+    }
+
     let provider_display_name = toml_edit::Value::from(provider_display_name.as_str()).to_string();
     let model_name = toml_edit::Value::from(model_name_raw.as_str()).to_string();
     let endpoint = toml_edit::Value::from(endpoint.as_str()).to_string();
@@ -516,7 +563,7 @@ requires_openai_auth = false
 "#
     );
 
-    json!({
+    let settings = json!({
         "auth": {
             "OPENAI_API_KEY": request.api_key,
         },
@@ -524,7 +571,8 @@ requires_openai_auth = false
         "modelCatalog": {
             "models": [{ "model": model_name_raw }]
         }
-    })
+    });
+    Ok((settings, None))
 }
 
 /// Build Gemini settings configuration
@@ -544,7 +592,15 @@ fn build_gemini_settings(request: &DeepLinkImportRequest) -> serde_json::Value {
     json!({ "env": env })
 }
 
-fn build_grokbuild_settings(request: &DeepLinkImportRequest) -> serde_json::Value {
+/// Build Grok Build settings: one `[model."<model>"]` profile.
+///
+/// Without a `config` in the link this is the fixed template, byte for byte.
+/// With one, the profile's own display name, API backend and context window
+/// are kept (address, key and model come from the merged request); the
+/// second value is then the protocol that API backend implies.
+fn build_grokbuild_settings(
+    request: &DeepLinkImportRequest,
+) -> Result<(serde_json::Value, Option<&'static str>), AppError> {
     let model = request
         .model
         .as_deref()
@@ -559,19 +615,61 @@ fn build_grokbuild_settings(request: &DeepLinkImportRequest) -> serde_json::Valu
         .trim();
     let endpoint = get_primary_endpoint(request).trim().to_string();
     let api_key = request.api_key.as_deref().unwrap_or("").trim();
+    let profile = linked_grok_profile(request)?;
 
     let model_value = toml_edit::Value::from(model).to_string();
-    let name_value = toml_edit::Value::from(name).to_string();
     let endpoint_value = toml_edit::Value::from(endpoint.as_str()).to_string();
     let api_key_value = toml_edit::Value::from(api_key).to_string();
 
-    json!({
-        "config": format!(
-            "[models]\ndefault = {model_value}\n\n[model.{model_value}]\nmodel = {model_value}\nbase_url = {endpoint_value}\nname = {name_value}\napi_key = {api_key_value}\napi_backend = \"{}\"\ncontext_window = {}\n",
-            crate::grok_config::DEFAULT_API_BACKEND,
-            crate::grok_config::DEFAULT_CONTEXT_WINDOW,
-        )
+    let Some(profile) = profile else {
+        let name_value = toml_edit::Value::from(name).to_string();
+        let settings = json!({
+            "config": format!(
+                "[models]\ndefault = {model_value}\n\n[model.{model_value}]\nmodel = {model_value}\nbase_url = {endpoint_value}\nname = {name_value}\napi_key = {api_key_value}\napi_backend = \"{}\"\ncontext_window = {}\n",
+                crate::grok_config::DEFAULT_API_BACKEND,
+                crate::grok_config::DEFAULT_CONTEXT_WINDOW,
+            )
+        });
+        return Ok((settings, None));
+    };
+
+    if profile.context_window <= 0 {
+        return Err(AppError::InvalidInput(
+            "链接中的 Grok Build 配置项“context_window”必须是大于 0 的整数，不能导入。".to_string(),
+        ));
+    }
+    let profile_name = profile.name.trim();
+    let name_value = toml_edit::Value::from(if profile_name.is_empty() {
+        name
+    } else {
+        profile_name
     })
+    .to_string();
+    let api_backend = profile.api_backend.trim();
+    let api_backend = if api_backend.is_empty() {
+        crate::grok_config::DEFAULT_API_BACKEND
+    } else {
+        api_backend
+    };
+    let api_backend_value = toml_edit::Value::from(api_backend).to_string();
+    let settings = json!({
+        "config": format!(
+            "[models]\ndefault = {model_value}\n\n[model.{model_value}]\nmodel = {model_value}\nbase_url = {endpoint_value}\nname = {name_value}\napi_key = {api_key_value}\napi_backend = {api_backend_value}\ncontext_window = {}\n",
+            profile.context_window,
+        )
+    });
+    Ok((settings, grok_declared_api_format(api_backend)))
+}
+
+/// The protocol a Grok Build `api_backend` implies, spelled like
+/// `meta.apiFormat` (same mapping as the Grok Build editor).
+fn grok_declared_api_format(api_backend: &str) -> Option<&'static str> {
+    match api_backend {
+        "chat_completions" => Some("openai_chat"),
+        "messages" => Some("anthropic"),
+        "responses" => Some("openai_responses"),
+        _ => None,
+    }
 }
 
 /// Build OpenCode settings configuration
@@ -642,6 +740,50 @@ fn build_pi_settings(request: &DeepLinkImportRequest) -> serde_json::Value {
 // Config Merge Logic
 // =============================================================================
 
+/// Decode the link's `config` parameter (Base64) and parse it according to
+/// `configFormat`. `None` when the link carries no config.
+pub(super) fn decode_link_config(
+    request: &DeepLinkImportRequest,
+) -> Result<Option<serde_json::Value>, AppError> {
+    let config_content = if let Some(config_b64) = &request.config {
+        // Decode Base64 inline config
+        let decoded = decode_base64_param("config", config_b64)?;
+        String::from_utf8(decoded).map_err(|e| {
+            AppError::InvalidInput(format!("链接中的配置不是有效的 UTF-8 文本：{e}"))
+        })?
+    } else if request.config_url.is_some() {
+        // The parser already refuses `configUrl`; a request that skipped it
+        // gets the same answer here.
+        return Err(AppError::InvalidInput(
+            REMOTE_CONFIG_UNSUPPORTED.to_string(),
+        ));
+    } else {
+        return Ok(None);
+    };
+
+    let format = request.config_format.as_deref().unwrap_or("json");
+    let config_value: serde_json::Value = match format {
+        "json" => serde_json::from_str(&config_content)
+            .map_err(|e| AppError::InvalidInput(format!("链接中的配置不是有效的 JSON：{e}")))?,
+        "toml" => {
+            // `message()` leaves out the quoted source line, which could
+            // contain a key from the config.
+            let toml_value: toml::Value = toml::from_str(&config_content).map_err(|e| {
+                AppError::InvalidInput(format!("链接中的配置不是有效的 TOML：{}", e.message()))
+            })?;
+            // Convert TOML to JSON for uniform processing
+            serde_json::to_value(toml_value)
+                .map_err(|e| AppError::Message(format!("Failed to convert TOML to JSON: {e}")))?
+        }
+        _ => {
+            return Err(AppError::InvalidInput(format!(
+                "不支持的配置格式：{format}（只支持 json 或 toml）"
+            )))
+        }
+    };
+    Ok(Some(config_value))
+}
+
 /// Parse and merge configuration from Base64 encoded config or remote URL
 ///
 /// Priority: URL params > inline config > remote config
@@ -650,45 +792,11 @@ pub fn parse_and_merge_config(
 ) -> Result<DeepLinkImportRequest, AppError> {
     validate_request_limits(request)?;
     // If no config provided, return original request
-    if request.config.is_none() && request.config_url.is_none() {
-        return Ok(request.clone());
-    }
-
-    // Step 1: Get config content
-    let config_content = if let Some(config_b64) = &request.config {
-        // Decode Base64 inline config
-        let decoded = decode_base64_param("config", config_b64)?;
-        String::from_utf8(decoded)
-            .map_err(|e| AppError::InvalidInput(format!("Invalid UTF-8 in config: {e}")))?
-    } else if let Some(_config_url) = &request.config_url {
-        // Fetch remote config (TODO: implement remote fetching in next phase)
-        return Err(AppError::InvalidInput(
-            "Remote config URL is not yet supported. Use inline config instead.".to_string(),
-        ));
-    } else {
+    let Some(config_value) = decode_link_config(request)? else {
         return Ok(request.clone());
     };
 
-    // Step 2: Parse config based on format
-    let format = request.config_format.as_deref().unwrap_or("json");
-    let config_value: serde_json::Value = match format {
-        "json" => serde_json::from_str(&config_content)
-            .map_err(|e| AppError::InvalidInput(format!("Invalid JSON config: {e}")))?,
-        "toml" => {
-            let toml_value: toml::Value = toml::from_str(&config_content)
-                .map_err(|e| AppError::InvalidInput(format!("Invalid TOML config: {e}")))?;
-            // Convert TOML to JSON for uniform processing
-            serde_json::to_value(toml_value)
-                .map_err(|e| AppError::Message(format!("Failed to convert TOML to JSON: {e}")))?
-        }
-        _ => {
-            return Err(AppError::InvalidInput(format!(
-                "Unsupported config format: {format}"
-            )))
-        }
-    };
-
-    // Step 3: Extract values from config based on app type and merge with URL params
+    // Extract values from config based on app type and merge with URL params
     let mut merged = request.clone();
 
     // MCP, Skill and other resource types don't need config merging
@@ -717,7 +825,26 @@ pub fn parse_and_merge_config(
         }
     }
 
+    check_merged_request(&merged)?;
     Ok(merged)
+}
+
+/// Values a link's `config` filled in get the same checks the parser gives
+/// URL parameters: plain http(s) addresses, and nothing the target tool
+/// would expand.
+fn check_merged_request(request: &DeepLinkImportRequest) -> Result<(), AppError> {
+    if let Some(endpoints) = request.endpoint.as_deref() {
+        for (index, endpoint) in endpoints.split(',').enumerate() {
+            let trimmed = endpoint.trim();
+            if !trimmed.is_empty() {
+                validate_url(trimmed, &format!("endpoint[{index}]"))?;
+            }
+        }
+    }
+    if let Ok(app_type) = AppType::parse_id(request.app.as_deref().unwrap_or_default()) {
+        check_link_values(&app_type, request)?;
+    }
+    Ok(())
 }
 
 fn validate_request_limits(request: &DeepLinkImportRequest) -> Result<(), AppError> {
@@ -811,34 +938,50 @@ fn merge_codex_config(
     request: &mut DeepLinkImportRequest,
     config: &serde_json::Value,
 ) -> Result<(), AppError> {
+    let config_text = codex_link::config_text(config)?;
+    // Check the link's own table first, so a refused key is reported as soon
+    // as the confirm dialog opens rather than after the user confirmed.
+    let link = config_text
+        .as_deref()
+        .map(CodexLinkConfig::parse)
+        .transpose()?;
+
     // Auto-fill API key from auth.OPENAI_API_KEY or Codex mobile-compatible bearer token.
     if request.api_key.as_ref().is_none_or(|s| s.is_empty()) {
-        let config_str = config.get("config").and_then(|v| v.as_str());
         if let Some(api_key) =
-            crate::codex_config::extract_codex_api_key(config.get("auth"), config_str)
+            crate::codex_config::extract_codex_api_key(config.get("auth"), config_text.as_deref())
         {
-            request.api_key = Some(api_key.to_string());
+            request.api_key = Some(api_key);
         }
     }
+    // The imported line never keeps `env_key`: Codex would send that local
+    // environment variable to the link's address. Without a key of its own
+    // the link cannot be imported.
+    if request.api_key.as_ref().is_none_or(|s| s.is_empty())
+        && link.as_ref().is_some_and(|link| link.declares_env_key)
+    {
+        return Err(AppError::InvalidInput(
+            "链接中的 Codex 配置要从本机环境变量（env_key）读取 API Key，不能通过链接导入。请让链接直接提供 API Key，或手动添加线路。"
+                .to_string(),
+        ));
+    }
 
-    // Auto-fill endpoint and model from config string
-    if let Some(config_str) = config.get("config").and_then(|v| v.as_str()) {
-        // Parse TOML config string to extract base_url and model
-        if let Ok(toml_value) = toml::from_str::<toml::Value>(config_str) {
-            // Extract base_url from model_providers section
-            if request.endpoint.as_ref().is_none_or(|s| s.is_empty()) {
-                if let Some(base_url) = extract_codex_base_url(&toml_value) {
-                    request.endpoint = Some(base_url);
-                }
-            }
-
-            // Extract model
-            if request.model.is_none() {
-                if let Some(model) = toml_value.get("model").and_then(|v| v.as_str()) {
-                    request.model = Some(model.to_string());
-                }
-            }
+    // Auto-fill endpoint and model from the selected provider table
+    if request.endpoint.as_ref().is_none_or(|s| s.is_empty()) {
+        if let Some(base_url) = link
+            .as_ref()
+            .and_then(CodexLinkConfig::base_url)
+            .or_else(|| {
+                config_text
+                    .as_deref()
+                    .and_then(crate::codex_config::extract_codex_base_url)
+            })
+        {
+            request.endpoint = Some(base_url);
         }
+    }
+    if request.model.is_none() {
+        request.model = link.as_ref().and_then(CodexLinkConfig::model);
     }
 
     // Auto-fill homepage from endpoint
@@ -896,32 +1039,147 @@ fn merge_gemini_config(
     Ok(())
 }
 
+/// Keys of the selected Grok Build profile that a link supplies; the others
+/// are reported as not imported.
+const GROK_PROFILE_KEYS: &[&str] = &[
+    "model",
+    "base_url",
+    "name",
+    "api_key",
+    "api_backend",
+    "context_window",
+];
+
+/// Profile keys that make Grok Build run a credential provider
+/// (`auth_provider`), send environment variables (`env_http_headers`) or read
+/// client certificates from this computer (`mtls_cert_dir`).
+const GROK_REJECTED_PROFILE_KEYS: &[&str] = &["auth_provider", "env_http_headers", "mtls_cert_dir"];
+
+/// The link's Grok Build `config.toml` text: `{"config": "<toml>"}`, or the
+/// whole value is the TOML document.
+fn grokbuild_config_text(config: &serde_json::Value) -> Result<String, AppError> {
+    if let Some(config_toml) = config.get("config").and_then(|v| v.as_str()) {
+        return Ok(config_toml.to_string());
+    }
+    let toml_value: toml::Value = serde_json::from_value(config.clone())
+        .map_err(|error| AppError::InvalidInput(format!("Invalid Grok Build config: {error}")))?;
+    toml::to_string(&toml_value)
+        .map_err(|error| AppError::InvalidInput(format!("Invalid Grok Build config: {error}")))
+}
+
+/// The profile `[models] default` selects, with its name.
+fn selected_grok_profile(document: &toml::Value) -> Option<(&str, &toml::value::Table)> {
+    let name = document.get("models")?.get("default")?.as_str()?.trim();
+    let table = document.get("model")?.get(name)?.as_table()?;
+    Some((name, table))
+}
+
+fn check_grok_profile(config_toml: &str) -> Result<(), AppError> {
+    let document = config_toml.parse::<toml::Value>().map_err(|error| {
+        AppError::InvalidInput(format!(
+            "链接中的 Grok Build 配置无法解析：{}",
+            error.message()
+        ))
+    })?;
+    let Some((_, profile)) = selected_grok_profile(&document) else {
+        return Ok(());
+    };
+    if let Some(key) = GROK_REJECTED_PROFILE_KEYS
+        .iter()
+        .find(|key| profile.contains_key(**key))
+    {
+        return Err(AppError::InvalidInput(format!(
+            "链接中的 Grok Build 配置包含“{key}”，它会让 Grok Build 运行凭据程序或读取本机的环境变量、证书。为安全起见，不能通过链接导入；如需使用，请手动添加线路。"
+        )));
+    }
+    Ok(())
+}
+
+fn grok_profile_from_text(
+    config_toml: &str,
+) -> Result<crate::grok_config::GrokModelConfig, AppError> {
+    check_grok_profile(config_toml)?;
+    crate::grok_config::extract_model_config(config_toml).ok_or_else(|| {
+        AppError::InvalidInput("Invalid Grok Build config.toml model profile".to_string())
+    })
+}
+
+/// The profile a Grok Build link's `config` carries, already checked.
+fn linked_grok_profile(
+    request: &DeepLinkImportRequest,
+) -> Result<Option<crate::grok_config::GrokModelConfig>, AppError> {
+    match decode_link_config(request)? {
+        Some(config) => grok_profile_from_text(&grokbuild_config_text(&config)?).map(Some),
+        None => Ok(None),
+    }
+}
+
+/// Grok Build link settings that are not imported (names only).
+pub(super) fn grok_ignored_keys(config: &serde_json::Value) -> Result<Vec<String>, AppError> {
+    let text = grokbuild_config_text(config)?;
+    let Ok(document) = text.parse::<toml::Value>() else {
+        return Ok(Vec::new());
+    };
+    let Some(root) = document.as_table() else {
+        return Ok(Vec::new());
+    };
+    let selected = selected_grok_profile(&document).map(|(name, _)| name.to_string());
+    let mut ignored = Vec::new();
+    for (key, value) in root {
+        match key.as_str() {
+            "models" => ignored.extend(
+                value
+                    .as_table()
+                    .into_iter()
+                    .flat_map(|models| models.keys())
+                    .filter(|name| name.as_str() != "default")
+                    .map(|name| format!("models.{name}")),
+            ),
+            "model" => {
+                for (name, profile) in value.as_table().into_iter().flatten() {
+                    if selected.as_deref() == Some(name.as_str()) {
+                        ignored.extend(
+                            profile
+                                .as_table()
+                                .into_iter()
+                                .flat_map(|table| table.keys())
+                                .filter(|field| !GROK_PROFILE_KEYS.contains(&field.as_str()))
+                                .map(|field| format!("model.{name}.{field}")),
+                        );
+                    } else {
+                        ignored.push(format!("model.{name}"));
+                    }
+                }
+            }
+            _ => ignored.push(key.clone()),
+        }
+    }
+    Ok(ignored)
+}
+
 fn merge_grokbuild_config(
     request: &mut DeepLinkImportRequest,
     config: &serde_json::Value,
 ) -> Result<(), AppError> {
-    let config_toml = if let Some(config_toml) = config.get("config").and_then(|v| v.as_str()) {
-        config_toml.to_string()
-    } else {
-        let toml_value: toml::Value = serde_json::from_value(config.clone()).map_err(|error| {
-            AppError::InvalidInput(format!("Invalid Grok Build config: {error}"))
-        })?;
-        toml::to_string(&toml_value).map_err(|error| {
-            AppError::InvalidInput(format!("Invalid Grok Build config: {error}"))
-        })?
-    };
-    let model = crate::grok_config::extract_model_config(&config_toml).ok_or_else(|| {
-        AppError::InvalidInput("Invalid Grok Build config.toml model profile".to_string())
-    })?;
+    // Refuse credential programs and local secrets first, so the confirm
+    // dialog reports them as soon as it opens.
+    let model = grok_profile_from_text(&grokbuild_config_text(config)?)?;
 
     if request
         .api_key
         .as_ref()
         .is_none_or(|value| value.is_empty())
     {
-        request.api_key = model.api_key.or_else(|| {
-            crate::grok_config::extract_credentials(&config_toml).map(|(_, api_key)| api_key)
-        });
+        // Only a key written in the link counts. `extract_credentials` would
+        // resolve `env_key` (or fall back to `XAI_API_KEY`) from this
+        // computer's environment and send that secret to the link's address.
+        request.api_key = model.api_key;
+        if request.api_key.is_none() && model.env_key.is_some() {
+            return Err(AppError::InvalidInput(
+                "链接中的 Grok Build 配置要从本机环境变量（env_key）读取 API Key，不能通过链接导入。请让链接直接提供 API Key，或手动添加线路。"
+                    .to_string(),
+            ));
+        }
     }
     if request
         .endpoint
@@ -983,19 +1241,6 @@ fn merge_additive_config(
     }
 
     Ok(())
-}
-
-/// Extract base_url from Codex TOML config
-fn extract_codex_base_url(toml_value: &toml::Value) -> Option<String> {
-    // Try to find base_url in model_providers section
-    if let Some(providers) = toml_value.get("model_providers").and_then(|v| v.as_table()) {
-        for (_key, provider) in providers.iter() {
-            if let Some(base_url) = provider.get("base_url").and_then(|v| v.as_str()) {
-                return Some(base_url.to_string());
-            }
-        }
-    }
-    None
 }
 
 #[cfg(test)]
@@ -1210,7 +1455,9 @@ mod tests {
             ..Default::default()
         };
 
-        let settings = build_codex_settings(&request);
+        let (settings, declared_api_format) =
+            build_codex_settings(&request).expect("build Codex template");
+        assert_eq!(declared_api_format, None);
         let config_text = settings
             .get("config")
             .and_then(|value| value.as_str())

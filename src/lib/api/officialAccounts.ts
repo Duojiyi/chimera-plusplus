@@ -2,16 +2,34 @@ import { invoke } from "@tauri-apps/api/core";
 import { providersApi } from "./providers";
 import type { SubscriptionQuota } from "@/types/subscription";
 
+/** How Codex's live login relates to the saved accounts (same on every row). */
+export type OfficialLiveState =
+  "matched" | "unsaved" | "mismatch" | "third_party" | "unknown";
+
 export interface OfficialAccountDto {
   key: string;
   accountId: string;
   displayName: string;
   email?: string | null;
+  /** Plan from the login's claims, e.g. "plus", "pro", "team". */
+  planType?: string | null;
+  /** Name of the line that uses this account. */
+  lineName?: string | null;
   capturedAt: string;
   isCurrent: boolean;
+  /** The account's line is the line selected for Codex. */
+  isSelected?: boolean;
   needsRelogin: boolean;
+  /** The stored login cannot be read here; it can only be signed in again or removed. */
+  unreadable?: boolean;
+  /** The access token has expired; Codex renews it when the account is used. */
+  accessExpired?: boolean;
   providerId?: string | null;
+  liveState?: OfficialLiveState;
 }
+
+/** A quota answer; `accessExpired` means nothing was queried. */
+export type OfficialQuota = SubscriptionQuota & { accessExpired?: boolean };
 
 export interface StartedLoginDto {
   flowId: string;
@@ -32,8 +50,8 @@ export const officialAccountsApi = {
     return invoke<OfficialAccountDto[]>("list_official_accounts");
   },
 
-  getQuota: async (key: string): Promise<SubscriptionQuota> => {
-    return invoke<SubscriptionQuota>("get_official_account_quota", { key });
+  getQuota: async (key: string): Promise<OfficialQuota> => {
+    return invoke<OfficialQuota>("get_official_account_quota", { key });
   },
 
   saveCurrentLogin: async (name?: string): Promise<string> => {

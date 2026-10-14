@@ -34,13 +34,24 @@ beforeEach(() => {
   );
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
     function (this: HTMLElement) {
-      const top =
-        this === scroller
-          ? viewportTop
-          : Object.hasOwn(offsets, this.id)
-            ? viewportTop + offsets[this.id] - (scroller?.scrollTop ?? 0)
-            : 0;
-      return { top, bottom: top, left: 0, right: 0 } as DOMRect;
+      if (this === scroller)
+        return { top: viewportTop, bottom: viewportTop + 600 } as DOMRect;
+      if (!Object.hasOwn(offsets, this.id))
+        return { top: 0, bottom: 0, left: 0, right: 0 } as DOMRect;
+      // Each section runs until the next one starts; the scroll-spy reads the
+      // bottom edge to decide whether a section has scrolled away.
+      const start = offsets[this.id];
+      const end =
+        Object.values(offsets)
+          .filter((offset) => offset > start)
+          .sort((a, b) => a - b)[0] ?? start + 200;
+      const shift = viewportTop - (scroller?.scrollTop ?? 0);
+      return {
+        top: start + shift,
+        bottom: end + shift,
+        left: 0,
+        right: 0,
+      } as DOMRect;
     },
   );
 });

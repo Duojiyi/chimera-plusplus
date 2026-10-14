@@ -45,13 +45,14 @@ describe("Codex model catalog feedback", () => {
   });
   it("fetching a catalog never triggers inference protocol probes", () => {
     const fetchHandler = appSource.slice(
-      appSource.indexOf("  const fetchModels = async () =>"),
+      appSource.indexOf("  const fetchModels = async ("),
       appSource.indexOf("  const checkRuntime ="),
     );
+    expect(fetchHandler.length).toBeGreaterThan(0);
     expect(fetchHandler).toContain("fetchModelsForConfig(");
     expect(fetchHandler).not.toContain("detectCodexApiFormats(");
     expect(appSource).toContain("测试地址连通性");
-    expect(appSource).toContain("仅测试地址连通性，不验证密钥或模型。");
+    expect(appSource).toContain("仅测试地址连通性，不验证密钥或模型");
   });
 
   it("address reachability feedback does not imply verified credentials, models, or inference", () => {

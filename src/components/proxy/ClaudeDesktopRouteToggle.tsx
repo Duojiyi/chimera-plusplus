@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import { Switch } from "@/components/ui/switch";
 import { useProxyStatus } from "@/hooks/useProxyStatus";
+import { useGlobalProxyConfig } from "@/lib/query/proxy";
 import { cn } from "@/lib/utils";
 
 interface ClaudeDesktopRouteToggleProps {
@@ -33,8 +34,12 @@ export function ClaudeDesktopRouteToggle({
     takeoverStatus?.gemini ||
     takeoverStatus?.grokbuild,
   );
-  const routeAddress = status?.address ?? "127.0.0.1";
-  const routePort = status?.port ?? 15721;
+  const { data: routeConfig } = useGlobalProxyConfig();
+  // A stopped server reports port 0; show the configured listen address then.
+  const routeAddress =
+    (isRunning && status?.address) || routeConfig?.listenAddress || "127.0.0.1";
+  const routePort =
+    (isRunning && status?.port) || routeConfig?.listenPort || 15721;
 
   const handleToggle = async (checked: boolean) => {
     if (isBusy || isLoading || disabled) return;

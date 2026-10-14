@@ -154,9 +154,16 @@ describe("settings application update", () => {
       "aria-valuenow",
       "50",
     );
+    expect(screen.getByRole("progressbar")).toHaveAccessibleName(
+      "\u5e94\u7528\u66f4\u65b0\u4e0b\u8f7d\u8fdb\u5ea6",
+    );
     expect(
-      screen.getByText("\u6b63\u5728\u4e0b\u8f7d\u66f4\u65b0 50%"),
-    ).toBeInTheDocument();
+      document.querySelector(".settings-app-update-progress > span"),
+    ).toHaveTextContent(/^50%$/);
+    // The phase is announced through the polite live region next to the title.
+    const copy = document.querySelector(".settings-app-update-copy");
+    expect(copy).toHaveAttribute("aria-live", "polite");
+    expect(copy).toHaveTextContent("\u6b63\u5728\u4e0b\u8f7d\u66f4\u65b0\u5305\uff0c\u5b8c\u6210\u540e\u81ea\u52a8\u5b89\u88c5\u5e76\u91cd\u542f");
     expect(
       screen.getByRole("button", { name: /\u6b63\u5728\u66f4\u65b0\u2026/ }),
     ).toBeDisabled();

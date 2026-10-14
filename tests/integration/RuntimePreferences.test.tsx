@@ -4,6 +4,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ComponentProps } from "react";
@@ -594,7 +595,8 @@ describe("runtime persisted preferences", () => {
       return [];
     });
     const onOperationFinished = vi.fn();
-    renderRuntime({ onOperationFinished });
+    const onReceipt = vi.fn();
+    const { rerender, props } = renderRuntime({ onOperationFinished, onReceipt });
     await openPreferences();
     fireEvent.click(
       screen.getByRole("button", { name: /安装历史版本 从镜像发布目录/ }),
@@ -604,10 +606,21 @@ describe("runtime persisted preferences", () => {
       await screen.findByRole("button", { name: "确认安装此版本" }),
     );
     await waitFor(() => expect(onOperationFinished).toHaveBeenCalledTimes(1));
-    expect(mocks.error).toHaveBeenCalledWith(
-      "安装所选版本失败",
-      expect.anything(),
-    );
+    // The failure is reported as a persistent error receipt (not a toast)
+    // that the open history dialog shows next to the locked plan.
+    const failure = onReceipt.mock.calls.map(([r]) => r).filter(Boolean).at(-1);
+    expect(failure).toMatchObject({
+      kind: "history",
+      tone: "error",
+      title: "安装所选版本失败",
+    });
+    expect(failure.detail).toContain("download interrupted");
+    rerender(<NewRuntimeView {...props} receipt={failure} />);
+    expect(
+      within(screen.getByRole("dialog", { name: /历史版本/ })).getByText(
+        "安装所选版本失败",
+      ),
+    ).toBeVisible();
     expect(
       screen.getByRole("button", { name: "确认安装此版本" }),
     ).toBeEnabled();

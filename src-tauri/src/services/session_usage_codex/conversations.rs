@@ -34,10 +34,13 @@ const MAX_LISTED_SUBAGENTS: usize = 20;
 const TITLE_MAX_CHARS: usize = 60;
 /// The identity line and the first user message sit at the top of a rollout.
 /// These bounds keep a pasted file or a tool output from turning a title
-/// lookup into a full scan.
+/// lookup into a full scan. A line may be as long as the importer accepts:
+/// `session_meta` carries the base instructions and tool schemas, and a
+/// truncated one would lose the parent link, listing a sub-agent as its own
+/// conversation.
 const HEAD_MAX_LINES: usize = 64;
-const HEAD_MAX_LINE_BYTES: usize = 2 * 1024 * 1024;
-const HEAD_MAX_BYTES: u64 = 8 * 1024 * 1024;
+const HEAD_MAX_LINE_BYTES: usize = super::MAX_SESSION_LINE_BYTES;
+const HEAD_MAX_BYTES: u64 = 2 * HEAD_MAX_LINE_BYTES as u64;
 const IDE_REQUEST_HEADING: &str = "## My request for Codex:";
 const INTERNAL_THREAD_KINDS: [&str; 4] = [
     "subagent",
@@ -293,7 +296,7 @@ fn parse_thread_head(mut reader: impl BufRead) -> Option<ThreadHead> {
 
 fn head_from_meta(payload: &Value) -> ThreadHead {
     let parent_id = match super::explicit_parent_from_meta(payload) {
-        super::ParentResolution::Parent(parent) => Some(normalize_thread_id(&parent)),
+        super::ParentResolution::Parent { id, .. } => Some(normalize_thread_id(&id)),
         _ => None,
     };
     let spawned = payload
@@ -864,6 +867,30 @@ mod tests {
             .map(|child| (child.id.clone(), child.is_fork))
             .collect();
         assert_eq!(kinds, vec![(helper, false), (fork, true)]);
+        Ok(())
+    }
+
+    #[test]
+    fn a_large_session_meta_keeps_its_parent_link() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let codex = tempdir().unwrap();
+        let dir = codex.path();
+        let (root, helper) = (thread(1), thread(2));
+        write_rollout(dir, meta(&root, None, None), Some("主对话"));
+        // Base instructions and tool schemas can push session_meta past the
+        // old 2 MiB head limit, which used to drop the parent link.
+        let mut large = meta(&helper, Some(&root), None);
+        large["base_instructions"] = json!({ "text": "x".repeat(3 * 1024 * 1024) });
+        write_rollout(dir, large, None);
+        insert_session_row(&db, &root, 1, BASE, [100, 0, 10]);
+        insert_session_row(&db, &helper, 1, BASE + 10, [200, 0, 20]);
+
+        let report = report(&db, dir, None);
+
+        assert_eq!(report.total_conversations, 1);
+        let conversation = find(&report, &root);
+        assert_eq!(conversation.subagent_count, 1);
+        assert_eq!(conversation.total_tokens, 330);
         Ok(())
     }
 

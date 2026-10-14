@@ -1,0 +1,74 @@
+.help-tip-trigger {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin: -2px 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-3);
+  vertical-align: middle;
+  cursor: help;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+.help-tip-trigger svg {
+  width: 14px;
+  height: 14px;
+}
+
+.help-tip-trigger:hover,
+.help-tip-trigger[data-state="open"] {
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
+
+.help-tip-trigger:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.help-card {
+  z-index: 120;
+  width: max-content;
+  max-width: 300px;
+  padding: 9px 12px 10px;
+  border: 1px solid var(--dialog-border, var(--border-subtle));
+  border-radius: var(--radius-panel);
+  background: var(--dialog-bg);
+  color: var(--text-2);
+  font-size: 12.5px;
+  line-height: 1.55;
+  box-shadow:
+    0 1px 2px var(--shadow-soft),
+    0 10px 24px var(--shadow-overlay);
+  outline: none;
+}
+
+.help-card-title {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--text-1);
+  font-weight: 600;
+}
+
+.disabled-reason-anchor {
+  display: inline-flex;
+}
+
+.is-reason-disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .help-tip-trigger {
+    transition: none;
+  }
+}

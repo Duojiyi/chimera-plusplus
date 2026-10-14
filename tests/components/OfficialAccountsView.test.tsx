@@ -25,6 +25,7 @@ vi.mock("@/lib/api/officialAccounts", () => ({
     pollDeviceLogin: vi.fn(),
     cancelDeviceLogin: vi.fn(),
     switchAccount: vi.fn(),
+    removeAccount: vi.fn(),
   },
 }));
 const quota = (utilization = 25): SubscriptionQuota => ({
@@ -86,6 +87,7 @@ beforeEach(() => {
     .mockResolvedValue(quota());
   vi.mocked(officialAccountsApi.switchAccount).mockResolvedValue();
   vi.mocked(officialAccountsApi.cancelDeviceLogin).mockResolvedValue();
+  vi.mocked(officialAccountsApi.removeAccount).mockReset().mockResolvedValue();
 });
 describe("official account onboarding", () => {
   it("keeps the startup guard across unmount and remount", async () => {
@@ -310,7 +312,7 @@ describe("official account live identity", () => {
     expect(b).toHaveAttribute("data-current", String(bIsCurrent));
     if (!bIsCurrent) {
       expect(
-        screen.queryByRole("region", { name: "当前官方账号" }),
+        screen.queryByRole("region", { name: "Codex 当前登录" }),
       ).not.toBeInTheDocument();
     }
     fireEvent.click(within(a).getByRole("button", { name: "切换" }));
@@ -414,7 +416,7 @@ describe("official account Vault quotas", () => {
     expect(within(first).getByText("70%")).toBeVisible();
     expect(within(second).getByText("40%")).toBeVisible();
     expect(within(second).getByText("35%")).toBeVisible();
-    const current = screen.getByRole("region", { name: "当前官方账号" });
+    const current = screen.getByRole("region", { name: "Codex 当前登录" });
     expect(within(current).getByText("75%")).toBeVisible();
     expect(within(current).queryByText("40%")).not.toBeInTheDocument();
     expect(officialAccountsApi.getQuota).toHaveBeenCalledWith("vault-a");
@@ -425,14 +427,14 @@ describe("official account Vault quotas", () => {
   it("skips tombstoned accounts and offers login after a rejected credential response", async () => {
     vi.mocked(officialAccountsApi.list).mockResolvedValue([
       { ...account("logged-out"), needsRelogin: true },
-      account("expired-token", true),
+      account("rejected-login", true),
     ]);
     vi.mocked(officialAccountsApi.getQuota).mockResolvedValue({
       ...quota(),
       success: false,
       credentialStatus: "expired",
       tiers: [],
-      error: "HTTP 401",
+      error: "官方账号登录已失效，请重新登录 (HTTP 401)",
     });
     render(<OfficialAccountsView />);
     await waitFor(() =>
@@ -441,13 +443,73 @@ describe("official account Vault quotas", () => {
       ),
     );
     expect(officialAccountsApi.getQuota).toHaveBeenCalledExactlyOnceWith(
-      "expired-token",
+      "rejected-login",
     );
     expect(screen.queryByText("登录有效")).not.toBeInTheDocument();
-    const current = screen.getByRole("region", { name: "当前官方账号" });
-    expect(within(current).getAllByText("重新登录后可查询额度")).toHaveLength(
-      2,
+    // The card now holds one message instead of one per fixed window.
+    const current = screen.getByRole("region", { name: "Codex 当前登录" });
+    expect(within(current).getByText("重新登录后可查询额度")).toBeVisible();
+  });
+
+  it("keeps switching available when the quota service is blocked (HTTP 403)", async () => {
+    vi.mocked(officialAccountsApi.list).mockResolvedValue([account("blocked")]);
+    vi.mocked(officialAccountsApi.getQuota).mockResolvedValue({
+      ...quota(),
+      success: false,
+      credentialStatus: "valid",
+      tiers: [],
+      error: "无法访问官方额度服务（HTTP 403），可能是网络或地区限制",
+    });
+    render(<OfficialAccountsView />);
+    const row = await screen.findByRole("article");
+    expect(
+      await within(row).findByText(
+        "无法访问官方额度服务（HTTP 403），可能是网络或地区限制",
+      ),
+    ).toBeVisible();
+    expect(within(row).getByRole("button", { name: "切换" })).toBeEnabled();
+    expect(
+      within(row).queryByRole("button", { name: "重新登录" }),
+    ).not.toBeInTheDocument();
+    expect(within(row).queryByText("需要重新登录")).not.toBeInTheDocument();
+  });
+
+  it("keeps switching for an expired access token without querying the service", async () => {
+    vi.mocked(officialAccountsApi.list).mockResolvedValue([
+      { ...account("expired-token"), accessExpired: true },
+      account("fresh"),
+    ]);
+    render(<OfficialAccountsView />);
+    await waitFor(() => expect(screen.getAllByRole("article")).toHaveLength(2));
+    const [expired] = screen.getAllByRole("article");
+    expect(
+      within(expired).getByText("令牌已过期 · 切换后由 Codex 续期"),
+    ).toBeVisible();
+    expect(within(expired).getByRole("button", { name: "切换" })).toBeEnabled();
+    expect(within(expired).queryByText("需要重新登录")).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(officialAccountsApi.getQuota).toHaveBeenCalledExactlyOnceWith(
+        "fresh",
+      ),
     );
+  });
+
+  it("treats an access-expired quota answer as renewable, not as a failure", async () => {
+    vi.mocked(officialAccountsApi.list).mockResolvedValue([account("raced")]);
+    vi.mocked(officialAccountsApi.getQuota).mockResolvedValue({
+      ...quota(),
+      success: false,
+      tiers: [],
+      error: "令牌已过期，切换后由 Codex 续期",
+      queriedAt: null,
+      accessExpired: true,
+    });
+    render(<OfficialAccountsView />);
+    expect(
+      await screen.findByText("令牌已过期 · 切换后由 Codex 续期"),
+    ).toBeVisible();
+    expect(screen.getByRole("button", { name: "切换" })).toBeEnabled();
+    expect(screen.queryByText(/部分额度未更新/)).not.toBeInTheDocument();
   });
 
   it("shows a quota failure for one account without losing another account's result", async () => {
@@ -465,17 +527,16 @@ describe("official account Vault quotas", () => {
     await waitFor(() =>
       expect(within(first).getByText("额度查询失败，请刷新重试")).toBeVisible(),
     );
-    expect(within(first).queryByText("尚未获取额度")).not.toBeInTheDocument();
-    expect(within(first).getByText("已保存登录")).toBeVisible();
+    expect(within(first).queryByText("尚未查询额度")).not.toBeInTheDocument();
+    // A failed query is not a sign-in problem.
+    expect(within(first).queryByText("需要重新登录")).not.toBeInTheDocument();
     expect(screen.queryByText("登录有效")).not.toBeInTheDocument();
     expect(
       within(first).getByRole("button", { name: "重新应用" }),
     ).toBeEnabled();
     expect(within(second).getByText("75%")).toBeVisible();
-    const current = screen.getByRole("region", { name: "当前官方账号" });
-    expect(
-      within(current).getAllByText("额度查询失败，请刷新重试"),
-    ).toHaveLength(2);
+    const current = screen.getByRole("region", { name: "Codex 当前登录" });
+    expect(within(current).getByText("额度查询失败，请刷新重试")).toBeVisible();
   });
 });
 
@@ -721,7 +782,7 @@ describe("official account automatic quota refresh", () => {
       expect(screen.getAllByText("75%")).toHaveLength(2);
       expect(screen.getAllByText("70%")).toHaveLength(2);
       expect(screen.getAllByText(/部分额度未更新/)).toHaveLength(1);
-      expect(screen.getByText("已保存登录")).toBeVisible();
+      expect(screen.getByRole("button", { name: "重新应用" })).toBeEnabled();
       vi.mocked(officialAccountsApi.getQuota).mockResolvedValue(quota(40));
       await advance(5);
       expect(screen.queryByText(/部分额度未更新/)).not.toBeInTheDocument();
@@ -774,7 +835,57 @@ describe("official account automatic quota refresh", () => {
     const calls = vi.mocked(officialAccountsApi.list).mock.calls.length;
     await advance(5);
     expect(officialAccountsApi.list).toHaveBeenCalledTimes(calls + 1);
+    // The timer polls only Codex's current account; "strict" is not current.
+    expect(officialAccountsApi.getQuota).toHaveBeenCalledTimes(1);
+  });
+
+  it("polls only the current account and queries the others on entry and manual refresh", async () => {
+    vi.useFakeTimers();
+    vi.mocked(officialAccountsApi.list).mockResolvedValue([
+      account("live", true),
+      account("other"),
+    ]);
+    await act(async () => {
+      render(<OfficialAccountsView />);
+    });
     expect(officialAccountsApi.getQuota).toHaveBeenCalledTimes(2);
+    await advance(5);
+    expect(officialAccountsApi.getQuota).toHaveBeenCalledTimes(3);
+    expect(officialAccountsApi.getQuota).toHaveBeenLastCalledWith("live");
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "刷新" }));
+    });
+    expect(officialAccountsApi.getQuota).toHaveBeenCalledTimes(5);
+  });
+
+  it("re-reads the local list on window focus without querying quotas", async () => {
+    vi.useFakeTimers();
+    vi.mocked(officialAccountsApi.list).mockResolvedValue([
+      account("live", true),
+    ]);
+    await act(async () => {
+      render(<OfficialAccountsView />);
+    });
+    const listCalls = vi.mocked(officialAccountsApi.list).mock.calls.length;
+    vi.mocked(officialAccountsApi.list).mockResolvedValue([
+      account("live", true),
+      account("added-elsewhere"),
+    ]);
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    expect(officialAccountsApi.list).toHaveBeenCalledTimes(listCalls + 1);
+    expect(officialAccountsApi.getQuota).toHaveBeenCalledTimes(1);
+    const added = screen.getAllByRole("article")[1];
+    expect(within(added).getByText("尚未查询额度")).toBeVisible();
+    // The new account is queried on demand.
+    await act(async () => {
+      fireEvent.click(within(added).getByRole("button", { name: "查询" }));
+    });
+    expect(officialAccountsApi.getQuota).toHaveBeenLastCalledWith(
+      "added-elsewhere",
+    );
+    expect(within(added).getByText("75%")).toBeVisible();
   });
 
   it("surfaces unsuccessful quota responses and does not keep an expired quota visible", async () => {
@@ -805,5 +916,302 @@ describe("official account automatic quota refresh", () => {
     } finally {
       visibility.mockRestore();
     }
+  });
+});
+
+describe("official account quota windows", () => {
+  // 2026-10-13 10:24 local time, like the QA harness clock.
+  const NOW = new Date(2026, 9, 13, 10, 24, 0);
+  const at = (hours: number, minutes = 0) =>
+    new Date(2026, 9, 13, hours, minutes, 0).toISOString();
+  const windows = (
+    tiers: SubscriptionQuota["tiers"],
+    queriedAt = new Date(2026, 9, 13, 10, 22).getTime(),
+  ): SubscriptionQuota => ({ ...quota(), tiers, queriedAt });
+  const openAt = async (accounts: OfficialAccountDto[]) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    vi.mocked(officialAccountsApi.list).mockResolvedValue(accounts);
+    await act(async () => {
+      render(<OfficialAccountsView />);
+    });
+  };
+
+  it("renders every returned window shortest first with countdown, exact time and query time", async () => {
+    vi.mocked(officialAccountsApi.getQuota).mockResolvedValue(
+      windows([
+        { name: "30_day", utilization: 20, resetsAt: null },
+        { name: "seven_day", utilization: 59, resetsAt: at(23, 0) },
+        { name: "five_hour", utilization: 38, resetsAt: at(13, 55) },
+      ]),
+    );
+    await openAt([account("live", true)]);
+    const current = screen.getByRole("region", { name: "Codex 当前登录" });
+    const bars = within(current).getAllByRole("progressbar");
+    expect(bars.map((bar) => bar.getAttribute("aria-label"))).toEqual([
+      "5 小时额度剩余",
+      "7 天额度剩余",
+      "30 天额度剩余",
+    ]);
+    expect(bars[0]).toHaveAttribute("aria-valuenow", "62");
+    expect(bars[0]).toHaveAttribute("aria-valuemin", "0");
+    expect(bars[0]).toHaveAttribute("aria-valuemax", "100");
+    expect(bars[0]).toHaveAttribute("aria-valuetext", "剩余 62%");
+    expect(
+      within(current).getByText("3 小时 31 分钟后重置 · 10月13日 13:55"),
+    ).toBeVisible();
+    expect(within(current).getByText("重置时间未知")).toBeVisible();
+    expect(within(current).getByText("查询于 10:22")).toBeVisible();
+    const row = screen.getByRole("article");
+    expect(within(row).getAllByRole("progressbar")).toHaveLength(3);
+    expect(within(row).getByText("3 小时后重置")).toHaveAttribute(
+      "title",
+      "10月13日 13:55 重置",
+    );
+    // Next to 刷新 as well as on the card.
+    expect(screen.getAllByText("查询于 10:22")).toHaveLength(2);
+  });
+
+  it("shows a free plan's 30-day window and highlights a nearly used-up window", async () => {
+    vi.mocked(officialAccountsApi.getQuota).mockResolvedValue(
+      windows([{ name: "30_day", utilization: 95, resetsAt: null }]),
+    );
+    await openAt([account("free", true)]);
+    const current = screen.getByRole("region", { name: "Codex 当前登录" });
+    const bar = within(current).getByRole("progressbar", {
+      name: "30 天额度剩余",
+    });
+    expect(bar).toHaveAttribute("aria-valuenow", "5");
+    expect(bar.closest(".quota-meter")).toHaveAttribute("data-low", "true");
+    expect(within(current).getByText("5%")).toBeVisible();
+    expect(within(current).queryByText(/5 小时/)).not.toBeInTheDocument();
+  });
+
+  it("says the service returned no windows instead of pretending to wait", async () => {
+    vi.mocked(officialAccountsApi.getQuota).mockResolvedValue(windows([]));
+    await openAt([account("empty", true)]);
+    expect(screen.getAllByText("服务未返回额度数据")).toHaveLength(2);
+    expect(screen.queryByText("尚未查询额度")).not.toBeInTheDocument();
+  });
+});
+
+describe("official account identity", () => {
+  it("shows the line name, the email and a plan tag", async () => {
+    vi.mocked(officialAccountsApi.list).mockResolvedValue([
+      {
+        ...account("main", true),
+        displayName: "ChatGPT · li***@gmail.com",
+        email: "li***@gmail.com",
+        lineName: "OpenAI 官方 · 主力",
+        planType: "plus",
+      },
+      {
+        ...account("work"),
+        displayName: "ChatGPT · ch***@acme.cn",
+        email: "ch***@acme.cn",
+        lineName: "ChatGPT · ch***@acme.cn",
+        planType: "team",
+      },
+    ]);
+    render(<OfficialAccountsView />);
+    await waitFor(() => expect(screen.getAllByRole("article")).toHaveLength(2));
+    const [main, work] = screen.getAllByRole("article");
+    expect(within(main).getByText("OpenAI 官方 · 主力")).toBeVisible();
+    expect(within(main).getByText("li***@gmail.com")).toBeVisible();
+    expect(within(main).getByText("Plus")).toBeVisible();
+    expect(within(main).getByText("使用中")).toBeVisible();
+    // A default line name repeats the email, so the email is the title.
+    expect(within(work).getByText("ch***@acme.cn")).toBeVisible();
+    expect(
+      within(work).queryByText("ChatGPT · ch***@acme.cn"),
+    ).not.toBeInTheDocument();
+    expect(within(work).getByText("Team")).toBeVisible();
+    const current = screen.getByRole("region", { name: "Codex 当前登录" });
+    expect(within(current).getByText("Codex 当前登录")).toBeVisible();
+    expect(within(current).getByText("Plus")).toBeVisible();
+  });
+});
+
+describe("unreadable official accounts", () => {
+  const unreadable: OfficialAccountDto = {
+    key: "unreadable",
+    accountId: "",
+    displayName: "无法读取的账号",
+    email: null,
+    capturedAt: "",
+    isCurrent: false,
+    needsRelogin: true,
+    unreadable: true,
+    providerId: "line-unreadable",
+  };
+
+  it("lists the account with a repair message and never queries it", async () => {
+    vi.mocked(officialAccountsApi.list).mockResolvedValue([
+      unreadable,
+      account("healthy"),
+    ]);
+    render(<OfficialAccountsView />);
+    await waitFor(() => expect(screen.getAllByRole("article")).toHaveLength(2));
+    const [row] = screen.getAllByRole("article");
+    expect(within(row).getByText("无法读取的账号")).toBeVisible();
+    expect(
+      within(row).getByText(
+        "无法读取（可能因系统密码重置或配置迁移），请重新登录或删除",
+      ),
+    ).toBeVisible();
+    expect(within(row).getByRole("button", { name: "重新登录" })).toBeEnabled();
+    await waitFor(() =>
+      expect(officialAccountsApi.getQuota).toHaveBeenCalledExactlyOnceWith(
+        "healthy",
+      ),
+    );
+    fireEvent.click(within(row).getByRole("button", { name: "重新登录" }));
+    await waitFor(() =>
+      expect(officialAccountsApi.startBrowserLogin).toHaveBeenCalledOnce(),
+    );
+  });
+
+  it("can be removed after a confirmation that states the consequence", async () => {
+    vi.mocked(officialAccountsApi.list)
+      .mockResolvedValueOnce([unreadable])
+      .mockResolvedValueOnce([]);
+    const onAccountSwitched = vi.fn();
+    render(<OfficialAccountsView onAccountSwitched={onAccountSwitched} />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "删除无法读取的账号" }),
+    );
+    const dialog = await screen.findByRole("alertdialog", {
+      name: "删除账号“无法读取的账号”？",
+    });
+    expect(within(dialog).getByText(/已无法读取/)).toBeVisible();
+    expect(within(dialog).getByText(/使用它的线路会保留/)).toBeVisible();
+    expect(officialAccountsApi.removeAccount).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole("button", { name: "删除账号" }));
+    await waitFor(() =>
+      expect(officialAccountsApi.removeAccount).toHaveBeenCalledWith(
+        "unreadable",
+      ),
+    );
+    await screen.findByText("连接第一个官方账号");
+    expect(onAccountSwitched).toHaveBeenCalledOnce();
+  });
+});
+
+describe("official account removal", () => {
+  it("does nothing until confirmed and keeps the account on cancel", async () => {
+    vi.mocked(officialAccountsApi.list).mockResolvedValue([account("keep")]);
+    render(<OfficialAccountsView />);
+    fireEvent.click(await screen.findByRole("button", { name: "删除keep" }));
+    const dialog = await screen.findByRole("alertdialog", {
+      name: "删除账号“keep”？",
+    });
+    expect(
+      within(dialog).getByText(/Codex 与 ChatGPT 中已有的登录不受影响/),
+    ).toBeVisible();
+    fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+    await waitFor(() => expect(dialog).not.toBeInTheDocument());
+    expect(officialAccountsApi.removeAccount).not.toHaveBeenCalled();
+    expect(screen.getByRole("article")).toBeVisible();
+  });
+});
+
+describe("Codex live login", () => {
+  it("offers to save an unsaved live login instead of hiding the current card silently", async () => {
+    vi.mocked(officialAccountsApi.list).mockResolvedValue([
+      { ...account("saved"), liveState: "unsaved" },
+    ]);
+    render(<OfficialAccountsView />);
+    const banner = (
+      await screen.findByText("Codex 当前登录的账号还没有保存")
+    ).closest(".accounts-banner") as HTMLElement;
+    expect(
+      screen.queryByRole("region", { name: "Codex 当前登录" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(
+      within(banner).getByRole("button", { name: "导入本机登录" }),
+    );
+    await waitFor(() =>
+      expect(officialAccountsApi.saveCurrentLogin).toHaveBeenCalledOnce(),
+    );
+  });
+
+  it("offers to reapply the selected account when Codex uses another login", async () => {
+    vi.mocked(officialAccountsApi.list).mockResolvedValue([
+      { ...account("selected"), isSelected: true, liveState: "mismatch" },
+      { ...account("in-use", true), liveState: "mismatch" },
+    ]);
+    render(<OfficialAccountsView />);
+    const banner = (
+      await screen.findByText("Codex 当前没有使用所选账号")
+    ).closest(".accounts-banner") as HTMLElement;
+    expect(within(banner).getByText(/线路选的是「selected」/)).toBeVisible();
+    const current = screen.getByRole("region", { name: "Codex 当前登录" });
+    expect(
+      within(current).getByRole("heading", { name: "in-use" }),
+    ).toBeVisible();
+    fireEvent.click(within(banner).getByRole("button", { name: "重新应用" }));
+    const dialog = await screen.findByRole("dialog", {
+      name: "切换到 selected？",
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "确认切换" }));
+    await waitFor(() =>
+      expect(officialAccountsApi.switchAccount).toHaveBeenCalledWith(
+        "selected",
+      ),
+    );
+  });
+
+  it("explains a third-party route without a warning", async () => {
+    vi.mocked(officialAccountsApi.list).mockResolvedValue([
+      { ...account("idle"), liveState: "third_party" },
+    ]);
+    render(<OfficialAccountsView />);
+    expect(await screen.findByText(/Codex 正在使用第三方线路/)).toBeVisible();
+    expect(
+      screen.queryByText("Codex 当前没有使用所选账号"),
+    ).not.toBeInTheDocument();
+  });
+});
+
+describe("Codex CLI not found", () => {
+  it("explains the desktop-app search and makes importing the local login the way forward", async () => {
+    vi.mocked(officialAccountsApi.startBrowserLogin).mockRejectedValueOnce(
+      new Error(
+        "未找到 Codex CLI（已查找 PATH、常见安装位置和 Codex 桌面版自带的 CLI），无法添加账号；也可以在 Codex 中登录后选择「导入本机登录」 (Codex CLI was not found; you can also sign in inside Codex and save the current login)",
+      ),
+    );
+    render(<OfficialAccountsView />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "登录并添加账号" }),
+    );
+    const dialog = await screen.findByRole("dialog", { name: "添加官方账号" });
+    const alert = await within(dialog).findByRole("alert");
+    expect(alert).toHaveTextContent("未找到 Codex CLI");
+    expect(alert).toHaveTextContent(/桌面版自带的 CLI/);
+    expect(dialog).not.toHaveTextContent("was not found");
+    expect(
+      within(dialog).queryByRole("button", { name: "改用设备码登录" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "导入本机登录" }),
+    );
+    await waitFor(() =>
+      expect(officialAccountsApi.saveCurrentLogin).toHaveBeenCalledOnce(),
+    );
+    await waitFor(() => expect(dialog).not.toBeInTheDocument());
+  });
+
+  it("shows other login failures in Chinese only", async () => {
+    vi.mocked(officialAccountsApi.startDeviceLogin).mockRejectedValueOnce(
+      new Error(
+        "Codex 登录未完成，请重试 (The Codex login did not complete; try again)",
+      ),
+    );
+    render(<OfficialAccountsView />);
+    fireEvent.click(await screen.findByRole("button", { name: "设备码登录" }));
+    const dialog = await screen.findByRole("dialog", { name: "添加官方账号" });
+    const alert = await within(dialog).findByRole("alert");
+    expect(alert).toHaveTextContent("Codex 登录未完成，请重试");
+    expect(alert).not.toHaveTextContent("did not complete");
   });
 });

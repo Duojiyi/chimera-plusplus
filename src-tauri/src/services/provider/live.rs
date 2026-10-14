@@ -1242,6 +1242,13 @@ pub(crate) fn write_live_snapshot(
                 .ok_or_else(|| AppError::Config("Codex 供应商配置缺少 'auth' 字段".to_string()))?
                 .clone();
 
+            // Codex may have rotated the saved account it still holds in
+            // auth.json while a third-party line was active; keep that login
+            // before this write can replace it (U4 A2).
+            crate::codex_accounts::refresh_slot_before_live_write(
+                &crate::codex_config::get_codex_config_dir(),
+            );
+
             if let Some(key) = provider.official_account_key() {
                 let vault = crate::codex_accounts::vault::Vault::open_default()?;
                 let slot = vault.applicable_slot(key)?;

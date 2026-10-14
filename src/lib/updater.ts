@@ -31,7 +31,7 @@ export async function checkForUpdate(
   const { check } = await import("@tauri-apps/plugin-updater");
 
   const currentVersion = await getCurrentVersion();
-  const update = await check({ timeout: opts.timeout ?? 30000 } as any);
+  const update = await check({ timeout: opts.timeout ?? 30000 });
 
   if (!update) {
     return { status: "up-to-date" };
@@ -39,10 +39,15 @@ export async function checkForUpdate(
 
   const info: UpdateInfo = {
     currentVersion,
-    availableVersion: (update as any).version ?? "",
-    notes: (update as any).notes,
-    pubDate: (update as any).date,
+    availableVersion: update.version ?? "",
+    // The plugin exposes the release notes as `body`.
+    notes: update.body,
+    pubDate: update.date,
   };
+  // Only this metadata is read here; downloading and installing go through the
+  // backend commands, so release the plugin resource instead of leaking one per
+  // periodic check.
+  void update.close().catch(() => {});
 
   return { status: "available", info };
 }

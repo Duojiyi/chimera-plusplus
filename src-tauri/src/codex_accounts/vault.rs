@@ -130,11 +130,19 @@ pub(crate) fn validate_account_key(key: &str) -> Result<(), AppError> {
     }
 }
 
+/// Tests point the home directory at a temporary one (`get_home_dir`); the
+/// vault follows it there instead of the real per-user data directory.
+#[cfg(not(target_os = "macos"))]
+fn test_home_override() -> bool {
+    std::env::var("CC_SWITCH_TEST_HOME").is_ok_and(|home| !home.trim().is_empty())
+}
+
 fn local_data_base() -> PathBuf {
     let home = crate::config::get_home_dir;
     #[cfg(windows)]
     {
         std::env::var_os("LOCALAPPDATA")
+            .filter(|_| !test_home_override())
             .map(PathBuf::from)
             .filter(|path| path.is_absolute())
             .unwrap_or_else(|| home().join("AppData").join("Local"))
@@ -146,6 +154,7 @@ fn local_data_base() -> PathBuf {
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         std::env::var_os("XDG_DATA_HOME")
+            .filter(|_| !test_home_override())
             .map(PathBuf::from)
             .filter(|path| path.is_absolute())
             .unwrap_or_else(|| home().join(".local").join("share"))
@@ -270,6 +279,15 @@ impl Vault {
         Self::open_at(default_vault_root())
     }
 
+    /// The default vault if one was ever created; never creates it.
+    pub fn open_default_if_present() -> Result<Option<Self>, AppError> {
+        let root = default_vault_root();
+        match fs::symlink_metadata(&root) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            _ => Self::open_at(root).map(Some),
+        }
+    }
+
     pub fn open_at(root: PathBuf) -> Result<Self, AppError> {
         ensure_private_dir(&root)?;
         #[cfg(windows)]
@@ -302,18 +320,19 @@ impl Vault {
         self.root.join(TOMBSTONES_DIR).join(key)
     }
 
+    fn decode_entry(snapshot: &FileSnapshot) -> Result<Option<VaultSlot>, AppError> {
+        let Some(bytes) = snapshot.contents() else {
+            return Ok(None);
+        };
+        let plain = unseal(bytes)?;
+        serde_json::from_slice::<VaultSlot>(&plain)
+            .map(Some)
+            .map_err(|_| AppError::Config("账号保险库条目格式无效".to_string()))
+    }
+
     fn read_entry(path: &Path) -> Result<(Option<VaultSlot>, FileSnapshot), AppError> {
         let snapshot = FileSnapshot::read(path)?;
-        let slot = match snapshot.contents() {
-            None => None,
-            Some(bytes) => {
-                let plain = unseal(bytes)?;
-                let slot: VaultSlot = serde_json::from_slice(&plain)
-                    .map_err(|_| AppError::Config("账号保险库条目格式无效".to_string()))?;
-                Some(slot)
-            }
-        };
-        Ok((slot, snapshot))
+        Ok((Self::decode_entry(&snapshot)?, snapshot))
     }
 
     fn write_entry(snapshot: FileSnapshot, slot: &VaultSlot) -> Result<(), AppError> {
@@ -326,8 +345,13 @@ impl Vault {
     }
 
     /// Offers `auth` (already classified as `identity`) to `path`: written
-    /// unless the stored copy of the same identity is fresher. Compare and
-    /// write are CAS against the bytes read.
+    /// unless the stored copy of the same identity is fresher or identical.
+    /// Compare and write are CAS against the bytes read.
+    ///
+    /// An entry that cannot be decrypted or parsed (sealed under another
+    /// Windows profile or password, truncated, a future format) would block
+    /// every repair, so a trusted source replaces it, still CAS against the
+    /// bytes just read. Other sources keep failing on it.
     fn offer(
         path: &Path,
         identity: &AccountIdentity,
@@ -347,10 +371,18 @@ impl Vault {
             ));
         }
         for _ in 0..5 {
-            let (existing, snapshot) = Self::read_entry(path)?;
+            let snapshot = FileSnapshot::read(path)?;
+            let existing = match Self::decode_entry(&snapshot) {
+                Ok(existing) => existing,
+                Err(_) if source.may_update_slot() => {
+                    log::warn!("账号保险库条目无法读取，已用新的登录覆盖");
+                    None
+                }
+                Err(error) => return Err(error),
+            };
             if let Some(existing) = existing {
                 if existing.account_key == identity.key()
-                    && !is_at_least_as_fresh(auth, &existing.auth)
+                    && (existing.auth == *auth || !is_at_least_as_fresh(auth, &existing.auth))
                 {
                     return Ok(StoreOutcome::KeptExisting);
                 }
@@ -386,6 +418,8 @@ impl Vault {
 
     /// Switch-away backfill may refresh a saved login, never recreate a deleted
     /// account or clear a needs-login marker from a stale provider snapshot.
+    /// An unreadable slot is still a saved account: Codex's own login of that
+    /// identity repairs it.
     pub fn refresh_existing_slot(
         &self,
         identity: &AccountIdentity,
@@ -393,7 +427,7 @@ impl Vault {
     ) -> Result<(), AppError> {
         let _transaction = super::account_mutation()?;
         let key = identity.key();
-        if self.has_tombstone(&key) || self.read_slot(&key)?.is_none() {
+        if self.has_tombstone(&key) || !self.slot_path(&key).is_file() {
             return Ok(());
         }
         self.store_slot(identity, auth, SlotSource::Live)?;
@@ -1008,6 +1042,60 @@ mod tests {
             )
             .unwrap();
         assert!(vault.applicable_slot(&b.key()).is_ok());
+    }
+
+    // U4 A1: an unreadable entry must not block its own repair.
+    #[test]
+    fn unreadable_entries_are_replaced_by_trusted_logins_only() {
+        let (_dir, vault) = vault();
+        let a = identity("a");
+        let login = chatgpt_login("a", "2026-09-20T00:00:00Z");
+        vault.store_slot(&a, &login, SlotSource::Cli).unwrap();
+        fs::write(vault.slot_path(&a.key()), b"corrupt").unwrap();
+        assert!(vault.read_slot(&a.key()).is_err());
+        assert!(vault.applicable_slot(&a.key()).is_err());
+
+        // Imported material keeps failing on an unreadable entry.
+        let b = identity("b");
+        fs::write(vault.candidate_path(&b.key()), b"corrupt").unwrap();
+        assert!(vault
+            .store_candidate(
+                &b,
+                &chatgpt_login("b", "2026-09-20T00:00:00Z"),
+                SlotSource::Import
+            )
+            .is_err());
+        assert_eq!(
+            fs::read(vault.candidate_path(&b.key())).unwrap(),
+            b"corrupt"
+        );
+
+        // A new CLI login of the same identity repairs the slot.
+        let relogin = chatgpt_login("a", "2026-09-21T00:00:00Z");
+        assert_eq!(
+            vault.store_slot(&a, &relogin, SlotSource::Cli).unwrap(),
+            StoreOutcome::Stored
+        );
+        assert_eq!(vault.applicable_slot(&a.key()).unwrap().auth, relogin);
+
+        // So does Codex's own login, through the switch-time refresh.
+        fs::write(vault.slot_path(&a.key()), b"corrupt").unwrap();
+        vault.refresh_existing_slot(&a, &login).unwrap();
+        assert_eq!(vault.applicable_slot(&a.key()).unwrap().auth, login);
+    }
+
+    #[test]
+    fn an_identical_login_is_not_rewritten() {
+        let (_dir, vault) = vault();
+        let a = identity("a");
+        let login = chatgpt_login("a", "2026-09-20T00:00:00Z");
+        vault.store_slot(&a, &login, SlotSource::Live).unwrap();
+        let bytes = fs::read(vault.slot_path(&a.key())).unwrap();
+        assert_eq!(
+            vault.store_slot(&a, &login, SlotSource::Live).unwrap(),
+            StoreOutcome::KeptExisting
+        );
+        assert_eq!(fs::read(vault.slot_path(&a.key())).unwrap(), bytes);
     }
 
     #[test]

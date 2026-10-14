@@ -4,7 +4,7 @@
   display: flex;
   flex-direction: column;
   gap: 20px;
-  padding: 28px;
+  padding: 24px;
   color: var(--text-1);
   background: var(--bg-base);
   overflow: auto;
@@ -84,6 +84,13 @@
   color: var(--brand-text);
   background: var(--bg-selected);
 }
+.prompts-summary.is-warning {
+  border-color: var(--warning-border);
+}
+.is-warning .prompts-summary-icon {
+  color: var(--warning-fg);
+  background: var(--warning-bg);
+}
 .prompts-summary-copy {
   flex: 1;
   min-width: 0;
@@ -91,6 +98,46 @@
 .prompts-summary-copy strong {
   font-size: 14px;
   font-weight: 600;
+}
+.prompts-summary-headline {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  max-width: 100%;
+}
+.prompts-summary-headline strong {
+  overflow-wrap: anywhere;
+}
+/* Status pill: colour only says whether the file in effect matches the library. */
+.prompts-state-tag {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+}
+.prompts-state-tag.is-ok {
+  color: var(--success-fg);
+  background: var(--success-bg);
+  border-color: var(--success-border);
+}
+.prompts-state-tag.is-warning {
+  color: var(--warning-fg);
+  background: var(--warning-bg);
+  border-color: var(--warning-border);
+}
+.prompts-summary-actions {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 8px;
 }
 .prompts-active-names {
   display: inline;
@@ -301,6 +348,17 @@
 .prompt-enabled-label {
   color: var(--brand-text);
 }
+.prompt-enabled-label.is-pending {
+  color: var(--warning-fg);
+}
+.prompt-card-badge {
+  padding: 1px 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  color: var(--text-2);
+  background: var(--bg-subtle);
+  line-height: 16px;
+}
 .prompt-card-actions {
   gap: 0;
 }
@@ -382,10 +440,81 @@
   color: var(--text-2);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font:
-    12px/1.9 "Cascadia Code",
-    "Consolas",
-    monospace;
+  font: 12px/1.9 var(--font-mono);
+  /* Show markers such as <!-- and --> exactly as they are in the file. */
+  font-variant-ligatures: none;
+  font-feature-settings:
+    "liga" 0,
+    "calt" 0;
+}
+.prompt-file-sections {
+  display: grid;
+  gap: 18px;
+  margin-top: 18px;
+}
+.prompt-file-section h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--text-1);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 20px;
+}
+.prompt-file-section .prompt-file-content {
+  margin-top: 8px;
+}
+/* The block Chimera owns carries the brand rail; another tool's block is read-only. */
+.prompt-file-section.is-managed .prompt-file-content {
+  border-left: 3px solid var(--brand-indicator);
+  background: var(--bg-surface);
+}
+.prompt-file-section.is-foreign .prompt-file-content {
+  border-style: dashed;
+}
+.prompt-file-raw-note {
+  margin-top: 12px;
+  color: var(--warning-fg);
+}
+.prompt-file-issue > svg {
+  color: var(--warning-fg);
+}
+.prompt-resolve-dialog {
+  max-width: 560px;
+  color: var(--text-1);
+  background: var(--bg-surface);
+}
+.prompt-resolve-options {
+  display: grid;
+  gap: 12px;
+  padding: 20px 24px;
+  overflow-y: auto;
+}
+.prompt-resolve-option {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+}
+.prompt-resolve-option > div {
+  flex: 1;
+  min-width: 0;
+}
+.prompt-resolve-option strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+.prompt-resolve-option p {
+  margin: 4px 0 0;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.prompt-resolve-option > button {
+  flex-shrink: 0;
 }
 .prompt-detail-note {
   margin: 0;
@@ -439,7 +568,7 @@
     display: block;
     margin-left: 0;
   }
-  .prompts-file-link {
+  .prompts-summary-actions {
     margin-left: auto;
   }
   .prompts-search {

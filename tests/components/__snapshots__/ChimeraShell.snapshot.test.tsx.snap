@@ -2,8 +2,9 @@
 
 exports[`keeps the shell markup stable across views and the line editor > sidebar on another page 1`] = `
 <aside
-  class="box-border w-[216px] shrink-0 h-full flex flex-col gap-[2px] p-[0px_8px_12px_8px] justify-start items-start bg-[#13181C] select-none z-10"
+  class="chimera-sidebar box-border w-[216px] shrink-0 h-full flex flex-col gap-[2px] p-[0px_8px_12px_8px] justify-start items-start bg-[#13181C] select-none z-10"
   data-pencil-name="侧栏"
+  data-theme="dark"
 >
   <div
     class="box-border w-full h-[40px] shrink-0 flex flex-row gap-0 p-[0px_8px] justify-start items-center"
@@ -45,25 +46,6 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
           data-pencil-name="名称"
         >
           Codex
-        </div>
-        <div
-          class="box-border w-fit shrink-0 h-fit flex flex-row gap-[4px] justify-start items-center relative z-10"
-          data-pencil-name="尾部"
-        >
-          <div
-            class="box-border w-[20px] shrink-0 h-[20px] flex flex-row gap-0 justify-center items-center overflow-hidden rounded-[4px]"
-            data-pencil-name="当前线路"
-            style="background-color: rgb(123, 155, 195);"
-            title="未选择线路"
-          >
-            <div
-              class="text-[12px]/[17px] box-border font-bold text-left whitespace-nowrap"
-              data-pencil-name="简称"
-              style="color: rgb(18, 22, 28);"
-            >
-              —
-            </div>
-          </div>
         </div>
         <div
           class="box-border w-[2px] h-[6px] absolute left-[21px] top-[30px] bg-[#7B9BC3] z-0"
@@ -216,6 +198,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
         </div>
       </button>
       <button
+        aria-current="page"
         class="box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-[#23282D]"
         data-pencil-name="能力 · Codex 管理"
         type="button"
@@ -402,7 +385,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
       <span
         class="w-[24px] h-[24px] shrink-0 flex items-center justify-center border border-[#8D9398] rounded-[4px] text-[12px] font-bold"
       >
-        OMP
+        Om
       </span>
       <span
         class="flex-1 text-[14px]"
@@ -428,9 +411,9 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
       </span>
     </button>
     <button
-      class="w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] bg-transparent border-0 text-left text-[#BABEC3] cursor-pointer hover:bg-[#1A1E24]"
+      class="w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left cursor-pointer bg-transparent text-[#BABEC3] hover:bg-[#1A1E24]"
       data-pencil-name="添加工具"
-      title="管理工具显示偏好"
+      title="选择侧栏显示哪些工具"
       type="button"
     >
       <span
@@ -547,8 +530,9 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
 
 exports[`keeps the shell markup stable across views and the line editor > sidebar on the line overview 1`] = `
 <aside
-  class="box-border w-[216px] shrink-0 h-full flex flex-col gap-[2px] p-[0px_8px_12px_8px] justify-start items-start bg-[#13181C] select-none z-10"
+  class="chimera-sidebar box-border w-[216px] shrink-0 h-full flex flex-col gap-[2px] p-[0px_8px_12px_8px] justify-start items-start bg-[#13181C] select-none z-10"
   data-pencil-name="侧栏"
+  data-theme="dark"
 >
   <div
     class="box-border w-full h-[40px] shrink-0 flex flex-row gap-0 p-[0px_8px] justify-start items-center"
@@ -592,30 +576,12 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
           Codex
         </div>
         <div
-          class="box-border w-fit shrink-0 h-fit flex flex-row gap-[4px] justify-start items-center relative z-10"
-          data-pencil-name="尾部"
-        >
-          <div
-            class="box-border w-[20px] shrink-0 h-[20px] flex flex-row gap-0 justify-center items-center overflow-hidden rounded-[4px]"
-            data-pencil-name="当前线路"
-            style="background-color: rgb(123, 155, 195);"
-            title="未选择线路"
-          >
-            <div
-              class="text-[12px]/[17px] box-border font-bold text-left whitespace-nowrap"
-              data-pencil-name="简称"
-              style="color: rgb(18, 22, 28);"
-            >
-              —
-            </div>
-          </div>
-        </div>
-        <div
           class="box-border w-[2px] h-[6px] absolute left-[21px] top-[30px] bg-[#7B9BC3] z-0"
           data-pencil-name="干线起点"
         />
       </div>
       <button
+        aria-current="page"
         class="box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-[#23282D]"
         data-pencil-name="能力 · 线路"
         type="button"
@@ -947,7 +913,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
       <span
         class="w-[24px] h-[24px] shrink-0 flex items-center justify-center border border-[#8D9398] rounded-[4px] text-[12px] font-bold"
       >
-        OMP
+        Om
       </span>
       <span
         class="flex-1 text-[14px]"
@@ -973,9 +939,9 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
       </span>
     </button>
     <button
-      class="w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] bg-transparent border-0 text-left text-[#BABEC3] cursor-pointer hover:bg-[#1A1E24]"
+      class="w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left cursor-pointer bg-transparent text-[#BABEC3] hover:bg-[#1A1E24]"
       data-pencil-name="添加工具"
-      title="管理工具显示偏好"
+      title="选择侧栏显示哪些工具"
       type="button"
     >
       <span

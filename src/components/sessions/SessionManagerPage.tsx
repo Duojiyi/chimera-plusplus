@@ -6,24 +6,26 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
 import {
+  AlertTriangle,
   ArchiveRestore,
-  Download,
-  Copy,
-  RefreshCw,
-  Search,
-  Play,
-  Trash2,
-  MessageSquare,
-  Clock,
-  FolderOpen,
-  FileText,
-  X,
-  CheckSquare,
-  ListTree,
-  List,
   ChevronDown,
   ChevronRight,
   ChevronsDownUp,
+  CheckSquare,
+  Clock,
+  Copy,
+  FileText,
+  FolderOpen,
+  Info,
+  LayoutGrid,
+  List,
+  ListTree,
+  MessageSquare,
+  Play,
+  RefreshCw,
+  Search,
+  Trash2,
+  X,
 } from "lucide-react";
 import { useSessionMessagesQuery, useSessionsQuery } from "@/lib/query";
 import { sessionsApi } from "@/lib/api";
@@ -40,7 +42,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Collapsible,
   CollapsibleContent,
@@ -56,10 +57,16 @@ import {
 import { extractErrorMessage } from "@/utils/errorUtils";
 import { isMac } from "@/lib/platform";
 import { ProviderIcon } from "@/components/ProviderIcon";
+import {
+  SessionDeleteDialog,
+  type SessionDeleteTarget,
+} from "./SessionDeleteDialog";
+import { SessionExportButton } from "./SessionExportButton";
 import { SessionItem } from "./SessionItem";
 import { SessionMessageItem } from "./SessionMessageItem";
 import { SessionTocDialog, SessionTocSidebar } from "./SessionToc";
 import {
+  describeSessionReadError,
   extractCodexPromptPreview,
   formatSessionMessagePreview,
   formatSessionTitle,
@@ -70,6 +77,9 @@ import {
   getSessionDirectoryGroupKey,
   getSessionKey,
   groupSessionsByProviderAndDirectory,
+  isArchivedSession,
+  isNoticeMessage,
+  isTruncatedMessage,
   type SessionDirectoryGroup,
   type SessionProviderGroup,
   shouldHideCodexMessageFromToc,
@@ -82,6 +92,14 @@ const SESSION_GROUP_EXPANSION_STORAGE_KEY =
 
 type ProviderFilter =
   "all" | "codex" | "grokbuild" | "claude" | "opencode" | "gemini";
+
+const PROVIDER_FILTERS: ProviderFilter[] = [
+  "codex",
+  "claude",
+  "gemini",
+  "opencode",
+  "grokbuild",
+];
 
 type SessionListViewMode = "flat" | "grouped";
 
@@ -179,33 +197,52 @@ const filterSetToAllowedValues = (
   return changed ? next : current;
 };
 
+/** What the retry banner says about deletes that did not finish. */
+const describeUnfinishedDeletes = (targets: SessionDeleteTarget[]) => {
+  const cleanup = targets.filter((target) => target.contentDeleted).length;
+  const failed = targets.length - cleanup;
+  if (failed === 0) {
+    return `${cleanup} 个会话的内容已删除，但索引清理未完成。请关闭 Codex 后重试。`;
+  }
+  if (cleanup === 0) {
+    return `${failed} 个会话删除失败，仍保留在列表中。`;
+  }
+  return `${cleanup} 个会话待完成索引清理，${failed} 个会话删除失败。`;
+};
+
 export function SessionManagerPage({ appId }: { appId: string }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const { data, isLoading, refetch } = useSessionsQuery();
-  const sessions = data ?? [];
-  const detailRef = useRef<HTMLDivElement | null>(null);
+  const {
+    data,
+    isLoading,
+    isError: isListError,
+    error: listError,
+    isFetching: isFetchingList,
+    refetch,
+  } = useSessionsQuery();
+  const sessions = useMemo(() => data ?? [], [data]);
+  const listScrollRef = useRef<HTMLDivElement | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const deleteInFlightRef = useRef(false);
   const [activeMessageIndex, setActiveMessageIndex] = useState<number | null>(
     null,
   );
   const [tocDialogOpen, setTocDialogOpen] = useState(false);
-  const [isSearchOpen, setIsSearchOpen] = useState(false);
-  const [deleteTargets, setDeleteTargets] = useState<SessionMeta[] | null>(
-    null,
-  );
+  const [deleteTargets, setDeleteTargets] = useState<
+    SessionDeleteTarget[] | null
+  >(null);
   const [selectedSessionKeys, setSelectedSessionKeys] = useState<Set<string>>(
     () => new Set(),
   );
-  const [isBatchDeleting, setIsBatchDeleting] = useState(false);
-  const [deleteRetryTargets, setDeleteRetryTargets] = useState<SessionMeta[]>(
-    [],
-  );
-  const deleteInFlightRef = useRef(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteRetryTargets, setDeleteRetryTargets] = useState<
+    SessionDeleteTarget[]
+  >([]);
   const [selectionMode, setSelectionMode] = useState(false);
   const [isReclaiming, setIsReclaiming] = useState(false);
   const [reclaimConfirmOpen, setReclaimConfirmOpen] = useState(false);
-  const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   const [search, setSearch] = useState("");
   const [providerFilter, setProviderFilter] = useState<ProviderFilter>(
@@ -235,6 +272,8 @@ export function SessionManagerPage({ appId }: { appId: string }) {
     return searchSessions(search);
   }, [searchSessions, search]);
 
+  // With one application chosen, its name above every folder says nothing.
+  const singleProvider = providerFilter !== "all";
   const groupedSessions = useMemo(
     () =>
       groupSessionsByProviderAndDirectory(
@@ -310,59 +349,42 @@ export function SessionManagerPage({ appId }: { appId: string }) {
     );
   }, [filteredSessions, selectedKey]);
 
-  const listViewModeLabel =
-    listViewMode === "grouped"
-      ? t("sessionManager.viewModeGrouped", {
-          defaultValue: "分类",
-        })
-      : t("sessionManager.viewModeFlat", {
-          defaultValue: "列表",
-        });
+  const listViewModeLabel = listViewMode === "grouped" ? "分类" : "列表";
 
   const {
     data: messages = [],
     isLoading: isLoadingMessages,
     isError: isMessagesError,
+    error: messagesError,
     isFetching: isFetchingMessages,
     refetch: refetchMessages,
   } = useSessionMessagesQuery(
     selectedSession?.providerId,
     selectedSession?.sourcePath,
   );
-  const handleExport = () => {
-    if (
-      !selectedSession ||
-      isLoadingMessages ||
-      isFetchingMessages ||
-      isMessagesError
-    )
-      return;
-    const link = document.createElement("a");
-    const url = URL.createObjectURL(
-      new Blob(
-        [
-          JSON.stringify(
-            { version: 1, session: selectedSession, messages },
-            null,
-            2,
-          ),
-        ],
-        { type: "application/json;charset=utf-8" },
-      ),
-    );
-    link.href = url;
-    link.download = `session-${selectedSession.sessionId.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 100)}.json`;
-    document.body.appendChild(link);
-    try {
-      link.click();
-    } finally {
-      link.remove();
-      // Let the WebView consume the download before releasing its URL.
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    }
-  };
 
-  const isDeleting = isBatchDeleting;
+  const exportUnavailableReason =
+    isLoadingMessages || isFetchingMessages
+      ? "正在读取对话，读取完成后可以导出"
+      : isMessagesError
+        ? "对话读取失败，无法导出"
+        : messages.length === 0
+          ? "这条会话没有可以导出的对话"
+          : null;
+  const contentTruncated = useMemo(
+    () =>
+      messages.some(
+        (message) => isNoticeMessage(message) || isTruncatedMessage(message),
+      ),
+    [messages],
+  );
+  const readFailure = useMemo(
+    () =>
+      isMessagesError
+        ? describeSessionReadError(extractErrorMessage(messagesError) || "")
+        : null,
+    [isMessagesError, messagesError],
+  );
 
   const virtualizer = useVirtualizer({
     count: messages.length,
@@ -372,11 +394,27 @@ export function SessionManagerPage({ appId }: { appId: string }) {
     gap: 12,
   });
 
+  // Long histories stay cheap: only the rows in view are rendered.
+  const listVirtualizer = useVirtualizer({
+    count: listViewMode === "flat" ? filteredSessions.length : 0,
+    getScrollElement: () => listScrollRef.current,
+    estimateSize: () => 64,
+    overscan: 8,
+    gap: 2,
+    getItemKey: (index) => getSessionKey(filteredSessions[index]),
+  });
+
   useEffect(() => {
     if (scrollContainerRef.current) {
       scrollContainerRef.current.scrollTop = 0;
     }
   }, [selectedKey]);
+
+  useEffect(() => {
+    if (listScrollRef.current) {
+      listScrollRef.current.scrollTop = 0;
+    }
+  }, [search, providerFilter, listViewMode]);
 
   useEffect(() => {
     const validKeys = new Set(
@@ -432,23 +470,17 @@ export function SessionManagerPage({ appId }: { appId: string }) {
         await navigator.clipboard.writeText(text);
         toast.success(successMessage);
       } catch (error) {
-        toast.error(
-          extractErrorMessage(error) ||
-            t("common.error", { defaultValue: "Copy failed" }),
-        );
+        toast.error(extractErrorMessage(error) || "复制失败");
       }
     },
-    [t],
+    [],
   );
 
   const handleMessageCopy = useCallback(
     (content: string) => {
-      void handleCopy(
-        content,
-        t("sessionManager.messageCopied", { defaultValue: "已复制消息内容" }),
-      );
+      void handleCopy(content, "已复制消息内容");
     },
-    [handleCopy, t],
+    [handleCopy],
   );
 
   const handleResume = async () => {
@@ -475,20 +507,27 @@ export function SessionManagerPage({ appId }: { appId: string }) {
     }
   };
 
+  const requestDelete = (targets: SessionMeta[]) => {
+    const deletable = targets.filter((session) => session.sourcePath);
+    if (deletable.length > 0) {
+      setDeleteTargets(deletable.map((session) => ({ session })));
+    }
+  };
+
   const handleDeleteConfirm = async () => {
     if (!deleteTargets?.length || deleteInFlightRef.current) return;
 
-    const targets = deleteTargets.filter((session) => session.sourcePath);
+    const targets = deleteTargets.filter(({ session }) => session.sourcePath);
     setDeleteTargets(null);
     if (!targets.length) return;
 
     deleteInFlightRef.current = true;
-    setIsBatchDeleting(true);
+    setIsDeleting(true);
     try {
       // Use the structured contract for single deletes too: the legacy boolean
       // cannot distinguish deleted content from unfinished index cleanup.
       const results = await sessionsApi.deleteMany(
-        targets.map((session) => ({
+        targets.map(({ session }) => ({
           providerId: session.providerId,
           sessionId: session.sessionId,
           sourcePath: session.sourcePath!,
@@ -497,15 +536,27 @@ export function SessionManagerPage({ appId }: { appId: string }) {
       const outcomes = new Map(
         results.map((result) => [getSessionKey(result), result]),
       );
-      const failedTargets = targets.filter(
-        (target) => !outcomes.get(getSessionKey(target))?.success,
+      const unfinished = targets.flatMap((target) => {
+        const outcome = outcomes.get(getSessionKey(target.session));
+        if (outcome?.success) return [];
+        return [
+          {
+            session: target.session,
+            contentDeleted:
+              target.contentDeleted === true || outcome?.sourceDeleted === true,
+          },
+        ];
+      });
+      const targetKeys = new Set(
+        targets.map(({ session }) => getSessionKey(session)),
       );
-      const targetKeys = new Set(targets.map(getSessionKey));
       // Retain identities independently of the scanned list: a deleted source
       // can disappear while its index cleanup still needs an explicit retry.
       setDeleteRetryTargets((current) => [
-        ...current.filter((target) => !targetKeys.has(getSessionKey(target))),
-        ...failedTargets,
+        ...current.filter(
+          ({ session }) => !targetKeys.has(getSessionKey(session)),
+        ),
+        ...unfinished,
       ]);
 
       const contentDeleted = results.filter(
@@ -544,16 +595,12 @@ export function SessionManagerPage({ appId }: { appId: string }) {
       }
       if (cleanupPending.length > 0) {
         toast.warning(
-          t("sessionManager.deleteCleanupPending", {
-            defaultValue:
-              "{{count}} 个会话内容已删除，但索引清理未完成，请重试完成清理。",
-            count: cleanupPending.length,
-          }),
+          `${cleanupPending.length} 个会话的内容已删除，索引清理未完成。请关闭 Codex 后点「重试未完成的删除」。`,
         );
       }
       const cleanupKeys = new Set(cleanupPending.map(getSessionKey));
-      const failures = failedTargets.filter(
-        (target) => !cleanupKeys.has(getSessionKey(target)),
+      const failures = unfinished.filter(
+        ({ session }) => !cleanupKeys.has(getSessionKey(session)),
       );
       if (failures.length > 0) {
         toast.error(
@@ -563,29 +610,21 @@ export function SessionManagerPage({ appId }: { appId: string }) {
           }),
           {
             description:
-              outcomes.get(getSessionKey(failures[0]))?.error ||
-              t("common.unknown"),
+              outcomes.get(getSessionKey(failures[0].session))?.error ||
+              "原因未知",
           },
         );
       }
     } catch (error) {
-      setDeleteRetryTargets((current) => [
-        ...new Map(
-          [...current, ...targets].map((target) => [
-            getSessionKey(target),
-            target,
-          ]),
-        ).values(),
-      ]);
+      // The request was refused as a whole (Codex still running, for one),
+      // so nothing was deleted and the sessions are still listed: there is
+      // no partial delete to offer a retry for.
       toast.error(
-        extractErrorMessage(error) ||
-          t("sessionManager.batchDeleteRequestFailed", {
-            defaultValue: "批量删除失败，请稍后重试",
-          }),
+        extractErrorMessage(error) || "删除请求没有完成，会话均未删除。",
       );
     } finally {
       deleteInFlightRef.current = false;
-      setIsBatchDeleting(false);
+      setIsDeleting(false);
     }
   };
 
@@ -819,7 +858,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
     setExpandedDirectoryGroups(new Set());
   };
 
-  const renderSessionItem = (session: SessionMeta) => {
+  const renderSessionItem = (session: SessionMeta, showFolder = true) => {
     const sessionKey = getSessionKey(session);
     const isSelected = selectedKey !== null && sessionKey === selectedKey;
 
@@ -830,6 +869,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
         isSelected={isSelected}
         selectionMode={selectionMode}
         searchQuery={search}
+        showFolder={showFolder}
         isChecked={selectedSessionKeys.has(sessionKey)}
         isCheckDisabled={!session.sourcePath}
         onSelect={setSelectedKey}
@@ -901,6 +941,115 @@ export function SessionManagerPage({ appId }: { appId: string }) {
     );
   };
 
+  const renderDirectoryGroup = (directoryGroup: SessionDirectoryGroup) => {
+    const directoryOpen = expandedDirectoryGroups.has(directoryGroup.key);
+    const directorySelectionState = getGroupSelectionState(
+      directoryGroup.sessions,
+    );
+
+    return (
+      <Collapsible
+        key={directoryGroup.key}
+        open={directoryOpen}
+        onOpenChange={() => toggleDirectoryGroup(directoryGroup.key)}
+      >
+        <div className="session-group-row is-folder">
+          {renderDirectoryGroupCheckbox(
+            directoryGroup,
+            directorySelectionState,
+          )}
+          <CollapsibleTrigger asChild>
+            <button
+              type="button"
+              className="session-group-trigger"
+              aria-label={t("sessionManager.toggleDirectoryGroup", {
+                defaultValue: "展开或折叠 {{directory}} 目录分组",
+                directory: directoryGroup.label,
+              })}
+            >
+              {directoryOpen ? (
+                <ChevronDown className="size-3.5 shrink-0" aria-hidden />
+              ) : (
+                <ChevronRight className="size-3.5 shrink-0" aria-hidden />
+              )}
+              <FolderOpen className="size-3.5 shrink-0" aria-hidden />
+              <span
+                className="session-group-label"
+                title={directoryGroup.projectDir ?? undefined}
+              >
+                {directoryGroup.label}
+              </span>
+              {renderGroupSelectionBadge(
+                directorySelectionState,
+                directoryGroup.sessions.length,
+                "outline",
+              )}
+            </button>
+          </CollapsibleTrigger>
+        </div>
+        <CollapsibleContent className="session-group-children">
+          {directoryGroup.sessions.map((session) =>
+            renderSessionItem(session, false),
+          )}
+        </CollapsibleContent>
+      </Collapsible>
+    );
+  };
+
+  const renderProviderGroup = (providerGroup: SessionProviderGroup) => {
+    const providerOpen = expandedProviderGroups.has(providerGroup.providerId);
+    const providerLabel = getProviderLabel(providerGroup.providerId);
+    const providerSelectionState = getGroupSelectionState(
+      providerGroup.sessions,
+    );
+
+    return (
+      <Collapsible
+        key={providerGroup.providerId}
+        open={providerOpen}
+        onOpenChange={() => toggleProviderGroup(providerGroup.providerId)}
+      >
+        <div className="session-group-row is-app">
+          {renderProviderGroupCheckbox(
+            providerGroup,
+            providerLabel,
+            providerSelectionState,
+          )}
+          <CollapsibleTrigger asChild>
+            <button
+              type="button"
+              className="session-group-trigger"
+              aria-label={t("sessionManager.toggleProviderGroup", {
+                defaultValue: "展开或折叠 {{provider}} 供应商分组",
+                provider: providerLabel,
+              })}
+            >
+              {providerOpen ? (
+                <ChevronDown className="size-3.5 shrink-0" aria-hidden />
+              ) : (
+                <ChevronRight className="size-3.5 shrink-0" aria-hidden />
+              )}
+              <ProviderIcon
+                icon={getProviderIconName(providerGroup.providerId)}
+                name={providerGroup.providerId}
+                size={16}
+              />
+              <span className="session-group-label">{providerLabel}</span>
+              {renderGroupSelectionBadge(
+                providerSelectionState,
+                providerGroup.sessions.length,
+                "secondary",
+              )}
+            </button>
+          </CollapsibleTrigger>
+        </div>
+        <CollapsibleContent className="session-group-children">
+          {providerGroup.directories.map(renderDirectoryGroup)}
+        </CollapsibleContent>
+      </Collapsible>
+    );
+  };
+
   const handleToggleSelectAll = () => {
     setSelectedSessionKeys((current) => {
       const next = new Set(current);
@@ -917,14 +1066,179 @@ export function SessionManagerPage({ appId }: { appId: string }) {
     });
   };
 
-  const openBatchDeleteDialog = () => {
-    if (selectedDeletableSessions.length === 0) return;
-    setDeleteTargets(selectedDeletableSessions);
-  };
-
   const exitSelectionMode = () => {
     setSelectionMode(false);
     setSelectedSessionKeys(new Set());
+  };
+
+  const clearSearch = () => {
+    setSearch("");
+    searchInputRef.current?.focus();
+  };
+
+  const listUnavailable = isListError && sessions.length === 0;
+  const noSessionsAtAll = !isLoading && !isListError && sessions.length === 0;
+  const codexRelevant = providerFilter === "all" || providerFilter === "codex";
+  const selectedTitle = selectedSession
+    ? formatSessionTitle(selectedSession)
+    : "";
+
+  const renderListBody = () => {
+    if (isLoading) {
+      return (
+        <div className="session-list-skeleton" role="status">
+          <span className="sr-only">正在读取会话列表…</span>
+          {[0, 1, 2, 3, 4].map((row) => (
+            <div key={row} className="session-skeleton-row" aria-hidden>
+              <span />
+              <span />
+            </div>
+          ))}
+        </div>
+      );
+    }
+    if (filteredSessions.length === 0) {
+      return (
+        <div className="session-list-empty">
+          {search.trim() ? (
+            <>
+              <p>
+                没有标题、摘要、文件夹或 ID 与「{search.trim()}」匹配的会话。
+              </p>
+              <Button variant="outline" size="sm" onClick={clearSearch}>
+                清除搜索
+              </Button>
+            </>
+          ) : singleProvider ? (
+            <>
+              <p>{getProviderLabel(providerFilter)} 还没有会话记录。</p>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setProviderFilter("all")}
+              >
+                查看全部应用
+              </Button>
+            </>
+          ) : (
+            <p>没有可以显示的会话。</p>
+          )}
+        </div>
+      );
+    }
+    if (listViewMode === "grouped") {
+      return (
+        <div className="session-group-list">
+          {singleProvider
+            ? groupedSessions.flatMap((providerGroup) =>
+                providerGroup.directories.map(renderDirectoryGroup),
+              )
+            : groupedSessions.map(renderProviderGroup)}
+        </div>
+      );
+    }
+    return (
+      <div
+        style={{
+          height: listVirtualizer.getTotalSize(),
+          position: "relative",
+        }}
+      >
+        {listVirtualizer.getVirtualItems().map((row) => (
+          <div
+            key={row.key}
+            data-index={row.index}
+            ref={listVirtualizer.measureElement}
+            style={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              width: "100%",
+              transform: `translateY(${row.start}px)`,
+            }}
+          >
+            {renderSessionItem(filteredSessions[row.index])}
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  const renderMessages = () => {
+    if (isLoadingMessages) {
+      return (
+        <div className="session-pane-status" role="status">
+          <RefreshCw className="size-4 motion-safe:animate-spin" aria-hidden />
+          正在读取对话…
+        </div>
+      );
+    }
+    if (isMessagesError && readFailure) {
+      const detail = extractErrorMessage(messagesError);
+      return (
+        <div role="alert" className="session-state is-error">
+          <AlertTriangle className="session-state-icon" aria-hidden />
+          <h3>读取失败</h3>
+          <p>{readFailure.hint || "无法读取这条会话的记录文件。"}</p>
+          {detail ? (
+            <details className="session-state-detail">
+              <summary>错误详情</summary>
+              <code>{detail}</code>
+            </details>
+          ) : null}
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={isFetchingMessages}
+            onClick={() => void refetchMessages()}
+          >
+            <RefreshCw
+              className={`size-3.5 mr-1.5${isFetchingMessages ? " motion-safe:animate-spin" : ""}`}
+              aria-hidden
+            />
+            重试
+          </Button>
+        </div>
+      );
+    }
+    if (messages.length === 0) {
+      return (
+        <div className="session-state">
+          <MessageSquare className="session-state-icon" aria-hidden />
+          <p>这条会话没有可以显示的对话。</p>
+        </div>
+      );
+    }
+    return (
+      <div
+        style={{
+          height: virtualizer.getTotalSize(),
+          position: "relative",
+        }}
+      >
+        {virtualizer.getVirtualItems().map((virtualRow) => (
+          <div
+            key={virtualRow.key}
+            data-index={virtualRow.index}
+            ref={virtualizer.measureElement}
+            style={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              width: "100%",
+              transform: `translateY(${virtualRow.start}px)`,
+            }}
+          >
+            <SessionMessageItem
+              message={messages[virtualRow.index]}
+              isActive={activeMessageIndex === virtualRow.index}
+              searchQuery={search}
+              onCopy={handleMessageCopy}
+            />
+          </div>
+        ))}
+      </div>
+    );
   };
 
   return (
@@ -951,296 +1265,246 @@ export function SessionManagerPage({ appId }: { appId: string }) {
             <SelectContent>
               <SelectItem value="all">
                 <div className="flex items-center gap-2">
-                  <ProviderIcon icon="apps" name="all" size={14} />
-                  <span>{t("sessionManager.providerFilterAll")}</span>
+                  <LayoutGrid className="size-3.5" aria-hidden />
+                  <span>全部</span>
                 </div>
               </SelectItem>
-              <SelectItem value="codex">
-                <div className="flex items-center gap-2">
-                  <ProviderIcon icon="openai" name="codex" size={14} />
-                  <span>Codex</span>
-                </div>
-              </SelectItem>
-              <SelectItem value="grokbuild">
-                <div className="flex items-center gap-2">
-                  <ProviderIcon icon="grok" name="grokbuild" size={14} />
-                  <span>Grok Build</span>
-                </div>
-              </SelectItem>
-              <SelectItem value="claude">
-                <div className="flex items-center gap-2">
-                  <ProviderIcon icon="claude" name="claude" size={14} />
-                  <span>Claude Code</span>
-                </div>
-              </SelectItem>
-              <SelectItem value="opencode">
-                <div className="flex items-center gap-2">
-                  <ProviderIcon icon="opencode" name="opencode" size={14} />
-                  <span>OpenCode</span>
-                </div>
-              </SelectItem>
-              <SelectItem value="gemini">
-                <div className="flex items-center gap-2">
-                  <ProviderIcon icon="gemini" name="gemini" size={14} />
-                  <span>Gemini CLI</span>
-                </div>
-              </SelectItem>
+              {PROVIDER_FILTERS.map((providerId) => (
+                <SelectItem key={providerId} value={providerId}>
+                  <div className="flex items-center gap-2">
+                    <ProviderIcon
+                      icon={getProviderIconName(providerId)}
+                      name={providerId}
+                      size={14}
+                    />
+                    <span>{getProviderLabel(providerId)}</span>
+                  </div>
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
         </header>
-        <div className="flex-1 min-h-0 overflow-hidden flex flex-col gap-4">
+        <div className="session-page-body">
           {deleteRetryTargets.length > 0 && (
-            <div
-              role="alert"
-              className="flex items-center justify-between gap-3 rounded-md border border-yellow-500/40 p-3 text-sm"
-            >
-              <span>
-                {t("sessionManager.deleteRetryPending", {
-                  defaultValue:
-                    "{{count}} 个会话尚未完整删除；内容已删除的项目仍需完成索引清理。",
-                  count: deleteRetryTargets.length,
-                })}
+            <div role="alert" className="session-retry-banner">
+              <AlertTriangle className="size-4 shrink-0" aria-hidden />
+              <span className="session-retry-banner-text">
+                {describeUnfinishedDeletes(deleteRetryTargets)}
               </span>
               <Button
                 variant="outline"
+                size="sm"
                 disabled={isDeleting}
                 onClick={() => setDeleteTargets(deleteRetryTargets)}
               >
-                {t("sessionManager.retryDelete", {
-                  defaultValue: "重试未完成的删除",
-                })}
+                重试未完成的删除
               </Button>
             </div>
           )}
-          {/* 主内容区域 - 左右分栏 */}
-          <div className="session-workspace">
-            {/* 左侧会话列表 */}
-            <Card className="session-list-panel flex flex-col min-h-0 overflow-hidden">
-              <CardHeader className="py-3 px-3 border-b shrink-0">
-                {isSearchOpen ? (
-                  <div className="flex items-center gap-2">
-                    <div className="relative flex-1">
-                      <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
-                      <Input
-                        ref={searchInputRef}
-                        value={search}
-                        onChange={(event) => setSearch(event.target.value)}
-                        placeholder={t("sessionManager.searchPlaceholder")}
-                        aria-label={t("sessionManager.searchSessions", {
-                          defaultValue: "搜索会话",
-                        })}
-                        className="h-8 pl-8 pr-8 text-sm"
-                        autoFocus
-                        onKeyDown={(e) => {
-                          if (e.key === "Escape") {
-                            setIsSearchOpen(false);
-                            setSearch("");
-                          }
-                        }}
-                        onBlur={() => {
-                          if (search.trim() === "") {
-                            setIsSearchOpen(false);
-                          }
-                        }}
-                      />
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="absolute right-1 top-1/2 -translate-y-1/2 size-6"
-                        aria-label="关闭搜索"
-                        onClick={() => {
-                          setIsSearchOpen(false);
-                          setSearch("");
-                        }}
-                      >
-                        <X className="size-3" />
-                      </Button>
+          {isListError && sessions.length > 0 && (
+            <div role="alert" className="session-retry-banner">
+              <AlertTriangle className="size-4 shrink-0" aria-hidden />
+              <span className="session-retry-banner-text">
+                刷新会话列表失败，下面是上次读取的结果。
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={isFetchingList}
+                onClick={() => void refetch()}
+              >
+                重试
+              </Button>
+            </div>
+          )}
+          {listUnavailable ? (
+            <div role="alert" className="session-state is-error is-page">
+              <AlertTriangle className="session-state-icon" aria-hidden />
+              <h3>无法读取会话列表</h3>
+              <p>
+                读取本机会话记录时出错。请确认相关工具的数据文件夹可以访问，然后重试。
+              </p>
+              {extractErrorMessage(listError) ? (
+                <details className="session-state-detail">
+                  <summary>错误详情</summary>
+                  <code>{extractErrorMessage(listError)}</code>
+                </details>
+              ) : null}
+              <Button
+                size="sm"
+                disabled={isFetchingList}
+                onClick={() => void refetch()}
+              >
+                <RefreshCw
+                  className={`size-3.5 mr-1.5${isFetchingList ? " motion-safe:animate-spin" : ""}`}
+                  aria-hidden
+                />
+                重试
+              </Button>
+            </div>
+          ) : noSessionsAtAll ? (
+            <div className="session-state is-page">
+              <MessageSquare className="session-state-icon" aria-hidden />
+              <h3>还没有会话记录</h3>
+              <p>
+                在 Codex
+                或其他已接入的工具里开始对话后，会话会出现在这里，可以随时回看和继续。
+              </p>
+              <div className="session-state-actions">
+                <Button
+                  size="sm"
+                  disabled={isFetchingList}
+                  onClick={() => void refetch()}
+                >
+                  <RefreshCw className="size-3.5 mr-1.5" aria-hidden />
+                  刷新列表
+                </Button>
+                {codexRelevant ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={isReclaiming}
+                    onClick={() => setReclaimConfirmOpen(true)}
+                  >
+                    <ArchiveRestore className="size-3.5 mr-1.5" aria-hidden />
+                    恢复其他线路下的会话
+                  </Button>
+                ) : null}
+              </div>
+            </div>
+          ) : (
+            <div className="session-workspace">
+              {/* 左侧会话列表 */}
+              <Card className="session-list-panel flex flex-col min-h-0 overflow-hidden">
+                <CardHeader className="session-list-head p-3 space-y-0 border-b shrink-0">
+                  <div className="session-list-header">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <CardTitle className="text-sm font-semibold whitespace-nowrap">
+                        会话
+                      </CardTitle>
+                      <Badge variant="secondary" className="text-xs">
+                        {filteredSessions.length}
+                      </Badge>
                     </div>
-                    {selectionMode && (
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            variant="secondary"
-                            size="icon"
-                            className="size-7 bg-muted text-foreground hover:bg-accent"
-                            aria-label={t(
-                              "sessionManager.exitBatchModeTooltip",
-                              {
-                                defaultValue: "退出批量管理",
-                              },
-                            )}
-                            onClick={exitSelectionMode}
-                          >
-                            <CheckSquare className="size-3.5" />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          {t("sessionManager.exitBatchModeTooltip", {
-                            defaultValue: "退出批量管理",
-                          })}
-                        </TooltipContent>
-                      </Tooltip>
-                    )}
-                  </div>
-                ) : (
-                  <div className="flex flex-col gap-2">
-                    <div className="session-list-header">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <CardTitle className="text-sm font-medium whitespace-nowrap">
-                          {t("sessionManager.sessionList")}
-                        </CardTitle>
-                        <Badge variant="secondary" className="text-xs">
-                          {filteredSessions.length}
-                        </Badge>
-                      </div>
-                      <div className="session-list-toolbar">
-                        {(selectionMode ||
-                          deletableFilteredSessions.length > 0) && (
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <Button
-                                variant={selectionMode ? "secondary" : "ghost"}
-                                size="icon"
-                                className={
-                                  selectionMode
-                                    ? "size-7 bg-muted text-foreground hover:bg-accent"
-                                    : "size-7"
+                    <div className="session-list-toolbar">
+                      {(selectionMode ||
+                        deletableFilteredSessions.length > 0) && (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              variant={selectionMode ? "secondary" : "ghost"}
+                              size="icon"
+                              className={
+                                selectionMode
+                                  ? "size-7 bg-muted text-foreground hover:bg-accent"
+                                  : "size-7"
+                              }
+                              aria-label={
+                                selectionMode
+                                  ? t("sessionManager.exitBatchModeTooltip", {
+                                      defaultValue: "退出批量管理",
+                                    })
+                                  : t("sessionManager.manageBatchTooltip", {
+                                      defaultValue: "批量管理",
+                                    })
+                              }
+                              onClick={() => {
+                                if (selectionMode) {
+                                  exitSelectionMode();
+                                } else {
+                                  setSelectionMode(true);
                                 }
-                                aria-label={
-                                  selectionMode
-                                    ? t("sessionManager.exitBatchModeTooltip", {
-                                        defaultValue: "退出批量管理",
-                                      })
-                                    : t("sessionManager.manageBatchTooltip", {
-                                        defaultValue: "批量管理",
-                                      })
-                                }
-                                onClick={() => {
-                                  if (selectionMode) {
-                                    exitSelectionMode();
-                                  } else {
-                                    setSelectionMode(true);
-                                  }
-                                }}
-                              >
-                                <CheckSquare className="size-3.5" />
-                              </Button>
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              {selectionMode
-                                ? t("sessionManager.exitBatchModeTooltip", {
-                                    defaultValue: "退出批量管理",
-                                  })
-                                : t("sessionManager.manageBatchTooltip", {
-                                    defaultValue: "批量管理",
-                                  })}
-                            </TooltipContent>
-                          </Tooltip>
-                        )}
-                        <Select
-                          value={listViewMode}
-                          onValueChange={(value) =>
-                            setListViewMode(value as SessionListViewMode)
-                          }
-                        >
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <SelectTrigger
-                                className="size-7 p-0 justify-center border-0 bg-transparent hover:bg-muted"
-                                aria-label={t(
-                                  "sessionManager.viewModeTooltip",
-                                  {
-                                    defaultValue: "查看方式",
-                                  },
-                                )}
-                              >
-                                <span className="sr-only">
-                                  {t("sessionManager.viewModeTooltip", {
-                                    defaultValue: "查看方式",
-                                  })}
-                                </span>
-                                {listViewMode === "grouped" ? (
-                                  <ListTree className="size-3.5" />
-                                ) : (
-                                  <List className="size-3.5" />
-                                )}
-                              </SelectTrigger>
-                            </TooltipTrigger>
-                            <TooltipContent>{listViewModeLabel}</TooltipContent>
-                          </Tooltip>
-                          <SelectContent className="w-40">
-                            <SelectItem value="flat">
-                              <div className="flex items-center gap-2">
-                                <List className="size-3.5" />
-                                <span>
-                                  {t("sessionManager.viewModeFlat", {
-                                    defaultValue: "列表",
-                                  })}
-                                </span>
-                              </div>
-                            </SelectItem>
-                            <SelectItem value="grouped">
-                              <div className="flex items-center gap-2">
-                                <ListTree className="size-3.5" />
-                                <span>
-                                  {t("sessionManager.viewModeGrouped", {
-                                    defaultValue: "分类",
-                                  })}
-                                </span>
-                              </div>
-                            </SelectItem>
-                          </SelectContent>
-                        </Select>
-                        {listViewMode === "grouped" && (
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="size-7"
-                                aria-label={t(
-                                  "sessionManager.collapseAllGroups",
-                                  {
-                                    defaultValue: "全部收起",
-                                  },
-                                )}
-                                onClick={handleCollapseAllGroups}
-                              >
-                                <ChevronsDownUp className="size-3.5" />
-                              </Button>
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              {t("sessionManager.collapseAllGroups", {
-                                defaultValue: "全部收起",
+                              }}
+                            >
+                              <CheckSquare className="size-3.5" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            {selectionMode
+                              ? t("sessionManager.exitBatchModeTooltip", {
+                                  defaultValue: "退出批量管理",
+                                })
+                              : t("sessionManager.manageBatchTooltip", {
+                                  defaultValue: "批量管理",
+                                })}
+                          </TooltipContent>
+                        </Tooltip>
+                      )}
+                      <Select
+                        value={listViewMode}
+                        onValueChange={(value) =>
+                          setListViewMode(value as SessionListViewMode)
+                        }
+                      >
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <SelectTrigger
+                              className="size-7 p-0 justify-center border-0 bg-transparent hover:bg-muted"
+                              aria-label={t("sessionManager.viewModeTooltip", {
+                                defaultValue: "查看方式",
                               })}
-                            </TooltipContent>
-                          </Tooltip>
-                        )}
+                            >
+                              <span className="sr-only">
+                                {t("sessionManager.viewModeTooltip", {
+                                  defaultValue: "查看方式",
+                                })}
+                              </span>
+                              {listViewMode === "grouped" ? (
+                                <ListTree className="size-3.5" />
+                              ) : (
+                                <List className="size-3.5" />
+                              )}
+                            </SelectTrigger>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            查看方式：{listViewModeLabel}
+                          </TooltipContent>
+                        </Tooltip>
+                        <SelectContent className="w-40">
+                          <SelectItem value="flat">
+                            <div className="flex items-center gap-2">
+                              <List className="size-3.5" />
+                              <span>
+                                {t("sessionManager.viewModeFlat", {
+                                  defaultValue: "列表",
+                                })}
+                              </span>
+                            </div>
+                          </SelectItem>
+                          <SelectItem value="grouped">
+                            <div className="flex items-center gap-2">
+                              <ListTree className="size-3.5" />
+                              <span>按文件夹分类</span>
+                            </div>
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+                      {listViewMode === "grouped" && (
                         <Tooltip>
                           <TooltipTrigger asChild>
                             <Button
                               variant="ghost"
                               size="icon"
                               className="size-7"
-                              aria-label={t("sessionManager.searchSessions", {
-                                defaultValue: "搜索会话",
-                              })}
-                              onClick={() => {
-                                setIsSearchOpen(true);
-                                setTimeout(
-                                  () => searchInputRef.current?.focus(),
-                                  0,
-                                );
-                              }}
+                              aria-label={t(
+                                "sessionManager.collapseAllGroups",
+                                {
+                                  defaultValue: "全部收起",
+                                },
+                              )}
+                              onClick={handleCollapseAllGroups}
                             >
-                              <Search className="size-3.5" />
+                              <ChevronsDownUp className="size-3.5" />
                             </Button>
                           </TooltipTrigger>
                           <TooltipContent>
-                            {t("sessionManager.searchSessions")}
+                            {t("sessionManager.collapseAllGroups", {
+                              defaultValue: "全部收起",
+                            })}
                           </TooltipContent>
                         </Tooltip>
-
+                      )}
+                      {codexRelevant && (
                         <Tooltip>
                           <TooltipTrigger asChild>
                             <Button
@@ -1252,643 +1516,418 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                               aria-label={t("sessionManager.reclaimHistory", {
                                 defaultValue: "一键恢复所有历史会话",
                               })}
-                              title={t("sessionManager.reclaimHistory", {
-                                defaultValue: "一键恢复所有历史会话",
-                              })}
                             >
                               <ArchiveRestore
-                                className={`size-3.5${isReclaiming ? " animate-pulse" : ""}`}
+                                className={`size-3.5${isReclaiming ? " motion-safe:animate-pulse" : ""}`}
                               />
                             </Button>
                           </TooltipTrigger>
                           <TooltipContent>
-                            {t("sessionManager.reclaimHistoryTooltip", {
-                              defaultValue:
-                                "一键恢复所有历史会话（切换中转线路后列表变空时使用）",
-                            })}
+                            恢复其他线路下的 Codex
+                            会话（切换线路后会话不见时使用）
                           </TooltipContent>
                         </Tooltip>
-
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="size-7"
-                              aria-label={t("common.refresh", {
-                                defaultValue: "刷新",
-                              })}
-                              onClick={() => {
-                                void refetch();
-                                if (selectedSession) void refetchMessages();
-                              }}
-                            >
-                              <RefreshCw className="size-3.5" />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>{t("common.refresh")}</TooltipContent>
-                        </Tooltip>
-                      </div>
+                      )}
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="size-7"
+                            aria-label={t("common.refresh", {
+                              defaultValue: "刷新",
+                            })}
+                            onClick={() => {
+                              void refetch();
+                              if (selectedSession) void refetchMessages();
+                            }}
+                          >
+                            <RefreshCw
+                              className={`size-3.5${isFetchingList ? " motion-safe:animate-spin" : ""}`}
+                            />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>刷新列表</TooltipContent>
+                      </Tooltip>
                     </div>
-                    {selectionMode && (
-                      <div className="grid gap-3 rounded-md border bg-muted/40 px-3 py-2.5">
-                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                          <Badge variant="outline" className="text-xs">
-                            {t("sessionManager.selectedCount", {
-                              defaultValue: "已选 {{count}} 项",
-                              count: selectedDeletableSessions.length,
-                            })}
-                          </Badge>
-                          <span className="truncate">
-                            {t("sessionManager.batchModeHint", {
-                              defaultValue: "勾选要删除的会话",
-                            })}
-                          </span>
-                        </div>
-                        <div className="grid gap-3 min-[520px]:grid-cols-[minmax(0,1fr)_auto] min-[520px]:items-center">
-                          <div className="flex flex-wrap items-center gap-2">
-                            {deletableFilteredSessions.length > 0 && (
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                className="h-7 px-2.5 text-xs whitespace-nowrap"
-                                onClick={handleToggleSelectAll}
-                              >
-                                {allFilteredSelected
-                                  ? t("sessionManager.clearFilteredSelection", {
-                                      defaultValue: "取消全选",
-                                    })
-                                  : t("sessionManager.selectAllFiltered", {
-                                      defaultValue: "全选当前",
-                                    })}
-                              </Button>
-                            )}
+                  </div>
+                  <div className="session-search">
+                    <Search
+                      className="session-search-icon size-3.5"
+                      aria-hidden
+                    />
+                    <Input
+                      ref={searchInputRef}
+                      value={search}
+                      onChange={(event) => setSearch(event.target.value)}
+                      placeholder="搜索标题、文件夹或 ID"
+                      aria-label={t("sessionManager.searchSessions", {
+                        defaultValue: "搜索会话",
+                      })}
+                      className="h-8 pl-8 pr-8 text-sm"
+                      onKeyDown={(event) => {
+                        if (event.key === "Escape" && search) {
+                          event.stopPropagation();
+                          setSearch("");
+                        }
+                      }}
+                    />
+                    {search ? (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="session-search-clear size-6"
+                        aria-label="清除搜索"
+                        onClick={clearSearch}
+                      >
+                        <X className="size-3" />
+                      </Button>
+                    ) : null}
+                  </div>
+                  {selectionMode && (
+                    <div className="session-batch-panel">
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <Badge variant="outline" className="text-xs">
+                          {t("sessionManager.selectedCount", {
+                            defaultValue: "已选 {{count}} 项",
+                            count: selectedDeletableSessions.length,
+                          })}
+                        </Badge>
+                        <span className="truncate">
+                          {t("sessionManager.batchModeHint", {
+                            defaultValue: "勾选要删除的会话",
+                          })}
+                        </span>
+                      </div>
+                      <div className="session-batch-actions">
+                        <div className="flex flex-wrap items-center gap-2">
+                          {deletableFilteredSessions.length > 0 && (
                             <Button
                               variant="ghost"
                               size="sm"
                               className="h-7 px-2.5 text-xs whitespace-nowrap"
-                              onClick={() => setSelectedSessionKeys(new Set())}
+                              onClick={handleToggleSelectAll}
                             >
-                              {t("sessionManager.clearSelection", {
-                                defaultValue: "清空已选",
-                              })}
-                            </Button>
-                          </div>
-                          <Button
-                            variant="destructive"
-                            size="sm"
-                            className="h-7 gap-1.5 px-2.5 whitespace-nowrap justify-self-start min-[520px]:justify-self-end"
-                            onClick={openBatchDeleteDialog}
-                            disabled={
-                              isDeleting ||
-                              selectedDeletableSessions.length === 0
-                            }
-                          >
-                            <Trash2 className="size-3.5" />
-                            <span className="text-xs">
-                              {isBatchDeleting
-                                ? t("sessionManager.batchDeleting", {
-                                    defaultValue: "删除中...",
+                              {allFilteredSelected
+                                ? t("sessionManager.clearFilteredSelection", {
+                                    defaultValue: "取消全选",
                                   })
-                                : t("sessionManager.deleteSelected", {
-                                    defaultValue: "批量删除",
+                                : t("sessionManager.selectAllFiltered", {
+                                    defaultValue: "全选当前",
                                   })}
-                            </span>
+                            </Button>
+                          )}
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 px-2.5 text-xs whitespace-nowrap"
+                            onClick={() => setSelectedSessionKeys(new Set())}
+                          >
+                            {t("sessionManager.clearSelection", {
+                              defaultValue: "清空已选",
+                            })}
+                          </Button>
+                        </div>
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          className="h-7 gap-1.5 px-2.5 whitespace-nowrap"
+                          onClick={() =>
+                            requestDelete(selectedDeletableSessions)
+                          }
+                          disabled={
+                            isDeleting || selectedDeletableSessions.length === 0
+                          }
+                        >
+                          <Trash2 className="size-3.5" />
+                          <span className="text-xs">
+                            {isDeleting
+                              ? "删除中…"
+                              : t("sessionManager.deleteSelected", {
+                                  defaultValue: "批量删除",
+                                })}
+                          </span>
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </CardHeader>
+                <CardContent className="flex-1 min-h-0 p-0">
+                  <div ref={listScrollRef} className="session-list-scroll">
+                    {renderListBody()}
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* 右侧会话详情 */}
+              <Card className="session-detail-panel flex flex-col overflow-hidden min-h-0 min-w-0">
+                {!selectedSession ? (
+                  <div className="session-state">
+                    <MessageSquare className="session-state-icon" aria-hidden />
+                    <p>
+                      {isLoading
+                        ? "正在读取会话列表…"
+                        : filteredSessions.length > 0
+                          ? "从左侧选择一条会话，查看完整对话。"
+                          : "没有可以显示的会话。"}
+                    </p>
+                  </div>
+                ) : (
+                  <>
+                    {/* 详情头部 */}
+                    <CardHeader className="session-detail-head px-4 py-3 space-y-0 border-b shrink-0">
+                      <div className="session-detail-title-row">
+                        <span
+                          className="shrink-0"
+                          title={getProviderLabel(selectedSession.providerId)}
+                        >
+                          <ProviderIcon
+                            icon={getProviderIconName(
+                              selectedSession.providerId,
+                            )}
+                            name={selectedSession.providerId}
+                            size={20}
+                          />
+                        </span>
+                        <h2
+                          className="session-detail-title"
+                          title={selectedTitle}
+                        >
+                          {selectedTitle}
+                        </h2>
+                        {isArchivedSession(selectedSession) ? (
+                          <span className="session-tag">已归档</span>
+                        ) : null}
+                        <div className="session-detail-actions">
+                          {isMac() && (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button
+                                  size="sm"
+                                  className="gap-1.5"
+                                  onClick={() => void handleResume()}
+                                  disabled={!selectedSession.resumeCommand}
+                                >
+                                  <Play className="size-3.5" />
+                                  <span className="hidden sm:inline">
+                                    {t("sessionManager.resume", {
+                                      defaultValue: "恢复会话",
+                                    })}
+                                  </span>
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                {selectedSession.resumeCommand
+                                  ? t("sessionManager.resumeTooltip", {
+                                      defaultValue: "在终端中恢复此会话",
+                                    })
+                                  : t("sessionManager.noResumeCommand", {
+                                      defaultValue: "此会话无法恢复",
+                                    })}
+                              </TooltipContent>
+                            </Tooltip>
+                          )}
+                          <SessionExportButton
+                            session={selectedSession}
+                            messages={messages}
+                            unavailableReason={exportUnavailableReason}
+                          />
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="gap-1.5 text-muted-foreground"
+                            onClick={() => requestDelete([selectedSession])}
+                            disabled={!selectedSession.sourcePath || isDeleting}
+                          >
+                            <Trash2 className="size-3.5" aria-hidden />
+                            {isDeleting
+                              ? "删除中…"
+                              : t("sessionManager.delete", {
+                                  defaultValue: "删除会话",
+                                })}
                           </Button>
                         </div>
                       </div>
-                    )}
-                  </div>
-                )}
-              </CardHeader>
-              <CardContent className="flex-1 min-h-0 p-0">
-                <ScrollArea className="h-full">
-                  <div className="p-2">
-                    {isLoading ? (
-                      <div className="flex items-center justify-center py-12">
-                        <RefreshCw className="size-5 animate-spin text-muted-foreground" />
-                      </div>
-                    ) : filteredSessions.length === 0 ? (
-                      <div className="flex flex-col items-center justify-center py-12 text-center">
-                        <MessageSquare className="size-8 text-muted-foreground/50 mb-2" />
-                        <p className="text-sm text-muted-foreground">
-                          {t("sessionManager.noSessions")}
-                        </p>
-                      </div>
-                    ) : listViewMode === "grouped" ? (
-                      <div className="space-y-2">
-                        {groupedSessions.map((providerGroup) => {
-                          const providerOpen = expandedProviderGroups.has(
-                            providerGroup.providerId,
-                          );
-                          const providerLabel = getProviderLabel(
-                            providerGroup.providerId,
-                            t,
-                          );
-                          const providerSelectionState = getGroupSelectionState(
-                            providerGroup.sessions,
-                          );
 
-                          return (
-                            <Collapsible
-                              key={providerGroup.providerId}
-                              open={providerOpen}
-                              onOpenChange={() =>
-                                toggleProviderGroup(providerGroup.providerId)
-                              }
-                            >
-                              <div className="flex w-full items-center gap-2 rounded-md border bg-muted/40 px-2.5 py-2 transition-colors hover:bg-muted">
-                                {renderProviderGroupCheckbox(
-                                  providerGroup,
-                                  providerLabel,
-                                  providerSelectionState,
-                                )}
-                                <CollapsibleTrigger asChild>
-                                  <button
-                                    type="button"
-                                    className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                                    aria-label={t(
-                                      "sessionManager.toggleProviderGroup",
-                                      {
-                                        defaultValue:
-                                          "展开或折叠 {{provider}} 供应商分组",
-                                        provider: providerLabel,
-                                      },
-                                    )}
-                                  >
-                                    {providerOpen ? (
-                                      <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
-                                    ) : (
-                                      <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
-                                    )}
-                                    <ProviderIcon
-                                      icon={getProviderIconName(
-                                        providerGroup.providerId,
-                                      )}
-                                      name={providerGroup.providerId}
-                                      size={16}
-                                    />
-                                    <span className="min-w-0 flex-1 truncate text-sm font-medium">
-                                      {providerLabel}
-                                    </span>
-                                    {renderGroupSelectionBadge(
-                                      providerSelectionState,
-                                      providerGroup.sessions.length,
-                                      "secondary",
-                                    )}
-                                  </button>
-                                </CollapsibleTrigger>
-                              </div>
-                              <CollapsibleContent className="mt-1 space-y-1 pl-2">
-                                {providerGroup.directories.map(
-                                  (directoryGroup) => {
-                                    const directoryOpen =
-                                      expandedDirectoryGroups.has(
-                                        directoryGroup.key,
-                                      );
-                                    const directorySelectionState =
-                                      getGroupSelectionState(
-                                        directoryGroup.sessions,
-                                      );
-
-                                    return (
-                                      <Collapsible
-                                        key={directoryGroup.key}
-                                        open={directoryOpen}
-                                        onOpenChange={() =>
-                                          toggleDirectoryGroup(
-                                            directoryGroup.key,
-                                          )
-                                        }
-                                      >
-                                        <div className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground">
-                                          {renderDirectoryGroupCheckbox(
-                                            directoryGroup,
-                                            directorySelectionState,
-                                          )}
-                                          <CollapsibleTrigger asChild>
-                                            <button
-                                              type="button"
-                                              className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                                              aria-label={t(
-                                                "sessionManager.toggleDirectoryGroup",
-                                                {
-                                                  defaultValue:
-                                                    "展开或折叠 {{directory}} 目录分组",
-                                                  directory:
-                                                    directoryGroup.label,
-                                                },
-                                              )}
-                                            >
-                                              {directoryOpen ? (
-                                                <ChevronDown className="size-3.5 shrink-0" />
-                                              ) : (
-                                                <ChevronRight className="size-3.5 shrink-0" />
-                                              )}
-                                              <FolderOpen className="size-3.5 shrink-0" />
-                                              <Tooltip>
-                                                <TooltipTrigger asChild>
-                                                  <span className="min-w-0 flex-1 truncate text-xs font-medium">
-                                                    {directoryGroup.label}
-                                                  </span>
-                                                </TooltipTrigger>
-                                                <TooltipContent
-                                                  side="bottom"
-                                                  className="max-w-xs"
-                                                >
-                                                  <p className="font-mono text-xs break-all">
-                                                    {directoryGroup.projectDir ??
-                                                      t(
-                                                        "sessionManager.unknownDirectory",
-                                                        {
-                                                          defaultValue:
-                                                            "未知目录",
-                                                        },
-                                                      )}
-                                                  </p>
-                                                </TooltipContent>
-                                              </Tooltip>
-                                              {renderGroupSelectionBadge(
-                                                directorySelectionState,
-                                                directoryGroup.sessions.length,
-                                                "outline",
-                                              )}
-                                            </button>
-                                          </CollapsibleTrigger>
-                                        </div>
-                                        <CollapsibleContent className="mt-1 space-y-1 pl-3">
-                                          {directoryGroup.sessions.map(
-                                            (session) =>
-                                              renderSessionItem(session),
-                                          )}
-                                        </CollapsibleContent>
-                                      </Collapsible>
-                                    );
-                                  },
-                                )}
-                              </CollapsibleContent>
-                            </Collapsible>
-                          );
-                        })}
-                      </div>
-                    ) : (
-                      <div className="space-y-1">
-                        {filteredSessions.map((session) =>
-                          renderSessionItem(session),
-                        )}
-                      </div>
-                    )}
-                  </div>
-                </ScrollArea>
-              </CardContent>
-            </Card>
-
-            {/* 右侧会话详情 */}
-            <Card
-              className="session-detail-panel flex flex-col overflow-hidden min-h-0 min-w-0"
-              ref={detailRef}
-            >
-              {!selectedSession ? (
-                <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground p-8">
-                  <MessageSquare className="size-12 mb-3 opacity-30" />
-                  <p className="text-sm">{t("sessionManager.selectSession")}</p>
-                </div>
-              ) : (
-                <>
-                  {/* 详情头部 */}
-                  <CardHeader className="py-3 px-4 border-b shrink-0">
-                    <div className="flex items-start justify-between gap-4">
-                      {/* 左侧：会话信息 */}
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2 mb-1">
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <span className="shrink-0">
-                                <ProviderIcon
-                                  icon={getProviderIconName(
-                                    selectedSession.providerId,
-                                  )}
-                                  name={selectedSession.providerId}
-                                  size={20}
-                                />
-                              </span>
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              {getProviderLabel(selectedSession.providerId, t)}
-                            </TooltipContent>
-                          </Tooltip>
-                          <h2 className="text-base font-semibold truncate">
-                            {formatSessionTitle(selectedSession)}
-                          </h2>
-                        </div>
-
-                        {/* 元信息 */}
-                        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
-                          <div className="flex items-center gap-1">
-                            <Clock className="size-3" />
-                            <span>
-                              {formatTimestamp(
-                                selectedSession.lastActiveAt ??
-                                  selectedSession.createdAt,
-                              )}
-                            </span>
-                          </div>
-                          {selectedSession.projectDir && (
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    void handleCopy(
-                                      selectedSession.projectDir!,
-                                      t("sessionManager.projectDirCopied"),
-                                    )
-                                  }
-                                  className="flex items-center gap-1 hover:text-foreground transition-colors"
-                                >
-                                  <FolderOpen className="size-3" />
-                                  <span className="truncate max-w-[200px]">
-                                    {getBaseName(selectedSession.projectDir)}
-                                  </span>
-                                </button>
-                              </TooltipTrigger>
-                              <TooltipContent
-                                side="bottom"
-                                className="max-w-xs"
-                              >
-                                <p className="font-mono text-xs break-all">
-                                  {selectedSession.projectDir}
-                                </p>
-                                <p className="text-muted-foreground mt-1">
-                                  {t("sessionManager.clickToCopyPath")}
-                                </p>
-                              </TooltipContent>
-                            </Tooltip>
-                          )}
-                          {selectedSession.sourcePath && (
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    void handleCopy(
-                                      selectedSession.sourcePath!,
-                                      t("sessionManager.sourcePathCopied"),
-                                    )
-                                  }
-                                  className="flex items-center gap-1 hover:text-foreground transition-colors"
-                                >
-                                  <FileText className="size-3 shrink-0" />
-                                  <span className="font-mono truncate max-w-[200px]">
-                                    {getBaseName(selectedSession.sourcePath)}
-                                  </span>
-                                </button>
-                              </TooltipTrigger>
-                              <TooltipContent
-                                side="bottom"
-                                className="max-w-xs"
-                              >
-                                <p className="font-mono text-xs break-all">
-                                  {selectedSession.sourcePath}
-                                </p>
-                                <p className="text-muted-foreground mt-1">
-                                  {t("sessionManager.clickToCopyPath")}
-                                </p>
-                              </TooltipContent>
-                            </Tooltip>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* 右侧：操作按钮组 */}
-                      <div className="flex items-center gap-2 shrink-0">
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={handleExport}
-                          disabled={
-                            isLoadingMessages ||
-                            isFetchingMessages ||
-                            isMessagesError
-                          }
-                          title={t("sessionManager.exportPrivacy", {
-                            defaultValue:
-                              "导出包含会话原文与本地路径，请谨慎分享",
-                          })}
+                      {/* 元信息 */}
+                      <div className="session-detail-meta">
+                        <span
+                          className="session-detail-meta-item"
+                          title="最近活动时间"
                         >
-                          <Download className="size-3.5 mr-1.5" />
-                          {t("sessionManager.exportJson", {
-                            defaultValue: "导出 JSON",
-                          })}
-                        </Button>
-                        {isMac() && (
+                          <Clock className="size-3 shrink-0" aria-hidden />
+                          <span>
+                            {formatTimestamp(
+                              selectedSession.lastActiveAt ??
+                                selectedSession.createdAt,
+                            ) || "时间未知"}
+                          </span>
+                        </span>
+                        {selectedSession.projectDir && (
                           <Tooltip>
                             <TooltipTrigger asChild>
-                              <Button
-                                size="sm"
-                                className="gap-1.5"
-                                onClick={() => void handleResume()}
-                                disabled={!selectedSession.resumeCommand}
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  void handleCopy(
+                                    selectedSession.projectDir!,
+                                    t("sessionManager.projectDirCopied"),
+                                  )
+                                }
+                                className="session-detail-meta-item is-button"
                               >
-                                <Play className="size-3.5" />
-                                <span className="hidden sm:inline">
-                                  {t("sessionManager.resume", {
-                                    defaultValue: "恢复会话",
-                                  })}
+                                <FolderOpen
+                                  className="size-3 shrink-0"
+                                  aria-hidden
+                                />
+                                <span className="truncate">
+                                  {getBaseName(selectedSession.projectDir)}
                                 </span>
-                              </Button>
+                              </button>
                             </TooltipTrigger>
-                            <TooltipContent>
-                              {selectedSession.resumeCommand
-                                ? t("sessionManager.resumeTooltip", {
-                                    defaultValue: "在终端中恢复此会话",
-                                  })
-                                : t("sessionManager.noResumeCommand", {
-                                    defaultValue: "此会话无法恢复",
-                                  })}
+                            <TooltipContent side="bottom" className="max-w-xs">
+                              <p className="font-mono text-xs break-all">
+                                {selectedSession.projectDir}
+                              </p>
+                              <p className="text-muted-foreground mt-1">
+                                点击复制文件夹路径
+                              </p>
                             </TooltipContent>
                           </Tooltip>
                         )}
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="gap-1.5 text-muted-foreground"
-                              onClick={() =>
-                                setDeleteTargets([selectedSession])
-                              }
-                              disabled={
-                                !selectedSession.sourcePath || isDeleting
-                              }
-                            >
-                              <Trash2 className="size-3.5" />
-                              <span className="hidden sm:inline">
-                                {isDeleting
-                                  ? t("sessionManager.deleting", {
-                                      defaultValue: "删除中...",
-                                    })
-                                  : t("sessionManager.delete", {
-                                      defaultValue: "删除会话",
-                                    })}
-                              </span>
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>
-                            {t("sessionManager.deleteTooltip", {
-                              defaultValue: "永久删除此本地会话记录",
-                            })}
-                          </TooltipContent>
-                        </Tooltip>
+                        {selectedSession.sourcePath && (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  void handleCopy(
+                                    selectedSession.sourcePath!,
+                                    t("sessionManager.sourcePathCopied"),
+                                  )
+                                }
+                                className="session-detail-meta-item is-button"
+                              >
+                                <FileText
+                                  className="size-3 shrink-0"
+                                  aria-hidden
+                                />
+                                <span className="font-mono truncate">
+                                  {getBaseName(selectedSession.sourcePath)}
+                                </span>
+                              </button>
+                            </TooltipTrigger>
+                            <TooltipContent side="bottom" className="max-w-xs">
+                              <p className="font-mono text-xs break-all">
+                                {selectedSession.sourcePath}
+                              </p>
+                              <p className="text-muted-foreground mt-1">
+                                点击复制记录文件路径
+                              </p>
+                            </TooltipContent>
+                          </Tooltip>
+                        )}
                       </div>
-                    </div>
 
-                    {/* 恢复命令预览 */}
-                    {selectedSession.resumeCommand && (
-                      <div className="mt-3 flex items-center gap-2">
-                        <div className="flex-1 rounded-md bg-muted/60 px-3 py-1.5 font-mono text-xs text-muted-foreground truncate">
-                          {selectedSession.resumeCommand}
+                      {/* 恢复命令预览 */}
+                      {selectedSession.resumeCommand && (
+                        <div className="session-resume-row">
+                          <code className="session-resume-command">
+                            {selectedSession.resumeCommand}
+                          </code>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="size-7 shrink-0"
+                                aria-label={t("sessionManager.copyCommand", {
+                                  defaultValue: "复制命令",
+                                })}
+                                onClick={() =>
+                                  void handleCopy(
+                                    selectedSession.resumeCommand!,
+                                    t("sessionManager.resumeCommandCopied"),
+                                  )
+                                }
+                              >
+                                <Copy className="size-3.5" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>复制继续对话的命令</TooltipContent>
+                          </Tooltip>
                         </div>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="size-7 shrink-0"
-                              aria-label={t("sessionManager.copyCommand", {
-                                defaultValue: "复制命令",
-                              })}
-                              onClick={() =>
-                                void handleCopy(
-                                  selectedSession.resumeCommand!,
-                                  t("sessionManager.resumeCommandCopied"),
-                                )
-                              }
-                            >
-                              <Copy className="size-3.5" />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>
-                            {t("sessionManager.copyCommand", {
-                              defaultValue: "复制命令",
-                            })}
-                          </TooltipContent>
-                        </Tooltip>
-                      </div>
-                    )}
-                  </CardHeader>
+                      )}
+                    </CardHeader>
 
-                  {/* 消息列表区域 */}
-                  <CardContent className="flex-1 min-h-0 p-0">
-                    <div className="flex h-full min-w-0">
-                      {/* 消息列表 */}
-                      <div className="flex-1 min-w-0 flex flex-col">
-                        <div className="px-4 pt-4 pb-2 min-w-0">
-                          <div className="flex items-center gap-2">
-                            <MessageSquare className="size-4 text-muted-foreground" />
+                    {/* 消息列表区域 */}
+                    <CardContent className="flex-1 min-h-0 p-0">
+                      <div className="flex h-full min-w-0">
+                        {/* 消息列表 */}
+                        <div className="flex-1 min-w-0 flex flex-col">
+                          <div className="session-conversation-head">
+                            <MessageSquare
+                              className="size-4 text-muted-foreground"
+                              aria-hidden
+                            />
                             <span className="text-sm font-medium">
-                              {t("sessionManager.conversationHistory", {
-                                defaultValue: "对话记录",
-                              })}
+                              对话记录
                             </span>
-                            <Badge variant="secondary" className="text-xs">
-                              {messages.length}
-                            </Badge>
+                            {/* A count is only true once the messages are in. */}
+                            {!isLoadingMessages && !isMessagesError ? (
+                              <Badge variant="secondary" className="text-xs">
+                                {
+                                  messages.filter(
+                                    (message) => !isNoticeMessage(message),
+                                  ).length
+                                }
+                              </Badge>
+                            ) : null}
+                            <span className="flex-1" />
+                            <SessionTocDialog
+                              items={userMessagesToc}
+                              onItemClick={scrollToMessage}
+                              open={tocDialogOpen}
+                              onOpenChange={setTocDialogOpen}
+                            />
+                          </div>
+                          {contentTruncated &&
+                            !isLoadingMessages &&
+                            !isMessagesError && (
+                              <div
+                                className="session-truncated-banner"
+                                role="status"
+                              >
+                                <Info
+                                  className="size-3.5 shrink-0 mt-0.5"
+                                  aria-hidden
+                                />
+                                <span>
+                                  <strong>内容过大，已截断显示。</strong>
+                                  过长的记录和工具输出只显示了一部分，记录文件本身没有改动。
+                                </span>
+                              </div>
+                            )}
+                          <div
+                            ref={scrollContainerRef}
+                            className="flex-1 overflow-y-auto px-4 pb-4 min-w-0"
+                          >
+                            {renderMessages()}
                           </div>
                         </div>
-                        <div
-                          ref={scrollContainerRef}
-                          className="flex-1 overflow-y-auto px-4 pb-4 min-w-0"
-                        >
-                          {isLoadingMessages ? (
-                            <div className="flex items-center justify-center py-12">
-                              <RefreshCw className="size-5 animate-spin text-muted-foreground" />
-                            </div>
-                          ) : isMessagesError ? (
-                            <div
-                              role="alert"
-                              className="flex flex-col items-center justify-center gap-3 py-12 text-center"
-                            >
-                              <p className="text-sm text-destructive">
-                                {t("sessionManager.messagesLoadError", {
-                                  defaultValue:
-                                    "无法读取会话消息，请检查文件是否可读后重试。",
-                                })}
-                              </p>
-                              <Button
-                                variant="outline"
-                                disabled={isFetchingMessages}
-                                onClick={() => void refetchMessages()}
-                              >
-                                <RefreshCw
-                                  className={`size-4 mr-2${isFetchingMessages ? " animate-spin" : ""}`}
-                                />
-                                {t("common.retry", { defaultValue: "重试" })}
-                              </Button>
-                            </div>
-                          ) : messages.length === 0 ? (
-                            <div className="flex flex-col items-center justify-center py-12 text-center">
-                              <MessageSquare className="size-8 text-muted-foreground/50 mb-2" />
-                              <p className="text-sm text-muted-foreground">
-                                {t("sessionManager.emptySession")}
-                              </p>
-                            </div>
-                          ) : (
-                            <div
-                              style={{
-                                height: virtualizer.getTotalSize(),
-                                position: "relative",
-                              }}
-                            >
-                              {virtualizer
-                                .getVirtualItems()
-                                .map((virtualRow) => (
-                                  <div
-                                    key={virtualRow.key}
-                                    data-index={virtualRow.index}
-                                    ref={virtualizer.measureElement}
-                                    style={{
-                                      position: "absolute",
-                                      top: 0,
-                                      left: 0,
-                                      width: "100%",
-                                      transform: `translateY(${virtualRow.start}px)`,
-                                    }}
-                                  >
-                                    <SessionMessageItem
-                                      message={messages[virtualRow.index]}
-                                      isActive={
-                                        activeMessageIndex === virtualRow.index
-                                      }
-                                      searchQuery={search}
-                                      onCopy={handleMessageCopy}
-                                    />
-                                  </div>
-                                ))}
-                            </div>
-                          )}
-                        </div>
+
+                        {/* 右侧目录 - 类似少数派 (大屏幕) */}
+                        <SessionTocSidebar
+                          items={userMessagesToc}
+                          onItemClick={scrollToMessage}
+                        />
                       </div>
-
-                      {/* 右侧目录 - 类似少数派 (大屏幕) */}
-                      <SessionTocSidebar
-                        items={userMessagesToc}
-                        onItemClick={scrollToMessage}
-                      />
-                    </div>
-
-                    {/* 浮动目录按钮 (小屏幕) */}
-                    <SessionTocDialog
-                      items={userMessagesToc}
-                      onItemClick={scrollToMessage}
-                      open={tocDialogOpen}
-                      onOpenChange={setTocDialogOpen}
-                    />
-                  </CardContent>
-                </>
-              )}
-            </Card>
-          </div>
+                    </CardContent>
+                  </>
+                )}
+              </Card>
+            </div>
+          )}
         </div>
       </div>
       <ConfirmDialog
@@ -1907,44 +1946,8 @@ export function SessionManagerPage({ appId }: { appId: string }) {
         onConfirm={() => void handleReclaimHistory()}
         onCancel={() => setReclaimConfirmOpen(false)}
       />
-      <ConfirmDialog
-        isOpen={Boolean(deleteTargets)}
-        title={
-          deleteTargets && deleteTargets.length > 1
-            ? t("sessionManager.batchDeleteConfirmTitle", {
-                defaultValue: "批量删除会话",
-              })
-            : t("sessionManager.deleteConfirmTitle", {
-                defaultValue: "删除会话",
-              })
-        }
-        message={
-          deleteTargets && deleteTargets.length > 1
-            ? t("sessionManager.batchDeleteConfirmMessage", {
-                defaultValue:
-                  "将永久删除已选中的 {{count}} 个本地会话记录。\n\n此操作不可恢复。",
-                count: deleteTargets.length,
-              })
-            : deleteTargets?.[0]
-              ? t("sessionManager.deleteConfirmMessage", {
-                  defaultValue:
-                    "将永久删除本地会话“{{title}}”\nSession ID: {{sessionId}}\n\n此操作不可恢复。",
-                  title: formatSessionTitle(deleteTargets[0]),
-                  sessionId: deleteTargets[0].sessionId,
-                })
-              : ""
-        }
-        confirmText={
-          deleteTargets && deleteTargets.length > 1
-            ? t("sessionManager.batchDeleteConfirmAction", {
-                defaultValue: "删除所选会话",
-              })
-            : t("sessionManager.deleteConfirmAction", {
-                defaultValue: "删除会话",
-              })
-        }
-        cancelText={t("common.cancel", { defaultValue: "取消" })}
-        variant="destructive"
+      <SessionDeleteDialog
+        targets={deleteTargets}
         onConfirm={() => void handleDeleteConfirm()}
         onCancel={() => {
           if (!isDeleting) {

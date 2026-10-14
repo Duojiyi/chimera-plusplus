@@ -4,6 +4,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import {
   afterEach,
@@ -289,7 +290,7 @@ describe("connected Skills/MCP page", () => {
     expect(exportButton).toHaveAccessibleDescription("导出前请检查敏感信息");
     expect(exportButton).toHaveAttribute("title", exportScope);
     expect(
-      screen.getByText("管理 Skills 与 MCP · 当前工具 Codex"),
+      screen.getByRole("heading", { level: 1, name: "Codex · Skills 与 MCP" }),
     ).toBeVisible();
     expect(screen.queryByText(/密钥与令牌值已脱敏/)).not.toBeInTheDocument();
     fireEvent.click(exportButton);
@@ -617,7 +618,7 @@ describe("connected Skills/MCP page", () => {
     fireEvent.click(screen.getByText("Real MCP"));
     fireEvent.click(screen.getByRole("button", { name: "移除…" }));
     expect(mcpApi.deleteUnifiedServer).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "确认移除" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "移除" }));
     await waitFor(() => expect(toast.error).toHaveBeenCalled());
     expect(mcpApi.deleteUnifiedServer).toHaveBeenCalledWith("real");
     expect(screen.getAllByText("Real MCP").length).toBeGreaterThan(0);
@@ -679,7 +680,7 @@ describe("A06 resource lifecycle and A07 refresh", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "添加所选 Skills" }));
     expect(skillsApi.importFromApps).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "确认执行" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "添加 1 个" }));
     await waitFor(() =>
       expect(skillsApi.importFromApps).toHaveBeenCalledExactlyOnceWith([
         {
@@ -709,7 +710,7 @@ describe("A06 resource lifecycle and A07 refresh", () => {
       name: "添加 Shared",
     });
     expect(checkbox).toBeEnabled();
-    expect(screen.getByText("来源：Claude Code、agents")).toBeVisible();
+    expect(screen.getByText("来源：Claude Code、通用目录 .agents")).toBeVisible();
     fireEvent.click(checkbox);
     expect(
       screen.getByRole("button", { name: "添加所选 Skills" }),
@@ -777,7 +778,7 @@ describe("A06 resource lifecycle and A07 refresh", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "删除备份 Real Skill" }),
     );
-    fireEvent.click(screen.getByRole("button", { name: "确认执行" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "删除备份" }));
     await waitFor(() => expect(toast.error).toHaveBeenCalled());
     expect(screen.getByRole("dialog")).toBeInTheDocument();
   });
@@ -815,13 +816,13 @@ describe("A06 resource lifecycle and A07 refresh", () => {
       .mockRejectedValueOnce(new Error("ambiguous source"))
       .mockResolvedValueOnce(skill);
     fireEvent.click(updateButton);
-    fireEvent.click(screen.getByRole("button", { name: "确认执行" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "更新" }));
     await waitFor(() => expect(toast.error).toHaveBeenCalled());
     expect(screen.getByRole("dialog")).toBeInTheDocument();
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "确认执行" })).toBeEnabled(),
+      expect(within(screen.getByRole("dialog")).getByRole("button", { name: "更新" })).toBeEnabled(),
     );
-    fireEvent.click(screen.getByRole("button", { name: "确认执行" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "更新" }));
     await waitFor(() =>
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
     );
@@ -900,7 +901,7 @@ describe("A06 repository management", () => {
     await waitFor(() => expect(url).toHaveValue(""));
     fireEvent.click(screen.getByTitle("common.delete"));
     expect(skillsApi.removeRepo).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "确认执行" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "移除仓库" }));
     await waitFor(() =>
       expect(skillsApi.removeRepo).toHaveBeenCalledExactlyOnceWith(
         "team",
@@ -915,7 +916,10 @@ describe("A06 repository management", () => {
     render(<SkillsMcpView />);
     await screen.findByRole("switch");
     fireEvent.click(screen.getByRole("button", { name: "管理仓库" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("操作失败");
+    // Reads report what could not be read; they do not claim a partial write.
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "无法读取仓库列表",
+    );
     fireEvent.click(screen.getByRole("button", { name: "管理仓库" }));
     expect(await screen.findByLabelText("skills.repo.url")).toBeInTheDocument();
   });
@@ -964,7 +968,8 @@ describe("empty and loading states", () => {
     render(<SkillsMcpView />);
     fireEvent.click(await screen.findByRole("button", { name: /从仓库安装/ }));
     fireEvent.click(screen.getByRole("button", { name: "读取已配置仓库" }));
-    expect(await screen.findByText(/没有读取到可安装的/)).toBeVisible();
+    // No enabled repository is configured, so the hint points to adding one.
+    expect(await screen.findByText(/还没有启用的仓库/)).toBeVisible();
   });
   it("gives the MCP tab its own empty state with one add action", async () => {
     render(<SkillsMcpView initialApp="claude" />);

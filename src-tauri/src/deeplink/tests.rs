@@ -176,7 +176,7 @@ fn test_validate_invalid_scheme() {
     assert!(result
         .unwrap_err()
         .to_string()
-        .contains("must be http or https"));
+        .contains("必须是 http 或 https"));
 }
 
 #[test]
@@ -235,6 +235,7 @@ fn test_build_gemini_provider_with_model() {
         usage_user_id: None,
         usage_auto_interval: None,
         confirmed_env_keys: None,
+        confirmed_usage_enabled: None,
     };
 
     let provider = build_provider_from_request(&AppType::Gemini, &request).unwrap();
@@ -289,6 +290,7 @@ fn test_build_gemini_provider_without_model() {
         usage_user_id: None,
         usage_auto_interval: None,
         confirmed_env_keys: None,
+        confirmed_usage_enabled: None,
     };
 
     let provider = build_provider_from_request(&AppType::Gemini, &request).unwrap();
@@ -336,6 +338,7 @@ fn test_deeplink_usage_script_does_not_copy_provider_credentials() {
         usage_user_id: None,
         usage_auto_interval: None,
         confirmed_env_keys: None,
+        confirmed_usage_enabled: None,
     };
 
     let provider = build_provider_from_request(&AppType::Claude, &request).unwrap();
@@ -345,7 +348,8 @@ fn test_deeplink_usage_script_does_not_copy_provider_credentials() {
         .and_then(|meta| meta.usage_script.as_ref())
         .expect("usage script should be created");
 
-    assert!(script.enabled);
+    // The link's `usageEnabled=true` alone never enables the query.
+    assert!(!script.enabled);
     assert_eq!(script.api_key, None);
     assert_eq!(script.base_url, None);
 }
@@ -386,6 +390,7 @@ fn test_deeplink_usage_script_omits_explicit_credentials_that_match_provider() {
         usage_user_id: None,
         usage_auto_interval: None,
         confirmed_env_keys: None,
+        confirmed_usage_enabled: None,
     };
 
     let provider = build_provider_from_request(&AppType::Claude, &request).unwrap();
@@ -435,6 +440,7 @@ fn test_deeplink_usage_script_preserves_distinct_usage_credentials() {
         usage_user_id: None,
         usage_auto_interval: None,
         confirmed_env_keys: None,
+        confirmed_usage_enabled: None,
     };
 
     let provider = build_provider_from_request(&AppType::Claude, &request).unwrap();
@@ -489,6 +495,7 @@ fn test_parse_and_merge_config_claude() {
         usage_user_id: None,
         usage_auto_interval: None,
         confirmed_env_keys: None,
+        confirmed_usage_enabled: None,
     };
 
     let merged = parse_and_merge_config(&request).unwrap();
@@ -613,6 +620,7 @@ fn test_parse_and_merge_config_url_override() {
         usage_user_id: None,
         usage_auto_interval: None,
         confirmed_env_keys: None,
+        confirmed_usage_enabled: None,
     };
 
     let merged = parse_and_merge_config(&request).unwrap();
@@ -677,6 +685,7 @@ fn test_build_claude_provider_preserves_custom_env_fields() {
         usage_user_id: None,
         usage_auto_interval: None,
         confirmed_env_keys: None,
+        confirmed_usage_enabled: None,
     };
 
     let provider = build_provider_from_request(&AppType::Claude, &request).unwrap();
@@ -733,6 +742,7 @@ fn test_build_claude_provider_without_config_unchanged() {
         usage_user_id: None,
         usage_auto_interval: None,
         confirmed_env_keys: None,
+        confirmed_usage_enabled: None,
     };
 
     let provider = build_provider_from_request(&AppType::Claude, &request).unwrap();
@@ -1104,4 +1114,464 @@ fn supported_deeplink_targets_are_allowed_but_unknown_targets_are_rejected() {
         ..Default::default()
     };
     assert!(ensure_targets_allowed(&codex_mcp).is_ok());
+}
+
+// =============================================================================
+// Link review fixes: expansion, usage script, Codex and Grok configs
+// =============================================================================
+
+/// A provider link for `app` with ordinary values, where `overrides`
+/// replace (or add) parameters.
+fn provider_link(app: &str, overrides: &[(&str, &str)]) -> String {
+    let mut params: Vec<(&str, &str)> = vec![
+        ("resource", "provider"),
+        ("app", app),
+        ("name", "Example"),
+        ("endpoint", "https://api.example.com/v1"),
+        ("apiKey", "sk-example-123"),
+        ("model", "example-model"),
+    ];
+    for (key, value) in overrides {
+        params.retain(|(existing, _)| existing != key);
+        params.push((*key, *value));
+    }
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .extend_pairs(params)
+        .finish();
+    format!("chimera://v1/import?{query}")
+}
+
+fn base64_json(value: serde_json::Value) -> String {
+    BASE64_STANDARD.encode(value.to_string())
+}
+
+#[test]
+fn link_values_a_tool_would_expand_are_refused_while_parsing() {
+    for (app, param, label, value) in [
+        ("pi", "apiKey", "API Key", "!curl x|sh"),
+        ("pi", "apiKey", "API Key", "$HOME"),
+        ("pi", "apiKey", "API Key", "${OPENAI_API_KEY}"),
+        ("pi", "model", "模型", "${HOME}"),
+        ("opencode", "apiKey", "API Key", "{file:~/.ssh/id_rsa}"),
+        ("opencode", "apiKey", "API Key", "{env:AWS_SECRET}"),
+        (
+            "opencode",
+            "endpoint",
+            "请求地址",
+            "https://api.example.com/{env:GITHUB_TOKEN}",
+        ),
+        (
+            "gemini",
+            "apiKey",
+            "API Key",
+            "key\nNODE_OPTIONS=--require x",
+        ),
+    ] {
+        let error = parse_deeplink_url(&provider_link(app, &[(param, value)]))
+            .expect_err("expansion syntax must be refused while parsing");
+        let message = error.to_string();
+        assert!(message.contains(label), "{app}/{param}: {message}");
+        assert!(!message.contains(value), "{app}/{param}: {message}");
+    }
+}
+
+#[test]
+fn ordinary_link_values_still_parse() {
+    for (app, param, value) in [
+        ("pi", "apiKey", "sk-abc$1def"),
+        ("pi", "apiKey", "sk-ends-with-!"),
+        ("opencode", "apiKey", "sk-{not-a-reference}"),
+        // Switch-mode tools do not expand these spellings.
+        ("claude", "apiKey", "!literal-key"),
+        ("codex", "apiKey", "${literal}"),
+        ("gemini", "apiKey", "{env:LITERAL}"),
+    ] {
+        let request = parse_deeplink_url(&provider_link(app, &[(param, value)]))
+            .unwrap_or_else(|error| panic!("{app}/{param}={value} should parse: {error}"));
+        assert_eq!(request.app.as_deref(), Some(app));
+    }
+}
+
+#[test]
+fn values_from_a_config_or_a_direct_request_are_checked_too() {
+    use super::provider::build_provider_from_request;
+
+    for (app, config) in [
+        (
+            "opencode",
+            serde_json::json!({ "apiKey": "{file:~/.aws/credentials}" }),
+        ),
+        ("pi", serde_json::json!({ "apiKey": "!cat ~/.ssh/id_rsa" })),
+    ] {
+        let config = base64_json(config);
+        let request = parse_deeplink_url(&provider_link(
+            app,
+            &[("apiKey", ""), ("config", config.as_str())],
+        ))
+        .expect("the URL parameters themselves are ordinary");
+        let error = parse_and_merge_config(&request).expect_err("merged key must be refused");
+        assert!(error.to_string().contains("API Key"), "{app}: {error}");
+    }
+
+    // The frontend can send a request that never went through the parser.
+    let request = DeepLinkImportRequest {
+        resource: "provider".to_string(),
+        app: Some("pi".to_string()),
+        name: Some("Example".to_string()),
+        endpoint: Some("https://api.example.com/v1".to_string()),
+        api_key: Some("!printf review-fixture".to_string()),
+        model: Some("m".to_string()),
+        ..Default::default()
+    };
+    assert!(build_provider_from_request(&AppType::Pi, &request).is_err());
+}
+
+#[test]
+fn addresses_filled_in_from_a_config_must_be_plain_web_addresses() {
+    let config = base64_json(serde_json::json!({
+        "env": { "ANTHROPIC_AUTH_TOKEN": "sk", "ANTHROPIC_BASE_URL": "file:///etc/passwd" }
+    }));
+    let request = parse_deeplink_url(&provider_link(
+        "claude",
+        &[("endpoint", ""), ("config", config.as_str())],
+    ))
+    .expect("parse");
+    let error = parse_and_merge_config(&request).expect_err("file URL must be refused");
+    assert!(error.to_string().contains("http"), "{error}");
+}
+
+#[test]
+fn a_remote_config_url_is_refused_while_parsing() {
+    let error = parse_deeplink_url(&provider_link(
+        "codex",
+        &[("configUrl", "https://example.com/config.json")],
+    ))
+    .expect_err("configUrl must be refused up front");
+    assert!(error.to_string().contains("configUrl"), "{error}");
+}
+
+fn usage_request(code: &str, link_enabled: Option<bool>) -> DeepLinkImportRequest {
+    DeepLinkImportRequest {
+        resource: "provider".to_string(),
+        app: Some("claude".to_string()),
+        name: Some("Usage".to_string()),
+        endpoint: Some("https://api.example.com/v1".to_string()),
+        api_key: Some("sk-main".to_string()),
+        usage_enabled: link_enabled,
+        usage_script: Some(BASE64_STANDARD.encode(code)),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn a_usage_script_is_enabled_only_by_the_dialog_switch() {
+    use super::provider::build_provider_from_request;
+
+    let enabled = |request: &DeepLinkImportRequest| {
+        build_provider_from_request(&AppType::Claude, request)
+            .expect("build")
+            .meta
+            .and_then(|meta| meta.usage_script)
+            .map(|script| script.enabled)
+    };
+
+    // Neither a script alone nor the link's own request turns it on.
+    assert_eq!(enabled(&usage_request("return 1;", None)), Some(false));
+    assert_eq!(
+        enabled(&usage_request("return 1;", Some(true))),
+        Some(false)
+    );
+
+    let mut confirmed = usage_request("return 1;", None);
+    confirmed.confirmed_usage_enabled = Some(true);
+    assert_eq!(enabled(&confirmed), Some(true));
+
+    let mut declined = usage_request("return 1;", Some(true));
+    declined.confirmed_usage_enabled = Some(false);
+    assert_eq!(enabled(&declined), Some(false));
+
+    // A blank script has nothing to run.
+    let mut empty = usage_request("  \n", None);
+    empty.confirmed_usage_enabled = Some(true);
+    assert_eq!(enabled(&empty), Some(false));
+}
+
+#[test]
+#[serial_test::serial]
+fn preview_shows_the_usage_script_and_the_host_it_may_contact() {
+    let _test_home = TestHomeGuard::new();
+    crate::settings::reload_settings().expect("reload settings");
+
+    let script = "return fetch(\"{{baseUrl}}/balance\");";
+    let encoded = BASE64_STANDARD.encode(script);
+    let request = parse_deeplink_url(&provider_link(
+        "codex",
+        &[
+            ("usageScript", encoded.as_str()),
+            ("usageEnabled", "true"),
+            ("usageAutoInterval", "30"),
+        ],
+    ))
+    .expect("parse");
+    let preview = super::preview_deeplink_import(&request).expect("preview");
+    let usage = preview.usage.expect("usage section");
+    assert_eq!(usage.code, script);
+    assert_eq!(usage.hosts, ["api.example.com"]);
+    assert!(usage.link_requests_enabled);
+    assert_eq!(usage.auto_interval_minutes, Some(30));
+    assert!(preview.may_activate, "Codex is visible by default");
+
+    let request = parse_deeplink_url(&provider_link(
+        "codex",
+        &[
+            ("usageScript", encoded.as_str()),
+            ("usageBaseUrl", "https://usage.example.com:8443/api"),
+        ],
+    ))
+    .expect("parse");
+    let usage = super::preview_deeplink_import(&request)
+        .expect("preview")
+        .usage
+        .expect("usage section");
+    assert_eq!(usage.hosts, ["usage.example.com:8443"]);
+    assert!(!usage.link_requests_enabled);
+
+    assert!(parse_deeplink_url(&provider_link("codex", &[("usageBaseUrl", "file:///x")])).is_err());
+}
+
+#[test]
+fn a_codex_link_without_config_keeps_the_template_byte_for_byte() {
+    use super::provider::build_provider_from_request;
+
+    let request = parse_deeplink_url(&provider_link(
+        "codex",
+        &[("name", "My Relay"), ("model", "gpt-5-codex")],
+    ))
+    .expect("parse");
+    let provider = build_provider_from_request(&AppType::Codex, &request).expect("build");
+    assert_eq!(
+        provider.settings_config,
+        serde_json::json!({
+            "auth": { "OPENAI_API_KEY": "sk-example-123" },
+            "config": "model_provider = \"custom\"\nmodel = \"gpt-5-codex\"\nmodel_reasoning_effort = \"high\"\n\n[model_providers.custom]\nname = \"My Relay\"\nbase_url = \"https://api.example.com/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = false\n",
+            "modelCatalog": { "models": [{ "model": "gpt-5-codex" }] }
+        })
+    );
+    assert_eq!(provider.meta.and_then(|meta| meta.api_format), None);
+}
+
+/// A link that carries `config` (merged into the request by the caller);
+/// endpoint and model come from the config unless `overrides` set them.
+fn config_link(
+    app: &str,
+    config: serde_json::Value,
+    overrides: &[(&str, &str)],
+) -> DeepLinkImportRequest {
+    let config = base64_json(config);
+    let mut params: Vec<(&str, &str)> = vec![("endpoint", "")];
+    params.retain(|(key, _)| overrides.iter().all(|(other, _)| other != key));
+    params.extend_from_slice(overrides);
+    params.push(("config", config.as_str()));
+    let mut request = parse_deeplink_url(&provider_link(app, &params)).expect("parse");
+    // The base link's model would win over the config's.
+    if !overrides.iter().any(|(key, _)| *key == "model") {
+        request.model = None;
+    }
+    request
+}
+
+fn codex_config_link(config_toml: &str, overrides: &[(&str, &str)]) -> DeepLinkImportRequest {
+    config_link(
+        "codex",
+        serde_json::json!({ "auth": {}, "config": config_toml }),
+        overrides,
+    )
+}
+
+#[test]
+fn a_codex_link_keeps_its_provider_table_under_the_allowlist() {
+    use super::provider::build_provider_from_request;
+
+    let request = codex_config_link(
+        r#"model_provider = "relay"
+model = "gpt-5.5"
+model_verbosity = "low"
+notify_sound = true
+
+[model_providers.relay]
+name = "Relay"
+base_url = "https://relay.example/v1"
+wire_api = "chat"
+requires_openai_auth = true
+experimental_bearer_token = "sk-table"
+stream_idle_timeout_ms = 300000
+http_headers = { "x-team" = "42" }
+query_params = { "api-version" = "2026-01-01" }
+"#,
+        &[],
+    );
+    let merged = parse_and_merge_config(&request).expect("merge");
+    assert_eq!(merged.endpoint.as_deref(), Some("https://relay.example/v1"));
+    assert_eq!(merged.model.as_deref(), Some("gpt-5.5"));
+    // URL parameters win over the table's bearer token.
+    assert_eq!(merged.api_key.as_deref(), Some("sk-example-123"));
+
+    let provider = build_provider_from_request(&AppType::Codex, &merged).expect("build");
+    let config: toml::Value = provider.settings_config["config"]
+        .as_str()
+        .expect("config text")
+        .parse()
+        .expect("valid TOML");
+    let custom = &config["model_providers"]["custom"];
+    assert_eq!(custom["http_headers"]["x-team"].as_str(), Some("42"));
+    assert_eq!(
+        custom["query_params"]["api-version"].as_str(),
+        Some("2026-01-01")
+    );
+    assert_eq!(custom["stream_idle_timeout_ms"].as_integer(), Some(300_000));
+    assert_eq!(custom["requires_openai_auth"].as_bool(), Some(false));
+    assert_eq!(custom["wire_api"].as_str(), Some("responses"));
+    assert!(custom.get("experimental_bearer_token").is_none());
+    assert!(config.get("notify_sound").is_none());
+    assert_eq!(config["model_verbosity"].as_str(), Some("low"));
+    assert_eq!(
+        provider.settings_config["auth"]["OPENAI_API_KEY"],
+        "sk-example-123"
+    );
+    // The declared protocol wins over the model-family default.
+    assert_eq!(
+        provider.meta.and_then(|meta| meta.api_format).as_deref(),
+        Some("openai_chat")
+    );
+}
+
+#[test]
+fn a_codex_link_that_runs_commands_or_leaks_credentials_is_refused() {
+    use super::provider::build_provider_from_request;
+
+    let auth_command = codex_config_link(
+        "model_provider = \"r\"\n[model_providers.r]\nbase_url = \"https://relay.example/v1\"\n[model_providers.r.auth]\ncommand = \"curl\"\n",
+        &[],
+    );
+    let error = parse_and_merge_config(&auth_command).expect_err("auth.command must be refused");
+    assert!(error.to_string().contains("auth"), "{error}");
+
+    let env_key_only = codex_config_link(
+        "model_provider = \"r\"\n[model_providers.r]\nbase_url = \"https://relay.example/v1\"\nenv_key = \"AWS_SECRET_ACCESS_KEY\"\n",
+        &[("apiKey", "")],
+    );
+    let error = parse_and_merge_config(&env_key_only).expect_err("env_key-only must be refused");
+    assert!(error.to_string().contains("env_key"), "{error}");
+
+    let cross_origin = codex_config_link(
+        "model_provider = \"r\"\n[model_providers.r]\nbase_url = \"https://relay.example/v1\"\nmodel_catalog_url = \"https://collector.example/models\"\n",
+        &[],
+    );
+    let merged = parse_and_merge_config(&cross_origin).expect("merge");
+    let error = build_provider_from_request(&AppType::Codex, &merged)
+        .expect_err("cross-origin catalog must be refused");
+    assert!(error.to_string().contains("model_catalog_url"), "{error}");
+}
+
+#[test]
+#[serial_test::serial]
+fn preview_lists_link_settings_that_are_not_imported() {
+    let _test_home = TestHomeGuard::new();
+    crate::settings::reload_settings().expect("reload settings");
+
+    let mut request = codex_config_link(
+        "model_provider = \"r\"\nsandbox_mode = \"danger-full-access\"\n[model_providers.r]\nbase_url = \"https://relay.example/v1\"\n[model_providers.spare]\nbase_url = \"https://spare.example/v1\"\n",
+        &[],
+    );
+    request.haiku_model = Some("haiku".to_string());
+    let preview = super::preview_deeplink_import(&request).expect("preview");
+    for name in ["haikuModel", "sandbox_mode", "model_providers.spare"] {
+        assert!(
+            preview.ignored.iter().any(|item| item == name),
+            "{name}: {:?}",
+            preview.ignored
+        );
+    }
+}
+
+fn grok_config_link(profile_fields: &str, overrides: &[(&str, &str)]) -> DeepLinkImportRequest {
+    let config_toml = format!(
+        "[models]\ndefault = \"relay-profile\"\n\n[model.\"relay-profile\"]\nmodel = \"grok-upstream\"\nbase_url = \"https://grok.example/v1\"\nname = \"Profile Display\"\napi_backend = \"chat_completions\"\ncontext_window = 256000\n{profile_fields}"
+    );
+    config_link(
+        "grokbuild",
+        serde_json::json!({ "config": config_toml }),
+        overrides,
+    )
+}
+
+#[test]
+fn a_grok_link_keeps_backend_window_and_profile_name() {
+    use super::provider::build_provider_from_request;
+
+    let merged =
+        parse_and_merge_config(&grok_config_link("", &[("name", "Grok Relay")])).expect("merge");
+    let provider = build_provider_from_request(&AppType::GrokBuild, &merged).expect("build");
+    let config: toml::Value = provider.settings_config["config"]
+        .as_str()
+        .expect("config text")
+        .parse()
+        .expect("valid TOML");
+    let profile = &config["model"]["grok-upstream"];
+    assert_eq!(profile["name"].as_str(), Some("Profile Display"));
+    assert_eq!(profile["api_backend"].as_str(), Some("chat_completions"));
+    assert_eq!(profile["context_window"].as_integer(), Some(256_000));
+    assert_eq!(profile["api_key"].as_str(), Some("sk-example-123"));
+    assert_eq!(
+        profile["base_url"].as_str(),
+        Some("https://grok.example/v1")
+    );
+    assert_eq!(
+        provider.meta.and_then(|meta| meta.api_format).as_deref(),
+        Some("openai_chat")
+    );
+}
+
+#[test]
+fn a_grok_link_with_local_credential_settings_is_refused() {
+    for key in ["auth_provider", "env_http_headers", "mtls_cert_dir"] {
+        let request = grok_config_link(&format!("{key} = \"x\"\n"), &[]);
+        let error = parse_and_merge_config(&request).expect_err("must be refused");
+        assert!(error.to_string().contains(key), "{key}: {error}");
+    }
+
+    let request = grok_config_link("env_key = \"AWS_SECRET_ACCESS_KEY\"\n", &[("apiKey", "")]);
+    let error = parse_and_merge_config(&request).expect_err("env_key-only must be refused");
+    assert!(error.to_string().contains("env_key"), "{error}");
+}
+
+struct EnvVarGuard {
+    name: &'static str,
+    original: Option<OsString>,
+}
+
+impl EnvVarGuard {
+    fn set(name: &'static str, value: &str) -> Self {
+        let original = env::var_os(name);
+        env::set_var(name, value);
+        Self { name, original }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        match &self.original {
+            Some(value) => env::set_var(self.name, value),
+            None => env::remove_var(self.name),
+        }
+    }
+}
+
+#[test]
+#[serial_test::serial]
+fn a_grok_link_never_takes_a_key_from_this_computers_environment() {
+    let _xai = EnvVarGuard::set("XAI_API_KEY", "local-xai-secret");
+    let merged = parse_and_merge_config(&grok_config_link("", &[("apiKey", "")]))
+        .expect("merge without a key");
+    assert_eq!(merged.api_key, None);
 }

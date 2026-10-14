@@ -152,4 +152,15 @@ mod tests {
         assert!(msg.contains("500"));
         assert!(msg.contains("Internal Server Error"));
     }
+
+    #[test]
+    fn test_invalid_request_message_keeps_bridge_reason() {
+        // The Codex error body quotes this message as its cause, so a bridge's
+        // refusal reason (and its next step) must reach Codex verbatim.
+        let reason =
+            crate::proxy::providers::codex_chat_common::CODEX_REMOTE_COMPACTION_CHECKPOINT_UNSUPPORTED;
+        let error = ProxyError::InvalidRequest(reason.to_string());
+        assert_eq!(map_proxy_error_to_status(&error), 400);
+        assert!(get_error_message(&error).contains(reason));
+    }
 }

@@ -4,6 +4,10 @@
 //! pinned commit registered in THIRD_PARTY_SOURCES.md. Catalog paths are
 //! resolved only below the fixed mirror; packages are size and SHA-256 gated
 //! before the upstream theme importer validates their archive contents.
+//!
+//! Every user-visible message is plain Chinese and keeps the underlying cause
+//! where it is safe to show: catalog and package URLs are public, and network
+//! errors are described without echoing request URLs.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -22,6 +26,8 @@ const SKIN_CATALOG_TIMEOUT_SECS: u64 = 20;
 const SKIN_CATALOG_MAX_BYTES: usize = 8 * 1024 * 1024;
 /// 发送给皮肤镜像站点的标准 User-Agent。
 const SKIN_CATALOG_USER_AGENT: &str = "chimera-plus-plus";
+const NOT_INSTALLED_MESSAGE: &str = "未检测到 Codex 安装，请先在“Codex 管理”中安装 Codex。";
+const MSIX_CUSTOM_HOME_MESSAGE: &str = "Codex 标准安装使用自定义 CODEX_HOME 时无法应用皮肤：系统激活不能同时传入调试参数和自定义目录。请恢复默认的 ~/.codex 目录，或改用免安装版 Codex。";
 
 /// One verified catalog entry returned to the appearance gallery.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -76,14 +82,16 @@ pub fn catalog_asset_url(relative: &str) -> Result<String, String> {
     if valid {
         Ok(format!("{SKINS_BASE}/{relative}"))
     } else {
-        Err("The skin catalog contains an unsafe asset path.".to_string())
+        Err(format!(
+            "皮肤目录中的资源路径不安全（{relative}），已拒绝下载。"
+        ))
     }
 }
 
 /// Parse and retain only catalog entries that can be integrity-verified.
 pub fn parse_catalog(json: &str) -> Result<Vec<CatalogSkin>, String> {
     let index: CatalogIndex = serde_json::from_str(json)
-        .map_err(|_| "The skin catalog response is invalid.".to_string())?;
+        .map_err(|error| format!("皮肤目录格式无效：{error}。请稍后重试。"))?;
     let mut skins = index
         .skins
         .into_iter()
@@ -160,7 +168,13 @@ async fn fetch_catalog_text() -> Result<String, String> {
         .timeout(Duration::from_secs(SKIN_CATALOG_TIMEOUT_SECS))
         .send()
         .await
-        .map_err(|_| "Could not reach the verified skin catalog.".to_string())?;
+        .map_err(|error| {
+            format!(
+                "无法读取皮肤目录：{}。当前网络：{}。请检查网络或应用代理设置后重试。",
+                crate::services::bounded_download::describe_reqwest_error(&error),
+                crate::proxy::http_client::describe_network_mode()
+            )
+        })?;
     let status = response.status();
     if !status.is_success() {
         let detail = response
@@ -170,26 +184,35 @@ async fn fetch_catalog_text() -> Result<String, String> {
             .unwrap_or_default();
         let detail = detail.trim();
         return Err(if detail.is_empty() {
-            format!("HTTP {status}")
+            format!("皮肤目录服务器返回 HTTP {status}，请稍后重试。")
         } else {
-            format!("HTTP {status}: {detail}")
+            format!("皮肤目录服务器返回 HTTP {status}（{detail}），请稍后重试。")
         });
     }
     if response
         .content_length()
         .is_some_and(|len| len > SKIN_CATALOG_MAX_BYTES as u64)
     {
-        return Err("The skin catalog response is too large.".to_string());
+        return Err(catalog_too_large_message());
     }
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|_| "Could not read the skin catalog response.".to_string())?;
+    let bytes = response.bytes().await.map_err(|error| {
+        format!(
+            "读取皮肤目录响应失败：{}。请检查网络后重试。",
+            crate::services::bounded_download::describe_reqwest_error(&error)
+        )
+    })?;
     if bytes.len() > SKIN_CATALOG_MAX_BYTES {
-        return Err("The skin catalog response is too large.".to_string());
+        return Err(catalog_too_large_message());
     }
     String::from_utf8(bytes.to_vec())
-        .map_err(|_| "The skin catalog response is not valid UTF-8.".to_string())
+        .map_err(|error| format!("皮肤目录响应不是有效的 UTF-8 文本：{error}"))
+}
+
+fn catalog_too_large_message() -> String {
+    format!(
+        "皮肤目录响应超过 {} MiB 上限，已拒绝读取。",
+        SKIN_CATALOG_MAX_BYTES / (1024 * 1024)
+    )
 }
 
 async fn fetch_catalog() -> Result<Vec<CatalogSkin>, String> {
@@ -216,7 +239,7 @@ pub async fn list_skin_catalog() -> Result<Vec<CatalogSkin>, String> {
         Ok(catalog)
     })
     .await
-    .map_err(|_| "The skin catalog request was interrupted.".to_string())?
+    .map_err(|error| format!("读取皮肤目录的任务被中断：{error}"))?
 }
 
 /// Download, hash-check, and import one schema-v2 catalog skin.
@@ -234,42 +257,60 @@ pub async fn install_catalog_skin(
         let skin = catalog
             .into_iter()
             .find(|entry| entry.id == skin_id)
-            .ok_or_else(|| "That skin is not in the verified catalog.".to_string())?;
+            .ok_or_else(|| "皮肤目录中没有找到这个皮肤，请刷新目录后重试。".to_string())?;
         let url = catalog_asset_url(&skin.pack)?;
         let staging = data_root
             .join("downloads")
             .join(format!("{}.codexskin", skin.id));
         if let Some(parent) = staging.parent() {
             std::fs::create_dir_all(parent)
-                .map_err(|_| "Could not prepare the skin download folder.".to_string())?;
+                .map_err(|error| format!("无法创建皮肤下载目录：{error}"))?;
         }
         let total = skin.bytes;
         let progress_app = app.clone();
-        codex_win_engine::download_to_with_progress_bounded(&url, &staging, total, &|downloaded| {
-            let _ = progress_app.emit(
-                "skin://download-progress",
-                serde_json::json!({ "downloaded": downloaded, "total": total }),
-            );
-        })
-        .map_err(|_| "The skin package download failed.".to_string())?;
-        let digest = codex_win_engine::sha256_file(&staging)
-            .map_err(|_| "Could not verify the downloaded skin.".to_string())?;
+        let on_progress: crate::services::bounded_download::ProgressCallback =
+            std::sync::Arc::new(move |downloaded: u64| {
+                let _ = progress_app.emit(
+                    "skin://download-progress",
+                    serde_json::json!({ "downloaded": downloaded, "total": total }),
+                );
+            });
+        // Same client and proxy as the catalog request above; this runs on the
+        // blocking thread that holds the runtime operation lock.
+        crate::services::bounded_download::download_to_file_blocking(
+            crate::proxy::http_client::get(),
+            url,
+            staging.clone(),
+            total,
+            crate::services::bounded_download::DownloadOptions::default(),
+            on_progress,
+        )
+        .map_err(|error| {
+            format!(
+                "下载皮肤包失败：{error}。当前网络：{}。请检查网络或应用代理设置后重试。",
+                crate::proxy::http_client::describe_network_mode()
+            )
+        })?;
+        let digest = codex_win_engine::sha256_file(&staging).map_err(|error| {
+            let _ = std::fs::remove_file(&staging);
+            format!("无法校验下载的皮肤包：{error}")
+        })?;
         if !digest.eq_ignore_ascii_case(&skin.sha256) {
             let _ = std::fs::remove_file(&staging);
-            return Err("The skin package checksum does not match the catalog.".to_string());
+            return Err("下载的皮肤包与目录中的校验值不一致，已删除。请稍后重试。".to_string());
         }
-        let imported = codex_theme_engine::import::import_codexskin(&staging, &root)
-            .map_err(|error| error.to_string())?;
+        let imported = codex_theme_engine::import::import_codexskin(&staging, &root);
         let _ = std::fs::remove_file(&staging);
+        let imported = imported.map_err(|error| format!("导入皮肤包失败：{error}"))?;
         if imported.id != skin.id {
-            return Err("The skin package identity does not match the catalog.".to_string());
+            return Err("皮肤包内容与目录中的皮肤不一致，已拒绝安装。".to_string());
         }
         let mut result = skin;
         result.installed = true;
         Ok(result)
     })
     .await
-    .map_err(|_| "The skin install was interrupted.".to_string())?
+    .map_err(|error| format!("安装皮肤的任务被中断：{error}"))?
 }
 
 /// Import a local schema-v2 `.codexskin` through the reference validator.
@@ -281,25 +322,25 @@ pub async fn import_skin_package(path: String) -> Result<String, String> {
         let _guard = super::codex_runtime::acquire_operation_lock("import_skin_package")?;
         codex_theme_engine::import::import_codexskin(&archive, &root)
             .map(|summary| summary.id)
-            .map_err(|error| error.to_string())
+            .map_err(|error| format!("导入皮肤包失败：{error}"))
     })
     .await
-    .map_err(|_| "The skin import was interrupted.".to_string())?
+    .map_err(|error| format!("导入皮肤的任务被中断：{error}"))?
 }
 
+/// Closing Codex already reports plain-Chinese reasons; keep them.
 fn close_codex(
     installed: &codex_win_engine::InstalledWindowsCodex,
     portable_root: &Path,
 ) -> Result<(), String> {
     super::codex_runtime::close_codex_for_restart(installed, portable_root)
-        .map_err(|_| "Could not close Codex before applying the skin.".to_string())
 }
 
 fn close_and_launch(portable_root: &Path, debug_port: Option<u16>) -> Result<(), String> {
     let installed = codex_win_engine::detect_installed_codex(portable_root)
-        .ok_or_else(|| "Install Codex before applying a skin.".to_string())?;
+        .ok_or_else(|| NOT_INSTALLED_MESSAGE.to_string())?;
     if debug_port.is_some() && !super::codex_runtime::renderer_unlock_available(&installed) {
-        return Err("MSIX skin injection cannot preserve a custom CODEX_HOME; use the default directory or portable Codex.".to_string());
+        return Err(MSIX_CUSTOM_HOME_MESSAGE.to_string());
     }
     close_codex(&installed, portable_root)?;
     super::codex_runtime::launch_codex_with_config(
@@ -309,18 +350,20 @@ fn close_and_launch(portable_root: &Path, debug_port: Option<u16>) -> Result<(),
             remote_debugging_port: debug_port,
         },
     )
-    .map_err(|_| "Could not restart Codex for skin injection.".to_string())
+    .map_err(|error| format!("重启 Codex 以应用皮肤失败：{error}"))
 }
 
 async fn inject_skin(root: PathBuf, skin_id: &str) -> Result<(), String> {
     let theme = codex_theme_engine::theme::resolve_theme_dir(&root, skin_id)
-        .map_err(|error| error.to_string())?;
-    let payload =
-        codex_theme_engine::payload::build_payload(&theme).map_err(|error| error.to_string())?;
+        .map_err(|error| format!("读取皮肤失败：{error}"))?;
+    let payload = codex_theme_engine::payload::build_payload(&theme)
+        .map_err(|error| format!("生成皮肤注入内容失败：{error}"))?;
     let targets =
         codex_theme_engine::cdp::connect_codex_targets(theme_cdp_port(), Duration::from_secs(45))
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| {
+                format!("无法连接 Codex 窗口以注入皮肤：{error}。请确认 Codex 已正常打开后重试。")
+            })?;
     let mut applied = 0usize;
     for target in targets {
         if target.session.evaluate(&payload.payload).await.is_ok() {
@@ -329,7 +372,7 @@ async fn inject_skin(root: PathBuf, skin_id: &str) -> Result<(), String> {
         target.session.close();
     }
     if applied == 0 {
-        Err("No verified Codex window accepted the skin.".to_string())
+        Err("没有 Codex 窗口接受皮肤注入。请确认 Codex 已正常打开后重试。".to_string())
     } else {
         Ok(())
     }
@@ -339,7 +382,7 @@ async fn inject_skin(root: PathBuf, skin_id: &str) -> Result<(), String> {
 #[tauri::command]
 pub async fn apply_skin_package(skin_id: String, confirm: bool) -> Result<(), String> {
     if !confirm {
-        return Err("Applying a skin requires explicit confirmation.".to_string());
+        return Err("应用皮肤需要用户明确确认".to_string());
     }
     let root = themes_root();
     let portable_root = portable_root()?;
@@ -350,13 +393,13 @@ pub async fn apply_skin_package(skin_id: String, confirm: bool) -> Result<(), St
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = super::codex_runtime::acquire_operation_lock("apply_skin_package")?;
         let dir = codex_theme_engine::theme::resolve_theme_dir(&apply_root, &id)
-            .map_err(|error| error.to_string())?;
-        let loaded =
-            codex_theme_engine::theme::load_theme(&dir).map_err(|error| error.to_string())?;
+            .map_err(|error| format!("读取皮肤失败：{error}"))?;
+        let loaded = codex_theme_engine::theme::load_theme(&dir)
+            .map_err(|error| format!("读取皮肤失败：{error}"))?;
         let installed = codex_win_engine::detect_installed_codex(&portable_root)
-            .ok_or_else(|| "Install Codex before applying a skin.".to_string())?;
+            .ok_or_else(|| NOT_INSTALLED_MESSAGE.to_string())?;
         if !super::codex_runtime::renderer_unlock_available(&installed) {
-            return Err("MSIX skin injection cannot preserve a custom CODEX_HOME; use the default directory or portable Codex.".to_string());
+            return Err(MSIX_CUSTOM_HOME_MESSAGE.to_string());
         }
         close_codex(&installed, &portable_root)?;
         if let Some(block) = loaded.codex_theme.as_ref() {
@@ -370,18 +413,18 @@ pub async fn apply_skin_package(skin_id: String, confirm: bool) -> Result<(), St
                 )
                 .map_err(|e| format!("codexTheme 校验失败: {e}"))?;
                 codex_theme_engine::native::backup_native_theme(&native)
-                    .map_err(|e| e.to_string())?;
-                let current =
-                    crate::codex_config::read_codex_config_text().map_err(|e| e.to_string())?;
+                    .map_err(|e| format!("备份 Codex 原生外观设置失败：{e}"))?;
+                let current = crate::codex_config::read_codex_config_text()
+                    .map_err(|e| format!("读取 Codex 配置失败：{e}"))?;
                 let planned = codex_theme_engine::native::plan_native_config(
                     &current,
                     &codex_theme_engine::native::apply_plan(&parsed),
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| format!("生成 Codex 外观配置失败：{e}"))?;
                 crate::codex_live_write::write_codex_live_files(
                     crate::codex_live_write::CodexLiveWrite::config_only(&planned),
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| format!("写入 Codex 配置失败：{e}"))?;
             }
         }
         super::codex_runtime::launch_codex_with_config(
@@ -391,10 +434,10 @@ pub async fn apply_skin_package(skin_id: String, confirm: bool) -> Result<(), St
                 remote_debugging_port: Some(theme_cdp_port()),
             },
         )
-        .map_err(|_| "Could not restart Codex for skin injection.".to_string())
+        .map_err(|error| format!("重启 Codex 以应用皮肤失败：{error}"))
     })
     .await
-    .map_err(|_| "The skin apply operation was interrupted.".to_string())??;
+    .map_err(|error| format!("应用皮肤的任务被中断：{error}"))??;
     inject_skin(root, &skin_id).await?;
     // Acquiring the lock can wait, so keep it off the async executor.
     tauri::async_runtime::spawn_blocking(move || {
@@ -408,17 +451,17 @@ pub async fn apply_skin_package(skin_id: String, confirm: bool) -> Result<(), St
                 }
                 std::fs::rename(&temporary, &active)
             })
-            .map_err(|_| "The skin was applied but its selection could not be saved.".to_string())
+            .map_err(|error| format!("皮肤已应用，但保存选择失败：{error}"))
     })
     .await
-    .map_err(|_| "Saving the skin selection was interrupted.".to_string())?
+    .map_err(|error| format!("保存皮肤选择的任务被中断：{error}"))?
 }
 
 /// Try a skin live without changing native settings or the persisted selection.
 #[tauri::command]
 pub async fn try_skin_package(skin_id: String, confirm: bool) -> Result<(), String> {
     if !confirm {
-        return Err("Trying a skin requires explicit confirmation.".to_string());
+        return Err("试穿皮肤需要用户明确确认".to_string());
     }
     let root = themes_root();
     let portable_root = portable_root()?;
@@ -432,7 +475,7 @@ pub async fn try_skin_package(skin_id: String, confirm: bool) -> Result<(), Stri
         close_and_launch(&portable_root, Some(theme_cdp_port()))
     })
     .await
-    .map_err(|_| "The skin preview was interrupted.".to_string())??;
+    .map_err(|error| format!("试穿皮肤的任务被中断：{error}"))??;
     inject_skin(root, &skin_id).await
 }
 
@@ -440,7 +483,7 @@ pub async fn try_skin_package(skin_id: String, confirm: bool) -> Result<(), Stri
 #[tauri::command]
 pub async fn restore_skin_package(confirm: bool) -> Result<(), String> {
     if !confirm {
-        return Err("Restoring Codex appearance requires explicit confirmation.".to_string());
+        return Err("恢复 Codex 默认外观需要用户明确确认".to_string());
     }
     let portable_root = portable_root()?;
     let native = native_paths();
@@ -448,30 +491,78 @@ pub async fn restore_skin_package(confirm: bool) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = super::codex_runtime::acquire_operation_lock("restore_skin_package")?;
         let installed = codex_win_engine::detect_installed_codex(&portable_root)
-            .ok_or_else(|| "Codex is not installed.".to_string())?;
+            .ok_or_else(|| NOT_INSTALLED_MESSAGE.to_string())?;
         close_codex(&installed, &portable_root)
-            .map_err(|_| "Could not close Codex for restore.".to_string())?;
-        let current = crate::codex_config::read_codex_config_text().map_err(|e| e.to_string())?;
+            .map_err(|error| format!("恢复外观前无法关闭 Codex：{error}"))?;
+        let current = crate::codex_config::read_codex_config_text()
+            .map_err(|e| format!("读取 Codex 配置失败：{e}"))?;
         if let Some(planned) = codex_theme_engine::native::planned_restore_text(&native, &current)
-            .map_err(|error| error.to_string())?
+            .map_err(|error| format!("生成恢复后的 Codex 配置失败：{error}"))?
         {
             crate::codex_live_write::write_codex_live_files(
                 crate::codex_live_write::CodexLiveWrite::config_only(&planned),
             )
-            .map_err(|error| error.to_string())?;
-            codex_theme_engine::native::drop_backup(&native).map_err(|error| error.to_string())?;
+            .map_err(|error| format!("写入 Codex 配置失败：{error}"))?;
+            codex_theme_engine::native::drop_backup(&native)
+                .map_err(|error| format!("清理外观备份失败：{error}"))?;
         }
         super::codex_runtime::launch_codex_with_config(
             &installed,
             codex_win_engine::LaunchOptions::default(),
         )
-        .map_err(|_| "Codex appearance was restored, but Codex could not restart.".to_string())?;
+        .map_err(|error| format!("已恢复 Codex 默认外观，但重启 Codex 失败：{error}"))?;
         if active.exists() {
             std::fs::remove_file(active)
-                .map_err(|_| "Could not clear the active skin selection.".to_string())?;
+                .map_err(|error| format!("无法清除当前皮肤选择：{error}"))?;
         }
         Ok(())
     })
     .await
-    .map_err(|_| "The skin restore was interrupted.".to_string())?
+    .map_err(|error| format!("恢复外观的任务被中断：{error}"))?
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn catalog_errors_are_plain_chinese_and_keep_their_cause() {
+        let error = super::parse_catalog("not json").expect_err("invalid JSON is rejected");
+        assert!(error.starts_with("皮肤目录格式无效："), "{error}");
+        assert!(
+            error.contains("expected"),
+            "the parser's reason is kept: {error}"
+        );
+
+        let error = super::catalog_asset_url("../escape.codexskin").expect_err("unsafe path");
+        assert!(error.contains("不安全"), "{error}");
+        assert!(error.contains("../escape.codexskin"), "{error}");
+        assert_eq!(
+            super::catalog_asset_url("packs/aurora.codexskin").as_deref(),
+            Ok("https://skins.agentsmirror.com/packs/aurora.codexskin")
+        );
+        assert!(super::catalog_too_large_message().contains("8 MiB"));
+    }
+
+    #[test]
+    fn skin_commands_keep_underlying_causes_and_chinese_launch_errors() {
+        let source = include_str!("skin_catalog.rs")
+            .split("mod tests {")
+            .next()
+            .expect("source before tests");
+        // Every failure keeps its cause instead of replacing it wholesale.
+        assert!(!source.contains("map_err(|_|"));
+        // Launch-path failures from the runtime are already plain Chinese.
+        assert!(source.contains("重启 Codex 以应用皮肤失败：{error}"));
+        assert!(source.contains("已恢复 Codex 默认外观，但重启 Codex 失败：{error}"));
+        assert!(source
+            .contains("super::codex_runtime::close_codex_for_restart(installed, portable_root)\n"));
+        for english in [
+            "Could not",
+            "The skin",
+            "Install Codex before",
+            "requires explicit confirmation",
+            "was interrupted",
+        ] {
+            assert!(!source.contains(english), "{english}");
+        }
+    }
 }

@@ -146,6 +146,11 @@ export const settingsApi = {
     await invoke("open_app_config_folder");
   },
 
+  /** 在系统文件管理器中选中应用日志文件；日志尚未生成时打开日志目录 */
+  async revealAppLogFile(): Promise<void> {
+    await invoke("reveal_app_log_file");
+  },
+
   async getAppConfigDirOverride(): Promise<string | null> {
     return await invoke("get_app_config_dir_override");
   },

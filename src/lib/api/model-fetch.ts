@@ -117,6 +117,34 @@ export async function fetchXaiOauthModels(
   });
 }
 
+/** Why a model-list request failed, read from the backend's error text. */
+export type ModelFetchErrorCode =
+  "auth" | "endpoint" | "timeout" | "parse" | "unknown";
+
+export function classifyModelFetchError(err: unknown): ModelFetchErrorCode {
+  const msg = String(err);
+  if (msg.includes("HTTP 401") || msg.includes("HTTP 403")) return "auth";
+  // 所有候选端点均返回 404/405：供应商可能未开放 /models 接口，或 Base URL 有误
+  if (
+    msg.includes("All candidates failed") ||
+    msg.includes("HTTP 404") ||
+    msg.includes("HTTP 405")
+  ) {
+    return "endpoint";
+  }
+  if (msg.includes("timeout") || msg.includes("timed out")) return "timeout";
+  if (msg.includes("Failed to parse")) return "parse";
+  return "unknown";
+}
+
+const FETCH_MODELS_ERROR_KEYS: Record<ModelFetchErrorCode, string> = {
+  auth: "providerForm.fetchModelsAuthFailed",
+  endpoint: "providerForm.fetchModelsEndpointNotFound",
+  timeout: "providerForm.fetchModelsTimeout",
+  parse: "providerForm.fetchModelsNotSupported",
+  unknown: "providerForm.fetchModelsFailed",
+};
+
 /**
  * 根据错误类型显示对应的 toast 提示
  */
@@ -138,32 +166,5 @@ export function showFetchModelsError(
     toast.error(t("providerForm.fetchModelsNeedEndpoint"));
     return;
   }
-
-  // 解析后端错误字符串
-  const msg = String(err);
-
-  if (msg.includes("HTTP 401") || msg.includes("HTTP 403")) {
-    toast.error(t("providerForm.fetchModelsAuthFailed"));
-    return;
-  }
-  // 所有候选端点均返回 404/405：供应商可能未开放 /models 接口，或 Base URL 有误
-  if (msg.includes("All candidates failed")) {
-    toast.error(t("providerForm.fetchModelsEndpointNotFound"));
-    return;
-  }
-  if (msg.includes("HTTP 404") || msg.includes("HTTP 405")) {
-    toast.error(t("providerForm.fetchModelsEndpointNotFound"));
-    return;
-  }
-  if (msg.includes("timeout") || msg.includes("timed out")) {
-    toast.error(t("providerForm.fetchModelsTimeout"));
-    return;
-  }
-  if (msg.includes("Failed to parse")) {
-    toast.error(t("providerForm.fetchModelsNotSupported"));
-    return;
-  }
-
-  // 通用兜底
-  toast.error(t("providerForm.fetchModelsFailed"));
+  toast.error(t(FETCH_MODELS_ERROR_KEYS[classifyModelFetchError(err)]));
 }

@@ -1,0 +1,337 @@
+/* The current line's signboard: one graphite plate, the line's colour band and
+   the route its requests really take. Plate tokens keep it the same material in
+   both themes; in the dark theme it sits darker than the page, with an edge. */
+.station-signboard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  user-select: none;
+}
+.station-plate {
+  --line-color: var(--id-cobalt);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: var(--radius-panel);
+  outline: 1px solid var(--plate-border);
+  outline-offset: -1px;
+  background: var(--plate-bg);
+  color: var(--plate-fg-1);
+}
+.station-band {
+  height: 4px;
+  flex: none;
+  background: var(--line-color);
+}
+.station-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px 24px;
+}
+.station-top {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+}
+.station-title {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.station-eyebrow {
+  color: var(--plate-fg-3);
+  font-size: 13px;
+  line-height: 18px;
+}
+.station-name-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  min-width: 0;
+}
+.station-name {
+  max-width: 100%;
+  margin: 0;
+  overflow: hidden;
+  color: var(--plate-fg-1);
+  font:
+    700 28px/34px var(--font-latin),
+    var(--font-cjk),
+    sans-serif;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.station-kind {
+  flex: none;
+  padding: 1px 8px;
+  border: 1px solid var(--plate-control-border);
+  border-radius: var(--radius-pill);
+  color: var(--plate-fg-2);
+  font-size: 13px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+.station-reading {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+.station-latency {
+  color: var(--plate-fg-1);
+  font:
+    700 22px/25px var(--font-latin),
+    var(--font-cjk),
+    sans-serif;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.station-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--plate-fg-3);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 18px;
+  white-space: nowrap;
+}
+.station-state[data-tone="ok"] {
+  color: var(--plate-success);
+}
+.station-state[data-tone="warn"] {
+  color: var(--plate-warning);
+}
+.station-state[data-tone="error"] {
+  color: var(--plate-danger);
+}
+.station-state-time {
+  color: var(--plate-fg-3);
+  font-weight: 400;
+}
+.station-actions {
+  display: flex;
+  flex: none;
+  gap: 8px;
+  padding-left: 8px;
+}
+.station-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--plate-control-border);
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--plate-fg-1);
+  font-size: 14px;
+  line-height: 20px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color var(--dur-instant) var(--ease-out);
+}
+.station-action:hover:not(:disabled):not([aria-disabled="true"]) {
+  background: var(--plate-control-hover);
+}
+.station-action:active:not(:disabled):not([aria-disabled="true"]) {
+  background: var(--plate-control-pressed);
+}
+.station-action:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+/* Route bar: one stop per hop the request takes. */
+.station-route {
+  display: flex;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.station-stop {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  padding-right: 12px;
+}
+.station-track {
+  display: flex;
+  align-items: center;
+  height: 12px;
+  margin: 0 -12px 10px 0;
+}
+.station-dot {
+  box-sizing: border-box;
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--line-color);
+  border-radius: 50%;
+  background: var(--plate-bg);
+}
+.station-stop[data-last] .station-dot {
+  background: var(--line-color);
+}
+.station-rail {
+  flex: 1;
+  height: 2px;
+  background: var(--line-color);
+}
+.station-stop[data-pending] .station-dot {
+  border-style: dashed;
+  border-color: var(--plate-fg-3);
+}
+.station-stop[data-pending] .station-dot,
+.station-stop[data-last][data-pending] .station-dot {
+  background: transparent;
+}
+.station-stop:has(+ .station-stop[data-pending]) .station-rail,
+.station-stop[data-pending] .station-rail {
+  height: 0;
+  border-top: 2px dashed var(--plate-fg-3);
+  background: none;
+}
+/* A failed hop: the segment into it breaks and turns red. */
+.station-stop[data-break-next] .station-rail {
+  height: 0;
+  border-top: 2px dashed var(--plate-danger);
+  background: none;
+}
+.station-stop[data-tone="error"] .station-dot {
+  border-color: var(--plate-danger);
+}
+.station-stop-name {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--plate-fg-1);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.station-stop-name.is-mono {
+  display: block;
+  font:
+    400 13px/18px var(--font-mono),
+    monospace;
+}
+.station-stop-note {
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--plate-fg-3);
+  font-size: 13px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.station-stop[data-tone="error"] .station-stop-note {
+  color: var(--plate-danger);
+}
+/* The "?" trigger is drawn for paper surfaces; recolour it for the plate. */
+.station-stop-name .help-tip-trigger {
+  color: var(--plate-fg-3);
+}
+.station-stop-name .help-tip-trigger:hover,
+.station-stop-name .help-tip-trigger[data-state="open"] {
+  background: var(--plate-control-hover);
+  color: var(--plate-fg-1);
+}
+
+/* Empty plate: no current line yet. */
+.station-plate.is-empty {
+  --line-color: var(--plate-fg-3);
+}
+.station-empty-mark {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: 1px dashed var(--plate-control-border);
+  border-radius: var(--radius-panel);
+  color: var(--plate-fg-3);
+}
+.station-empty-title {
+  margin: 0;
+  color: var(--plate-fg-1);
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 28px;
+}
+.station-empty-detail {
+  margin: 0;
+  color: var(--plate-fg-2);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+/* Switch receipt under the plate. */
+.station-receipt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 4px 0 12px;
+  border-radius: var(--radius-control);
+  background: var(--bg-subtle);
+  color: var(--text-3);
+}
+.station-receipt-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.station-receipt button {
+  height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-1);
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.station-receipt button:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+.station-receipt button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+@media (max-width: 1100px) {
+  .station-body {
+    padding: 16px 20px;
+  }
+  .station-top {
+    gap: 12px;
+  }
+  .station-actions {
+    padding-left: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .station-action {
+    transition: none;
+  }
+}

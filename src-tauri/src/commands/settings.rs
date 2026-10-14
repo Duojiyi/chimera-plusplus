@@ -58,6 +58,15 @@ fn merge_settings_for_save(
     incoming.current_provider_grokbuild = existing.current_provider_grokbuild.clone();
     incoming.current_provider_opencode = existing.current_provider_opencode.clone();
 
+    // 配置目录只由 patch_config_directory 修改（目录面板逐项提交）。整份保存的
+    // 载荷是前端某一时刻的设置快照（例如线路表单确认通用配置时带上的旧快照），
+    // 可能早于刚提交的目录；按 incoming 透传会把新目录静默改回旧值。
+    incoming.claude_config_dir = existing.claude_config_dir.clone();
+    incoming.codex_config_dir = existing.codex_config_dir.clone();
+    incoming.gemini_config_dir = existing.gemini_config_dir.clone();
+    incoming.grok_config_dir = existing.grok_config_dir.clone();
+    incoming.opencode_config_dir = existing.opencode_config_dir.clone();
+
     // local_migrations 是纯后端状态（迁移完成标记），前端没有合法的修改场景，
     // 无条件取现有值。若按 incoming 透传：后端清掉 marker（如关闭统一会话
     // 开关）后、前端 query 缓存刷新前的一次全量保存会把旧 marker 重放回来，
@@ -403,11 +412,106 @@ pub(crate) fn take_staged_bytes(staged: &mut StagedUpdate, available: &str) -> O
     None
 }
 
+/// 检查请求只取一份很小的 latest.json，总时长上限给得紧一些。
+const UPDATE_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// 建立连接的时长上限，检查与下载共用。
+const UPDATE_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+/// 连续这么久收不到任何数据就判定连接卡死；慢速但仍在传输的下载不受影响。
+const UPDATE_STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+/// 安装包下载的总时长兜底（约 13 MB）。卡死的连接由上面的空闲超时更早结束，
+/// 这里只防止极慢的传输无限拖住暂存锁。
+const UPDATE_DOWNLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+const UPDATE_DOWNLOAD_TIMEOUT_MESSAGE: &str = "更新下载超时，请检查网络后重试";
+const UPDATE_BLOCKED_BY_RUNTIME_MESSAGE: &str =
+    "Codex 安装或皮肤操作正在进行，完成后再更新 Chimera++";
+
+/// 所有应用更新请求共用的更新器：检查请求有总时长上限；检查和下载都有连接
+/// 超时与空闲（读取）超时，卡住的连接会及时报错，而不是让界面一直等待。
+fn bounded_updater(app: &AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
+    app.updater_builder()
+        .timeout(UPDATE_CHECK_TIMEOUT)
+        .configure_client(|client| {
+            client
+                .connect_timeout(UPDATE_CONNECT_TIMEOUT)
+                .read_timeout(UPDATE_STALL_TIMEOUT)
+        })
+        .build()
+        .map_err(|e| format!("初始化更新器失败: {e}"))
+}
+
+/// 更新器错误转成中文；超时单独说明，提示用户先检查网络。
+fn describe_updater_error(action: &str, error: &tauri_plugin_updater::Error) -> String {
+    if matches!(error, tauri_plugin_updater::Error::Reqwest(inner) if inner.is_timeout()) {
+        format!("{action}超时，请检查网络后重试")
+    } else {
+        format!("{action}失败: {error}")
+    }
+}
+
+/// 给一次更新包下载加上外层时限。插件自身的超时之外再兜一层，保证无论下载
+/// 卡在哪一步，调用方都能在时限内拿到中文错误。
+async fn download_update_bytes<F>(
+    deadline: std::time::Duration,
+    download: F,
+) -> Result<Vec<u8>, String>
+where
+    F: std::future::Future<Output = Result<Vec<u8>, String>>,
+{
+    tokio::time::timeout(deadline, download)
+        .await
+        .unwrap_or_else(|_| Err(UPDATE_DOWNLOAD_TIMEOUT_MESSAGE.to_string()))
+}
+
+/// 持暂存槽锁下载并暂存 `version` 的更新包；该版本已暂存时不会开始下载。
+///
+/// 锁只在本函数内持有：成功、失败或超时返回时都会释放，卡死的下载因此不会
+/// 让"立即更新"无限等待。下载 future 与时限由调用方注入，便于测试。
+async fn stage_update_bytes<F>(
+    slot: &tokio::sync::Mutex<StagedUpdate>,
+    version: &str,
+    deadline: std::time::Duration,
+    download: F,
+) -> Result<(), String>
+where
+    F: std::future::Future<Output = Result<Vec<u8>, String>>,
+{
+    let mut guard = slot.lock().await;
+    if guard.version.as_deref() == Some(version) && guard.bytes.is_some() {
+        return Ok(());
+    }
+    let bytes = download_update_bytes(deadline, download).await?;
+    guard.version = Some(version.to_string());
+    guard.bytes = Some(bytes);
+    Ok(())
+}
+
+/// 应用自更新会结束当前进程。Codex 安装或皮肤操作若正处于目录交换中途，被
+/// 打断后只能靠安装日志在下次启动时提示恢复，所以更新前先取得同一把运行时
+/// 操作锁，并一直持有到进程退出。
+async fn acquire_runtime_lock_for_update() -> Result<chimera_platform::lock::LockGuard, String> {
+    let acquired = tauri::async_runtime::spawn_blocking(|| {
+        super::codex_runtime::acquire_operation_lock("app_self_update")
+    })
+    .await;
+    match acquired {
+        Ok(Ok(guard)) => Ok(guard),
+        Ok(Err(reason)) => {
+            log::warn!("应用更新未取得 Codex 运行时操作锁: {reason}");
+            Err(UPDATE_BLOCKED_BY_RUNTIME_MESSAGE.to_string())
+        }
+        Err(error) => {
+            log::warn!("等待 Codex 运行时操作锁的任务中断: {error}");
+            Err(UPDATE_BLOCKED_BY_RUNTIME_MESSAGE.to_string())
+        }
+    }
+}
+
 /// 后台下载更新包并暂存，让用户点"立即更新"时可以直接安装、不必等下载。
 ///
 /// 返回已暂存的版本号；无更新或未配置更新源时返回 `None`。整个下载过程持锁：
 /// 这样如果用户在暂存途中点了安装，`install_update_and_restart` 会等到这里
-/// 完成、直接复用这份字节，而不是并行再下一份。
+/// 完成、直接复用这份字节，而不是并行再下一份。下载有连接、空闲和总时长上限，
+/// 超时会释放锁并返回中文错误。
 #[tauri::command]
 pub async fn stage_update_download(
     app: AppHandle,
@@ -417,42 +521,43 @@ pub async fn stage_update_download(
         return Ok(None);
     }
 
-    let updater = app
-        .updater_builder()
-        .build()
-        .map_err(|e| format!("初始化更新器失败: {e}"))?;
+    let updater = bounded_updater(&app)?;
 
-    let Some(update) = updater
+    let Some(mut update) = updater
         .check()
         .await
-        .map_err(|e| format!("检查更新失败: {e}"))?
+        .map_err(|e| describe_updater_error("检查更新", &e))?
     else {
         // 已是最新：清掉可能残留的旧暂存，否则它会一直占着内存。
         *staged.0.lock().await = StagedUpdate::default();
         return Ok(None);
     };
+    update.timeout = Some(UPDATE_DOWNLOAD_TIMEOUT);
 
-    let mut guard = staged.0.lock().await;
-    if guard.version.as_deref() == Some(update.version.as_str()) && guard.bytes.is_some() {
-        return Ok(Some(update.version.clone()));
-    }
-
-    log::info!("后台暂存应用更新: {}", update.version);
-    let bytes = update
-        .download(
-            // 故意不发进度事件：用户没触发这次下载，界面上也没有进度条在等它。
-            // 13 MB 会产生数千次回调，逐块发 IPC 给零个监听者纯属浪费。安装时
-            // 复用这份字节的那条路径会补发一次 100% 的 update-download-progress。
-            |_chunk_len, _content_len| {},
-            || {},
-        )
-        .await
-        .map_err(|e| format!("下载更新失败: {e}"))?;
-
-    log::info!("✓ 更新包已暂存: {} ({} 字节)", update.version, bytes.len());
-    guard.version = Some(update.version.clone());
-    guard.bytes = Some(bytes);
-    Ok(Some(update.version))
+    // future 是惰性的：版本已暂存时 stage_update_bytes 直接返回，不会开始下载。
+    let download = async {
+        log::info!("后台暂存应用更新: {}", update.version);
+        let bytes = update
+            .download(
+                // 故意不发进度事件：用户没触发这次下载，界面上也没有进度条在等它。
+                // 13 MB 会产生数千次回调，逐块发 IPC 给零个监听者纯属浪费。安装时
+                // 复用这份字节的那条路径会补发一次 100% 的 update-download-progress。
+                |_chunk_len, _content_len| {},
+                || {},
+            )
+            .await
+            .map_err(|e| describe_updater_error("下载更新", &e))?;
+        log::info!("✓ 更新包已暂存: {} ({} 字节)", update.version, bytes.len());
+        Ok::<Vec<u8>, String>(bytes)
+    };
+    stage_update_bytes(
+        &staged.0,
+        &update.version,
+        UPDATE_DOWNLOAD_TIMEOUT,
+        download,
+    )
+    .await?;
+    Ok(Some(update.version.clone()))
 }
 
 /// 下载并安装应用更新，然后由后端直接重启应用。
@@ -474,21 +579,19 @@ pub async fn install_update_and_restart(
         return Err("Chimera++ update source is not configured".to_string());
     }
 
-    let updater = app
-        .updater_builder()
-        .build()
-        .map_err(|e| format!("初始化更新器失败: {e}"))?;
+    let updater = bounded_updater(&app)?;
 
-    let Some(update) = updater
+    let Some(mut update) = updater
         .check()
         .await
-        .map_err(|e| format!("检查更新失败: {e}"))?
+        .map_err(|e| describe_updater_error("检查更新", &e))?
     else {
         return Ok(false);
     };
+    update.timeout = Some(UPDATE_DOWNLOAD_TIMEOUT);
 
     // 复用后台暂存的字节（如果版本对得上）。持锁等待意味着：若暂存正在进行，
-    // 这里会等它下完再直接用，而不是并行下载第二份。
+    // 这里会等它下完再直接用，而不是并行下载第二份；暂存下载有时限，不会无限等待。
     let mut guard = staged.0.lock().await;
     let staged_bytes = take_staged_bytes(&mut guard, &update.version);
     drop(guard);
@@ -515,22 +618,37 @@ pub async fn install_update_and_restart(
             log::info!("开始下载应用更新: {}", update.version);
             let progress_handle = app.clone();
             let mut downloaded: u64 = 0;
-            update
-                .download(
-                    move |chunk_len, content_len| {
-                        downloaded = downloaded.saturating_add(chunk_len as u64);
-                        let _ = progress_handle.emit(
-                            "update-download-progress",
-                            UpdateDownloadProgress {
-                                downloaded,
-                                total: content_len,
-                            },
-                        );
+            let on_chunk = move |chunk_len: usize, content_len: Option<u64>| {
+                downloaded = downloaded.saturating_add(chunk_len as u64);
+                let _ = progress_handle.emit(
+                    "update-download-progress",
+                    UpdateDownloadProgress {
+                        downloaded,
+                        total: content_len,
                     },
-                    || {},
-                )
-                .await
-                .map_err(|e| format!("下载更新失败: {e}"))?
+                );
+            };
+            let download = async {
+                update
+                    .download(on_chunk, || {})
+                    .await
+                    .map_err(|e| describe_updater_error("下载更新", &e))
+            };
+            download_update_bytes(UPDATE_DOWNLOAD_TIMEOUT, download).await?
+        }
+    };
+
+    // 安装会结束当前进程：先取得 Codex 运行时操作锁并持有到进程退出，避免打断
+    // 正在交换目录的 Codex 安装或皮肤操作。锁在安装包就绪后才取，下载期间不会
+    // 挡住“打开 Codex”等操作。取锁失败时尚未做任何退出清理；已验证的安装包放回
+    // 暂存槽，操作结束后重试无需重新下载。
+    let _runtime_guard = match acquire_runtime_lock_for_update().await {
+        Ok(guard) => guard,
+        Err(message) => {
+            let mut slot = staged.0.lock().await;
+            slot.version = Some(update.version.clone());
+            slot.bytes = Some(bytes);
+            return Err(message);
         }
     };
 
@@ -549,6 +667,12 @@ pub async fn install_update_and_restart(
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         update.install(bytes).map_err(|e| {
             crate::codex_accounts::login::resume_after_failed_shutdown();
+            // 安装器没有接手，进程会继续运行：把退出前摘掉的托盘图标放回来。
+            if let Some(tray) = app.tray_by_id(crate::tray::TRAY_ID) {
+                if let Err(error) = tray.set_visible(true) {
+                    log::warn!("更新安装失败后恢复托盘图标失败: {error}");
+                }
+            }
             format!(
                 "Windows 更新安装失败: {e}。已执行退出前清理，代理或 Live 接管可能已暂停；请重启应用或重新开启代理后再试。"
             )
@@ -583,15 +707,130 @@ pub async fn check_app_update_available(app: AppHandle) -> Result<Option<String>
         return Ok(None);
     }
 
-    let updater = app
-        .updater_builder()
-        .build()
-        .map_err(|e| format!("初始化更新器失败: {e}"))?;
+    let updater = bounded_updater(&app)?;
     let update = updater
         .check()
         .await
-        .map_err(|e| format!("检查更新失败: {e}"))?;
+        .map_err(|e| describe_updater_error("检查更新", &e))?;
     Ok(update.map(|u| u.version))
+}
+
+#[cfg(test)]
+mod update_tests {
+    use super::{download_update_bytes, stage_update_bytes, StagedUpdate};
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn a_stalled_staging_download_times_out_and_releases_the_slot() {
+        let slot = tokio::sync::Mutex::new(StagedUpdate::default());
+        let error = stage_update_bytes(
+            &slot,
+            "2.8.5",
+            Duration::from_millis(50),
+            std::future::pending::<Result<Vec<u8>, String>>(),
+        )
+        .await
+        .expect_err("a download that never completes must time out");
+        assert_eq!(error, super::UPDATE_DOWNLOAD_TIMEOUT_MESSAGE);
+        let guard = slot
+            .try_lock()
+            .expect("the staging lock is released after the timeout");
+        assert!(guard.version.is_none() && guard.bytes.is_none());
+    }
+
+    #[tokio::test]
+    async fn staging_stores_new_bytes_and_skips_an_already_staged_version() {
+        let slot = tokio::sync::Mutex::new(StagedUpdate::default());
+        stage_update_bytes(
+            &slot,
+            "2.8.5",
+            Duration::from_secs(5),
+            std::future::ready(Ok::<Vec<u8>, String>(vec![1, 2, 3])),
+        )
+        .await
+        .expect("the download completes");
+        // A second call for the same version must not use its download at all.
+        stage_update_bytes(
+            &slot,
+            "2.8.5",
+            Duration::from_secs(5),
+            std::future::ready(Err::<Vec<u8>, String>(
+                "the download must not run".to_string(),
+            )),
+        )
+        .await
+        .expect("an already staged version is reused");
+        let guard = slot.try_lock().expect("the staging lock is released");
+        assert_eq!(guard.version.as_deref(), Some("2.8.5"));
+        assert_eq!(guard.bytes.as_deref(), Some(&[1_u8, 2, 3][..]));
+    }
+
+    #[tokio::test]
+    async fn download_failures_and_timeouts_surface_as_chinese_errors() {
+        let error = download_update_bytes(
+            Duration::from_millis(50),
+            std::future::pending::<Result<Vec<u8>, String>>(),
+        )
+        .await
+        .expect_err("a stalled download times out");
+        assert_eq!(error, "更新下载超时，请检查网络后重试");
+        let slot = tokio::sync::Mutex::new(StagedUpdate::default());
+        let error = stage_update_bytes(
+            &slot,
+            "2.8.5",
+            Duration::from_secs(5),
+            std::future::ready(Err::<Vec<u8>, String>("下载更新失败: 404".to_string())),
+        )
+        .await
+        .expect_err("a failed download is reported");
+        assert_eq!(error, "下载更新失败: 404");
+        assert!(slot.try_lock().is_ok_and(|guard| guard.bytes.is_none()));
+    }
+
+    #[test]
+    fn self_update_takes_the_codex_runtime_lock_before_any_exit_step() {
+        let body = include_str!("settings.rs")
+            .split("pub async fn install_update_and_restart(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("install_update_and_restart body");
+        let position = |step: &str| {
+            body.find(step)
+                .unwrap_or_else(|| panic!("missing step {step:?}"))
+        };
+        let lock = position("let _runtime_guard = match acquire_runtime_lock_for_update().await {");
+        // The lock is taken once the bytes are ready, so a slow download never
+        // blocks Codex runtime operations, and before every exit step.
+        assert!(position("take_staged_bytes(") < lock);
+        assert!(position(".download(") < lock);
+        for step in [
+            "save_window_state_before_exit(",
+            "cleanup_before_exit(",
+            "remove_tray_icon_before_exit(",
+            "destroy_single_instance_lock(",
+            ".install(bytes)",
+            "restart_process(",
+        ] {
+            assert!(
+                lock < position(step),
+                "{step:?} must come after the runtime lock"
+            );
+        }
+        // A busy lock returns before any cleanup and keeps the verified bytes.
+        let refusal = &body[lock..position("log::info!(\"开始安装应用更新")];
+        assert!(refusal.contains("slot.bytes = Some(bytes);"));
+        assert!(refusal.contains("return Err(message);"));
+        assert!(body.contains("UPDATE_DOWNLOAD_TIMEOUT"));
+        assert!(body.contains("bounded_updater(&app)?"));
+    }
+
+    #[test]
+    fn busy_runtime_lock_message_is_plain_chinese() {
+        assert_eq!(
+            super::UPDATE_BLOCKED_BY_RUNTIME_MESSAGE,
+            "Codex 安装或皮肤操作正在进行，完成后再更新 Chimera++"
+        );
+    }
 }
 
 /// 获取 app_config_dir 覆盖配置 (从 Store)
@@ -712,6 +951,39 @@ mod tests {
         for app in ["", "unknown", "Codex", "claude-desktop", "app"] {
             assert!(super::ConfigDirectoryPatch::new(app, Some("/config/tool".into())).is_err());
             assert!(super::ConfigDirectoryPatch::new(app, None).is_err());
+        }
+    }
+
+    /// A full save built from an older snapshot (directory D1, or none) must not
+    /// undo the directory D2 committed through the directory patch; that patch
+    /// remains the way to change it.
+    #[test]
+    fn full_save_keeps_directories_owned_by_directory_patches() {
+        for app in ["claude", "codex", "gemini", "grokbuild", "opencode"] {
+            let field = super::ConfigDirectoryPatch::new(app, None).unwrap().field;
+            let mut existing = AppSettings::default();
+            *field(&mut existing) = Some("/config/d2".into());
+
+            for stale in [Some("/config/d1".to_string()), None] {
+                let mut incoming = AppSettings {
+                    show_provider_balance: !existing.show_provider_balance,
+                    ..Default::default()
+                };
+                *field(&mut incoming) = stale;
+
+                let mut merged = merge_settings_for_save(incoming, &existing);
+                assert_eq!(field(&mut merged).as_deref(), Some("/config/d2"), "{app}");
+                // The rest of the payload still applies.
+                assert_eq!(
+                    merged.show_provider_balance, !existing.show_provider_balance,
+                    "{app}"
+                );
+
+                super::ConfigDirectoryPatch::new(app, Some("/config/d3".into()))
+                    .unwrap()
+                    .apply(&mut merged);
+                assert_eq!(field(&mut merged).as_deref(), Some("/config/d3"), "{app}");
+            }
         }
     }
 

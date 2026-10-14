@@ -34,7 +34,10 @@ describe("usage viewport layout", () => {
       (node) =>
         node.type === "rule" && node.selector === ".usage-analysis-grid",
     );
-    expect(rule?.toString()).toContain("minmax(278px, 0.52fr)");
+    // Chart flexes; the model ranking keeps a readable minimum width beside it.
+    expect(rule?.toString()).toContain(
+      "grid-template-columns: minmax(0, 1fr) minmax(260px, 0.5fr)",
+    );
     const compactColumns: string[] = [];
     usage.walkAtRules("media", (media) => {
       media.walkRules(".usage-analysis-grid", (grid) => {

@@ -25,6 +25,40 @@ use tauri_plugin_opener::OpenerExt;
 pub struct CodexRuntimeDiagnostic {
     pub name: String,
     pub result: String,
+    /// Stable lowercase reason code for a `warn`/`fail` item, e.g.
+    /// `not-installed`, `layout`, `executable`, `not-registered`,
+    /// `package-status`, `manifest`, `dependencies`, `launch`, `main-window`,
+    /// `timeout`, `probe`, `permissions`, `signature`. Omitted when passing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// One plain-Chinese sentence with the specific reason and the next step.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+impl CodexRuntimeDiagnostic {
+    fn new(name: &str, result: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            result: result.to_string(),
+            kind: None,
+            detail: None,
+        }
+    }
+
+    fn check(name: &str, passed: bool) -> Self {
+        Self::new(name, if passed { "pass" } else { "fail" })
+    }
+
+    /// Attach the reason. A passing item never carries one, so the renderer
+    /// can treat a present `detail` as authoritative.
+    fn because(mut self, kind: &str, detail: impl Into<String>) -> Self {
+        if self.result != "pass" {
+            self.kind = Some(kind.to_string());
+            self.detail = Some(detail.into());
+        }
+        self
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -552,13 +586,149 @@ fn wait_for_codex_stopped(
     Ok(false)
 }
 
+/// The engine's launch-target file. The engine only exports its name on
+/// Windows, but the layout check below must run (and be tested) everywhere.
+const PORTABLE_LAUNCH_TARGET_FILE: &str = "codex-portable-launcher.txt";
+
+const NESTED_PORTABLE_LAYOUT_MESSAGE: &str = "这个免安装版目录已被其他工具更新为新的目录结构（官方文件位于 app 子目录），当前版本的 Chimera++ 无法直接启动它。请在“Codex 管理”中执行“修复”，重新安装为兼容的结构；或在设置中更换免安装版目录。";
+
+/// Whether another tool rewrote this portable install into the nested
+/// layout (official files under `app\`, launcher stubs in the root).
+///
+/// Newer upstream engines use that layout and may share our default
+/// directory. The pinned engine resolves the root stub as the Codex
+/// executable, so `ensure_portable_launcher` would fail with upstream-branded
+/// advice — or, worse, overwrite the other tool's launcher files. Detect it
+/// first and explain the way out instead.
+fn portable_layout_is_nested(root: &Path) -> bool {
+    if !root.join("app").is_dir() {
+        return false;
+    }
+    let Ok(config) = std::fs::read_to_string(root.join(PORTABLE_LAUNCH_TARGET_FILE)) else {
+        return false;
+    };
+    let target = config
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .trim_start_matches('\u{feff}')
+        .trim()
+        .to_ascii_lowercase();
+    target.starts_with("app\\") || target.starts_with("app/")
+}
+
+/// Upstream-branded and English failures the pinned engine reports, paired
+/// with a plain-Chinese reason and next step. Patterns are lowercase.
+const KNOWN_ENGINE_FAILURES: &[(&[&str], &str)] = &[
+    (
+        &["missing its bundled cli"],
+        "Codex 免安装版缺少内置的命令行组件（resources\\codex.exe），无法启动。请在“Codex 管理”中执行“修复”重新安装。",
+    ),
+    (
+        &["invalid portable launch target", "invalid portable executable name"],
+        "Codex 免安装版的启动配置无效。请在“Codex 管理”中执行“修复”重新安装。",
+    ),
+    (
+        &["write portable launch target", "write portable launcher"],
+        "无法写入 Codex 免安装版启动器，安装目录可能只读或文件正被占用。请关闭 Codex 后重试；仍然失败时在“Codex 管理”中执行“修复”。",
+    ),
+    (
+        &["no portable app executable", "no app entry executable"],
+        "免安装版目录中找不到 Codex 主程序。请在“Codex 管理”中执行“修复”重新安装，或在设置中确认免安装版目录。",
+    ),
+    (
+        &["(startup-dialog)"],
+        "Codex 启动时弹出了错误对话框，没有正常打开。请在“Codex 管理”中运行诊断；如需改用免安装版，请在安装方式中选择后重新安装。",
+    ),
+    (
+        &["(main-window-timeout)"],
+        "Codex 已经启动，但 30 秒内没有出现稳定的主窗口。请检查 Codex 窗口，或在“Codex 管理”中运行诊断。",
+    ),
+    (
+        &["(immediate-exit)", "exited immediately after launch"],
+        "Codex 启动后立即退出。请在“Codex 管理”中运行诊断，必要时执行“修复”。",
+    ),
+    (
+        &["(activation-failed)"],
+        "Windows 没能启动 Codex 标准安装。请在“Codex 管理”中运行诊断；问题持续时可执行“修复”，或改用免安装版重新安装。",
+    ),
+    (
+        &["codex is not installed", "registered codex package not found"],
+        "Windows 中没有找到已注册的 Codex 标准安装。请在“Codex 管理”中重新安装 Codex。",
+    ),
+];
+
+const ENGINE_FAILURE_NEXT_STEP: &str = "请在“Codex 管理”中运行诊断；问题持续时可执行“修复”。";
+
+/// Drop every sentence that names the upstream manager. Its advice
+/// ("Reinstall it with …", "automatically try the portable fallback") is
+/// wrong inside Chimera++, which never falls back silently.
+fn scrub_upstream_advice(raw: &str) -> String {
+    raw.split(". ")
+        .filter(|sentence| {
+            let lower = sentence.to_ascii_lowercase();
+            !(lower.contains("codex app manager")
+                || lower.contains("codexappmanager")
+                || lower.contains("codex-app-manager"))
+        })
+        .collect::<Vec<_>>()
+        .join(". ")
+        .trim()
+        .trim_end_matches(['.', '。'])
+        .to_string()
+}
+
+fn known_engine_failure(raw: &str) -> Option<&'static str> {
+    let lower = raw.to_ascii_lowercase();
+    KNOWN_ENGINE_FAILURES
+        .iter()
+        .find(|(patterns, _)| patterns.iter().any(|pattern| lower.contains(pattern)))
+        .map(|(_, message)| *message)
+}
+
+/// Reason only, for messages that already carry their own next step.
+fn engine_failure_reason(raw: &str) -> String {
+    known_engine_failure(raw)
+        .map(str::to_string)
+        .unwrap_or_else(|| scrub_upstream_advice(raw))
+}
+
+/// Plain-Chinese reason and next step for a failure reported by the Codex
+/// engine. Known failures become a fixed sentence; anything else keeps its
+/// text, minus upstream product advice, so diagnosis is still possible.
+/// Callers log the raw text before converting it.
+pub(crate) fn engine_error_message(raw: &str) -> String {
+    if let Some(message) = known_engine_failure(raw) {
+        return message.to_string();
+    }
+    let detail = scrub_upstream_advice(raw);
+    if detail.is_empty() {
+        ENGINE_FAILURE_NEXT_STEP.to_string()
+    } else {
+        format!("{detail}。{ENGINE_FAILURE_NEXT_STEP}")
+    }
+}
+
 fn portable_command_with_codex_home(
     root: &Path,
     codex_home: &Path,
     options: codex_win_engine::LaunchOptions,
 ) -> Result<Command, String> {
-    let launcher = codex_win_engine::portable::ensure_portable_launcher(root)
-        .map_err(|error| format!("无法准备 Codex 免安装版启动器: {error}"))?;
+    if portable_layout_is_nested(root) {
+        log::warn!(
+            "Codex 免安装版目录 {} 是嵌套布局（app\\），当前引擎无法直接启动",
+            root.display()
+        );
+        return Err(NESTED_PORTABLE_LAYOUT_MESSAGE.to_string());
+    }
+    let launcher = codex_win_engine::portable::ensure_portable_launcher(root).map_err(|error| {
+        let raw = error.to_string();
+        log::warn!("准备 Codex 免安装版启动器失败：{raw}");
+        format!(
+            "无法准备 Codex 免安装版启动器：{}",
+            engine_error_message(&raw)
+        )
+    })?;
     let mut command = Command::new(launcher);
     command
         .current_dir(root)
@@ -622,6 +792,7 @@ fn codex_main_window_ready(root: &Path, deadline: Instant) -> Result<bool, Strin
         "-NonInteractive",
         "-Command",
         r#"
+try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch { }
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path -LiteralPath $env:CHIMERA_CODEX_STARTUP_ROOT).ProviderPath.TrimEnd('\')
 $ids = @(Get-Process -Name Codex,ChatGPT -ErrorAction SilentlyContinue | ForEach-Object {
@@ -651,6 +822,8 @@ ConvertTo-Json -InputObject $ids -Compress
         }
     })?;
     if !output.status.success() {
+        let detail = crate::process_utils::decode_console_output(&output.stderr);
+        log::warn!("Codex 主窗口进程探测脚本失败：{}", detail.trim());
         return Err("Codex 主窗口进程探测失败，无法确认启动成功".to_string());
     }
     let pids: Vec<u32> = serde_json::from_slice(&output.stdout)
@@ -769,7 +942,7 @@ fn launch_portable_with_codex_home(
             Duration::from_millis(250).min(deadline.saturating_duration_since(Instant::now())),
         );
     }
-    Err("Codex 启动后未通过主窗口/渲染器就绪检查，请在更新页运行诊断".to_string())
+    Err("Codex 启动后未通过主窗口/渲染器就绪检查，请在“Codex 管理”中运行诊断".to_string())
 }
 
 fn launch_msix_with_codex_home(
@@ -784,7 +957,11 @@ fn launch_msix_with_codex_home(
     // cannot see a temporary Rust-side environment change. Start the shell
     // activation from PowerShell with CODEX_HOME explicitly present so the
     // activated Desktop process inherits the same config directory.
+    // The encoding line keeps Chinese error text readable; it fails silently
+    // under ConstrainedLanguage, where `decode_console_output` falls back to
+    // the OEM code page.
     let script = r#"
+try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch { }
 $ErrorActionPreference = 'Stop'
 $pkg = Get-AppxPackage -Name 'OpenAI.Codex' |
   Sort-Object -Property Version -Descending |
@@ -820,7 +997,9 @@ Start-Process ("shell:AppsFolder\" + $pkg.PackageFamilyName + "!" + $id)
     )
     .map_err(|error| format!("无法调用 PowerShell 启动 MSIX Codex: {error}"))?;
     if !output.status.success() {
-        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let detail = crate::process_utils::decode_console_output(&output.stderr)
+            .trim()
+            .to_string();
         return Err(if detail.is_empty() {
             format!("MSIX Codex 激活失败（退出码 {:?}）", output.status.code())
         } else {
@@ -874,18 +1053,24 @@ pub(crate) fn launch_codex_with_config(
             }
             log::warn!("环境注入的 MSIX Codex 启动失败，回退到系统激活：{error}");
             codex_win_engine::launch_codex_with_options(installed, options).map_err(|fallback| {
-                msix_launch_error(&format!("{error}；系统激活也失败：{fallback}"))
+                let raw = fallback.to_string();
+                log::warn!("系统激活 MSIX Codex 失败：{raw}");
+                msix_launch_error(&format!(
+                    "{error}；系统激活也失败：{}",
+                    engine_failure_reason(&raw)
+                ))
             })
         }
     }
 }
 
 fn msix_launch_error(detail: &str) -> String {
+    let detail = scrub_upstream_advice(detail);
     let normalized = detail.to_ascii_lowercase();
     if normalized.contains("80073d28") || normalized.contains("80073cf6") {
-        format!("Windows 无法注册或激活 Codex 安装包（打包服务可能需要管理员权限）。这不是线路配置损坏。请在更新页选择免安装版重新安装，或由管理员修复标准 MSIX 安装；无需删除 ~/.codex 会话与配置。原始错误：{detail}")
+        format!("Windows 无法注册或激活 Codex 安装包（打包服务可能需要管理员权限）。这不是线路配置损坏。请在“Codex 管理”中选择免安装版重新安装，或由管理员修复标准 MSIX 安装；无需删除 ~/.codex 会话与配置。原始错误：{detail}")
     } else {
-        format!("MSIX Codex 启动失败；请在更新页运行诊断或选择免安装版。原始错误：{detail}")
+        format!("MSIX Codex 启动失败；请在“Codex 管理”中运行诊断或选择免安装版。原始错误：{detail}")
     }
 }
 
@@ -1026,7 +1211,7 @@ pub async fn restart_codex_for_model_catalog(confirm: bool) -> Result<CodexLaunc
         launch_codex_with_config(&installed, renderer_unlock_launch_options(&installed))?;
         let running = wait_for_codex_running(&installed)?;
         if !running {
-            return Err("Codex 重启后未保持运行，请在更新页运行诊断".to_string());
+            return Err("Codex 重启后未保持运行，请在“Codex 管理”中运行诊断".to_string());
         }
         let model_unlock = renderer_unlock_status(&installed);
         Ok(launch_result(was_running, running, model_unlock))
@@ -1164,7 +1349,7 @@ pub async fn open_codex_runtime(
         }
         let running = wait_for_codex_running(&installed)?;
         if !running {
-            return Err("Codex 启动后未保持运行，请在更新页运行诊断".to_string());
+            return Err("Codex 启动后未保持运行，请在“Codex 管理”中运行诊断".to_string());
         }
         let model_unlock = renderer_unlock_status(&installed);
         Ok(launch_result(was_running, running, model_unlock))
@@ -1307,12 +1492,27 @@ fn install_journal_observer<'a>(
     }
 }
 
+/// Forward package download progress to the renderer. The event name and
+/// `{ downloaded, total }` payload are unchanged; the downloader throttles calls.
+fn runtime_download_progress(
+    app: &AppHandle,
+    total: u64,
+) -> crate::services::bounded_download::ProgressCallback {
+    let app = app.clone();
+    std::sync::Arc::new(move |downloaded: u64| {
+        let _ = app.emit(
+            "codex-runtime-download-progress",
+            serde_json::json!({ "downloaded": downloaded, "total": total }),
+        );
+    })
+}
+
 fn install_runtime_release_with_observer(
     plan: &WindowsReleasePlan,
     install_mode: InstallMode,
     staging_root: &Path,
     portable_root: &Path,
-    on_progress: &dyn Fn(u64),
+    on_progress: crate::services::bounded_download::ProgressCallback,
     observer: &mut dyn FnMut(
         codex_win_engine::PortableBoundary,
     ) -> Result<(), codex_win_engine::EngineError>,
@@ -1325,19 +1525,24 @@ fn install_runtime_release_with_observer(
     }
     std::fs::create_dir_all(staging_root).map_err(|error| format!("创建暂存目录失败: {error}"))?;
     let package_path = staging_root.join(format!("{}.Msix", plan.package_moniker));
-    let network = crate::proxy::http_client::get_current_proxy_url()
-        .map(codex_win_engine::NetworkConfig::custom)
-        .unwrap_or_else(codex_win_engine::NetworkConfig::direct);
     let result = (|| {
-        codex_win_engine::download_to_with_progress_bounded_with_network(
-            &plan.package_url,
-            &package_path,
+        // Same client, proxy and TLS stack as the update check: the app proxy
+        // when one is set, otherwise the system proxy. This runs on the
+        // blocking thread that holds the runtime operation lock, so the
+        // runtime lock also covers the download.
+        crate::services::bounded_download::download_to_file_blocking(
+            crate::proxy::http_client::get(),
+            plan.package_url.clone(),
+            package_path.clone(),
             plan.size_bytes,
+            crate::services::bounded_download::DownloadOptions::default(),
             on_progress,
-            &network,
         )
         .map_err(|error| {
-            format!("下载安装包失败，请检查网络与应用代理设置，或使用离线安装：{error}")
+            format!(
+                "下载 Codex 安装包失败：{error}。当前网络：{}。请检查网络，或在设置中调整应用代理后重试；也可以使用离线安装。",
+                crate::proxy::http_client::describe_network_mode()
+            )
         })?;
         verify_staged_runtime_package(plan, &package_path)?;
         let mut notes = Vec::new();
@@ -1360,7 +1565,11 @@ fn install_runtime_release_with_observer(
                 .map_err(|error| format!("无法关闭 Codex，安装已中止：{error}"))?;
             let report =
                 codex_win_engine::install_msix_sideload(&package_path, &plan.package_moniker)
-                    .map_err(|error| msix_launch_error(&error.to_string()))?;
+                    .map_err(|error| {
+                        let raw = error.to_string();
+                        log::warn!("注册 Codex MSIX 安装包失败：{raw}");
+                        msix_launch_error(&engine_failure_reason(&raw))
+                    })?;
             if report.success && verify_msix_health_with_main_window(portable_root).healthy {
                 return Ok(CodexRuntimeOperation {
                     version: plan.version.clone(),
@@ -1372,7 +1581,7 @@ fn install_runtime_release_with_observer(
                     notes,
                 });
             }
-            return Err("Codex MSIX 安装完成但启动健康检查未通过；为避免无程序包标识符错误，未回退到免安装版。请在更新页运行诊断或由管理员修复 MSIX。".to_string());
+            return Err("Codex MSIX 安装完成但启动健康检查未通过；为避免无程序包标识符错误，未回退到免安装版。请在“Codex 管理”中运行诊断或由管理员修复 MSIX。".to_string());
         }
         let report = codex_win_engine::install_portable_from_msix_with_observer(
             &package_path,
@@ -1381,7 +1590,11 @@ fn install_runtime_release_with_observer(
             false,
             observer,
         )
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| {
+            let raw = error.to_string();
+            log::warn!("安装 Codex 免安装版失败：{raw}");
+            format!("安装 Codex 免安装版失败：{}", engine_error_message(&raw))
+        })?;
         notes.extend(report.notes);
         Ok(CodexRuntimeOperation {
             version: report.version,
@@ -1565,12 +1778,12 @@ fn verify_msix_health_with_main_window(portable_root: &Path) -> codex_win_engine
     let ready = (|| -> Result<(), String> {
         let installed = detect_windows_codex(portable_root)
             .filter(|installed| installed.install_mode == "standard")
-            .ok_or_else(|| "MSIX installation could not be located".to_string())?;
+            .ok_or_else(|| "找不到 Codex 标准安装的位置".to_string())?;
         let executable = msix_app_exe(Path::new(&installed.path))
-            .ok_or_else(|| "MSIX executable could not be located".to_string())?;
+            .ok_or_else(|| "找不到 Codex 标准安装的主程序".to_string())?;
         let root = executable
             .parent()
-            .ok_or_else(|| "Invalid MSIX executable path".to_string())?;
+            .ok_or_else(|| "Codex 标准安装的主程序路径无效".to_string())?;
         let deadline = Instant::now() + Duration::from_secs(30);
         let mut visible_since: Option<Instant> = None;
         while Instant::now() < deadline {
@@ -1592,7 +1805,7 @@ fn verify_msix_health_with_main_window(portable_root: &Path) -> codex_win_engine
                 Duration::from_millis(250).min(deadline.saturating_duration_since(Instant::now())),
             );
         }
-        Err("Codex MSIX main window did not become stably visible".to_string())
+        Err("Codex 启动后 30 秒内没有出现稳定的主窗口".to_string())
     })();
     if let Err(reason) = ready {
         health.healthy = false;
@@ -1603,77 +1816,180 @@ fn verify_msix_health_with_main_window(portable_root: &Path) -> codex_win_engine
     health
 }
 
+const REINSTALL_NEXT_STEP: &str = "请在“Codex 管理”中执行“修复”重新安装。";
+const NOT_REGISTERED_DETAIL: &str =
+    "Windows 中没有找到已注册的 Codex 安装包。请在“Codex 管理”中执行“修复”重新安装。";
+
+/// Reason code and plain-Chinese explanation for an unhealthy MSIX report.
+/// `failure_kind` carries the engine's `msix_failure` codes plus the
+/// wrapper's own `window-not-ready`.
+fn msix_failure_reason(health: &codex_win_engine::MsixHealthReport) -> (&'static str, String) {
+    match health.failure_kind.as_str() {
+        "not-registered" => ("not-registered", NOT_REGISTERED_DETAIL.to_string()),
+        "status-bad" => ("package-status", msix_status_detail(&health.status)),
+        "aumid-unresolved" => (
+            "manifest",
+            format!("无法从安装包清单中找到 Codex 的启动入口。{REINSTALL_NEXT_STEP}"),
+        ),
+        "missing-dependencies" => (
+            "dependencies",
+            missing_dependencies_detail(&health.missing_dependencies),
+        ),
+        "policy" => (
+            "permissions",
+            "系统策略不允许运行 Codex 标准安装。请联系管理员调整策略，或改用免安装版重新安装。"
+                .to_string(),
+        ),
+        "timeout" => (
+            "timeout",
+            "启动检查超时，系统繁忙时也可能发生。请稍后重新诊断；仍然超时可在“Codex 管理”中执行“修复”。"
+                .to_string(),
+        ),
+        "probe-failed" => (
+            "probe",
+            "启动检查无法运行（PowerShell 不可用或受系统策略限制），无法确认 Codex 能否启动；这不一定代表安装损坏，可以直接打开 Codex 确认。"
+                .to_string(),
+        ),
+        "window-not-ready" => {
+            let reason = health.reason.trim().trim_end_matches(['。', '.']);
+            let reason = if reason.is_empty() {
+                "Codex 启动后没有出现稳定的主窗口"
+            } else {
+                reason
+            };
+            (
+                "main-window",
+                format!("启动检查未通过：{reason}。问题持续时请在“Codex 管理”中执行“修复”，或改用免安装版重新安装。"),
+            )
+        }
+        "immediate-exit" => (
+            "launch",
+            "Codex 启动后立即退出。请在“Codex 管理”中执行“修复”；问题持续时可改用免安装版重新安装。"
+                .to_string(),
+        ),
+        _ => (
+            "launch",
+            "Windows 没能启动 Codex 标准安装。请在“Codex 管理”中执行“修复”；问题持续时可改用免安装版重新安装。"
+                .to_string(),
+        ),
+    }
+}
+
+fn msix_status_detail(status: &str) -> String {
+    let status = status.trim();
+    if status.is_empty() {
+        format!("Windows 报告 Codex 安装包状态异常。{REINSTALL_NEXT_STEP}")
+    } else {
+        format!("Windows 报告 Codex 安装包状态异常（{status}）。{REINSTALL_NEXT_STEP}")
+    }
+}
+
+fn missing_dependencies_detail(missing: &[String]) -> String {
+    format!(
+        "缺少运行依赖：{}。请联网后在“Codex 管理”中执行“修复”，或改用免安装版重新安装。",
+        missing.join("、")
+    )
+}
+
+/// Map one MSIX health report onto the four standard-install checks, each
+/// with its own reason. Pure so the wording is testable without Windows.
+fn msix_health_diagnostics(
+    health: &codex_win_engine::MsixHealthReport,
+) -> Vec<CodexRuntimeDiagnostic> {
+    let integrity = CodexRuntimeDiagnostic::check(
+        "package integrity",
+        health.package_registered && health.status_ok,
+    );
+    let integrity = if health.package_registered {
+        integrity.because("package-status", msix_status_detail(&health.status))
+    } else {
+        integrity.because("not-registered", NOT_REGISTERED_DETAIL)
+    };
+    let registration =
+        CodexRuntimeDiagnostic::check("package registration", health.package_registered)
+            .because("not-registered", NOT_REGISTERED_DETAIL);
+    let dependencies =
+        CodexRuntimeDiagnostic::check("dependencies", health.missing_dependencies.is_empty())
+            .because(
+                "dependencies",
+                missing_dependencies_detail(&health.missing_dependencies),
+            );
+    let launch_result = if health.healthy {
+        "pass"
+    } else if health.verified {
+        "fail"
+    } else {
+        "warn"
+    };
+    let (kind, detail) = msix_failure_reason(health);
+    let launch = CodexRuntimeDiagnostic::new("launch", launch_result).because(kind, detail);
+    vec![integrity, registration, dependencies, launch]
+}
+
+/// Attach reasons to the portable checks produced by the runtime crate.
+fn portable_runtime_diagnostic(
+    entry: chimera_runtime::manager::ManagerDiagnostic,
+) -> CodexRuntimeDiagnostic {
+    let diagnostic = CodexRuntimeDiagnostic::new(&entry.name, &entry.result);
+    match entry.name.as_str() {
+        "package signature" => diagnostic.because(
+            "signature",
+            "免安装版提取后不再携带可独立验证的安装包签名；安装前已验证过 OpenAI 发行者签名，不影响使用。",
+        ),
+        "ownership" => diagnostic.because(
+            "permissions",
+            "无法确认这个免安装版目录由 Chimera++ 管理。请在设置中确认免安装版目录，或在“Codex 管理”中执行“修复”。",
+        ),
+        _ => diagnostic,
+    }
+}
+
 /// Run installation diagnostics without killing a running Codex install.
 ///
 /// The shared runtime helper activates MSIX and closes the probe instance. For
 /// the standard install mode we use the keep-running variant here so the user's
 /// live Codex session survives a diagnostic run.
-fn diagnose_windows_codex_non_destructive(
-    portable_root: &Path,
-) -> Vec<chimera_runtime::manager::ManagerDiagnostic> {
-    use chimera_runtime::manager::ManagerDiagnostic;
-
+fn diagnose_windows_codex_non_destructive(portable_root: &Path) -> Vec<CodexRuntimeDiagnostic> {
     let Some(installed) = detect_windows_codex(portable_root) else {
-        return vec![ManagerDiagnostic {
-            name: "installation".to_string(),
-            result: "fail".to_string(),
-        }];
+        return vec![CodexRuntimeDiagnostic::new("installation", "fail").because(
+            "not-installed",
+            "没有检测到 Codex 标准版或免安装版。请在“Codex 管理”中安装 Codex；如果使用免安装版，请在设置中确认免安装版目录。",
+        )];
     };
-    let executable = if installed.install_mode == "standard" {
-        msix_app_exe(Path::new(&installed.path))
-    } else {
-        codex_win_engine::installed_app_exe(Path::new(&installed.path))
-    };
-    let mut diagnostics = vec![ManagerDiagnostic {
-        name: "executable".to_string(),
-        result: if executable.is_some() { "pass" } else { "fail" }.to_string(),
-    }];
+    let install_root = Path::new(&installed.path);
     if installed.install_mode != "standard" {
-        diagnostics.extend(diagnose_windows_codex(portable_root).into_iter().skip(1));
+        // A root launcher stub would otherwise pass as "the executable".
+        let executable = if portable_layout_is_nested(install_root) {
+            CodexRuntimeDiagnostic::check("executable", false)
+                .because("layout", NESTED_PORTABLE_LAYOUT_MESSAGE)
+        } else {
+            CodexRuntimeDiagnostic::check(
+                "executable",
+                codex_win_engine::installed_app_exe(install_root).is_some(),
+            )
+            .because(
+                "executable",
+                "免安装版目录中找不到 Codex 主程序。请在“Codex 管理”中执行“修复”重新安装，或在设置中确认免安装版目录。",
+            )
+        };
+        let mut diagnostics = vec![executable];
+        diagnostics.extend(
+            diagnose_windows_codex(portable_root)
+                .into_iter()
+                .skip(1)
+                .map(portable_runtime_diagnostic),
+        );
         return diagnostics;
     }
 
+    let executable_found = msix_app_exe(install_root).is_some();
+    let executable = CodexRuntimeDiagnostic::check("executable", executable_found).because(
+        "executable",
+        format!("找不到 Codex 标准安装的主程序文件。{REINSTALL_NEXT_STEP}"),
+    );
+    let mut diagnostics = vec![executable];
     let health = verify_msix_health_with_main_window(portable_root);
-    diagnostics.extend([
-        ManagerDiagnostic {
-            name: "package integrity".to_string(),
-            result: if health.package_registered && health.status_ok {
-                "pass"
-            } else {
-                "fail"
-            }
-            .to_string(),
-        },
-        ManagerDiagnostic {
-            name: "package registration".to_string(),
-            result: if health.package_registered {
-                "pass"
-            } else {
-                "fail"
-            }
-            .to_string(),
-        },
-        ManagerDiagnostic {
-            name: "dependencies".to_string(),
-            result: if health.missing_dependencies.is_empty() {
-                "pass"
-            } else {
-                "fail"
-            }
-            .to_string(),
-        },
-        ManagerDiagnostic {
-            name: "launch".to_string(),
-            result: if health.healthy {
-                "pass"
-            } else if health.verified {
-                "fail"
-            } else {
-                "warn"
-            }
-            .to_string(),
-        },
-    ]);
+    diagnostics.extend(msix_health_diagnostics(&health));
     diagnostics
 }
 
@@ -1685,13 +2001,7 @@ pub async fn diagnose_codex_runtime() -> Result<Vec<CodexRuntimeDiagnostic>, Str
     let portable_root = portable_root()?;
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = acquire_operation_lock("codex_runtime_diagnose")?;
-        Ok(diagnose_windows_codex_non_destructive(&portable_root)
-            .into_iter()
-            .map(|entry| CodexRuntimeDiagnostic {
-                name: entry.name,
-                result: entry.result,
-            })
-            .collect())
+        Ok(diagnose_windows_codex_non_destructive(&portable_root))
     })
     .await
     .map_err(|_| "Codex 诊断任务中断".to_string())?
@@ -1718,14 +2028,7 @@ async fn install_release(
         {
             return Err("确认后可用版本发生变化，请重新检查更新".to_string());
         }
-        let total = plan.size_bytes;
-        let progress_app = app.clone();
-        let progress = move |downloaded: u64| {
-            let _ = progress_app.emit(
-                "codex-runtime-download-progress",
-                serde_json::json!({ "downloaded": downloaded, "total": total }),
-            );
-        };
+        let progress = runtime_download_progress(&app, plan.size_bytes);
         // 安装事务日志（TASK-007）：破坏性操作前落盘，崩溃后启动时可发现。
         let journal = InstallJournal::at(&root);
         let journal_id = journal
@@ -1742,7 +2045,7 @@ async fn install_release(
             install_mode,
             &root.join("downloads"),
             &portable_root,
-            &progress,
+            progress,
             &mut observer,
         );
         match &result {
@@ -1793,6 +2096,26 @@ pub async fn repair_codex_runtime(
     .await
 }
 
+/// Plain-Chinese text for maintenance failures from the runtime crate, whose
+/// messages are English. The original text stays in the log.
+fn maintenance_error_message(
+    failed: &str,
+    error: &chimera_runtime::manager::ManagerError,
+) -> String {
+    use chimera_runtime::manager::ManagerError;
+    log::warn!("{failed}：{error}");
+    match error {
+        ManagerError::NotInstalled => format!("{failed}：未检测到 Codex 安装。"),
+        ManagerError::NoRollback => format!(
+            "{failed}：没有可用的回滚备份。只有通过 Chimera++ 更新过的免安装版才会保留上一个版本。"
+        ),
+        ManagerError::Maintenance => format!(
+            "{failed}：Codex 可能仍在运行，或安装目录被占用、没有写入权限。请关闭 Codex 后重试；问题持续时在“Codex 管理”中运行诊断。"
+        ),
+        other => format!("{failed}：{other}。{ENGINE_FAILURE_NEXT_STEP}"),
+    }
+}
+
 /// Restore the latest portable backup. Standard MSIX has no local rollback slot.
 #[tauri::command]
 pub async fn rollback_codex_runtime(confirm: bool) -> Result<CodexRuntimeOperation, String> {
@@ -1808,7 +2131,7 @@ pub async fn rollback_codex_runtime(confirm: bool) -> Result<CodexRuntimeOperati
                 }
                 rollback_portable_install(&portable_root)
                     .map(operation_dto)
-                    .map_err(|error| error.to_string())
+                    .map_err(|error| maintenance_error_message("回滚 Codex 失败", &error))
             }
             // The install root can go missing if a portable install/update was
             // interrupted (crash, forced exit, power loss) between "move
@@ -1860,7 +2183,7 @@ pub async fn uninstall_codex_runtime(confirm: bool) -> Result<CodexRuntimeOperat
         let _guard = acquire_operation_lock("codex_runtime_uninstall")?;
         uninstall_windows_codex(&portable_root)
             .map(operation_dto)
-            .map_err(|error| error.to_string())
+            .map_err(|error| maintenance_error_message("卸载 Codex 失败", &error))
     })
     .await
     .map_err(|_| "Codex 卸载任务中断，请运行诊断".to_string())?
@@ -2215,21 +2538,14 @@ pub async fn install_codex_runtime_release(
                 Some(&plan.sha256),
             )
             .map_err(|error| format!("写入安装事务日志失败，已中止安装: {error}"))?;
-        let total = plan.size_bytes;
-        let progress_app = app.clone();
-        let progress = move |downloaded: u64| {
-            let _ = progress_app.emit(
-                "codex-runtime-download-progress",
-                serde_json::json!({ "downloaded": downloaded, "total": total }),
-            );
-        };
+        let progress = runtime_download_progress(&app, plan.size_bytes);
         let mut observer = install_journal_observer(&journal, &journal_id);
         let result = install_runtime_release_with_observer(
             &plan,
             install_mode,
             &root.join("downloads"),
             &portable_root,
-            &progress,
+            progress,
             &mut observer,
         );
         match &result {
@@ -2445,8 +2761,12 @@ pub async fn install_codex_runtime_offline(
                 })
             }
             Err(error) => {
-                let _ = journal.finish(&journal_id, "failed", Some(error.to_string()));
-                Err(format!("离线安装失败: {error}"))
+                // The journal keeps the engine's own text for diagnosis; the
+                // user sees the plain-Chinese reason and next step.
+                let raw = error.to_string();
+                log::warn!("离线安装 Codex 失败：{raw}");
+                let _ = journal.finish(&journal_id, "failed", Some(raw.clone()));
+                Err(format!("离线安装失败：{}", engine_error_message(&raw)))
             }
         }
     })
@@ -3136,6 +3456,335 @@ mod tests {
         assert!(replaced_new.exists(), "newest replaced-* must survive");
         assert!(!rollback_old.exists(), "older rollback-* should be pruned");
         assert!(!replaced_old.exists(), "older replaced-* should be pruned");
+    }
+
+    // ── Engine error wording ─────────────────────────────────────────────
+
+    #[test]
+    fn engine_errors_become_plain_chinese_without_upstream_names() {
+        for (raw, expected) in [
+            (
+                "io error: configure portable launch: Portable Codex is missing its bundled CLI (resources/codex.exe). Reinstall it with Codex App Manager.",
+                "缺少内置的命令行组件",
+            ),
+            (
+                "Invalid portable launch target. Reinstall with Codex App Manager.",
+                "启动配置无效",
+            ),
+            (
+                "io error: write portable launcher: Access is denied. (os error 5)",
+                "无法写入 Codex 免安装版启动器",
+            ),
+            (
+                "install error: no portable app executable in C:\\Codex",
+                "找不到 Codex 主程序",
+            ),
+            (
+                "io error: Codex exited immediately after launch (exit=1)",
+                "立即退出",
+            ),
+            (
+                "MSIX Codex failed to start (startup-dialog): The process has no package identity. Reinstall this version in Codex App Manager to verify startup and automatically try the portable fallback.",
+                "错误对话框",
+            ),
+            (
+                "MSIX Codex failed to start (main-window-timeout): no stable window",
+                "稳定的主窗口",
+            ),
+            (
+                "MSIX Codex failed to start (activation-failed): 0x80004005",
+                "没能启动 Codex 标准安装",
+            ),
+            (
+                "install error: Codex is not installed",
+                "没有找到已注册的 Codex 标准安装",
+            ),
+        ] {
+            let message = super::engine_error_message(raw);
+            assert!(message.contains(expected), "{raw} -> {message}");
+            assert!(message.contains("“Codex 管理”"), "{raw} -> {message}");
+            assert!(!message.contains("Manager"), "{raw} -> {message}");
+            assert!(!message.contains("Reinstall"), "{raw} -> {message}");
+            assert!(!message.contains("fallback"), "{raw} -> {message}");
+        }
+    }
+
+    #[test]
+    fn unknown_engine_errors_keep_their_detail_but_drop_upstream_advice() {
+        let message = super::engine_error_message(
+            "install error: rename staging failed (os error 32). Reinstall it with Codex App Manager.",
+        );
+        assert!(
+            message.starts_with("install error: rename staging failed (os error 32)。"),
+            "{message}"
+        );
+        assert!(!message.contains("Manager"), "{message}");
+        assert!(
+            message.ends_with("请在“Codex 管理”中运行诊断；问题持续时可执行“修复”。"),
+            "{message}"
+        );
+        assert_eq!(
+            super::engine_error_message("Reinstall it with Codex App Manager."),
+            "请在“Codex 管理”中运行诊断；问题持续时可执行“修复”。"
+        );
+        // Composite MSIX messages keep the HRESULT that selects the advice.
+        let launch = super::msix_launch_error(
+            "0x80073CF6. Reinstall this version in Codex App Manager to verify startup",
+        );
+        assert!(launch.contains("原始错误：0x80073CF6"), "{launch}");
+        assert!(launch.contains("管理员"), "{launch}");
+        assert!(!launch.contains("Manager"), "{launch}");
+        assert_eq!(
+            super::engine_failure_reason("install error: Codex is not installed"),
+            "Windows 中没有找到已注册的 Codex 标准安装。请在“Codex 管理”中重新安装 Codex。"
+        );
+    }
+
+    #[test]
+    fn maintenance_errors_are_reported_in_chinese() {
+        use chimera_runtime::manager::ManagerError;
+        for (error, expected) in [
+            (ManagerError::NotInstalled, "未检测到 Codex 安装"),
+            (ManagerError::NoRollback, "没有可用的回滚备份"),
+            (ManagerError::Maintenance, "关闭 Codex 后重试"),
+        ] {
+            let message = super::maintenance_error_message("回滚 Codex 失败", &error);
+            assert!(message.starts_with("回滚 Codex 失败："), "{message}");
+            assert!(message.contains(expected), "{message}");
+        }
+    }
+
+    // ── Portable layout written by other tools ───────────────────────────
+
+    #[test]
+    fn nested_portable_layout_is_detected_and_refused_before_touching_launchers() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let config_path = root.join(super::PORTABLE_LAUNCH_TARGET_FILE);
+
+        // The flat layout written by the pinned engine.
+        std::fs::write(&config_path, "ChatGPT.exe").expect("write launch target");
+        assert!(!super::portable_layout_is_nested(root));
+        // An `app` directory alone is not the nested layout.
+        std::fs::create_dir(root.join("app")).expect("create app dir");
+        assert!(!super::portable_layout_is_nested(root));
+        for config in [
+            "app\\ChatGPT.exe\r\nrequire-cli=1\r\n",
+            "app/ChatGPT.exe",
+            "\u{feff}APP\\Codex.exe\nrequire-cli=0",
+        ] {
+            std::fs::write(&config_path, config).expect("write launch target");
+            assert!(super::portable_layout_is_nested(root), "{config:?}");
+        }
+        std::fs::write(&config_path, "application.exe").expect("write launch target");
+        assert!(!super::portable_layout_is_nested(root));
+        std::fs::remove_file(&config_path).expect("remove launch target");
+        assert!(!super::portable_layout_is_nested(root));
+
+        // The launch path refuses it without rewriting the other tool's files.
+        let config = "app\\ChatGPT.exe\nrequire-cli=1\n";
+        std::fs::write(&config_path, config).expect("write launch target");
+        std::fs::write(root.join("ChatGPT.exe"), b"launcher stub").expect("write stub");
+        let error = super::portable_command_with_codex_home(
+            root,
+            root,
+            codex_win_engine::LaunchOptions::default(),
+        )
+        .expect_err("the nested layout must be refused");
+        assert_eq!(error, super::NESTED_PORTABLE_LAYOUT_MESSAGE);
+        assert!(error.contains("修复"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(&config_path).expect("read launch target"),
+            config
+        );
+        assert!(!root.join("LaunchCodex.exe").exists());
+    }
+
+    // ── Diagnostics with reasons ─────────────────────────────────────────
+
+    fn health_report(failure_kind: &str) -> codex_win_engine::MsixHealthReport {
+        codex_win_engine::MsixHealthReport {
+            healthy: failure_kind.is_empty(),
+            verified: failure_kind != "probe-failed",
+            package_registered: failure_kind != "not-registered",
+            status: if failure_kind == "status-bad" {
+                "Modified"
+            } else {
+                "Ok"
+            }
+            .to_string(),
+            status_ok: !matches!(failure_kind, "not-registered" | "status-bad"),
+            aumid_resolved: failure_kind != "aumid-unresolved",
+            missing_dependencies: if failure_kind == "missing-dependencies" {
+                vec!["Microsoft.VCLibs.140.00".to_string()]
+            } else {
+                Vec::new()
+            },
+            activation_ok: failure_kind.is_empty(),
+            failure_kind: failure_kind.to_string(),
+            reason: if failure_kind == "window-not-ready" {
+                "Codex 启动时出现原生对话框，无法确认启动成功，请检查 Codex 窗口".to_string()
+            } else {
+                String::new()
+            },
+        }
+    }
+
+    #[test]
+    fn msix_diagnostics_explain_each_failure_with_a_stable_kind() {
+        let healthy = super::msix_health_diagnostics(&health_report(""));
+        assert_eq!(
+            healthy
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "package integrity",
+                "package registration",
+                "dependencies",
+                "launch"
+            ]
+        );
+        assert!(healthy
+            .iter()
+            .all(|entry| entry.result == "pass" && entry.kind.is_none() && entry.detail.is_none()));
+        // Passing items keep the old two-field JSON shape.
+        assert_eq!(
+            serde_json::to_value(&healthy[3]).expect("diagnostic serializes"),
+            serde_json::json!({ "name": "launch", "result": "pass" })
+        );
+
+        for (failure, item, result, kind, needle) in [
+            (
+                "not-registered",
+                "package registration",
+                "fail",
+                "not-registered",
+                "没有找到已注册",
+            ),
+            (
+                "not-registered",
+                "package integrity",
+                "fail",
+                "not-registered",
+                "修复",
+            ),
+            (
+                "status-bad",
+                "package integrity",
+                "fail",
+                "package-status",
+                "Modified",
+            ),
+            (
+                "missing-dependencies",
+                "dependencies",
+                "fail",
+                "dependencies",
+                "Microsoft.VCLibs.140.00",
+            ),
+            (
+                "missing-dependencies",
+                "launch",
+                "fail",
+                "dependencies",
+                "缺少运行依赖",
+            ),
+            ("aumid-unresolved", "launch", "fail", "manifest", "启动入口"),
+            ("policy", "launch", "fail", "permissions", "系统策略"),
+            ("timeout", "launch", "fail", "timeout", "稍后重新诊断"),
+            (
+                "probe-failed",
+                "launch",
+                "warn",
+                "probe",
+                "不一定代表安装损坏",
+            ),
+            (
+                "window-not-ready",
+                "launch",
+                "fail",
+                "main-window",
+                "原生对话框",
+            ),
+            ("immediate-exit", "launch", "fail", "launch", "立即退出"),
+            ("activation-failed", "launch", "fail", "launch", "修复"),
+        ] {
+            let diagnostics = super::msix_health_diagnostics(&health_report(failure));
+            let entry = diagnostics
+                .iter()
+                .find(|entry| entry.name == item)
+                .expect("diagnostic item exists");
+            assert_eq!(entry.result, result, "{failure}/{item}");
+            assert_eq!(entry.kind.as_deref(), Some(kind), "{failure}/{item}");
+            let detail = entry
+                .detail
+                .as_deref()
+                .expect("failing items carry a detail");
+            assert!(detail.contains(needle), "{failure}/{item}: {detail}");
+            let json = serde_json::to_value(entry).expect("diagnostic serializes");
+            assert_eq!(json["kind"], kind);
+            assert_eq!(json["detail"], detail);
+        }
+    }
+
+    #[test]
+    fn portable_diagnostics_explain_the_signature_warning_only_when_relevant() {
+        use chimera_runtime::manager::ManagerDiagnostic;
+        let signature = super::portable_runtime_diagnostic(ManagerDiagnostic {
+            name: "package signature".to_string(),
+            result: "warn".to_string(),
+        });
+        assert_eq!(signature.kind.as_deref(), Some("signature"));
+        assert!(signature
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("安装前已验证")));
+        let ownership = super::portable_runtime_diagnostic(ManagerDiagnostic {
+            name: "ownership".to_string(),
+            result: "pass".to_string(),
+        });
+        assert!(ownership.kind.is_none() && ownership.detail.is_none());
+    }
+
+    // ── One network path for checks and downloads ────────────────────────
+
+    #[test]
+    fn package_downloads_use_the_shared_client_instead_of_engine_curl() {
+        let runtime = include_str!("codex_runtime.rs")
+            .split("mod tests {")
+            .next()
+            .unwrap();
+        let install = runtime
+            .split("fn install_runtime_release_with_observer(")
+            .nth(1)
+            .unwrap()
+            .split("\nfn ")
+            .next()
+            .unwrap();
+        assert!(install.contains("bounded_download::download_to_file_blocking("));
+        assert!(install.contains("crate::proxy::http_client::get(),"));
+        assert!(install.contains("describe_network_mode()"));
+        let skin = include_str!("skin_catalog.rs")
+            .split("mod tests {")
+            .next()
+            .unwrap();
+        assert!(skin.contains("bounded_download::download_to_file_blocking("));
+        assert!(skin.contains("crate::proxy::http_client::get(),"));
+        // Neither the engine's curl downloads nor the runtime crate's
+        // curl-based release helpers may come back.
+        for source in [runtime, skin] {
+            for forbidden in [
+                "NetworkConfig::",
+                "download_to_with_progress",
+                "codex_win_engine::download_to(",
+                "codex_win_engine::fetch_text(",
+                "install_windows_release(",
+                "fetch_windows_release_plan(",
+            ] {
+                assert!(!source.contains(forbidden), "{forbidden}");
+            }
+        }
     }
 
     #[test]

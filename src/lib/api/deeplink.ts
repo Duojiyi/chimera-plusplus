@@ -7,8 +7,20 @@ export interface DeepLinkImportRequest {
   resource: ResourceType;
 
   // Common fields
-  app?: "claude" | "codex" | "gemini";
+  app?:
+    | "claude"
+    | "claude-desktop"
+    | "claude_desktop"
+    | "codex"
+    | "gemini"
+    | "grokbuild"
+    | "opencode"
+    | "pi";
   name?: string;
+  /**
+   * What the link asks for. For providers the confirm dialog replaces it with
+   * the user's own choice before importing.
+   */
   enabled?: boolean;
 
   // Provider fields
@@ -40,6 +52,7 @@ export interface DeepLinkImportRequest {
   configUrl?: string;
 
   // Usage script fields (v3.9+)
+  /** What the link asks for; shown as a hint only, it never enables the query. */
   usageEnabled?: boolean;
   usageScript?: string;
   usageApiKey?: string;
@@ -51,19 +64,42 @@ export interface DeepLinkImportRequest {
   // Set by the confirm dialog: env keys outside the tool's allowlist that the
   // user confirmed one by one. Denied keys are dropped by the backend anyway.
   confirmedEnvKeys?: string[];
+  /**
+   * Set by the confirm dialog's "导入后启用用量查询" switch. The backend
+   * enables a link's usage script only when this is true.
+   */
+  confirmedUsageEnabled?: boolean;
 }
 
 /** Backend verdict for one env key (see `deeplink/env_allowlist.rs`). */
 export type EnvKeyStatus = "allowed" | "needsConfirmation" | "denied";
 
+/** A link's usage query script (see `deeplink/preview.rs`). */
+export interface UsageScriptPreview {
+  /** The decoded script, exactly as it will be stored. */
+  code: string;
+  /** Hosts the script may contact (same host and port as its base URL). */
+  hosts: string[];
+  /** The link asked for the query to be enabled; only the dialog decides. */
+  linkRequestsEnabled: boolean;
+  /** Automatic query interval in minutes, when the link sets one. */
+  autoIntervalMinutes?: number | null;
+}
+
 export interface DeepLinkImportPreview {
   /** Absolute paths of the live files this resource is written to once active. */
   targetPaths: string[];
-  /** Whether confirming writes `targetPaths` right away. */
+  /** Whether the link itself asks to write `targetPaths` on confirm. */
   writesLive: boolean;
+  /** Whether confirming may switch to this provider (offered as a switch). */
+  mayActivate?: boolean;
   /** Full content carried by the link, as it will be stored. */
   content: string;
   env: Array<{ key: string; status: EnvKeyStatus }>;
+  /** The usage query script the link carries, if any. */
+  usage?: UsageScriptPreview | null;
+  /** Names of link parameters and config entries that are not imported. */
+  ignored?: string[];
 }
 
 export interface McpImportResult {

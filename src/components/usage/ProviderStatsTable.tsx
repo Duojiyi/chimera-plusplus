@@ -8,7 +8,9 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useProviderStats } from "@/lib/query/usage";
-import { fmtUsd } from "./format";
+import { cn } from "@/lib/utils";
+import { fmtUsd, formatSeconds } from "./format";
+import { usageTable } from "./usageTable";
 import type { UsageRangeSelection } from "@/types/usage";
 
 interface ProviderStatsTableProps {
@@ -36,7 +38,7 @@ export function ProviderStatsTable({
   );
 
   if (isLoading) {
-    return <div className="h-[400px] animate-pulse rounded bg-gray-100" />;
+    return <div className={usageTable.skeleton} aria-hidden="true" />;
   }
 
   return (
@@ -44,20 +46,18 @@ export function ProviderStatsTable({
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>{t("usage.provider", "Provider")}</TableHead>
-            <TableHead className="text-right">
+            <TableHead className={usageTable.th}>线路</TableHead>
+            <TableHead className={usageTable.thNum}>
               {t("usage.requests", "请求数")}
             </TableHead>
-            <TableHead className="text-right">
-              {t("usage.tokens", "Tokens")}
-            </TableHead>
-            <TableHead className="text-right">
+            <TableHead className={usageTable.thNum}>词元</TableHead>
+            <TableHead className={usageTable.thNum}>
               {t("usage.cost", "成本")}
             </TableHead>
-            <TableHead className="text-right">
+            <TableHead className={usageTable.thNum}>
               {t("usage.successRate", "成功率")}
             </TableHead>
-            <TableHead className="text-right">
+            <TableHead className={usageTable.thNum}>
               {t("usage.avgLatency", "平均延迟")}
             </TableHead>
           </TableRow>
@@ -67,31 +67,31 @@ export function ProviderStatsTable({
             <TableRow>
               <TableCell
                 colSpan={6}
-                className="text-center text-muted-foreground"
+                className={cn(usageTable.td, "py-8 text-muted-foreground")}
               >
-                {t("usage.noData", "暂无数据")}
+                所选范围内没有线路统计
               </TableCell>
             </TableRow>
           ) : (
             stats?.map((stat) => (
               <TableRow key={stat.providerId}>
-                <TableCell className="font-medium">
+                <TableCell className={cn(usageTable.td, "font-medium")}>
                   {stat.providerName}
                 </TableCell>
-                <TableCell className="text-right">
-                  {stat.requestCount.toLocaleString()}
+                <TableCell className={usageTable.tdNum}>
+                  {stat.requestCount.toLocaleString("zh-CN")}
                 </TableCell>
-                <TableCell className="text-right">
-                  {stat.totalTokens.toLocaleString()}
+                <TableCell className={usageTable.tdNum}>
+                  {stat.totalTokens.toLocaleString("zh-CN")}
                 </TableCell>
-                <TableCell className="text-right">
+                <TableCell className={usageTable.tdNum}>
                   {fmtUsd(stat.totalCost, 4)}
                 </TableCell>
-                <TableCell className="text-right">
+                <TableCell className={usageTable.tdNum}>
                   {stat.successRate.toFixed(1)}%
                 </TableCell>
-                <TableCell className="text-right">
-                  {stat.avgLatencyMs}ms
+                <TableCell className={usageTable.tdNum}>
+                  {formatSeconds(stat.avgLatencyMs)}
                 </TableCell>
               </TableRow>
             ))

@@ -668,11 +668,14 @@ fn is_codex_token_stale(last_refresh: &str) -> bool {
 
 // ── Codex API 查询 ──────────────────────────────────────
 
+const CODEX_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
+
 #[derive(Deserialize)]
 struct CodexRateLimitWindow {
     used_percent: Option<f64>,
     limit_window_seconds: Option<i64>,
     reset_at: Option<i64>,
+    reset_after_seconds: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -683,6 +686,7 @@ struct CodexRateLimit {
 
 #[derive(Deserialize)]
 struct CodexUsageResponse {
+    account_id: Option<String>,
     rate_limit: Option<CodexRateLimit>,
 }
 
@@ -711,21 +715,126 @@ fn unix_ts_to_iso(ts: i64) -> Option<String> {
     chrono::DateTime::from_timestamp(ts, 0).map(|dt| dt.to_rfc3339())
 }
 
+/// What a non-success `wham/usage` status means. Only 401 says the login
+/// itself was rejected: 403 is typically a network, region or edge block,
+/// so the login stays valid. Every message keeps `HTTP <code>`, which the
+/// quota hooks read to tell transient failures (5xx, 429) from lasting ones.
+fn codex_quota_failure(
+    status: reqwest::StatusCode,
+    expired_message: &str,
+) -> Option<(CredentialStatus, String)> {
+    if status.is_success() {
+        return None;
+    }
+    let code = status.as_u16();
+    Some(match code {
+        401 => (
+            CredentialStatus::Expired,
+            format!("{expired_message} (HTTP 401)"),
+        ),
+        403 => (
+            CredentialStatus::Valid,
+            "无法访问官方额度服务（HTTP 403），可能是网络或地区限制".to_string(),
+        ),
+        429 => (
+            CredentialStatus::Valid,
+            "查询过于频繁，请稍后再试（HTTP 429）".to_string(),
+        ),
+        300..=399 => (
+            CredentialStatus::Valid,
+            format!("官方额度服务返回了重定向（HTTP {code}），已停止请求"),
+        ),
+        500..=599 => (
+            CredentialStatus::Valid,
+            format!("官方额度服务暂不可用（HTTP {code}），请稍后再试"),
+        ),
+        _ => (
+            CredentialStatus::Valid,
+            format!("官方额度查询失败（HTTP {code}）"),
+        ),
+    })
+}
+
+fn nonempty(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+/// One rate-limit window as a tier: a window without a finite percentage is
+/// dropped rather than shown as 0%, and a reset time is never invented.
+fn codex_quota_tier(
+    window: CodexRateLimitWindow,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<QuotaTier> {
+    let utilization = window
+        .used_percent
+        .filter(|used| used.is_finite())?
+        .clamp(0.0, 100.0);
+    let resets_at = window.reset_at.and_then(unix_ts_to_iso).or_else(|| {
+        window
+            .reset_after_seconds
+            .filter(|seconds| *seconds >= 0)
+            .and_then(chrono::Duration::try_seconds)
+            .and_then(|after| now.checked_add_signed(after))
+            .map(|time| time.to_rfc3339())
+    });
+    Some(QuotaTier {
+        name: window
+            .limit_window_seconds
+            .filter(|seconds| *seconds > 0)
+            .map(window_seconds_to_tier_name)
+            .unwrap_or_else(|| "unknown".to_string()),
+        utilization,
+        resets_at,
+        used_value_usd: None,
+        max_value_usd: None,
+    })
+}
+
+/// The tiers of a `wham/usage` body. A body for another account is refused,
+/// and no identifier or response text ever reaches the error.
+fn parse_codex_usage(
+    raw: &[u8],
+    expected_account_id: Option<&str>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<Vec<QuotaTier>, String> {
+    let body: CodexUsageResponse = serde_json::from_slice(raw)
+        .map_err(|_| "官方额度响应格式无法识别，请稍后再试".to_string())?;
+    if let (Some(actual), Some(expected)) = (
+        nonempty(body.account_id.as_deref()),
+        nonempty(expected_account_id),
+    ) {
+        if actual != expected {
+            return Err("额度响应与所选账号不一致，请刷新重试".to_string());
+        }
+    }
+    let Some(rate_limit) = body.rate_limit else {
+        return Ok(Vec::new());
+    };
+    Ok([rate_limit.primary_window, rate_limit.secondary_window]
+        .into_iter()
+        .flatten()
+        .filter_map(|window| codex_quota_tier(window, now))
+        .collect())
+}
+
 /// 查询 Codex / ChatGPT 反代订阅额度
 ///
-/// 参数化 `tool_label` 和 `expired_message` 让该函数可被两个调用点共用：
+/// 参数化 `tool_label` 和 `expired_message` 让该函数可被几个调用点共用：
 /// - `"codex"` + "Please re-login with Codex CLI."（CLI 凭据路径）
 /// - `"codex_oauth"` + "Please re-login via cc-switch."（cc-switch 自管 OAuth 路径）
+/// - 官方账号页（按账号库身份查询）
+///
+/// 不跟随重定向：请求带着 Bearer 令牌，不能被 3xx 引到别处。
 pub(crate) async fn query_codex_quota(
     access_token: &str,
     account_id: Option<&str>,
     tool_label: &str,
     expired_message: &str,
 ) -> Result<SubscriptionQuota, String> {
-    let client = crate::proxy::http_client::get();
+    let client = crate::proxy::http_client::get_for_auth_probe()?;
 
     let mut req = client
-        .get("https://chatgpt.com/backend-api/wham/usage")
+        .get(CODEX_USAGE_URL)
         .header("Authorization", format!("Bearer {access_token}"))
         .header("User-Agent", "codex-cli")
         .header("Accept", "application/json");
@@ -741,15 +850,7 @@ pub(crate) async fn query_codex_quota(
 
     let status = resp.status();
 
-    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-        return Ok(SubscriptionQuota::error(
-            tool_label,
-            CredentialStatus::Expired,
-            format!("{expired_message} (HTTP {status})"),
-        ));
-    }
-
-    if !status.is_success() {
+    if let Some((credential_status, message)) = codex_quota_failure(status, expired_message) {
         // MH-16: this body comes from an endpoint we don't control and is
         // never surfaced verbatim to the caller/UI — only its status code
         // is. The body is capped and logged for diagnostics only.
@@ -761,8 +862,8 @@ pub(crate) async fn query_codex_quota(
         }
         return Ok(SubscriptionQuota::error(
             tool_label,
-            CredentialStatus::Valid,
-            format!("API error (HTTP {status})"),
+            credential_status,
+            message,
         ));
     }
 
@@ -773,38 +874,16 @@ pub(crate) async fn query_codex_quota(
             Ok(b) => b,
             Err(e) => return Err(format!("Failed to read API response: {e}")),
         };
-    let body: CodexUsageResponse = match serde_json::from_slice(&raw) {
-        Ok(v) => v,
-        Err(e) => {
+    let tiers = match parse_codex_usage(&raw, account_id, chrono::Utc::now()) {
+        Ok(tiers) => tiers,
+        Err(message) => {
             return Ok(SubscriptionQuota::error(
                 tool_label,
                 CredentialStatus::Valid,
-                format!("Failed to parse API response: {e}"),
+                message,
             ));
         }
     };
-
-    let mut tiers = Vec::new();
-
-    if let Some(rate_limit) = body.rate_limit {
-        for window in [rate_limit.primary_window, rate_limit.secondary_window]
-            .into_iter()
-            .flatten()
-        {
-            if let Some(used) = window.used_percent {
-                tiers.push(QuotaTier {
-                    name: window
-                        .limit_window_seconds
-                        .map(window_seconds_to_tier_name)
-                        .unwrap_or_else(|| "unknown".to_string()),
-                    utilization: used,
-                    resets_at: window.reset_at.and_then(unix_ts_to_iso),
-                    used_value_usd: None,
-                    max_value_usd: None,
-                });
-            }
-        }
-    }
 
     Ok(SubscriptionQuota {
         tool: tool_label.to_string(),
@@ -1426,6 +1505,122 @@ mod tests {
         // 其他窗口按小时/天回退命名
         assert_eq!(window_seconds_to_tier_name(3600), "1_hour");
         assert_eq!(window_seconds_to_tier_name(86400), "1_day");
+    }
+
+    #[test]
+    fn codex_quota_statuses_separate_rejected_logins_from_blocks_and_limits() {
+        assert!(codex_quota_failure(reqwest::StatusCode::OK, "relogin").is_none());
+        for (code, rejected, needle) in [
+            (401_u16, true, "relogin"),
+            (403, false, "可能是网络或地区限制"),
+            (429, false, "查询过于频繁"),
+            (302, false, "重定向"),
+            (503, false, "暂不可用"),
+            (404, false, "查询失败"),
+        ] {
+            let (credential, message) =
+                codex_quota_failure(reqwest::StatusCode::from_u16(code).unwrap(), "relogin")
+                    .unwrap();
+            assert_eq!(
+                matches!(credential, CredentialStatus::Expired),
+                rejected,
+                "{code}"
+            );
+            assert!(message.contains(needle), "{code}: {message}");
+            // The quota hooks classify transient failures by this marker.
+            assert!(
+                message.contains(&format!("HTTP {code}")),
+                "{code}: {message}"
+            );
+        }
+    }
+
+    fn quota_time(text: &str) -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339(text)
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    }
+
+    #[test]
+    fn codex_usage_keeps_every_window_and_falls_back_to_reset_after_seconds() {
+        let now = quota_time("2026-09-09T03:00:00Z");
+        let body = serde_json::json!({
+            "account_id": "acct-a",
+            "rate_limit": {
+                "primary_window": {
+                    "used_percent": 37.5,
+                    "limit_window_seconds": 18000,
+                    "reset_after_seconds": 600
+                },
+                "secondary_window": {
+                    "used_percent": 130,
+                    "limit_window_seconds": 2_592_000,
+                    "reset_at": now.timestamp() + 3600,
+                    "reset_after_seconds": 20
+                }
+            }
+        });
+        let tiers =
+            parse_codex_usage(&serde_json::to_vec(&body).unwrap(), Some("acct-a"), now).unwrap();
+        assert_eq!(tiers.len(), 2);
+        assert_eq!(tiers[0].name, TIER_FIVE_HOUR);
+        assert_eq!(tiers[0].utilization, 37.5);
+        assert_eq!(
+            tiers[0].resets_at.as_deref(),
+            Some("2026-09-09T03:10:00+00:00")
+        );
+        // An absolute reset time wins over the relative one; percentages clamp.
+        assert_eq!(tiers[1].name, TIER_THIRTY_DAY);
+        assert_eq!(tiers[1].utilization, 100.0);
+        assert_eq!(
+            tiers[1].resets_at.as_deref(),
+            Some("2026-09-09T04:00:00+00:00")
+        );
+    }
+
+    #[test]
+    fn codex_usage_invents_no_percentage_window_or_reset_time() {
+        let now = quota_time("2026-09-09T03:00:00Z");
+        let body = serde_json::json!({
+            "rate_limit": {
+                "primary_window": { "limit_window_seconds": 18000 },
+                "secondary_window": {
+                    "used_percent": 10,
+                    "limit_window_seconds": -1,
+                    "reset_at": i64::MAX,
+                    "reset_after_seconds": -10
+                }
+            }
+        });
+        let tiers = parse_codex_usage(&serde_json::to_vec(&body).unwrap(), None, now).unwrap();
+        assert_eq!(tiers.len(), 1);
+        assert_eq!(tiers[0].name, "unknown");
+        assert!(tiers[0].resets_at.is_none());
+        assert!(parse_codex_usage(b"{}", None, now).unwrap().is_empty());
+    }
+
+    #[test]
+    fn codex_usage_for_another_account_or_garbage_echoes_nothing() {
+        let now = quota_time("2026-09-09T03:00:00Z");
+        let error = parse_codex_usage(
+            br#"{"account_id":"other-private-account"}"#,
+            Some("selected-private-account"),
+            now,
+        )
+        .unwrap_err();
+        assert!(error.contains("不一致"));
+        assert!(!error.contains("private-account"));
+        // A missing id on either side is not a mismatch.
+        assert!(
+            parse_codex_usage(br#"{"account_id":null}"#, Some("selected"), now)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(parse_codex_usage(br#"{"account_id":"server"}"#, None, now)
+            .unwrap()
+            .is_empty());
+        let error = parse_codex_usage(b"private-secret-token", None, now).unwrap_err();
+        assert!(!error.contains("private-secret-token"));
     }
 
     // MH-16 regression: `read_response_bytes_limited`/`read_response_text_limited`

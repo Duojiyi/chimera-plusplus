@@ -297,6 +297,26 @@ pub fn is_proxy_enabled() -> bool {
     get_current_proxy_url().is_some()
 }
 
+/// 用户可见的当前出站网络方式，与 [`get`] 选择代理的规则一致，凭据已脱敏。
+///
+/// 下载失败时附在错误里，让用户知道这次请求实际走的是应用代理、系统代理还是直连。
+pub(crate) fn describe_network_mode() -> String {
+    network_mode_label(
+        get_current_proxy_url().as_deref(),
+        system_proxy_points_to_loopback(),
+    )
+}
+
+fn network_mode_label(proxy_url: Option<&str>, loopback_bypassed: bool) -> String {
+    match proxy_url {
+        Some(url) => format!("应用代理 {}", mask_url(url)),
+        None if loopback_bypassed => {
+            "未设置应用代理；系统代理指向本应用自身端口，已改为直连".to_string()
+        }
+        None => "未设置应用代理，跟随系统代理设置".to_string(),
+    }
+}
+
 /// 构建 HTTP 客户端
 fn build_client(proxy_url: Option<&str>) -> Result<Client, String> {
     build_client_with_redirect_policy(proxy_url, reqwest::redirect::Policy::default())
@@ -595,6 +615,19 @@ mod tests {
                 "{previous} -> {next}"
             );
         }
+    }
+
+    #[test]
+    fn network_mode_label_masks_credentials_and_names_the_route() {
+        assert_eq!(
+            network_mode_label(Some("http://user:secret@127.0.0.1:7890"), false),
+            "应用代理 http://127.0.0.1:7890"
+        );
+        assert_eq!(
+            network_mode_label(None, false),
+            "未设置应用代理，跟随系统代理设置"
+        );
+        assert!(network_mode_label(None, true).contains("已改为直连"));
     }
 
     #[test]

@@ -1,7 +1,9 @@
 use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use regex::Regex;
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
@@ -11,19 +13,44 @@ use serde_json::Value;
 use crate::codex_config::{get_codex_config_dir, read_codex_config_text};
 use crate::codex_state_db::{
     backup_sqlite_online, codex_sqlite_homes, codex_state_db_paths, CodexRuntimeDb,
+    CODEX_STATE_DB_FILENAME,
 };
+use crate::error::AppError;
+use crate::security_limits::{open_regular_file_no_symlink, read_limited, MAX_CONFIG_FILE_BYTES};
 use crate::session_manager::{SessionDeleteResult, SessionMessage, SessionMeta};
 
 use super::utils::{
-    extract_text, parse_timestamp_to_ms, path_basename, truncate_summary, TITLE_MAX_CHARS,
+    extract_message_text, extract_text, parse_timestamp_to_ms, path_basename, truncate_summary,
+    TITLE_MAX_CHARS,
 };
 
-use super::codex_io::{open_lines, read_head_tail_lines};
+use super::codex_io::{
+    open_lines, read_head_tail_lines, SessionLine, SessionLines, MAX_DECODED_BYTES,
+};
 
 const PROVIDER_ID: &str = "codex";
 const CODEX_SESSION_INDEX_FILENAME: &str = "session_index.jsonl";
+/// Codex's typed-prompt history, recalled with the ↑ key.
+const CODEX_HISTORY_FILENAME: &str = "history.jsonl";
+const ARCHIVED_SESSIONS_DIR: &str = "archived_sessions";
 const VSCODE_CONTEXT_PREFIX: &str = "# Context from my IDE setup:";
 const CODEX_REQUEST_MARKER: &str = "my request for codex";
+
+/// Text one `load_messages` reply may carry. The reply is materialized for
+/// IPC, so the budget bounds what is kept, not how large a rollout may be.
+const MAX_RETAINED_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
+/// A longer tool output is cut: the rest of the conversation is worth more
+/// than one command's full log.
+const MAX_TOOL_OUTPUT_BYTES: usize = 64 * 1024;
+/// Role of the entries that say what the reader left out.
+const NOTICE_ROLE: &str = "notice";
+
+/// The history is rewritten in memory under its lock; a larger file is left
+/// for the user to clear rather than held twice in memory.
+const MAX_HISTORY_REWRITE_BYTES: u64 = 64 * 1024 * 1024;
+const HISTORY_IN_USE: &str = "Codex 正在写入输入历史，请关闭 Codex 后重试";
+const HISTORY_CHANGED: &str = "输入历史在清理时被改动，请关闭 Codex 后重试";
+const INDEX_CHANGED: &str = "会话索引在清理时被改动，请关闭 Codex 后重试";
 
 static UUID_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
@@ -37,47 +64,146 @@ struct SessionIndexEntry {
 }
 
 pub fn scan_sessions() -> Vec<SessionMeta> {
-    let roots = session_roots();
-    scan_sessions_in_roots(&roots)
+    let threads = load_thread_index(&get_codex_config_dir());
+    scan_sessions_in_roots(&session_roots(), &threads)
 }
 
 pub fn session_roots() -> Vec<PathBuf> {
     let config_dir = get_codex_config_dir();
     vec![
         config_dir.join("sessions"),
-        config_dir.join("archived_sessions"),
+        config_dir.join(ARCHIVED_SESSIONS_DIR),
     ]
 }
 
-fn scan_sessions_in_roots(roots: &[PathBuf]) -> Vec<SessionMeta> {
-    let thread_titles = load_thread_titles();
-    scan_sessions_in_roots_with_titles(roots, &thread_titles)
+/// What Codex's own stores record per thread id.
+#[derive(Default)]
+struct ThreadIndex {
+    /// Explicit thread names; the state DB wins over `session_index.jsonl`.
+    titles: HashMap<String, String>,
+    /// `threads.rollout_path` and `threads.archived` from the state DB.
+    rollouts: HashMap<String, ThreadRollout>,
 }
 
-fn scan_sessions_in_roots_with_titles(
-    roots: &[PathBuf],
-    thread_titles: &HashMap<String, String>,
-) -> Vec<SessionMeta> {
-    let mut files = Vec::new();
-    for root in roots {
-        collect_jsonl_files(root, &mut files);
-    }
+struct ThreadRollout {
+    path: PathBuf,
+    archived: bool,
+}
 
-    let mut sessions = Vec::new();
-    for path in files {
-        if let Some(meta) = parse_session_with_titles(&path, thread_titles) {
-            sessions.push(meta);
+/// One rollout found on disk, before the copies of a thread are folded.
+struct ScannedRollout {
+    meta: SessionMeta,
+    path: PathBuf,
+    modified: Option<SystemTime>,
+}
+
+fn load_thread_index(config_dir: &Path) -> ThreadIndex {
+    let config_text = read_codex_config_text().unwrap_or_default();
+    let db_paths = codex_state_db_paths(config_dir, &config_text);
+    ThreadIndex {
+        titles: load_thread_titles_from_paths(
+            &config_dir.join(CODEX_SESSION_INDEX_FILENAME),
+            &db_paths,
+        ),
+        rollouts: db_paths
+            .iter()
+            .flat_map(|db_path| load_thread_rollouts_from_db(db_path, config_dir))
+            .collect(),
+    }
+}
+
+fn scan_sessions_in_roots(roots: &[PathBuf], threads: &ThreadIndex) -> Vec<SessionMeta> {
+    let mut scanned = Vec::new();
+    for root in roots {
+        let archive_root = root.ends_with(ARCHIVED_SESSIONS_DIR);
+        let mut files = Vec::new();
+        collect_jsonl_files(root, &mut files);
+        for path in files {
+            let Some(mut meta) = parse_session_with_titles(&path, &threads.titles) else {
+                continue;
+            };
+            let modified = std::fs::metadata(&path)
+                .and_then(|metadata| metadata.modified())
+                .ok();
+            // A last record longer than the tail window leaves no timestamp to
+            // read; the file's write time still sorts the session correctly.
+            if meta.last_active_at.is_none() {
+                meta.last_active_at = modified.and_then(unix_millis);
+            }
+            meta.archived = archive_root
+                || threads
+                    .rollouts
+                    .get(&meta.session_id)
+                    .is_some_and(|thread| thread.archived);
+            scanned.push(ScannedRollout {
+                meta,
+                path,
+                modified,
+            });
         }
     }
-
-    sessions
+    keep_one_rollout_per_thread(scanned, &threads.rollouts)
 }
 
-fn load_thread_titles() -> HashMap<String, String> {
-    let config_dir = get_codex_config_dir();
-    let config_text = read_codex_config_text().unwrap_or_default();
-    let db_paths = codex_state_db_paths(&config_dir, &config_text);
-    load_thread_titles_from_paths(&config_dir.join(CODEX_SESSION_INDEX_FILENAME), &db_paths)
+// Adapted from yynxxxxx/Codex-X apps/desktop/src-tauri/src/sessions/storage.rs
+// (`is_authoritative_rollout`) (MIT)
+/// One row per thread. Rolling a thread back or forking it in place leaves
+/// several rollouts with the same thread id: keep the one the state DB points
+/// at, otherwise the most recently written copy. Deleting the row still
+/// removes every copy (`rollout_files_for`).
+fn keep_one_rollout_per_thread(
+    scanned: Vec<ScannedRollout>,
+    rollouts: &HashMap<String, ThreadRollout>,
+) -> Vec<SessionMeta> {
+    let mut kept: Vec<ScannedRollout> = Vec::with_capacity(scanned.len());
+    let mut slots: HashMap<String, usize> = HashMap::new();
+    for candidate in scanned {
+        let existing = slots.get(&candidate.meta.session_id).copied();
+        match existing {
+            Some(slot) => {
+                let authoritative = rollouts
+                    .get(&candidate.meta.session_id)
+                    .map(|thread| thread.path.as_path());
+                if outranks(&candidate, &kept[slot], authoritative) {
+                    kept[slot] = candidate;
+                }
+            }
+            None => {
+                slots.insert(candidate.meta.session_id.clone(), kept.len());
+                kept.push(candidate);
+            }
+        }
+    }
+    kept.into_iter().map(|rollout| rollout.meta).collect()
+}
+
+fn outranks(
+    candidate: &ScannedRollout,
+    current: &ScannedRollout,
+    authoritative: Option<&Path>,
+) -> bool {
+    if let Some(expected) = authoritative {
+        match (
+            same_file(&candidate.path, expected),
+            same_file(&current.path, expected),
+        ) {
+            (true, false) => return true,
+            (false, true) => return false,
+            _ => {}
+        }
+    }
+    candidate.modified > current.modified
+}
+
+fn same_file(left: &Path, right: &Path) -> bool {
+    matches!(
+        (left.canonicalize(), right.canonicalize()),
+        (Ok(left_real), Ok(right_real)) if left_real == right_real
+    )
+}
+
+fn unix_millis(time: SystemTime) -> Option<i64> {
+    i64::try_from(time.duration_since(UNIX_EPOCH).ok()?.as_millis()).ok()
 }
 
 fn load_thread_titles_from_paths(
@@ -114,14 +240,16 @@ fn load_thread_titles_from_session_index(index_path: &Path) -> HashMap<String, S
     titles
 }
 
-fn load_thread_titles_from_db(db_path: &Path) -> HashMap<String, String> {
+/// A state DB opened for reading, or `None` (logged) when it is missing or
+/// cannot be opened.
+fn open_state_db_read_only(db_path: &Path) -> Option<Connection> {
     if !db_path.exists() {
-        return HashMap::new();
+        return None;
     }
 
     let conn = match Connection::open_with_flags(
         db_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     ) {
         Ok(conn) => conn,
         Err(err) => {
@@ -129,7 +257,7 @@ fn load_thread_titles_from_db(db_path: &Path) -> HashMap<String, String> {
                 "Failed to open Codex state database {}: {err}",
                 db_path.display()
             );
-            return HashMap::new();
+            return None;
         }
     };
     // Codex keeps this DB open and write-locked while running; without a busy
@@ -139,8 +267,67 @@ fn load_thread_titles_from_db(db_path: &Path) -> HashMap<String, String> {
             "Failed to set Codex state database busy timeout for {}: {err}",
             db_path.display()
         );
-        return HashMap::new();
+        return None;
     }
+    Some(conn)
+}
+
+fn load_thread_rollouts_from_db(
+    db_path: &Path,
+    config_dir: &Path,
+) -> HashMap<String, ThreadRollout> {
+    let Some(conn) = open_state_db_read_only(db_path) else {
+        return HashMap::new();
+    };
+    query_thread_rollouts(&conn, config_dir).unwrap_or_else(|err| {
+        log::warn!(
+            "Failed to read Codex thread rollouts from {}: {err}",
+            db_path.display()
+        );
+        HashMap::new()
+    })
+}
+
+fn query_thread_rollouts(
+    conn: &Connection,
+    config_dir: &Path,
+) -> rusqlite::Result<HashMap<String, ThreadRollout>> {
+    if !has_column(conn, "threads", "rollout_path")? {
+        return Ok(HashMap::new());
+    }
+    // A schema without the column has no archived threads.
+    let archived = if has_column(conn, "threads", "archived")? {
+        "archived"
+    } else {
+        "0"
+    };
+    let mut stmt = conn.prepare(&format!("SELECT id, rollout_path, {archived} FROM threads"))?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<i64>>(2)?,
+        ))
+    })?;
+    Ok(rows
+        .flatten()
+        .filter_map(|(id, path, archived)| {
+            let path = PathBuf::from(path.filter(|path| !path.trim().is_empty())?);
+            let path = if path.is_relative() {
+                config_dir.join(path)
+            } else {
+                path
+            };
+            let archived = archived.is_some_and(|flag| flag != 0);
+            Some((id, ThreadRollout { path, archived }))
+        })
+        .collect())
+}
+
+fn load_thread_titles_from_db(db_path: &Path) -> HashMap<String, String> {
+    let Some(conn) = open_state_db_read_only(db_path) else {
+        return HashMap::new();
+    };
 
     // Mirror Codex's own `distinct_thread_metadata_title`: keep a title only
     // when it differs from the first user message. Push the comparison into SQL
@@ -189,72 +376,184 @@ fn load_thread_titles_from_db(db_path: &Path) -> HashMap<String, String> {
         .collect()
 }
 
+/// Bounds for one `load_messages` reply.
+struct MessageLimits {
+    retained_bytes: usize,
+    tool_output_bytes: usize,
+}
+
 pub fn load_messages(path: &Path) -> Result<Vec<SessionMessage>, String> {
-    // IPC still materializes messages, so bound decoded bytes as well as
-    // compressed input and each line. Never read a zstd frame as UTF-8.
-    let mut lines = open_lines(path, crate::security_limits::MAX_SESSION_FILE_BYTES)
-        .map_err(|error| format!("Failed to read session file {}: {error}", path.display()))?;
+    let read_failed =
+        |error: io::Error| format!("Failed to read session file {}: {error}", path.display());
+    // Never read a zstd frame as UTF-8: decode first, within the decode caps.
+    let lines = open_lines(path, MAX_DECODED_BYTES).map_err(read_failed)?;
+    collect_messages(
+        lines,
+        MessageLimits {
+            retained_bytes: MAX_RETAINED_MESSAGE_BYTES,
+            tool_output_bytes: MAX_TOOL_OUTPUT_BYTES,
+        },
+    )
+    .map_err(read_failed)
+}
+
+/// Display messages within `limits`. An oversized record and everything past
+/// the budget become notices, so a large session opens instead of failing.
+fn collect_messages(
+    mut lines: SessionLines,
+    limits: MessageLimits,
+) -> io::Result<Vec<SessionMessage>> {
     let mut messages = Vec::new();
-
-    while let Some(line) = lines
-        .next_line()
-        .map_err(|error| format!("Failed to read session file {}: {error}", path.display()))?
-    {
-        let value: Value = match serde_json::from_str(&line) {
-            Ok(parsed) => parsed,
-            Err(_) => continue,
+    let mut retained = 0usize;
+    let mut hidden = 0usize;
+    while let Some(record) = lines.next_record()? {
+        let message = match record {
+            SessionLine::Text(line) => match message_from_record(&line, limits.tool_output_bytes) {
+                Some(message) => message,
+                None => continue,
+            },
+            SessionLine::Oversized { bytes, prefix } => match oversized_notice(&prefix, bytes) {
+                Some(message) => message,
+                None => continue,
+            },
         };
-
-        if value.get("type").and_then(Value::as_str) != Some("response_item") {
-            continue;
+        if hidden == 0 && retained + message.content.len() <= limits.retained_bytes {
+            retained += message.content.len();
+            messages.push(message);
+        } else {
+            hidden += 1;
         }
-
-        let payload = match value.get("payload") {
-            Some(payload) => payload,
-            None => continue,
-        };
-
-        let payload_type = payload.get("type").and_then(Value::as_str).unwrap_or("");
-
-        // Codex uses separate payload types for tool interactions
-        let (role, content) = match payload_type {
-            "message" => {
-                let role = payload
-                    .get("role")
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown")
-                    .to_string();
-                let content = payload.get("content").map(extract_text).unwrap_or_default();
-                (role, content)
-            }
-            "function_call" => {
-                let name = payload
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown");
-                ("assistant".to_string(), format!("[Tool: {name}]"))
-            }
-            "function_call_output" => {
-                let output = payload
-                    .get("output")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                ("tool".to_string(), output)
-            }
-            _ => continue,
-        };
-
-        if content.trim().is_empty() {
-            continue;
-        }
-
-        let ts = value.get("timestamp").and_then(parse_timestamp_to_ms);
-
-        messages.push(SessionMessage { role, content, ts });
     }
-
+    if hidden > 0 {
+        messages.push(notice(format!(
+            "会话内容过大，后续 {hidden} 条消息未显示。"
+        )));
+    }
     Ok(messages)
+}
+
+/// The message Codex shows for one rollout line, if it shows one.
+fn message_from_record(line: &str, tool_output_bytes: usize) -> Option<SessionMessage> {
+    let mut value: Value = serde_json::from_str(line).ok()?;
+    if value.get("type").and_then(Value::as_str) != Some("response_item") {
+        return None;
+    }
+    let ts = value.get("timestamp").and_then(parse_timestamp_to_ms);
+    let payload = value.get_mut("payload")?;
+    let payload_type = payload
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+
+    // Codex uses separate payload types for tool interactions
+    let (role, content, truncated) = match payload_type.as_str() {
+        "message" => {
+            let role = payload
+                .get("role")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+                .to_string();
+            let content = payload
+                .get("content")
+                .map(extract_message_text)
+                .unwrap_or_default();
+            (role, content, false)
+        }
+        "function_call" => {
+            let name = payload
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            ("assistant".to_string(), format!("[Tool: {name}]"), false)
+        }
+        "function_call_output" => {
+            // A plain string, or content items that can carry images.
+            let output = match payload.get_mut("output").map(Value::take) {
+                Some(Value::String(text)) => text,
+                Some(items) => extract_message_text(&items),
+                None => String::new(),
+            };
+            let (output, truncated) = truncate_tool_output(output, tool_output_bytes);
+            ("tool".to_string(), output, truncated)
+        }
+        _ => return None,
+    };
+
+    if content.trim().is_empty() {
+        return None;
+    }
+    Some(SessionMessage {
+        role,
+        content,
+        ts,
+        truncated,
+    })
+}
+
+/// What to show for a record too large to read. Codex writes each record as
+/// `{"timestamp":…,"type":<kind>,"payload":{"type":<item>,…`, so the start
+/// of the line says whether it is a transcript entry. Records the transcript
+/// never shows stay silent: an image prompt is written twice, as the message
+/// and as an `event_msg`, and only the message deserves a notice. A line that
+/// cannot be classified still gets one rather than vanishing.
+fn oversized_notice(prefix: &[u8], bytes: u64) -> Option<SessionMessage> {
+    let prefix = String::from_utf8_lossy(prefix);
+    let mut tags = prefix
+        .split("\"type\":\"")
+        .skip(1)
+        .map(|rest| rest.split('"').next().unwrap_or_default());
+    let what = match (tags.next(), tags.next()) {
+        (Some("response_item"), Some("message")) => "消息",
+        (Some("response_item"), Some("function_call")) => "工具调用",
+        (Some("response_item"), Some("function_call_output")) => "工具输出",
+        // Reasoning, other items and non-transcript records are never shown.
+        (Some("response_item"), Some(_)) => return None,
+        (Some(kind), _) if kind != "response_item" => return None,
+        _ => "记录",
+    };
+    Some(notice(format!(
+        "这里有一条约 {} 的{what}，超过单条显示上限，未显示。",
+        human_size(bytes)
+    )))
+}
+
+/// Keep the head of an oversized tool output, cut on a UTF-8 boundary, and
+/// say how much was left out.
+fn truncate_tool_output(mut output: String, limit: usize) -> (String, bool) {
+    if output.len() <= limit {
+        return (output, false);
+    }
+    let mut cut = limit;
+    while !output.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let removed = (output.len() - cut) as u64;
+    output.truncate(cut);
+    output.push_str(&format!("\n…[已截断 {}]", human_size(removed)));
+    (output, true)
+}
+
+fn notice(content: String) -> SessionMessage {
+    SessionMessage {
+        role: NOTICE_ROLE.to_string(),
+        content,
+        ts: None,
+        truncated: true,
+    }
+}
+
+/// A byte count for people: "512 字节", "64 KB", "18.2 MB".
+fn human_size(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
+    let size = bytes as f64;
+    if size < KIB {
+        format!("{bytes} 字节")
+    } else if size < KIB * KIB {
+        format!("{:.0} KB", size / KIB)
+    } else {
+        format!("{:.1} MB", size / (KIB * KIB))
+    }
 }
 
 /// Finish as much cleanup as possible. The caller keeps the original request
@@ -445,6 +744,12 @@ impl SessionCleanup {
         ) {
             errors.push(format!("{CODEX_SESSION_INDEX_FILENAME}: {error}"));
         }
+        if let Err(error) = remove_sessions_from_history(
+            &self.config_dir.join(CODEX_HISTORY_FILENAME),
+            &self.thread_ids,
+        ) {
+            errors.push(format!("{CODEX_HISTORY_FILENAME}: {error}"));
+        }
 
         // Do not short-circuit on one store's error: the other stores and
         // homes may be writable. Within a home, the state DB goes last and is
@@ -497,9 +802,23 @@ impl SessionCleanup {
                     Err(error) => errors.push(format!("{}: {error}", db_path.display())),
                 }
             }
+            for name in newer_state_dbs(home) {
+                errors.push(format!(
+                    "{}: 检测到新版 Codex 状态库，其中的会话记录还不能清理",
+                    home.join(name).display()
+                ));
+            }
         }
         for path in rollout_files_for(&self.config_dir, &self.thread_ids) {
             errors.push(format!("{}: rollout still present", path.display()));
+        }
+        match history_mentions(
+            &self.config_dir.join(CODEX_HISTORY_FILENAME),
+            &self.thread_ids,
+        ) {
+            Ok(false) => {}
+            Ok(true) => errors.push(format!("{CODEX_HISTORY_FILENAME}: entries remain")),
+            Err(error) => errors.push(format!("{CODEX_HISTORY_FILENAME}: {error}")),
         }
     }
 
@@ -535,12 +854,13 @@ fn session_delete_backup_root(config_dir: &Path) -> PathBuf {
 }
 
 /// Rollout files (active or archived) whose name carries one of `thread_ids`,
-/// the way Codex names them (`rollout-<timestamp>-<thread id>.jsonl[.zst]`).
+/// the way Codex names them (`rollout-<timestamp>-<thread id>.jsonl[.zst]`,
+/// with `_<rollout id>` appended to a rolled-back copy).
 fn rollout_files_for(config_dir: &Path, thread_ids: &[String]) -> Vec<PathBuf> {
     let mut files = Vec::new();
     for root in [
         config_dir.join("sessions"),
-        config_dir.join("archived_sessions"),
+        config_dir.join(ARCHIVED_SESSIONS_DIR),
     ] {
         collect_jsonl_files(&root, &mut files);
     }
@@ -773,46 +1093,239 @@ fn delete_thread_memory(conn: &Connection, thread_id: &str) -> rusqlite::Result<
     Ok(())
 }
 
+/// Drop the JSONL lines whose `key` names one of `ids` and keep every other
+/// byte: lines split on `\n` with any `\r` left in place, unparsable lines kept
+/// as they are, nothing re-serialized. `None` when no line matched, so an
+/// untouched file is never rewritten.
+fn without_lines_for(content: &[u8], key: &str, ids: &[String]) -> Option<Vec<u8>> {
+    let mut kept = Vec::with_capacity(content.len());
+    let mut removed = false;
+    for line in content.split_inclusive(|&byte| byte == b'\n') {
+        if line_names_one_of(line, key, ids) {
+            removed = true;
+        } else {
+            kept.extend_from_slice(line);
+        }
+    }
+    removed.then_some(kept)
+}
+
+fn line_names_one_of(line: &[u8], key: &str, ids: &[String]) -> bool {
+    let Ok(value) = serde_json::from_slice::<Value>(line) else {
+        return false;
+    };
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .is_some_and(|id| ids.iter().any(|candidate| candidate.as_str() == id))
+}
+
+/// A planned rewrite: the bytes it was based on and the bytes to write.
+struct LinesRewrite {
+    original: Vec<u8>,
+    rewritten: Vec<u8>,
+}
+
 /// Rewrites `session_index.jsonl` without the lines whose `id` is one of
-/// `session_ids`. Every other line is kept byte-for-byte — parsed only far
-/// enough to read `id`, never re-serialized — so no unrelated line's
-/// formatting is ever disturbed. A no-op when the file doesn't exist or has
-/// no matching line: deleting a session Codex never indexed is not an error.
+/// `session_ids`. A no-op when the file doesn't exist or has no matching line:
+/// deleting a session Codex never indexed is not an error.
 fn remove_sessions_from_session_index(
     index_path: &Path,
     session_ids: &[String],
 ) -> Result<(), String> {
-    let content = match crate::security_limits::read_to_string_limited(
-        index_path,
-        crate::security_limits::MAX_CONFIG_FILE_BYTES,
-    ) {
-        Ok(content) => content,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+    match plan_index_rewrite(index_path, session_ids)? {
+        Some(plan) => commit_index_rewrite(index_path, plan),
+        None => Ok(()),
+    }
+}
+
+fn plan_index_rewrite(
+    index_path: &Path,
+    session_ids: &[String],
+) -> Result<Option<LinesRewrite>, String> {
+    let original = match read_limited(index_path, MAX_CONFIG_FILE_BYTES) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.to_string()),
     };
+    let Some(rewritten) = without_lines_for(&original, "id", session_ids) else {
+        return Ok(None);
+    };
+    Ok(Some(LinesRewrite {
+        original,
+        rewritten,
+    }))
+}
 
-    let mut changed = false;
-    let mut kept_lines: Vec<&str> = Vec::new();
-    for line in content.lines() {
-        let is_match = serde_json::from_str::<Value>(line)
-            .ok()
-            .and_then(|value| value.get("id").and_then(Value::as_str).map(str::to_string))
-            .is_some_and(|id| session_ids.contains(&id));
-        if is_match {
-            changed = true;
-        } else {
-            kept_lines.push(line);
+/// Replace the index atomically, but only if it still holds the bytes the
+/// plan was made from: Codex appends a line whenever a thread is renamed.
+fn commit_index_rewrite(index_path: &Path, plan: LinesRewrite) -> Result<(), String> {
+    crate::config::atomic_write_checked(index_path, &plan.rewritten, false, || {
+        match read_limited(index_path, MAX_CONFIG_FILE_BYTES) {
+            Ok(current) if current == plan.original => Ok(()),
+            Ok(_) => Err(AppError::Conflict(INDEX_CHANGED.to_string())),
+            Err(error) => Err(AppError::io(index_path, error)),
         }
-    }
-    if !changed {
-        return Ok(());
-    }
+    })
+    .map_err(|error: AppError| error.to_string())
+}
 
-    let mut rewritten = kept_lines.join("\n");
-    if !rewritten.is_empty() {
-        rewritten.push('\n');
+/// Removes the prompts typed in these sessions from Codex's input history.
+/// Codex appends to the file under an exclusive advisory lock and reopens it
+/// for every append (`codex-rs/message-history`), so the rewrite happens in
+/// place under the same lock instead of by replacing the file. A held lock or
+/// a file that changed underneath is reported for a retry with Codex closed.
+fn remove_sessions_from_history(history_path: &Path, session_ids: &[String]) -> Result<(), String> {
+    let Some(mut file) = open_history_for_rewrite(history_path).map_err(|e| e.to_string())? else {
+        return Ok(());
+    };
+    match file.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => return Err(HISTORY_IN_USE.to_string()),
+        Err(std::fs::TryLockError::Error(error)) => return Err(error.to_string()),
     }
-    crate::config::atomic_write(index_path, rewritten.as_bytes()).map_err(|error| error.to_string())
+    let result = plan_history_rewrite(&mut file, session_ids).and_then(|plan| match plan {
+        Some(plan) => commit_history_rewrite(&mut file, plan),
+        None => Ok(()),
+    });
+    // Closing the handle would release the lock too; do it now so a waiting
+    // Codex append can proceed.
+    let _ = file.unlock();
+    result
+}
+
+/// The history opened for reading and writing, or `None` when Codex has not
+/// written one.
+fn open_history_for_rewrite(history_path: &Path) -> io::Result<Option<File>> {
+    // The same link policy as every other Codex file read here.
+    match open_regular_file_no_symlink(history_path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    }
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(history_path)
+        .map(Some)
+}
+
+#[derive(PartialEq, Eq)]
+struct FileStamp {
+    len: u64,
+    modified: Option<SystemTime>,
+}
+
+impl FileStamp {
+    fn of(file: &File) -> io::Result<Self> {
+        let metadata = file.metadata()?;
+        Ok(Self {
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+        })
+    }
+}
+
+/// Read the locked history and work out the rewrite, if any line matches.
+fn plan_history_rewrite(
+    file: &mut File,
+    session_ids: &[String],
+) -> Result<Option<(FileStamp, LinesRewrite)>, String> {
+    let stamp = FileStamp::of(file).map_err(|error| error.to_string())?;
+    if stamp.len > MAX_HISTORY_REWRITE_BYTES {
+        return Err(format!(
+            "输入历史超过 {} MB，未清理其中的记录",
+            MAX_HISTORY_REWRITE_BYTES / (1024 * 1024)
+        ));
+    }
+    let mut original = Vec::new();
+    file.seek(SeekFrom::Start(0))
+        .and_then(|_| {
+            (&mut *file)
+                .take(MAX_HISTORY_REWRITE_BYTES + 1)
+                .read_to_end(&mut original)
+        })
+        .map_err(|error| error.to_string())?;
+    if original.len() as u64 != stamp.len {
+        return Err(HISTORY_CHANGED.to_string());
+    }
+    let Some(rewritten) = without_lines_for(&original, "session_id", session_ids) else {
+        return Ok(None);
+    };
+    Ok(Some((
+        stamp,
+        LinesRewrite {
+            original,
+            rewritten,
+        },
+    )))
+}
+
+/// Write the planned history through the locked handle. If the file changed
+/// since it was read, nothing is written; if writing fails, the original
+/// bytes are put back before the error is returned.
+fn commit_history_rewrite(
+    file: &mut File,
+    (stamp, plan): (FileStamp, LinesRewrite),
+) -> Result<(), String> {
+    // Codex waits for the lock, but a writer that ignores it may not have.
+    if FileStamp::of(file).map_err(|error| error.to_string())? != stamp {
+        return Err(HISTORY_CHANGED.to_string());
+    }
+    if let Err(error) = overwrite_in_place(file, &plan.rewritten) {
+        return Err(match overwrite_in_place(file, &plan.original) {
+            Ok(()) => error.to_string(),
+            Err(restore_error) => {
+                format!("{error}; restoring the original history failed: {restore_error}")
+            }
+        });
+    }
+    Ok(())
+}
+
+fn overwrite_in_place(file: &mut File, bytes: &[u8]) -> io::Result<()> {
+    file.seek(SeekFrom::Start(0))?;
+    file.write_all(bytes)?;
+    file.set_len(bytes.len() as u64)?;
+    file.sync_all()
+}
+
+/// Whether the history still holds a line for one of `session_ids`.
+fn history_mentions(history_path: &Path, session_ids: &[String]) -> io::Result<bool> {
+    match read_limited(history_path, MAX_HISTORY_REWRITE_BYTES) {
+        Ok(content) => Ok(content
+            .split_inclusive(|&byte| byte == b'\n')
+            .any(|line| line_names_one_of(line, "session_id", session_ids))),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+/// `state_N.sqlite` files newer than the one this build knows. Codex moves
+/// to a new file when it changes the schema; rows there cannot be cleaned
+/// yet, so the delete stays pending instead of reporting success.
+fn newer_state_dbs(home: &Path) -> Vec<String> {
+    let Some(known) = state_db_version(CODEX_STATE_DB_FILENAME) else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(home) else {
+        return Vec::new();
+    };
+    let mut newer: Vec<String> = entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| state_db_version(name).is_some_and(|version| version > known))
+        .collect();
+    newer.sort();
+    newer
+}
+
+fn state_db_version(file_name: &str) -> Option<u32> {
+    file_name
+        .strip_prefix("state_")?
+        .strip_suffix(".sqlite")?
+        .parse()
+        .ok()
 }
 
 fn parse_session(path: &Path) -> Option<SessionMeta> {
@@ -838,6 +1351,7 @@ fn parse_session_with_titles(
     let mut project_dir: Option<String> = None;
     let mut created_at: Option<i64> = None;
     let mut first_user_message: Option<String> = None;
+    let mut meta_seen = false;
 
     // Extract metadata and first user message from head lines
     for line in &head {
@@ -848,23 +1362,23 @@ fn parse_session_with_titles(
         if created_at.is_none() {
             created_at = value.get("timestamp").and_then(parse_timestamp_to_ms);
         }
-        if value.get("type").and_then(Value::as_str) == Some("session_meta") {
+        // Only the rollout's own (first) metadata record counts: a fork or a
+        // rollback replays its parent's records, and that parent may be a
+        // sub-agent while the fork is the user's.
+        if !meta_seen && value.get("type").and_then(Value::as_str) == Some("session_meta") {
+            meta_seen = true;
             if let Some(payload) = value.get("payload") {
-                if is_subagent_source(payload.get("source")) {
+                if is_internal_session(payload) {
                     return None;
                 }
-                if session_id.is_none() {
-                    session_id = payload
-                        .get("id")
-                        .and_then(Value::as_str)
-                        .map(|s| s.to_string());
-                }
-                if project_dir.is_none() {
-                    project_dir = payload
-                        .get("cwd")
-                        .and_then(Value::as_str)
-                        .map(|s| s.to_string());
-                }
+                session_id = payload
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(|s| s.to_string());
+                project_dir = payload
+                    .get("cwd")
+                    .and_then(Value::as_str)
+                    .map(|s| s.to_string());
                 if let Some(ts) = payload.get("timestamp").and_then(parse_timestamp_to_ms) {
                     created_at.get_or_insert(ts);
                 }
@@ -949,14 +1463,39 @@ fn parse_session_with_titles(
         resume_command: super::utils::is_uuid(&session_id)
             .then(|| super::utils::resume_command("codex resume", &session_id))
             .flatten(),
+        archived: false,
     })
 }
 
-fn is_subagent_source(source: Option<&Value>) -> bool {
-    source
-        .and_then(|value| value.as_object())
-        .map(|source| source.contains_key("subagent"))
-        .unwrap_or(false)
+// Adapted from yynxxxxx/Codex-X apps/desktop/src-tauri/src/sessions/storage.rs
+// (`source_value_is_subagent`, `thread_source_is_internal`) (MIT)
+/// Codex's own threads (sub-agents, guardian reviews, memory consolidation)
+/// stay out of the list the way Codex keeps them out of its own; deleting
+/// their parent still removes them.
+fn is_internal_session(payload: &Value) -> bool {
+    let internal_source = match payload.get("source") {
+        Some(Value::Object(source)) => {
+            source.contains_key("subagent") || source.contains_key("internal")
+        }
+        Some(Value::String(source)) => {
+            let source = source.trim().to_ascii_lowercase();
+            source == "subagent"
+                || source == "internal"
+                || source.starts_with("subagent_")
+                || source.starts_with("internal_")
+        }
+        _ => false,
+    };
+    internal_source
+        || payload
+            .get("thread_source")
+            .and_then(Value::as_str)
+            .is_some_and(|source| {
+                matches!(
+                    source.trim().to_ascii_lowercase().as_str(),
+                    "subagent" | "guardian_review" | "memory_consolidation"
+                )
+            })
 }
 
 fn title_candidate_from_user_message(text: &str) -> Option<String> {
@@ -1092,8 +1631,9 @@ fn collect_jsonl_files_at_depth(root: &Path, files: &mut Vec<PathBuf>, depth: us
 
 #[cfg(test)]
 mod tests {
+    use super::super::codex_io::open_lines_with_limits;
     use super::*;
-    use crate::codex_state_db::CODEX_STATE_DB_FILENAME;
+    use serde_json::json;
     use tempfile::tempdir;
 
     fn write_codex_session(path: &Path, session_id: &str, message: &str) {
@@ -1122,14 +1662,14 @@ mod tests {
             "Archived session",
         );
 
-        let sessions = scan_sessions_in_roots(&[active, archived]);
-        let ids = sessions
+        let sessions = scan_sessions_in_roots(&[active, archived], &ThreadIndex::default());
+        let archived_by_id = sessions
             .into_iter()
-            .map(|session| session.session_id)
-            .collect::<Vec<_>>();
+            .map(|session| (session.session_id, session.archived))
+            .collect::<HashMap<_, _>>();
 
-        assert!(ids.contains(&"active-id".to_string()));
-        assert!(ids.contains(&"archived-id".to_string()));
+        assert_eq!(archived_by_id.get("active-id"), Some(&false));
+        assert_eq!(archived_by_id.get("archived-id"), Some(&true));
     }
 
     #[test]
@@ -1675,7 +2215,7 @@ mod tests {
         std::fs::remove_file(&plain).unwrap();
         let path = root.join(format!("rollout-{id}.jsonl.zst"));
         std::fs::write(&path, zstd::stream::encode_all(&content[..], 1).unwrap()).unwrap();
-        let sessions = scan_sessions_in_roots_with_titles(&[root], &HashMap::new());
+        let sessions = scan_sessions_in_roots(&[root], &ThreadIndex::default());
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].session_id, id);
         assert_eq!(sessions[0].title.as_deref(), Some("压缩会话"));
@@ -2352,6 +2892,588 @@ mod tests {
         assert_eq!(
             count_rows(home, CodexRuntimeDb::State, "threads", "id", ROOT_ID),
             1
+        );
+    }
+
+    fn meta_line(id: &str) -> String {
+        json!({
+            "timestamp": "2026-03-06T21:50:12Z",
+            "type": "session_meta",
+            "payload": {"id": id, "cwd": "/tmp/project"}
+        })
+        .to_string()
+    }
+
+    fn message_line(role: &str, content: Value) -> String {
+        json!({
+            "timestamp": "2026-03-06T21:50:13Z",
+            "type": "response_item",
+            "payload": {"type": "message", "role": role, "content": content}
+        })
+        .to_string()
+    }
+
+    fn tool_output_line(output: Value) -> String {
+        json!({
+            "timestamp": "2026-03-06T21:50:14Z",
+            "type": "response_item",
+            "payload": {"type": "function_call_output", "call_id": "call_1", "output": output}
+        })
+        .to_string()
+    }
+
+    fn write_rollout(path: &Path, lines: &[String]) {
+        std::fs::write(path, lines.join("\n") + "\n").unwrap();
+    }
+
+    fn generous_limits() -> MessageLimits {
+        MessageLimits {
+            retained_bytes: 1 << 20,
+            tool_output_bytes: 1 << 20,
+        }
+    }
+
+    fn set_modified(path: &Path, seconds: u64) {
+        OpenOptions::new()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(UNIX_EPOCH + Duration::from_secs(seconds))
+            .unwrap();
+    }
+
+    #[test]
+    fn a_rollout_far_larger_than_the_decode_caps_loads_to_its_last_message() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("rollout.jsonl");
+        let lines: Vec<String> = (0..50)
+            .map(|index| message_line("user", json!(format!("message {index}"))))
+            .collect();
+        write_rollout(&path, &lines);
+        let file_len = std::fs::metadata(&path).unwrap().len();
+        // Input and decoded caps far below the file size only bind zstd streams.
+        let lines = open_lines_with_limits(&path, file_len / 4, file_len / 4, 1024).unwrap();
+        let messages = collect_messages(lines, generous_limits()).unwrap();
+        assert_eq!(messages.len(), 50);
+        assert_eq!(messages[49].content, "message 49");
+        assert!(messages.iter().all(|message| !message.truncated));
+    }
+
+    #[test]
+    fn an_oversized_record_becomes_a_notice_and_the_rest_still_loads() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("rollout.jsonl");
+        // Codex writes an image prompt twice: as the message and as an event.
+        let event = json!({
+            "timestamp": "2026-03-06T21:50:13Z",
+            "type": "event_msg",
+            "payload": {"type": "user_message", "message": "x", "images": ["y".repeat(400)]}
+        });
+        write_rollout(
+            &path,
+            &[
+                message_line("user", json!("before")),
+                message_line("user", json!("x".repeat(400))),
+                event.to_string(),
+                format!("{{\"unknown\":\"{}\"}}", "z".repeat(400)),
+                message_line("assistant", json!("after")),
+            ],
+        );
+        let lines = open_lines_with_limits(&path, u64::MAX, u64::MAX, 256).unwrap();
+        let messages = collect_messages(lines, generous_limits()).unwrap();
+        let roles: Vec<&str> = messages
+            .iter()
+            .map(|message| message.role.as_str())
+            .collect();
+        assert_eq!(roles, ["user", NOTICE_ROLE, NOTICE_ROLE, "assistant"]);
+        assert!(messages[1].truncated);
+        assert!(
+            messages[1]
+                .content
+                .contains("的消息，超过单条显示上限，未显示"),
+            "{}",
+            messages[1].content
+        );
+        // A line that cannot be classified is reported, not dropped.
+        assert!(
+            messages[2].content.contains("的记录"),
+            "{}",
+            messages[2].content
+        );
+        assert_eq!(messages[3].content, "after");
+    }
+
+    #[test]
+    fn the_retained_budget_bounds_the_reply_and_counts_what_it_hides() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("rollout.jsonl");
+        let lines: Vec<String> = (0..10)
+            .map(|index| message_line("user", json!(format!("0123456789ABCDEFGHIJ{index}"))))
+            .collect();
+        write_rollout(&path, &lines);
+        let lines = open_lines_with_limits(&path, u64::MAX, u64::MAX, 1024).unwrap();
+        let messages = collect_messages(
+            lines,
+            MessageLimits {
+                retained_bytes: 50,
+                tool_output_bytes: 1024,
+            },
+        )
+        .unwrap();
+        let (notice, shown) = messages.split_last().unwrap();
+        assert_eq!(shown.len(), 2);
+        let shown_bytes: usize = shown.iter().map(|message| message.content.len()).sum();
+        assert!(shown_bytes <= 50);
+        assert_eq!(notice.role, NOTICE_ROLE);
+        assert!(notice.truncated);
+        assert!(
+            notice.content.contains("后续 8 条消息未显示"),
+            "{}",
+            notice.content
+        );
+    }
+
+    #[test]
+    fn a_long_tool_output_keeps_its_head_on_a_char_boundary() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("rollout.jsonl");
+        write_rollout(&path, &[tool_output_line(json!("你好世界".repeat(10)))]);
+        let lines = open_lines_with_limits(&path, u64::MAX, u64::MAX, 1024).unwrap();
+        let messages = collect_messages(
+            lines,
+            MessageLimits {
+                retained_bytes: 1 << 20,
+                tool_output_bytes: 10,
+            },
+        )
+        .unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, "tool");
+        assert!(messages[0].truncated);
+        // 10 bytes falls inside the fourth character; the cut moves back to 9.
+        assert_eq!(messages[0].content, "你好世\n…[已截断 111 字节]");
+    }
+
+    #[test]
+    fn images_leave_a_placeholder_instead_of_vanishing() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("rollout.jsonl");
+        let image = json!({"type": "input_image", "image_url": "data:image/png;base64,AAAA"});
+        write_rollout(
+            &path,
+            &[
+                message_line(
+                    "user",
+                    json!([{"type": "input_text", "text": "看看这个"}, image.clone()]),
+                ),
+                message_line("user", json!([image.clone()])),
+                tool_output_line(json!([{"type": "input_text", "text": "截图如下"}, image])),
+            ],
+        );
+        let contents: Vec<String> = load_messages(&path)
+            .unwrap()
+            .into_iter()
+            .map(|message| message.content)
+            .collect();
+        assert_eq!(contents, ["看看这个\n[图片]", "[图片]", "截图如下\n[图片]"]);
+    }
+
+    #[test]
+    fn an_oversized_record_keeps_the_session_listed_and_dated_by_its_file() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("sessions");
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join(rollout_name(ROOT_ID, "jsonl"));
+        // The last record is over the per-line cap and longer than the tail
+        // window, so it can supply neither metadata nor a timestamp.
+        write_rollout(
+            &path,
+            &[
+                meta_line(ROOT_ID),
+                message_line("user", json!("Keep me listed")),
+                tool_output_line(json!("z".repeat(16 * 1024 * 1024))),
+            ],
+        );
+        let modified = unix_millis(std::fs::metadata(&path).unwrap().modified().unwrap());
+        let sessions = scan_sessions_in_roots(&[root], &ThreadIndex::default());
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].title.as_deref(), Some("Keep me listed"));
+        assert!(modified.is_some());
+        assert_eq!(sessions[0].last_active_at, modified);
+    }
+
+    #[test]
+    fn rollback_copies_fold_into_the_rollout_the_state_db_names() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("sessions");
+        std::fs::create_dir(&root).unwrap();
+        let original = root.join(rollout_name(ROOT_ID, "jsonl"));
+        let rolled_back = root.join(format!(
+            "rollout-2026-03-07T09-00-00-{ROOT_ID}_{OTHER_ID}.jsonl"
+        ));
+        write_codex_session(&original, ROOT_ID, "original");
+        write_codex_session(&rolled_back, ROOT_ID, "rolled back");
+        set_modified(&original, 1_000_000);
+        set_modified(&rolled_back, 2_000_000);
+
+        let mut threads = ThreadIndex::default();
+        threads.rollouts.insert(
+            ROOT_ID.to_string(),
+            ThreadRollout {
+                path: original.clone(),
+                archived: false,
+            },
+        );
+        let sessions = scan_sessions_in_roots(std::slice::from_ref(&root), &threads);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(
+            sessions[0].source_path.as_deref().map(PathBuf::from),
+            Some(original)
+        );
+
+        // Without the state DB, the most recently written copy wins.
+        let sessions = scan_sessions_in_roots(&[root], &ThreadIndex::default());
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(
+            sessions[0].source_path.as_deref().map(PathBuf::from),
+            Some(rolled_back)
+        );
+    }
+
+    #[test]
+    fn deleting_a_folded_row_removes_every_copy() {
+        let temp = tempdir().unwrap();
+        let (sessions, archived) = codex_home_with_sessions(temp.path());
+        let original = sessions.join(rollout_name(ROOT_ID, "jsonl"));
+        let rolled_back = sessions.join(format!(
+            "rollout-2026-03-07T09-00-00-{ROOT_ID}_{OTHER_ID}.jsonl"
+        ));
+        let archived_copy = archived.join(rollout_name(ROOT_ID, "jsonl"));
+        for path in [&original, &rolled_back, &archived_copy] {
+            write_codex_session(path, ROOT_ID, "copy");
+        }
+        let result = delete_session(&sessions, &rolled_back, ROOT_ID).unwrap();
+        assert!(
+            result.source_deleted && !result.cleanup_pending,
+            "{:?}",
+            result.error
+        );
+        assert!(!original.exists() && !rolled_back.exists() && !archived_copy.exists());
+    }
+
+    #[test]
+    fn archived_comes_from_the_archive_folder_or_the_state_db() {
+        let temp = tempdir().unwrap();
+        let (active, archived) = codex_home_with_sessions(temp.path());
+        let in_archive = archived.join(rollout_name(ROOT_ID, "jsonl"));
+        let flagged = active.join(rollout_name(CHILD_ID, "jsonl"));
+        let plain = active.join(rollout_name(OTHER_ID, "jsonl"));
+        write_codex_session(&in_archive, ROOT_ID, "in archive");
+        write_codex_session(&flagged, CHILD_ID, "flagged");
+        write_codex_session(&plain, OTHER_ID, "plain");
+        let mut threads = ThreadIndex::default();
+        threads.rollouts.insert(
+            CHILD_ID.to_string(),
+            ThreadRollout {
+                path: flagged,
+                archived: true,
+            },
+        );
+        let archived_by_id: HashMap<String, bool> =
+            scan_sessions_in_roots(&[active, archived], &threads)
+                .into_iter()
+                .map(|session| (session.session_id, session.archived))
+                .collect();
+        assert!(archived_by_id[ROOT_ID]);
+        assert!(archived_by_id[CHILD_ID]);
+        assert!(!archived_by_id[OTHER_ID]);
+    }
+
+    #[test]
+    fn thread_rollouts_come_from_the_state_db_and_tolerate_other_schemas() {
+        let temp = tempdir().unwrap();
+        let db_path = temp.path().join(CODEX_STATE_DB_FILENAME);
+        Connection::open(&db_path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, archived INTEGER NOT NULL DEFAULT 0, title TEXT NOT NULL);
+                 INSERT INTO threads VALUES ('active', 'sessions/a.jsonl', 0, 't');
+                 INSERT INTO threads VALUES ('stored', 'archived_sessions/b.jsonl', 1, 't');",
+            )
+            .unwrap();
+        let rollouts = load_thread_rollouts_from_db(&db_path, temp.path());
+        assert_eq!(
+            rollouts["active"].path,
+            temp.path().join("sessions/a.jsonl")
+        );
+        assert!(!rollouts["active"].archived);
+        assert!(rollouts["stored"].archived);
+
+        let trimmed = temp.path().join("trimmed.sqlite");
+        Connection::open(&trimmed)
+            .unwrap()
+            .execute_batch("CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT);")
+            .unwrap();
+        assert!(load_thread_rollouts_from_db(&trimmed, temp.path()).is_empty());
+    }
+
+    #[test]
+    fn a_fork_replaying_a_sub_agent_record_stays_listed() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("fork.jsonl");
+        let replayed_parent = json!({
+            "timestamp": "2026-03-06T21:50:12Z",
+            "type": "session_meta",
+            "payload": {
+                "id": "parent-id",
+                "cwd": "/tmp/project",
+                "source": {"subagent": {"thread_spawn": {"parent_thread_id": "root", "depth": 1}}}
+            }
+        });
+        write_rollout(
+            &path,
+            &[
+                meta_line("fork-id"),
+                replayed_parent.to_string(),
+                message_line("user", json!("My own fork")),
+            ],
+        );
+        let meta = parse_session(&path).expect("the user's fork is listed");
+        assert_eq!(meta.session_id, "fork-id");
+        assert_eq!(meta.title.as_deref(), Some("My own fork"));
+    }
+
+    #[test]
+    fn guardian_and_memory_threads_are_hidden_like_sub_agents() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("internal.jsonl");
+        for payload in [
+            json!({"id": "g", "cwd": "/tmp", "thread_source": "guardian_review"}),
+            json!({"id": "m", "cwd": "/tmp", "thread_source": "memory_consolidation"}),
+            json!({"id": "i", "cwd": "/tmp", "source": {"internal": "memory_consolidation"}}),
+            json!({"id": "s", "cwd": "/tmp", "source": {"subagent": "review"}}),
+        ] {
+            let meta = json!({
+                "timestamp": "2026-03-06T21:50:12Z",
+                "type": "session_meta",
+                "payload": payload.clone()
+            });
+            write_rollout(
+                &path,
+                &[
+                    meta.to_string(),
+                    message_line("user", json!("internal prompt")),
+                ],
+            );
+            assert!(parse_session(&path).is_none(), "{payload}");
+        }
+        // A thread the user started is not internal.
+        let user = json!({"id": "u", "cwd": "/tmp", "source": "vscode", "thread_source": "user"});
+        assert!(!is_internal_session(&user));
+    }
+
+    const HISTORY_FIXTURE: &str = concat!(
+        "{\"session_id\":\"keep\",\"ts\":1,\"text\":\"a\"}\r\n",
+        "{\"session_id\":\"drop\",\"ts\":2,\"text\":\"b\"}\r\n",
+        "not json at all\n",
+        "{\"session_id\":\"drop-child\",\"ts\":3,\"text\":\"c\"}\n",
+        "{\"session_id\":\"keep\",\"ts\":4,\"text\":\"d\"}",
+    );
+
+    fn ids(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn history_cleanup_removes_only_those_sessions_and_keeps_every_other_byte() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join(CODEX_HISTORY_FILENAME);
+        std::fs::write(&path, HISTORY_FIXTURE).unwrap();
+
+        remove_sessions_from_history(&path, &ids(&["drop", "drop-child"])).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            concat!(
+                "{\"session_id\":\"keep\",\"ts\":1,\"text\":\"a\"}\r\n",
+                "not json at all\n",
+                "{\"session_id\":\"keep\",\"ts\":4,\"text\":\"d\"}",
+            )
+        );
+        assert!(!history_mentions(&path, &ids(&["drop", "drop-child"])).unwrap());
+        assert!(history_mentions(&path, &ids(&["keep"])).unwrap());
+
+        // A missing history means Codex never saved one: nothing to clean.
+        let missing = temp.path().join("missing").join(CODEX_HISTORY_FILENAME);
+        remove_sessions_from_history(&missing, &ids(&["drop"])).unwrap();
+        assert!(!history_mentions(&missing, &ids(&["drop"])).unwrap());
+    }
+
+    #[test]
+    fn history_cleanup_writes_nothing_when_the_file_changed_after_it_was_read() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join(CODEX_HISTORY_FILENAME);
+        std::fs::write(&path, HISTORY_FIXTURE).unwrap();
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        let plan = plan_history_rewrite(&mut file, &ids(&["drop"]))
+            .unwrap()
+            .expect("a line to remove");
+        // A writer that ignores the lock appends a prompt in between.
+        file.seek(SeekFrom::End(0)).unwrap();
+        file.write_all(b"\n{\"session_id\":\"late\",\"ts\":5,\"text\":\"e\"}\n")
+            .unwrap();
+        let error = commit_history_rewrite(&mut file, plan).unwrap_err();
+        assert!(error.contains("请关闭 Codex 后重试"), "{error}");
+        drop(file);
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.starts_with(HISTORY_FIXTURE) && content.contains("late"));
+    }
+
+    #[test]
+    fn history_cleanup_asks_to_close_codex_while_the_file_is_locked() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join(CODEX_HISTORY_FILENAME);
+        std::fs::write(&path, HISTORY_FIXTURE).unwrap();
+        let holder = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        holder.try_lock().unwrap();
+        let error = remove_sessions_from_history(&path, &ids(&["drop"])).unwrap_err();
+        assert!(error.contains("请关闭 Codex 后重试"), "{error}");
+        drop(holder);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), HISTORY_FIXTURE);
+    }
+
+    #[test]
+    fn delete_also_clears_the_subtrees_prompts_from_history() {
+        let temp = tempdir().unwrap();
+        let home = temp.path();
+        let (sessions, _) = codex_home_with_sessions(home);
+        create_runtime_dbs(
+            home,
+            &[
+                CodexRuntimeDb::Logs,
+                CodexRuntimeDb::Queue,
+                CodexRuntimeDb::Memories,
+                CodexRuntimeDb::Goals,
+                CodexRuntimeDb::ThreadHistory,
+                CodexRuntimeDb::State,
+            ],
+        );
+        seed_thread(home, ROOT_ID, None);
+        seed_thread(home, CHILD_ID, Some(ROOT_ID));
+        let main = sessions.join(rollout_name(ROOT_ID, "jsonl"));
+        write_codex_session(&main, ROOT_ID, "root");
+        let history = home.join(CODEX_HISTORY_FILENAME);
+        let other_line = format!("{{\"session_id\":\"{OTHER_ID}\",\"ts\":3,\"text\":\"keep\"}}\n");
+        std::fs::write(
+            &history,
+            format!(
+                "{{\"session_id\":\"{ROOT_ID}\",\"ts\":1,\"text\":\"root prompt\"}}\n{{\"session_id\":\"{CHILD_ID}\",\"ts\":2,\"text\":\"child prompt\"}}\n{other_line}"
+            ),
+        )
+        .unwrap();
+
+        let result = delete_session(&sessions, &main, ROOT_ID).unwrap();
+        assert!(
+            result.source_deleted && !result.cleanup_pending,
+            "{:?}",
+            result.error
+        );
+        assert_eq!(std::fs::read_to_string(&history).unwrap(), other_line);
+    }
+
+    #[test]
+    fn a_locked_history_keeps_the_delete_pending_until_codex_is_closed() {
+        let temp = tempdir().unwrap();
+        let (sessions, _) = codex_home_with_sessions(temp.path());
+        let main = sessions.join(rollout_name(ROOT_ID, "jsonl"));
+        write_codex_session(&main, ROOT_ID, "root");
+        let history = temp.path().join(CODEX_HISTORY_FILENAME);
+        std::fs::write(
+            &history,
+            format!("{{\"session_id\":\"{ROOT_ID}\",\"ts\":1,\"text\":\"root prompt\"}}\n"),
+        )
+        .unwrap();
+        let holder = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&history)
+            .unwrap();
+        holder.try_lock().unwrap();
+
+        let partial = delete_session(&sessions, &main, ROOT_ID).unwrap();
+        assert!(partial.source_deleted && partial.cleanup_pending);
+        assert!(partial.error.unwrap().contains("请关闭 Codex 后重试"));
+        assert!(!main.exists());
+
+        drop(holder);
+        let retried = delete_session(&sessions, &main, ROOT_ID).unwrap();
+        assert!(!retried.cleanup_pending, "{:?}", retried.error);
+        assert!(std::fs::read_to_string(&history).unwrap().is_empty());
+    }
+
+    #[test]
+    fn index_cleanup_keeps_crlf_and_unparsable_lines_byte_for_byte() {
+        let temp = tempdir().unwrap();
+        let index = temp.path().join(CODEX_SESSION_INDEX_FILENAME);
+        std::fs::write(
+            &index,
+            "{\"id\":\"drop\",\"thread_name\":\"x\"}\r\n{\"id\":\"keep\",\"thread_name\":\"y\"}\r\nnot json\r\n",
+        )
+        .unwrap();
+        remove_sessions_from_session_index(&index, &ids(&["drop"])).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&index).unwrap(),
+            "{\"id\":\"keep\",\"thread_name\":\"y\"}\r\nnot json\r\n"
+        );
+    }
+
+    #[test]
+    fn index_cleanup_does_not_overwrite_a_line_appended_after_reading() {
+        let temp = tempdir().unwrap();
+        let index = temp.path().join(CODEX_SESSION_INDEX_FILENAME);
+        let original = "{\"id\":\"drop\",\"thread_name\":\"x\"}\n";
+        std::fs::write(&index, original).unwrap();
+        let plan = plan_index_rewrite(&index, &ids(&["drop"]))
+            .unwrap()
+            .expect("a line to remove");
+        let appended = "{\"id\":\"renamed\",\"thread_name\":\"new name\"}\n";
+        OpenOptions::new()
+            .append(true)
+            .open(&index)
+            .unwrap()
+            .write_all(appended.as_bytes())
+            .unwrap();
+        let error = commit_index_rewrite(&index, plan).unwrap_err();
+        assert!(error.contains("请关闭 Codex 后重试"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(&index).unwrap(),
+            format!("{original}{appended}")
+        );
+    }
+
+    #[test]
+    fn a_newer_state_db_keeps_the_delete_pending() {
+        let temp = tempdir().unwrap();
+        let (sessions, _) = codex_home_with_sessions(temp.path());
+        let main = sessions.join(rollout_name(ROOT_ID, "jsonl"));
+        write_codex_session(&main, ROOT_ID, "root");
+        std::fs::write(temp.path().join("state_6.sqlite"), b"").unwrap();
+        // An older leftover is not a store Codex still reads.
+        std::fs::write(temp.path().join("state_4.sqlite"), b"").unwrap();
+
+        let result = delete_session(&sessions, &main, ROOT_ID).unwrap();
+        assert!(result.source_deleted && result.cleanup_pending);
+        let error = result.error.unwrap();
+        assert!(
+            error.contains("state_6.sqlite") && !error.contains("state_4.sqlite"),
+            "{error}"
         );
     }
 }

@@ -402,8 +402,9 @@ describe("Codex line save path", () => {
 });
 
 describe("opening Codex", () => {
+  // Shared restart scope (CODEX_RESTART_SCOPE) names every window that closes.
   const confirmText =
-    "Codex 正在运行，继续将关闭并重新启动它以应用最新配置，期间的任何未完成操作都会中断。是否继续？";
+    "Codex 正在运行，重启后才会使用最新配置。将关闭此安装目录下的所有 Codex 窗口（包括用其他工具打开的实例）并重新启动，未完成的操作会中断。是否继续？";
   function routeRunningCodex(openResult: Record<string, unknown>) {
     routeInvoke({
       get_codex_process_status: () => ({
@@ -489,24 +490,32 @@ describe("line editor dialogs", () => {
     mount();
     await editAlpha();
     fireEvent.click(screen.getByRole("button", { name: "获取模型" }));
-    const picker = await screen.findByRole("dialog", { name: "选择默认模型" });
-    expect(mocks.toast.success).toHaveBeenCalledWith("已获取 2 个模型", {
-      description: "模型列表不代表模型可用性；自动模式将在保存时尝试识别协议。",
-    });
-    fireEvent.click(within(picker).getByRole("button", { name: "gpt-b" }));
+    const picker = await screen.findByRole("dialog", { name: "选择模型" });
+    // The picker itself shows the count; no toast repeats it.
+    expect(within(picker).getByText(/共 2 个/)).toBeVisible();
+    expect(mocks.toast.success).not.toHaveBeenCalledWith(
+      expect.stringMatching(/已获取/),
+      expect.anything(),
+    );
+    fireEvent.click(within(picker).getByRole("button", { name: /^gpt-b/ }));
     expect(
-      screen.queryByRole("dialog", { name: "选择默认模型" }),
+      screen.queryByRole("dialog", { name: "选择模型" }),
     ).not.toBeInTheDocument();
     expect(document.querySelector('[name="provider-model"]')).toHaveValue(
       "gpt-b",
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "获取模型" }));
-    await screen.findByRole("dialog", { name: "选择默认模型" });
+    // Once fetched, the button reopens the cached list under a new label.
+    expect(
+      screen.queryByRole("button", { name: "获取模型" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "选择模型" }));
+    await screen.findByRole("dialog", { name: "选择模型" });
+    expect(mocks.fetchModels).toHaveBeenCalledTimes(1);
     fireEvent.keyDown(document, { key: "Escape" });
     await waitFor(() =>
       expect(
-        screen.queryByRole("dialog", { name: "选择默认模型" }),
+        screen.queryByRole("dialog", { name: "选择模型" }),
       ).not.toBeInTheDocument(),
     );
     expect(
@@ -673,9 +682,9 @@ describe("activity history", () => {
 
 describe("command palette", () => {
   it("speed-tests every saved line in list order", async () => {
-    // Characterizes current behaviour, including the known issues listed in
-    // the decomposition plan: each result lands in the active line's banner
-    // and a custom line without an address is probed at 127.0.0.1:4000.
+    // One batched probe of every saved address, results shown per row in the
+    // line table. Lines without an address (official, bare) are not probed at
+    // invented URLs, and the current line's signboard is not overwritten.
     mocks.getAll.mockResolvedValue({
       Alpha: provider("Alpha"),
       Official: provider("Official", { category: "official" }, null),
@@ -686,19 +695,24 @@ describe("command palette", () => {
     await screen.findByRole("button", { name: /^Alpha，.*当前线路/ });
     await waitFor(() => expect(mocks.testEndpoints).toHaveBeenCalledTimes(1));
     mocks.testEndpoints.mockClear();
-    mocks.testEndpoints.mockResolvedValue([{ latency: 120 }]);
+    mocks.testEndpoints.mockResolvedValue([
+      { url: "https://example.com/v1", latency: 120 },
+      { url: "https://beta.example/v1", latency: 340 },
+    ]);
 
     fireEvent.keyDown(window, { key: "k", ctrlKey: true });
     fireEvent.click(screen.getByText("测速全部线路"));
 
-    await waitFor(() => expect(mocks.testEndpoints).toHaveBeenCalledTimes(4));
-    expect(mocks.toast.info).toHaveBeenCalledWith("正在对所有线路进行测速…");
+    await waitFor(() => expect(mocks.testEndpoints).toHaveBeenCalledTimes(1));
     expect(mocks.testEndpoints.mock.calls).toEqual([
-      [["https://example.com/v1"], { timeoutSecs: 12 }],
-      [["https://api.openai.com/v1"], { timeoutSecs: 12 }],
-      [["http://127.0.0.1:4000"], { timeoutSecs: 12 }],
-      [["https://beta.example/v1"], { timeoutSecs: 12 }],
+      [
+        ["https://example.com/v1", "https://beta.example/v1"],
+        { timeoutSecs: 12 },
+      ],
     ]);
+    const table = screen.getByRole("table", { name: "线路切换" });
+    expect(await within(table).findByText("340 ms")).toBeVisible();
+    expect(within(table).getByText("120 ms")).toBeVisible();
     expect(screen.queryByText("测速全部线路")).not.toBeInTheDocument();
   });
 });

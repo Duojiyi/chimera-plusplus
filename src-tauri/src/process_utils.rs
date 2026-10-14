@@ -302,6 +302,74 @@ fn terminate_process_tree(pid: u32) {
 #[cfg(not(any(unix, target_os = "windows")))]
 fn terminate_process_tree(_pid: u32) {}
 
+/// Decode text captured from a console child (PowerShell, cmd) for display.
+///
+/// Our scripts ask PowerShell for UTF-8 output, but ConstrainedLanguage mode
+/// and older hosts silently ignore that and emit the OEM code page instead
+/// (936/GBK on Simplified Chinese Windows), which a lossy UTF-8 decode turns
+/// into U+FFFD. Try UTF-8 (without BOM) first, then the OEM code page, and
+/// only then fall back to a lossy decode so this never fails.
+pub fn decode_console_output(bytes: &[u8]) -> String {
+    let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        return text.to_string();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // SAFETY: GetOEMCP takes no arguments and only reads system state.
+        let code_page = unsafe { windows_sys::Win32::Globalization::GetOEMCP() };
+        if let Some(text) = decode_with_code_page(bytes, code_page) {
+            return text;
+        }
+    }
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+/// Strictly decode `bytes` from a Windows code page. Returns `None` instead
+/// of guessing when the bytes are not valid in that code page.
+#[cfg(target_os = "windows")]
+fn decode_with_code_page(bytes: &[u8], code_page: u32) -> Option<String> {
+    use windows_sys::Win32::Globalization::{MultiByteToWideChar, MB_ERR_INVALID_CHARS};
+
+    if bytes.is_empty() {
+        return Some(String::new());
+    }
+    let length = i32::try_from(bytes.len()).ok()?;
+    // SAFETY: the input pointer and length describe a live slice; a null
+    // output buffer with zero capacity only asks for the required length.
+    let required = unsafe {
+        MultiByteToWideChar(
+            code_page,
+            MB_ERR_INVALID_CHARS,
+            bytes.as_ptr(),
+            length,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if required <= 0 {
+        return None;
+    }
+    let mut wide = vec![0_u16; usize::try_from(required).ok()?];
+    // SAFETY: `wide` holds exactly `required` writable UTF-16 units and stays
+    // alive for the duration of the call.
+    let written = unsafe {
+        MultiByteToWideChar(
+            code_page,
+            MB_ERR_INVALID_CHARS,
+            bytes.as_ptr(),
+            length,
+            wide.as_mut_ptr(),
+            required,
+        )
+    };
+    if written <= 0 {
+        return None;
+    }
+    wide.truncate(usize::try_from(written).ok()?);
+    String::from_utf16(&wide).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -455,6 +523,35 @@ mod tests {
             .expect_err("command must time out");
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[test]
+    fn console_output_prefers_utf8_and_strips_a_bom() {
+        assert_eq!(decode_console_output("中文 ready".as_bytes()), "中文 ready");
+        let mut with_bom = b"\xEF\xBB\xBF".to_vec();
+        with_bom.extend_from_slice("错误".as_bytes());
+        assert_eq!(decode_console_output(&with_bom), "错误");
+        assert_eq!(decode_console_output(b""), "");
+    }
+
+    #[test]
+    fn console_output_never_fails_on_invalid_bytes() {
+        let decoded = decode_console_output(&[0xFF, 0xFE, 0x81, 0x00, 0xC3]);
+        assert!(!decoded.is_empty());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn code_page_decoding_recovers_gbk_and_rejects_invalid_input() {
+        assert_eq!(
+            decode_with_code_page(b"{\"message\":\"\xD6\xD0\xCE\xC4\"}", 936).as_deref(),
+            Some("{\"message\":\"中文\"}")
+        );
+        assert_eq!(decode_with_code_page(b"", 936).as_deref(), Some(""));
+        // A dangling lead byte is not valid GBK; strict decoding must refuse.
+        assert_eq!(decode_with_code_page(&[0x81], 936), None);
+        // Invalid UTF-8 under code page 65001 must be refused, not panic.
+        assert_eq!(decode_with_code_page(&[0xFF, 0xFE, 0xFD], 65001), None);
     }
 
     #[test]

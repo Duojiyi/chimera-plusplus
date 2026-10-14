@@ -73,33 +73,105 @@ pub(crate) fn read_live_auth(path: &Path) -> Result<(FileSnapshot, LiveAuth), Ap
     }
 }
 
-/// Resolve a Vault identity for quota queries, never the legacy OAuth store.
-/// Codex owns refresh-token rotation: prefer its newer live access token for
-/// this same identity, without refreshing or writing either credential store.
+/// What a quota query presents for one Vault identity.
+pub(crate) struct QuotaCredentials {
+    pub access_token: String,
+    pub account_id: String,
+    /// Access-token expiry (unix seconds) when the token is a readable JWT.
+    pub access_expires_at: Option<i64>,
+}
+
+/// A token this close to expiry would be rejected while the request is in
+/// flight, which would read as a rejected login.
+const ACCESS_EXPIRY_MARGIN_SECS: i64 = 60;
+
+/// Whether the access token has expired. Codex renews it with the refresh
+/// token the next time the account is used, so this is not a sign-in problem.
+pub(crate) fn access_expired(expires_at: Option<i64>, now: i64) -> bool {
+    expires_at.is_some_and(|expires_at| expires_at <= now + ACCESS_EXPIRY_MARGIN_SECS)
+}
+
+/// The login a quota query presents for `key`. Codex owns refresh-token
+/// rotation: prefer its newer live login of this same identity over the slot.
+pub(crate) fn quota_login<'a>(
+    slot_auth: &'a Value,
+    live: Option<&'a Value>,
+    key: &str,
+) -> &'a Value {
+    match live {
+        Some(live)
+            if matches!(classify(live), LoginClass::Chatgpt(account) if account.key() == key)
+                && !identity::last_refresh_is_in_future(live, chrono::Utc::now())
+                && identity::is_at_least_as_fresh(live, slot_auth) =>
+        {
+            live
+        }
+        _ => slot_auth,
+    }
+}
+
+/// Resolve a Vault identity for quota queries, never the legacy OAuth store,
+/// without refreshing or writing either credential store.
 pub(crate) fn quota_credentials(
     vault: &Vault,
     codex_dir: &Path,
     key: &str,
-) -> Result<(String, String), AppError> {
+) -> Result<QuotaCredentials, AppError> {
     let slot = vault.applicable_slot(key)?;
-    let account_id = slot.account_id().to_string();
-    let mut auth = slot.auth;
-    if let Ok((_, LiveAuth::Present(live))) = read_live_auth(&codex_dir.join("auth.json")) {
-        if let LoginClass::Chatgpt(identity) = classify(&live) {
-            if identity.key() == key
-                && !identity::last_refresh_is_in_future(&live, chrono::Utc::now())
-                && identity::is_at_least_as_fresh(&live, &auth)
-            {
-                auth = live;
-            }
-        }
-    }
-    let token = auth
+    let live = match read_live_auth(&codex_dir.join("auth.json")) {
+        Ok((_, LiveAuth::Present(live))) => Some(live),
+        _ => None,
+    };
+    let auth = quota_login(&slot.auth, live.as_ref(), key);
+    let access_token = auth
         .pointer("/tokens/access_token")
         .and_then(Value::as_str)
         .filter(|token| !token.trim().is_empty())
-        .ok_or_else(vault::needs_login_error)?;
-    Ok((token.to_string(), account_id))
+        .ok_or_else(vault::needs_login_error)?
+        .to_string();
+    Ok(QuotaCredentials {
+        access_token,
+        account_id: slot.account_id().to_string(),
+        access_expires_at: identity::access_token_expires_at(auth),
+    })
+}
+
+/// Saves the ChatGPT login Codex holds right now into its existing slot
+/// before a live write may replace `auth.json` (U4 A2). Codex keeps rotating
+/// that login while a third-party line is active, so switching on to another
+/// account would otherwise leave the Vault with a refresh token Codex has
+/// already rotated away. Only an existing, non-tombstoned slot of the same
+/// identity is refreshed, and only with a login at least as fresh; nothing
+/// is created and live is never written.
+pub(crate) fn refresh_slot_from_live(vault: &Vault, codex_dir: &Path) -> Result<(), AppError> {
+    let (_, LiveAuth::Present(live)) = read_live_auth(&codex_dir.join("auth.json"))? else {
+        return Ok(());
+    };
+    match classify(&live) {
+        LoginClass::Chatgpt(account) => vault.refresh_existing_slot(&account, &live),
+        _ => Ok(()),
+    }
+}
+
+/// `refresh_slot_from_live` for the Codex live write path. Best effort, like
+/// the switch-away backfill: a Vault problem must not block a switch.
+///
+/// Lock order: callers may hold the provider switch lock (and the profile
+/// and lifecycle locks above it) but never the account mutation, a DB or a
+/// login lock. Opening the Vault takes and releases the login lock; the
+/// account mutation is then taken inside `refresh_existing_slot`, matching
+/// the order documented at `ACCOUNT_MUTATION`.
+pub(crate) fn refresh_slot_before_live_write(codex_dir: &Path) {
+    if require_enabled().is_err() {
+        return;
+    }
+    let result = Vault::open_default_if_present().and_then(|vault| match vault {
+        Some(vault) => refresh_slot_from_live(&vault, codex_dir),
+        None => Ok(()),
+    });
+    if let Err(error) = result {
+        log::warn!("切换前保存 Codex 当前登录失败，继续写入: {error}");
+    }
 }
 
 pub(crate) fn official_lines(db: &Database) -> Result<Vec<Provider>, AppError> {
@@ -367,6 +439,10 @@ mod tests {
     use super::test_support::Fixture;
     use super::*;
 
+    fn token_and_account(credentials: QuotaCredentials) -> (String, String) {
+        (credentials.access_token, credentials.account_id)
+    }
+
     #[test]
     fn quota_uses_the_requested_vault_identity_not_another_user_in_the_same_workspace() {
         let fx = Fixture::new();
@@ -386,7 +462,9 @@ mod tests {
         fx.write_live(&other);
         let live_before = fx.live_bytes();
         assert_eq!(
-            quota_credentials(&fx.vault, &fx.codex_dir(), &identity("a").key()).unwrap(),
+            token_and_account(
+                quota_credentials(&fx.vault, &fx.codex_dir(), &identity("a").key()).unwrap()
+            ),
             ("access-a".to_string(), "acct-a".to_string())
         );
         assert_eq!(fx.live_bytes(), live_before);
@@ -407,7 +485,7 @@ mod tests {
         fx.write_live(&rotated);
         let live_before = fx.live_bytes();
         assert_eq!(
-            quota_credentials(&fx.vault, &fx.codex_dir(), &key).unwrap(),
+            token_and_account(quota_credentials(&fx.vault, &fx.codex_dir(), &key).unwrap()),
             ("rotated-access".to_string(), "acct-a".to_string())
         );
         assert_eq!(fx.live_bytes(), live_before);
@@ -425,7 +503,7 @@ mod tests {
             .unwrap();
         let expected = ("access-a".to_string(), "acct-a".to_string());
         assert_eq!(
-            quota_credentials(&fx.vault, &fx.codex_dir(), &key).unwrap(),
+            token_and_account(quota_credentials(&fx.vault, &fx.codex_dir(), &key).unwrap()),
             expected
         );
         let mut stale = chatgpt_login("a", "2020-01-01T00:00:00Z");
@@ -438,7 +516,7 @@ mod tests {
         for live in [stale, future, conflict, json!({})] {
             fx.write_live(&live);
             assert_eq!(
-                quota_credentials(&fx.vault, &fx.codex_dir(), &key).unwrap(),
+                token_and_account(quota_credentials(&fx.vault, &fx.codex_dir(), &key).unwrap()),
                 expected
             );
         }
@@ -461,6 +539,185 @@ mod tests {
         fx.vault.set_tombstone(&key).unwrap();
         assert!(quota_credentials(&fx.vault, &fx.codex_dir(), &key).is_err());
         assert!(fx.vault.has_tombstone(&key));
+    }
+
+    #[test]
+    fn quota_reports_the_expiry_of_the_token_it_would_present() {
+        let fx = Fixture::new();
+        let key = identity("a").key();
+        let mut saved = chatgpt_login("a", "2020-01-01T00:00:00Z");
+        saved["tokens"]["access_token"] = json!(identity::test_support::jwt(json!({"exp": 1_000})));
+        fx.vault
+            .store_slot(&identity("a"), &saved, SlotSource::Cli)
+            .unwrap();
+        let credentials = quota_credentials(&fx.vault, &fx.codex_dir(), &key).unwrap();
+        assert_eq!(credentials.access_expires_at, Some(1_000));
+        assert!(access_expired(credentials.access_expires_at, 2_000));
+
+        // Codex's renewed live token of the same identity is what a query presents.
+        let mut renewed = chatgpt_login("a", "2020-01-02T00:00:00Z");
+        renewed["tokens"]["access_token"] =
+            json!(identity::test_support::jwt(json!({"exp": 5_000})));
+        fx.write_live(&renewed);
+        let credentials = quota_credentials(&fx.vault, &fx.codex_dir(), &key).unwrap();
+        assert_eq!(credentials.access_expires_at, Some(5_000));
+        assert!(!access_expired(credentials.access_expires_at, 2_000));
+
+        // A token about to expire counts as expired; an unknown expiry never does.
+        assert!(access_expired(Some(2_030), 2_000));
+        assert!(!access_expired(None, 2_000));
+    }
+
+    // U4 A2 (unit): the live login refreshes only its own existing slot.
+    #[test]
+    fn live_rotation_of_a_saved_account_is_kept_before_live_is_replaced() {
+        let fx = Fixture::new();
+        let a = identity("a");
+        let saved = chatgpt_login("a", "2020-01-01T00:00:00Z");
+        fx.vault.store_slot(&a, &saved, SlotSource::Cli).unwrap();
+        let mut rotated = chatgpt_login("a", "2020-01-02T00:00:00Z");
+        rotated["tokens"]["refresh_token"] = json!("rotated-refresh-a");
+        fx.write_live(&rotated);
+        let live_before = fx.live_bytes();
+        refresh_slot_from_live(&fx.vault, &fx.codex_dir()).unwrap();
+        assert_eq!(fx.vault.read_slot(&a.key()).unwrap().unwrap().auth, rotated);
+        assert_eq!(fx.live_bytes(), live_before);
+
+        // An older live copy never replaces the newer saved one.
+        fx.write_live(&saved);
+        refresh_slot_from_live(&fx.vault, &fx.codex_dir()).unwrap();
+        assert_eq!(fx.vault.read_slot(&a.key()).unwrap().unwrap().auth, rotated);
+
+        // An identity without a slot never gets one.
+        fx.write_live(&chatgpt_login("stranger", "2020-01-03T00:00:00Z"));
+        refresh_slot_from_live(&fx.vault, &fx.codex_dir()).unwrap();
+        assert_eq!(fx.vault.slot_keys(), vec![a.key()]);
+
+        // A tombstoned account keeps its marker and its stored login.
+        fx.vault.set_tombstone(&a.key()).unwrap();
+        fx.write_live(&chatgpt_login("a", "2020-01-04T00:00:00Z"));
+        refresh_slot_from_live(&fx.vault, &fx.codex_dir()).unwrap();
+        assert_eq!(fx.vault.read_slot(&a.key()).unwrap().unwrap().auth, rotated);
+        assert!(fx.vault.has_tombstone(&a.key()));
+
+        // No live login, or one that is not ChatGPT, changes nothing.
+        fx.vault.clear_tombstone(&a.key()).unwrap();
+        fx.write_live(&json!({"auth_mode": "apikey", "OPENAI_API_KEY": "sk-x"}));
+        refresh_slot_from_live(&fx.vault, &fx.codex_dir()).unwrap();
+        std::fs::remove_file(fx.codex_dir().join("auth.json")).unwrap();
+        refresh_slot_from_live(&fx.vault, &fx.codex_dir()).unwrap();
+        assert_eq!(fx.vault.read_slot(&a.key()).unwrap().unwrap().auth, rotated);
+    }
+
+    /// Points every location a switch and the default Vault use at a
+    /// temporary home, and restores the process environment afterwards.
+    struct IsolatedHome {
+        _dir: tempfile::TempDir,
+        saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    }
+
+    impl IsolatedHome {
+        fn new() -> Self {
+            let dir = tempfile::TempDir::new().unwrap();
+            let home = dir.path().to_path_buf();
+            let vars = [
+                ("CC_SWITCH_TEST_HOME", home.clone()),
+                ("HOME", home.clone()),
+                ("USERPROFILE", home.clone()),
+                ("LOCALAPPDATA", home.join("AppData").join("Local")),
+                ("XDG_DATA_HOME", home.join(".local").join("share")),
+            ];
+            let saved = vars
+                .iter()
+                .map(|(name, _)| (*name, std::env::var_os(name)))
+                .collect();
+            for (name, value) in &vars {
+                std::env::set_var(name, value);
+            }
+            crate::settings::reload_settings().unwrap();
+            Self { _dir: dir, saved }
+        }
+    }
+
+    impl Drop for IsolatedHome {
+        fn drop(&mut self) {
+            for (name, value) in &self.saved {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+            let _ = crate::settings::reload_settings();
+        }
+    }
+
+    // U4 A2 (switch level): official A → third-party X → Codex rotates A's
+    // tokens → official B → back to A hands Codex the rotated tokens.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn switching_through_a_third_party_line_keeps_tokens_codex_rotated_meanwhile() {
+        let _home = IsolatedHome::new();
+        let db = std::sync::Arc::new(Database::memory().unwrap());
+        let state = crate::store::AppState::new(db.clone());
+        let vault = Vault::open_default().unwrap();
+        let (a, b) = (identity("a"), identity("b"));
+        for (account, label) in [(&a, "a"), (&b, "b")] {
+            vault
+                .store_slot(
+                    account,
+                    &chatgpt_login(label, "2020-01-01T00:00:00Z"),
+                    SlotSource::Cli,
+                )
+                .unwrap();
+        }
+        {
+            let transaction = account_mutation().unwrap();
+            for (id, account) in [("line-a", &a), ("line-b", &b)] {
+                let mut line = Provider::with_id(
+                    id.to_string(),
+                    id.to_string(),
+                    json!({ "auth": {}, "config": "" }),
+                    None,
+                );
+                line.category = Some("official".to_string());
+                set_pin(&mut line, Some(&account.key()));
+                db.save_provider_with_account_pin(&transaction, &line)
+                    .unwrap();
+            }
+        }
+        let third_party = Provider::with_id(
+            "line-x".to_string(),
+            "X".to_string(),
+            json!({
+                "auth": { "OPENAI_API_KEY": "sk-x" },
+                "config": "model = \"model-x\"\n"
+            }),
+            None,
+        );
+        db.save_provider(AppType::Codex.as_str(), &third_party)
+            .unwrap();
+        let switch = |id: &str| {
+            crate::services::provider::ProviderService::switch(&state, AppType::Codex, id).unwrap();
+        };
+
+        switch("line-a");
+        switch("line-x");
+        // Codex keeps the official login in auth.json and rotates it.
+        let mut rotated = chatgpt_login("a", "2020-01-02T00:00:00Z");
+        rotated["tokens"]["access_token"] = json!("rotated-access-a");
+        rotated["tokens"]["refresh_token"] = json!("rotated-refresh-a");
+        std::fs::write(
+            crate::codex_config::get_codex_auth_path(),
+            serde_json::to_vec_pretty(&rotated).unwrap(),
+        )
+        .unwrap();
+        switch("line-b");
+        switch("line-a");
+
+        let live: Value =
+            crate::config::read_json_file(&crate::codex_config::get_codex_auth_path()).unwrap();
+        assert_eq!(live["tokens"]["access_token"], json!("rotated-access-a"));
+        assert_eq!(live["tokens"]["refresh_token"], json!("rotated-refresh-a"));
     }
 
     #[test]

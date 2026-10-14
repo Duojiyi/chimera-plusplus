@@ -1,6 +1,8 @@
 import type { ConnectionState } from "@/chimeraUtils";
 import type { Provider } from "@/types";
 import { LoaderCircle } from "lucide-react";
+import { isOfficialLine } from "@/utils/lineBadge";
+import { LineBadge, lineIdentityColor } from "@/components/LineBadge";
 import "./MiniSignboard.css";
 
 interface MiniSignboardProps {
@@ -18,24 +20,14 @@ export function MiniSignboard({
   appTitle = "Codex",
   onClick,
 }: MiniSignboardProps) {
-  const isOfficial =
-    currentProvider?.category === "official" ||
-    currentProvider?.id === "codex-official";
   const lineName = currentProvider
     ? currentProvider.name || "未命名线路"
     : unresolvedLabel;
-  const shortName = isOfficial
-    ? "官"
-    : lineName.includes("DeepSeek")
-      ? "DS"
-      : /[\u3400-\u9fff]/.test(lineName[0])
-        ? lineName[0]
-        : lineName.slice(0, 2).toUpperCase();
-  const compactLineName =
-    lineName.length > 12 ? lineName.slice(0, 12) + "…" : lineName;
-  const color = currentProvider
-    ? currentProvider.iconColor || (isOfficial ? "#CED1D5" : "#537197")
-    : "var(--plate-fg-3)";
+  const stripe = !currentProvider
+    ? "var(--plate-fg-3)"
+    : isOfficialLine(currentProvider)
+      ? "var(--plate-fg-2)"
+      : lineIdentityColor(currentProvider);
   const latency = connection.kind === "connected" ? connection.latencyMs : null;
   const slow = latency != null && latency >= 1000;
   const reading =
@@ -68,28 +60,20 @@ export function MiniSignboard({
     >
       <span
         className="mini-signboard-stripe"
-        style={{ backgroundColor: color }}
+        style={{ backgroundColor: stripe }}
       />
       <span className="mini-signboard-tool">{appTitle}</span>
       <span className="mini-signboard-track" aria-hidden="true" />
       <span className="mini-signboard-line">
         {currentProvider && (
-          <span
-            className="mini-signboard-badge"
-            style={{
-              backgroundColor: color,
-              borderRadius: isOfficial ? "50%" : undefined,
-              color: isOfficial ? "#1F2328" : undefined,
-            }}
-          >
-            {shortName}
-          </span>
+          <LineBadge line={currentProvider} size="sm" onPlate />
         )}
         <span
           className="mini-signboard-name"
           data-unresolved={!currentProvider}
+          title={lineName}
         >
-          {compactLineName}
+          {lineName}
         </span>
       </span>
       {currentProvider && (

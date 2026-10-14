@@ -1,10 +1,46 @@
 import type { ReactNode } from "react";
 import { createElement } from "react";
-import { SessionMeta } from "@/types";
+import type {
+  SessionListEntry,
+  SessionTranscriptEntry,
+} from "@/lib/api/sessions";
+import type { SessionMessage, SessionMeta } from "@/types";
 
 const CODEX_IDE_CONTEXT_PREFIX = "# Context from my IDE setup:";
 const CODEX_REQUEST_MARKER = "my request for codex";
 export const UNKNOWN_PROJECT_DIR_KEY = "__unknown_project_dir__";
+
+/** Role of the entries the reader adds when it leaves content out. */
+export const NOTICE_ROLE = "notice";
+
+/** Product names, the same ones the 应用 filter offers. */
+const PROVIDER_NAMES: Record<string, string> = {
+  codex: "Codex",
+  claude: "Claude Code",
+  gemini: "Gemini CLI",
+  opencode: "OpenCode",
+  grokbuild: "Grok Build",
+};
+
+/** Tools whose deletes also remove sub-sessions they spawned. */
+const PROVIDERS_WITH_SUB_SESSIONS = new Set(["codex", "claude"]);
+
+const DATE_TIME_FORMAT = new Intl.DateTimeFormat("zh-CN", {
+  year: "numeric",
+  month: "numeric",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+});
+const MONTH_DAY_FORMAT = new Intl.DateTimeFormat("zh-CN", {
+  month: "long",
+  day: "numeric",
+});
+const FULL_DATE_FORMAT = new Intl.DateTimeFormat("zh-CN", {
+  year: "numeric",
+  month: "long",
+  day: "numeric",
+});
 
 export interface SessionDirectoryGroup {
   key: string;
@@ -86,9 +122,10 @@ export const getBaseName = (value?: string | null) => {
   return parts[parts.length - 1] || trimmed;
 };
 
+/** The UI is Simplified Chinese, so dates are too, whatever the OS locale. */
 export const formatTimestamp = (value?: number) => {
   if (!value) return "";
-  return new Date(value).toLocaleString();
+  return DATE_TIME_FORMAT.format(value);
 };
 
 export const formatRelativeTime = (
@@ -106,44 +143,102 @@ export const formatRelativeTime = (
   if (minutes < 60) return t("sessionManager.minutesAgo", { count: minutes });
   if (hours < 24) return t("sessionManager.hoursAgo", { count: hours });
   if (days < 7) return t("sessionManager.daysAgo", { count: days });
-  return new Date(value).toLocaleDateString();
+  const sameYear =
+    new Date(value).getFullYear() === new Date(now).getFullYear();
+  return (sameYear ? MONTH_DAY_FORMAT : FULL_DATE_FORMAT).format(value);
 };
 
-export const getProviderLabel = (
-  providerId: string,
-  t: (key: string) => string,
-) => {
-  const key = `apps.${providerId}`;
-  const translated = t(key);
-  return translated === key ? providerId : translated;
-};
+export const getProviderLabel = (providerId: string) =>
+  PROVIDER_NAMES[providerId] ?? providerId;
 
 // 根据 providerId 获取对应的图标名称
 export const getProviderIconName = (providerId: string) => {
   if (providerId === "codex") return "openai";
   if (providerId === "grokbuild") return "grok";
-  if (providerId === "claude") return "claude";
-  if (providerId === "opencode") return "opencode";
-  {
-  }
   return providerId;
 };
 
-export const getRoleTone = (role: string) => {
-  const normalized = role.toLowerCase();
-  if (normalized === "assistant") return "text-blue-500";
-  if (normalized === "user") return "text-emerald-500";
-  if (normalized === "system") return "text-amber-500";
-  if (normalized === "tool") return "text-purple-500";
-  return "text-muted-foreground";
+export const isArchivedSession = (session: SessionMeta) =>
+  (session as SessionListEntry).archived === true;
+
+export const isTruncatedMessage = (message: SessionMessage) =>
+  (message as SessionTranscriptEntry).truncated === true;
+
+export const isNoticeMessage = (message: SessionMessage) =>
+  message.role === NOTICE_ROLE;
+
+export const hasSubSessions = (session: SessionMeta) =>
+  PROVIDERS_WITH_SUB_SESSIONS.has(session.providerId);
+
+/** The first block of a UUID is enough to tell sessions apart at a glance. */
+export const shortSessionId = (sessionId: string) => sessionId.slice(0, 8);
+
+/**
+ * The JSON export. Tool outputs (command results, file contents) and the
+ * record's location on this computer are left out unless asked for: both can
+ * carry secrets or personal paths into a file that gets shared.
+ */
+export const buildSessionExport = (
+  session: SessionMeta,
+  messages: SessionMessage[],
+  { includeToolOutput }: { includeToolOutput: boolean },
+) => {
+  const exportedSession: SessionMeta = { ...session };
+  delete exportedSession.sourcePath;
+  return {
+    version: 1,
+    session: exportedSession,
+    messages: includeToolOutput
+      ? messages
+      : messages.filter((message) => message.role.toLowerCase() !== "tool"),
+  };
 };
 
-export const getRoleLabel = (role: string, t: (key: string) => string) => {
+export interface SessionReadFailure {
+  /** The record is beyond what the reader accepts, not unreadable. */
+  tooLarge: boolean;
+  /** One plain sentence on the likely cause, or "" when it is unknown. */
+  hint: string;
+}
+
+/** Turn a read error from the backend into something a person can act on. */
+export const describeSessionReadError = (
+  message: string,
+): SessionReadFailure => {
+  if (/exceeds byte limit/i.test(message)) {
+    return {
+      tooLarge: true,
+      hint: "这条会话的压缩记录超过了可读取的上限。",
+    };
+  }
+  if (/os error (32|33)\b|used by another process|正在使用/i.test(message)) {
+    return {
+      tooLarge: false,
+      hint: "文件正被其他程序占用，请稍后重试。",
+    };
+  }
+  if (
+    /os error (5|13)\b|permission denied|access is denied|拒绝访问/i.test(
+      message,
+    )
+  ) {
+    return { tooLarge: false, hint: "没有读取这个文件的权限。" };
+  }
+  if (/os error (2|3)\b|not found|cannot find|找不到/i.test(message)) {
+    return {
+      tooLarge: false,
+      hint: "记录文件已不存在，可能已被移动或删除。刷新列表后再试。",
+    };
+  }
+  return { tooLarge: false, hint: "" };
+};
+
+export const getRoleLabel = (role: string) => {
   const normalized = role.toLowerCase();
   if (normalized === "assistant") return "AI";
-  if (normalized === "user") return t("sessionManager.roleUser");
-  if (normalized === "system") return t("sessionManager.roleSystem");
-  if (normalized === "tool") return t("sessionManager.roleTool");
+  if (normalized === "user") return "用户";
+  if (normalized === "system") return "系统";
+  if (normalized === "tool") return "工具输出";
   return role;
 };
 

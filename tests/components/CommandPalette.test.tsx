@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, cleanup } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { BarChart3, MessageSquare } from "lucide-react";
 import { CommandPalette } from "@/components/CommandPalette";
 import type { Provider } from "@/types";
 
@@ -17,13 +18,18 @@ function mount(providers: Provider[] = [saved]) {
     onEditProvider: vi.fn(),
     onSpeedTestAll: vi.fn(),
     onCheckHealth: vi.fn(),
-    canNavigate: (view: string) => ["sessions", "usage"].includes(view),
   };
+  // The shell passes only the pages the user can open, under their nav labels.
+  const pages = [
+    { id: "sessions", label: "会话", icon: MessageSquare },
+    { id: "usage", label: "用量", icon: BarChart3 },
+  ];
   const view = render(
     <CommandPalette
       isOpen
       providers={providers}
       currentProviderId={saved.id}
+      pages={pages}
       {...callbacks}
     />,
   );
@@ -61,8 +67,22 @@ describe("command palette uses persisted data", () => {
     expect(screen.getByText("当前线路")).toBeVisible();
     fireEvent.click(screen.getByText("切换到 My saved route"));
     expect(callbacks.onSwitchProvider).toHaveBeenCalledWith("persisted-id");
+    // Edit entries stay out of the default list and appear once the user searches.
+    expect(screen.queryByText("编辑 My saved route")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByRole("combobox"), {
+      target: { value: "saved" },
+    });
     fireEvent.click(screen.getByText("编辑 My saved route"));
     expect(callbacks.onEditProvider).toHaveBeenCalledWith("persisted-id");
+  });
+  it("edits the selected line with Ctrl+Enter", () => {
+    const callbacks = mount();
+    fireEvent.keyDown(screen.getByRole("combobox"), {
+      key: "Enter",
+      ctrlKey: true,
+    });
+    expect(callbacks.onEditProvider).toHaveBeenCalledWith("persisted-id");
+    expect(callbacks.onSwitchProvider).not.toHaveBeenCalled();
   });
   it("does not fabricate providers for an empty store", () => {
     mount([]);
@@ -78,11 +98,11 @@ describe("command palette uses persisted data", () => {
     expect(callbacks.onSpeedTestAll).toHaveBeenCalledTimes(1);
     expect(screen.queryByText("测速 My saved route")).not.toBeInTheDocument();
   });
-  it("navigates to actual sessions and usage without sample metadata", () => {
+  it("navigates to the pages it is given, under their navigation labels", () => {
     const callbacks = mount();
-    fireEvent.click(screen.getByText("查看会话"));
+    fireEvent.click(screen.getByText("会话"));
     expect(callbacks.onNavigate).toHaveBeenCalledWith("sessions");
-    fireEvent.click(screen.getByText("查看用量"));
+    fireEvent.click(screen.getByText("用量"));
     expect(callbacks.onNavigate).toHaveBeenCalledWith("usage");
   });
 });

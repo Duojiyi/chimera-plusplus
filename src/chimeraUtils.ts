@@ -1,13 +1,13 @@
 import type {
+  CodexApiFormat,
+  CodexApiFormatSelection,
   CodexCatalogModel,
   CodexModelRoute,
   Provider,
-  ProviderMeta,
 } from "@/types";
-import type {
-  DetectedCodexApiFormat,
-  FetchedModel,
-} from "@/lib/api/model-fetch";
+import type { FetchedModel } from "@/lib/api/model-fetch";
+import { codexApiFormatForModel } from "@/utils/providerConfigUtils";
+import { codexProviderRouting, type CodexRouting } from "@/utils/codexRouting";
 export type ConnectionState =
   | { kind: "unknown"; message: string }
   | { kind: "checking"; message: string }
@@ -169,8 +169,8 @@ const NON_CHAT_MODEL_PATTERN =
   /(?<![a-z])(?:embedding|embed|rerank|tts|whisper|image|vision-only|bge|flux|wan|moderation)(?![a-z])/i;
 
 /** Whether a model id looks like a non-chat model (embeddings, rerankers,
- * speech, image/video generation, moderation). Used only to pick a sensible
- * default from a fetched list, never to hide models from the catalog. */
+ * speech, image/video generation, moderation). Used to pick a sensible default
+ * and to group the model picker, never to hide models from the catalog. */
 export function isLikelyNonChatModel(modelId: string): boolean {
   return NON_CHAT_MODEL_PATTERN.test(modelId.trim());
 }
@@ -189,49 +189,142 @@ export function pickDefaultFetchedModel(
 /** Detection results persisted on a provider, restored as the same shape the
  * probe returns so a re-opened editor can reuse them without re-probing. */
 export function persistedCodexModelApiFormats(
-  meta: ProviderMeta | undefined | null,
-): Record<string, DetectedCodexApiFormat> {
+  meta: Provider["meta"] | undefined | null,
+): Record<string, { apiFormat: CodexApiFormat }> {
   const stored = meta?.codexModelApiFormats;
   if (!stored || typeof stored !== "object") return {};
-  const anthropicAuthField =
-    meta?.apiKeyField === "ANTHROPIC_API_KEY"
-      ? "ANTHROPIC_API_KEY"
-      : "ANTHROPIC_AUTH_TOKEN";
-  const result: Record<string, DetectedCodexApiFormat> = {};
+  const result: Record<string, { apiFormat: CodexApiFormat }> = {};
   for (const [rawModel, format] of Object.entries(stored)) {
     const model = rawModel.trim();
-    if (!model) continue;
-    if (format === "anthropic") {
-      result[model] = { apiFormat: format, anthropicAuthField };
-    } else if (format === "openai_chat" || format === "openai_responses") {
-      result[model] = { apiFormat: format };
-    }
+    if (model) result[model] = { apiFormat: format };
   }
   return result;
 }
 
-export interface CodexDetectionFailureDescription {
-  /** `HTTP 400 (generic_validation)` — status and classification only. */
-  status: string;
-  /** Upstream excerpt after the status, possibly empty. */
-  excerpt: string;
-}
-
-const DETECTION_FAILURE_PATTERN = /^(HTTP\s+\d{3}(?:\s*\([^)]*\))?)\s*(.*)$/s;
-
-/** Split a backend failure reason (`HTTP 400 (generic_validation) <excerpt>`)
- * into the part worth showing prominently and the raw upstream excerpt. */
+/** Split a backend failure reason into its status and upstream excerpt. */
 export function describeCodexDetectionFailure(
   reason: string | undefined | null,
-): CodexDetectionFailureDescription {
+): { status: string; excerpt: string } {
   const text = (reason ?? "").trim();
   if (!text) return { status: "未返回原因", excerpt: "" };
+  // Multi-protocol diagnostics: keep every protocol's error, none is "the" cause.
   if (/^(openai_responses|openai_chat|anthropic):/.test(text)) {
     return { status: "尚未确认协议", excerpt: text };
   }
-  const match = text.match(DETECTION_FAILURE_PATTERN);
+  const match = text.match(/^(HTTP\s+\d{3}(?:\s*\([^)]*\))?)\s*(.*)$/s);
   if (!match) return { status: text, excerpt: "" };
   return { status: match[1].trim(), excerpt: match[2].trim() };
+}
+
+export interface CodexDraftFormatInput {
+  apiFormat: CodexApiFormatSelection;
+  model: string;
+  catalogModels: CodexCatalogModel[];
+}
+
+export interface CodexDraftFormats {
+  /** The line protocol a save writes to `meta.apiFormat`. */
+  apiFormat: CodexApiFormat;
+  /** Per-model protocols a save writes in auto mode; absent otherwise. */
+  modelApiFormats?: Record<string, CodexApiFormat>;
+}
+
+/** The protocol resolution a save persists. "Auto" never probes the upstream:
+ * the default model's family picks the line protocol and every mapped model
+ * records its own family, so a mixed line is routed per model. */
+export function resolveCodexDraftFormats(
+  draft: CodexDraftFormatInput,
+): CodexDraftFormats {
+  if (draft.apiFormat !== "auto") return { apiFormat: draft.apiFormat };
+  return {
+    apiFormat: codexApiFormatForModel(draft.model),
+    modelApiFormats: Object.fromEntries(
+      codexProbeModels(draft.model, draft.catalogModels).map((model) => [
+        model,
+        codexApiFormatForModel(model),
+      ]),
+    ),
+  };
+}
+
+export interface CodexDraftRoutingInput extends CodexDraftFormatInput {
+  isFullUrl: boolean;
+  customUserAgent: string;
+}
+
+/** The meta fields of a saved line that decide whether it is routed. Shared by
+ * the save and by the editor's hints so the two can never disagree. */
+export function codexDraftRoutingMeta(
+  draft: CodexDraftRoutingInput,
+  formats: CodexDraftFormats = resolveCodexDraftFormats(draft),
+) {
+  return {
+    apiFormat: formats.apiFormat,
+    apiFormatAutoDetected: draft.apiFormat === "auto" ? true : undefined,
+    codexModelApiFormats: formats.modelApiFormats,
+    isFullUrl: draft.isFullUrl || undefined,
+    customUserAgent: draft.customUserAgent.trim() || undefined,
+  };
+}
+
+export interface CodexDraftProjectionInput extends CodexDraftRoutingInput {
+  id: string;
+  name: string;
+  original: Provider | null;
+}
+
+/** The provider a save would persist, as far as routing can tell: the routing
+ * meta above plus what the editor never changes (request overrides, per-model
+ * routes, provider type, category). */
+export function projectCodexDraftProvider(
+  draft: CodexDraftProjectionInput,
+): Provider {
+  return {
+    id: draft.id,
+    name: draft.name,
+    category: draft.original?.category ?? "custom",
+    settingsConfig: {},
+    meta: { ...draft.original?.meta, ...codexDraftRoutingMeta(draft) },
+  };
+}
+
+/** Routing of the line a save would persist, for the editor's hints. "按模型
+ * 分流" is left out when it only restates the line's own conversion: every
+ * model shares the line protocol and no per-model route has its own upstream. */
+export function codexDraftRouting(
+  draft: CodexDraftProjectionInput,
+): CodexRouting {
+  const projected = projectCodexDraftProvider(draft);
+  const routing = codexProviderRouting(projected);
+  const converted = routing.reasons.some(
+    (reason) => reason === "chat" || reason === "anthropic",
+  );
+  if (!converted || !routing.reasons.includes("model-routing")) return routing;
+  const formats = Object.values(projected.meta?.codexModelApiFormats ?? {});
+  const mixed = formats.some((format) => format !== projected.meta?.apiFormat);
+  const routesHaveTargets = codexProviderRouting({
+    ...projected,
+    meta: { ...projected.meta, codexModelApiFormats: undefined },
+  }).reasons.includes("model-routing");
+  if (mixed || routesHaveTargets) return routing;
+  return {
+    ...routing,
+    reasons: routing.reasons.filter((reason) => reason !== "model-routing"),
+  };
+}
+
+const TOP_LEVEL_REASONING_EFFORT =
+  /^\s*model_reasoning_effort\s*=\s*(?:"([^"]*)"|'([^']*)')/;
+
+/** The line-wide `model_reasoning_effort`, which Codex applies over every
+ * catalog row's `default_reasoning_level`; null when the config has none. */
+export function codexGlobalReasoningEffort(config: string): string | null {
+  for (const line of config.split(/\r?\n/)) {
+    if (/^\s*\[/.test(line)) break;
+    const match = line.match(TOP_LEVEL_REASONING_EFFORT);
+    if (match) return (match[1] ?? match[2]).trim() || null;
+  }
+  return null;
 }
 
 function isCatalogRow(value: unknown): value is CodexCatalogModel {
@@ -257,6 +350,35 @@ export function isCustomizedCatalogRow(row: CodexCatalogModel): boolean {
   if (row.inputModalities?.length) return true;
   if (row.supportsParallelToolCalls !== undefined) return true;
   return false;
+}
+
+/** Model ids compare like catalog slugs: trimmed, case-insensitive. */
+export const codexModelKey = (model: string) =>
+  model.trim().toLocaleLowerCase("en-US");
+
+/** Mapping rows after the model picker's checkboxes are applied. A checked
+ * fetched model without a row gets a plain one (appended in list order); an
+ * unchecked one loses its row unless the user customized it. Rows for models
+ * the list did not return are never touched. */
+export function applyCodexMappingSelection(
+  rows: CodexCatalogModel[],
+  fetchedIds: string[],
+  checked: ReadonlySet<string>,
+): CodexCatalogModel[] {
+  const fetched = new Set(fetchedIds.map(codexModelKey));
+  const kept = rows.filter((row) => {
+    const key = codexModelKey(row.model);
+    return !fetched.has(key) || checked.has(key) || isCustomizedCatalogRow(row);
+  });
+  const present = new Set(kept.map((row) => codexModelKey(row.model)));
+  const added: CodexCatalogModel[] = [];
+  for (const id of fetchedIds) {
+    const key = codexModelKey(id);
+    if (!checked.has(key) || present.has(key)) continue;
+    present.add(key);
+    added.push({ model: id.trim(), displayName: "", contextWindow: "" });
+  }
+  return [...kept, ...added];
 }
 
 /** The user's mapping rows for the editor table. Stored separately from the

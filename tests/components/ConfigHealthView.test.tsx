@@ -5,6 +5,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ConfigHealthView } from "@/views/ConfigHealthView";
@@ -150,7 +151,85 @@ describe("connected configuration health", () => {
     expect(item).toHaveAttribute("data-tone", "warning");
     expect(item).toHaveTextContent("DeepSeek 官方接口应使用 HTTP 连接。");
     expect(screen.getByText("有 1 项建议")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /修复/ })).toBeNull();
+    // No repair is offered; the inactive control says the fix is manual and why.
+    expect(screen.queryByRole("button", { name: /^修复/ })).toBeNull();
+    const manual = within(item).getByRole("button", { name: "需手动修复" });
+    expect(manual).toHaveAttribute("aria-disabled", "true");
+    expect(manual).toHaveAccessibleDescription(/手动修改 config\.toml/);
+  });
+  it("shows where each issue is, which parameter and how to fix it", async () => {
+    vi.mocked(configHealthApi.check).mockResolvedValue({
+      ...report,
+      issues: [
+        {
+          id: "provider-boolean-0",
+          severity: "critical",
+          title: "供应商开关格式不正确",
+          location: "config.toml",
+          impact: "开关必须使用 true 或 false，不能使用带引号的文字。",
+          solution: "将该开关写为 true 或 false（不带引号）。",
+          repairable: false,
+          line: 2,
+          column: 1,
+          field: "supports_websockets",
+        },
+        {
+          id: "provider-name-1",
+          severity: "critical",
+          title: "供应商缺少有效名称",
+          location: "config.toml",
+          impact: "供应商名称必须是非空文字。",
+          solution: "在这张供应商表里填写 name。",
+          repairable: false,
+          field: "name",
+        },
+        {
+          id: "auth-format-2",
+          severity: "critical",
+          title: "登录配置格式不正确",
+          location: "auth.json",
+          impact: "登录配置必须是 JSON 对象；未回显凭据内容。",
+          solution: "在「官方账号」页重新登录会重新生成 auth.json。",
+          repairable: false,
+        },
+      ],
+    });
+    render(<ConfigHealthView />);
+    const located = (await screen.findByText("供应商开关格式不正确")).closest(
+      "li",
+    )!;
+    expect(
+      within(located).getByText("config.toml · 第 2 行，第 1 列"),
+    ).toBeVisible();
+    expect(located).toHaveTextContent("参数：supports_websockets");
+    expect(located).toHaveTextContent(
+      "修复建议：将该开关写为 true 或 false（不带引号）。",
+    );
+    const undefinedLine = screen.getByText("供应商缺少有效名称").closest("li")!;
+    expect(
+      within(undefinedLine).getByText("config.toml · 未定义，无对应行"),
+    ).toBeVisible();
+    const fileLevel = screen.getByText("登录配置格式不正确").closest("li")!;
+    expect(within(fileLevel).getByText("auth.json")).toBeVisible();
+    expect(fileLevel).not.toHaveTextContent("参数：");
+    expect(fileLevel).not.toHaveTextContent("第");
+    expect(screen.getAllByRole("button", { name: "需手动修复" })).toHaveLength(
+      3,
+    );
+  });
+  it("offers repair, not manual repair, for issues the backend can fix", async () => {
+    vi.mocked(configHealthApi.check).mockResolvedValue({
+      ...report,
+      repairToken: "token",
+      issues: [{ ...repairableIssue, line: 1, column: 1 }],
+    });
+    render(<ConfigHealthView />);
+    expect(
+      await screen.findByRole("button", { name: "修复「失效自有引用」" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "需手动修复" }),
+    ).not.toBeInTheDocument();
   });
   it("treats a fresh install's missing files as information, not warnings", async () => {
     vi.mocked(configHealthApi.check).mockResolvedValue({

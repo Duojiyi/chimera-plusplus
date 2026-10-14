@@ -4610,6 +4610,36 @@ value"
     }
 
     #[test]
+    fn codex_remote_compaction_rejection_does_not_count_against_converted_lines() {
+        // Codex replays the same history every turn; a retryable category would
+        // record a failure on every replay and trip the breaker of a healthy line.
+        let forwarder = test_forwarder(Duration::ZERO, Duration::ZERO);
+        let error =
+            crate::proxy::providers::codex_chat_common::reject_codex_remote_compaction_items(
+                &json!({"input": [{"type": "compaction", "encrypted_content": "gAAAAB-checkpoint"}]}),
+            )
+            .expect_err("a remote compaction checkpoint must be refused");
+        assert!(matches!(error, ProxyError::InvalidRequest(_)));
+        assert_eq!(
+            crate::proxy::error_mapper::map_proxy_error_to_status(&error),
+            400
+        );
+
+        for api_format in ["openai_chat", "anthropic"] {
+            let mut provider = test_provider_with_type(None);
+            provider.meta = Some(crate::provider::ProviderMeta {
+                api_format: Some(api_format.to_string()),
+                ..Default::default()
+            });
+            assert_eq!(
+                forwarder.categorize_proxy_error(&error, &provider),
+                ErrorCategory::NonRetryable,
+                "{api_format}"
+            );
+        }
+    }
+
+    #[test]
     fn official_codex_auth_failures_are_not_retryable() {
         let forwarder = test_forwarder(Duration::ZERO, Duration::ZERO);
         let mut provider = test_provider_with_type(None);

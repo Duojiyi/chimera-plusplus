@@ -1,21 +1,18 @@
-import { ChevronRight, Clock } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Checkbox } from "@/components/ui/checkbox";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import type { SessionMeta } from "@/types";
 import {
   formatRelativeTime,
   formatSessionTitle,
+  formatTimestamp,
+  getBaseName,
   getProviderIconName,
   getProviderLabel,
   getSessionKey,
   highlightText,
+  isArchivedSession,
 } from "./utils";
 
 interface SessionItemProps {
@@ -24,6 +21,8 @@ interface SessionItemProps {
   selectionMode: boolean;
   isChecked: boolean;
   isCheckDisabled?: boolean;
+  /** The folder is already named by the group the row sits in. */
+  showFolder?: boolean;
   searchQuery?: string;
   onSelect: (key: string) => void;
   onToggleChecked: (checked: boolean) => void;
@@ -35,6 +34,7 @@ export function SessionItem({
   selectionMode,
   isChecked,
   isCheckDisabled = false,
+  showFolder = true,
   searchQuery,
   onSelect,
   onToggleChecked,
@@ -43,16 +43,13 @@ export function SessionItem({
   const title = formatSessionTitle(session);
   const lastActive = session.lastActiveAt || session.createdAt || undefined;
   const sessionKey = getSessionKey(session);
+  const folder = showFolder ? getBaseName(session.projectDir) : "";
+  const archived = isArchivedSession(session);
 
   return (
-    <div
-      className={cn(
-        "session-list-row flex items-start gap-2 group",
-        isSelected && "is-selected",
-      )}
-    >
+    <div className={cn("session-list-row", isSelected && "is-selected")}>
       {selectionMode && (
-        <div className="shrink-0 pt-0.5">
+        <div className="session-list-row-check">
           <Checkbox
             checked={isChecked}
             disabled={isCheckDisabled}
@@ -67,42 +64,39 @@ export function SessionItem({
         type="button"
         onClick={() => onSelect(sessionKey)}
         aria-pressed={isSelected}
-        className="min-w-0 flex-1 text-left"
+        className="session-list-row-main"
       >
-        <div className="flex items-center gap-2 mb-1">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span className="shrink-0">
-                <ProviderIcon
-                  icon={getProviderIconName(session.providerId)}
-                  name={session.providerId}
-                  size={18}
-                />
-              </span>
-            </TooltipTrigger>
-            <TooltipContent>
-              {getProviderLabel(session.providerId, t)}
-            </TooltipContent>
-          </Tooltip>
-          <span className="text-sm font-medium line-clamp-2 flex-1">
+        <span className="session-list-row-title">
+          <span
+            className="session-list-row-icon"
+            title={getProviderLabel(session.providerId)}
+          >
+            <ProviderIcon
+              icon={getProviderIconName(session.providerId)}
+              name={session.providerId}
+              size={16}
+            />
+          </span>
+          <span className="session-list-row-text" title={title}>
             {searchQuery ? highlightText(title, searchQuery) : title}
           </span>
-          <ChevronRight
-            className={cn(
-              "size-4 text-muted-foreground/50 shrink-0 transition-transform",
-              isSelected && "text-primary rotate-90",
-            )}
-          />
-        </div>
-
-        <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
-          <Clock className="size-3" />
-          <span>
+        </span>
+        <span className="session-list-row-meta">
+          <span title={lastActive ? formatTimestamp(lastActive) : undefined}>
             {lastActive
               ? formatRelativeTime(lastActive, t)
-              : t("common.unknown")}
+              : t("common.unknown", { defaultValue: "时间未知" })}
           </span>
-        </div>
+          {folder ? (
+            <span
+              className="session-list-row-folder"
+              title={session.projectDir ?? undefined}
+            >
+              {folder}
+            </span>
+          ) : null}
+          {archived ? <span className="session-tag">已归档</span> : null}
+        </span>
       </button>
     </div>
   );

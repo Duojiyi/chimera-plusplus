@@ -45,6 +45,8 @@ export interface SessionSyncResult {
   suspectedDuplicates: number;
   deferredFiles: number;
   errors: string[];
+  /** Unparsable session lines skipped instead of aborting; omitted by older backends. */
+  skippedLines?: number;
 }
 
 export interface CodexUsageRebuildResult extends SessionSyncResult {

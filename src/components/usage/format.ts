@@ -44,6 +44,35 @@ function isTraditionalChineseLanguage(normalizedLanguage: string): boolean {
   );
 }
 
+/** Latency in seconds with one decimal; a missing or zero value reads "—". */
+export function formatSeconds(ms: number | null | undefined): string {
+  if (ms == null || !Number.isFinite(ms) || ms <= 0) return "—";
+  return `${(ms / 1000).toFixed(1)} 秒`;
+}
+
+/**
+ * Token counts inside table cells. One fixed precision per unit keeps a
+ * right-aligned column readable (13.0 万 above 14.9 万); counts below 10,000
+ * stay exact. Zero is "0".
+ */
+export function formatTokenCell(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "0";
+  const tokens = Math.round(value);
+  if (tokens < 1e4) return tokens.toLocaleString("zh-CN");
+  // Round first so 99,999,999 reads as 1.00 亿 rather than 10,000.0 万.
+  const wan = Math.round(tokens / 1e3) / 10;
+  if (wan < 1e4)
+    return `${wan.toLocaleString("zh-CN", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} 万`;
+  return `${(tokens / 1e8).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} 亿`;
+}
+
+/** Where a request record came from, in the words the rest of the app uses. */
+export function usageSourceLabel(source?: string | null): string {
+  if (!source || source === "proxy") return "本地代理";
+  if (source.endsWith("_session")) return "会话记录";
+  return source;
+}
+
 export function getLocaleFromLanguage(language: string): string {
   if (!language) return "en-US";
   const normalized = normalizeLanguageTag(language);

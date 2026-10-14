@@ -5,7 +5,8 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 12px 24px 24px;
+  /* Same frame as the neighbouring Codex pages, so titles do not jump. */
+  padding: 24px;
   color: var(--text-1);
   background: var(--bg-surface);
 }
@@ -20,7 +21,7 @@
 }
 .health-header h1 {
   margin: 0;
-  font-size: 28px;
+  font-size: 26px;
   line-height: 36px;
   font-weight: 700;
 }
@@ -217,8 +218,25 @@
   font-size: 15px;
   line-height: 21px;
 }
-.health-item-location {
+/* Machine text: file, line and parameter, never with font ligatures. */
+.health-item-location,
+.health-item-field code {
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
+  font-feature-settings:
+    "liga" 0,
+    "calt" 0;
+}
+.health-item-body .health-item-location {
   color: var(--text-3);
+  font-size: 12px;
+}
+.health-item-field {
+  color: var(--text-2);
+}
+.health-item-field code {
+  color: var(--text-1);
+  font-size: 12px;
 }
 .health-item-impact {
   color: var(--text-2);
@@ -226,6 +244,24 @@
 .health-item-solution {
   color: var(--text-1);
 }
+.health-item-label {
+  font-weight: 700;
+}
 .health-item > button {
   flex-shrink: 0;
+}
+/* Looks inactive but stays focusable, so the reason in its description is reachable. */
+.health-manual {
+  height: 32px;
+  padding: 0 12px;
+  border: 1px dashed var(--border-control);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 12px;
+  cursor: not-allowed;
+}
+.health-manual:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }

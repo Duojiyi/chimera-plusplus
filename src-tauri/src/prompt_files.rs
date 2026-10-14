@@ -40,6 +40,12 @@ pub fn prompt_file_path(app: &AppType) -> Result<PathBuf, AppError> {
     Ok(base_dir.join(filename))
 }
 
+/// Codex reads this file from its home directory instead of AGENTS.md whenever
+/// it is not blank.
+pub fn codex_override_file_path() -> Result<PathBuf, AppError> {
+    Ok(prompt_file_path(&AppType::Codex)?.with_file_name("AGENTS.override.md"))
+}
+
 fn get_base_dir_with_fallback(
     primary_path: PathBuf,
     fallback_dir: &str,
@@ -60,4 +66,15 @@ fn get_base_dir_with_fallback(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[serial_test::serial]
+    fn codex_override_sits_next_to_agents_md() {
+        let _home = crate::services::live_backup::tests::TempHome::new();
+        crate::settings::reload_settings().unwrap();
+        let agents = prompt_file_path(&AppType::Codex).unwrap();
+        let override_path = codex_override_file_path().unwrap();
+        assert_eq!(override_path.parent(), agents.parent());
+        assert_eq!(override_path.file_name().unwrap(), "AGENTS.override.md");
+    }
 }

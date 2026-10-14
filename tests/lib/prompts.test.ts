@@ -1,7 +1,33 @@
 import { describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
-import { promptsApi } from "@/lib/api/prompts";
+import { promptErrorCode, promptsApi } from "@/lib/api/prompts";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+
+describe("Codex prompt status contract", () => {
+  it("queries the file in effect without renderer-supplied paths", async () => {
+    const status = { state: "in_sync", enabledCount: 2, managedBytes: 90 };
+    vi.mocked(invoke).mockResolvedValueOnce(status);
+    expect(await promptsApi.getCodexStatus()).toEqual(status);
+    expect(invoke).toHaveBeenCalledWith("get_codex_prompt_status");
+  });
+  it("passes only the chosen resolution", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce("kept-id");
+    expect(await promptsApi.resolveCodexFile("keep_edits")).toBe("kept-id");
+    expect(invoke).toHaveBeenCalledWith("resolve_codex_prompt_file", {
+      action: "keep_edits",
+    });
+  });
+  it("reads the stable code that prefixes coded errors", () => {
+    expect(promptErrorCode("[prompt.managed.duplicate] 重复 (Duplicate)")).toBe(
+      "prompt.managed.duplicate",
+    );
+    expect(promptErrorCode(new Error("[config.changeset_conflict] x"))).toBe(
+      "config.changeset_conflict",
+    );
+    expect(promptErrorCode("无效输入: 启用的提示词不能为空。")).toBeNull();
+    expect(promptErrorCode(undefined)).toBeNull();
+  });
+});
 describe("prompt import command contract", () => {
   it("passes only observed content for explicit Codex takeover", async () => {
     vi.mocked(invoke).mockResolvedValueOnce("adopted-id");

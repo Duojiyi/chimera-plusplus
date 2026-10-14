@@ -216,10 +216,17 @@ describe("connected provider line table", () => {
   });
   it("blocks row mutations during an in-flight switch", () => {
     render(<ProviderLineTable {...props()} switchingId="real-b" />);
-    for (const button of within(screen.getByRole("table")).getAllByRole(
-      "button",
+    const buttons = within(screen.getByRole("table")).getAllByRole("button");
+    // Help-tip triggers only open an explanation popover; they mutate nothing.
+    const mutations = buttons.filter(
+      (button) => !button.classList.contains("help-tip-trigger"),
+    );
+    expect(mutations.length).toBeGreaterThan(0);
+    for (const button of mutations) expect(button).toBeDisabled();
+    for (const button of buttons.filter((b) =>
+      b.classList.contains("help-tip-trigger"),
     ))
-      expect(button).toBeDisabled();
+      expect(button).toBeEnabled();
   });
 });
 

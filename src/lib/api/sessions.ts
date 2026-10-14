@@ -1,6 +1,16 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { SessionMessage, SessionMeta } from "@/types";
 
+/** A `list_sessions` row. `archived` (Codex only) is omitted when false. */
+export type SessionListEntry = SessionMeta & { archived?: boolean };
+
+/**
+ * A `get_session_messages` entry. `truncated` marks an entry the reader
+ * shortened, or a `notice` entry standing in for content too large to load;
+ * it is omitted when false.
+ */
+export type SessionTranscriptEntry = SessionMessage & { truncated?: boolean };
+
 export interface DeleteSessionOptions {
   providerId: string;
   sessionId: string;
@@ -27,14 +37,14 @@ export interface CodexHistoryReclaimResult {
 }
 
 export const sessionsApi = {
-  async list(): Promise<SessionMeta[]> {
+  async list(): Promise<SessionListEntry[]> {
     return await invoke("list_sessions");
   },
 
   async getMessages(
     providerId: string,
     sourcePath: string,
-  ): Promise<SessionMessage[]> {
+  ): Promise<SessionTranscriptEntry[]> {
     return await invoke("get_session_messages", { providerId, sourcePath });
   },
 

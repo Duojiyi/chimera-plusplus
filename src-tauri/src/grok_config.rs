@@ -10,6 +10,10 @@ pub const DEFAULT_MODEL: &str = "grok-4.5";
 pub const DEFAULT_API_BACKEND: &str = "responses";
 pub const DEFAULT_CONTEXT_WINDOW: i64 = 500_000;
 
+/// `[models].session_summary`: the model profile Grok Build uses to write
+/// session titles and summaries.
+const SESSION_SUMMARY_KEY: &str = "session_summary";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GrokModelConfig {
     pub profile: String,
@@ -303,8 +307,90 @@ pub fn base_url_matches(config_toml: &str, predicate: impl FnOnce(&str) -> bool)
     extract_model_config(config_toml).is_some_and(|config| predicate(&config.base_url))
 }
 
-/// Remove MCP projections from a provider-owned Grok Build settings snapshot.
-/// MCP servers are owned by the database and projected into live config.toml.
+/// The profile `[models].session_summary` follows: `[models].default`, when it
+/// names a `[model."<name>"]` table of the same document.
+///
+/// Without `session_summary`, Grok Build (1.0.50, cc-switch #7003) writes
+/// titles with its built-in `grok-4.6` but sends the request to the default
+/// profile's endpoint, which a third-party upstream rejects, so title
+/// generation fails. An official snapshot has no model tables and never gets
+/// one, and a default that names a built-in model is left to Grok.
+fn session_summary_target(document: &toml_edit::DocumentMut) -> Option<String> {
+    let default_model = document
+        .get("models")
+        .and_then(|models| models.get("default"))
+        .and_then(toml_edit::Item::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())?;
+    let has_table = document
+        .get("model")
+        .and_then(|tables| tables.get(default_model))
+        .is_some_and(toml_edit::Item::is_table_like);
+    has_table.then(|| default_model.to_string())
+}
+
+/// `config_toml` with `[models].session_summary` pointing at the default
+/// profile, or `None` when nothing changes: the line chose a value itself
+/// (any non-blank value is kept, a built-in model or another profile alike)
+/// or there is no default profile table to point at.
+fn fill_session_summary(config_toml: &str) -> Result<Option<String>, AppError> {
+    if config_toml.trim().is_empty() {
+        return Ok(None);
+    }
+    let mut document = config_toml
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|error| {
+            AppError::localized(
+                "provider.grokbuild.config.invalid_toml",
+                format!("Grok Build config.toml 格式错误: {error}"),
+                format!("Invalid Grok Build config.toml: {error}"),
+            )
+        })?;
+    let Some(target) = session_summary_target(&document) else {
+        return Ok(None);
+    };
+    let Some(models) = document
+        .get_mut("models")
+        .and_then(toml_edit::Item::as_table_like_mut)
+    else {
+        return Ok(None);
+    };
+    let chosen = models
+        .get(SESSION_SUMMARY_KEY)
+        .is_some_and(|item| item.as_str().is_none_or(|name| !name.trim().is_empty()));
+    if chosen {
+        return Ok(None);
+    }
+    models.insert(SESSION_SUMMARY_KEY, toml_edit::value(target));
+    Ok(Some(document.to_string()))
+}
+
+/// Drop a `[models].session_summary` that only repeats what
+/// `write_grok_live_settings` fills in, so the projection never becomes part
+/// of a stored line and keeps following the line's default profile. Returns
+/// whether it was removed.
+fn strip_filled_session_summary(document: &mut toml_edit::DocumentMut) -> bool {
+    let Some(target) = session_summary_target(document) else {
+        return false;
+    };
+    let Some(models) = document
+        .get_mut("models")
+        .and_then(toml_edit::Item::as_table_like_mut)
+    else {
+        return false;
+    };
+    let filled = models
+        .get(SESSION_SUMMARY_KEY)
+        .and_then(toml_edit::Item::as_str)
+        .is_some_and(|name| name.trim() == target);
+    filled && models.remove(SESSION_SUMMARY_KEY).is_some()
+}
+
+/// Remove what Chimera++ projects into live from a provider-owned Grok Build
+/// settings snapshot: MCP servers (owned by the database) and a
+/// `[models].session_summary` that only repeats the default profile (filled
+/// in by `write_grok_live_settings`). Every live-to-line conversion (switch
+/// backfill, first-write adoption, default import) goes through here.
 pub fn strip_grok_mcp_servers_from_settings(settings: &mut Value) -> Result<(), AppError> {
     let Some(config_text) = settings
         .get("config")
@@ -313,7 +399,7 @@ pub fn strip_grok_mcp_servers_from_settings(settings: &mut Value) -> Result<(), 
     else {
         return Ok(());
     };
-    if !config_text.contains("mcp") {
+    if !config_text.contains("mcp") && !config_text.contains(SESSION_SUMMARY_KEY) {
         return Ok(());
     }
 
@@ -331,6 +417,9 @@ pub fn strip_grok_mcp_servers_from_settings(settings: &mut Value) -> Result<(), 
         if mcp_table.is_empty() {
             document.as_table_mut().remove("mcp");
         }
+    }
+    if strip_filled_session_summary(&mut document) {
+        changed = true;
     }
 
     if changed {
@@ -394,6 +483,14 @@ pub fn write_grok_provider_live(provider: &Provider) -> Result<(), AppError> {
 ///
 /// 代理接管的备份/恢复也走这里：官方态 live（无自定义模型表）必须可以
 /// 原样写回。完整形状校验由 `write_grok_provider_live` 的非官方分支负责。
+///
+/// Every live write (switch, takeover, hot switch, restore) also applies the
+/// one projection this module owns: when the snapshot does not choose a
+/// `[models].session_summary`, it follows the default profile (see
+/// `session_summary_target`). The whole file is replaced, so a value left by
+/// the previous line never survives a switch, and an official snapshot gets
+/// none. `strip_grok_mcp_servers_from_settings` removes it again when live is
+/// stored back into a line.
 pub fn write_grok_live_settings(settings: &Value) -> Result<(), AppError> {
     let config = settings
         .get("config")
@@ -406,7 +503,8 @@ pub fn write_grok_live_settings(settings: &Value) -> Result<(), AppError> {
             )
         })?;
     validate_config_toml_syntax(config)?;
-    write_text_file(&get_grok_config_path(), config)
+    let filled = fill_session_summary(config)?;
+    write_text_file(&get_grok_config_path(), filled.as_deref().unwrap_or(config))
 }
 
 #[cfg(test)]
@@ -620,17 +718,167 @@ context_window = 500000
 
         let path = get_grok_config_path();
         assert_eq!(path, temp.path().join(".grok").join("config.toml"));
+        // Live is the line plus the session_summary projection, nothing else.
+        let expected_live = with_session_summary(valid_config(), "grok-4.5");
         assert_eq!(
             fs::read_to_string(path).expect("read config"),
-            valid_config()
+            expected_live
         );
+        let mut live = read_grok_live_settings().expect("read live settings");
         assert_eq!(
-            read_grok_live_settings()
-                .expect("read live settings")
-                .get("config")
-                .and_then(Value::as_str),
+            live.get("config").and_then(Value::as_str),
+            Some(expected_live.as_str())
+        );
+        // Stored back into the line, the projection is gone again.
+        strip_grok_mcp_servers_from_settings(&mut live).expect("strip projections");
+        assert_eq!(
+            live.get("config").and_then(Value::as_str),
             Some(valid_config())
         );
+
+        match original_test_home {
+            Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
+            None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+        }
+    }
+
+    /// `config` with `session_summary` right after `[models].default`, where
+    /// `toml_edit` appends a new key of that table.
+    fn with_session_summary(config: &str, profile: &str) -> String {
+        config.replacen(
+            &format!("default = \"{profile}\"\n"),
+            &format!("default = \"{profile}\"\nsession_summary = \"{profile}\"\n"),
+            1,
+        )
+    }
+
+    fn session_summary_of(config: &str) -> Option<String> {
+        let document = config
+            .parse::<toml_edit::DocumentMut>()
+            .expect("valid TOML");
+        document
+            .get("models")
+            .and_then(|models| models.get(SESSION_SUMMARY_KEY))
+            .and_then(toml_edit::Item::as_str)
+            .map(str::to_string)
+    }
+
+    #[test]
+    fn session_summary_follows_the_default_profile_unless_the_line_chooses_one() {
+        let filled = fill_session_summary(valid_config())
+            .expect("valid config")
+            .expect("filled in");
+        assert_eq!(filled, with_session_summary(valid_config(), "grok-4.5"));
+        assert!(
+            fill_session_summary(&filled).expect("valid").is_none(),
+            "idempotent"
+        );
+
+        // A value the line chose is never replaced: a built-in model, another
+        // profile, or one with its own comment.
+        for chosen in ["grok-4.6", "grok-4.5-mini"] {
+            let config = valid_config().replace(
+                "default = \"grok-4.5\"\n",
+                &format!("default = \"grok-4.5\"\nsession_summary = \"{chosen}\" # titles\n"),
+            );
+            assert!(
+                fill_session_summary(&config).expect("valid").is_none(),
+                "{chosen}"
+            );
+        }
+
+        // A blank value chooses nothing.
+        let blank = valid_config().replace(
+            "default = \"grok-4.5\"\n",
+            "default = \"grok-4.5\"\nsession_summary = \" \"\n",
+        );
+        let filled = fill_session_summary(&blank)
+            .expect("valid")
+            .expect("filled in");
+        assert_eq!(session_summary_of(&filled).as_deref(), Some("grok-4.5"));
+
+        // Official snapshots and defaults without a table of their own.
+        let built_in_default =
+            valid_config().replace("default = \"grok-4.5\"", "default = \"grok-4.6\"");
+        for untouched in [
+            "",
+            "[mcp_servers.echo]\ncommand = \"echo\"\n",
+            "[models]\ndefault = \"grok-4.6\"\n",
+            built_in_default.as_str(),
+        ] {
+            assert!(
+                fill_session_summary(untouched).expect("valid").is_none(),
+                "{untouched}"
+            );
+        }
+    }
+
+    #[test]
+    fn stored_lines_never_keep_the_filled_session_summary() {
+        let row = valid_config();
+        let mut settings = json!({
+            "config": format!(
+                "{}\n[mcp_servers.echo]\ncommand = \"echo\"\n",
+                with_session_summary(row, "grok-4.5")
+            )
+        });
+        strip_grok_mcp_servers_from_settings(&mut settings).expect("strip projections");
+        assert_eq!(settings.get("config").and_then(Value::as_str), Some(row));
+
+        // The line's own choices stay with the line.
+        for kept in [
+            row.replace(
+                "default = \"grok-4.5\"\n",
+                "default = \"grok-4.5\"\nsession_summary = \"grok-4.6\"\n",
+            ),
+            "[models]\ndefault = \"grok-4.6\"\nsession_summary = \"grok-4.6\"\n".to_string(),
+        ] {
+            let mut settings = json!({ "config": kept.clone() });
+            strip_grok_mcp_servers_from_settings(&mut settings).expect("strip projections");
+            assert_eq!(
+                settings.get("config").and_then(Value::as_str),
+                Some(kept.as_str())
+            );
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn switching_lines_never_leaves_the_previous_session_summary() {
+        let temp = TempDir::new().expect("temp dir");
+        let original_test_home = std::env::var_os("CC_SWITCH_TEST_HOME");
+        std::env::set_var("CC_SWITCH_TEST_HOME", temp.path());
+        let live = || fs::read_to_string(get_grok_config_path()).expect("read config");
+        let provider = |id: &str, config: &str| {
+            Provider::with_id(
+                id.to_string(),
+                id.to_string(),
+                json!({ "config": config }),
+                None,
+            )
+        };
+
+        write_grok_provider_live(&provider("a", valid_config())).expect("write line a");
+        assert_eq!(session_summary_of(&live()).as_deref(), Some("grok-4.5"));
+
+        // To the official login: the whole file is replaced, no pointer left.
+        let mut official = provider("grokbuild-official", "");
+        official.category = Some("official".to_string());
+        write_grok_provider_live(&official).expect("write official");
+        assert_eq!(live(), "");
+
+        // To another third-party line: it follows that line's own profile.
+        write_grok_provider_live(&provider("a", valid_config())).expect("write line a");
+        write_grok_provider_live(&provider("env", valid_env_key_config())).expect("write line env");
+        assert_eq!(session_summary_of(&live()).as_deref(), Some("grok-env"));
+
+        // A line that chose a model keeps it.
+        let chosen = valid_env_key_config().replace(
+            "default = \"grok-env\"\n",
+            "default = \"grok-env\"\nsession_summary = \"grok-4.6\"\n",
+        );
+        write_grok_provider_live(&provider("chosen", &chosen)).expect("write chosen");
+        assert_eq!(live(), chosen);
 
         match original_test_home {
             Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),

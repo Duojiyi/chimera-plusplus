@@ -5,14 +5,39 @@ use std::path::Path;
 use crate::app_config::AppType;
 use crate::codex_accounts::{
     self,
-    identity::{classify, AccountIdentity, LoginClass},
+    identity::{
+        access_token_expires_at, auth_display_metadata, classify, AccountIdentity, LoginClass,
+    },
     login::LoginPoll,
-    vault::Vault,
+    vault::{validate_account_key, Vault},
     LiveAuth,
 };
 use crate::error::AppError;
-use crate::services::subscription::{query_codex_quota, SubscriptionQuota};
+use crate::services::subscription::{query_codex_quota, CredentialStatus, SubscriptionQuota};
 use crate::store::AppState;
+
+/// Shown for a saved account whose slot cannot be read here (another
+/// Windows profile or reset password, a migrated configuration, a damaged
+/// file): no identity can be shown, only that it needs to sign in again.
+const UNREADABLE_ACCOUNT_NAME: &str = "无法读取的账号";
+
+/// How Codex's live login relates to the saved accounts. Page-level: every
+/// row carries the same value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OfficialLiveState {
+    /// A saved account, consistent with the selected line.
+    Matched,
+    /// A complete ChatGPT login that is not saved here.
+    Unsaved,
+    /// An account line is selected but Codex holds another login or none.
+    Mismatch,
+    /// Codex is routed to a third-party endpoint.
+    ThirdParty,
+    /// Nothing reliable to say (unreadable files, a profile override, or no
+    /// ChatGPT login while no account line is selected).
+    Unknown,
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -21,10 +46,31 @@ pub struct OfficialAccountDto {
     pub account_id: String,
     pub display_name: String,
     pub email: Option<String>,
+    pub plan_type: Option<String>,
+    /// Name of the line that uses this account (the selected one first).
+    pub line_name: Option<String>,
     pub captured_at: String,
     pub is_current: bool,
+    /// The account's line is the line selected for Codex.
+    pub is_selected: bool,
     pub needs_relogin: bool,
+    /// The slot is missing or cannot be decrypted; it can only be signed in
+    /// again or removed.
+    pub unreadable: bool,
+    /// The access token a quota query would present has expired; Codex
+    /// renews it when the account is used, so this is not a sign-in problem.
+    pub access_expired: bool,
     pub provider_id: Option<String>,
+    pub live_state: OfficialLiveState,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OfficialQuotaDto {
+    #[serde(flatten)]
+    pub quota: SubscriptionQuota,
+    /// The local access token has expired, so nothing was queried.
+    pub access_expired: bool,
 }
 
 #[derive(Serialize)]
@@ -84,64 +130,172 @@ fn list_official_accounts_from(
     codex_dir: &Path,
     official_proxy_active: bool,
 ) -> Vec<OfficialAccountDto> {
+    let live_auth = codex_accounts::read_live_auth(&codex_dir.join("auth.json"))
+        .ok()
+        .map(|(_, auth)| auth);
+    let live_value = match &live_auth {
+        Some(LiveAuth::Present(auth)) => Some(auth),
+        _ => None,
+    };
     // A saved line is a selection, not evidence of the login Codex uses now.
     // Unknown/unreadable live state must leave every account available to apply.
-    let live_identity = live_official_account_identity(codex_dir, official_proxy_active);
-    let mut accounts = Vec::new();
-    for key in vault.slot_keys() {
-        if let Ok(Some(slot)) = vault.read_slot(&key) {
-            let display = codex_accounts::identity::auth_display_metadata(&slot.auth);
+    let live_key = match live_login(codex_dir, official_proxy_active, live_auth.as_ref()) {
+        LiveLogin::Chatgpt(identity) => Ok(identity.key()),
+        other => Err(other),
+    };
+    let saved = vault.slot_keys();
+    let selected_key = lines
+        .iter()
+        .find(|line| Some(line.id.as_str()) == current_id)
+        .and_then(|line| line.official_account_key());
+    let live_state = match &live_key {
+        Ok(key) if !saved.contains(key) => OfficialLiveState::Unsaved,
+        Ok(key) if selected_key.is_some_and(|selected| selected != key.as_str()) => {
+            OfficialLiveState::Mismatch
+        }
+        Ok(_) => OfficialLiveState::Matched,
+        // An account line is selected, yet Codex has no login of it in use.
+        Err(LiveLogin::NoChatgpt | LiveLogin::ThirdParty) if selected_key.is_some() => {
+            OfficialLiveState::Mismatch
+        }
+        Err(LiveLogin::ThirdParty) => OfficialLiveState::ThirdParty,
+        Err(_) => OfficialLiveState::Unknown,
+    };
+    // A line may pin an account whose slot never reached this machine; it
+    // stays visible so it can be signed in again or removed (U4 A1).
+    let mut keys = saved;
+    keys.extend(
+        lines
+            .iter()
+            .filter_map(|line| line.official_account_key())
+            .filter(|key| validate_account_key(key).is_ok())
+            .map(str::to_string),
+    );
+    keys.sort();
+    keys.dedup();
+    // Same order as the official group on the lines page; unbound last.
+    keys.sort_by_key(|key| {
+        lines
+            .iter()
+            .position(|line| line.official_account_key() == Some(key.as_str()))
+            .unwrap_or(usize::MAX)
+    });
+    let now = chrono::Utc::now().timestamp();
+    keys.into_iter()
+        .map(|key| {
             let line = official_account_line(lines, &key, current_id);
-            let is_current = live_identity.as_ref().is_some_and(|live| {
-                matches!(classify(&slot.auth), LoginClass::Chatgpt(saved)
-                    if saved == *live && saved.key() == key)
-            });
-            let needs_relogin = vault.has_tombstone(&key);
-            accounts.push(OfficialAccountDto {
-                key: key.clone(),
+            let is_selected = line.is_some_and(|line| Some(line.id.as_str()) == current_id);
+            let provider_id = line.map(|line| line.id.clone());
+            let line_name = line.map(|line| line.name.clone());
+            let is_live = live_key.as_ref().is_ok_and(|live| *live == key);
+            // A slot that cannot be read is still an account the user saved.
+            let Ok(Some(slot)) = vault.read_slot(&key) else {
+                return OfficialAccountDto {
+                    key,
+                    account_id: String::new(),
+                    display_name: UNREADABLE_ACCOUNT_NAME.to_string(),
+                    email: None,
+                    plan_type: None,
+                    line_name,
+                    captured_at: String::new(),
+                    is_current: is_live,
+                    is_selected,
+                    needs_relogin: true,
+                    unreadable: true,
+                    access_expired: false,
+                    provider_id,
+                    live_state,
+                };
+            };
+            let display = auth_display_metadata(&slot.auth);
+            let applicable =
+                matches!(classify(&slot.auth), LoginClass::Chatgpt(account) if account.key() == key);
+            let access_expired = codex_accounts::access_expired(
+                access_token_expires_at(codex_accounts::quota_login(&slot.auth, live_value, &key)),
+                now,
+            );
+            let needs_relogin = !applicable || vault.has_tombstone(&key);
+            OfficialAccountDto {
                 account_id: slot.account_id().to_string(),
                 display_name: codex_accounts::default_line_name(&display),
                 email: display.email,
+                plan_type: display.plan_type,
+                line_name,
                 captured_at: slot.captured_at,
-                is_current,
+                is_current: applicable && is_live,
+                is_selected,
                 needs_relogin,
-                provider_id: line.map(|l| l.id.clone()),
-            });
-        }
-    }
-    accounts
+                unreadable: false,
+                access_expired,
+                provider_id,
+                live_state,
+                key,
+            }
+        })
+        .collect()
 }
 
-fn live_official_account_identity(
+/// What Codex's live files say about its login.
+enum LiveLogin {
+    /// A complete ChatGPT login on Codex's official route.
+    Chatgpt(AccountIdentity),
+    /// The official route without a ChatGPT login (none, API key, partial).
+    NoChatgpt,
+    /// Codex is routed to a third-party endpoint.
+    ThirdParty,
+    /// Unreadable files, a profile override, or a login policy Codex would
+    /// apply differently.
+    Unknown,
+}
+
+fn live_login(
     codex_dir: &Path,
     official_proxy_active: bool,
-) -> Option<AccountIdentity> {
-    let config = crate::config::cas::FileSnapshot::read(codex_dir.join("config.toml")).ok()?;
+    live_auth: Option<&LiveAuth>,
+) -> LiveLogin {
+    let Ok(config) = crate::config::cas::FileSnapshot::read(codex_dir.join("config.toml")) else {
+        return LiveLogin::Unknown;
+    };
     // Missing config uses Codex's built-in official route; unreadable is unknown.
-    let config = std::str::from_utf8(config.contents().unwrap_or_default()).ok()?;
+    let Ok(config) = std::str::from_utf8(config.contents().unwrap_or_default()) else {
+        return LiveLogin::Unknown;
+    };
     let config = if crate::codex_config::codex_config_has_owned_official_proxy_route(config, |_| {
         official_proxy_active
     }) {
-        crate::codex_config::remove_codex_official_proxy_route(config).ok()?
+        match crate::codex_config::remove_codex_official_proxy_route(config) {
+            Ok(config) => config,
+            Err(_) => return LiveLogin::Unknown,
+        }
     } else {
         config.to_string()
     };
-    let config = crate::codex_config::strip_codex_unified_session_bucket(&config).ok()?;
-    let doc = config.parse::<toml::Value>().ok()?;
-    if doc
-        .get("model_provider")
-        .is_some_and(|value| value.as_str() != Some("openai"))
-    {
-        return None;
+    let Ok(config) = crate::codex_config::strip_codex_unified_session_bucket(&config) else {
+        return LiveLogin::Unknown;
+    };
+    let Ok(doc) = config.parse::<toml::Value>() else {
+        return LiveLogin::Unknown;
+    };
+    match doc.get("model_provider").map(toml::Value::as_str) {
+        None | Some(Some("openai")) => {}
+        // Our official route while its proxy ownership is not confirmed, or
+        // a value Codex would reject.
+        Some(Some(crate::codex_config::CC_SWITCH_CODEX_OFFICIAL_PROXY_PROVIDER_ID))
+        | Some(None) => return LiveLogin::Unknown,
+        Some(Some(_)) => return LiveLogin::ThirdParty,
     }
     // Do not guess when a profile overrides the route or login policy.
     if let Some(profile) = doc.get("profile") {
-        let profile = doc.get("profiles")?.get(profile.as_str()?)?.as_table()?;
-        if crate::codex_key_ownership::PROFILE_ROUTE_KEYS
-            .iter()
-            .any(|key| profile.contains_key(*key))
-        {
-            return None;
+        let overrides = profile
+            .as_str()
+            .and_then(|name| doc.get("profiles")?.get(name)?.as_table())
+            .is_none_or(|profile| {
+                crate::codex_key_ownership::PROFILE_ROUTE_KEYS
+                    .iter()
+                    .any(|key| profile.contains_key(*key))
+            });
+        if overrides {
+            return LiveLogin::Unknown;
         }
     }
     if ["base_url", "openai_base_url", "chatgpt_base_url"]
@@ -156,26 +310,30 @@ fn live_official_account_identity(
         || crate::codex_config::extract_codex_base_url(&config)
             .is_some_and(|url| !crate::codex_key_ownership::is_official_codex_base_url(&url))
         || crate::codex_config::extract_codex_experimental_bearer_token(&config).is_some()
-        || doc
-            .get("forced_login_method")
-            .is_some_and(|value| value.as_str() != Some("chatgpt"))
     {
-        return None;
+        return LiveLogin::ThirdParty;
     }
-    let (_, LiveAuth::Present(auth)) =
-        codex_accounts::read_live_auth(&codex_dir.join("auth.json")).ok()?
-    else {
-        return None;
+    if doc
+        .get("forced_login_method")
+        .is_some_and(|value| value.as_str() != Some("chatgpt"))
+    {
+        return LiveLogin::Unknown;
+    }
+    let auth = match live_auth {
+        Some(LiveAuth::Present(auth)) => auth,
+        Some(LiveAuth::Missing) => return LiveLogin::NoChatgpt,
+        Some(LiveAuth::Unreadable) | None => return LiveLogin::Unknown,
     };
-    match classify(&auth) {
+    match classify(auth) {
         LoginClass::Chatgpt(identity)
             if doc
                 .get("forced_chatgpt_workspace_id")
                 .is_none_or(|value| value.as_str() == Some(identity.account_id.as_str())) =>
         {
-            Some(identity)
+            LiveLogin::Chatgpt(identity)
         }
-        _ => None,
+        LoginClass::Chatgpt(_) | LoginClass::Conflict => LiveLogin::Unknown,
+        LoginClass::Incomplete | LoginClass::Other | LoginClass::Empty => LiveLogin::NoChatgpt,
     }
 }
 
@@ -193,21 +351,47 @@ fn official_account_line<'a>(
         .or_else(|| matching.next())
 }
 
+/// The answer when the local access token has already expired: nothing is
+/// queried (the service would only reject it), and the login is not called
+/// rejected, because Codex renews the token when the account is used.
+fn expired_access_quota() -> OfficialQuotaDto {
+    let mut quota = SubscriptionQuota::error(
+        "codex",
+        CredentialStatus::Valid,
+        "令牌已过期，切换后由 Codex 续期".to_string(),
+    );
+    quota.queried_at = None;
+    OfficialQuotaDto {
+        quota,
+        access_expired: true,
+    }
+}
+
 /// Quota-only IPC: credentials stay inside the Vault/live-auth backend path.
 #[tauri::command]
-pub async fn get_official_account_quota(key: String) -> Result<SubscriptionQuota, String> {
+pub async fn get_official_account_quota(key: String) -> Result<OfficialQuotaDto, String> {
     codex_accounts::require_enabled().map_err(|err| err.to_string())?;
     let vault = Vault::open_default().map_err(|err| err.to_string())?;
     let codex_dir = crate::codex_config::get_codex_config_dir();
-    let (access_token, account_id) = codex_accounts::quota_credentials(&vault, &codex_dir, &key)
+    let credentials = codex_accounts::quota_credentials(&vault, &codex_dir, &key)
         .map_err(|err| err.to_string())?;
-    query_codex_quota(
-        &access_token,
-        Some(&account_id),
+    if codex_accounts::access_expired(
+        credentials.access_expires_at,
+        chrono::Utc::now().timestamp(),
+    ) {
+        return Ok(expired_access_quota());
+    }
+    let quota = query_codex_quota(
+        &credentials.access_token,
+        Some(&credentials.account_id),
         "codex",
-        "官方账号登录已过期或被拒绝，请在 Codex 中刷新登录后重试，或重新登录",
+        "官方账号登录已失效，请重新登录",
     )
-    .await
+    .await?;
+    Ok(OfficialQuotaDto {
+        quota,
+        access_expired: false,
+    })
 }
 
 #[tauri::command]
@@ -582,6 +766,135 @@ mod live_account_tests {
                 );
             }
         }
+    }
+
+    fn slot_file(fx: &Fixture, key: &str) -> std::path::PathBuf {
+        fx.dir
+            .path()
+            .join("vault/accounts")
+            .join(format!("{key}.json"))
+    }
+
+    // U4 A1: unreadable or missing slots stay visible and removable.
+    #[test]
+    fn unreadable_and_line_only_accounts_are_listed_as_needing_login() {
+        let fx = Fixture::new();
+        let a_key = save(&fx, "line-a", &chatgpt_login("a", "2020-01-01T00:00:00Z"));
+        let b_key = save(&fx, "line-b", &chatgpt_login("b", "2020-01-01T00:00:00Z"));
+        std::fs::write(slot_file(&fx, &a_key), b"corrupt").unwrap();
+        // A line pinned to an account whose slot never reached this machine.
+        let ghost_key = identity("ghost").key();
+        fx.add_line("line-ghost", Some(&ghost_key));
+        // A malformed pin can never be removed by key, so it is not listed.
+        fx.add_line("line-forged", Some("forged-key"));
+
+        let accounts = list(&fx, Some("line-b"), false);
+        assert_eq!(accounts.len(), 3);
+        for key in [&a_key, &ghost_key] {
+            let row = accounts.iter().find(|row| row.key == *key).unwrap();
+            assert!(row.unreadable && row.needs_relogin, "{key}");
+            assert_eq!(row.display_name, "无法读取的账号");
+            assert!(row.email.is_none() && row.plan_type.is_none());
+            assert!(row.account_id.is_empty());
+        }
+        assert_eq!(
+            accounts
+                .iter()
+                .find(|row| row.key == ghost_key)
+                .unwrap()
+                .provider_id
+                .as_deref(),
+            Some("line-ghost")
+        );
+        let b = accounts.iter().find(|row| row.key == b_key).unwrap();
+        assert!(!b.unreadable && !b.needs_relogin && b.is_selected);
+        assert_eq!(b.plan_type.as_deref(), Some("pro"));
+
+        // Removing the unreadable account needs no decryption and leaves B alone.
+        remove_official_account_from(&fx.db, &a_key, || fx.vault.remove_account(&a_key)).unwrap();
+        assert!(!slot_file(&fx, &a_key).exists());
+        assert!(fx.line("line-a").official_account_key().is_none());
+        assert!(fx.vault.applicable_slot(&b_key).is_ok());
+        let accounts = list(&fx, Some("line-b"), false);
+        assert!(accounts.iter().all(|row| row.key != a_key));
+    }
+
+    // U4 A1: re-login and import repair an unreadable slot in place.
+    #[test]
+    fn signing_in_again_repairs_an_unreadable_account() {
+        for cli in [false, true] {
+            let fx = Fixture::new();
+            let login = chatgpt_login("a", "2020-01-01T00:00:00Z");
+            let key = save(&fx, "line-a", &login);
+            std::fs::write(slot_file(&fx, &key), b"corrupt").unwrap();
+            let fresh = chatgpt_login("a", "2020-01-02T00:00:00Z");
+            fx.write_live(&fresh);
+            let saved = if cli {
+                let LoginClass::Chatgpt(account) = classify(&fresh) else {
+                    panic!("fixture must be a complete login");
+                };
+                codex_accounts::register_cli_login(
+                    &fx.db,
+                    &fx.vault,
+                    &fx.codex_dir(),
+                    &account,
+                    &fresh,
+                )
+            } else {
+                codex_accounts::save_current_login(&fx.db, &fx.vault, &fx.codex_dir(), None)
+            };
+            assert_eq!(saved.unwrap(), key);
+            assert_eq!(fx.vault.applicable_slot(&key).unwrap().auth, fresh);
+            let accounts = list(&fx, Some("line-a"), false);
+            assert_eq!(accounts.len(), 1);
+            assert!(!accounts[0].unreadable && !accounts[0].needs_relogin);
+            assert_eq!(codex_accounts::official_lines(&fx.db).unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn live_state_tells_unsaved_mismatched_and_third_party_logins_apart() {
+        let fx = Fixture::new();
+        let a = chatgpt_login("a", "2020-01-01T00:00:00Z");
+        save(&fx, "line-a", &a);
+        save(&fx, "line-b", &chatgpt_login("b", "2020-01-01T00:00:00Z"));
+        let state = |fx: &Fixture, current: Option<&str>| list(fx, current, false)[0].live_state;
+
+        fx.write_live(&a);
+        assert_eq!(state(&fx, Some("line-a")), OfficialLiveState::Matched);
+        assert_eq!(state(&fx, Some("line-b")), OfficialLiveState::Mismatch);
+        fx.write_live(&chatgpt_login("stranger", "2020-01-01T00:00:00Z"));
+        assert_eq!(state(&fx, Some("line-a")), OfficialLiveState::Unsaved);
+        fx.write_live(&json!({"auth_mode": "apikey", "OPENAI_API_KEY": "sk-x"}));
+        assert_eq!(state(&fx, Some("line-a")), OfficialLiveState::Mismatch);
+        assert_eq!(state(&fx, None), OfficialLiveState::Unknown);
+        std::fs::write(
+            fx.codex_dir().join("config.toml"),
+            "model_provider = 'custom'\n[model_providers.custom]\nbase_url = 'https://relay.example/v1'\n",
+        )
+        .unwrap();
+        assert_eq!(
+            state(&fx, Some("third-party")),
+            OfficialLiveState::ThirdParty
+        );
+        std::fs::write(fx.codex_dir().join("config.toml"), "model_provider = [").unwrap();
+        assert_eq!(state(&fx, Some("third-party")), OfficialLiveState::Unknown);
+    }
+
+    #[test]
+    fn an_expired_access_token_is_reported_without_asking_for_a_new_login() {
+        let fx = Fixture::new();
+        let mut login = chatgpt_login("a", "2020-01-01T00:00:00Z");
+        login["tokens"]["access_token"] = json!(jwt(json!({"exp": 1_000})));
+        save(&fx, "line-a", &login);
+        let accounts = list(&fx, Some("line-a"), false);
+        assert!(accounts[0].access_expired);
+        assert!(!accounts[0].needs_relogin);
+        let quota = serde_json::to_value(expired_access_quota()).unwrap();
+        assert_eq!(quota["accessExpired"], json!(true));
+        assert_eq!(quota["credentialStatus"], json!("valid"));
+        assert_eq!(quota["success"], json!(false));
+        assert!(quota["queriedAt"].is_null());
     }
 
     #[test]

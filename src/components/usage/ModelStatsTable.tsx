@@ -8,7 +8,9 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useModelStats } from "@/lib/query/usage";
+import { cn } from "@/lib/utils";
 import { fmtUsd } from "./format";
+import { usageTable } from "./usageTable";
 import type { UsageRangeSelection } from "@/types/usage";
 
 interface ModelStatsTableProps {
@@ -36,7 +38,7 @@ export function ModelStatsTable({
   );
 
   if (isLoading) {
-    return <div className="h-[400px] animate-pulse rounded bg-gray-100" />;
+    return <div className={usageTable.skeleton} aria-hidden="true" />;
   }
 
   return (
@@ -44,17 +46,17 @@ export function ModelStatsTable({
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>{t("usage.model", "模型")}</TableHead>
-            <TableHead className="text-right">
+            <TableHead className={usageTable.th}>
+              {t("usage.model", "模型")}
+            </TableHead>
+            <TableHead className={usageTable.thNum}>
               {t("usage.requests", "请求数")}
             </TableHead>
-            <TableHead className="text-right">
-              {t("usage.tokens", "Tokens")}
-            </TableHead>
-            <TableHead className="text-right">
+            <TableHead className={usageTable.thNum}>词元</TableHead>
+            <TableHead className={usageTable.thNum}>
               {t("usage.totalCost", "总成本")}
             </TableHead>
-            <TableHead className="text-right">
+            <TableHead className={usageTable.thNum}>
               {t("usage.avgCost", "平均成本")}
             </TableHead>
           </TableRow>
@@ -64,27 +66,27 @@ export function ModelStatsTable({
             <TableRow>
               <TableCell
                 colSpan={5}
-                className="text-center text-muted-foreground"
+                className={cn(usageTable.td, "py-8 text-muted-foreground")}
               >
-                {t("usage.noData", "暂无数据")}
+                所选范围内没有模型统计
               </TableCell>
             </TableRow>
           ) : (
             stats?.map((stat) => (
               <TableRow key={stat.model}>
-                <TableCell className="font-mono text-sm">
+                <TableCell className={cn(usageTable.td, "font-mono text-xs")}>
                   {stat.model}
                 </TableCell>
-                <TableCell className="text-right">
-                  {stat.requestCount.toLocaleString()}
+                <TableCell className={usageTable.tdNum}>
+                  {stat.requestCount.toLocaleString("zh-CN")}
                 </TableCell>
-                <TableCell className="text-right">
-                  {stat.totalTokens.toLocaleString()}
+                <TableCell className={usageTable.tdNum}>
+                  {stat.totalTokens.toLocaleString("zh-CN")}
                 </TableCell>
-                <TableCell className="text-right">
+                <TableCell className={usageTable.tdNum}>
                   {fmtUsd(stat.totalCost, 4)}
                 </TableCell>
-                <TableCell className="text-right">
+                <TableCell className={usageTable.tdNum}>
                   {fmtUsd(stat.avgCostPerRequest, 6)}
                 </TableCell>
               </TableRow>

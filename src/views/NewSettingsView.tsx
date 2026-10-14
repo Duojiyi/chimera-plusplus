@@ -19,6 +19,7 @@ import {
   CircleAlert,
   CircleCheck,
   Download,
+  FileSearch,
   FolderOpen,
   LoaderCircle,
   RefreshCw,
@@ -27,6 +28,7 @@ import type { Settings } from "@/types";
 import { settingsApi, type PreferencesPatch } from "@/lib/api/settings";
 import { getCurrentVersion } from "@/lib/updater";
 import { useUpdate } from "@/contexts/UpdateContext";
+import { extractErrorMessage } from "@/utils/errorUtils";
 
 const DatabaseRecoveryPanel = lazy(() =>
   import("@/components/settings/DatabaseRecoveryPanel").then((m) => ({
@@ -67,8 +69,9 @@ const isStandalone = (id: SectionId) =>
 const scrolledSections = settingsSections
   .map(([id]) => id)
   .filter((id) => !isStandalone(id));
-// A section becomes current once its heading is within this distance of the
-// top edge of the scroll area.
+// A section stays current until less than this much of it is left below the
+// top edge of the scroll area, so the highlight never points at a section
+// that has scrolled out of view.
 const SCROLL_SPY_OFFSET = 48;
 const isSectionHash = (hash: string) =>
   settingsSections.some(([id]) => `#${id}` === hash);
@@ -78,6 +81,53 @@ const sectionFromLocation = (): SectionId =>
 
 const runningInTauri =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+const defaultPreferences: PreferencesPatch = {
+  codexUpdateSource: "auto",
+  codexInstallMode: "standard",
+  checkCodexUpdatesOnStart: true,
+  checkProviderStatusOnStart: true,
+  showProviderBalance: false,
+  minimizeToTrayOnClose: true,
+  lightweightOnClose: false,
+};
+
+const closeBehaviors = [
+  ["tray", "最小化到托盘", "窗口收进托盘，Chimera++ 和本地路由继续运行"],
+  ["exit", "退出软件", "完全退出 Chimera++，本地路由随之停止"],
+  ["lightweight", "轻量模式", "关闭界面以释放内存，托盘和本地路由继续运行"],
+] as const;
+
+// Both values currently download from the same verified mirror: the runtime
+// manager resolves "auto" to it on Windows. Say so instead of implying a
+// difference that does not exist.
+const updateSources = [
+  [
+    "auto",
+    "自动选择",
+    "推荐。由 Chimera++ 选择下载来源，目前从 GitHub 镜像下载并校验文件",
+  ],
+  [
+    "mirror",
+    "镜像安装",
+    "固定从 GitHub 镜像下载并校验文件，目前与「自动选择」相同",
+  ],
+] as const;
+
+const describeError = (reason: unknown) =>
+  extractErrorMessage(reason) || String(reason);
+
+function formatCheckedAt(time: number) {
+  const date = new Date(time);
+  const clock = new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(date);
+  return date.toDateString() === new Date().toDateString()
+    ? clock
+    : `${date.getMonth() + 1}月${date.getDate()}日 ${clock}`;
+}
 
 function DisclosureRow({
   id,
@@ -161,7 +211,7 @@ export function NewSettingsView({
   const saveQueue = useRef<Promise<void>>(Promise.resolve());
   const [pendingKeys, setPendingKeys] = useState<Set<string>>(new Set());
   const [settings, setSettings] = useState<Settings | null>(null);
-  const [settingsError, setSettingsError] = useState(false);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
   const [autoLaunchBusy, setAutoLaunchBusy] = useState(false);
   const [appVersion, setAppVersion] = useState("正在读取版本");
 
@@ -217,24 +267,26 @@ export function NewSettingsView({
       return;
     jumpTop.current = null;
     const top = container.getBoundingClientRect().top;
-    let current = scrolledSections[0];
-    for (const id of scrolledSections) {
-      const section = document.getElementById(id);
-      if (
-        section &&
-        section.getBoundingClientRect().top - top <= SCROLL_SPY_OFFSET
-      )
-        current = id;
-    }
+    // The first section that still shows more than a sliver is the one being
+    // read; near the end of the page that is the section at the top of the
+    // view, never one that has already scrolled away.
+    const current =
+      scrolledSections.find((id) => {
+        const section = document.getElementById(id);
+        return (
+          section !== null &&
+          section.getBoundingClientRect().bottom - top > SCROLL_SPY_OFFSET
+        );
+      }) ?? scrolledSections[scrolledSections.length - 1];
     setActiveSection(current);
   };
 
   const loadSettings = async () => {
-    setSettingsError(false);
+    setSettingsError(null);
     try {
       setSettings(await settingsApi.get());
-    } catch {
-      setSettingsError(true);
+    } catch (reason) {
+      setSettingsError(describeError(reason));
     }
   };
   useEffect(() => {
@@ -251,7 +303,10 @@ export function NewSettingsView({
       .catch(() => setAppVersion("未知版本"));
     void loadSettings();
   }, []);
-  const save = (patch: PreferencesPatch) => {
+  const save = (
+    patch: PreferencesPatch,
+    done?: { message: string; undo: PreferencesPatch },
+  ) => {
     if (!settings) return;
     const keys = Object.keys(patch);
     setPendingKeys((current) => new Set([...current, ...keys]));
@@ -265,9 +320,15 @@ export function NewSettingsView({
             current ? { ...current, ...patch } : current,
           );
         }
-        toast.success(runningInTauri ? "设置已保存" : "预览设置已更新");
+        if (done) {
+          toast.success(done.message, {
+            action: { label: "撤销", onClick: () => save(done.undo) },
+          });
+        } else {
+          toast.success(runningInTauri ? "设置已保存" : "预览设置已更新");
+        }
       } catch (reason) {
-        toast.error("设置保存失败", { description: String(reason) });
+        toast.error("设置保存失败", { description: describeError(reason) });
       } finally {
         setPendingKeys((current) => {
           const next = new Set(current);
@@ -276,6 +337,16 @@ export function NewSettingsView({
         });
       }
     });
+  };
+  const resetPreferences = () => {
+    if (!settings) return;
+    const undo = Object.fromEntries(
+      Object.keys(defaultPreferences).map((key) => [
+        key,
+        settings[key as keyof PreferencesPatch],
+      ]),
+    ) as PreferencesPatch;
+    save(defaultPreferences, { message: "已恢复默认设置", undo });
   };
   // Mirrors the backend default for a preference that was never saved.
   const launchOnStartup = settings?.launchOnStartup ?? true;
@@ -298,7 +369,7 @@ export function NewSettingsView({
       );
       toast.success("开机自启动设置已保存");
     } catch (reason) {
-      toast.error("设置开机自启动失败", { description: String(reason) });
+      toast.error("设置开机自启动失败", { description: describeError(reason) });
     } finally {
       setAutoLaunchBusy(false);
     }
@@ -306,6 +377,8 @@ export function NewSettingsView({
   const updateChecks = settings?.checkCodexUpdatesOnStart ?? true;
   const providerChecks = settings?.checkProviderStatusOnStart ?? true;
   const showProviderBalance = settings?.showProviderBalance ?? false;
+  const updateSource =
+    settings?.codexUpdateSource === "mirror" ? "mirror" : "auto";
   const closeBehavior = !(settings?.minimizeToTrayOnClose ?? true)
     ? "exit"
     : settings?.lightweightOnClose
@@ -315,18 +388,28 @@ export function NewSettingsView({
     pendingKeys.size > 0 || autoLaunchBusy || installingAppUpdate || isStaging,
   );
   const openDataFolder = async () => {
-    if (!runningInTauri) return;
     try {
       await settingsApi.openAppConfigFolder();
     } catch (reason) {
-      toast.error("无法打开数据目录", { description: String(reason) });
+      toast.error("无法打开数据目录", { description: describeError(reason) });
+    }
+  };
+  const revealLogFile = async () => {
+    try {
+      await settingsApi.revealAppLogFile();
+    } catch (reason) {
+      toast.error("无法打开日志位置", { description: describeError(reason) });
     }
   };
   const checkAppUpdate = async () => {
+    if (!runningInTauri) {
+      toast.info("浏览器预览无法检查更新");
+      return;
+    }
     try {
       await checkUpdate();
     } catch (reason) {
-      toast.error("检查应用更新失败", { description: String(reason) });
+      toast.error("检查应用更新失败", { description: describeError(reason) });
     }
   };
   const installAppUpdate = async () => {
@@ -336,15 +419,15 @@ export function NewSettingsView({
         toast.info("该更新已不可用", { description: "已重新检查更新" });
       }
     } catch (reason) {
-      toast.error("应用更新失败", { description: String(reason) });
+      toast.error("应用更新未完成", { description: describeError(reason) });
     }
   };
-  const lastCheckedLabel = lastCheckedAt
-    ? new Intl.DateTimeFormat("zh-CN", {
-        hour: "2-digit",
-        minute: "2-digit",
-      }).format(lastCheckedAt)
-    : null;
+
+  const availableVersion = updateInfo?.availableVersion;
+  const installFailed = hasUpdate && updateErrorOperation === "install";
+  const checkFailed = !hasUpdate && Boolean(updateError);
+  const packageStaged =
+    hasUpdate && !installFailed && stagedVersion === availableVersion;
   const appUpdatePercent =
     appUpdateProgress?.total && appUpdateProgress.total > 0
       ? Math.min(
@@ -354,66 +437,91 @@ export function NewSettingsView({
           ),
         )
       : null;
+  // The install waits for a background download that reports no progress of
+  // its own; say what it is waiting for instead of an open-ended "preparing".
+  const finishingBackgroundDownload =
+    installingAppUpdate && isStaging && appUpdatePercent === null;
+  const updateTone = installingAppUpdate
+    ? "available"
+    : isChecking
+      ? "idle"
+      : installFailed || checkFailed
+        ? "error"
+        : hasUpdate
+          ? "available"
+          : lastCheckedAt
+            ? "ok"
+            : "idle";
   const appUpdateTitle = installingAppUpdate
     ? "正在更新 Chimera++"
     : isChecking
       ? "正在检查更新"
-      : hasUpdate && updateInfo
-        ? updateErrorOperation === "install"
-          ? "更新未完成，可以重试"
-          : `发现 Chimera++ ${updateInfo.availableVersion}`
-        : updateError
-          ? "检查更新失败"
-          : lastCheckedAt
-            ? "已是最新版本"
-            : `Chimera++ ${appVersion}`;
+      : installFailed
+        ? "更新未完成，可以重试"
+        : hasUpdate && availableVersion
+          ? `发现 Chimera++ ${availableVersion}`
+          : checkFailed
+            ? "检查更新失败"
+            : lastCheckedAt
+              ? "已是最新版本"
+              : `Chimera++ ${appVersion}`;
   const appUpdateDescription = installingAppUpdate
-    ? appUpdatePercent === null
-      ? "正在准备更新，完成后应用将自动重启"
-      : appUpdatePercent >= 100
-        ? "正在安装更新，完成后应用将自动重启"
-        : `正在下载更新 ${appUpdatePercent}%`
+    ? finishingBackgroundDownload
+      ? "正在完成后台下载，完成后自动安装并重启"
+      : appUpdatePercent === null
+        ? "正在准备更新，完成后应用将自动重启"
+        : appUpdatePercent >= 100
+          ? "正在安装更新，完成后应用将自动重启"
+          : "正在下载更新包，完成后自动安装并重启"
     : isChecking
       ? "正在连接稳定版更新源"
-      : hasUpdate
-        ? updateErrorOperation === "install"
-          ? `${updateError ?? "安装失败"}。旧版本未被替换，可再次尝试。`
-          : updateErrorOperation === "stage"
-            ? "后台预下载未完成，点击后会重新下载、验证并安装"
-            : stagedVersion === updateInfo?.availableVersion
+      : installFailed
+        ? `${(updateError ?? "安装没有完成").replace(/[。.]+$/, "")}。旧版本未被替换。`
+        : hasUpdate
+          ? updateErrorOperation === "stage"
+            ? "后台下载没有完成；点击后会重新下载、验证并安装"
+            : packageStaged
               ? "更新包已下载并通过验证，安装后应用将自动重启"
               : isStaging
-                ? "正在后台下载更新包，点击后将下载完成并安装"
-                : "发现新版本，下载并验证后安装"
-        : updateError
-          ? updateError
-          : lastCheckedLabel
-            ? `Chimera++ ${appVersion} · 上次检查 ${lastCheckedLabel}`
-            : "自动检测已开启，也可以随时手动检查";
+                ? "正在后台下载更新包；现在点击会等下载完成后安装"
+                : "下载并验证后安装，完成后应用将自动重启"
+          : checkFailed
+            ? (updateError ?? "")
+            : lastCheckedAt
+              ? `Chimera++ ${appVersion} · 上次检查 ${formatCheckedAt(lastCheckedAt)}`
+              : "Chimera++ 会自动检查新版本，也可以随时手动检查";
+  const appUpdateButton = installingAppUpdate
+    ? "正在更新…"
+    : isChecking
+      ? "正在检查…"
+      : installFailed
+        ? "重试更新"
+        : hasUpdate
+          ? packageStaged
+            ? "安装并重启"
+            : "下载并安装"
+          : lastCheckedAt || checkFailed
+            ? "重新检查"
+            : "检查更新";
+  const appUpdateProgressLabel =
+    appUpdatePercent === null
+      ? finishingBackgroundDownload
+        ? "后台下载中"
+        : "准备中"
+      : appUpdatePercent >= 100
+        ? "正在安装"
+        : `${appUpdatePercent}%`;
+  const releaseNotes = updateInfo?.notes?.trim();
+
   return (
     <section className="new-settings-view">
       <header className="settings-page-header">
         <h1>{t("settings.title", { defaultValue: "设置" })}</h1>
-        <p>Chimera++ {appVersion} · 配置只保存在本机</p>
+        <p>
+          Chimera++ {appVersion} ·{" "}
+          {runningInTauri ? "配置只保存在本机" : "浏览器预览，不读取本机数据"}
+        </p>
       </header>
-      <div className="settings-page-summary" aria-label="设置摘要">
-        <span>
-          运行环境 <b>{runningInTauri ? "桌面应用" : "浏览器预览"}</b>
-        </span>
-        <span>
-          备份服务{" "}
-          <b>
-            {!runningInTauri
-              ? "未连接本机"
-              : liveBackupsEnabled
-                ? "已开放"
-                : "尚未开放"}
-          </b>
-        </span>
-        <span>
-          存储方式 <b>仅本机</b>
-        </span>
-      </div>
       <div className="settings-page-layout">
         <nav className="settings-page-nav" aria-label="设置目录">
           {settingsSections.map(([id, label]) => (
@@ -459,10 +567,13 @@ export function NewSettingsView({
             hidden={isStandalone(activeSection)}
             className="settings-standard-sections"
           >
-            {settingsError && (
+            {settingsError !== null && (
               <div className="settings-load-error" role="alert">
                 <CircleAlert size={16} aria-hidden="true" />
-                <span>无法读取设置，以下偏好暂时不能修改。</span>
+                <span>
+                  无法读取设置，以下偏好暂时不能修改。
+                  {settingsError && <small>{settingsError}</small>}
+                </span>
                 <button
                   type="button"
                   className="secondary"
@@ -539,7 +650,7 @@ export function NewSettingsView({
             >
               <h2 id="settings-connections-heading">代理与故障转移</h2>
               <p className="settings-section-lead">
-                默认不启用代理或后台任务。展开后只读取状态，保存、测试和启用都需要手动操作。
+                默认都不启用。展开只读取当前状态，保存、测试和启用都需要你手动操作。
               </p>
               <div className="settings-reference-list">
                 <DisclosureRow
@@ -564,7 +675,7 @@ export function NewSettingsView({
                 <DisclosureRow
                   id="settings-failover"
                   title="自动故障转移"
-                  description="本地代理请求失败时按队列切换线路"
+                  description="本地路由请求失败时，按队列换用下一条线路"
                   expanded={connectionPanel === "failover"}
                   disabled={!runningInTauri}
                   onToggle={() =>
@@ -612,6 +723,32 @@ export function NewSettingsView({
                     </Suspense>
                   </div>
                 )}
+                <button
+                  type="button"
+                  className="settings-reference-row settings-link-row"
+                  disabled={!runningInTauri}
+                  onClick={() => void openDataFolder()}
+                >
+                  <span>
+                    <b>打开数据目录</b>
+                    <small>线路、备份和运行日志都保存在这里</small>
+                  </span>
+                  <FolderOpen size={16} aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  className="settings-reference-row settings-link-row"
+                  disabled={!runningInTauri}
+                  onClick={() => void revealLogFile()}
+                >
+                  <span>
+                    <b>定位日志文件</b>
+                    <small>
+                      在文件管理器中选中运行日志，反馈问题时可以附上
+                    </small>
+                  </span>
+                  <FileSearch size={16} aria-hidden="true" />
+                </button>
               </div>
             </section>
             <section
@@ -628,11 +765,14 @@ export function NewSettingsView({
                     </b>
                     <small>当前版本仅提供简体中文界面。</small>
                   </span>
-                  <span aria-labelledby="settings-language-label">
+                  <span
+                    className="settings-static-value"
+                    aria-labelledby="settings-language-label"
+                  >
                     简体中文
                   </span>
                 </div>
-                <div className="settings-reference-row settings-theme-row">
+                <div className="settings-reference-row">
                   <span>
                     <b id="settings-theme-label">
                       {t("settings.theme", { defaultValue: "应用主题" })}
@@ -640,7 +780,7 @@ export function NewSettingsView({
                     <small>只改变 Chimera++ 自身；Codex 皮肤在「外观」里</small>
                   </span>
                   <div
-                    className="settings-segment settings-theme-segment"
+                    className="settings-segment"
                     role="group"
                     aria-labelledby="settings-theme-label"
                   >
@@ -675,6 +815,7 @@ export function NewSettingsView({
                   </div>
                 </div>
                 <button
+                  type="button"
                   className="settings-reference-row"
                   role="switch"
                   aria-checked={launchOnStartup}
@@ -694,19 +835,21 @@ export function NewSettingsView({
                 <div className="settings-reference-row">
                   <span>
                     <b id="close-behavior-label">关闭主窗口时</b>
+                    <small id="close-behavior-note">
+                      {
+                        closeBehaviors.find(
+                          ([value]) => value === closeBehavior,
+                        )?.[2]
+                      }
+                    </small>
                   </span>
                   <div
                     className="settings-close-options"
                     role="radiogroup"
                     aria-labelledby="close-behavior-label"
+                    aria-describedby="close-behavior-note"
                   >
-                    {(
-                      [
-                        ["tray", "最小化到托盘"],
-                        ["exit", "退出软件"],
-                        ["lightweight", "轻量模式"],
-                      ] as const
-                    ).map(([value, label]) => (
+                    {closeBehaviors.map(([value, label]) => (
                       <label key={value}>
                         <input
                           type="radio"
@@ -740,6 +883,7 @@ export function NewSettingsView({
               <h2 id="settings-codex-heading">Codex 偏好</h2>
               <div className="settings-reference-list">
                 <button
+                  type="button"
                   className="settings-reference-row"
                   role="switch"
                   aria-checked={updateChecks}
@@ -761,6 +905,7 @@ export function NewSettingsView({
                   </i>
                 </button>
                 <button
+                  type="button"
                   className="settings-reference-row"
                   role="switch"
                   aria-checked={providerChecks}
@@ -772,8 +917,8 @@ export function NewSettingsView({
                   }
                 >
                   <span>
-                    <b>自动检查供应商状态</b>
-                    <small>启动后轻量验证当前路由</small>
+                    <b>自动检查线路状态</b>
+                    <small>启动后测试当前线路的地址能否连通，不使用密钥</small>
                   </span>
                   <i
                     className={`settings-switch ${providerChecks ? "is-on" : ""}`}
@@ -782,6 +927,7 @@ export function NewSettingsView({
                   </i>
                 </button>
                 <button
+                  type="button"
                   className="settings-reference-row"
                   role="switch"
                   aria-checked={showProviderBalance}
@@ -791,9 +937,9 @@ export function NewSettingsView({
                   }
                 >
                   <span>
-                    <b>显示供应商余额</b>
+                    <b>显示线路余额</b>
                     <small>
-                      在供应商卡片显示余额或额度（需供应商配置用量查询脚本）
+                      在线路页显示当前线路的余额或额度（支持的服务商会自动查询）
                     </small>
                   </span>
                   <i
@@ -802,54 +948,41 @@ export function NewSettingsView({
                     <u />
                   </i>
                 </button>
-                <div className="settings-reference-row settings-segment-row">
+                <div className="settings-reference-row">
                   <span>
-                    <b>Codex 更新源</b>
-                    <small>
-                      安装方式请在“Codex 管理”页的“安装方式与更新源”中选择
+                    <b id="settings-update-source-label">Codex 更新源</b>
+                    <small id="settings-update-source-note">
+                      {
+                        updateSources.find(
+                          ([value]) => value === updateSource,
+                        )?.[2]
+                      }
                     </small>
                   </span>
-                  <div className="settings-segment">
-                    <button
-                      className={
-                        settings?.codexUpdateSource === "mirror"
-                          ? ""
-                          : "is-active"
-                      }
-                      aria-pressed={settings?.codexUpdateSource !== "mirror"}
-                      disabled={
-                        !settings || pendingKeys.has("codexUpdateSource")
-                      }
-                      onClick={() => void save({ codexUpdateSource: "auto" })}
-                    >
-                      自动选择
-                    </button>
-                    <button
-                      className={
-                        settings?.codexUpdateSource === "mirror"
-                          ? "is-active"
-                          : ""
-                      }
-                      aria-pressed={settings?.codexUpdateSource === "mirror"}
-                      disabled={
-                        !settings || pendingKeys.has("codexUpdateSource")
-                      }
-                      onClick={() => void save({ codexUpdateSource: "mirror" })}
-                    >
-                      镜像安装
-                    </button>
+                  <div
+                    className="settings-segment"
+                    role="group"
+                    aria-labelledby="settings-update-source-label"
+                    aria-describedby="settings-update-source-note"
+                  >
+                    {updateSources.map(([value, label]) => (
+                      <button
+                        key={value}
+                        type="button"
+                        className={
+                          updateSource === value ? "is-active" : undefined
+                        }
+                        aria-pressed={updateSource === value}
+                        disabled={
+                          !settings || pendingKeys.has("codexUpdateSource")
+                        }
+                        onClick={() => void save({ codexUpdateSource: value })}
+                      >
+                        {label}
+                      </button>
+                    ))}
                   </div>
                 </div>
-                <button
-                  className="settings-reference-row settings-link-row"
-                  onClick={() => void openDataFolder()}
-                >
-                  <span>
-                    <b>数据与日志</b>
-                    <small>配置保存在本机</small>
-                  </span>
-                  <FolderOpen size={16} aria-hidden="true" />
-                </button>
               </div>
             </section>
             <section
@@ -858,29 +991,27 @@ export function NewSettingsView({
               tabIndex={-1}
             >
               <h2 id="settings-updates-heading">应用更新</h2>
-              <div
-                className={`settings-app-update${hasUpdate ? " is-available" : ""}${updateError ? " is-error" : ""}`}
-                aria-live="polite"
-              >
+              <div className={`settings-app-update is-${updateTone}`}>
                 <div className="settings-app-update-row">
                   <span className="settings-app-update-icon" aria-hidden="true">
                     {installingAppUpdate || isChecking ? (
-                      <LoaderCircle className="spin" size={15} />
+                      <LoaderCircle className="spin" size={16} />
+                    ) : installFailed || checkFailed ? (
+                      <CircleAlert size={16} />
                     ) : hasUpdate ? (
-                      <Download size={15} />
-                    ) : lastCheckedAt && !updateError ? (
-                      <CircleCheck size={15} />
-                    ) : updateError ? (
-                      <CircleAlert size={15} />
+                      <Download size={16} />
+                    ) : lastCheckedAt ? (
+                      <CircleCheck size={16} />
                     ) : (
-                      <RefreshCw size={15} />
+                      <RefreshCw size={16} />
                     )}
                   </span>
-                  <span className="settings-app-update-copy">
+                  <span className="settings-app-update-copy" aria-live="polite">
                     <b>{appUpdateTitle}</b>
                     <small>{appUpdateDescription}</small>
                   </span>
                   <button
+                    type="button"
                     className={hasUpdate ? "primary" : "secondary"}
                     disabled={isChecking || installingAppUpdate}
                     onClick={() => {
@@ -898,48 +1029,23 @@ export function NewSettingsView({
                     ) : (
                       <RefreshCw size={14} />
                     )}
-                    {installingAppUpdate
-                      ? "正在更新…"
-                      : isChecking
-                        ? "正在检查…"
-                        : hasUpdate
-                          ? stagedVersion === updateInfo?.availableVersion
-                            ? "安装并重启"
-                            : "下载并安装"
-                          : lastCheckedAt
-                            ? "重新检查"
-                            : "检查更新"}
+                    {appUpdateButton}
                   </button>
                 </div>
-                {hasUpdate && updateInfo && (
-                  <div className="settings-app-update-details">
-                    <span>
-                      <b>
-                        {updateInfo.currentVersion} →{" "}
-                        {updateInfo.availableVersion}
-                      </b>
-                      <small>
-                        {updateInfo.notes?.trim() ||
-                          "安装期间 Chimera++ 将重新启动，正在运行的 Codex 任务不会被关闭。"}
-                      </small>
-                    </span>
-                  </div>
-                )}
                 {installingAppUpdate && (
                   <div className="settings-app-update-progress">
-                    <span>
-                      {appUpdatePercent === null
-                        ? "正在准备下载"
-                        : appUpdatePercent >= 100
-                          ? "正在安装"
-                          : `${appUpdatePercent}%`}
-                    </span>
+                    <span>{appUpdateProgressLabel}</span>
                     <i
                       role="progressbar"
                       aria-label="应用更新下载进度"
                       aria-valuemin={0}
                       aria-valuemax={100}
                       aria-valuenow={appUpdatePercent ?? undefined}
+                      aria-valuetext={
+                        appUpdatePercent === null
+                          ? appUpdateProgressLabel
+                          : undefined
+                      }
                     >
                       <u
                         className={
@@ -956,6 +1062,23 @@ export function NewSettingsView({
                     </i>
                   </div>
                 )}
+                {hasUpdate && updateInfo && (
+                  <div className="settings-app-update-details">
+                    <b>
+                      {updateInfo.currentVersion || appVersion} →{" "}
+                      {updateInfo.availableVersion}
+                    </b>
+                    {releaseNotes && (
+                      <p className="settings-app-update-notes">
+                        {releaseNotes}
+                      </p>
+                    )}
+                    <small>
+                      安装时 Chimera++ 会退出并自动重启，Codex
+                      保持运行；重启完成前，经本地路由的请求会暂停。
+                    </small>
+                  </div>
+                )}
               </div>
             </section>
             {/* Part of the scroll flow, so it can never cover the last rows. */}
@@ -968,17 +1091,7 @@ export function NewSettingsView({
                 type="button"
                 className="secondary"
                 disabled={!settings || pendingKeys.size > 0}
-                onClick={() =>
-                  void save({
-                    codexUpdateSource: "auto",
-                    codexInstallMode: "standard",
-                    checkCodexUpdatesOnStart: true,
-                    checkProviderStatusOnStart: true,
-                    showProviderBalance: false,
-                    minimizeToTrayOnClose: true,
-                    lightweightOnClose: false,
-                  })
-                }
+                onClick={resetPreferences}
               >
                 恢复默认设置
               </button>

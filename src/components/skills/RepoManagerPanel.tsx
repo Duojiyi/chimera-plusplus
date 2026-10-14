@@ -10,7 +10,8 @@ import type { DiscoverableSkill, SkillRepo } from "@/lib/api/skills";
 
 interface RepoManagerPanelProps {
   repos: SkillRepo[];
-  skills: DiscoverableSkill[];
+  /** `null` until the repositories have been read; counts need that read. */
+  skills: DiscoverableSkill[] | null;
   onAdd: (repo: SkillRepo) => Promise<void>;
   onRemove: (owner: string, name: string) => Promise<void>;
   onClose: () => void;
@@ -28,8 +29,8 @@ export function RepoManagerPanel({
   const [branch, setBranch] = useState("");
   const [error, setError] = useState("");
 
-  const getSkillCount = (repo: SkillRepo) =>
-    skills.filter(
+  const getSkillCount = (repo: SkillRepo, discovered: DiscoverableSkill[]) =>
+    discovered.filter(
       (skill) =>
         skill.repoOwner === repo.owner &&
         skill.repoName === repo.name &&
@@ -157,11 +158,13 @@ export function RepoManagerPanel({
                   </div>
                   <div className="mt-1 text-xs text-muted-foreground">
                     {t("skills.repo.branch")}: {repo.branch || "main"}
-                    <span className="ml-3 inline-flex items-center rounded-full border border-border-default px-2 py-0.5 text-[11px]">
-                      {t("skills.repo.skillCount", {
-                        count: getSkillCount(repo),
-                      })}
-                    </span>
+                    {skills && (
+                      <span className="ml-3 inline-flex items-center rounded-full border border-border-default px-2 py-0.5 text-[11px]">
+                        {t("skills.repo.skillCount", {
+                          count: getSkillCount(repo, skills),
+                        })}
+                      </span>
+                    )}
                   </div>
                 </div>
                 <div className="flex gap-2">

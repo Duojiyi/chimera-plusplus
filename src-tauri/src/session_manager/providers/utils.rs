@@ -79,12 +79,26 @@ pub fn parse_timestamp_to_ms(value: &Value) -> Option<i64> {
         .map(|dt: DateTime<FixedOffset>| dt.timestamp_millis())
 }
 
+/// Stands in for an image a text transcript cannot show.
+const IMAGE_PLACEHOLDER: &str = "[图片]";
+
 pub fn extract_text(content: &Value) -> String {
+    collect_text(content, false)
+}
+
+/// [`extract_text`] for showing a message: an image becomes a visible
+/// placeholder instead of vanishing, so a screenshot-only turn is not dropped
+/// as empty. Titles and summaries keep using [`extract_text`].
+pub fn extract_message_text(content: &Value) -> String {
+    collect_text(content, true)
+}
+
+fn collect_text(content: &Value, image_placeholders: bool) -> String {
     match content {
         Value::String(text) => text.to_string(),
         Value::Array(items) => items
             .iter()
-            .filter_map(extract_text_from_item)
+            .filter_map(|item| extract_text_from_item(item, image_placeholders))
             .filter(|text| !text.trim().is_empty())
             .collect::<Vec<_>>()
             .join("\n"),
@@ -97,8 +111,12 @@ pub fn extract_text(content: &Value) -> String {
     }
 }
 
-fn extract_text_from_item(item: &Value) -> Option<String> {
+fn extract_text_from_item(item: &Value, image_placeholders: bool) -> Option<String> {
     let item_type = item.get("type").and_then(Value::as_str).unwrap_or("");
+
+    if image_placeholders && matches!(item_type, "input_image" | "image") {
+        return Some(IMAGE_PLACEHOLDER.to_string());
+    }
 
     // tool_use: show tool name
     if item_type == "tool_use" {
@@ -112,7 +130,7 @@ fn extract_text_from_item(item: &Value) -> Option<String> {
     // tool_result: extract nested content
     if item_type == "tool_result" {
         if let Some(content) = item.get("content") {
-            let text = extract_text(content);
+            let text = collect_text(content, image_placeholders);
             if !text.is_empty() {
                 return Some(text);
             }
@@ -133,7 +151,7 @@ fn extract_text_from_item(item: &Value) -> Option<String> {
     }
 
     if let Some(content) = item.get("content") {
-        let text = extract_text(content);
+        let text = collect_text(content, image_placeholders);
         if !text.is_empty() {
             return Some(text);
         }
@@ -187,6 +205,21 @@ mod tests {
         assert_eq!(
             parse_timestamp_to_ms(&json!("1970-01-01T00:00:01Z")),
             Some(1_000)
+        );
+    }
+
+    #[test]
+    fn message_text_keeps_a_placeholder_where_an_image_was() {
+        let content = json!([
+            {"type": "input_text", "text": "看这张截图"},
+            {"type": "input_image", "image_url": "data:image/png;base64,AAAA"}
+        ]);
+        assert_eq!(extract_message_text(&content), "看这张截图\n[图片]");
+        // Titles and summaries stay text-only.
+        assert_eq!(extract_text(&content), "看这张截图");
+        assert_eq!(
+            extract_message_text(&json!([{"type": "input_image", "image_url": "x"}])),
+            "[图片]"
         );
     }
 }

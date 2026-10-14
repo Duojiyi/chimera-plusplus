@@ -2,8 +2,10 @@
 //!
 //! Parses Chimera++ and legacy CC Switch URLs into import requests.
 
-use super::utils::validate_url;
+use super::link_guard::check_link_values;
+use super::utils::{validate_url, REMOTE_CONFIG_UNSUPPORTED};
 use super::DeepLinkImportRequest;
+use crate::app_config::AppType;
 use crate::error::AppError;
 use std::collections::HashMap;
 use url::Url;
@@ -163,7 +165,13 @@ fn parse_provider_deeplink(
         .filter(|v| !v.is_empty());
     let config = params.get("config").cloned();
     let config_format = params.get("configFormat").cloned();
-    let config_url = params.get("configUrl").cloned();
+    // Remote configs are not implemented. Refusing here tells the user right
+    // away instead of after they confirmed the import.
+    if params.contains_key("configUrl") {
+        return Err(AppError::InvalidInput(
+            REMOTE_CONFIG_UNSUPPORTED.to_string(),
+        ));
+    }
     let enabled = params.get("enabled").and_then(|v| v.parse::<bool>().ok());
 
     // Extract usage script fields (v3.9+)
@@ -173,13 +181,25 @@ fn parse_provider_deeplink(
     let usage_script = params.get("usageScript").cloned();
     let usage_api_key = params.get("usageApiKey").cloned();
     let usage_base_url = params.get("usageBaseUrl").cloned();
+    // The confirm dialog shows the host a usage script may contact, taken
+    // from this URL when it is set, so it must be a plain http(s) URL.
+    if let Some(ref usage_url) = usage_base_url {
+        let trimmed = usage_url.trim();
+        if !trimmed.is_empty() {
+            validate_url(trimmed, "usageBaseUrl")?;
+        }
+    }
     let usage_access_token = params.get("usageAccessToken").cloned();
     let usage_user_id = params.get("usageUserId").cloned();
     let usage_auto_interval = params
         .get("usageAutoInterval")
         .and_then(|v| v.parse::<u64>().ok());
 
-    Ok(DeepLinkImportRequest {
+    // Values the target tool would expand into a command, an environment
+    // variable or a local file are refused before the link is queued.
+    let app_type = AppType::parse_id(&app)?;
+
+    let request = DeepLinkImportRequest {
         version,
         resource,
         app: Some(app),
@@ -202,7 +222,7 @@ fn parse_provider_deeplink(
         branch: None,
         config,
         config_format,
-        config_url,
+        config_url: None,
         usage_enabled,
         usage_script,
         usage_api_key,
@@ -211,7 +231,10 @@ fn parse_provider_deeplink(
         usage_user_id,
         usage_auto_interval,
         confirmed_env_keys: None,
-    })
+        confirmed_usage_enabled: None,
+    };
+    check_link_values(&app_type, &request)?;
+    Ok(request)
 }
 
 /// Parse prompt deep link parameters
@@ -282,6 +305,7 @@ fn parse_prompt_deeplink(
         usage_user_id: None,
         usage_auto_interval: None,
         confirmed_env_keys: None,
+        confirmed_usage_enabled: None,
     })
 }
 
@@ -348,6 +372,7 @@ fn parse_mcp_deeplink(
         usage_user_id: None,
         usage_auto_interval: None,
         confirmed_env_keys: None,
+        confirmed_usage_enabled: None,
     })
 }
 
@@ -404,5 +429,6 @@ fn parse_skill_deeplink(
         usage_user_id: None,
         usage_auto_interval: None,
         confirmed_env_keys: None,
+        confirmed_usage_enabled: None,
     })
 }

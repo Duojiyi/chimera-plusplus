@@ -154,6 +154,7 @@ fn scan_sessions_sqlite() -> Vec<SessionMeta> {
             last_active_at: Some(updated),
             source_path: Some(format!("sqlite:{db_display}:{session_id}")),
             resume_command: super::utils::resume_command("opencode -s", &session_id),
+            archived: false,
         });
     }
     sessions
@@ -222,6 +223,7 @@ pub fn load_messages(path: &Path) -> Result<Vec<SessionMessage>, String> {
             role,
             content,
             ts: if ts > 0 { Some(ts) } else { None },
+            truncated: false,
         })
         .collect();
 
@@ -311,6 +313,7 @@ pub fn load_messages_sqlite(source: &str) -> Result<Vec<SessionMessage>, String>
             role,
             content,
             ts: Some(ts),
+            truncated: false,
         });
     }
 
@@ -534,6 +537,7 @@ fn parse_session(storage: &Path, path: &Path) -> Option<SessionMeta> {
         last_active_at: updated_at.or(created_at),
         source_path: Some(source_path),
         resume_command: super::utils::resume_command("opencode -s", &session_id),
+        archived: false,
     })
 }
 

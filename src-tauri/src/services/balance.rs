@@ -274,6 +274,9 @@ fn parse_openrouter_response(body: &serde_json::Value) -> Result<Vec<UsageData>,
         None => return Err("Missing or invalid 'total_usage' field in response".to_string()),
     };
     let remaining = total_credits - total_usage;
+    if !remaining.is_finite() {
+        return Err("Invalid OpenRouter credit balance".to_string());
+    }
 
     Ok(vec![UsageData {
         plan_name: Some("OpenRouter".to_string()),
@@ -281,12 +284,11 @@ fn parse_openrouter_response(body: &serde_json::Value) -> Result<Vec<UsageData>,
         total: Some(total_credits),
         used: Some(total_usage),
         unit: Some("USD".to_string()),
-        is_valid: Some(remaining > 0.0),
-        invalid_message: if remaining <= 0.0 {
-            Some("No credits remaining".to_string())
-        } else {
-            None
-        },
+        // `/credits` reports purchased credits, not whether the key works: a
+        // free account with no credits can still use free models, and an
+        // exhausted or overdrawn balance is an answer, not an expired plan.
+        is_valid: Some(true),
+        invalid_message: None,
         extra: None,
     }])
 }
@@ -304,12 +306,10 @@ fn parse_novita_response(body: &serde_json::Value) -> Result<Vec<UsageData>, Str
         total: None,
         used: None,
         unit: Some("USD".to_string()),
-        is_valid: Some(available > 0.0),
-        invalid_message: if available <= 0.0 {
-            Some("No balance remaining".to_string())
-        } else {
-            None
-        },
+        // A zero or negative balance does not make the key invalid; the
+        // amount itself tells the user the balance is used up.
+        is_valid: Some(true),
+        invalid_message: None,
         extra: None,
     }])
 }
@@ -795,7 +795,7 @@ mod tests {
         }))
         .expect("negative balance on openrouter succeeds");
         assert_eq!(or_res[0].remaining, Some(-5.0));
-        assert_eq!(or_res[0].is_valid, Some(false));
+        assert_eq!(or_res[0].is_valid, Some(true));
 
         let or_zero = parse_openrouter_response(&json!({
             "data": { "total_credits": 10.0, "total_usage": 10.0 }
@@ -837,6 +837,72 @@ mod tests {
         }))
         .expect("ds ok");
         assert_eq!(ds_ok[0].remaining, Some(0.0));
+    }
+
+    #[test]
+    fn openrouter_balance_does_not_decide_key_validity() {
+        // Free, exhausted, overdrawn and funded accounts all report a balance;
+        // none of them means the key expired.
+        for (credits, usage, remaining) in [
+            (0.0, 0.0, 0.0),
+            (100.0, 100.0, 0.0),
+            (100.0, 105.0, -5.0),
+            (100.0, 25.5, 74.5),
+        ] {
+            let data = parse_openrouter_response(&json!({
+                "data": { "total_credits": credits, "total_usage": usage }
+            }))
+            .expect("a parsed balance succeeds");
+            assert_eq!(data.len(), 1);
+            let balance = &data[0];
+            assert_eq!(balance.plan_name.as_deref(), Some("OpenRouter"));
+            assert_eq!(balance.unit.as_deref(), Some("USD"));
+            assert_eq!(balance.total, Some(credits));
+            assert_eq!(balance.used, Some(usage));
+            assert_eq!(balance.remaining, Some(remaining));
+            assert_eq!(balance.is_valid, Some(true));
+            assert!(balance.invalid_message.is_none());
+        }
+
+        // Strings and an unwrapped body still parse.
+        let data = parse_openrouter_response(
+            &json!({ "total_credits": "100.00", "total_usage": "25.50" }),
+        )
+        .expect("unwrapped numeric strings");
+        assert_eq!(data[0].remaining, Some(74.5));
+
+        // Finite inputs whose difference overflows are not a balance.
+        assert!(parse_openrouter_response(&json!({
+            "data": { "total_credits": 1e308, "total_usage": -1e308 }
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn novita_balance_does_not_decide_key_validity() {
+        for (raw, available) in [(0.0, 0.0), (-50000.0, -5.0), (255000.0, 25.5)] {
+            let data = parse_novita_response(&json!({ "availableBalance": raw }))
+                .expect("a parsed balance succeeds");
+            assert_eq!(data.len(), 1);
+            let balance = &data[0];
+            assert_eq!(balance.remaining, Some(available));
+            assert_eq!(balance.unit.as_deref(), Some("USD"));
+            assert_eq!(balance.is_valid, Some(true));
+            assert!(balance.invalid_message.is_none());
+        }
+        let data =
+            parse_novita_response(&json!({ "availableBalance": "10000" })).expect("numeric string");
+        assert_eq!(data[0].remaining, Some(1.0));
+        for body in [
+            json!({ "availableBalance": "invalid" }),
+            json!({ "availableBalance": "inf" }),
+            json!({ "cashBalance": 10000 }),
+        ] {
+            assert!(
+                parse_novita_response(&body).is_err(),
+                "unexpected success for {body}"
+            );
+        }
     }
 
     #[test]

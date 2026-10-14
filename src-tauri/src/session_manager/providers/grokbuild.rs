@@ -84,6 +84,7 @@ pub fn load_messages(path: &Path) -> Result<Vec<SessionMessage>, String> {
             role: role.to_string(),
             content,
             ts,
+            truncated: false,
         });
     }
 
@@ -191,6 +192,7 @@ fn parse_summary(path: &Path) -> Option<SessionMeta> {
         last_active_at,
         source_path: Some(path.to_string_lossy().to_string()),
         resume_command: super::utils::resume_command("grok --resume", &session_id),
+        archived: false,
     })
 }
 

@@ -1,0 +1,24 @@
+/* Sonner's own dark-theme rule paints the close button black with a border
+   ([data-sonner-theme=dark] … [data-close-button], specificity 0,4,0) and wins
+   over the notification styles in index.css. This selector outranks it so the
+   button stays a quiet icon on the notification surface in both themes. */
+.chimera-toaster[data-sonner-toaster]
+  [data-sonner-toast]
+  .chimera-toast-close[data-close-button] {
+  border: 0;
+  background: transparent;
+  color: var(--chimera-toast-muted);
+}
+.chimera-toaster[data-sonner-toaster]
+  [data-sonner-toast]
+  .chimera-toast-close[data-close-button]:hover {
+  background: color-mix(in oklch, var(--chimera-toast-ink) 10%, transparent);
+  color: var(--chimera-toast-ink);
+}
+.chimera-toaster[data-sonner-toaster]
+  [data-sonner-toast]
+  .chimera-toast-close
+  svg {
+  width: 16px;
+  height: 16px;
+}

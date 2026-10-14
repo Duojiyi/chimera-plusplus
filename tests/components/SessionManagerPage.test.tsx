@@ -10,8 +10,12 @@ import {
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionManagerPage } from "@/components/sessions/SessionManagerPage";
-import { sessionsApi } from "@/lib/api/sessions";
-import type { SessionMessage, SessionMeta } from "@/types";
+import {
+  sessionsApi,
+  type SessionListEntry,
+  type SessionTranscriptEntry,
+} from "@/lib/api/sessions";
+import type { SessionMessage } from "@/types";
 import { setSessionFixtures } from "../msw/state";
 
 const toastSuccessMock = vi.fn();
@@ -35,6 +39,8 @@ vi.mock("@/components/sessions/SessionToc", () => ({
   SessionTocDialog: () => null,
 }));
 
+// Only the history-reclaim confirmation still uses the shared dialog; the
+// delete confirmation is the page's own dialog and is exercised for real.
 vi.mock("@/components/ConfirmDialog", () => ({
   ConfirmDialog: ({
     isOpen,
@@ -81,28 +87,10 @@ const renderPage = (appId = "codex") => {
   };
 };
 
-const openSearch = () => {
-  const searchButton = Array.from(screen.getAllByRole("button")).find(
-    (button) => button.querySelector(".lucide-search"),
-  );
-
-  if (!searchButton) {
-    throw new Error("Search button not found");
-  }
-
-  fireEvent.click(searchButton);
-};
-
-const closeSearch = () => {
-  const closeButton = Array.from(screen.getAllByRole("button")).find((button) =>
-    button.querySelector(".lucide-x"),
-  );
-
-  if (!closeButton) {
-    throw new Error("Search close button not found");
-  }
-
-  fireEvent.click(closeButton);
+const searchFor = (value: string) => {
+  fireEvent.change(screen.getByRole("textbox", { name: "搜索会话" }), {
+    target: { value },
+  });
 };
 
 const openViewModeMenu = async () => {
@@ -140,12 +128,15 @@ const collapseAllGroups = () => {
   fireEvent.click(screen.getByRole("button", { name: /全部收起/i }));
 };
 
-const expandDirectoryGroup = (provider: string, directory: string) => {
+const expandProviderGroup = (provider: string) => {
   fireEvent.click(
     screen.getByRole("button", {
       name: new RegExp(`展开或折叠 ${provider} 供应商分组`),
     }),
   );
+};
+
+const expandDirectoryGroup = (directory: string) => {
   fireEvent.click(
     screen.getByRole("button", {
       name: new RegExp(`展开或折叠 ${directory} 目录分组`),
@@ -153,15 +144,36 @@ const expandDirectoryGroup = (provider: string, directory: string) => {
   );
 };
 
-describe("SessionManagerPage", () => {
-  it("keeps the named application selector visible even while searching", async () => {
-    renderPage("all");
-    const selector = await screen.findByRole("combobox", { name: "会话应用" });
-    expect(selector).toHaveTextContent("应用");
-    expect(selector.closest("header")).toHaveClass("session-page-heading");
-    openSearch();
-    expect(screen.getByRole("combobox", { name: "会话应用" })).toBeVisible();
+/** Confirm the open delete dialog, ticking the Codex acknowledgement first. */
+const confirmDelete = async (confirmName: RegExp) => {
+  const dialog = await screen.findByRole("dialog");
+  const acknowledgement = within(dialog).queryByRole("checkbox", {
+    name: /我已关闭/,
   });
+  if (acknowledgement) fireEvent.click(acknowledgement);
+  fireEvent.click(within(dialog).getByRole("button", { name: confirmName }));
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+  );
+};
+
+// The trigger is replaced while the conversation loads, so query it afresh.
+const exportButton = () => screen.getByRole("button", { name: "导出" });
+
+const openExport = async () => {
+  await waitFor(() => expect(exportButton()).toBeEnabled());
+  fireEvent.click(exportButton());
+  return await screen.findByRole("dialog");
+};
+
+const readBlob = (blob: Blob) =>
+  new Promise<string>((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.readAsText(blob);
+  });
+
+describe("SessionManagerPage", () => {
   beforeEach(() => {
     toastSuccessMock.mockReset();
     toastErrorMock.mockReset();
@@ -171,7 +183,7 @@ describe("SessionManagerPage", () => {
     window.localStorage.removeItem("cc-switch.sessionManager.listViewMode");
     window.localStorage.removeItem(GROUP_EXPANSION_STORAGE_KEY);
 
-    const sessions: SessionMeta[] = [
+    const sessions: SessionListEntry[] = [
       {
         providerId: "codex",
         sessionId: "codex-session-1",
@@ -193,6 +205,7 @@ describe("SessionManagerPage", () => {
         lastActiveAt: 10,
         sourcePath: "/mock/codex/session-2.jsonl",
         resumeCommand: "codex resume codex-session-2",
+        archived: true,
       },
       {
         providerId: "claude",
@@ -220,6 +233,8 @@ describe("SessionManagerPage", () => {
     const messages: Record<string, SessionMessage[]> = {
       "codex:/mock/codex/session-1.jsonl": [
         { role: "user", content: "alpha", ts: 20 },
+        { role: "tool", content: "OPENAI_API_KEY=sk-test-secret", ts: 21 },
+        { role: "assistant", content: "done", ts: 22 },
       ],
       "codex:/mock/codex/session-2.jsonl": [
         { role: "user", content: "beta", ts: 10 },
@@ -235,16 +250,48 @@ describe("SessionManagerPage", () => {
     setSessionFixtures(sessions, messages);
   });
 
-  it("shows a message query error instead of an empty session and retries successfully", async () => {
+  it("keeps the named application selector visible even while searching", async () => {
+    renderPage("all");
+    const selector = await screen.findByRole("combobox", { name: "会话应用" });
+    expect(selector).toHaveTextContent("应用");
+    expect(selector.closest("header")).toHaveClass("session-page-heading");
+    searchFor("Alpha");
+    expect(screen.getByRole("combobox", { name: "会话应用" })).toBeVisible();
+  });
+
+  it("names each application by its product name in the filter", async () => {
+    renderPage("all");
+    await userEvent.click(
+      await screen.findByRole("combobox", { name: "会话应用" }),
+    );
+    for (const name of [
+      "Codex",
+      "Claude Code",
+      "Gemini CLI",
+      "OpenCode",
+      "Grok Build",
+    ]) {
+      expect(
+        await screen.findByRole("option", { name: new RegExp(name) }),
+      ).toBeInTheDocument();
+    }
+  });
+
+  it("shows a read failure instead of an empty session and retries successfully", async () => {
     const getMessages = vi
       .spyOn(sessionsApi, "getMessages")
-      .mockRejectedValueOnce(new Error("invalid compressed session"));
+      .mockRejectedValueOnce(
+        new Error(
+          "Failed to read session file C:\\x.jsonl: 另一个程序正在使用此文件，进程无法访问。 (os error 32)",
+        ),
+      );
     const { client } = renderPage();
     try {
       const alert = await screen.findByRole("alert");
-      expect(alert).toHaveTextContent("无法读取会话消息");
+      expect(alert).toHaveTextContent("读取失败");
+      expect(alert).toHaveTextContent("文件正被其他程序占用");
       expect(
-        screen.queryByText("sessionManager.emptySession"),
+        screen.queryByText("这条会话没有可以显示的对话。"),
       ).not.toBeInTheDocument();
       fireEvent.click(within(alert).getByRole("button", { name: "重试" }));
       await waitFor(() =>
@@ -257,13 +304,75 @@ describe("SessionManagerPage", () => {
           "codex",
           "/mock/codex/session-1.jsonl",
         ]),
-      ).toEqual([{ role: "user", content: "alpha", ts: 20 }]);
+      ).toHaveLength(3);
     } finally {
       getMessages.mockRestore();
     }
   });
 
-  it("exports the loaded session as JSON and disables export on message errors", async () => {
+  it("says when a large session was shortened instead of failing to open it", async () => {
+    const shortened: SessionTranscriptEntry[] = [
+      { role: "user", content: "alpha", ts: 20 },
+      {
+        role: "notice",
+        content: "这里有一条约 18.2 MB 的消息，超过单条显示上限，未显示。",
+        truncated: true,
+      },
+      {
+        role: "notice",
+        content: "会话内容过大，后续 120 条消息未显示。",
+        truncated: true,
+      },
+    ];
+    const getMessages = vi
+      .spyOn(sessionsApi, "getMessages")
+      .mockResolvedValue(shortened);
+    renderPage();
+    try {
+      const banner = (await screen.findByText("内容过大，已截断显示。"))
+        .parentElement!.parentElement!;
+      expect(banner).toHaveAttribute("role", "status");
+      expect(banner).toHaveTextContent("记录文件本身没有改动");
+      expect(screen.queryByText("读取失败")).not.toBeInTheDocument();
+      const notes = screen.getAllByRole("note");
+      expect(notes).toHaveLength(2);
+      expect(notes[1]).toHaveTextContent("后续 120 条消息未显示");
+    } finally {
+      getMessages.mockRestore();
+    }
+  });
+
+  it("shows a list read failure with a retry instead of an empty list", async () => {
+    const list = vi
+      .spyOn(sessionsApi, "list")
+      .mockRejectedValueOnce(new Error("数据库错误: database is locked"));
+    renderPage();
+    try {
+      const alert = await screen.findByRole("alert");
+      expect(alert).toHaveTextContent("无法读取会话列表");
+      expect(screen.queryByText("还没有会话记录")).not.toBeInTheDocument();
+      fireEvent.click(within(alert).getByRole("button", { name: "重试" }));
+      expect(
+        await screen.findByRole("heading", { name: "Alpha Session" }),
+      ).toBeInTheDocument();
+    } finally {
+      list.mockRestore();
+    }
+  });
+
+  it("explains an empty history once instead of leaving two blank panels", async () => {
+    setSessionFixtures([], {});
+    renderPage();
+    expect(await screen.findByText("还没有会话记录")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "刷新列表" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("从左侧选择一条会话，查看完整对话。"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("exports the conversation without tool output or the record's location by default", async () => {
     const createUrl = vi.fn((_blob: Blob) => "blob:session-export");
     const revokeUrl = vi.fn();
     vi.stubGlobal(
@@ -276,61 +385,97 @@ describe("SessionManagerPage", () => {
     const click = vi
       .spyOn(HTMLAnchorElement.prototype, "click")
       .mockImplementation(() => {});
-    const { client } = renderPage();
+    renderPage();
     try {
-      const button = await screen.findByRole("button", { name: "导出 JSON" });
-      await waitFor(() => expect(button).toBeEnabled());
-      fireEvent.click(button);
-      expect(createUrl).toHaveBeenCalledWith(expect.any(Blob));
+      const popover = await openExport();
+      expect(popover).toHaveTextContent("默认不含工具输出");
+      expect(
+        within(popover).queryByText(/分享文件前请逐条检查/),
+      ).not.toBeInTheDocument();
+      fireEvent.click(
+        within(popover).getByRole("button", { name: "导出 JSON" }),
+      );
       expect(click).toHaveBeenCalledTimes(1);
       const anchor = click.mock.instances[0] as HTMLAnchorElement;
       expect(anchor.download).toBe("session-codex-session-1.json");
       expect(anchor.isConnected).toBe(false);
-      const blob = createUrl.mock.calls[0][0] as Blob;
-      const content = await new Promise<string>((resolve) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result));
-        reader.readAsText(blob);
-      });
-      expect(JSON.parse(content)).toMatchObject({
+      const exported = JSON.parse(await readBlob(createUrl.mock.calls[0][0]));
+      expect(exported).toMatchObject({
         version: 1,
         session: { sessionId: "codex-session-1", providerId: "codex" },
-        messages: [{ role: "user", content: "alpha", ts: 20 }],
       });
-      let resolveMessages!: (messages: SessionMessage[]) => void;
-      const refreshed = [
+      expect(exported.session).not.toHaveProperty("sourcePath");
+      expect(exported.messages).toEqual([
         { role: "user", content: "alpha", ts: 20 },
-        { role: "assistant", content: "new message", ts: 21 },
-      ];
-      const getMessages = vi
-        .spyOn(sessionsApi, "getMessages")
-        .mockImplementationOnce(
-          () =>
-            new Promise((resolve) => {
-              resolveMessages = resolve;
-            }),
-        );
+        { role: "assistant", content: "done", ts: 22 },
+      ]);
+    } finally {
+      click.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("includes tool output only when asked, with the risk stated as visible text", async () => {
+    const createUrl = vi.fn((_blob: Blob) => "blob:session-export");
+    vi.stubGlobal(
+      "URL",
+      Object.assign(URL, {
+        createObjectURL: createUrl,
+        revokeObjectURL: vi.fn(),
+      }),
+    );
+    const click = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(() => {});
+    renderPage();
+    try {
+      const popover = await openExport();
+      fireEvent.click(
+        within(popover).getByRole("checkbox", {
+          name: "包含工具输出（可能含密钥或令牌）",
+        }),
+      );
+      expect(within(popover).getByRole("note")).toHaveTextContent(
+        "工具输出可能含有密钥、令牌或本机文件内容",
+      );
+      fireEvent.click(
+        within(popover).getByRole("button", { name: "导出 JSON" }),
+      );
+      const exported = JSON.parse(await readBlob(createUrl.mock.calls[0][0]));
+      expect(exported.messages).toHaveLength(3);
+      expect(exported.messages[1]).toMatchObject({ role: "tool" });
+    } finally {
+      click.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("disables export while the conversation reloads or cannot be read", async () => {
+    const { client } = renderPage();
+    await waitFor(() => expect(exportButton()).toBeEnabled());
+    let resolveMessages!: (messages: SessionMessage[]) => void;
+    const getMessages = vi.spyOn(sessionsApi, "getMessages");
+    getMessages.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveMessages = resolve;
+        }),
+    );
+    try {
       fireEvent.click(screen.getByRole("button", { name: "刷新" }));
       await waitFor(() => expect(getMessages).toHaveBeenCalled());
-      await waitFor(() => expect(button).toBeDisabled());
-      await act(async () => resolveMessages(refreshed));
-      await waitFor(() => expect(button).toBeEnabled());
-      fireEvent.click(button);
-      const refreshedContent = await new Promise<string>((resolve) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result));
-        reader.readAsText(createUrl.mock.calls[1][0]);
-      });
-      expect(JSON.parse(refreshedContent).messages).toEqual(refreshed);
+      await waitFor(() => expect(exportButton()).toBeDisabled());
+      await act(async () =>
+        resolveMessages([{ role: "user", content: "alpha", ts: 20 }]),
+      );
+      await waitFor(() => expect(exportButton()).toBeEnabled());
       getMessages.mockRejectedValue(new Error("unavailable"));
       await act(async () => {
         await client.invalidateQueries({ queryKey: ["sessionMessages"] });
       });
-      await waitFor(() => expect(button).toBeDisabled());
-      getMessages.mockRestore();
+      await waitFor(() => expect(exportButton()).toBeDisabled());
     } finally {
-      click.mockRestore();
-      vi.unstubAllGlobals();
+      getMessages.mockRestore();
     }
   });
 
@@ -345,11 +490,10 @@ describe("SessionManagerPage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /删除会话/i }));
 
-    const dialog = screen.getByTestId("confirm-dialog");
-    expect(dialog).toBeInTheDocument();
-    expect(within(dialog).getByText(/Alpha Session/)).toBeInTheDocument();
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Alpha Session")).toBeInTheDocument();
 
-    fireEvent.click(within(dialog).getByRole("button", { name: /删除会话/i }));
+    await confirmDelete(/删除会话/);
 
     await waitFor(() =>
       expect(
@@ -360,6 +504,118 @@ describe("SessionManagerPage", () => {
     expect(screen.queryByText("Alpha Session")).not.toBeInTheDocument();
     expect(toastErrorMock).not.toHaveBeenCalled();
     expect(toastSuccessMock).toHaveBeenCalled();
+  });
+
+  it("asks the user to confirm Codex is closed elsewhere before deleting", async () => {
+    const deleteMany = vi.spyOn(sessionsApi, "deleteMany");
+    renderPage();
+    try {
+      await screen.findByRole("heading", { name: "Alpha Session" });
+      fireEvent.click(screen.getByRole("button", { name: /删除会话/i }));
+      const dialog = await screen.findByRole("dialog");
+      expect(dialog).toHaveTextContent("派生的子会话会一并删除");
+      expect(dialog).toHaveTextContent("会话内容本身无法恢复");
+      const confirm = within(dialog).getByRole("button", { name: "删除会话" });
+      expect(confirm).toBeDisabled();
+      fireEvent.click(
+        within(dialog).getByRole("checkbox", {
+          name: "我已关闭正在使用这些会话的 Codex 窗口、CLI 或 VS Code 扩展",
+        }),
+      );
+      expect(confirm).toBeEnabled();
+      fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+      await waitFor(() =>
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+      );
+      expect(deleteMany).not.toHaveBeenCalled();
+    } finally {
+      deleteMany.mockRestore();
+    }
+  });
+
+  it("does not ask about Codex windows when no Codex session is being deleted", async () => {
+    renderPage("all");
+    await screen.findByRole("heading", { name: "Claude Session" });
+    fireEvent.click(screen.getByRole("button", { name: /删除会话/i }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(
+      within(dialog).getByRole("button", { name: "删除会话" }),
+    ).toBeEnabled();
+  });
+
+  it("lists the sessions a batch delete removes and counts the rest beyond eight", async () => {
+    const many: SessionListEntry[] = Array.from({ length: 11 }, (_, index) => ({
+      providerId: "codex",
+      sessionId: `0000000${index}-batch-session`,
+      title: `Batch ${index}`,
+      projectDir: "/work/batch-project",
+      lastActiveAt: 100 - index,
+      sourcePath: `/mock/codex/batch-${index}.jsonl`,
+      archived: index === 0,
+    }));
+    setSessionFixtures(many, {});
+    renderPage();
+    await screen.findByRole("heading", { name: "Batch 0" });
+    fireEvent.click(screen.getByRole("button", { name: /批量管理/i }));
+    fireEvent.click(screen.getByRole("button", { name: /全选当前/i }));
+    fireEvent.click(screen.getByRole("button", { name: /批量删除/i }));
+    const dialog = await screen.findByRole("dialog", {
+      name: /删除 11 个会话/,
+    });
+    const items = within(
+      within(dialog).getByRole("list", { name: "将删除的会话" }),
+    ).getAllByRole("listitem");
+    expect(items).toHaveLength(8);
+    expect(items[0]).toHaveTextContent("Batch 0");
+    expect(items[0]).toHaveTextContent("00000000");
+    expect(items[0]).toHaveTextContent("batch-project");
+    expect(items[0]).toHaveTextContent("已归档");
+    expect(items[1]).not.toHaveTextContent("已归档");
+    expect(dialog).toHaveTextContent("另有 3 条");
+  });
+
+  it("does not offer a retry when the delete request was refused as a whole", async () => {
+    const deleteManySpy = vi
+      .spyOn(sessionsApi, "deleteMany")
+      .mockRejectedValueOnce(
+        new Error("Codex 正在运行，请先关闭 Codex 再删除会话"),
+      );
+
+    renderPage();
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "Alpha Session" }),
+      ).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /批量管理/i }));
+    fireEvent.click(screen.getByRole("button", { name: /全选当前/i }));
+    fireEvent.click(screen.getByRole("button", { name: /批量删除/i }));
+    await confirmDelete(/删除 3 个会话/);
+
+    await waitFor(() =>
+      expect(toastErrorMock).toHaveBeenCalledWith(
+        "Codex 正在运行，请先关闭 Codex 再删除会话",
+      ),
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /批量删除/i }),
+      ).not.toBeDisabled(),
+    );
+    // Nothing was deleted, so there is nothing half-done to finish.
+    expect(
+      screen.queryByRole("button", { name: "重试未完成的删除" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/内容已删除/)).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Alpha Session" }),
+    ).toBeInTheDocument();
+
+    deleteManySpy.mockRestore();
   });
 
   it("reclaims history sessions after confirmation and refreshes the list", async () => {
@@ -471,39 +727,31 @@ describe("SessionManagerPage", () => {
       ).toBeInTheDocument(),
     );
 
-    openSearch();
-
-    fireEvent.change(screen.getByRole("textbox"), {
-      target: { value: "Alpha" },
-    });
+    searchFor("Alpha");
 
     await waitFor(() =>
-      expect(
-        screen.getByRole("heading", { name: "Alpha Session" }),
-      ).toBeInTheDocument(),
+      expect(screen.queryByText("Beta Session")).not.toBeInTheDocument(),
     );
 
     fireEvent.click(screen.getByRole("button", { name: /删除会话/i }));
-
-    const dialog = screen.getByTestId("confirm-dialog");
-    fireEvent.click(within(dialog).getByRole("button", { name: /删除会话/i }));
+    await confirmDelete(/删除会话/);
 
     await waitFor(() =>
       expect(screen.queryByText("Alpha Session")).not.toBeInTheDocument(),
     );
 
+    expect(screen.getByText("没有可以显示的会话。")).toBeInTheDocument();
+    // Both the empty list and the search field offer to clear the search.
+    expect(screen.getAllByRole("button", { name: "清除搜索" })).toHaveLength(2);
     expect(
-      screen.getByText("sessionManager.selectSession"),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByText("sessionManager.emptySession"),
+      screen.queryByText("这条会话没有可以显示的对话。"),
     ).not.toBeInTheDocument();
     expect(toastErrorMock).not.toHaveBeenCalled();
     expect(toastSuccessMock).toHaveBeenCalled();
   });
 
   it("keeps a single partial deletion retryable after its source disappears from the list", async () => {
-    const session: SessionMeta = {
+    const session: SessionListEntry = {
       providerId: "codex",
       sessionId: "partial",
       title: "Partial Session",
@@ -534,15 +782,14 @@ describe("SessionManagerPage", () => {
     try {
       await screen.findByRole("heading", { name: "Partial Session" });
       fireEvent.click(screen.getByRole("button", { name: /删除会话/i }));
-      fireEvent.click(
-        within(screen.getByTestId("confirm-dialog")).getByRole("button", {
-          name: /删除会话/i,
-        }),
-      );
+      await confirmDelete(/删除会话/);
       const retry = await screen.findByRole("button", {
         name: "重试未完成的删除",
       });
       await waitFor(() => expect(retry).toBeEnabled());
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "1 个会话的内容已删除，但索引清理未完成",
+      );
       expect(toastSuccessMock).not.toHaveBeenCalled();
       expect(toastWarningMock).toHaveBeenCalledWith(
         expect.stringContaining("索引清理未完成"),
@@ -555,15 +802,12 @@ describe("SessionManagerPage", () => {
           session.sourcePath,
         ]),
       ).toBeUndefined();
-      expect(
-        screen.queryByText("sessionManager.emptySession"),
-      ).not.toBeInTheDocument();
       fireEvent.click(retry);
-      fireEvent.click(
-        within(screen.getByTestId("confirm-dialog")).getByRole("button", {
-          name: /删除会话/i,
-        }),
-      );
+      // Only cleanup is left, and the dialog says so.
+      expect(
+        await screen.findByRole("dialog", { name: /完成删除/ }),
+      ).toHaveTextContent("内容已经删除");
+      await confirmDelete(/完成清理/);
       await waitFor(() =>
         expect(
           screen.queryByRole("button", { name: "重试未完成的删除" }),
@@ -578,7 +822,7 @@ describe("SessionManagerPage", () => {
   });
 
   it("counts only complete deletions as success and retries only partial/failed items", async () => {
-    const sessions: SessionMeta[] = ["complete", "partial", "failed"].map(
+    const sessions: SessionListEntry[] = ["complete", "partial", "failed"].map(
       (id) => ({
         providerId: "codex",
         sessionId: id,
@@ -615,15 +859,14 @@ describe("SessionManagerPage", () => {
       fireEvent.click(screen.getByRole("button", { name: /批量管理/i }));
       fireEvent.click(screen.getByRole("button", { name: /全选当前/i }));
       fireEvent.click(screen.getByRole("button", { name: /批量删除/i }));
-      fireEvent.click(
-        within(screen.getByTestId("confirm-dialog")).getByRole("button", {
-          name: /删除所选会话/i,
-        }),
-      );
+      await confirmDelete(/删除 3 个会话/);
       const retry = await screen.findByRole("button", {
         name: "重试未完成的删除",
       });
       await waitFor(() => expect(retry).toBeEnabled());
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "1 个会话待完成索引清理，1 个会话删除失败。",
+      );
       expect(toastSuccessMock).toHaveBeenCalledWith("已删除 1 个会话");
       expect(toastWarningMock).toHaveBeenCalledTimes(1);
       expect(toastErrorMock).toHaveBeenCalledWith(
@@ -631,11 +874,7 @@ describe("SessionManagerPage", () => {
         expect.anything(),
       );
       fireEvent.click(retry);
-      fireEvent.click(
-        within(screen.getByTestId("confirm-dialog")).getByRole("button", {
-          name: /删除所选会话/i,
-        }),
-      );
+      await confirmDelete(/删除 2 个会话/);
       await waitFor(() => expect(deleteMany).toHaveBeenCalledTimes(2));
       expect(
         deleteMany.mock.calls[1][0].map((item) => item.sessionId).sort(),
@@ -650,41 +889,6 @@ describe("SessionManagerPage", () => {
     }
   });
 
-  it("restores batch delete controls when deleteMany rejects", async () => {
-    const deleteManySpy = vi
-      .spyOn(sessionsApi, "deleteMany")
-      .mockRejectedValueOnce(new Error("network error"));
-
-    renderPage();
-
-    await waitFor(() =>
-      expect(
-        screen.getByRole("heading", { name: "Alpha Session" }),
-      ).toBeInTheDocument(),
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: /批量管理/i }));
-    fireEvent.click(screen.getByRole("button", { name: /全选当前/i }));
-    fireEvent.click(screen.getByRole("button", { name: /批量删除/i }));
-
-    const dialog = screen.getByTestId("confirm-dialog");
-    fireEvent.click(
-      within(dialog).getByRole("button", { name: /删除所选会话/i }),
-    );
-
-    await waitFor(() =>
-      expect(toastErrorMock).toHaveBeenCalledWith("network error"),
-    );
-
-    await waitFor(() =>
-      expect(
-        screen.getByRole("button", { name: /批量删除/i }),
-      ).not.toBeDisabled(),
-    );
-
-    deleteManySpy.mockRestore();
-  });
-
   it("keeps the exit batch mode button visible when search hides all sessions", async () => {
     renderPage();
 
@@ -695,14 +899,12 @@ describe("SessionManagerPage", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: /批量管理/i }));
-    openSearch();
-    fireEvent.change(screen.getByRole("textbox"), {
-      target: { value: "NoSuchSession" },
-    });
+    searchFor("NoSuchSession");
 
     await waitFor(() => expect(screen.queryByText("Alpha Session")).toBeNull());
 
     expect(screen.getByRole("button", { name: /退出批量管理/i })).toBeVisible();
+    expect(screen.getByText(/与「NoSuchSession」匹配的会话/)).toBeVisible();
   });
 
   it("drops hidden selections when search narrows the result set", async () => {
@@ -719,16 +921,13 @@ describe("SessionManagerPage", () => {
 
     expect(screen.getByText("已选 3 项")).toBeInTheDocument();
 
-    openSearch();
-    fireEvent.change(screen.getByRole("textbox"), {
-      target: { value: "Alpha" },
-    });
+    searchFor("Alpha");
 
     await waitFor(() =>
       expect(screen.queryByText("Beta Session")).not.toBeInTheDocument(),
     );
 
-    closeSearch();
+    fireEvent.click(screen.getByRole("button", { name: "清除搜索" }));
 
     await waitFor(() =>
       expect(screen.getByText("已选 1 项")).toBeInTheDocument(),
@@ -756,11 +955,7 @@ describe("SessionManagerPage", () => {
     fireEvent.click(screen.getByRole("button", { name: /批量管理/i }));
     fireEvent.click(screen.getByRole("button", { name: /全选当前/i }));
     fireEvent.click(screen.getByRole("button", { name: /批量删除/i }));
-
-    const dialog = screen.getByTestId("confirm-dialog");
-    fireEvent.click(
-      within(dialog).getByRole("button", { name: /删除所选会话/i }),
-    );
+    await confirmDelete(/删除 3 个会话/);
 
     await waitFor(() => {
       expect(screen.queryByText("Alpha Session")).not.toBeInTheDocument();
@@ -771,6 +966,41 @@ describe("SessionManagerPage", () => {
       resolveInvalidate();
     });
     invalidateSpy.mockRestore();
+  });
+
+  it("tags archived sessions in the list and in the detail header", async () => {
+    renderPage();
+    await screen.findByRole("heading", { name: "Alpha Session" });
+    const betaRow = screen.getByRole("button", { name: /Beta Session/ });
+    expect(betaRow).toHaveTextContent("已归档");
+    expect(
+      screen.getByRole("button", { name: /Alpha Session/ }),
+    ).not.toHaveTextContent("已归档");
+    fireEvent.click(betaRow);
+    const heading = await screen.findByRole("heading", {
+      name: "Beta Session",
+    });
+    expect(heading.parentElement).toHaveTextContent("已归档");
+  });
+
+  it("renders only the visible part of a long flat list", async () => {
+    const many: SessionListEntry[] = Array.from(
+      { length: 300 },
+      (_, index) => ({
+        providerId: "codex",
+        sessionId: `long-${index}`,
+        title: `Long list ${index}`,
+        lastActiveAt: 1000 - index,
+        sourcePath: `/mock/codex/long-${index}.jsonl`,
+      }),
+    );
+    setSessionFixtures(many, {});
+    renderPage();
+    await screen.findByRole("heading", { name: "Long list 0" });
+    const rows = screen.getAllByRole("button", { name: /Long list \d+/ });
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.length).toBeLessThan(60);
+    expect(screen.getByText("300")).toBeInTheDocument();
   });
 
   it("switches to grouped view collapsed by default and shows collapse control", async () => {
@@ -789,12 +1019,12 @@ describe("SessionManagerPage", () => {
     ).toBeInTheDocument();
     expect(
       screen.getByRole("button", {
-        name: /展开或折叠 codex 供应商分组/,
+        name: /展开或折叠 Codex 供应商分组/,
       }),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("button", {
-        name: /展开或折叠 claude 供应商分组/,
+        name: /展开或折叠 Claude Code 供应商分组/,
       }),
     ).toBeInTheDocument();
     expect(
@@ -805,7 +1035,7 @@ describe("SessionManagerPage", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("persists manual expansion and collapses all grouped sessions", async () => {
+  it("drops the application level from the folder tree when one application is chosen", async () => {
     renderPage();
 
     await waitFor(() =>
@@ -815,11 +1045,11 @@ describe("SessionManagerPage", () => {
     );
 
     await switchToGroupedView();
-    expandDirectoryGroup("codex", "codex");
-
     expect(
-      screen.getByRole("button", { name: /展开或折叠 codex 目录分组/ }),
-    ).toBeInTheDocument();
+      screen.queryByRole("button", { name: /供应商分组/ }),
+    ).not.toBeInTheDocument();
+    expandDirectoryGroup("codex");
+
     expect(
       screen.getByRole("button", { name: /Alpha Session/ }),
     ).toBeInTheDocument();
@@ -827,7 +1057,7 @@ describe("SessionManagerPage", () => {
       expect(
         JSON.parse(window.localStorage.getItem(GROUP_EXPANSION_STORAGE_KEY)!),
       ).toEqual({
-        expandedProviderIds: ["codex"],
+        expandedProviderIds: [],
         expandedDirectoryKeys: ["codex:/mock/codex"],
       }),
     );
@@ -836,7 +1066,7 @@ describe("SessionManagerPage", () => {
 
     await waitFor(() =>
       expect(
-        screen.queryByRole("button", { name: /展开或折叠 codex 目录分组/ }),
+        screen.queryByRole("button", { name: /Alpha Session/ }),
       ).not.toBeInTheDocument(),
     );
     await waitFor(() =>
@@ -868,19 +1098,14 @@ describe("SessionManagerPage", () => {
       screen.getByRole("heading", { name: "Claude Session" }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("button", {
-        name: /展开或折叠 claude 供应商分组/,
-      }),
-    ).toBeInTheDocument();
+      screen.queryByRole("button", { name: /供应商分组/ }),
+    ).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: /展开或折叠 claude 目录分组/ }),
+      screen.queryByRole("button", { name: /Claude Session/ }),
     ).not.toBeInTheDocument();
 
-    expandDirectoryGroup("claude", "claude");
+    expandDirectoryGroup("claude");
 
-    expect(
-      screen.getByRole("button", { name: /展开或折叠 claude 目录分组/ }),
-    ).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /Claude Session/ }),
     ).toBeInTheDocument();
@@ -900,11 +1125,7 @@ describe("SessionManagerPage", () => {
     fireEvent.click(screen.getByRole("button", { name: /批量管理/i }));
     fireEvent.click(screen.getByRole("button", { name: /全选当前/i }));
     fireEvent.click(screen.getByRole("button", { name: /批量删除/i }));
-
-    const dialog = screen.getByTestId("confirm-dialog");
-    fireEvent.click(
-      within(dialog).getByRole("button", { name: /删除所选会话/i }),
-    );
+    await confirmDelete(/删除 3 个会话/);
 
     await waitFor(() => {
       expect(screen.queryByText("Alpha Session")).not.toBeInTheDocument();
@@ -928,10 +1149,10 @@ describe("SessionManagerPage", () => {
     await enterGroupedBatchMode();
 
     const codexProviderCheckbox = screen.getByRole("checkbox", {
-      name: /选择 codex 供应商分组内会话/,
+      name: /选择 Codex 供应商分组内会话/,
     });
     const claudeProviderCheckbox = screen.getByRole("checkbox", {
-      name: /选择 claude 供应商分组内会话/,
+      name: /选择 Claude Code 供应商分组内会话/,
     });
 
     fireEvent.click(codexProviderCheckbox);
@@ -947,19 +1168,19 @@ describe("SessionManagerPage", () => {
   });
 
   it("selects visible deletable sessions by directory group and marks the provider as mixed", async () => {
-    renderPage();
+    renderPage("all");
 
     await waitFor(() =>
       expect(
-        screen.getByRole("heading", { name: "Alpha Session" }),
+        screen.getByRole("heading", { name: "Claude Session" }),
       ).toBeInTheDocument(),
     );
 
     await enterGroupedBatchMode();
-    expandDirectoryGroup("codex", "codex");
+    expandProviderGroup("Codex");
 
     const providerCheckbox = screen.getByRole("checkbox", {
-      name: /选择 codex 供应商分组内会话/,
+      name: /选择 Codex 供应商分组内会话/,
     });
     const codexDirectoryCheckbox = screen.getByRole("checkbox", {
       name: /选择 codex 目录分组内会话/,
@@ -973,22 +1194,23 @@ describe("SessionManagerPage", () => {
   });
 
   it("marks grouped batch checkboxes as mixed when only one session is selected", async () => {
-    renderPage();
+    renderPage("all");
 
     await waitFor(() =>
       expect(
-        screen.getByRole("heading", { name: "Alpha Session" }),
+        screen.getByRole("heading", { name: "Claude Session" }),
       ).toBeInTheDocument(),
     );
 
     await enterGroupedBatchMode();
-    expandDirectoryGroup("codex", "codex");
+    expandProviderGroup("Codex");
+    expandDirectoryGroup("codex");
 
     fireEvent.click(screen.getAllByRole("checkbox", { name: "选择会话" })[0]);
 
     expect(
       screen.getByRole("checkbox", {
-        name: /选择 codex 供应商分组内会话/,
+        name: /选择 Codex 供应商分组内会话/,
       }),
     ).toHaveAttribute("aria-checked", "mixed");
     expect(
@@ -1007,18 +1229,13 @@ describe("SessionManagerPage", () => {
     );
 
     await enterGroupedBatchMode();
-    expandDirectoryGroup("codex", "codex");
     fireEvent.click(
       screen.getByRole("checkbox", {
         name: /选择 codex 目录分组内会话/,
       }),
     );
     fireEvent.click(screen.getByRole("button", { name: /批量删除/i }));
-
-    const dialog = screen.getByTestId("confirm-dialog");
-    fireEvent.click(
-      within(dialog).getByRole("button", { name: /删除所选会话/i }),
-    );
+    await confirmDelete(/删除 2 个会话/);
 
     await waitFor(() => {
       expect(screen.queryByText("Alpha Session")).not.toBeInTheDocument();

@@ -32,6 +32,8 @@ import { isNonNegativeDecimalString, type ModelPricing } from "@/types/usage";
 import { Plus, Pencil, Trash2, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { proxyApi } from "@/lib/api/proxy";
+import { cn } from "@/lib/utils";
+import { usageTable } from "./usageTable";
 
 const PRICING_APPS = ["claude", "codex", "gemini", "grokbuild"] as const;
 type PricingApp = (typeof PRICING_APPS)[number];
@@ -367,21 +369,25 @@ export function PricingConfigPanel() {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>{t("usage.model")}</TableHead>
-                    <TableHead>{t("usage.displayName")}</TableHead>
-                    <TableHead className="text-right">
+                    <TableHead className={usageTable.th}>
+                      {t("usage.model")}
+                    </TableHead>
+                    <TableHead className={usageTable.th}>
+                      {t("usage.displayName")}
+                    </TableHead>
+                    <TableHead className={usageTable.thNum}>
                       {t("usage.inputCost")}
                     </TableHead>
-                    <TableHead className="text-right">
+                    <TableHead className={usageTable.thNum}>
                       {t("usage.outputCost")}
                     </TableHead>
-                    <TableHead className="text-right">
+                    <TableHead className={usageTable.thNum}>
                       {t("usage.cacheReadCost")}
                     </TableHead>
-                    <TableHead className="text-right">
+                    <TableHead className={usageTable.thNum}>
                       {t("usage.cacheWriteCost")}
                     </TableHead>
-                    <TableHead className="text-right">
+                    <TableHead className={usageTable.thNum}>
                       {t("common.actions")}
                     </TableHead>
                   </TableRow>
@@ -389,23 +395,27 @@ export function PricingConfigPanel() {
                 <TableBody>
                   {pricing.map((model) => (
                     <TableRow key={model.modelId}>
-                      <TableCell className="font-mono text-sm">
+                      <TableCell
+                        className={cn(usageTable.td, "font-mono text-xs")}
+                      >
                         {model.modelId}
                       </TableCell>
-                      <TableCell>{model.displayName}</TableCell>
-                      <TableCell className="text-right font-mono text-sm">
+                      <TableCell className={usageTable.td}>
+                        {model.displayName}
+                      </TableCell>
+                      <TableCell className={usageTable.tdNum}>
                         ${model.inputCostPerMillion}
                       </TableCell>
-                      <TableCell className="text-right font-mono text-sm">
+                      <TableCell className={usageTable.tdNum}>
                         ${model.outputCostPerMillion}
                       </TableCell>
-                      <TableCell className="text-right font-mono text-sm">
+                      <TableCell className={usageTable.tdNum}>
                         ${model.cacheReadCostPerMillion}
                       </TableCell>
-                      <TableCell className="text-right font-mono text-sm">
+                      <TableCell className={usageTable.tdNum}>
                         ${model.cacheCreationCostPerMillion}
                       </TableCell>
-                      <TableCell className="text-right">
+                      <TableCell className={cn(usageTable.tdNum, "py-1")}>
                         <div className="flex justify-end gap-1">
                           <Button
                             variant="ghost"

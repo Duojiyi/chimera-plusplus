@@ -1,8 +1,7 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useId, useMemo, useRef } from "react";
 import {
   DeepLinkImportPreview,
   DeepLinkImportRequest,
-  EnvKeyStatus,
   deeplinkApi,
 } from "@/lib/api/deeplink";
 import {
@@ -14,6 +13,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
@@ -22,6 +22,7 @@ import { McpConfirmation } from "./deeplink/McpConfirmation";
 import { SkillConfirmation } from "./deeplink/SkillConfirmation";
 import { ProviderIcon } from "./ProviderIcon";
 import { classifyEndpoint, maskValue, riskI18nKey } from "@/utils/deeplinkRisk";
+import "./DeepLinkImportDialog.css";
 
 function safeDisplayUrl(value?: string): string {
   if (!value) return "—";
@@ -41,6 +42,82 @@ function safeDisplayUrl(value?: string): string {
   }
 }
 
+/** `host` or `host:port`, the part a non-expert can check at a glance. */
+function hostOf(value: string): string | null {
+  try {
+    return new URL(value.trim()).host || null;
+  } catch {
+    return null;
+  }
+}
+
+const TOOL_NAMES: Record<string, string> = {
+  claude: "Claude Code",
+  "claude-desktop": "Claude Desktop",
+  claude_desktop: "Claude Desktop",
+  codex: "Codex",
+  gemini: "Gemini CLI",
+  grokbuild: "Grok Build",
+  opencode: "OpenCode",
+  pi: "Pi",
+};
+
+/** Tools that enable several lines at once instead of switching one. */
+const ADDITIVE_TOOLS = new Set(["opencode", "pi"]);
+
+/** How many ignored setting names are listed before "等 N 项". */
+const IGNORED_SHOWN = 12;
+
+/** Backend error text without the generic "无效输入: " prefix. */
+function errorReason(error: unknown): string {
+  const text =
+    typeof error === "string"
+      ? error
+      : error instanceof Error
+        ? error.message
+        : "";
+  return text.replace(/^无效输入:\s*/, "").trim();
+}
+
+/**
+ * Env values a Claude / Gemini link config carries, for display next to the
+ * backend's verdicts. Quiet on purpose: the input may hold secrets, so a
+ * malformed config is never logged.
+ */
+function configEnvValues(
+  request: DeepLinkImportRequest,
+): Record<string, string> {
+  if (!request.config) return {};
+  if (request.configFormat && request.configFormat !== "json") return {};
+  try {
+    let normalized = request.config
+      .trim()
+      .replace(/ /g, "+")
+      .replace(/-/g, "+")
+      .replace(/_/g, "/");
+    if (normalized.length % 4 !== 0) {
+      normalized += "=".repeat(4 - (normalized.length % 4));
+    }
+    const bytes = Uint8Array.from(atob(normalized), (c) => c.charCodeAt(0));
+    const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes));
+    if (!parsed || typeof parsed !== "object") return {};
+    const source =
+      request.app === "gemini"
+        ? parsed
+        : (parsed as Record<string, unknown>).env;
+    if (!source || typeof source !== "object") return {};
+    const values: Record<string, string> = {};
+    for (const [key, value] of Object.entries(source)) {
+      if (typeof value === "string" || typeof value === "number") {
+        values[key] = String(value);
+      }
+    }
+    return values;
+  } catch {
+    return {};
+  }
+}
+
 export function DeepLinkImportDialog({
   request: incomingRequest,
   onHandled,
@@ -54,16 +131,21 @@ export function DeepLinkImportDialog({
 }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const ids = useId();
   const [request, setRequest] = useState(incomingRequest);
   const [isImporting, setIsImporting] = useState(false);
   const [isPreparing, setIsPreparing] = useState(
     !!(incomingRequest.config || incomingRequest.configUrl),
   );
-  const [mergeFailed, setMergeFailed] = useState(false);
+  const [mergeError, setMergeError] = useState<string | null>(null);
   // MH-4: what the backend will store and write; import waits for it.
   const [preview, setPreview] = useState<DeepLinkImportPreview | null>(null);
-  const [previewFailed, setPreviewFailed] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const [confirmedEnvKeys, setConfirmedEnvKeys] = useState<string[]>([]);
+  // Both switches start off whatever the link asks for: switching lines and
+  // running a script are the user's decisions, not the link's.
+  const [activate, setActivate] = useState(false);
+  const [usageEnabled, setUsageEnabled] = useState(false);
   const [imported, setImported] = useState(false);
   const inFlightRef = useRef(false);
   const importedRef = useRef(false);
@@ -95,8 +177,8 @@ export function DeepLinkImportDialog({
         .then((merged) => {
           if (active) setRequest(merged);
         })
-        .catch(() => {
-          if (active) setMergeFailed(true);
+        .catch((error: unknown) => {
+          if (active) setMergeError(errorReason(error));
         })
         .finally(() => {
           if (active) setIsPreparing(false);
@@ -114,21 +196,34 @@ export function DeepLinkImportDialog({
       .then((result) => {
         if (active) setPreview(result);
       })
-      .catch(() => {
-        if (active) setPreviewFailed(true);
+      .catch((error: unknown) => {
+        if (active) setPreviewError(errorReason(error));
       });
     return () => {
       active = false;
     };
   }, [incomingRequest]);
 
-  const envStatus = useMemo(
+  const isProvider = request.resource === "provider" || !request.resource;
+  const tool = TOOL_NAMES[request.app ?? ""] ?? request.app ?? "该工具";
+  const additive = ADDITIVE_TOOLS.has(request.app ?? "");
+  const endpoints = useMemo(
     () =>
-      new Map<string, EnvKeyStatus>(
-        (preview?.env ?? []).map((entry) => [entry.key, entry.status]),
-      ),
-    [preview],
+      (request.endpoint ?? "")
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean),
+    [request.endpoint],
   );
+  const primaryEndpoint = endpoints[0];
+  const primaryHost = primaryEndpoint ? hostOf(primaryEndpoint) : null;
+  const primaryRisk = primaryEndpoint
+    ? classifyEndpoint(primaryEndpoint)
+    : null;
+  const mayActivate = isProvider && preview?.mayActivate === true;
+  const activateNow = mayActivate && activate;
+  const usage = isProvider ? (preview?.usage ?? null) : null;
+  const ignored = preview?.ignored ?? [];
   const deniedEnvKeys = useMemo(
     () =>
       new Set(
@@ -138,6 +233,25 @@ export function DeepLinkImportDialog({
       ),
     [preview],
   );
+  const envValues = useMemo(() => configEnvValues(request), [request]);
+  const flaggedEnv = (preview?.env ?? []).filter(
+    (entry) => entry.status !== "allowed",
+  );
+  const allowedEnvKeys = (preview?.env ?? [])
+    .filter((entry) => entry.status === "allowed")
+    .map((entry) => entry.key);
+
+  // Import would fail on these anyway; say so before the user confirms.
+  const missing = isProvider
+    ? [
+        !request.apiKey?.trim() ? "API Key" : null,
+        !primaryEndpoint ? "请求地址" : null,
+      ].filter((item): item is string => item !== null)
+    : [];
+  const blockingError = previewError ?? mergeError;
+  const blocked =
+    isPreparing || blockingError !== null || !preview || missing.length > 0;
+
   const toggleEnvKey = (key: string, confirmed: boolean) =>
     setConfirmedEnvKeys((current) =>
       confirmed
@@ -146,7 +260,7 @@ export function DeepLinkImportDialog({
     );
 
   const handleImport = async () => {
-    if (inFlightRef.current || isPreparing || mergeFailed || !preview) return;
+    if (inFlightRef.current || (blocked && !importedRef.current)) return;
     inFlightRef.current = true;
     setIsImporting(true);
 
@@ -159,6 +273,14 @@ export function DeepLinkImportDialog({
       const result = await deeplinkApi.importFromDeeplink({
         ...request,
         confirmedEnvKeys,
+        // The dialog's switches are the user's decisions; the link's own
+        // `enabled` / `usageEnabled` were only shown as requests.
+        ...(isProvider
+          ? {
+              enabled: activateNow,
+              confirmedUsageEnabled: usage ? usageEnabled : undefined,
+            }
+          : {}),
       });
       importedRef.current = true;
       setImported(true);
@@ -271,7 +393,7 @@ export function DeepLinkImportDialog({
         );
       } else {
         toast.error(t("deeplink.importError"), {
-          description: error instanceof Error ? error.message : String(error),
+          description: errorReason(error),
         });
       }
     } finally {
@@ -294,129 +416,14 @@ export function DeepLinkImportDialog({
     }
   };
 
-  // Mask API key for display (show first 4 chars + ***)
-  const maskedApiKey =
-    request?.apiKey && request.apiKey.length > 4
-      ? `${request.apiKey.substring(0, 4)}${"*".repeat(20)}`
-      : "****";
-
-  // Check if config file is present
-  const hasConfigFile = !!(request?.config || request?.configUrl);
-  const configSource = request?.config
-    ? "base64"
-    : request?.configUrl
-      ? "url"
-      : null;
-
-  // Parse config file content for display
-  interface ParsedConfig {
-    type: "claude" | "codex" | "gemini";
-    env?: Record<string, string>;
-    auth?: Record<string, string>;
-    tomlConfig?: string;
-    raw: Record<string, unknown>;
-  }
-
-  // Helper to decode base64 with UTF-8 support
-  const b64ToUtf8 = (str: string): string => {
-    try {
-      const binString = atob(str);
-      const bytes = Uint8Array.from(binString, (m) => m.codePointAt(0) || 0);
-      return new TextDecoder().decode(bytes);
-    } catch (e) {
-      console.error("Failed to decode base64:", e);
-      return atob(str);
-    }
-  };
-
-  const parsedConfig = useMemo((): ParsedConfig | null => {
-    if (!request?.config) return null;
-    try {
-      const decoded = b64ToUtf8(request.config);
-      const parsed = JSON.parse(decoded) as Record<string, unknown>;
-
-      if (request.app === "claude") {
-        // Claude 格式: { env: { ANTHROPIC_AUTH_TOKEN: ..., ... } }
-        return {
-          type: "claude",
-          env: (parsed.env as Record<string, string>) || {},
-          raw: parsed,
-        };
-      } else if (request.app === "codex") {
-        // Codex 格式: { auth: { OPENAI_API_KEY: ... }, config: "TOML string" }
-        return {
-          type: "codex",
-          auth: (parsed.auth as Record<string, string>) || {},
-          tomlConfig: (parsed.config as string) || "",
-          raw: parsed,
-        };
-      } else if (request.app === "gemini") {
-        // Gemini 格式: 扁平结构 { GEMINI_API_KEY: ..., GEMINI_BASE_URL: ... }
-        return {
-          type: "gemini",
-          env: parsed as Record<string, string>,
-          raw: parsed,
-        };
-      }
-      return null;
-    } catch (e) {
-      console.error("Failed to parse config:", e);
-      return null;
-    }
-  }, [request?.config, request?.app]);
-
-  /**
-   * env 行：值经 `maskValue` 脱敏，键命中加载器控制变量时标记。
-   *
-   * `break-all` 而非 `truncate`——被截断的值等于没展示。
-   */
-  const EnvRow = ({ envKey, value }: { envKey: string; value: string }) => {
-    // Verdict comes from the backend allowlist (MH-4); keys without one
-    // (e.g. Codex auth fields) are not env and are shown plainly.
-    const status = envStatus.get(envKey);
-    const flagged = status === "denied" || status === "needsConfirmation";
-    return (
-      <div className="space-y-0.5">
-        <div className="grid grid-cols-2 gap-2 text-xs">
-          <span
-            className={`font-mono break-all ${
-              flagged
-                ? "text-yellow-700 dark:text-yellow-500 font-semibold"
-                : "text-muted-foreground"
-            }`}
-          >
-            {flagged && <span aria-hidden="true">⚠ </span>}
-            {envKey}
-          </span>
-          <span className="font-mono break-all">
-            {maskValue(envKey, value)}
-          </span>
-        </div>
-        {status === "denied" && (
-          <div className="text-xs text-yellow-700 dark:text-yellow-500">
-            {t("deeplink.envDenied", {
-              defaultValue: "出于安全原因，此变量不会导入",
-            })}
-          </div>
-        )}
-        {status === "needsConfirmation" && (
-          <label className="flex items-center gap-2 text-xs">
-            <input
-              type="checkbox"
-              checked={confirmedEnvKeys.includes(envKey)}
-              onChange={(event) => toggleEnvKey(envKey, event.target.checked)}
-            />
-            {t("deeplink.envConfirm", {
-              defaultValue: "此变量不在该工具的允许清单中，勾选后才会导入",
-            })}
-          </label>
-        )}
-      </div>
-    );
-  };
+  const apiKey = request.apiKey?.trim() ?? "";
+  const apiKeyText = !apiKey
+    ? "未提供"
+    : apiKey.length > 8
+      ? `已提供（末 4 位 ${apiKey.slice(-4)}）`
+      : "已提供";
 
   const getTitle = () => {
-    if (!request) return t("deeplink.confirmImport");
     switch (request.resource) {
       case "prompt":
         return t("deeplink.importPrompt");
@@ -425,12 +432,11 @@ export function DeepLinkImportDialog({
       case "skill":
         return t("deeplink.importSkill");
       default:
-        return t("deeplink.confirmImport");
+        return "确认导入线路";
     }
   };
 
   const getDescription = () => {
-    if (!request) return t("deeplink.confirmImportDescription");
     switch (request.resource) {
       case "prompt":
         return t("deeplink.importPromptDescription");
@@ -439,9 +445,14 @@ export function DeepLinkImportDialog({
       case "skill":
         return t("deeplink.importSkillDescription");
       default:
-        return t("deeplink.confirmImportDescription");
+        return "这条线路来自导入链接。确认之前不会保存或修改任何内容。";
     }
   };
+
+  const activateId = `${ids}-activate`;
+  const usageId = `${ids}-usage`;
+  const writtenFiles = preview?.targetPaths ?? [];
+  const usageLines = usage ? usage.code.split("\n").length : 0;
 
   return (
     <Dialog
@@ -450,475 +461,401 @@ export function DeepLinkImportDialog({
         if (!open) void handleCancel();
       }}
     >
-      <DialogContent className="sm:max-w-[500px]" zIndex="top">
-        {request && (
-          <>
-            {/* 标题显式左对齐，避免默认居中样式影响 */}
-            <DialogHeader className="text-left sm:text-left">
-              <DialogTitle>{getTitle()}</DialogTitle>
-              <DialogDescription>{getDescription()}</DialogDescription>
-            </DialogHeader>
+      <DialogContent className="sm:max-w-[600px]" zIndex="top">
+        {/* 标题显式左对齐，避免默认居中样式影响 */}
+        <DialogHeader className="text-left sm:text-left">
+          <DialogTitle>{getTitle()}</DialogTitle>
+          <DialogDescription>{getDescription()}</DialogDescription>
+        </DialogHeader>
 
-            {/* 主体内容整体右移，略大于标题内边距，让内容看起来不贴边 */}
-            <div className="space-y-4 px-8 py-4 max-h-[60vh] overflow-y-auto [scrollbar-width:thin] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar]:block [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-gray-200 dark:[&::-webkit-scrollbar-thumb]:bg-gray-700">
-              {request.resource === "prompt" && (
-                <PromptConfirmation request={request} />
-              )}
-              {request.resource === "mcp" && (
-                <McpConfirmation
-                  request={request}
-                  deniedEnvKeys={deniedEnvKeys}
-                />
-              )}
-              {request.resource === "skill" && (
-                <SkillConfirmation request={request} />
-              )}
+        <div className="dl-body">
+          {request.resource === "prompt" && (
+            <PromptConfirmation request={request} />
+          )}
+          {request.resource === "mcp" && (
+            <McpConfirmation request={request} deniedEnvKeys={deniedEnvKeys} />
+          )}
+          {request.resource === "skill" && (
+            <SkillConfirmation request={request} />
+          )}
 
-              {/* Legacy Provider View */}
-              {(request.resource === "provider" || !request.resource) && (
-                <>
-                  {/* Provider Icon - enlarge and center near the top */}
-                  {request.icon && (
-                    <div className="flex justify-center pt-2 pb-1">
-                      <ProviderIcon
-                        icon={request.icon}
-                        name={request.name || request.icon}
-                        size={80}
-                        className="drop-shadow-sm"
-                      />
-                    </div>
-                  )}
+          {isProvider && (
+            <>
+              {/* Who and what */}
+              <section className="dl-summary" aria-label="要导入的线路">
+                {request.icon && (
+                  <ProviderIcon
+                    icon={request.icon}
+                    name={request.name || request.icon}
+                    size={40}
+                  />
+                )}
+                <div className="dl-summary-text">
+                  <strong className="dl-summary-name">{request.name}</strong>
+                  <span className="dl-summary-tool">用于 {tool}</span>
+                </div>
+              </section>
 
-                  {/* App Type */}
-                  <div className="grid grid-cols-3 items-center gap-4">
-                    <div className="font-medium text-sm text-muted-foreground">
-                      {t("deeplink.app")}
-                    </div>
-                    <div className="col-span-2 text-sm font-medium capitalize">
-                      {request.app}
-                    </div>
-                  </div>
-
-                  {/* Provider Name */}
-                  <div className="grid grid-cols-3 items-center gap-4">
-                    <div className="font-medium text-sm text-muted-foreground">
-                      {t("deeplink.providerName")}
-                    </div>
-                    <div className="col-span-2 text-sm font-medium">
-                      {request.name}
-                    </div>
-                  </div>
-
-                  {/* Homepage */}
-                  <div className="grid grid-cols-3 items-center gap-4">
-                    <div className="font-medium text-sm text-muted-foreground">
-                      {t("deeplink.homepage")}
-                    </div>
-                    <div className="col-span-2 text-sm break-all text-blue-600 dark:text-blue-400">
-                      {safeDisplayUrl(request.homepage)}
-                    </div>
-                  </div>
-
-                  {/* API Endpoint */}
-                  <div className="grid grid-cols-3 items-start gap-4">
-                    <div className="font-medium text-sm text-muted-foreground pt-0.5">
-                      {t("deeplink.endpoint")}
-                    </div>
-                    <div className="col-span-2 text-sm break-all space-y-1">
-                      {request.endpoint?.split(",").map((ep, idx) => {
-                        const endpointRisk = classifyEndpoint(ep.trim());
-                        return (
-                          <div
-                            key={idx}
-                            className={
-                              endpointRisk
-                                ? "text-yellow-700 dark:text-yellow-500 font-semibold"
-                                : idx === 0
-                                  ? "font-medium"
-                                  : "text-muted-foreground"
-                            }
-                          >
-                            {idx === 0 ? "🔹 " : "└ "}
-                            {endpointRisk && <span aria-hidden="true">⚠ </span>}
-                            {safeDisplayUrl(ep)}
-                            {idx === 0 && request.endpoint?.includes(",") && (
-                              <span className="text-xs text-muted-foreground ml-2">
-                                ({t("deeplink.primaryEndpoint")})
-                              </span>
-                            )}
-                            {endpointRisk && (
-                              <div className="text-xs font-normal mt-0.5">
-                                {t(riskI18nKey(endpointRisk))}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  {/* API Key (masked) */}
-                  <div className="grid grid-cols-3 items-center gap-4">
-                    <div className="font-medium text-sm text-muted-foreground">
-                      {t("deeplink.apiKey")}
-                    </div>
-                    <div className="col-span-2 text-sm font-mono text-muted-foreground">
-                      {maskedApiKey}
-                    </div>
-                  </div>
-
-                  {/* Model Fields - 根据应用类型显示不同的模型字段 */}
-                  {request.app === "claude" ? (
-                    <>
-                      {/* Claude 四种模型字段 */}
-                      {request.haikuModel && (
-                        <div className="grid grid-cols-3 items-center gap-4">
-                          <div className="font-medium text-sm text-muted-foreground">
-                            {t("deeplink.haikuModel")}
-                          </div>
-                          <div className="col-span-2 text-sm font-mono">
-                            {request.haikuModel}
-                          </div>
-                        </div>
-                      )}
-                      {request.sonnetModel && (
-                        <div className="grid grid-cols-3 items-center gap-4">
-                          <div className="font-medium text-sm text-muted-foreground">
-                            {t("deeplink.sonnetModel")}
-                          </div>
-                          <div className="col-span-2 text-sm font-mono">
-                            {request.sonnetModel}
-                          </div>
-                        </div>
-                      )}
-                      {request.opusModel && (
-                        <div className="grid grid-cols-3 items-center gap-4">
-                          <div className="font-medium text-sm text-muted-foreground">
-                            {t("deeplink.opusModel")}
-                          </div>
-                          <div className="col-span-2 text-sm font-mono">
-                            {request.opusModel}
-                          </div>
-                        </div>
-                      )}
-                      {request.model && (
-                        <div className="grid grid-cols-3 items-center gap-4">
-                          <div className="font-medium text-sm text-muted-foreground">
-                            {t("deeplink.multiModel")}
-                          </div>
-                          <div className="col-span-2 text-sm font-mono">
-                            {request.model}
-                          </div>
-                        </div>
-                      )}
-                    </>
-                  ) : (
-                    <>
-                      {/* Codex 和 Gemini 使用通用 model 字段 */}
-                      {request.model && (
-                        <div className="grid grid-cols-3 items-center gap-4">
-                          <div className="font-medium text-sm text-muted-foreground">
-                            {t("deeplink.model")}
-                          </div>
-                          <div className="col-span-2 text-sm font-mono">
-                            {request.model}
-                          </div>
-                        </div>
-                      )}
-                    </>
-                  )}
-
-                  {/* Notes (if present) */}
-                  {request.notes && (
-                    <div className="grid grid-cols-3 items-start gap-4">
-                      <div className="font-medium text-sm text-muted-foreground">
-                        {t("deeplink.notes")}
-                      </div>
-                      <div className="col-span-2 text-sm text-muted-foreground">
-                        {request.notes}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Config File Details (v3.8+) */}
-                  {hasConfigFile && (
-                    <div className="space-y-3 pt-2 border-t border-border-default">
-                      <div className="grid grid-cols-3 items-center gap-4">
-                        <div className="font-medium text-sm text-muted-foreground">
-                          {t("deeplink.configSource")}
-                        </div>
-                        <div className="col-span-2 text-sm">
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 text-xs font-medium">
-                            {configSource === "base64"
-                              ? t("deeplink.configEmbedded")
-                              : t("deeplink.configRemote")}
-                          </span>
-                          {request.configFormat && (
-                            <span className="ml-2 text-xs text-muted-foreground uppercase">
-                              {request.configFormat}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Parsed Config Details */}
-                      {parsedConfig && (
-                        <div className="rounded-lg bg-muted/50 p-3 space-y-2">
-                          <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                            {t("deeplink.configDetails")}
-                          </div>
-
-                          {/* Claude config */}
-                          {parsedConfig.type === "claude" &&
-                            parsedConfig.env && (
-                              <div className="space-y-1.5">
-                                {Object.entries(parsedConfig.env).map(
-                                  ([key, value]) => (
-                                    <EnvRow
-                                      key={key}
-                                      envKey={key}
-                                      value={String(value)}
-                                    />
-                                  ),
-                                )}
-                              </div>
-                            )}
-
-                          {/* Codex config */}
-                          {parsedConfig.type === "codex" && (
-                            <div className="space-y-2">
-                              {parsedConfig.auth &&
-                                Object.keys(parsedConfig.auth).length > 0 && (
-                                  <div className="space-y-1.5">
-                                    <div className="text-xs text-muted-foreground">
-                                      Auth:
-                                    </div>
-                                    <div className="pl-2 space-y-1.5">
-                                      {Object.entries(parsedConfig.auth).map(
-                                        ([key, value]) => (
-                                          <EnvRow
-                                            key={key}
-                                            envKey={key}
-                                            value={String(value)}
-                                          />
-                                        ),
-                                      )}
-                                    </div>
-                                  </div>
-                                )}
-                              {parsedConfig.tomlConfig && (
-                                <div className="space-y-1">
-                                  <div className="text-xs text-muted-foreground">
-                                    TOML Config:
-                                  </div>
-                                  <pre className="text-xs font-mono bg-background p-2 rounded overflow-x-auto max-h-24 whitespace-pre-wrap">
-                                    {parsedConfig.tomlConfig.substring(0, 300)}
-                                    {parsedConfig.tomlConfig.length > 300 &&
-                                      "..."}
-                                  </pre>
-                                </div>
-                              )}
-                            </div>
-                          )}
-
-                          {/* Gemini config */}
-                          {parsedConfig.type === "gemini" &&
-                            parsedConfig.env && (
-                              <div className="space-y-1.5">
-                                {Object.entries(parsedConfig.env).map(
-                                  ([key, value]) => (
-                                    <EnvRow
-                                      key={key}
-                                      envKey={key}
-                                      value={String(value)}
-                                    />
-                                  ),
-                                )}
-                              </div>
-                            )}
-                        </div>
-                      )}
-
-                      {/* Config URL (if remote) */}
-                      {request.configUrl && (
-                        <div className="grid grid-cols-3 items-center gap-4">
-                          <div className="font-medium text-sm text-muted-foreground">
-                            {t("deeplink.configUrl")}
-                          </div>
-                          <div className="col-span-2 text-sm font-mono text-muted-foreground break-all">
-                            {safeDisplayUrl(request.configUrl)}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Usage Script Configuration (v3.9+) */}
-                  {request.usageScript && (
-                    <div className="space-y-3 pt-2 border-t border-border-default">
-                      <div className="grid grid-cols-3 items-center gap-4">
-                        <div className="font-medium text-sm text-muted-foreground">
-                          {t("deeplink.usageScript", {
-                            defaultValue: "用量查询",
-                          })}
-                        </div>
-                        <div className="col-span-2 text-sm">
-                          <span
-                            className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ${
-                              request.usageEnabled !== false
-                                ? "bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300"
-                                : "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400"
-                            }`}
-                          >
-                            {request.usageEnabled !== false
-                              ? t("deeplink.usageScriptEnabled", {
-                                  defaultValue: "已启用",
-                                })
-                              : t("deeplink.usageScriptDisabled", {
-                                  defaultValue: "未启用",
-                                })}
-                          </span>
-                        </div>
-                      </div>
-
-                      {/* Usage API Key (if different from provider) */}
-                      {request.usageApiKey &&
-                        request.usageApiKey !== request.apiKey && (
-                          <div className="grid grid-cols-3 items-center gap-4">
-                            <div className="font-medium text-sm text-muted-foreground">
-                              {t("deeplink.usageApiKey", {
-                                defaultValue: "用量 API Key",
-                              })}
-                            </div>
-                            <div className="col-span-2 text-sm font-mono text-muted-foreground">
-                              {request.usageApiKey.length > 4
-                                ? `${request.usageApiKey.substring(0, 4)}${"*".repeat(12)}`
-                                : "****"}
-                            </div>
-                          </div>
-                        )}
-
-                      {/* Usage Base URL (if different from provider) */}
-                      {request.usageBaseUrl &&
-                        request.usageBaseUrl !== request.endpoint && (
-                          <div className="grid grid-cols-3 items-center gap-4">
-                            <div className="font-medium text-sm text-muted-foreground">
-                              {t("deeplink.usageBaseUrl", {
-                                defaultValue: "用量查询地址",
-                              })}
-                            </div>
-                            <div className="col-span-2 text-sm break-all">
-                              {safeDisplayUrl(request.usageBaseUrl)}
-                            </div>
-                          </div>
-                        )}
-
-                      {/* Auto Query Interval */}
-                      {request.usageAutoInterval &&
-                        request.usageAutoInterval > 0 && (
-                          <div className="grid grid-cols-3 items-center gap-4">
-                            <div className="font-medium text-sm text-muted-foreground">
-                              {t("deeplink.usageAutoInterval", {
-                                defaultValue: "自动查询",
-                              })}
-                            </div>
-                            <div className="col-span-2 text-sm">
-                              {t("deeplink.usageAutoIntervalValue", {
-                                defaultValue: "每 {{minutes}} 分钟",
-                                minutes: request.usageAutoInterval,
-                              })}
-                            </div>
-                          </div>
-                        )}
-                    </div>
-                  )}
-
-                  {/* Warning */}
-                  <div className="rounded-lg bg-yellow-50 dark:bg-yellow-900/20 p-3 text-sm text-yellow-800 dark:text-yellow-200">
-                    {t("deeplink.warning")}
-                  </div>
-                </>
-              )}
-
-              {/* MH-4: exactly what will be stored, and where it lands. */}
-              {preview && (
-                <div className="space-y-2 pt-2 border-t border-border-default">
-                  {preview.targetPaths.length > 0 && (
-                    <div className="space-y-1">
-                      <div className="text-sm font-medium text-muted-foreground">
-                        {t("deeplink.targetPaths", {
-                          defaultValue: "目标文件",
-                        })}
-                      </div>
-                      {preview.targetPaths.map((path) => (
-                        <div key={path} className="text-xs font-mono break-all">
-                          {path}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  <p className="text-xs text-muted-foreground">
-                    {preview.writesLive
-                      ? t("deeplink.writesLive", {
-                          defaultValue: "确认后会立即写入上述文件。",
-                        })
-                      : t("deeplink.importOnly", {
-                          defaultValue:
-                            "仅导入：确认后不会写入任何配置文件，需要时再手动启用。",
-                        })}
+              {/* Where requests go */}
+              <section
+                className="dl-host"
+                aria-labelledby={`${ids}-host-title`}
+              >
+                <h3 id={`${ids}-host-title`} className="dl-host-label">
+                  请求将发往
+                </h3>
+                <p className="dl-host-name">{primaryHost ?? "—"}</p>
+                {primaryEndpoint && (
+                  <p className="dl-host-url">
+                    {safeDisplayUrl(primaryEndpoint)}
                   </p>
-                  <details>
-                    <summary className="text-sm font-medium text-muted-foreground cursor-pointer">
-                      {t("deeplink.fullContent", {
-                        defaultValue: "完整内容",
-                      })}
-                    </summary>
-                    <pre className="mt-1 max-h-64 overflow-auto bg-muted/50 p-2 rounded text-xs whitespace-pre-wrap break-all border">
-                      {preview.content}
+                )}
+                {primaryRisk && (
+                  <p className="dl-host-risk">{t(riskI18nKey(primaryRisk))}</p>
+                )}
+                {endpoints.length > 1 && (
+                  <div className="dl-host-spares">
+                    <span>备用地址</span>
+                    <ul className="dl-paths">
+                      {endpoints.slice(1).map((endpoint, index) => (
+                        <li key={index}>{safeDisplayUrl(endpoint)}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </section>
+
+              {/* Details */}
+              <dl className="dl-fields">
+                <dt>API Key</dt>
+                <dd className={apiKey.length > 8 ? "dl-mono" : undefined}>
+                  {apiKeyText}
+                </dd>
+                {request.model && (
+                  <>
+                    <dt>{request.app === "claude" ? "主模型" : "模型"}</dt>
+                    <dd className="dl-mono">{request.model}</dd>
+                  </>
+                )}
+                {request.app === "claude" && request.haikuModel && (
+                  <>
+                    <dt>Haiku 模型</dt>
+                    <dd className="dl-mono">{request.haikuModel}</dd>
+                  </>
+                )}
+                {request.app === "claude" && request.sonnetModel && (
+                  <>
+                    <dt>Sonnet 模型</dt>
+                    <dd className="dl-mono">{request.sonnetModel}</dd>
+                  </>
+                )}
+                {request.app === "claude" && request.opusModel && (
+                  <>
+                    <dt>Opus 模型</dt>
+                    <dd className="dl-mono">{request.opusModel}</dd>
+                  </>
+                )}
+                {request.homepage && (
+                  <>
+                    <dt>主页</dt>
+                    <dd>{safeDisplayUrl(request.homepage)}</dd>
+                  </>
+                )}
+                {request.notes && (
+                  <>
+                    <dt>备注</dt>
+                    <dd>{request.notes}</dd>
+                  </>
+                )}
+              </dl>
+
+              {/* What confirming does */}
+              <section
+                className="dl-section"
+                aria-labelledby={`${ids}-outcome-title`}
+              >
+                <h3 id={`${ids}-outcome-title`} className="dl-section-title">
+                  确认后
+                </h3>
+                <p className="dl-note">
+                  这条线路会保存到 Chimera++，之后可以随时编辑或删除。
+                </p>
+                {mayActivate && (
+                  <div className="dl-toggle">
+                    <div className="dl-toggle-text">
+                      <label htmlFor={activateId}>导入后切换到此线路</label>
+                      <p id={`${activateId}-note`} className="dl-note">
+                        {activateNow
+                          ? `确认后立即切换，并写入下列文件；${tool} 之后的请求会发往 ${primaryHost ?? "上面的地址"}。`
+                          : "默认关闭。"}
+                      </p>
+                    </div>
+                    <Switch
+                      id={activateId}
+                      checked={activate}
+                      onCheckedChange={setActivate}
+                      aria-describedby={`${activateId}-note`}
+                      disabled={isImporting || imported}
+                    />
+                  </div>
+                )}
+                {request.enabled && !activateNow && (
+                  <p className="dl-note">
+                    {mayActivate
+                      ? "链接希望导入后立即切换；是否切换由你决定。"
+                      : `链接希望导入后立即启用；通过链接导入的 ${tool} 线路只会保存，不会自动启用。`}
+                  </p>
+                )}
+                {!activateNow && (
+                  <p className="dl-statement">
+                    {additive
+                      ? `不会启用这条线路，${tool} 的配置文件保持不变。以后可以在 ${tool} 页面手动启用。`
+                      : `不会切换当前线路，${tool} 的配置文件保持不变。以后可以在线路列表中手动切换。`}
+                  </p>
+                )}
+                {writtenFiles.length > 0 && (
+                  <div className="dl-files">
+                    <span className="dl-note">
+                      {activateNow
+                        ? "将立即写入："
+                        : additive
+                          ? "启用这条线路时才会写入："
+                          : "切换到这条线路时才会写入："}
+                    </span>
+                    <ul className="dl-paths">
+                      {writtenFiles.map((path) => (
+                        <li key={path}>{path}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </section>
+
+              {/* Usage query script */}
+              {usage && (
+                <section
+                  className="dl-section dl-usage"
+                  aria-labelledby={`${ids}-usage-title`}
+                >
+                  <h3 id={`${ids}-usage-title`} className="dl-section-title">
+                    用量查询脚本
+                  </h3>
+                  <p className="dl-note">
+                    链接附带了一段查询余额和用量的脚本。启用后，Chimera++
+                    会在本机定期运行它；脚本只能访问下面的地址，并可能使用这条线路的
+                    API Key。
+                  </p>
+                  <dl className="dl-fields">
+                    <dt>会访问</dt>
+                    <dd>
+                      {usage.hosts.length > 0 ? (
+                        <ul className="dl-paths">
+                          {usage.hosts.map((host) => (
+                            <li key={host} className="dl-usage-host">
+                              {host}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        "无法确定"
+                      )}
+                    </dd>
+                    {usage.autoIntervalMinutes ? (
+                      <>
+                        <dt>自动查询</dt>
+                        <dd>每 {usage.autoIntervalMinutes} 分钟</dd>
+                      </>
+                    ) : null}
+                  </dl>
+                  <details className="dl-details">
+                    <summary>查看脚本内容（{usageLines} 行）</summary>
+                    <pre className="dl-code" tabIndex={0}>
+                      {usage.code}
                     </pre>
                   </details>
-                </div>
+                  {usage.linkRequestsEnabled && (
+                    <p className="dl-note">
+                      链接希望导入后启用用量查询；是否启用由你决定。
+                    </p>
+                  )}
+                  <div className="dl-toggle">
+                    <div className="dl-toggle-text">
+                      <label htmlFor={usageId}>导入后启用用量查询</label>
+                      <p id={`${usageId}-note`} className="dl-note">
+                        {usageEnabled
+                          ? "确认后会按上面的设置定期运行这段脚本。"
+                          : "默认关闭。关闭时只保存脚本，不会运行。"}
+                      </p>
+                    </div>
+                    <Switch
+                      id={usageId}
+                      checked={usageEnabled}
+                      onCheckedChange={setUsageEnabled}
+                      aria-describedby={`${usageId}-note`}
+                      disabled={isImporting || imported}
+                    />
+                  </div>
+                </section>
               )}
-            </div>
 
-            {isPreparing && (
-              <p role="status">
-                {t("common.loading", { defaultValue: "正在读取配置…" })}
+              {/* Environment variables the line would export */}
+              {flaggedEnv.length > 0 && (
+                <section
+                  className="dl-section"
+                  aria-labelledby={`${ids}-env-title`}
+                >
+                  <h3 id={`${ids}-env-title`} className="dl-section-title">
+                    环境变量
+                  </h3>
+                  <ul className="dl-env">
+                    {flaggedEnv.map(({ key, status }) => (
+                      <li key={key} className="dl-env-row">
+                        <span className="dl-mono">
+                          {key}
+                          {envValues[key] !== undefined && (
+                            <span className="dl-env-value">
+                              {" = "}
+                              {maskValue(key, envValues[key])}
+                            </span>
+                          )}
+                        </span>
+                        {status === "denied" ? (
+                          <span className="dl-env-denied">
+                            {t("deeplink.envDenied", {
+                              defaultValue: "出于安全原因，此变量不会导入",
+                            })}
+                          </span>
+                        ) : (
+                          <label className="dl-env-confirm">
+                            <input
+                              type="checkbox"
+                              checked={confirmedEnvKeys.includes(key)}
+                              onChange={(event) =>
+                                toggleEnvKey(key, event.target.checked)
+                              }
+                              disabled={isImporting || imported}
+                            />
+                            {t("deeplink.envConfirm", {
+                              defaultValue:
+                                "此变量不在该工具的允许清单中，勾选后才会导入",
+                            })}
+                          </label>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                  {allowedEnvKeys.length > 0 && (
+                    <p className="dl-note">
+                      常用变量会照常导入：
+                      <span className="dl-mono">
+                        {allowedEnvKeys.join("、")}
+                      </span>
+                    </p>
+                  )}
+                </section>
+              )}
+
+              {/* Settings the import leaves out */}
+              {ignored.length > 0 && (
+                <section
+                  className="dl-section"
+                  aria-labelledby={`${ids}-ignored-title`}
+                >
+                  <h3 id={`${ids}-ignored-title`} className="dl-section-title">
+                    不会导入的设置
+                  </h3>
+                  <p className="dl-note">
+                    链接里的以下设置不属于这条线路，导入时会忽略：
+                  </p>
+                  <ul className="dl-chips">
+                    {ignored.slice(0, IGNORED_SHOWN).map((name) => (
+                      <li key={name}>{name}</li>
+                    ))}
+                    {ignored.length > IGNORED_SHOWN && (
+                      <li className="dl-chips-more">等 {ignored.length} 项</li>
+                    )}
+                  </ul>
+                </section>
+              )}
+            </>
+          )}
+
+          {/* MH-4: exactly what will be stored. */}
+          {preview && (
+            <details className="dl-details">
+              <summary>
+                {isProvider
+                  ? "查看将保存的完整内容（包含 API Key）"
+                  : t("deeplink.fullContent", { defaultValue: "完整内容" })}
+              </summary>
+              <pre className="dl-code dl-code-wrap" tabIndex={0}>
+                {preview.content}
+              </pre>
+            </details>
+          )}
+          {!isProvider && preview && (
+            <div className="dl-files">
+              {preview.targetPaths.length > 0 && (
+                <>
+                  <span className="dl-note">
+                    {t("deeplink.targetPaths", { defaultValue: "目标文件" })}
+                  </span>
+                  <ul className="dl-paths">
+                    {preview.targetPaths.map((path) => (
+                      <li key={path}>{path}</li>
+                    ))}
+                  </ul>
+                </>
+              )}
+              <p className="dl-note">
+                {preview.writesLive
+                  ? t("deeplink.writesLive", {
+                      defaultValue: "确认后会立即写入上述文件。",
+                    })
+                  : t("deeplink.importOnly", {
+                      defaultValue:
+                        "仅导入：确认后不会写入任何配置文件，需要时再手动启用。",
+                    })}
               </p>
-            )}
-            {mergeFailed && (
-              <p role="alert">{t("deeplink.configMergeError")}</p>
-            )}
-            {previewFailed && (
-              <p role="alert">
-                {t("deeplink.previewError", {
-                  defaultValue: "无法生成导入预览，已阻止导入。",
-                })}
-              </p>
-            )}
-            <DialogFooter>
-              <Button
-                variant="outline"
-                onClick={handleCancel}
-                disabled={isImporting}
-              >
-                {imported
-                  ? t("common.close", { defaultValue: "关闭" })
-                  : t("common.cancel")}
-              </Button>
-              <Button
-                onClick={handleImport}
-                disabled={isImporting || isPreparing || mergeFailed || !preview}
-              >
-                {isImporting
-                  ? t("deeplink.importing")
-                  : imported
-                    ? t("common.done", { defaultValue: "完成" })
-                    : t("deeplink.import")}
-              </Button>
-            </DialogFooter>
-          </>
+            </div>
+          )}
+
+          {isProvider && <p className="dl-footnote">{t("deeplink.warning")}</p>}
+        </div>
+
+        {isPreparing && (
+          <p role="status" className="dl-status">
+            {t("common.loading", { defaultValue: "正在读取配置…" })}
+          </p>
         )}
+        {(blockingError !== null || missing.length > 0) && (
+          <p role="alert" className="dl-alert">
+            {blockingError !== null
+              ? `无法导入：${blockingError || "链接内容无法识别。"}`
+              : `链接没有提供${missing.join("和")}，无法导入。`}
+          </p>
+        )}
+        <DialogFooter>
+          <Button
+            variant="outline"
+            onClick={handleCancel}
+            disabled={isImporting}
+          >
+            {imported
+              ? t("common.close", { defaultValue: "关闭" })
+              : t("common.cancel")}
+          </Button>
+          <Button
+            onClick={handleImport}
+            disabled={isImporting || (blocked && !imported)}
+          >
+            {isImporting
+              ? t("deeplink.importing")
+              : imported
+                ? t("common.done", { defaultValue: "完成" })
+                : t("deeplink.import")}
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );

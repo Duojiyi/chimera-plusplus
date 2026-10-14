@@ -38,8 +38,6 @@ function setup(overrides: Partial<ComponentProps<typeof ProviderEditor>> = {}) {
             fetchingModels={false}
             savingProvider={false}
             modelFetchError={null}
-            apiFormatDetection={null}
-            apiFormatDetectionError={null}
             commonConfigSnippet=""
             commonConfigLoading={false}
             commonConfigLoaded={true}
@@ -61,40 +59,33 @@ function setup(overrides: Partial<ComponentProps<typeof ProviderEditor>> = {}) {
 }
 
 describe("full-page provider editor", () => {
-  it("does not report untested models as failed when reopening persisted protocol results", () => {
+  // Saving infers the protocol from the model family and never probes, so the
+  // editor states that inference and its routing consequence instead of a
+  // detection result that no longer exists.
+  it("explains the inferred protocol and that a GPT model goes direct", () => {
     setup({
       editor: {
         ...providerDraft(null, "已有线路"),
         model: "gpt-current",
         apiFormat: "auto",
       },
-      apiFormatDetection: {
-        identity: "persisted-endpoint",
-        formats: { "gpt-previous": { apiFormat: "openai_responses" } },
-        failures: {},
-      },
     });
+    expect(screen.getByText("按模型族推断为 Responses")).toBeInTheDocument();
+    expect(screen.getByText("保存后直连上游")).toBeInTheDocument();
     expect(screen.queryByText("未返回原因")).not.toBeInTheDocument();
-    expect(
-      screen.queryByText("也可以直接指定协议保存："),
-    ).not.toBeInTheDocument();
   });
 
-  it("still reports an explicitly failed model probe without a reason", () => {
+  it("says a model that needs conversion is routed through the local router", () => {
     setup({
       editor: {
         ...providerDraft(null, "已有线路"),
-        model: "gpt-current",
+        model: "deepseek-v4-pro",
         apiFormat: "auto",
       },
-      apiFormatDetection: {
-        identity: "persisted-endpoint",
-        formats: {},
-        failures: { "gpt-current": "" },
-      },
     });
-    expect(screen.getByText("未返回原因")).toBeInTheDocument();
-    expect(screen.getByText("也可以直接指定协议保存：")).toBeInTheDocument();
+    expect(
+      screen.getByText(/保存后经本地路由（转换为 Chat Completions/),
+    ).toBeInTheDocument();
   });
 
   it("edits the persisted line color and restores the default without changing credentials", () => {
@@ -108,7 +99,7 @@ describe("full-page provider editor", () => {
       apiKey: "test-key",
     });
     expect(screen.getByLabelText("修改线路外观")).toHaveTextContent(
-      "赭石 · 自动生成",
+      "赭石 · 自动简称",
     );
     fireEvent.change(screen.getByLabelText("线路颜色"), {
       target: { value: "" },
@@ -153,13 +144,13 @@ describe("full-page provider editor", () => {
     fireEvent.change(screen.getByLabelText("线路名称 *"), {
       target: { value: "预览线路" },
     });
-    fireEvent.change(screen.getByLabelText(/API 请求地址/), {
+    fireEvent.change(screen.getByLabelText(/API 请求地址/, { selector: "input" }), {
       target: {
         value:
           "https://user:password@example.com/private-token?key=query-secret#fragment",
       },
     });
-    fireEvent.change(screen.getByLabelText(/默认模型/), {
+    fireEvent.change(screen.getByLabelText(/默认模型/, { selector: "input" }), {
       target: { value: "example-model" },
     });
     expect(preview).toHaveTextContent("预览线路");
@@ -174,7 +165,7 @@ describe("full-page provider editor", () => {
       "fragment",
     ])
       expect(preview).not.toHaveTextContent(secret);
-    fireEvent.change(screen.getByLabelText(/API 请求地址/), {
+    fireEvent.change(screen.getByLabelText(/API 请求地址/, { selector: "input" }), {
       target: { value: "not-a-url secret-key" },
     });
     expect(preview).toHaveTextContent("尚未填写有效地址");
@@ -183,7 +174,7 @@ describe("full-page provider editor", () => {
 
   it("keeps keyboard-accessible protocol choices visible outside advanced configuration", () => {
     const { onDraftChange } = setup();
-    const group = screen.getByRole("radiogroup", { name: "上游格式" });
+    const group = screen.getByRole("radiogroup", { name: "协议" });
     expect(group.closest("details")).toBeNull();
     fireEvent.click(
       within(group).getByRole("radio", { name: "Anthropic Messages" }),

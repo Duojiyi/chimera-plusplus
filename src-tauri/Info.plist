@@ -2,18 +2,14 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <!-- 注册 ccswitch:// 自定义 URL 协议，用于深链接导入 -->
-  <key>CFBundleURLTypes</key>
-  <array>
-    <dict>
-      <key>CFBundleURLName</key>
-      <string>CC Switch Deep Link</string>
-      <key>CFBundleURLSchemes</key>
-      <array>
-        <string>ccswitch</string>
-      </array>
-    </dict>
-  </array>
+  <!-- 深链协议（chimera://、ccswitch://）只在 tauri.conf.json 的
+       plugins.deep-link.desktop.schemes 声明，打包时据此生成 CFBundleURLTypes。
+       不要在这里再写一份：本文件的顶层键会整体覆盖打包生成的同名键，
+       旧副本只含 ccswitch，结果 macOS 包没有注册 chimera://。 -->
+
+  <!-- macOS“本地网络”隐私授权的说明文案；连接用户填写的局域网 API 地址需要这项授权。 -->
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Chimera++ 需要访问本地网络，以连接你填写的局域网 API 地址。</string>
 </dict>
 </plist>
 

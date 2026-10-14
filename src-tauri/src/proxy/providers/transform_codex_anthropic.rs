@@ -10,6 +10,7 @@
 //! - `transform_responses.rs`: Anthropic request → Responses request, Responses response → Anthropic response
 //! - this module:               Responses request → Anthropic request, Anthropic response → Responses response
 
+use super::codex_chat_common::{reject_codex_remote_compaction_items, ORPHAN_TOOL_OUTPUT_MARKER};
 use super::transform_codex_chat::{
     build_codex_tool_context_from_request, response_tool_call_item_from_chat_name,
     response_tool_call_item_id_from_chat_name, CodexToolContext, RAW_TOOL_ARGUMENTS_FIELD,
@@ -226,6 +227,7 @@ pub fn responses_request_to_anthropic(
     body: Value,
     default_max_tokens: u64,
 ) -> Result<Value, ProxyError> {
+    reject_codex_remote_compaction_items(&body)?;
     let mut result = json!({});
     let tool_context = build_codex_tool_context_from_request(&body);
     let model = body
@@ -817,7 +819,8 @@ fn ensure_leading_user_message(messages: &mut Vec<Value>) {
 /// assistant `tool_use` → user `tool_result` pair. Anthropic requires every tool
 /// call in an assistant turn to be answered together in the immediately following
 /// user turn. Dropping the whole incomplete assistant turn also avoids modifying a
-/// subset of a signed thinking/tool-use response.
+/// subset of a signed thinking/tool-use response. Results left without their
+/// call are demoted to ordinary user content rather than dropped.
 fn drop_incomplete_tool_turns(messages: &mut Vec<Value>) {
     let original = std::mem::take(messages);
     let mut sanitized = Vec::with_capacity(original.len());
@@ -852,7 +855,7 @@ fn drop_incomplete_tool_turns(messages: &mut Vec<Value>) {
                 sanitized.push(paired_user.unwrap().clone());
             } else if let Some(user) = paired_user {
                 let mut user = user.clone();
-                drop_tool_result_blocks(&mut user);
+                demote_tool_result_blocks(&mut user);
                 if message_has_content(&user) {
                     sanitized.push(user);
                 }
@@ -866,7 +869,7 @@ fn drop_incomplete_tool_turns(messages: &mut Vec<Value>) {
         if message.get("role").and_then(Value::as_str) == Some("user") {
             // A user message not consumed as the adjacent half of a complete tool
             // pair cannot legally retain any tool_result blocks.
-            drop_tool_result_blocks(&mut message);
+            demote_tool_result_blocks(&mut message);
         }
         if message_has_content(&message) {
             sanitized.push(message);
@@ -888,10 +891,60 @@ fn message_block_ids<'a>(message: &'a Value, block_type: &str, id_field: &str) -
         .collect()
 }
 
-fn drop_tool_result_blocks(message: &mut Value) {
-    if let Some(content) = message.get_mut("content").and_then(Value::as_array_mut) {
-        content.retain(|block| block.get("type").and_then(Value::as_str) != Some("tool_result"));
+/// Replaces each `tool_result` block of a user message with ordinary content: a
+/// text block led by the orphan marker (and the call id when present), followed
+/// by the result's image and document blocks. Dropping such results lost the
+/// delegated task text that a Codex desktop receipt (`call_id: null`) carries.
+fn demote_tool_result_blocks(message: &mut Value) {
+    let Some(content) = message.get_mut("content").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for block in std::mem::take(content) {
+        if block.get("type").and_then(Value::as_str) == Some("tool_result") {
+            content.extend(orphan_tool_result_blocks(&block));
+        } else {
+            content.push(block);
+        }
     }
+}
+
+fn orphan_tool_result_blocks(block: &Value) -> Vec<Value> {
+    let call_id = block
+        .get("tool_use_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let marker = if call_id.is_empty() {
+        ORPHAN_TOOL_OUTPUT_MARKER.to_string()
+    } else {
+        format!("{ORPHAN_TOOL_OUTPUT_MARKER} (call_id: {call_id})")
+    };
+    let mut texts = vec![marker];
+    let mut media = Vec::new();
+    match block.get("content") {
+        Some(Value::String(text)) if is_meaningful_text(text) => texts.push(text.clone()),
+        Some(Value::Array(parts)) => {
+            for part in parts {
+                match part.get("type").and_then(Value::as_str) {
+                    Some("text") => {
+                        if let Some(text) = part
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .filter(|text| is_meaningful_text(text))
+                        {
+                            texts.push(text.to_string());
+                        }
+                    }
+                    Some("image" | "document") => media.push(part.clone()),
+                    _ => texts.push(canonical_json_string(part)),
+                }
+            }
+        }
+        Some(Value::String(_) | Value::Null) | None => {}
+        Some(other) => texts.push(canonical_json_string(other)),
+    }
+    let mut blocks = vec![json!({ "type": "text", "text": texts.join("\n") })];
+    blocks.extend(media);
+    blocks
 }
 
 fn message_has_content(message: &Value) -> bool {
@@ -1462,6 +1515,9 @@ fn append_str_field(block: &mut Value, field: &str, text: &str) {
 
 #[cfg(test)]
 mod tests {
+    use super::super::codex_chat_common::{
+        CODEX_REMOTE_COMPACTION_CHECKPOINT_UNSUPPORTED, CODEX_REMOTE_COMPACTION_TRIGGER_UNSUPPORTED,
+    };
     use super::*;
 
     // ==================== Request: Responses → Anthropic ====================
@@ -1713,7 +1769,13 @@ mod tests {
                 )
             })
         }));
-        assert_eq!(messages.last().unwrap()["content"][0]["text"], "continue");
+        // The answered result of the dropped turn survives as marked text.
+        let last = messages.last().unwrap()["content"].as_array().unwrap();
+        assert_eq!(
+            last[0]["text"],
+            format!("{ORPHAN_TOOL_OUTPUT_MARKER} (call_id: c1)\none")
+        );
+        assert_eq!(last[1]["text"], "continue");
     }
 
     #[test]
@@ -1739,10 +1801,10 @@ mod tests {
     }
 
     #[test]
-    fn test_request_orphan_tool_result_dropped() {
-        // A function_call_output whose matching function_call was dropped (e.g. by
-        // compaction) becomes an orphan tool_result; it must be removed so Anthropic
-        // does not 400, while the rest of the turn is preserved.
+    fn test_request_orphan_tool_result_becomes_marked_text() {
+        // A function_call_output whose matching function_call is gone (e.g. by
+        // compaction, or a Codex desktop receipt) becomes an orphan tool_result.
+        // Anthropic 400s on it, so it turns into marked text that keeps the result.
         let input = json!({
             "model": "c",
             "max_output_tokens": 100,
@@ -1756,10 +1818,44 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0]["role"], "user");
         let content = messages[0]["content"].as_array().unwrap();
-        // Only the text survives; the orphan tool_result is gone.
-        assert_eq!(content.len(), 1);
-        assert_eq!(content[0]["type"], "text");
-        assert_eq!(content[0]["text"], "hello");
+        assert_eq!(content.len(), 2);
+        assert_eq!(
+            content[0],
+            json!({
+                "type": "text",
+                "text": format!("{ORPHAN_TOOL_OUTPUT_MARKER} (call_id: ghost)\nX")
+            })
+        );
+        assert_eq!(content[1]["type"], "text");
+        assert_eq!(content[1]["text"], "hello");
+    }
+
+    #[test]
+    fn test_request_orphan_tool_result_keeps_image_blocks() {
+        let input = json!({
+            "model": "c",
+            "max_output_tokens": 100,
+            "input": [
+                { "role": "user", "content": [{ "type": "input_text", "text": "hi" }] },
+                { "type": "function_call_output", "call_id": null, "output": [
+                    { "type": "input_text", "text": "screenshot follows" },
+                    { "type": "input_image", "image_url": "data:image/png;base64,AAAA" }
+                ] }
+            ]
+        });
+        let result = responses_request_to_anthropic(input, 4096).unwrap();
+        let messages = result["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 1);
+        let content = messages[0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 3);
+        assert_eq!(
+            content[0]["text"],
+            format!("{ORPHAN_TOOL_OUTPUT_MARKER}\nscreenshot follows")
+        );
+        assert_eq!(content[1]["type"], "image");
+        assert_eq!(content[1]["source"]["data"], "AAAA");
+        assert_eq!(content[2]["text"], "hi");
+        assert!(content.iter().all(|block| block["type"] != "tool_result"));
     }
 
     #[test]
@@ -1837,9 +1933,10 @@ mod tests {
     }
 
     #[test]
-    fn test_request_all_orphan_tool_results_error() {
-        // If the entire input is orphan tool_results, dropping them empties the
-        // message list and conversion errors (nothing valid to send to Anthropic).
+    fn test_request_all_orphan_tool_results_convert_to_text() {
+        // An input made only of orphan tool results (e.g. a continuation whose
+        // calls are not in the replayed history) used to empty the message list
+        // and fail. Their text is now real context, so the request converts.
         let input = json!({
             "model": "c",
             "max_output_tokens": 100,
@@ -1848,7 +1945,17 @@ mod tests {
                 { "type": "function_call_output", "call_id": "c2", "output": "B" }
             ]
         });
-        assert!(responses_request_to_anthropic(input, 4096).is_err());
+        let result = responses_request_to_anthropic(input, 4096).unwrap();
+        let messages = result["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(
+            messages[0]["content"],
+            json!([
+                { "type": "text", "text": format!("{ORPHAN_TOOL_OUTPUT_MARKER} (call_id: c1)\nA") },
+                { "type": "text", "text": format!("{ORPHAN_TOOL_OUTPUT_MARKER} (call_id: c2)\nB") }
+            ])
+        );
     }
 
     #[test]
@@ -1908,7 +2015,7 @@ mod tests {
     }
 
     #[test]
-    fn test_request_drops_incomplete_tool_call_and_orphaned_output() {
+    fn test_request_drops_incomplete_tool_call_and_demotes_orphaned_output() {
         let input = json!({
             "model":"c",
             "input":[
@@ -1925,10 +2032,18 @@ mod tests {
         });
 
         let result = responses_request_to_anthropic(input, 4096).unwrap();
+        let blocks: Vec<&Value> = result["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|message| message["content"].as_array().unwrap())
+            .collect();
+        assert!(blocks
+            .iter()
+            .all(|block| !matches!(block["type"].as_str(), Some("tool_use" | "tool_result"))));
         let serialized = result["messages"].to_string();
-        assert!(!serialized.contains("tool_use"));
-        assert!(!serialized.contains("tool_result"));
         assert!(serialized.contains("run it"));
+        assert!(serialized.contains("never ran"));
     }
 
     #[test]
@@ -2322,6 +2437,90 @@ mod tests {
         assert!(result.get("include").is_none());
         assert!(result.get("service_tier").is_none());
         assert!(result.get("parallel_tool_calls").is_none());
+    }
+
+    // ==================== Request: Codex remote compaction ====================
+
+    fn expect_invalid_request(result: Result<Value, ProxyError>) -> String {
+        match result {
+            Err(ProxyError::InvalidRequest(message)) => message,
+            other => panic!("expected InvalidRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_request_remote_compaction_checkpoint_is_rejected() {
+        for checkpoint in [
+            json!({ "type": "compaction", "encrypted_content": "gAAAAB-checkpoint" }),
+            json!({ "type": "compaction_summary", "encrypted_content": "gAAAAB-checkpoint" }),
+            json!({ "type": "context_compaction", "encrypted_content": "gAAAAB-checkpoint" }),
+        ] {
+            let input = json!({
+                "model": "c",
+                "max_output_tokens": 100,
+                "input": [
+                    { "role": "user", "content": [{ "type": "input_text", "text": "fix the build" }] },
+                    checkpoint,
+                    { "role": "user", "content": [{ "type": "input_text", "text": "continue" }] }
+                ]
+            });
+
+            let message = expect_invalid_request(responses_request_to_anthropic(input, 4096));
+            assert_eq!(
+                message, CODEX_REMOTE_COMPACTION_CHECKPOINT_UNSUPPORTED,
+                "{checkpoint}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_request_compaction_trigger_is_rejected() {
+        let input = json!({
+            "model": "c",
+            "max_output_tokens": 100,
+            "input": [
+                { "role": "user", "content": [{ "type": "input_text", "text": "fix the build" }] },
+                { "type": "compaction_trigger" }
+            ]
+        });
+
+        let message = expect_invalid_request(responses_request_to_anthropic(input, 4096));
+        assert_eq!(message, CODEX_REMOTE_COMPACTION_TRIGGER_UNSUPPORTED);
+    }
+
+    #[test]
+    fn test_request_without_remote_checkpoint_still_converts() {
+        // Local compaction writes its summary back as a plain user message;
+        // official reasoning ciphertext and context_compaction markers without
+        // a checkpoint carry nothing the bridge could lose.
+        let summary = "Another language model started to solve this problem and produced a summary of its thinking process.\nThe build now passes.";
+        let input = json!({
+            "model": "c",
+            "max_output_tokens": 100,
+            "input": [
+                { "role": "user", "content": [{ "type": "input_text", "text": "fix the build" }] },
+                { "role": "user", "content": [{ "type": "input_text", "text": summary }] },
+                { "type": "reasoning", "summary": [], "encrypted_content": "gAAAAB-official-reasoning" },
+                { "role": "assistant", "content": [{ "type": "output_text", "text": "Done." }] },
+                { "type": "context_compaction" },
+                { "type": "context_compaction", "encrypted_content": null },
+                { "type": "context_compaction", "encrypted_content": " " },
+                { "role": "user", "content": [{ "type": "input_text", "text": "continue" }] }
+            ]
+        });
+
+        let result = responses_request_to_anthropic(input, 4096)
+            .expect("items without a remote checkpoint must still convert");
+        let texts: Vec<&str> = result["messages"]
+            .as_array()
+            .expect("messages")
+            .iter()
+            .flat_map(|message| message["content"].as_array().into_iter().flatten())
+            .filter_map(|block| block["text"].as_str())
+            .collect();
+        assert!(texts.contains(&summary), "{texts:?}");
+        assert!(texts.contains(&"Done."), "{texts:?}");
+        assert_eq!(texts.last(), Some(&"continue"));
     }
 
     // ==================== Response: Anthropic → Responses ====================

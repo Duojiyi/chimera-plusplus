@@ -41,6 +41,18 @@ const groups: { tone: Tone; label: string; Icon: LucideIcon }[] = [
   { tone: "info", label: "提示", Icon: Info },
 ];
 
+// A parameter the backend could not place has no line: say so, never guess one.
+const issueLocation = (issue: ConfigHealthIssue) =>
+  issue.line !== undefined
+    ? `${issue.location} · 第 ${issue.line} 行${
+        issue.column !== undefined ? `，第 ${issue.column} 列` : ""
+      }`
+    : issue.field
+      ? `${issue.location} · 未定义，无对应行`
+      : issue.location;
+const manualReason = (issue: ConfigHealthIssue) =>
+  `这一项没有自动修复，请按修复建议手动修改 ${issue.location}。自动修复只清理 Chimera 自有的失效指令引用。`;
+
 export const ConfigHealthView: React.FC = () => {
   const [report, setReport] = useState<ConfigHealthReport | null>(null);
   const [checking, setChecking] = useState(true);
@@ -277,7 +289,14 @@ export const ConfigHealthView: React.FC = () => {
                       />
                       <div className="health-item-body">
                         <p className="health-item-title">{item.title}</p>
-                        <p className="health-item-location">{item.location}</p>
+                        <p className="health-item-location">
+                          {issueLocation(item)}
+                        </p>
+                        {item.field && (
+                          <p className="health-item-field">
+                            参数：<code>{item.field}</code>
+                          </p>
+                        )}
                         {tone === "info" ? (
                           <p className="health-item-solution">
                             {firstUseHints[issueCode(item)]}
@@ -291,13 +310,17 @@ export const ConfigHealthView: React.FC = () => {
                             )}
                             {item.solution && (
                               <p className="health-item-solution">
+                                <span className="health-item-label">
+                                  修复建议：
+                                </span>
                                 {item.solution}
                               </p>
                             )}
                           </>
                         )}
                       </div>
-                      {item.repairable && repairToken !== null && (
+                      {tone === "info" ? null : item.repairable &&
+                        repairToken !== null ? (
                         <Button
                           variant="outline"
                           size="sm"
@@ -308,6 +331,20 @@ export const ConfigHealthView: React.FC = () => {
                         >
                           修复
                         </Button>
+                      ) : (
+                        // Focusable so keyboard users can reach the reason.
+                        <button
+                          type="button"
+                          className="health-manual"
+                          aria-disabled="true"
+                          aria-describedby={`${item.id}-manual`}
+                          title={manualReason(item)}
+                        >
+                          需手动修复
+                          <span id={`${item.id}-manual`} hidden>
+                            {manualReason(item)}
+                          </span>
+                        </button>
                       )}
                     </li>
                   ))}

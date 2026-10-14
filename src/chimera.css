@@ -222,7 +222,7 @@
    elements fell back to browser defaults (inline / static). Scoped rules
    further down still override these. */
 
-/* Centered overlay for ModelPickerDialog, Confirm* and DiagnosticsDialog.
+/* Centered overlay for the model picker, Confirm* and DiagnosticsDialog.
    Without this the dialogs render as static blocks in the document flow. */
 .modal-backdrop {
   position: fixed;
@@ -231,39 +231,94 @@
   display: grid;
   place-items: center;
   padding: 28px;
-  background: rgba(32, 37, 43, 0.28);
+  background: var(--scrim);
 }
+/* One themed surface for every centered dialog: the text colour is set with
+   the background so neither can come from a different theme. */
+.confirm-dialog,
+.model-picker,
+.diagnostics-dialog {
+  border: 1px solid var(--dialog-border);
+  border-radius: var(--radius-panel);
+  background: var(--dialog-bg);
+  color: var(--text-1);
+  box-shadow:
+    0 1px 2px var(--shadow-soft),
+    0 16px 40px var(--shadow-overlay);
+}
+/* Left-aligned like the account and health dialogs: icon beside the title,
+   consequence below, actions on the right. */
 .confirm-dialog {
-  width: min(420px, 100%);
-  padding: 26px;
-  display: flex;
-  flex-direction: column;
+  width: min(440px, 100%);
+  padding: 24px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
-  text-align: center;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: #fff;
-  box-shadow: 0 12px 28px rgba(23, 32, 42, 0.18);
+  column-gap: 10px;
+}
+.confirm-dialog > * {
+  grid-column: 1 / -1;
 }
 .confirm-dialog > svg {
-  color: var(--ch-accent);
+  grid-column: 1;
+  width: 20px;
+  height: 20px;
+  color: var(--text-2);
+}
+.confirm-dialog.is-danger > svg {
+  color: var(--danger-fg);
+}
+.confirm-dialog > svg + h2 {
+  grid-column: 2;
 }
 .confirm-dialog h2 {
-  margin: 14px 0 0;
+  margin: 0;
   font-size: 17px;
   line-height: 1.3;
 }
 .confirm-dialog p {
-  margin: 9px 0 0;
-  color: var(--ch-muted);
-  font-size: 12px;
-  line-height: 1.55;
+  margin: 10px 0 0;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.7;
+}
+/* Version, install mode and download size of a runtime confirmation: the
+   facts the user checks before agreeing, so they read stronger than the
+   explanation below them. */
+.confirm-dialog p.confirm-facts {
+  color: var(--text-1);
+  font-weight: 600;
 }
 .confirm-dialog footer {
   display: flex;
-  justify-content: center;
-  gap: 9px;
+  justify-content: flex-end;
+  gap: 8px;
   margin-top: 20px;
+}
+/* Secondary buttons sit on the dialog surface in both themes; a confirm
+   footer button without a variant gets the same look. */
+.confirm-dialog footer button:not(.primary):not(.danger),
+.model-picker :is(header, footer) button.secondary:not(.primary) {
+  border: 1px solid var(--border-control);
+  background: transparent;
+  color: var(--text-1);
+}
+.confirm-dialog footer button:not(.primary):not(.danger):hover:not(:disabled),
+.model-picker
+  :is(header, footer)
+  button.secondary:not(.primary):hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+.confirm-dialog footer button:not([class]) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 34px;
+  padding: 0 14px;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
 }
 .history-dialog {
   width: min(540px, 100%);
@@ -349,6 +404,23 @@
   display: grid;
   gap: 8px;
   margin: 0;
+}
+/* A failed catalog read: the reason, its raw detail, and a retry. */
+.history-dialog-error {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-panel);
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+}
+.history-dialog-error small {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  word-break: break-word;
 }
 .history-confirm-meta strong {
   font-size: 14px;
@@ -544,8 +616,8 @@
   margin-left: 6px;
   padding: 1px 6px;
   border-radius: var(--r-full);
-  background: var(--soft);
-  color: var(--ch-accent);
+  background: var(--info-bg);
+  color: var(--info-fg);
   font-size: 9px;
   font-style: normal;
   font-weight: 700;
@@ -576,7 +648,7 @@
   padding: 0 9px;
   border: 1px solid var(--line);
   border-radius: 7px;
-  background: #fff;
+  background: var(--input-bg);
   color: var(--ink);
   font-size: 11px;
   font-weight: 400;
@@ -594,7 +666,7 @@
   padding: 0 9px;
   border: 1px solid var(--line);
   border-radius: 7px;
-  background: #fff;
+  background: var(--input-bg);
   color: var(--ink);
   font-size: 11px;
   font-weight: 400;
@@ -607,14 +679,14 @@
   white-space: nowrap;
 }
 .reasoning-trigger .reasoning-trigger-placeholder {
-  color: var(--ch-muted);
+  color: var(--input-placeholder);
 }
 .reasoning-panel {
   grid-column: 1 / -1;
   padding: 12px;
-  border: 1px solid #e2e7ea;
+  border: 1px solid var(--border-subtle);
   border-radius: 8px;
-  background: #f8f9fa;
+  background: var(--bg-subtle);
 }
 .reasoning-panel-head {
   margin-bottom: 9px;
@@ -642,7 +714,7 @@
   padding: 0;
   border: 0;
   background: transparent;
-  accent-color: var(--ch-accent);
+  accent-color: var(--brand-indicator);
   cursor: pointer;
 }
 .reasoning-panel-default {
@@ -651,7 +723,7 @@
   gap: 8px;
   margin-top: 11px;
   padding-top: 11px;
-  border-top: 1px solid #e2e7ea;
+  border-top: 1px solid var(--border-subtle);
   color: var(--ch-muted);
   font-size: 11px;
 }
@@ -660,7 +732,7 @@
   padding: 0 8px;
   border: 1px solid var(--line);
   border-radius: 6px;
-  background: #fff;
+  background: var(--input-bg);
   color: var(--ink);
   font-size: 11px;
 }
@@ -671,22 +743,25 @@
   place-items: center;
   border: 1px solid var(--line);
   border-radius: 7px;
-  background: #fff;
+  background: var(--bg-surface);
   color: var(--ch-muted);
   cursor: pointer;
 }
-.instructions-trigger:hover,
+.instructions-trigger:hover {
+  border-color: var(--btn-secondary-border-hover);
+  color: var(--text-1);
+}
 .instructions-trigger[aria-expanded="true"],
 .instructions-trigger.has-value {
-  border-color: var(--ch-accent);
-  color: var(--ch-accent);
+  border-color: var(--brand-indicator);
+  color: var(--brand-indicator);
 }
 .instructions-panel {
   grid-column: 1 / -1;
   padding: 12px;
-  border: 1px solid #e2e7ea;
+  border: 1px solid var(--border-subtle);
   border-radius: 8px;
-  background: #f8f9fa;
+  background: var(--bg-subtle);
 }
 .instructions-panel-head {
   margin-bottom: 9px;
@@ -701,13 +776,13 @@
   border: 1px solid var(--line);
   border-radius: 7px;
   padding: 9px 10px;
-  background: #fff;
+  background: var(--input-bg);
   color: var(--ink);
   font-size: 11px;
   line-height: 1.55;
 }
 .instructions-panel textarea:focus-visible {
-  outline: 2px solid var(--focus);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 .instructions-panel small {
@@ -723,14 +798,13 @@
   place-items: center;
   border: 1px solid var(--line);
   border-radius: 7px;
-  background: #fff;
+  background: transparent;
   color: var(--ch-muted);
   cursor: pointer;
 }
 .icon-button:hover {
-  border-color: #f5a89e;
-  background: #fff3f1;
-  color: #c7372f;
+  background: var(--bg-hover);
+  color: var(--text-1);
 }
 /* Advanced-options label rows are direct children of .advanced-options-body,
    not .editor-form, so they need their own stacking rule. */
@@ -740,7 +814,7 @@
   flex-direction: column;
   gap: 6px;
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 400;
   color: var(--ink);
 }
 .advanced-options-body > label.toggle-field,
@@ -761,7 +835,7 @@
   padding: 0 10px;
   border: 1px solid var(--line);
   border-radius: 7px;
-  background: #fff;
+  background: var(--input-bg);
   color: var(--ink);
   font-size: 12px;
   font-weight: 400;
@@ -837,7 +911,7 @@
   color: #a04d00;
 }
 .error-text {
-  color: #b42318;
+  color: var(--danger-fg);
 }
 .version-compare b,
 .runtime-version b {
@@ -857,8 +931,6 @@
   max-height: calc(100vh - 56px);
   display: flex;
   flex-direction: column;
-  border-radius: 10px;
-  background: #fff;
 }
 .diagnostics-dialog header,
 .diagnostics-dialog footer {
@@ -963,66 +1035,6 @@
   margin: 24px auto 0;
   color: var(--ch-muted);
   font-size: 10px;
-}
-.model-picker {
-  width: min(560px, 100%);
-  max-height: min(640px, calc(100vh - 56px));
-  display: flex;
-  flex-direction: column;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: #fff;
-}
-.model-picker header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 18px 20px;
-  border-bottom: 1px solid var(--line);
-}
-.model-picker h2 {
-  margin: 0;
-  font-size: 17px;
-}
-.model-picker p {
-  margin: 4px 0 0;
-  color: var(--ch-muted);
-  font-size: 11px;
-}
-.model-picker-list {
-  display: grid;
-  gap: 6px;
-  overflow: auto;
-  padding: 12px;
-}
-.model-picker-list button {
-  min-height: 42px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: #fff;
-  padding: 0 12px;
-  text-align: left;
-  font:
-    12px ui-monospace,
-    monospace;
-}
-.model-picker-list button.picked {
-  border-color: var(--ch-accent);
-  background: var(--soft);
-  color: var(--ch-accent);
-}
-.editor-model-error {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  margin: 0;
-  color: #b42318;
-  font-size: 11px;
 }
 button:focus-visible,
 input:focus-visible,
@@ -1635,7 +1647,8 @@ body.is-mac
 }
 .provider-editor {
   padding: 26px;
-  background: #fff;
+  background: var(--bg-surface);
+  color: var(--text-1);
 }
 .provider-editor > header {
   /* Badge sits beside the title, not above it. The outer .provider-editor
@@ -1674,12 +1687,15 @@ body.is-mac
   align-items: center;
   border: 1px solid var(--line);
   border-radius: 7px;
-  background: #fff;
+  background: var(--input-bg);
   overflow: hidden;
 }
-.password-field:focus-within,
-.model-input:focus-within {
-  box-shadow: 0 0 0 2px rgba(255, 90, 61, 0.2);
+/* The inner input draws no outline, so the group shows its focus; a focused
+   side button keeps its own ring instead. */
+.password-field:has(> input:focus-visible),
+.model-input:has(> input:focus-visible) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 .password-field > input,
 .model-input > input {
@@ -1703,8 +1719,8 @@ body.is-mac
   border: 0;
   border-left: 1px solid var(--line);
   border-radius: 0;
-  background: #f8f9fa;
-  color: var(--ch-muted);
+  background: var(--bg-subtle);
+  color: var(--text-2);
   font-size: 12px;
   font-weight: 600;
   display: inline-flex;
@@ -1713,25 +1729,8 @@ body.is-mac
 }
 .password-field > button:hover,
 .model-input > button:hover {
-  background: #eef1f3;
+  background: var(--bg-hover);
   color: var(--ink);
-}
-.provider-editor > footer {
-  position: sticky;
-  bottom: -26px;
-  margin: 12px -26px -26px;
-  padding: 14px 26px 26px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  background: #fff;
-  border-top: 1px solid var(--line);
-}
-.provider-editor > footer > div {
-  display: flex;
-  align-items: center;
-  gap: 8px;
 }
 .runtime-reference-view {
   width: 100%;
@@ -2486,11 +2485,8 @@ body.is-mac
 }
 .advanced-options {
   overflow: hidden;
-  border: 1px solid #e5e9ec;
-  background: #f7f8fa;
-}
-.advanced-options[open] {
-  background: #f8f9fa;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
 }
 .advanced-options summary {
   padding: 2px 0;
@@ -2498,50 +2494,52 @@ body.is-mac
 .advanced-options-body {
   grid-template-columns: minmax(0, 1fr);
 }
+/* Rows of a .toggle-list: the list draws the frame and the dividers. */
 .advanced-options .toggle-field {
+  position: relative;
   width: 100%;
   grid-template-columns: minmax(0, 1fr) auto;
-  padding: 12px;
-  border: 1px solid #e2e7ea;
-  border-radius: 10px;
-  background: #fff;
+  padding: 12px 14px;
 }
+/* Same switch as 设置 and 工具显示: ink track when on, outlined when off. */
 .advanced-options .toggle-field input[type="checkbox"] {
   appearance: none;
   width: 38px;
   height: 22px;
   margin: 0;
-  border: 1px solid #cad2d8;
+  border: 1px solid var(--switch-off-border);
   border-radius: 999px;
   background:
-    radial-gradient(circle at 10px 50%, #fff 0 7px, transparent 8px), #dce2e6;
-  box-shadow: inset 0 1px 2px rgba(32, 40, 48, 0.1);
+    radial-gradient(
+      circle at 10px 50%,
+      var(--switch-thumb-off) 0 6px,
+      transparent 6.5px
+    ),
+    var(--switch-off-bg);
   transition:
     background 180ms var(--ease),
     border-color 180ms var(--ease);
 }
 .advanced-options .toggle-field input[type="checkbox"]:checked {
-  border-color: var(--ch-accent);
+  border-color: var(--switch-on-bg);
   background:
-    radial-gradient(circle at 26px 50%, #fff 0 7px, transparent 8px),
-    var(--ch-accent);
+    radial-gradient(
+      circle at 26px 50%,
+      var(--switch-thumb-on) 0 6px,
+      transparent 6.5px
+    ),
+    var(--switch-on-bg);
 }
 .advanced-options .toggle-field input[type="checkbox"]:focus-visible {
-  outline: 2px solid var(--focus);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 .advanced-options .toggle-field input[type="checkbox"]:disabled {
   cursor: not-allowed;
   opacity: 0.55;
 }
-.codex-feature-options {
-  gap: 0;
-}
 .codex-feature-options .advanced-section-heading {
   margin-bottom: 4px;
-}
-.codex-feature-options .toggle-field + .toggle-field {
-  border-top: 1px solid #e6eaed;
 }
 .common-config-actions {
   display: flex;
@@ -2549,7 +2547,6 @@ body.is-mac
   justify-content: space-between;
   gap: 12px;
   min-height: 34px;
-  border-top: 1px solid #e6eaed;
   color: var(--ch-muted);
   font-size: 11px;
 }
@@ -2568,15 +2565,14 @@ body.is-mac
   border: 1px solid var(--line);
   border-radius: 7px;
   padding: 10px;
-  background: #fff;
+  background: var(--input-bg);
   color: var(--ink);
   font:
-    11px / 1.55 "Cascadia Mono",
-    Consolas,
+    12px / 1.55 var(--font-mono),
     monospace;
 }
 .common-config-editor textarea:focus-visible {
-  outline: 2px solid var(--focus);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 .advanced-group.model-mapping {
@@ -2584,9 +2580,9 @@ body.is-mac
 }
 .mapping-row {
   padding: 10px;
-  border: 1px solid #e2e7ea;
+  border: 1px solid var(--border-subtle);
   border-radius: 10px;
-  background: #fff;
+  background: var(--bg-surface);
 }
 .mapping-row .icon-button,
 .mapping-row .instructions-trigger {

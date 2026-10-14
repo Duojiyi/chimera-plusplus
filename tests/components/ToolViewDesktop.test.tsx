@@ -29,6 +29,12 @@ const proxy = vi.hoisted(() => ({
   isStoppingServer: false,
 }));
 vi.mock("@/hooks/useProxyStatus", () => ({ useProxyStatus: () => proxy }));
+const proxyConfig = vi.hoisted(() => ({
+  data: undefined as { listenAddress: string; listenPort: number } | undefined,
+}));
+vi.mock("@/lib/query/proxy", () => ({
+  useGlobalProxyConfig: () => proxyConfig,
+}));
 vi.mock("@/lib/api/providers", () => ({
   providersApi: {
     getClaudeDesktopStatus: vi.fn(),

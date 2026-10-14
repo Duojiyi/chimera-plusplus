@@ -1,11 +1,138 @@
+use std::path::Path;
+
 use indexmap::IndexMap;
+use serde::{Deserialize, Serialize};
 
 use crate::app_config::AppType;
+use crate::config::cas::{ChangesetError, ContentHash, FileSnapshot};
 use crate::error::AppError;
+use crate::managed_prompts::BlockState;
 use crate::prompt::Prompt;
-use crate::prompt_files::prompt_file_path;
-use crate::security_limits::{read_to_string_limited, MAX_CONFIG_FILE_BYTES};
+use crate::prompt_files::{codex_override_file_path, prompt_file_path};
+use crate::security_limits::{
+    read_limited, read_to_string_limited, ResourceLimitError, MAX_CONFIG_FILE_BYTES,
+};
 use crate::store::AppState;
+
+/// What Codex actually reads, compared with the enabled library entries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodexPromptState {
+    InSync,
+    /// Entries are enabled but AGENTS.md has no Chimera block.
+    Missing,
+    /// The Chimera block was changed by hand.
+    Edited,
+    /// Block markers are broken; writes are refused until they are fixed.
+    Malformed,
+    /// Only another tool's block is present.
+    Foreign,
+    /// A non-blank `AGENTS.override.md` makes Codex skip AGENTS.md.
+    Overridden,
+    /// AGENTS.md is a link, which Chimera++ neither reads nor writes.
+    Linked,
+    Unreadable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexPromptStatus {
+    pub state: CodexPromptState,
+    pub enabled_count: usize,
+    /// Bytes of the merged enabled entries, reported only while they are in effect.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub managed_bytes: Option<u64>,
+}
+
+/// Explicit resolutions of a hand-edited (or removed) Chimera block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodexPromptResolution {
+    /// Write the enabled library entries back into the block, after a backup.
+    Rewrite,
+    /// Keep the block as edited: store it as the only enabled entry.
+    KeepEdits,
+}
+
+fn limit_error(error: &std::io::Error) -> Option<&ResourceLimitError> {
+    error
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<ResourceLimitError>())
+}
+
+/// Say why an instruction file cannot be read, without its path or bytes.
+fn file_read_error(path: &Path, error: &std::io::Error) -> AppError {
+    let name = path.file_name().map_or(
+        std::borrow::Cow::Borrowed("指令文件"),
+        std::ffi::OsStr::to_string_lossy,
+    );
+    match limit_error(error) {
+        Some(ResourceLimitError::Symlink) => AppError::localized(
+            "prompt.file.linked",
+            format!("{name} 是链接文件，Chimera++ 不会跟随链接读写。"),
+            format!("{name} is a link; Chimera++ does not read or write through links."),
+        ),
+        Some(ResourceLimitError::TooLarge { .. }) => AppError::localized(
+            "prompt.file.too_large",
+            format!("{name} 超过 8 MiB 上限。"),
+            format!("{name} exceeds the 8 MiB limit."),
+        ),
+        None if error.kind() == std::io::ErrorKind::InvalidData => AppError::localized(
+            "prompt.file.encoding",
+            format!("{name} 必须使用 UTF-8 编码。"),
+            format!("{name} must be UTF-8 encoded."),
+        ),
+        None => AppError::localized(
+            "prompt.file.unreadable",
+            format!("无法读取 {name}，请检查文件权限后重试。"),
+            format!("{name} could not be read; check its permissions."),
+        ),
+    }
+}
+
+/// Snapshot AGENTS.md for a write; links and unreadable files keep their reason.
+fn read_codex_snapshot(path: &Path) -> Result<FileSnapshot, AppError> {
+    FileSnapshot::read(path).map_err(|error| match error {
+        ChangesetError::App(AppError::Io { source, .. }) => file_read_error(path, &source),
+        other => other.into(),
+    })
+}
+
+fn snapshot_text(snapshot: &FileSnapshot) -> Result<&str, AppError> {
+    std::str::from_utf8(snapshot.contents().unwrap_or_default())
+        .map_err(|_| crate::managed_prompts::encoding_error())
+}
+
+fn edited_error() -> AppError {
+    AppError::localized(
+        "prompt.managed.edited",
+        "AGENTS.md 中的 Chimera 区块已被手动修改；请先选择保留修改，或恢复为提示词库内容。",
+        "The Chimera block in AGENTS.md was edited by hand; keep the edits or restore the library content first.",
+    )
+}
+
+/// Codex reads `AGENTS.override.md` instead of `AGENTS.md` whenever it is a file
+/// whose lossily decoded text is not blank (codex-rs rust-v0.157.0,
+/// codex-home/src/instructions/mod.rs). Only blankness leaves this function, so
+/// following a link here mirrors Codex without exposing the linked bytes.
+fn codex_override_active(path: &Path) -> bool {
+    use std::io::Read;
+    if !std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file()) {
+        return false;
+    }
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut bytes = Vec::new();
+    if file
+        .take(MAX_CONFIG_FILE_BYTES.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .is_err()
+    {
+        return false;
+    }
+    !String::from_utf8_lossy(&bytes).trim().is_empty()
+}
 
 /// 安全地获取当前 Unix 时间戳
 fn get_unix_timestamp() -> Result<i64, AppError> {
@@ -159,7 +286,7 @@ impl PromptService {
         }
 
         let content = read_to_string_limited(&file_path, MAX_CONFIG_FILE_BYTES)
-            .map_err(|e| AppError::io(&file_path, e))?;
+            .map_err(|error| file_read_error(&file_path, &error))?;
         let timestamp = get_unix_timestamp()?;
 
         let id = format!("imported-{}", uuid::Uuid::new_v4());
@@ -245,20 +372,19 @@ impl PromptService {
         state: &AppState,
         expected_content: &str,
     ) -> Result<String, AppError> {
-        use crate::config::cas::{Changeset, FileSnapshot};
+        use crate::config::cas::Changeset;
         if expected_content.len() as u64 > MAX_CONFIG_FILE_BYTES {
             return Err(AppError::InvalidInput("确认内容超过大小上限。".into()));
         }
         let _guard = futures::executor::block_on(state.proxy_service.lock_switch_for_app("codex"));
         ensure_codex_prompt_writable(state)?;
-        let snapshot = FileSnapshot::read(prompt_file_path(&AppType::Codex)?)?;
+        let snapshot = read_codex_snapshot(&prompt_file_path(&AppType::Codex)?)?;
         if snapshot.contents() != Some(expected_content.as_bytes()) {
             return Err(AppError::InvalidInput(
                 "AGENTS.md 已变化，请刷新并重新确认接管。".into(),
             ));
         }
-        let existing = std::str::from_utf8(snapshot.contents().unwrap_or_default())
-            .map_err(|_| AppError::InvalidInput("AGENTS.md 必须使用 UTF-8 编码。".into()))?;
+        let existing = snapshot_text(&snapshot)?;
         let (content, body) = crate::managed_prompts::adopt_foreign(existing)?;
         let before = state.db.get_prompts("codex")?;
         let mut next = before.clone();
@@ -273,7 +399,7 @@ impl PromptService {
                 template_id: None,
                 category_id: None,
                 id: id.clone(),
-                name: "从 Codex-X 接管的提示词".into(),
+                name: "从其他工具接管的提示词".into(),
                 content: body,
                 description: Some("用户确认接管；原条目保留但禁用".into()),
                 enabled: true,
@@ -290,12 +416,144 @@ impl PromptService {
 
     pub fn get_current_file_content(app: AppType) -> Result<Option<String>, AppError> {
         let file_path = prompt_file_path(&app)?;
-        if !file_path.exists() {
-            return Ok(None);
+        match read_to_string_limited(&file_path, MAX_CONFIG_FILE_BYTES) {
+            Ok(content) => Ok(Some(content)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(file_read_error(&file_path, &error)),
         }
-        let content = read_to_string_limited(&file_path, MAX_CONFIG_FILE_BYTES)
-            .map_err(|e| AppError::io(&file_path, e))?;
-        Ok(Some(content))
+    }
+
+    /// Compare the file Codex reads with the enabled entries. The caller holds
+    /// the Codex switch lock so a concurrent write is never seen half-applied.
+    pub fn codex_status(state: &AppState) -> Result<CodexPromptStatus, AppError> {
+        let prompts = state.db.get_prompts("codex")?;
+        let enabled_count = prompts.values().filter(|prompt| prompt.enabled).count();
+        let content = active_content(&prompts)?;
+        let expected = (enabled_count > 0).then_some(content.as_str());
+        let path = prompt_file_path(&AppType::Codex)?;
+        let file = match read_limited(&path, MAX_CONFIG_FILE_BYTES) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        };
+        let block = match &file {
+            Err(error) if matches!(limit_error(error), Some(ResourceLimitError::Symlink)) => {
+                CodexPromptState::Linked
+            }
+            Err(_) => CodexPromptState::Unreadable,
+            Ok(None) if expected.is_some() => CodexPromptState::Missing,
+            Ok(None) => CodexPromptState::InSync,
+            Ok(Some(bytes)) => match std::str::from_utf8(bytes) {
+                Err(_) => CodexPromptState::Unreadable,
+                // Several legacy rows only block writes, which report that themselves.
+                Ok(text) => match crate::managed_prompts::inspect(
+                    text,
+                    expected,
+                    state.db.codex_legacy_prompt_hash().ok().flatten(),
+                ) {
+                    BlockState::InSync => CodexPromptState::InSync,
+                    BlockState::Missing => CodexPromptState::Missing,
+                    BlockState::Edited => CodexPromptState::Edited,
+                    BlockState::Malformed => CodexPromptState::Malformed,
+                    BlockState::Foreign => CodexPromptState::Foreign,
+                },
+            },
+        };
+        let effective = if codex_override_active(&codex_override_file_path()?) {
+            CodexPromptState::Overridden
+        } else {
+            block
+        };
+        Ok(CodexPromptStatus {
+            state: effective,
+            enabled_count,
+            managed_bytes: (effective == CodexPromptState::InSync && enabled_count > 0)
+                .then_some(content.len() as u64),
+        })
+    }
+
+    /// The only ways to settle a block that no longer matches the library; the
+    /// caller holds the Codex switch lock. `Rewrite` backs up AGENTS.md and
+    /// writes the enabled entries again; `KeepEdits` changes only the library,
+    /// so the file stays byte-identical. Returns the id `KeepEdits` created.
+    pub fn resolve_codex_file(
+        state: &AppState,
+        resolution: CodexPromptResolution,
+    ) -> Result<Option<String>, AppError> {
+        let before = state.db.get_prompts("codex")?;
+        let content = active_content(&before)?;
+        let body = before
+            .values()
+            .any(|prompt| prompt.enabled)
+            .then_some(content.as_str());
+        let path = prompt_file_path(&AppType::Codex)?;
+        match resolution {
+            CodexPromptResolution::Rewrite => {
+                ensure_codex_prompt_writable(state)?;
+                let snapshot = read_codex_snapshot(&path)?;
+                // A whole file from an older version is adopted only on an exact
+                // match; after outside edits the entries are appended as a block
+                // and every byte the user wrote stays in place.
+                let legacy_hash = state.db.codex_legacy_prompt_hash()?.filter(|hash| {
+                    *hash == ContentHash::of(snapshot.contents().unwrap_or_default())
+                });
+                if crate::managed_prompts::project(snapshot_text(&snapshot)?, body, legacy_hash)?
+                    .as_bytes()
+                    == snapshot.contents().unwrap_or_default()
+                {
+                    return Ok(None);
+                }
+                super::live_backup::create_prompt_backup(&state.db, &snapshot)?;
+                commit_prompt_changes(
+                    state,
+                    &before,
+                    &before,
+                    crate::managed_prompts::plan(snapshot, body, legacy_hash)?,
+                )?;
+                Ok(None)
+            }
+            CodexPromptResolution::KeepEdits => {
+                let snapshot = read_codex_snapshot(&path)?;
+                let existing = snapshot_text(&snapshot)?;
+                if !crate::managed_prompts::block_edited(existing, body)? {
+                    return Ok(None);
+                }
+                let kept = crate::managed_prompts::owned_body(existing)
+                    .map_err(|error| match error {
+                        // An emptied block holds nothing that could be kept.
+                        AppError::InvalidInput(_) => AppError::localized(
+                            "prompt.managed.empty_block",
+                            "AGENTS.md 中的 Chimera 区块是空的，无法保留为提示词；请改为恢复提示词库内容。",
+                            "The Chimera block in AGENTS.md is empty and cannot be kept; restore the library content instead.",
+                        ),
+                        other => other,
+                    })?
+                    .ok_or_else(edited_error)?
+                    .to_string();
+                let mut next = before.clone();
+                for prompt in next.values_mut() {
+                    prompt.enabled = false;
+                }
+                let id = format!("kept-{}", uuid::Uuid::new_v4());
+                let timestamp = get_unix_timestamp()?;
+                next.insert(
+                    id.clone(),
+                    Prompt {
+                        template_id: None,
+                        category_id: None,
+                        id: id.clone(),
+                        name: "AGENTS.md 中的手动修改".into(),
+                        content: kept,
+                        description: Some("保留文件中手动修改的区块；原启用条目已停用".into()),
+                        enabled: true,
+                        created_at: Some(timestamp),
+                        updated_at: Some(timestamp),
+                    },
+                );
+                state.db.commit_codex_prompts(&before, &next, false)?;
+                Ok(Some(id))
+            }
+        }
     }
 
     /// 首次启动时从现有提示词文件自动导入（如果存在）
@@ -608,7 +866,6 @@ fn update_codex_prompts(
     state: &AppState,
     update: impl FnOnce(&mut IndexMap<String, Prompt>) -> Result<(), AppError>,
 ) -> Result<(), AppError> {
-    use crate::config::cas::FileSnapshot;
     let _guard = futures::executor::block_on(state.proxy_service.lock_switch_for_app("codex"));
     let before = state.db.get_prompts("codex")?;
     let mut next = before.clone();
@@ -626,15 +883,23 @@ fn update_codex_prompts(
         return state.db.commit_codex_prompts(&before, &next, false);
     }
     ensure_codex_prompt_writable(state)?;
-    let snapshot = FileSnapshot::read(prompt_file_path(&AppType::Codex)?)?;
+    let snapshot = read_codex_snapshot(&prompt_file_path(&AppType::Codex)?)?;
     let legacy_hash = state.db.codex_legacy_prompt_hash()?;
     let body = next
         .values()
         .any(|prompt| prompt.enabled)
         .then_some(content.as_str());
     // Validate before creating a backup. The subsequent plan uses this same snapshot.
-    let existing = std::str::from_utf8(snapshot.contents().unwrap_or_default())
-        .map_err(|_| AppError::InvalidInput("AGENTS.md 必须使用 UTF-8 编码。".into()))?;
+    let existing = snapshot_text(&snapshot)?;
+    // Hand edits inside our block are only discarded through an explicit
+    // `resolve_codex_file(Rewrite)`, never as a side effect of a toggle.
+    let previous = before
+        .values()
+        .any(|prompt| prompt.enabled)
+        .then_some(previous_content.as_str());
+    if crate::managed_prompts::block_edited(existing, previous)? {
+        return Err(edited_error());
+    }
     crate::managed_prompts::project(existing, body, legacy_hash)?;
     super::live_backup::create_prompt_backup(&state.db, &snapshot)?;
     commit_prompt_changes(
@@ -1016,6 +1281,213 @@ mod managed_tests {
         );
         assert!(!path.exists());
         assert!(state.db.get_prompts("codex").unwrap().is_empty());
+    }
+
+    fn status(state: &AppState) -> CodexPromptState {
+        PromptService::codex_status(state).unwrap().state
+    }
+
+    fn code_of(error: AppError) -> &'static str {
+        match error {
+            AppError::Localized { key, .. } => key,
+            other => panic!("expected a coded error, got {other}"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn status_in_sync_reports_the_written_entries() {
+        let (_home, state, path) = setup();
+        assert_eq!(status(&state), CodexPromptState::InSync);
+        fs::write(&path, "User rules\n").unwrap();
+        PromptService::upsert_prompt(
+            &state,
+            AppType::Codex,
+            "a",
+            prompt("a", "Managed rules", true),
+        )
+        .unwrap();
+        let report = PromptService::codex_status(&state).unwrap();
+        assert_eq!(report.state, CodexPromptState::InSync);
+        assert_eq!(report.enabled_count, 1);
+        assert_eq!(report.managed_bytes, Some("Managed rules".len() as u64));
+    }
+
+    #[test]
+    #[serial]
+    fn status_missing_when_the_block_is_removed_and_rewrite_restores_it() {
+        let (_home, state, path) = setup();
+        PromptService::upsert_prompt(
+            &state,
+            AppType::Codex,
+            "a",
+            prompt("a", "Managed rules", true),
+        )
+        .unwrap();
+        fs::remove_file(&path).unwrap();
+        assert_eq!(status(&state), CodexPromptState::Missing);
+        fs::write(&path, "User rules only\n").unwrap();
+        assert_eq!(status(&state), CodexPromptState::Missing);
+        assert_eq!(
+            PromptService::resolve_codex_file(&state, CodexPromptResolution::Rewrite).unwrap(),
+            None
+        );
+        let live = fs::read_to_string(&path).unwrap();
+        assert!(live.starts_with("User rules only\n"));
+        assert!(live.contains("Managed rules"));
+        assert_eq!(status(&state), CodexPromptState::InSync);
+    }
+
+    #[test]
+    #[serial]
+    fn status_edited_blocks_silent_overwrites_until_the_edits_are_kept() {
+        let (_home, state, path) = setup();
+        PromptService::upsert_prompt(
+            &state,
+            AppType::Codex,
+            "a",
+            prompt("a", "Managed rules", true),
+        )
+        .unwrap();
+        PromptService::upsert_prompt(&state, AppType::Codex, "b", prompt("b", "Other", false))
+            .unwrap();
+        let edited = fs::read_to_string(&path)
+            .unwrap()
+            .replace("Managed rules", "Hand-tuned rules");
+        fs::write(&path, &edited).unwrap();
+        assert_eq!(status(&state), CodexPromptState::Edited);
+        let error =
+            PromptService::set_prompt_enabled(&state, AppType::Codex, "b", true).unwrap_err();
+        assert_eq!(code_of(error), "prompt.managed.edited");
+        assert_eq!(fs::read_to_string(&path).unwrap(), edited);
+        assert!(!state.db.get_prompts("codex").unwrap()["b"].enabled);
+
+        let kept = PromptService::resolve_codex_file(&state, CodexPromptResolution::KeepEdits)
+            .unwrap()
+            .unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), edited);
+        let rows = state.db.get_prompts("codex").unwrap();
+        assert!(!rows["a"].enabled);
+        assert!(rows[&kept].enabled);
+        assert_eq!(rows[&kept].content, "Hand-tuned rules\n");
+        assert_eq!(status(&state), CodexPromptState::InSync);
+        PromptService::set_prompt_enabled(&state, AppType::Codex, "b", true).unwrap();
+        assert!(fs::read_to_string(&path)
+            .unwrap()
+            .contains("Hand-tuned rules"));
+    }
+
+    #[test]
+    #[serial]
+    fn rewrite_replaces_a_hand_edited_block_only_after_a_backup() {
+        let (_home, state, path) = setup();
+        fs::write(&path, "User rules\n").unwrap();
+        PromptService::upsert_prompt(
+            &state,
+            AppType::Codex,
+            "a",
+            prompt("a", "Managed rules", true),
+        )
+        .unwrap();
+        let synced = fs::read_to_string(&path).unwrap();
+        fs::write(&path, synced.replace("Managed rules", "Hand edit")).unwrap();
+        let backups = live_backup::list_backups(&AppType::Codex).unwrap().len();
+        PromptService::resolve_codex_file(&state, CodexPromptResolution::Rewrite).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), synced);
+        assert_eq!(
+            live_backup::list_backups(&AppType::Codex).unwrap().len(),
+            backups + 1
+        );
+        assert_eq!(status(&state), CodexPromptState::InSync);
+    }
+
+    #[test]
+    #[serial]
+    fn status_malformed_when_markers_are_broken() {
+        let (_home, state, path) = setup();
+        state
+            .db
+            .save_prompt("codex", &prompt("a", "Managed", false))
+            .unwrap();
+        let broken = format!("User\n{}\nDangling\n", crate::managed_prompts::BEGIN);
+        fs::write(&path, &broken).unwrap();
+        assert_eq!(status(&state), CodexPromptState::Malformed);
+        let error =
+            PromptService::set_prompt_enabled(&state, AppType::Codex, "a", true).unwrap_err();
+        assert_eq!(code_of(error), "prompt.managed.unbalanced");
+        assert_eq!(fs::read_to_string(&path).unwrap(), broken);
+    }
+
+    #[test]
+    #[serial]
+    fn status_foreign_when_only_another_tools_block_exists() {
+        let (_home, state, path) = setup();
+        fs::write(
+            &path,
+            "<!-- CODEX-X:INSTRUCTIONS:BEGIN -->\nForeign\n<!-- CODEX-X:INSTRUCTIONS:END -->\n",
+        )
+        .unwrap();
+        assert_eq!(status(&state), CodexPromptState::Foreign);
+    }
+
+    #[test]
+    #[serial]
+    fn status_overridden_follows_the_codex_override_rule() {
+        let (_home, state, path) = setup();
+        PromptService::upsert_prompt(
+            &state,
+            AppType::Codex,
+            "a",
+            prompt("a", "Managed rules", true),
+        )
+        .unwrap();
+        let override_path = crate::prompt_files::codex_override_file_path().unwrap();
+        // Codex trims the override and falls back to AGENTS.md when it is blank.
+        fs::write(&override_path, " \r\n\t").unwrap();
+        assert_eq!(status(&state), CodexPromptState::InSync);
+        fs::write(&override_path, "Override rules").unwrap();
+        let report = PromptService::codex_status(&state).unwrap();
+        assert_eq!(report.state, CodexPromptState::Overridden);
+        assert_eq!(report.managed_bytes, None);
+        fs::remove_file(&override_path).unwrap();
+        fs::create_dir(&override_path).unwrap();
+        assert_eq!(status(&state), CodexPromptState::InSync);
+        assert!(fs::read_to_string(&path).unwrap().contains("Managed rules"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial]
+    fn status_linked_and_writes_refuse_link_files() {
+        let (_home, state, path) = setup();
+        let target = path.with_file_name("dotfiles-agents.md");
+        fs::write(&target, "Linked rules\n").unwrap();
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        state
+            .db
+            .save_prompt("codex", &prompt("a", "Managed", false))
+            .unwrap();
+        assert_eq!(status(&state), CodexPromptState::Linked);
+        let error = PromptService::get_current_file_content(AppType::Codex).unwrap_err();
+        assert_eq!(code_of(error), "prompt.file.linked");
+        let error =
+            PromptService::set_prompt_enabled(&state, AppType::Codex, "a", true).unwrap_err();
+        assert_eq!(code_of(error), "prompt.file.linked");
+        assert_eq!(fs::read_to_string(&target).unwrap(), "Linked rules\n");
+        assert!(fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
+    #[test]
+    #[serial]
+    fn status_unreadable_when_agents_md_is_not_a_regular_file() {
+        let (_home, state, path) = setup();
+        fs::create_dir(&path).unwrap();
+        assert_eq!(status(&state), CodexPromptState::Unreadable);
+        let error = PromptService::get_current_file_content(AppType::Codex).unwrap_err();
+        assert_eq!(code_of(error), "prompt.file.unreadable");
     }
 }
 

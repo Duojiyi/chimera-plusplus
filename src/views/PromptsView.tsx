@@ -17,6 +17,7 @@ import {
   Upload,
   RefreshCw,
   FolderCog,
+  AlertTriangle,
 } from "lucide-react";
 import { toast } from "sonner";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -41,10 +42,22 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import type { AppId } from "@/lib/api/types";
 import {
   promptsApi,
+  type CodexPromptResolution,
+  type CodexPromptStatus,
   type Prompt,
   type PromptCategory,
 } from "@/lib/api/prompts";
+import { settingsApi } from "@/lib/api/settings";
 import { bundledPromptTemplates } from "@/config/promptTemplates";
+import {
+  codexStatusView,
+  type CodexStatusView,
+} from "@/components/prompts/codexStatus";
+import {
+  describeFileIssue,
+  describePromptError,
+} from "@/components/prompts/promptErrors";
+import { splitInstructionFile } from "@/components/prompts/instructionSections";
 import "./PromptsView.css";
 
 const PromptFormModal = React.lazy(
@@ -61,9 +74,11 @@ const PROMPT_TOOLS = [
   { id: "opencode", name: "OpenCode", file: "AGENTS.md" },
 ] as const;
 const UNSUPPORTED_PROMPT_TOOLS = "Claude Desktop 和 Pi 暂不支持提示词";
+const FOREIGN_BEGIN = "<!-- CODEX-X:INSTRUCTIONS:BEGIN -->";
 type Template = (typeof bundledPromptTemplates)[number];
 type Entry = { prompt: Prompt; saved: boolean; template?: Template };
 type Editor = { entry?: Entry; readOnly: boolean };
+type FileIssue = ReturnType<typeof describeFileIssue>;
 
 // Match provenance, never names: keep every saved copy and a stable template slot.
 function libraryEntries(
@@ -124,6 +139,11 @@ export const PromptsView: React.FC<{
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [showCategories, setShowCategories] = useState(false);
   const [live, setLive] = useState<string | null>(null);
+  const [liveIssue, setLiveIssue] = useState<FileIssue | null>(null);
+  const [codexStatus, setCodexStatus] = useState<CodexPromptStatus | null>(
+    null,
+  );
+  const [resolving, setResolving] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
@@ -145,14 +165,32 @@ export const PromptsView: React.FC<{
   const generation = useRef(0);
   const load = useCallback(async () => {
     const request = ++generation.current;
+    const fileName = PROMPT_TOOLS.find((tool) => tool.id === targetApp)!.file;
     setLoading(true);
     setError(false);
+    // The instruction file is read on its own: a link or an unreadable file
+    // must not take the library down with it.
+    const file = promptsApi.getCurrentFileContent(targetApp).then(
+      (content) => ({ content, issue: null }),
+      (reason: unknown) => ({
+        content: null,
+        issue: describeFileIssue(reason, fileName),
+      }),
+    );
+    // Without a status the card falls back to the library's own counts.
+    const status =
+      targetApp === "codex"
+        ? promptsApi.getCodexStatus().then(
+            (value) => value ?? null,
+            () => null,
+          )
+        : Promise.resolve(null);
     try {
-      const [rows, content, groups] = await Promise.all([
+      const [rows, groups] = await Promise.all([
         promptsApi.getPrompts(targetApp),
-        promptsApi.getCurrentFileContent(targetApp),
         promptsApi.getCategories(targetApp),
       ]);
+      const [{ content, issue }, codex] = await Promise.all([file, status]);
       if (mounted.current && request === generation.current) {
         setPrompts(Object.values(rows));
         setCategories(groups);
@@ -164,6 +202,8 @@ export const PromptsView: React.FC<{
             : "all",
         );
         setLive(content);
+        setLiveIssue(issue);
+        setCodexStatus(codex);
       }
     } catch {
       if (mounted.current && request === generation.current) {
@@ -171,6 +211,8 @@ export const PromptsView: React.FC<{
         setCategories([]);
         setPrompts([]);
         setLive(null);
+        setLiveIssue(null);
+        setCodexStatus(null);
       }
     } finally {
       if (mounted.current && request === generation.current) setLoading(false);
@@ -189,11 +231,17 @@ export const PromptsView: React.FC<{
     setPrompts([]);
     setCategories([]);
     setLive(null);
+    setLiveIssue(null);
+    setCodexStatus(null);
     void load();
     return () => {
       generation.current++;
     };
   }, [load, refreshVersion]);
+  const openFile = () => {
+    setShowFile(true);
+    void load();
+  };
   const mutate = async (action: () => Promise<unknown>) => {
     if (pending.current) return false;
     pending.current = true;
@@ -206,22 +254,15 @@ export const PromptsView: React.FC<{
       return true;
     } catch (reason) {
       if (mounted.current) {
-        const message = String(reason);
-        const known = [
-          "请先关闭 Codex 代理接管，再修改生效提示词。",
-          "无法检查代理接管状态。",
-          "AGENTS.md 必须使用 UTF-8 编码。",
-          "启用的提示词不能为空。",
-          "提示词内容超过大小上限。",
-          "提示词文件必须为 UTF-8。",
-          "提示词不存在，请刷新后重试。",
-          "这条提示词已更新或被删除，请重新打开后编辑。当前草稿尚未保存。",
-          "分类不存在，请刷新后重试。",
-          "分类名称已存在。",
-          "该分类名称为系统保留名称。",
-          "分类名称需为 1–50 个字符，且不能包含控制字符。",
-        ].find((text) => message.includes(text));
-        toast.error(known ?? "提示词操作未完成，请检查当前状态后重试。");
+        const { message, showFile: offerFile } = describePromptError(
+          reason,
+          target.file,
+        );
+        if (offerFile)
+          toast.error(message, {
+            action: { label: "查看当前指令", onClick: openFile },
+          });
+        else toast.error(message);
         await load();
       }
       return false;
@@ -229,6 +270,22 @@ export const PromptsView: React.FC<{
       pending.current = false;
       if (mounted.current) setBusy(false);
     }
+  };
+  const resolveFile = (action: CodexPromptResolution) => {
+    void mutate(() => promptsApi.resolveCodexFile(action)).then((done) => {
+      if (!done || !mounted.current) return;
+      setResolving(false);
+      setNotice(
+        action === "rewrite"
+          ? "已重新写入 AGENTS.md，写入前已自动备份。"
+          : "已保留文件中的修改，并存为一条启用的提示词。",
+      );
+    });
+  };
+  const openFolder = () => {
+    settingsApi
+      .openConfigFolder(targetApp)
+      .catch(() => toast.error(`无法打开 ${target.name} 的配置文件夹。`));
   };
   const confirmWholeFileWrite = (message: string) => {
     if (isCodex) return Promise.resolve(true);
@@ -284,8 +341,45 @@ export const PromptsView: React.FC<{
         .includes(query),
   );
   const disabled = loading || busy || error || writeConfirmation !== null;
-  const foreign =
-    isCodex && live?.includes("<!-- CODEX-X:INSTRUCTIONS:BEGIN -->");
+  const foreign = isCodex && live?.includes(FOREIGN_BEGIN);
+  // What the file in effect says; null keeps the library's own summary.
+  const statusView: CodexStatusView | null =
+    loading || error
+      ? null
+      : isCodex && codexStatus
+        ? codexStatusView(codexStatus)
+        : liveIssue
+          ? {
+              tone: "warning",
+              tag: liveIssue.kind === "linked" ? "链接文件" : "无法读取",
+              headline: liveIssue.title,
+              detail: liveIssue.detail,
+              action:
+                liveIssue.kind === "linked"
+                  ? { kind: "open-folder", label: "打开所在文件夹" }
+                  : { kind: "retry", label: "重试" },
+            }
+          : null;
+  // Writes never follow links, so enabling is refused up front with the reason.
+  const linkedFile =
+    (isCodex && codexStatus?.state === "linked") ||
+    liveIssue?.kind === "linked";
+  const blockedReason = linkedFile
+    ? `${target.file} 是链接文件，Chimera++ 只读不写，因此不能启用或停用。`
+    : undefined;
+  const notInEffect =
+    isCodex &&
+    (codexStatus?.state === "missing" || codexStatus?.state === "overridden");
+  const managedCount = codexStatus?.enabledCount ?? active.length;
+  const sections = isCodex && live ? splitInstructionFile(live) : null;
+  const runStatusAction = (
+    kind: NonNullable<CodexStatusView["action"]>["kind"],
+  ) => {
+    if (kind === "rewrite") resolveFile("rewrite");
+    else if (kind === "resolve") setResolving(true);
+    else if (kind === "open-folder") openFolder();
+    else void load();
+  };
   const activate = async (entry: Entry) => {
     if (pending.current || disabled) return false;
     const { prompt, saved } = entry;
@@ -338,10 +432,6 @@ export const PromptsView: React.FC<{
       }
     });
   };
-  const openFile = () => {
-    setShowFile(true);
-    void load();
-  };
   const importMarkdown = () => {
     let imported: string | undefined;
     void mutate(async () => {
@@ -385,6 +475,7 @@ export const PromptsView: React.FC<{
                 editor !== null ||
                 removing !== null ||
                 adopting !== null ||
+                resolving ||
                 showCategories
               }
               onChange={(event) => {
@@ -426,11 +517,23 @@ export const PromptsView: React.FC<{
       </header>
 
       <section
-        className={`prompts-summary${active.length ? " has-active" : ""}`}
+        className={`prompts-summary${
+          statusView?.tone === "warning"
+            ? " is-warning"
+            : active.length
+              ? " has-active"
+              : ""
+        }`}
         aria-label="当前提示词状态"
       >
         <div className="prompts-summary-icon" aria-hidden="true">
-          {active.length ? <Check size={19} /> : <FileText size={19} />}
+          {statusView?.tone === "warning" ? (
+            <AlertTriangle size={19} />
+          ) : active.length ? (
+            <Check size={19} />
+          ) : (
+            <FileText size={19} />
+          )}
         </div>
         <div className="prompts-summary-copy">
           {loading ? (
@@ -438,35 +541,59 @@ export const PromptsView: React.FC<{
           ) : error ? (
             <strong>当前状态暂不可用</strong>
           ) : (
-            <strong>
-              {active.length
-                ? `已启用 ${active.length} 条`
-                : "未启用 Chimera 提示词"}
-            </strong>
+            <div className="prompts-summary-headline">
+              <strong>
+                {statusView?.headline ??
+                  (active.length
+                    ? `已启用 ${active.length} 条`
+                    : "未启用 Chimera 提示词")}
+              </strong>
+              {statusView && (
+                <span className={`prompts-state-tag is-${statusView.tone}`}>
+                  {statusView.tag}
+                </span>
+              )}
+            </div>
           )}
-          {!loading && !error && active.length > 0 && (
-            <span
-              className="prompts-active-names"
-              title={active.map(({ prompt }) => prompt.name).join("、")}
-            >
-              {active.map(({ prompt }) => prompt.name).join("、")}
-            </span>
-          )}
-          <p>
-            {isCodex
-              ? "多条内容合并写入，保留原有指令；修改前自动备份。"
-              : "每次使用一条，应用时替换整个指令文件；原文保留在提示词库。"}
+          {!loading &&
+            !error &&
+            active.length > 0 &&
+            statusView?.tone !== "warning" && (
+              <span
+                className="prompts-active-names"
+                title={active.map(({ prompt }) => prompt.name).join("、")}
+              >
+                {active.map(({ prompt }) => prompt.name).join("、")}
+              </span>
+            )}
+          <p id="prompts-summary-detail">
+            {statusView?.detail ??
+              (isCodex
+                ? "多条内容合并写入，区块外的原有指令保持不变；修改前自动备份。"
+                : "每次使用一条，应用时替换整个指令文件；原文保留在提示词库。")}
           </p>
         </div>
-        <Button
-          variant="ghost"
-          className="prompts-file-link"
-          onClick={openFile}
-          disabled={loading || busy}
-        >
-          查看当前指令
-          <ArrowUpRight size={15} />
-        </Button>
+        <div className="prompts-summary-actions">
+          {statusView?.action && (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={busy || writeConfirmation !== null}
+              onClick={() => runStatusAction(statusView.action!.kind)}
+            >
+              {statusView.action.label}
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            className="prompts-file-link"
+            onClick={openFile}
+            disabled={loading || busy}
+          >
+            {statusView?.fileLink ?? "查看当前指令"}
+            <ArrowUpRight size={15} />
+          </Button>
+        </div>
       </section>
       {error && (
         <div className="prompts-notice" role="alert">
@@ -494,9 +621,9 @@ export const PromptsView: React.FC<{
           </Button>
         </div>
       )}
-      {foreign && (
+      {foreign && !codexStatus && (
         <div className="prompts-notice">
-          <span>检测到 Codex-X 区块，原内容保持只读。</span>
+          <span>检测到其他工具写入的区块，原内容保持只读。</span>
           <Button
             variant="outline"
             size="sm"
@@ -616,7 +743,11 @@ export const PromptsView: React.FC<{
                     <Switch
                       aria-label={`启用 ${prompt.name}`}
                       checked={prompt.enabled}
-                      disabled={disabled}
+                      disabled={disabled || linkedFile}
+                      title={blockedReason}
+                      aria-describedby={
+                        blockedReason ? "prompts-summary-detail" : undefined
+                      }
                       onCheckedChange={() => void activate(entry)}
                     />
                   ) : prompt.enabled ? (
@@ -629,7 +760,11 @@ export const PromptsView: React.FC<{
                       variant="outline"
                       size="sm"
                       aria-label={`设为当前 ${prompt.name}`}
-                      disabled={disabled}
+                      disabled={disabled || linkedFile}
+                      title={blockedReason}
+                      aria-describedby={
+                        blockedReason ? "prompts-summary-detail" : undefined
+                      }
                       onClick={() => void activate(entry)}
                     >
                       设为当前
@@ -643,18 +778,26 @@ export const PromptsView: React.FC<{
                 </p>
                 <div className="prompt-card-footer">
                   <span className="prompt-card-origin">
-                    {template
-                      ? modified
-                        ? "内置 · 已修改"
-                        : "内置"
-                      : "自定义"}
+                    {template ? "内置" : "自定义"}
+                    {modified && (
+                      <span
+                        className="prompt-card-badge"
+                        title="内容与内置模板不同，可在编辑时恢复内置内容"
+                      >
+                        本地已修改
+                      </span>
+                    )}
                     <span className="prompt-card-category">
                       {categories.find(
                         (category) => category.id === prompt.categoryId,
                       )?.name ?? "未分类"}
                     </span>
                     {prompt.enabled && isCodex && (
-                      <span className="prompt-enabled-label">已启用</span>
+                      <span
+                        className={`prompt-enabled-label${notInEffect ? " is-pending" : ""}`}
+                      >
+                        {notInEffect ? "已启用 · 未生效" : "已启用"}
+                      </span>
                     )}
                   </span>
                   <div className="prompt-card-actions">
@@ -788,20 +931,63 @@ export const PromptsView: React.FC<{
               <p>正在读取文件…</p>
             ) : error ? (
               <p role="alert">文件预览不可用，请重试。</p>
+            ) : liveIssue ? (
+              <div className="prompts-empty prompt-file-issue" role="status">
+                <AlertTriangle size={28} aria-hidden="true" />
+                <h2>{liveIssue.title}</h2>
+                <p>{liveIssue.detail}</p>
+              </div>
             ) : live === null ? (
               <div className="prompts-empty">
                 <FileText size={28} />
                 <h2>还没有 {target.file}</h2>
                 <p>启用提示词之前，不会创建这个文件。</p>
               </div>
-            ) : (
-              <pre
-                tabIndex={0}
+            ) : sections ? (
+              <div
+                className="prompt-file-sections"
+                role="group"
                 aria-label={`${target.file} 当前内容`}
-                className="prompt-file-content"
               >
-                {live || "文件为空"}
-              </pre>
+                {sections.map((section, index) => (
+                  <section
+                    key={index}
+                    className={`prompt-file-section is-${section.kind}`}
+                  >
+                    <h3>
+                      {section.kind === "user"
+                        ? "你的内容（Chimera 不改动）"
+                        : section.kind === "managed"
+                          ? `Chimera 受管区块（${managedCount} 条）`
+                          : "其他工具的区块（只读）"}
+                      {section.kind === "managed" &&
+                        codexStatus?.state === "edited" && (
+                          <span className="prompts-state-tag is-warning">
+                            已手动修改
+                          </span>
+                        )}
+                    </h3>
+                    <pre tabIndex={0} className="prompt-file-content">
+                      {section.text}
+                    </pre>
+                  </section>
+                ))}
+              </div>
+            ) : (
+              <>
+                {isCodex && live && (
+                  <p className="prompt-detail-note prompt-file-raw-note">
+                    区块标记不完整，按原文显示。
+                  </p>
+                )}
+                <pre
+                  tabIndex={0}
+                  aria-label={`${target.file} 当前内容`}
+                  className="prompt-file-content"
+                >
+                  {live || "文件为空"}
+                </pre>
+              </>
             )}
           </div>
           <DialogFooter>
@@ -811,7 +997,7 @@ export const PromptsView: React.FC<{
                 disabled={disabled}
                 onClick={() => setAdopting(live)}
               >
-                接管 Codex-X 区块
+                接管这个区块
               </Button>
             )}
             <Button
@@ -849,10 +1035,10 @@ export const PromptsView: React.FC<{
       <ConfirmDialog
         isOpen={adopting !== null}
         busy={busy}
-        title="接管 Codex-X 区块"
-        message="将把当前预览文件中的 Codex-X 区块转为 Chimera 受管区块。正文与区块外内容保持不变，原库条目保留但禁用，接管内容成为启用的新条目。写入前自动备份；若文件已变化则拒绝接管。已有 Chimera 区块时请先禁用其提示词。"
+        title="接管其他工具的区块"
+        message="将把当前预览文件中其他工具写入的区块转为 Chimera 受管区块。正文与区块外内容保持不变，原库条目保留但禁用，接管内容成为启用的新条目。写入前自动备份；若文件已变化则拒绝接管。已有 Chimera 区块时请先停用其提示词。"
         checkboxRequired
-        checkboxLabel="我已检查当前文件，并已停止 Codex-X 对该文件的写入"
+        checkboxLabel="我已检查当前文件，并已停止那个工具对该文件的写入"
         confirmText="确认接管"
         cancelText="取消"
         onCancel={() => {
@@ -866,6 +1052,64 @@ export const PromptsView: React.FC<{
           });
         }}
       />
+      <Dialog
+        open={resolving}
+        onOpenChange={(value) => {
+          if (!busy) setResolving(value);
+        }}
+      >
+        <DialogContent className="prompt-resolve-dialog">
+          <DialogHeader className="text-left">
+            <DialogTitle>处理手动修改</DialogTitle>
+            <DialogDescription>
+              AGENTS.md 中的 Chimera 区块与提示词库不一致。选择要保留的一份：
+            </DialogDescription>
+          </DialogHeader>
+          <div className="prompt-resolve-options">
+            <div className="prompt-resolve-option">
+              <div>
+                <strong>保留文件中的修改</strong>
+                <p>
+                  把区块中的内容存为一条新的启用提示词
+                  {managedCount > 0 &&
+                    `，原来启用的 ${managedCount} 条改为停用`}
+                  。AGENTS.md 保持不变。
+                </p>
+              </div>
+              <Button disabled={busy} onClick={() => resolveFile("keep_edits")}>
+                保留修改
+              </Button>
+            </div>
+            <div className="prompt-resolve-option">
+              <div>
+                <strong>恢复为提示词库内容</strong>
+                <p>
+                  {managedCount > 0
+                    ? `用提示词库中已启用的 ${managedCount} 条重写这个区块，手动修改会被替换。`
+                    : "提示词库中没有启用的条目，恢复会移除这个区块。"}
+                  区块外的内容不变，写入前自动备份当前文件。
+                </p>
+              </div>
+              <Button
+                variant="outline"
+                disabled={busy}
+                onClick={() => resolveFile("rewrite")}
+              >
+                恢复提示词库内容
+              </Button>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              disabled={busy}
+              onClick={() => setResolving(false)}
+            >
+              取消
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <ConfirmDialog
         isOpen={writeConfirmation !== null}
         title="确认修改提示词文件"

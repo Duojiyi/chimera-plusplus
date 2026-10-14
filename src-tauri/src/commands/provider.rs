@@ -2116,6 +2116,29 @@ mod automatic_routing_tests {
         ));
     }
 
+    /// The renderer mirrors this predicate (src/utils/codexRouting.ts) to show
+    /// which lines go through the local router. Both sides assert these shared
+    /// vectors, so the two implementations cannot drift apart silently.
+    #[test]
+    fn automatic_routing_matches_shared_renderer_vectors() {
+        let vectors: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/codex-routing-vectors.json"
+        ))
+        .expect("routing vectors must parse");
+        assert!(!vectors.is_empty());
+        for vector in vectors {
+            let name = vector["name"].as_str().expect("vector name");
+            let provider: Provider = serde_json::from_value(vector["provider"].clone())
+                .unwrap_or_else(|error| panic!("{name}: {error}"));
+            let expected = vector["routed"].as_bool().expect("routed flag");
+            assert_eq!(
+                provider_requires_automatic_routing(&AppType::Codex, &provider),
+                expected,
+                "{name}"
+            );
+        }
+    }
+
     #[test]
     fn auto_detect_candidate_requires_routing() {
         // api_format=None ("自动") 的供应商需要代理接管，才能触发 Responses→Chat 自动检测

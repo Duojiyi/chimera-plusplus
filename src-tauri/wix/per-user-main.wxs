@@ -38,6 +38,15 @@
         <!-- Property to forward cli args to the launched app to not lose those of the pre-update instance -->
         <Property Id="LAUNCHAPPARGS" Secure="yes" />
 
+        <!-- Whether the desktop shortcut is still on the desktop when this install starts.
+             AppSearch runs before RemoveExistingProducts (scheduled afterInstallInitialize)
+             removes the previous version, so a shortcut the user deleted is not found here. -->
+        <Property Id="DESKTOPSHORTCUTEXISTS" Secure="yes">
+            <DirectorySearch Id="DesktopShortcutDirSearch" Path="[DesktopFolder]" Depth="0">
+                <FileSearch Id="DesktopShortcutFileSearch" Name="{{product_name}}.lnk" />
+            </DirectorySearch>
+        </Property>
+
         {{#if allow_downgrades}}
             <MajorUpgrade Schedule="afterInstallInitialize" AllowDowngrades="yes" />
         {{else}}
@@ -110,6 +119,8 @@
         <Directory Id="TARGETDIR" Name="SourceDir">
             <Directory Id="DesktopFolder" Name="Desktop">
                 <Component Id="ApplicationShortcutDesktop" Guid="*">
+                    <!-- Fresh install: create the shortcut. Upgrade: recreate it only if the user still has it -->
+                    <Condition><![CDATA[NOT WIX_UPGRADE_DETECTED OR DESKTOPSHORTCUTEXISTS]]></Condition>
                     <Shortcut Id="ApplicationDesktopShortcut"
                         Name="{{product_name}}"
                         Description="Runs {{product_name}}"

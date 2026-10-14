@@ -1,5 +1,4 @@
 import { List, X } from "lucide-react";
-import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -18,6 +17,9 @@ interface TocItem {
   ts?: number;
 }
 
+/** A table of contents helps only once there is something to skip over. */
+const MIN_TOC_ITEMS = 3;
+
 interface SessionTocSidebarProps {
   items: TocItem[];
   onItemClick: (index: number) => void;
@@ -27,15 +29,17 @@ export function SessionTocSidebar({
   items,
   onItemClick,
 }: SessionTocSidebarProps) {
-  const { t } = useTranslation();
-  if (items.length <= 2) return null;
+  if (items.length < MIN_TOC_ITEMS) return null;
 
   return (
-    <div className="w-64 border-l shrink-0 hidden xl:block">
+    <nav
+      className="w-64 border-l shrink-0 hidden xl:block"
+      aria-label="对话目录"
+    >
       <div className="p-3 border-b">
         <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-          <List className="size-3.5" />
-          <span>{t("sessionManager.tocTitle")}</span>
+          <List className="size-3.5" aria-hidden />
+          <span>对话目录</span>
         </div>
       </div>
       <ScrollArea className="h-[calc(100%-40px)]">
@@ -51,15 +55,13 @@ export function SessionTocSidebar({
                 "flex items-start gap-2",
               )}
             >
-              <span className="shrink-0 w-4 h-4 rounded-full bg-primary/10 text-primary text-[10px] flex items-center justify-center font-medium">
-                {tocIndex + 1}
-              </span>
+              <span className="session-toc-number">{tocIndex + 1}</span>
               <span className="line-clamp-2 leading-snug">{item.preview}</span>
             </button>
           ))}
         </div>
       </ScrollArea>
-    </div>
+    </nav>
   );
 }
 
@@ -70,23 +72,29 @@ interface SessionTocDialogProps {
   onOpenChange: (open: boolean) => void;
 }
 
+/**
+ * Below the width where the sidebar fits, the contents open from a button in
+ * the conversation header instead of a floating button over the messages.
+ */
 export function SessionTocDialog({
   items,
   onItemClick,
   open,
   onOpenChange,
 }: SessionTocDialogProps) {
-  const { t } = useTranslation();
-  if (items.length <= 2) return null;
+  if (items.length < MIN_TOC_ITEMS) return null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogTrigger asChild>
         <Button
-          size="icon"
-          className="fixed bottom-20 right-4 xl:hidden size-10 rounded-full shadow-lg z-30"
+          variant="ghost"
+          size="sm"
+          className="session-toc-trigger xl:hidden"
+          aria-label={`对话目录（${items.length} 条提问）`}
         >
-          <List className="size-4" />
+          <List className="size-3.5" aria-hidden />
+          目录
         </Button>
       </DialogTrigger>
       <DialogContent
@@ -94,17 +102,18 @@ export function SessionTocDialog({
         zIndex="alert"
         onInteractOutside={() => onOpenChange(false)}
         onEscapeKeyDown={() => onOpenChange(false)}
+        aria-describedby={undefined}
       >
         <DialogHeader className="px-4 py-3 relative border-b">
           <DialogTitle className="flex items-center gap-2 text-base font-semibold">
-            <List className="size-4 text-primary" />
-            {t("sessionManager.tocTitle")}
+            <List className="size-4" aria-hidden />
+            对话目录
           </DialogTitle>
           <DialogClose
-            className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full p-1.5 hover:bg-muted transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2"
-            aria-label={t("common.close")}
+            className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full p-1.5 hover:bg-muted transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label="关闭"
           >
-            <X className="size-4 text-muted-foreground" />
+            <X className="size-4 text-muted-foreground" aria-hidden />
           </DialogClose>
         </DialogHeader>
         <div className="overflow-y-auto max-h-[calc(70vh-80px)]">
@@ -115,16 +124,14 @@ export function SessionTocDialog({
                 type="button"
                 onClick={() => onItemClick(item.index)}
                 className={cn(
-                  "w-full text-left px-3 py-2.5 rounded-lg text-sm transition-all",
-                  "hover:bg-primary/10 text-foreground",
+                  "w-full text-left px-3 py-2.5 rounded-md text-sm transition-colors",
+                  "hover:bg-muted text-foreground",
                   "flex items-start gap-3",
-                  "focus:outline-none focus:ring-2 focus:ring-primary focus:ring-inset",
+                  "focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
                 )}
               >
-                <span className="shrink-0 w-6 h-6 rounded-full bg-primary text-primary-foreground text-xs flex items-center justify-center font-semibold">
-                  {tocIndex + 1}
-                </span>
-                <span className="line-clamp-2 leading-relaxed pt-0.5">
+                <span className="session-toc-number">{tocIndex + 1}</span>
+                <span className="line-clamp-2 leading-relaxed">
                   {item.preview}
                 </span>
               </button>

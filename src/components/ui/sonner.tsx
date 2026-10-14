@@ -8,6 +8,7 @@ import {
   TriangleAlert,
   X,
 } from "lucide-react";
+import "./sonner.css";
 
 export function Toaster() {
   const { theme } = useTheme();

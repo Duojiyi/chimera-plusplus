@@ -107,8 +107,12 @@ describe("Chimera++ application shell", () => {
     ).toBeInTheDocument();
     // Settings opens at 工具; the preference rows are one section away.
     fireEvent.click(screen.getByRole("link", { name: "通用设置" }));
+    // Data folder and log file are separate entries under 配置目录.
     expect(
-      screen.getByRole("button", { name: /^数据与日志/ }),
+      screen.getByRole("button", { name: /^打开数据目录/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /^定位日志文件/ }),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "恢复默认设置" }),

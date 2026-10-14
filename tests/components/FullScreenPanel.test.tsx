@@ -74,4 +74,19 @@ describe("FullScreenPanel", () => {
     expect(document.body.style.overflow).toBe("hidden");
     document.body.style.overflow = "";
   });
+  it("opens and closes instantly without fading over the page underneath", () => {
+    const { rerender } = render(
+      <FullScreenPanel isOpen title="编辑线路" onClose={() => {}}>
+        内容
+      </FullScreenPanel>,
+    );
+    const panel = screen.getByRole("dialog", { name: "编辑线路" });
+    expect(panel.style.opacity).toBe("");
+    rerender(
+      <FullScreenPanel isOpen={false} title="编辑线路" onClose={() => {}}>
+        内容
+      </FullScreenPanel>,
+    );
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
 });

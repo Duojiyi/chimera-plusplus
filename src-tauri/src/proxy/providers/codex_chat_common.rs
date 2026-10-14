@@ -1,3 +1,4 @@
+use crate::proxy::error::ProxyError;
 use serde_json::{json, Map, Value};
 
 // 穷举上游可能的 reasoning 回传字段，优先级：reasoning_content > reasoning(字符串/对象) > reasoning_details。
@@ -203,6 +204,69 @@ pub(crate) fn is_empty_value(value: &Value) -> bool {
         Value::Object(value) => value.is_empty(),
         _ => false,
     }
+}
+
+/// Leads the text of a tool result that has no matching tool call once it is
+/// sent as ordinary user content (Chat bridge, Anthropic bridge, xAI native
+/// Responses). Such results are typically the Codex desktop app's delegation
+/// receipt (`call_id: null`) or an extra parallel result; strict upstreams
+/// reject them as tool results, and dropping them loses the delegated text.
+pub(crate) const ORPHAN_TOOL_OUTPUT_MARKER: &str = "[tool_result without a matching tool_call]";
+
+pub(crate) const CODEX_REMOTE_COMPACTION_TRIGGER_UNSUPPORTED: &str = "当前线路经 Chat/Anthropic 协议转换，无法执行远程上下文压缩（只有官方线路或原生 Responses 线路支持），本次请求未发送。请切回原线路后重试，或新建会话。";
+pub(crate) const CODEX_REMOTE_COMPACTION_CHECKPOINT_UNSUPPORTED: &str = "此会话包含远程压缩检查点（由官方线路或原生 Responses 线路生成），当前线路经 Chat/Anthropic 协议转换后无法读取，继续会丢失压缩前的全部上下文，因此本次请求未发送。请切回原线路继续此会话，或新建会话。";
+
+/// Refuse a Responses request that carries Codex remote-compaction items before
+/// it is converted for a Chat Completions or Anthropic Messages upstream.
+///
+/// Remote compaction leaves a thread with its user messages plus one encrypted
+/// checkpoint (`compaction`, legacy alias `compaction_summary`, or a
+/// `context_compaction` with `encrypted_content`). Only the Responses backend
+/// that wrote it can read it, and the bridges used to drop it without a word,
+/// so the model silently lost all earlier work. A `compaction_trigger` asks for
+/// exactly one `compaction` output item, which no bridge can produce. Codex's
+/// local compaction, used on converted lines, writes its summary back as an
+/// ordinary user message, so those threads never carry these items.
+///
+/// `InvalidRequest` (HTTP 400, non-retryable) keeps the refusal out of the
+/// line's health and circuit breaker: the request is at fault, not the line,
+/// and Codex replays the same history on every turn.
+pub(crate) fn reject_codex_remote_compaction_items(body: &Value) -> Result<(), ProxyError> {
+    let items = match body.get("input") {
+        Some(Value::Array(items)) => items.as_slice(),
+        Some(item) if item.is_object() => std::slice::from_ref(item),
+        _ => return Ok(()),
+    };
+
+    let mut has_trigger = false;
+    let mut has_checkpoint = false;
+    for item in items {
+        match item.get("type").and_then(Value::as_str) {
+            Some("compaction_trigger") => has_trigger = true,
+            Some("compaction" | "compaction_summary") => has_checkpoint = true,
+            // Without ciphertext the item is only a marker; dropping it loses nothing.
+            Some("context_compaction") => {
+                has_checkpoint |= item
+                    .get("encrypted_content")
+                    .and_then(Value::as_str)
+                    .is_some_and(|content| !content.trim().is_empty());
+            }
+            _ => {}
+        }
+    }
+
+    // A trigger is reported first: the failing request is itself a compaction.
+    if has_trigger {
+        return Err(ProxyError::InvalidRequest(
+            CODEX_REMOTE_COMPACTION_TRIGGER_UNSUPPORTED.to_string(),
+        ));
+    }
+    if has_checkpoint {
+        return Err(ProxyError::InvalidRequest(
+            CODEX_REMOTE_COMPACTION_CHECKPOINT_UNSUPPORTED.to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Exact, unescaped tags outside backtick code are protocol delimiters. Bare

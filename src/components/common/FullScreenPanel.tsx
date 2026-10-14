@@ -1,7 +1,6 @@
 import React from "react";
 import { useTranslation } from "react-i18next";
 import { createPortal } from "react-dom";
-import { motion, AnimatePresence } from "framer-motion";
 import { ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { DRAG_REGION_ATTR, DRAG_REGION_STYLE } from "@/lib/platform";
@@ -108,103 +107,97 @@ export const FullScreenPanel: React.FC<FullScreenPanelProps> = ({
     };
   }, [isOpen]);
 
+  // Panels switch instantly, like the Codex line editor: a fade let the list
+  // underneath show through, read as flicker and ignored reduced motion.
   return createPortal(
-    <AnimatePresence>
-      {isOpen && (
-        <motion.div
-          ref={panelRef}
-          data-fullscreen-panel
-          role="dialog"
-          aria-labelledby={editorHeader ? undefined : titleId}
-          aria-label={editorHeader ? title : undefined}
-          tabIndex={-1}
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.2 }}
-          className={cn(
-            "fixed inset-x-0 bottom-0 top-10 z-[60] flex min-h-0 flex-col",
-            editorHeader && "provider-editor-page",
-          )}
-          style={{ backgroundColor: "hsl(var(--background))" }}
-        >
-          {editorHeader ? (
-            <section className="provider-editor">
-              <header className="editor-page-header">{editorHeader}</header>
-              <div className="editor-scroll">{children}</div>
-              {footer && (
-                <div className="editor-bottom">
-                  <footer>{footer}</footer>
-                </div>
-              )}
-            </section>
-          ) : (
-            <>
-              {/* Keep the shell title bar and native window controls reachable. */}
-              {/* Header - match App.tsx */}
+    isOpen ? (
+      <div
+        ref={panelRef}
+        data-fullscreen-panel
+        role="dialog"
+        aria-labelledby={editorHeader ? undefined : titleId}
+        aria-label={editorHeader ? title : undefined}
+        tabIndex={-1}
+        className={cn(
+          "fixed inset-x-0 bottom-0 top-10 z-[60] flex min-h-0 flex-col",
+          editorHeader && "provider-editor-page",
+        )}
+        style={{ backgroundColor: "hsl(var(--background))" }}
+      >
+        {editorHeader ? (
+          <section className="provider-editor">
+            <header className="editor-page-header">{editorHeader}</header>
+            <div className="editor-scroll">{children}</div>
+            {footer && (
+              <div className="editor-bottom">
+                <footer>{footer}</footer>
+              </div>
+            )}
+          </section>
+        ) : (
+          <>
+            {/* Keep the shell title bar and native window controls reachable. */}
+            {/* Header - match App.tsx */}
+            <div
+              className="flex-shrink-0 flex items-center"
+              {...DRAG_REGION_ATTR}
+              style={
+                {
+                  ...DRAG_REGION_STYLE,
+                  backgroundColor: "hsl(var(--background))",
+                  height: HEADER_HEIGHT,
+                } as React.CSSProperties
+              }
+            >
               <div
-                className="flex-shrink-0 flex items-center"
+                className="px-6 w-full flex items-center gap-4"
                 {...DRAG_REGION_ATTR}
-                style={
-                  {
-                    ...DRAG_REGION_STYLE,
-                    backgroundColor: "hsl(var(--background))",
-                    height: HEADER_HEIGHT,
-                  } as React.CSSProperties
-                }
+                style={{ ...DRAG_REGION_STYLE } as React.CSSProperties}
               >
-                <div
-                  className="px-6 w-full flex items-center gap-4"
-                  {...DRAG_REGION_ATTR}
-                  style={{ ...DRAG_REGION_STYLE } as React.CSSProperties}
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  aria-label={t("common.back", { defaultValue: "返回" })}
+                  onClick={onClose}
+                  className="rounded-lg select-none"
+                  style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
                 >
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="icon"
-                    aria-label={t("common.back", { defaultValue: "返回" })}
-                    onClick={onClose}
-                    className="rounded-lg select-none"
-                    style={
-                      { WebkitAppRegion: "no-drag" } as React.CSSProperties
-                    }
-                  >
-                    <ArrowLeft className="h-4 w-4" />
-                  </Button>
-                  <h2
-                    id={titleId}
-                    className="text-lg font-semibold text-foreground select-none"
-                  >
-                    {title}
-                  </h2>
+                  <ArrowLeft className="h-4 w-4" />
+                </Button>
+                <h2
+                  id={titleId}
+                  className="text-lg font-semibold text-foreground select-none"
+                >
+                  {title}
+                </h2>
+              </div>
+            </div>
+
+            {/* Content */}
+            <div className="min-h-0 flex-1 overflow-y-auto scroll-overlay">
+              <div
+                className={cn("px-6 py-6 space-y-6 w-full", contentClassName)}
+              >
+                {children}
+              </div>
+            </div>
+
+            {/* Footer */}
+            {footer && (
+              <div
+                className="flex-shrink-0 py-4 border-t border-border-default"
+                style={{ backgroundColor: "hsl(var(--background))" }}
+              >
+                <div className="px-6 flex items-center justify-end gap-3">
+                  {footer}
                 </div>
               </div>
-
-              {/* Content */}
-              <div className="min-h-0 flex-1 overflow-y-auto scroll-overlay">
-                <div
-                  className={cn("px-6 py-6 space-y-6 w-full", contentClassName)}
-                >
-                  {children}
-                </div>
-              </div>
-
-              {/* Footer */}
-              {footer && (
-                <div
-                  className="flex-shrink-0 py-4 border-t border-border-default"
-                  style={{ backgroundColor: "hsl(var(--background))" }}
-                >
-                  <div className="px-6 flex items-center justify-end gap-3">
-                    {footer}
-                  </div>
-                </div>
-              )}
-            </>
-          )}
-        </motion.div>
-      )}
-    </AnimatePresence>,
+            )}
+          </>
+        )}
+      </div>
+    ) : null,
     (editorHeader && document.querySelector(".chimera-shell")) || document.body,
   );
 };

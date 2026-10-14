@@ -1746,21 +1746,7 @@ fn push_env_codex_cli_candidates(candidates: &mut Vec<PathBuf>, seen: &mut HashS
     // PATH cannot run. This mirrors the Windows resources-directory block below,
     // whose absence on macOS is why the runtime probe failed there.
     #[cfg(target_os = "macos")]
-    {
-        for root in [
-            PathBuf::from("/Applications/Codex.app"),
-            get_home_dir().join("Applications/Codex.app"),
-        ] {
-            for relative in [
-                "Contents/Resources/codex",
-                "Contents/Resources/app/codex",
-                "Contents/MacOS/codex",
-                "Contents/Resources/bin/codex",
-            ] {
-                push_existing_codex_cli_candidate(candidates, seen, root.join(relative));
-            }
-        }
-    }
+    push_macos_desktop_codex_cli_candidates(candidates, seen, &get_home_dir());
 
     #[cfg(windows)]
     {
@@ -1791,6 +1777,94 @@ fn push_env_codex_cli_candidates(candidates: &mut Vec<PathBuf>, seen: &mut HashS
     }
 }
 
+/// The CLI inside the renamed macOS desktop bundle (ChatGPT.app), current
+/// layout first: `codex-cli/bin/codex` is a shim for the sibling
+/// `CodexCLI.app`, and earlier builds placed the binary directly under
+/// `Resources`.
+#[cfg(any(target_os = "macos", test))]
+const CHATGPT_APP_CLI_LAYOUTS: &[&str] = &[
+    "Contents/Resources/codex-cli/bin/codex",
+    "Contents/Resources/codex",
+];
+
+/// The pre-rename Codex.app: the same two layouts first, then the older ones
+/// this app has always probed. They are not applied to ChatGPT.app because
+/// `Contents/MacOS/codex` can resolve to the app's own GUI executable on a
+/// case-insensitive volume.
+#[cfg(any(target_os = "macos", test))]
+const CODEX_APP_CLI_LAYOUTS: &[&str] = &[
+    "Contents/Resources/codex-cli/bin/codex",
+    "Contents/Resources/codex",
+    "Contents/Resources/app/codex",
+    "Contents/MacOS/codex",
+    "Contents/Resources/bin/codex",
+];
+
+/// The CLI bundled with the macOS desktop app, in `/Applications` and
+/// `~/Applications`. The desktop app was renamed from Codex.app to ChatGPT.app
+/// and the migration can leave both bundles behind (openai/codex#48052); the
+/// ChatGPT.app copy is then the current one, so it is tried first wherever it
+/// is installed and a leftover Codex.app cannot shadow its newer model list.
+#[cfg(any(target_os = "macos", test))]
+fn push_macos_desktop_codex_cli_candidates(
+    candidates: &mut Vec<PathBuf>,
+    seen: &mut HashSet<String>,
+    home: &Path,
+) {
+    for (bundle, layouts) in [
+        ("ChatGPT.app", CHATGPT_APP_CLI_LAYOUTS),
+        ("Codex.app", CODEX_APP_CLI_LAYOUTS),
+    ] {
+        for applications in [PathBuf::from("/Applications"), home.join("Applications")] {
+            for layout in layouts {
+                push_existing_codex_cli_candidate(
+                    candidates,
+                    seen,
+                    applications.join(bundle).join(layout),
+                );
+            }
+        }
+    }
+}
+
+/// `<versions_dir>/<child>/<exe>` for every child directory that contains
+/// `exe`, newest modification time first (ties by path). The child names are
+/// content hashes or version numbers that do not sort as strings, so only the
+/// binary's mtime tells which copy is current. Children without `exe` are
+/// skipped: a sibling directory can hold only other tools such as `rg.exe`.
+#[cfg(any(windows, test))]
+fn push_codex_cli_candidates_newest_first(
+    candidates: &mut Vec<PathBuf>,
+    seen: &mut HashSet<String>,
+    versions_dir: &Path,
+    exe: &str,
+) {
+    let Ok(entries) = fs::read_dir(versions_dir) else {
+        return;
+    };
+
+    let mut discovered = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let candidate = entry.path().join(exe);
+            let metadata = fs::metadata(&candidate).ok()?;
+            if !metadata.is_file() {
+                return None;
+            }
+            // A filesystem without mtimes still lists the binary, just last.
+            let modified = metadata
+                .modified()
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            Some((modified, candidate))
+        })
+        .collect::<Vec<_>>();
+
+    discovered.sort_by(|(a_time, a), (b_time, b)| b_time.cmp(a_time).then_with(|| a.cmp(b)));
+    for (_, candidate) in discovered {
+        push_codex_cli_candidate(candidates, seen, candidate);
+    }
+}
+
 pub(crate) fn codex_cli_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     let mut seen = HashSet::new();
@@ -1801,6 +1875,25 @@ pub(crate) fn codex_cli_candidates() -> Vec<PathBuf> {
 
     push_env_codex_cli_candidates(&mut candidates, &mut seen);
     push_home_codex_cli_candidates(&mut candidates, &mut seen, &get_home_dir());
+
+    // The Windows desktop app keeps its own CLI under
+    // `%LOCALAPPDATA%\OpenAI\Codex\bin\<hash>\codex.exe` and never adds it to
+    // PATH, so it is the only CLI a desktop-only user has. It goes last so a
+    // standalone install keeps winning.
+    #[cfg(windows)]
+    {
+        if let Some(local_appdata) = std::env::var_os("LOCALAPPDATA") {
+            push_codex_cli_candidates_newest_first(
+                &mut candidates,
+                &mut seen,
+                &PathBuf::from(local_appdata)
+                    .join("OpenAI")
+                    .join("Codex")
+                    .join("bin"),
+                "codex.exe",
+            );
+        }
+    }
 
     candidates
 }
@@ -1865,10 +1958,26 @@ fn codex_runtime_models_command(candidate: &Path, codex_home: &Path) -> Command 
     codex_command(candidate, &["debug", "models"], Some(codex_home))
 }
 
-/// ② `codex debug models --bundled`: the first CLI whose catalog carries the
-/// template entry.
-fn load_codex_runtime_catalog_from_bundled() -> Result<Option<Value>, AppError> {
-    for candidate in codex_cli_candidates() {
+/// Why `codex debug models --bundled` produced no usable catalog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CodexBundledCatalogMiss {
+    /// No candidate could be started: there is no Codex CLI on this machine.
+    NoCli,
+    /// A CLI started but produced nothing usable; describes the last such one.
+    Failed(String),
+}
+
+/// The first candidate whose `codex debug models --bundled` catalog carries
+/// the template entry.
+///
+/// The candidate list includes the bare `codex` name and fixed paths whether
+/// or not they exist, so a spawn `NotFound` only means "not installed there".
+/// Any other failure means a CLI exists but is unusable, which is worth telling
+/// apart from having no CLI at all. Failure details are limited to the path,
+/// the exit status and a recognized hint; raw stderr is never kept.
+fn first_bundled_catalog(candidates: Vec<PathBuf>) -> Result<Value, CodexBundledCatalogMiss> {
+    let mut failure: Option<String> = None;
+    for candidate in candidates {
         let candidate_label = candidate.to_string_lossy();
         let output = match crate::process_utils::output_with_timeout(
             codex_bundled_models_command(&candidate),
@@ -1876,22 +1985,39 @@ fn load_codex_runtime_catalog_from_bundled() -> Result<Option<Value>, AppError> 
             crate::security_limits::MAX_PROCESS_OUTPUT_BYTES,
         ) {
             Ok(output) => output,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
             Err(err) => {
                 log::debug!(
                     "failed to run Codex bundled-model probe ({}): {}",
                     candidate_label,
                     err.kind()
                 );
+                failure = Some(format!(
+                    "`{candidate_label}` could not run ({})",
+                    err.kind()
+                ));
                 continue;
             }
         };
 
         if !output.status.success() {
+            let hint = recognized_codex_probe_hint(&String::from_utf8_lossy(&output.stderr));
             log::debug!(
-                "Codex bundled-model probe exited unsuccessfully ({}): {:?}",
+                "Codex bundled-model probe exited unsuccessfully ({}): {:?} hint={:?}",
                 candidate_label,
-                output.status.code()
+                output.status.code(),
+                hint
             );
+            failure = Some(match hint {
+                Some(hint) => format!(
+                    "`{candidate_label} debug models --bundled` failed ({}): {hint}",
+                    output.status
+                ),
+                None => format!(
+                    "`{candidate_label} debug models --bundled` failed ({})",
+                    output.status
+                ),
+            });
             continue;
         }
 
@@ -1901,15 +2027,46 @@ fn load_codex_runtime_catalog_from_bundled() -> Result<Option<Value>, AppError> 
                 log::debug!(
                     "Failed to parse `{candidate_label} debug models --bundled` output: {e}"
                 );
+                failure = Some(format!(
+                    "`{candidate_label} debug models --bundled` printed invalid JSON: {e}"
+                ));
                 continue;
             }
         };
         if find_codex_model_template(&catalog).is_some() {
-            return Ok(Some(catalog));
+            return Ok(catalog);
         }
+        failure = Some(format!(
+            "`{candidate_label} debug models --bundled` has no `{CODEX_MODEL_CATALOG_TEMPLATE_SLUG}` entry"
+        ));
     }
 
-    Ok(None)
+    Err(failure.map_or(
+        CodexBundledCatalogMiss::NoCli,
+        CodexBundledCatalogMiss::Failed,
+    ))
+}
+
+/// ② `codex debug models --bundled`: the first CLI whose catalog carries the
+/// template entry. A miss is not an error (the static template follows), but
+/// a CLI that exists and fails is logged at warn level so it is visible
+/// without debug logging.
+fn load_codex_runtime_catalog_from_bundled() -> Result<Option<Value>, AppError> {
+    match first_bundled_catalog(codex_cli_candidates()) {
+        Ok(catalog) => Ok(Some(catalog)),
+        Err(CodexBundledCatalogMiss::NoCli) => {
+            log::info!(
+                "Codex bundled model catalog unavailable: no Codex CLI found on PATH, in common install locations or in the Codex desktop app"
+            );
+            Ok(None)
+        }
+        Err(CodexBundledCatalogMiss::Failed(detail)) => {
+            log::warn!(
+                "Codex bundled model catalog unavailable: a Codex CLI was found but failed: {detail}"
+            );
+            Ok(None)
+        }
+    }
 }
 
 /// Known, non-sensitive `codex debug models` failure signatures worth showing
@@ -1969,7 +2126,7 @@ enum CodexProbeFailure {
 impl CodexProbeFailure {
     fn message(&self) -> String {
         match self {
-            Self::NoCliFound => "未找到可用的 Codex CLI，无法验证 Codex 实际模型列表".to_string(),
+            Self::NoCliFound => "未找到可用的 Codex CLI（已查找 PATH、常见安装位置和 Codex 桌面版自带的 CLI），无法验证 Codex 实际模型列表".to_string(),
             Self::ExitedUnsuccessfully { code, hint } => {
                 let code = code
                     .map(|code| format!("退出码 {code}"))
@@ -7045,6 +7202,234 @@ base_url = "https://relay.example/v1"
             1,
             "duplicate candidates should be removed"
         );
+    }
+
+    fn create_cli_candidate(path: &Path) {
+        std::fs::create_dir_all(path.parent().expect("candidate parent"))
+            .expect("create candidate parent");
+        std::fs::write(path, "").expect("create candidate");
+    }
+
+    fn set_mtime(path: &Path, time: std::time::SystemTime) {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .expect("open candidate")
+            .set_times(std::fs::FileTimes::new().set_modified(time))
+            .expect("set candidate mtime");
+    }
+
+    #[test]
+    fn macos_desktop_cli_candidates_prefer_chatgpt_app_and_current_layout() {
+        let temp_home = tempfile::tempdir().expect("create temp home");
+        let applications = temp_home.path().join("Applications");
+        let chatgpt_current = applications
+            .join("ChatGPT.app")
+            .join(CHATGPT_APP_CLI_LAYOUTS[0]);
+        let chatgpt_legacy = applications
+            .join("ChatGPT.app")
+            .join(CHATGPT_APP_CLI_LAYOUTS[1]);
+        // A migration can leave the pre-rename bundle behind next to the new one.
+        let codex_legacy = applications
+            .join("Codex.app")
+            .join("Contents/Resources/codex");
+        let codex_oldest = applications
+            .join("Codex.app")
+            .join("Contents/Resources/bin/codex");
+        for path in [
+            &chatgpt_current,
+            &chatgpt_legacy,
+            &codex_legacy,
+            &codex_oldest,
+        ] {
+            create_cli_candidate(path);
+        }
+
+        let mut candidates = Vec::new();
+        let mut seen = HashSet::new();
+        push_macos_desktop_codex_cli_candidates(&mut candidates, &mut seen, temp_home.path());
+
+        let position = |path: &Path| {
+            candidates
+                .iter()
+                .position(|candidate| candidate == path)
+                .unwrap_or_else(|| panic!("missing desktop candidate {}", path.display()))
+        };
+        assert!(position(&chatgpt_current) < position(&chatgpt_legacy));
+        assert!(
+            position(&chatgpt_legacy) < position(&codex_legacy),
+            "the renamed ChatGPT.app must win over a leftover Codex.app"
+        );
+        assert!(
+            position(&codex_legacy) < position(&codex_oldest),
+            "Codex.app keeps its historical layouts after the current ones"
+        );
+        // Layouts that are not installed contribute nothing.
+        assert_eq!(
+            candidates
+                .iter()
+                .filter(|candidate| candidate.starts_with(temp_home.path()))
+                .count(),
+            4
+        );
+    }
+
+    #[test]
+    fn desktop_cli_versions_are_tried_newest_first_and_need_the_binary() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let root = temp.path();
+        let now = std::time::SystemTime::now();
+        // Directory names are hashes: string order must not decide.
+        let older = root.join("ffff0000aaaa1111").join("codex.exe");
+        let newer = root.join("0000ffff1111aaaa").join("codex.exe");
+        create_cli_candidate(&older);
+        create_cli_candidate(&newer);
+        set_mtime(&older, now - Duration::from_secs(3600));
+        set_mtime(&newer, now);
+        // A sibling holding only other tools, and an empty one, are skipped.
+        create_cli_candidate(&root.join("9a7ba4b9ea0c44a3").join("rg.exe"));
+        std::fs::create_dir_all(root.join("empty")).expect("create empty dir");
+
+        let mut candidates = Vec::new();
+        let mut seen = HashSet::new();
+        push_codex_cli_candidates_newest_first(&mut candidates, &mut seen, root, "codex.exe");
+        assert_eq!(candidates, vec![newer, older]);
+
+        // A missing versions directory is not an error.
+        let mut missing = Vec::new();
+        push_codex_cli_candidates_newest_first(
+            &mut missing,
+            &mut seen,
+            &root.join("does-not-exist"),
+            "codex.exe",
+        );
+        assert!(missing.is_empty());
+    }
+
+    /// Restores one environment variable when dropped, even if the test panics.
+    #[cfg(windows)]
+    struct EnvVarGuard {
+        key: &'static str,
+        original: Option<std::ffi::OsString>,
+    }
+
+    #[cfg(windows)]
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &Path) -> Self {
+            let original = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, original }
+        }
+    }
+
+    #[cfg(windows)]
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match self.original.take() {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[serial_test::serial]
+    fn desktop_app_cli_is_tried_after_standalone_installs() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let home = temp.path().join("home");
+        let local_appdata = temp.path().join("AppData").join("Local");
+        let _home_guard = EnvVarGuard::set("CC_SWITCH_TEST_HOME", &home);
+        let _local_appdata_guard = EnvVarGuard::set("LOCALAPPDATA", &local_appdata);
+
+        let standalone = home.join(".volta/bin/codex");
+        create_cli_candidate(&standalone);
+        let bin = local_appdata.join("OpenAI").join("Codex").join("bin");
+        let desktop = bin.join("2e5e00daee91c61d").join("codex.exe");
+        create_cli_candidate(&desktop);
+        create_cli_candidate(&bin.join("9a7ba4b9ea0c44a3").join("rg.exe"));
+
+        let candidates = codex_cli_candidates();
+        let position = |path: &Path| {
+            candidates
+                .iter()
+                .position(|candidate| candidate == path)
+                .unwrap_or_else(|| panic!("missing candidate {}", path.display()))
+        };
+        assert!(
+            position(&standalone) < position(&desktop),
+            "a standalone CLI keeps winning over the desktop app's own copy"
+        );
+        assert_eq!(
+            candidates.last(),
+            Some(&desktop),
+            "the desktop app's CLI is the last resort"
+        );
+        assert!(!candidates
+            .iter()
+            .any(|candidate| candidate.starts_with(bin.join("9a7ba4b9ea0c44a3"))));
+    }
+
+    #[test]
+    fn bundled_catalog_tells_a_missing_cli_apart_from_a_failing_one() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let missing = dir.path().join("missing-codex");
+        assert_eq!(
+            first_bundled_catalog(vec![missing.clone()]),
+            Err(CodexBundledCatalogMiss::NoCli),
+            "candidates that do not exist only mean no CLI is installed"
+        );
+
+        #[cfg(any(unix, windows))]
+        {
+            let catalog = json!({ "models": [{ "slug": CODEX_MODEL_CATALOG_TEMPLATE_SLUG }] });
+            #[cfg(unix)]
+            let (failing, working) = {
+                use std::os::unix::fs::PermissionsExt;
+                let script = |name: &str, body: String| {
+                    let path = dir.path().join(name);
+                    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("write script");
+                    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                        .expect("chmod script");
+                    path
+                };
+                (
+                    script("failing-codex", "echo boom >&2; exit 1".to_string()),
+                    script("working-codex", format!("echo '{catalog}'")),
+                )
+            };
+            #[cfg(windows)]
+            let (failing, working) = {
+                let script = |name: &str, body: String| {
+                    let path = dir.path().join(name);
+                    std::fs::write(&path, format!("@echo off\r\n{body}\r\n"))
+                        .expect("write script");
+                    path
+                };
+                (
+                    script(
+                        "failing-codex.cmd",
+                        "echo boom 1>&2\r\nexit /b 1".to_string(),
+                    ),
+                    script("working-codex.cmd", format!("echo {catalog}")),
+                )
+            };
+
+            // Found but failing must not be reported as "no CLI".
+            let failure = first_bundled_catalog(vec![missing.clone(), failing.clone()]);
+            assert!(
+                matches!(
+                    &failure,
+                    Err(CodexBundledCatalogMiss::Failed(detail)) if detail.contains("failing-codex")
+                ),
+                "unexpected result: {failure:?}"
+            );
+            // An earlier failure does not hide a later working candidate.
+            assert_eq!(
+                first_bundled_catalog(vec![missing, failing, working]),
+                Ok(catalog)
+            );
+        }
     }
 
     #[test]

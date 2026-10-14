@@ -816,6 +816,45 @@ pub struct ProviderMeta {
     /// pin is a pseudonymous key; the credential itself never lives in a row.
     #[serde(rename = "officialAccount", skip_serializing_if = "Option::is_none")]
     pub official_account: Option<OfficialAccountPin>,
+    /// 线路站牌上的简称（用户自定义；未设置时由界面按名称生成）。
+    /// 读入即规范化，见 `normalize_badge_text`。
+    #[serde(
+        default,
+        rename = "badgeText",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_badge_text"
+    )]
+    pub badge_text: Option<String>,
+}
+
+/// 线路简称最多保留的字符数，按 Unicode 标量值（`char`）计。
+const BADGE_TEXT_MAX_CHARS: usize = 3;
+
+/// 规范化线路简称：去掉首尾空白，空串视为未设置，最多保留
+/// `BADGE_TEXT_MAX_CHARS` 个 Unicode 标量值，截断后再去掉尾部空白。
+fn normalize_badge_text(raw: Option<&str>) -> Option<String> {
+    let truncated: String = raw?.trim().chars().take(BADGE_TEXT_MAX_CHARS).collect();
+    let badge = truncated.trim_end();
+    if badge.is_empty() {
+        None
+    } else {
+        Some(badge.to_string())
+    }
+}
+
+/// 简称在反序列化时规范化，而不是放进某个保存函数：供应商保存没有统一的
+/// 元数据规范化入口（Pi 走自己的保存路径），而渲染进程提交的保存、导入和
+/// 读库都要经过 `ProviderMeta` 的反序列化，在这里处理一次即可全部覆盖。
+///
+/// 非字符串一律当作未设置而不报错：数据库读取对解析失败的 meta 整体回退为
+/// 默认值，备份恢复又会原样保留 meta JSON，一个写坏的简称不能连带清掉
+/// 同一行的路由、协议和账号绑定。
+fn deserialize_badge_text<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Option::<Value>::deserialize(deserializer)?;
+    Ok(normalize_badge_text(raw.as_ref().and_then(Value::as_str)))
 }
 
 /// `meta.officialAccount` of an official Codex line.
@@ -1332,6 +1371,85 @@ mod tests {
     fn provider_meta_omits_max_output_tokens_when_none() {
         let value = serde_json::to_value(ProviderMeta::default()).expect("serialize ProviderMeta");
         assert!(value.get("maxOutputTokens").is_none());
+    }
+
+    #[test]
+    fn provider_meta_roundtrips_badge_text() {
+        let meta = ProviderMeta {
+            badge_text: Some("DS".to_string()),
+            ..ProviderMeta::default()
+        };
+
+        let value = serde_json::to_value(&meta).expect("serialize ProviderMeta");
+        assert_eq!(value.get("badgeText").and_then(|v| v.as_str()), Some("DS"));
+        assert!(value.get("badge_text").is_none());
+
+        let parsed: ProviderMeta = serde_json::from_value(value).expect("deserialize ProviderMeta");
+        assert_eq!(parsed.badge_text.as_deref(), Some("DS"));
+    }
+
+    #[test]
+    fn provider_meta_omits_badge_text_when_none() {
+        let value = serde_json::to_value(ProviderMeta::default()).expect("serialize ProviderMeta");
+        assert!(value.get("badgeText").is_none());
+
+        let parsed: ProviderMeta =
+            serde_json::from_value(json!({})).expect("deserialize ProviderMeta");
+        assert!(parsed.badge_text.is_none());
+    }
+
+    #[test]
+    fn provider_meta_normalizes_badge_text_when_read() {
+        for (raw, expected) in [
+            (json!("  DS  "), Some("DS")),
+            (json!("DeepSeek"), Some("Dee")),
+            (json!("深度求索"), Some("深度求")),
+            (json!("😀😀😀😀"), Some("😀😀😀")),
+            (json!("\u{3000}主\u{3000}"), Some("主")),
+            (json!("A  B"), Some("A")),
+            (json!(""), None),
+            (json!("   "), None),
+            (json!(null), None),
+            (json!(42), None),
+            (json!(["DS"]), None),
+        ] {
+            let parsed: ProviderMeta = serde_json::from_value(json!({ "badgeText": raw.clone() }))
+                .expect("deserialize ProviderMeta");
+            assert_eq!(parsed.badge_text.as_deref(), expected, "input {raw}");
+        }
+    }
+
+    /// Stored meta that fails to parse is replaced wholesale by the default, so
+    /// a malformed badge must not take the line's routing with it.
+    #[test]
+    fn malformed_badge_text_keeps_the_rest_of_the_meta() {
+        let raw = r#"{"badgeText":{"text":"DS"},"apiFormat":"openai_chat","isFullUrl":true}"#;
+        let parsed: ProviderMeta = serde_json::from_str(raw).expect("deserialize ProviderMeta");
+        assert!(parsed.badge_text.is_none());
+        assert_eq!(parsed.api_format.as_deref(), Some("openai_chat"));
+        assert_eq!(parsed.is_full_url, Some(true));
+    }
+
+    /// The renderer saves a whole `Provider`; the field must survive that shape.
+    #[test]
+    fn provider_payload_keeps_normalized_badge_text() {
+        let provider: Provider = serde_json::from_value(json!({
+            "id": "p1",
+            "name": "DeepSeek",
+            "settingsConfig": {},
+            "meta": { "badgeText": " DS " }
+        }))
+        .expect("deserialize Provider");
+        assert_eq!(
+            provider
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.badge_text.as_deref()),
+            Some("DS")
+        );
+
+        let value = serde_json::to_value(&provider).expect("serialize Provider");
+        assert_eq!(value["meta"]["badgeText"], json!("DS"));
     }
 
     #[test]

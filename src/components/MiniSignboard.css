@@ -55,19 +55,6 @@
 .mini-signboard-status {
   flex-shrink: 0;
 }
-.mini-signboard-badge {
-  display: inline-flex;
-  flex: 0 0 20px;
-  width: 20px;
-  min-width: 0;
-  height: 20px;
-  align-items: center;
-  justify-content: center;
-  border-radius: 4px;
-  color: #fdfdfe;
-  font-size: 12px;
-  font-weight: 700;
-}
 .mini-signboard-name {
   max-width: min(148px, 24vw);
   overflow: hidden;

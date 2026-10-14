@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import {
   Gauge,
@@ -12,14 +12,63 @@ import {
 } from "lucide-react";
 import { openDialogCount } from "@/hooks/useDialogFocus";
 import type { Provider } from "@/types";
+import type { ConnectionState } from "@/chimeraUtils";
 import type { CanonicalLine } from "@/data/canonicalData";
 import {
   extractCodexBaseUrl,
   extractCodexModelName,
   extractCodexWireApi,
 } from "@/utils/providerConfigUtils";
+import {
+  codexProviderRouting,
+  codexRoutingReasonLabels,
+  type CodexRouting,
+} from "@/utils/codexRouting";
 import { vscodeApi, type EndpointLatencyResult } from "@/lib/api/vscode";
+import { HelpTip } from "@/components/ui/help-tip";
+import { LineBadge } from "@/components/LineBadge";
 import "./ProviderLineTable.css";
+
+const PROTOCOL_LABELS: Record<string, string> = {
+  responses: "Responses",
+  chat: "Chat",
+  openai_responses: "Responses",
+  openai_chat: "Chat",
+  anthropic: "Anthropic",
+  gemini_native: "Gemini",
+};
+
+// Official lines talk to the ChatGPT backend through Codex itself.
+const DIRECT: CodexRouting = { routed: false, reasons: [] };
+
+/** Matches the latency readout used on the station signboard. */
+const SLOW_LATENCY_MS = 1000;
+
+const lineConfig = (provider: Provider) =>
+  String(provider.settingsConfig?.config ?? "");
+
+function protocolLabel(provider: Provider, official: boolean): string {
+  const raw =
+    provider.meta?.apiFormat || extractCodexWireApi(lineConfig(provider)) || "";
+  const label = PROTOCOL_LABELS[raw];
+  if (!label) return official ? "Responses" : "自动";
+  // Design 01: a detected protocol reads "自动 · Chat", a chosen one "Chat".
+  return provider.meta?.apiFormatAutoDetected ? `自动 · ${label}` : label;
+}
+
+/** The sentence behind the "本地路由" marker. */
+export function routingExplanation(routing: CodexRouting): string {
+  const reasons = routing.reasons
+    .map((reason) => codexRoutingReasonLabels[reason])
+    .join("、");
+  return `经 Chimera++ 本地路由转发（${reasons}），需保持 Chimera++ 运行。`;
+}
+
+type Reading =
+  | { kind: "none" }
+  | { kind: "checking" }
+  | { kind: "ok"; latencyMs: number }
+  | { kind: "error"; message: string };
 
 export function ProviderLineTable({
   readOnly = false,
@@ -29,9 +78,12 @@ export function ProviderLineTable({
   managerTriggerRef,
   providers,
   currentId,
+  currentConnection,
   switchingId,
   deletingProviderId,
   labels,
+  testAllRequested = false,
+  onTestAllHandled,
   onSwitch,
   onEdit,
   onDelete,
@@ -43,12 +95,14 @@ export function ProviderLineTable({
   managerTriggerRef?: RefObject<HTMLButtonElement>;
   providers: Provider[];
   currentId: string;
+  /** The current line's own connection test, shown on its row too. */
+  currentConnection?: ConnectionState;
   switchingId: string | null;
   deletingProviderId: string | null;
-  labels: Map<
-    string,
-    { name: string; source: string; mark: string; official: boolean }
-  >;
+  labels: Map<string, { name: string; source: string; official: boolean }>;
+  /** Set by the command palette; the table runs one bulk test and clears it. */
+  testAllRequested?: boolean;
+  onTestAllHandled?: () => void;
   onSwitch: (provider: Provider) => Promise<void>;
   onEdit: (provider: Provider) => void;
   onDelete: (provider: Provider) => void;
@@ -60,6 +114,16 @@ export function ProviderLineTable({
   const [testing, setTesting] = useState(false);
   const generation = useRef(0);
   const search = useRef<HTMLInputElement>(null);
+  const routing = useMemo(
+    () =>
+      new Map(
+        providers.map((provider) => [
+          provider.id,
+          codexProviderRouting(provider),
+        ]),
+      ),
+    [providers],
+  );
   useEffect(() => {
     generation.current++;
     setTesting(false);
@@ -79,13 +143,13 @@ export function ProviderLineTable({
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, []);
+  const endpoints = providers
+    .map((p) => extractCodexBaseUrl(lineConfig(p)))
+    .filter((url): url is string => Boolean(url));
   const testAll = async () => {
-    if (readOnly || testing) return;
+    if (readOnly || testing || !endpoints.length) return;
     const token = ++generation.current;
     setTesting(true);
-    const endpoints = providers
-      .map((p) => extractCodexBaseUrl(String(p.settingsConfig?.config ?? "")))
-      .filter((url): url is string => Boolean(url));
     try {
       const measured = await vscodeApi.testApiEndpoints(
         [...new Set(endpoints)],
@@ -107,9 +171,47 @@ export function ProviderLineTable({
       if (generation.current === token) setTesting(false);
     }
   };
+  // One run per request, also when React replays effects in development.
+  const requestRunning = useRef(false);
+  useEffect(() => {
+    if (!testAllRequested || requestRunning.current) return;
+    requestRunning.current = true;
+    onTestAllHandled?.();
+    void testAll().finally(() => {
+      requestRunning.current = false;
+    });
+  }, [testAllRequested]);
+  const current = providers.find((p) => p.id === currentId);
+  const currentEndpoint = current
+    ? extractCodexBaseUrl(lineConfig(current))
+    : undefined;
+  const readingFor = (endpoint: string | undefined): Reading => {
+    if (!endpoint) return { kind: "none" };
+    if (testing) return { kind: "checking" };
+    const result = results[endpoint];
+    if (result) {
+      if (result.error) return { kind: "error", message: result.error };
+      return result.latency != null
+        ? { kind: "ok", latencyMs: result.latency }
+        : { kind: "none" };
+    }
+    // Latency belongs to the address: rows sharing the current line's address
+    // show the signboard's measurement as well.
+    if (endpoint !== currentEndpoint || !currentConnection)
+      return { kind: "none" };
+    if (currentConnection.kind === "checking") return { kind: "checking" };
+    if (currentConnection.kind === "error")
+      return { kind: "error", message: currentConnection.message };
+    if (
+      currentConnection.kind === "connected" &&
+      currentConnection.latencyMs != null
+    )
+      return { kind: "ok", latencyMs: currentConnection.latencyMs };
+    return { kind: "none" };
+  };
   const filtered = providers.filter((p) => {
     const label = labels.get(p.id);
-    const config = String(p.settingsConfig?.config ?? "");
+    const config = lineConfig(p);
     return `${label?.name} ${p.name} ${extractCodexBaseUrl(config)} ${extractCodexModelName(config)}`
       .toLowerCase()
       .includes(query.trim().toLowerCase());
@@ -117,7 +219,7 @@ export function ProviderLineTable({
   const toolbar = (
     <div className="provider-table-tools">
       <label className="provider-table-search">
-        <Search size={14} />
+        <Search size={14} aria-hidden="true" />
         <input
           ref={search}
           value={query}
@@ -130,18 +232,13 @@ export function ProviderLineTable({
       <button
         type="button"
         onClick={() => void testAll()}
-        disabled={
-          readOnly ||
-          testing ||
-          !providers.some((p) =>
-            extractCodexBaseUrl(String(p.settingsConfig?.config ?? "")),
-          )
-        }
+        disabled={readOnly || testing || !endpoints.length}
+        title={endpoints.length ? undefined : "没有填写请求地址的线路可测速"}
       >
         {testing ? (
-          <RefreshCw size={14} className="spin" />
+          <RefreshCw size={14} className="spin" aria-hidden="true" />
         ) : (
-          <Gauge size={14} />
+          <Gauge size={14} aria-hidden="true" />
         )}
         {testing ? "测速中…" : "全部测速"}
       </button>
@@ -211,22 +308,15 @@ export function ProviderLineTable({
                 const sample = readOnly
                   ? designSamples?.find((line) => line.id === p.id)
                   : undefined;
-                const config = String(p.settingsConfig?.config ?? "");
+                const config = lineConfig(p);
                 const endpoint = extractCodexBaseUrl(config);
-                const result = endpoint ? results[endpoint] : undefined;
+                const reading = readingFor(endpoint);
                 const active = p.id === currentId;
-                const protocol =
-                  sample?.protocol ??
-                  ((
-                    {
-                      responses: "Responses",
-                      chat: "Chat",
-                      openai_responses: "Responses",
-                      openai_chat: "Chat",
-                      anthropic: "Anthropic",
-                    } as Record<string, string>
-                  )[p.meta?.apiFormat || extractCodexWireApi(config) || ""] ||
-                    "自动");
+                const protocol = sample?.protocol ?? protocolLabel(p, official);
+                const route = official ? DIRECT : (routing.get(p.id) ?? DIRECT);
+                const model =
+                  extractCodexModelName(config) ||
+                  (official ? "Codex 默认" : "未设置");
                 const busy =
                   readOnly || Boolean(switchingId || deletingProviderId);
                 return (
@@ -236,15 +326,8 @@ export function ProviderLineTable({
                     key={p.id}
                   >
                     <span role="cell" className="provider-row-indicator" />
-                    <span
-                      role="cell"
-                      className={`provider-row-badge${official ? " is-official" : ""}`}
-                      style={{
-                        backgroundColor:
-                          p.iconColor || (official ? "#1A1E24" : "#537197"),
-                      }}
-                    >
-                      {sample?.mark ?? label.mark}
+                    <span role="cell" className="provider-row-badge">
+                      <LineBadge line={p} />
                     </span>
                     <span role="cell">
                       <button
@@ -254,7 +337,7 @@ export function ProviderLineTable({
                         onClick={() => void onSwitch(p)}
                         disabled={busy || active}
                       >
-                        <b>{label.name}</b>
+                        <b title={label.name}>{label.name}</b>
                         <small
                           className={
                             sample?.expired
@@ -276,26 +359,35 @@ export function ProviderLineTable({
                     <span role="cell">
                       {official ? "ChatGPT 登录" : "API 密钥"}
                     </span>
-                    <span
-                      role="cell"
-                      className={
-                        /^[A-Za-z]+$/.test(protocol)
-                          ? "provider-direct-protocol"
-                          : undefined
-                      }
-                    >
-                      {protocol}
+                    <span role="cell" className="provider-row-protocol">
+                      <span
+                        className={
+                          /^[A-Za-z]+$/.test(protocol)
+                            ? "provider-direct-protocol"
+                            : undefined
+                        }
+                        title={protocol}
+                      >
+                        {protocol}
+                      </span>
+                      {route.routed && (
+                        <span className="provider-route-mark">
+                          本地路由
+                          <HelpTip title="本地路由">
+                            {routingExplanation(route)}
+                          </HelpTip>
+                        </span>
+                      )}
                     </span>
-                    <code
-                      role="cell"
-                      title={extractCodexModelName(config) || "未设置"}
-                    >
-                      {extractCodexModelName(config) || "未设置"}
+                    <code role="cell" title={model}>
+                      {model}
                     </code>
                     <span
                       role="cell"
                       className="provider-row-latency"
-                      title={result?.error}
+                      title={
+                        reading.kind === "error" ? reading.message : undefined
+                      }
                     >
                       {sample ? (
                         sample.expired ? null : (
@@ -324,14 +416,19 @@ export function ProviderLineTable({
                             {sample.timeout && <RefreshCw size={12} />}
                           </span>
                         )
-                      ) : testing && endpoint ? (
-                        "测速中"
-                      ) : result?.error ? (
-                        "失败"
-                      ) : result?.latency != null ? (
-                        `${result.latency} ms`
+                      ) : reading.kind === "checking" ? (
+                        <span className="provider-latency-muted">测速中</span>
+                      ) : reading.kind === "error" ? (
+                        <span className="is-timeout">失败</span>
+                      ) : reading.kind === "ok" ? (
+                        <>
+                          <span>{`${reading.latencyMs} ms`}</span>
+                          {reading.latencyMs >= SLOW_LATENCY_MS && (
+                            <strong className="is-slow"> 慢</strong>
+                          )}
+                        </>
                       ) : (
-                        "—"
+                        <span className="provider-latency-muted">—</span>
                       )}
                     </span>
                     <span role="cell" className="provider-row-actions">
@@ -364,6 +461,7 @@ export function ProviderLineTable({
                             onClick={() => onEdit(p)}
                             disabled={busy}
                             aria-label={`编辑${label.name}`}
+                            title="编辑线路"
                           >
                             <Pencil size={16} />
                           </button>
@@ -391,7 +489,12 @@ export function ProviderLineTable({
           );
         })}
         {!filtered.length && (
-          <p className="provider-table-empty">没有匹配的线路。</p>
+          <div className="provider-table-empty">
+            <p>没有匹配的线路。</p>
+            <button type="button" onClick={() => setQuery("")}>
+              清除筛选
+            </button>
+          </div>
         )}
       </div>
     </>

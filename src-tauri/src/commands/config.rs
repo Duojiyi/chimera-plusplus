@@ -232,6 +232,39 @@ pub async fn open_app_config_folder(handle: AppHandle) -> Result<bool, String> {
     Ok(true)
 }
 
+/// 日志目录中的应用日志文件。lib.rs 把日志插件的 Folder 目标设为
+/// `panic_hook::get_log_dir()`、文件名设为 `PRODUCT_LOG_FILE`，插件再按
+/// `dir.join(file_name).with_extension("log")` 生成文件路径，这里用同一规则。
+fn app_log_file_path(log_dir: &std::path::Path) -> std::path::PathBuf {
+    log_dir
+        .join(crate::product_policy::PRODUCT_LOG_FILE)
+        .with_extension("log")
+}
+
+/// 在系统文件管理器中定位应用日志并选中它，方便用户反馈问题时附上。
+#[tauri::command]
+pub async fn reveal_app_log_file(handle: AppHandle) -> Result<bool, String> {
+    let log_dir = crate::panic_hook::get_log_dir();
+    let log_file = app_log_file_path(&log_dir);
+    if log_file.is_file() {
+        handle
+            .opener()
+            .reveal_item_in_dir(&log_file)
+            .map_err(|e| format!("定位日志文件失败: {e}"))?;
+        return Ok(true);
+    }
+
+    // 日志还没生成（例如日志插件初始化失败）时没有可选中的文件，
+    // reveal_item_in_dir 会因路径不存在而报错，改为打开日志目录。
+    std::fs::create_dir_all(&log_dir).map_err(|e| format!("创建日志目录失败: {e}"))?;
+    handle
+        .opener()
+        .open_path(log_dir.to_string_lossy().to_string(), None::<String>)
+        .map_err(|e| format!("打开日志目录失败: {e}"))?;
+
+    Ok(true)
+}
+
 #[tauri::command]
 pub async fn get_claude_common_config_snippet(
     state: tauri::State<'_, crate::store::AppState>,
@@ -389,6 +422,21 @@ mod tests {
         assert!(
             err.contains("TOML") || err.contains("toml") || err.contains("格式"),
             "expected TOML validation error, got {err}"
+        );
+    }
+
+    // Pure path computation: no files are created or opened. The log directory
+    // is read once, so tests that change HOME concurrently cannot split it.
+    #[test]
+    fn app_log_file_path_points_at_the_log_plugin_file() {
+        let log_dir = crate::panic_hook::get_log_dir();
+        let path = super::app_log_file_path(&log_dir);
+
+        assert_eq!(path.parent(), Some(log_dir.as_path()));
+        assert!(
+            path.ends_with(std::path::Path::new("logs").join("chimera-plus-plus.log")),
+            "unexpected log file path: {}",
+            path.display()
         );
     }
 }

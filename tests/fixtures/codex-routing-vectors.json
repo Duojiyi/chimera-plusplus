@@ -1,0 +1,236 @@
+[
+  {
+    "name": "native responses line stays direct",
+    "provider": {
+      "id": "v1",
+      "name": "Responses",
+      "settingsConfig": {},
+      "meta": { "apiFormat": "openai_responses" }
+    },
+    "routed": false,
+    "reasons": []
+  },
+  {
+    "name": "official line is never routed",
+    "provider": {
+      "id": "v2",
+      "name": "OpenAI 官方",
+      "category": "official",
+      "settingsConfig": {},
+      "meta": { "apiFormat": "openai_chat", "isFullUrl": true }
+    },
+    "routed": false,
+    "reasons": []
+  },
+  {
+    "name": "chat line is converted",
+    "provider": {
+      "id": "v3",
+      "name": "Chat",
+      "settingsConfig": {},
+      "meta": { "apiFormat": "openai_chat" }
+    },
+    "routed": true,
+    "reasons": ["chat"]
+  },
+  {
+    "name": "anthropic line is converted",
+    "provider": {
+      "id": "v4",
+      "name": "Anthropic",
+      "settingsConfig": {},
+      "meta": { "apiFormat": "anthropic" }
+    },
+    "routed": true,
+    "reasons": ["anthropic"]
+  },
+  {
+    "name": "full url forces routing on a responses line",
+    "provider": {
+      "id": "v5",
+      "name": "Full URL",
+      "settingsConfig": {},
+      "meta": { "apiFormat": "openai_responses", "isFullUrl": true }
+    },
+    "routed": true,
+    "reasons": ["full-url"]
+  },
+  {
+    "name": "custom user agent forces routing",
+    "provider": {
+      "id": "v6",
+      "name": "UA",
+      "settingsConfig": {},
+      "meta": { "apiFormat": "openai_responses", "customUserAgent": "my-client/1.0" }
+    },
+    "routed": true,
+    "reasons": ["user-agent"]
+  },
+  {
+    "name": "blank custom user agent is ignored",
+    "provider": {
+      "id": "v7",
+      "name": "Blank UA",
+      "settingsConfig": {},
+      "meta": { "apiFormat": "openai_responses", "customUserAgent": "   " }
+    },
+    "routed": false,
+    "reasons": []
+  },
+  {
+    "name": "custom request headers force routing",
+    "provider": {
+      "id": "v8",
+      "name": "Headers",
+      "settingsConfig": {},
+      "meta": {
+        "apiFormat": "openai_responses",
+        "localProxyRequestOverrides": { "headers": { "x-team": "qa" } }
+      }
+    },
+    "routed": true,
+    "reasons": ["request-overrides"]
+  },
+  {
+    "name": "empty request overrides are ignored",
+    "provider": {
+      "id": "v9",
+      "name": "Empty overrides",
+      "settingsConfig": {},
+      "meta": {
+        "apiFormat": "openai_responses",
+        "localProxyRequestOverrides": { "headers": {} }
+      }
+    },
+    "routed": false,
+    "reasons": []
+  },
+  {
+    "name": "mixed catalog with a chat model is routed per model",
+    "provider": {
+      "id": "v10",
+      "name": "Mixed",
+      "settingsConfig": {},
+      "meta": {
+        "apiFormat": "openai_responses",
+        "codexModelApiFormats": {
+          "gpt-5.5": "openai_responses",
+          "deepseek-v4-pro": "openai_chat"
+        }
+      }
+    },
+    "routed": true,
+    "reasons": ["model-routing"]
+  },
+  {
+    "name": "enabled model route with its own upstream is routed",
+    "provider": {
+      "id": "v11",
+      "name": "Model route",
+      "settingsConfig": {},
+      "meta": {
+        "apiFormat": "openai_responses",
+        "codexModelRoutes": {
+          "claude-native": { "baseUrl": "https://anthropic.example.com", "apiFormat": "anthropic" }
+        }
+      }
+    },
+    "routed": true,
+    "reasons": ["model-routing"]
+  },
+  {
+    "name": "disabled model route is ignored",
+    "provider": {
+      "id": "v12",
+      "name": "Paused route",
+      "settingsConfig": {},
+      "meta": {
+        "apiFormat": "openai_responses",
+        "codexModelRoutes": {
+          "claude-native": { "baseUrl": "https://anthropic.example.com", "enabled": false }
+        }
+      }
+    },
+    "routed": false,
+    "reasons": []
+  },
+  {
+    "name": "protocol-only model route does not change the target",
+    "provider": {
+      "id": "v13",
+      "name": "Protocol-only route",
+      "settingsConfig": {},
+      "meta": {
+        "apiFormat": "openai_responses",
+        "codexModelRoutes": { "gpt-5.5": { "apiFormat": "openai_responses" } }
+      }
+    },
+    "routed": false,
+    "reasons": []
+  },
+  {
+    "name": "auto line without a declared protocol is routed for detection",
+    "provider": {
+      "id": "v14",
+      "name": "Auto",
+      "settingsConfig": {}
+    },
+    "routed": true,
+    "reasons": ["auto-detect"]
+  },
+  {
+    "name": "auto line that declares native responses stays direct",
+    "provider": {
+      "id": "v15",
+      "name": "Declared",
+      "settingsConfig": {
+        "config": "model_provider = \"custom\"\n[model_providers.custom]\nbase_url = \"https://api.example.com/v1\"\nwire_api = \"responses\"\n"
+      }
+    },
+    "routed": false,
+    "reasons": []
+  },
+  {
+    "name": "legacy config declaring chat is converted",
+    "provider": {
+      "id": "v16",
+      "name": "Legacy chat",
+      "settingsConfig": {
+        "config": "model_provider = \"custom\"\n[model_providers.custom]\nbase_url = \"https://api.example.com/v1\"\nwire_api = \"chat\"\n"
+      }
+    },
+    "routed": true,
+    "reasons": ["chat"]
+  },
+  {
+    "name": "chat completions endpoint url implies chat",
+    "provider": {
+      "id": "v17",
+      "name": "Endpoint URL",
+      "settingsConfig": { "base_url": "https://api.example.com/v1/chat/completions/" }
+    },
+    "routed": true,
+    "reasons": ["chat"]
+  },
+  {
+    "name": "managed oauth provider type is routed",
+    "provider": {
+      "id": "v18",
+      "name": "Managed",
+      "settingsConfig": {},
+      "meta": { "apiFormat": "openai_responses", "providerType": "codex_oauth" }
+    },
+    "routed": true,
+    "reasons": ["managed-auth"]
+  },
+  {
+    "name": "settings-level responses format still counts as auto for detection",
+    "provider": {
+      "id": "v19",
+      "name": "Settings format",
+      "settingsConfig": { "api_format": "openai_responses" }
+    },
+    "routed": true,
+    "reasons": ["auto-detect"]
+  }
+]

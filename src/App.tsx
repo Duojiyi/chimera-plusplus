@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { toast } from "sonner";
 import type { DeepLinkImportRequest } from "@/lib/api/deeplink";
+import { providersApi } from "@/lib/api/providers";
 import ChimeraApp from "./ChimeraApp";
 import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
 
@@ -87,7 +88,12 @@ export default function App() {
               );
               await refreshPendingRef.current();
             }}
-            onImported={() => setProviderRefreshVersion((value) => value + 1)}
+            onImported={() => {
+              setProviderRefreshVersion((value) => value + 1);
+              // The tray lists every line, so a new import must show up there
+              // too. Best effort: the import itself already succeeded.
+              void providersApi.updateTrayMenu().catch(() => undefined);
+            }}
           />
         </Suspense>
       )}

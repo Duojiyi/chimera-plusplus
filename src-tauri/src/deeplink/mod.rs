@@ -6,7 +6,9 @@
 //! a link, prompts and skills always import disabled, MCP servers import
 //! inert, and env keys go through [`env_allowlist`] (MH-4).
 
+mod codex_link;
 pub mod env_allowlist;
+mod link_guard;
 mod mcp;
 mod parser;
 mod preview;
@@ -115,7 +117,8 @@ pub struct DeepLinkImportRequest {
     pub config_url: Option<String>,
 
     // ============ Usage script fields (v3.9+) ============
-    /// Whether to enable usage query (default: true if usage_script is provided)
+    /// What the link asks for. Only shown in the confirm dialog: the query is
+    /// enabled solely by [`Self::confirmed_usage_enabled`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage_enabled: Option<bool>,
     /// Base64 encoded usage query script code
@@ -142,6 +145,11 @@ pub struct DeepLinkImportRequest {
     /// one (see [`env_allowlist`]). Denied keys stay dropped regardless.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confirmed_env_keys: Option<Vec<String>>,
+    /// The dialog's "enable usage query after import" switch. A link's script
+    /// runs periodically on this computer, so it is enabled only when the user
+    /// turned this on; the link's own `usage_enabled` never does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmed_usage_enabled: Option<bool>,
 }
 
 /// Deep links behave as Codex-only while `multi_tool` is off: a link that

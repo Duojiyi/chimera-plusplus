@@ -337,6 +337,12 @@ pub struct CodexUsageRebuildResult {
     pub backup_path: Option<String>,
     #[serde(flatten)]
     pub sync: crate::services::session_usage::SessionSyncResult,
+    /// Complete JSONL lines that were oversized, not UTF-8 or not JSON and
+    /// were skipped instead of stopping the rebuild.
+    pub skipped_lines: u32,
+    /// Imported records whose event had no valid timestamp, dated from the
+    /// nearest earlier timestamp in the same file.
+    pub undated_events: u32,
 }
 
 /// 备份数据库后，在独立数据库重建，再原子替换 Codex session 用量。锁覆盖整个流程。
@@ -350,9 +356,14 @@ pub async fn rebuild_codex_usage(
         let backup_path = db
             .backup_database_file()?
             .map(|path| path.to_string_lossy().into_owned());
-        let result = crate::services::session_usage_codex::rebuild_codex_usage(&db)?;
-        let sync = finish_codex_rebuild(Ok(result))?;
-        Ok(CodexUsageRebuildResult { backup_path, sync })
+        let report = crate::services::session_usage_codex::rebuild_codex_usage(&db)?;
+        let sync = finish_codex_rebuild(Ok(report.sync))?;
+        Ok(CodexUsageRebuildResult {
+            backup_path,
+            sync,
+            skipped_lines: report.skipped_lines,
+            undated_events: report.undated_events,
+        })
     })
     .await
     .map_err(|error| AppError::Message(format!("Codex 用量重建任务失败: {error}")))?

@@ -34,8 +34,6 @@ function setup(
             fetchingModels={false}
             savingProvider={false}
             modelFetchError={null}
-            apiFormatDetection={null}
-            apiFormatDetectionError={null}
             commonConfigSnippet=""
             commonConfigLoading={false}
             commonConfigLoaded={true}

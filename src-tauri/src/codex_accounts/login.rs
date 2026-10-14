@@ -214,8 +214,8 @@ pub(super) fn cleanup_orphaned_login_homes(vault: &Vault) -> Result<(), AppError
 fn cli_not_found() -> AppError {
     AppError::localized(
         "official_accounts.cli_not_found",
-        "未找到 Codex CLI，无法添加账号；也可以在 Codex 中登录后选择「导入本机登录」",
-        "Codex CLI was not found; you can also sign in inside Codex and save the current login",
+        "未找到 Codex CLI（已查找 PATH、常见安装位置和 Codex 桌面版自带的 CLI），无法添加账号；也可以在 Codex 中登录后选择「导入本机登录」",
+        "Codex CLI was not found (searched PATH, common install locations and the CLI bundled with the Codex desktop app); you can also sign in inside Codex and save the current login",
     )
 }
 

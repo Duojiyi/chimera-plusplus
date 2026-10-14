@@ -8,6 +8,7 @@ import {
   useState,
 } from "react";
 import {
+  ChevronRight,
   CircleAlert,
   DatabaseBackup,
   Download,
@@ -35,12 +36,15 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { HelpTip } from "@/components/ui/help-tip";
 import { ConversationUsageSection } from "@/components/usage/ConversationUsageSection";
+import { UsageCoverageNote } from "@/components/usage/UsageCoverageNote";
+import { formatTokenCell } from "@/components/usage/format";
 import {
+  formatUsageDateTime,
   formatUsageTokens,
   totalDailyTokens,
   usageBucketLabel,
-  usageRangeLabels,
   usageTrendTicks,
   usageWindow,
   type UsageRange,
@@ -65,9 +69,14 @@ const usageRangeTitles: Record<UsageRange, string> = {
   "7d": "近 7 天",
   "30d": "近 30 天",
 };
+const RANGE_OPTIONS: UsageRange[] = ["today", "7d", "30d"];
+
+/** More buckets than this get thin bars, no value labels and a sparse axis. */
+const DENSE_BUCKETS = 14;
 
 /** Placeholder bar heights (%) while the first statistics load. */
 const SKELETON_BARS = [42, 64, 50, 78, 36, 58, 46];
+const SKELETON_LINES = [78, 64, 52];
 
 /** Typing pauses this long before the title search asks the backend. */
 const CONVERSATION_SEARCH_DELAY_MS = 250;
@@ -81,9 +90,16 @@ export function topModelsByTokens(
     .slice(0, count);
 }
 
-function shortModelName(model: string) {
-  return model.length > 24 ? model.slice(0, 24) + "…" : model;
-}
+const n = (value: number) => value.toLocaleString("zh-CN");
+const exact = (value: number) => `${n(value)} 词元`;
+const share = (part: number, whole: number) =>
+  `${whole ? ((part / whole) * 100).toFixed(0) : "0"}%`;
+const clock = (epochMs: number) =>
+  new Date(epochMs).toLocaleTimeString("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
 
 const AdvancedUsageDashboard = lazy(() =>
   import("@/components/usage/UsageDashboard").then((module) => ({
@@ -99,12 +115,15 @@ export function UsageView() {
   const [summary, setSummary] = useState<UsageSummary | null>(null);
   const [trends, setTrends] = useState<DailyStats[]>([]);
   const [models, setModels] = useState<ModelStats[]>([]);
+  // When the numbers on screen were read, not when the page last rendered.
+  const [loadedAt, setLoadedAt] = useState<number | null>(null);
   const [range, setRange] = useState<UsageRange>("30d");
-  const [error, setError] = useState("");
+  const [statsError, setStatsError] = useState("");
   const [loadedHourly, setLoadedHourly] = useState(false);
   const [syncing, setSyncing] = useState(runningInTauri);
-  const [syncError, setSyncError] = useState(false);
+  const [syncFailure, setSyncFailure] = useState("");
   const [sessionFiles, setSessionFiles] = useState<number | null>(null);
+  const [coverage, setCoverage] = useState<SessionSyncResult | null>(null);
   const [rebuilding, setRebuilding] = useState(false);
   const [rebuildDialogOpen, setRebuildDialogOpen] = useState(false);
   const [rebuildResult, setRebuildResult] =
@@ -113,15 +132,11 @@ export function UsageView() {
   const [rangeLoading, setRangeLoading] = useState(false);
   const [conversations, setConversations] =
     useState<ConversationUsageReport | null>(null);
-  const [conversationsAvailable, setConversationsAvailable] =
-    useState(runningInTauri);
+  // Off until a report arrives: this build keeps the per-conversation summary
+  // switched off, and the page must not announce a grouping it cannot show.
+  const [conversationsAvailable, setConversationsAvailable] = useState(false);
   const [conversationsLoading, setConversationsLoading] = useState(false);
   const [conversationQuery, setConversationQuery] = useState("");
-  const [syncNote, setSyncNote] = useState(
-    runningInTauri
-      ? "正在读取 Codex 本机会话记录"
-      : "浏览器预览不会读取本机会话数据",
-  );
   const sessionSync = useRef<Promise<SessionSyncResult> | null>(null);
   const initialLoad = useRef(false);
   const requestId = useRef(0);
@@ -175,8 +190,10 @@ export function UsageView() {
         setSummary(nextSummary);
         setTrends(nextTrends);
         setModels(nextModels);
+        setLoadedAt(Date.now());
+        setStatsError("");
       } catch (reason) {
-        if (nextRequestId === requestId.current) setError(String(reason));
+        if (nextRequestId === requestId.current) setStatsError(String(reason));
       }
     },
     [loadConversations],
@@ -189,13 +206,9 @@ export function UsageView() {
           if (!mounted.current || sessionSync.current !== promise) return;
           sessionSync.current = null;
           setSyncing(false);
-          setSyncError(false);
+          setSyncFailure("");
           setSessionFiles(result.filesScanned);
-          setSyncNote(
-            result.errors.length
-              ? `已读取 ${result.filesScanned} 个文件，${result.errors.length} 项未能导入`
-              : `已同步 ${result.filesScanned} 个本机会话文件`,
-          );
+          setCoverage(result);
           if (!result.imported) return;
           const nextId = ++requestId.current;
           setRangeLoading(true);
@@ -207,9 +220,7 @@ export function UsageView() {
           if (!mounted.current || sessionSync.current !== promise) return;
           sessionSync.current = null;
           setSyncing(false);
-          setSyncError(true);
-          setSyncNote("本机会话同步失败，正在显示已有记录");
-          setError(String(reason));
+          setSyncFailure(String(reason));
         },
       );
     },
@@ -234,15 +245,12 @@ export function UsageView() {
         setModels([]);
         setSyncing(false);
         setRangeLoading(false);
-        setSyncNote("浏览器预览不会读取本机会话数据");
         return;
       }
-      setError("");
       setRangeLoading(true);
       const stats = loadStats(selectedRange, nextId);
       if (syncSessions) {
         setSyncing(true);
-        setSyncError(false);
         startSync();
       }
       try {
@@ -289,16 +297,15 @@ export function UsageView() {
       const result = await usageApi.rebuildCodexUsage();
       setRebuildResult(result);
       setSessionFiles(result.filesScanned);
-      setSyncNote("Codex 用量已从本机会话重新构建");
+      setCoverage(result);
       toast.success("Codex 用量重建完成", {
-        description: `扫描 ${result.filesScanned} 个文件，导入 ${result.imported} 条记录`,
+        description: `扫描 ${n(result.filesScanned)} 个文件，导入 ${n(result.imported)} 条记录`,
         closeButton: true,
       });
       await loadUsage(range, false);
     } catch (reason) {
       const message = String(reason);
-      setRebuildError("重建未完成，请检查权限后重试。");
-      setError(message);
+      setRebuildError(message);
       toast.error("Codex 用量重建失败", {
         description: message,
         closeButton: true,
@@ -310,38 +317,98 @@ export function UsageView() {
 
   const busy = syncing || rangeLoading || rebuilding;
   const total = summary?.realTotalTokens ?? 0;
-  const input = summary?.totalInputTokens ?? 0;
-  const output = summary?.totalOutputTokens ?? 0;
-  const cache =
-    (summary?.totalCacheCreationTokens ?? 0) +
-    (summary?.totalCacheReadTokens ?? 0);
-  const days = trends.slice(-7);
-  const maxDay = Math.max(...days.map(totalDailyTokens), 1);
   const topModels = topModelsByTokens(models);
   const modelTotal = models.reduce((sum, item) => sum + item.totalTokens, 0);
   const displayedRange = summary ? loadedRange : range;
-  const rangeLabel = usageRangeLabels[displayedRange];
-  const exact = (value: number) => `${value.toLocaleString("zh-CN")} 词元`;
   const hasData = summary !== null && summary.totalRequests > 0;
+  const showSkeleton = !summary && busy && runningInTauri;
   // A failed first load shows its error banner, not an "empty" verdict.
-  const showSkeleton = !hasData && busy && runningInTauri;
-  const showEmpty = !hasData && !busy && (summary !== null || !runningInTauri);
+  const showEmpty = !hasData && (summary !== null || !runningInTauri);
   const bucketUnit = loadedHourly ? "小时" : "天";
   const activeBuckets = trends
     .filter((day) => day.requestCount > 0 || totalDailyTokens(day) > 0)
     .reverse();
+  const dense = trends.length > DENSE_BUCKETS;
+  const maxBucket = Math.max(...trends.map(totalDailyTokens), 1);
+  const axisLabels = new Set(
+    dense
+      ? (usageTrendTicks(trends) ?? [])
+      : trends.map((bucket) => bucket.date),
+  );
+  const peak = trends.reduce<DailyStats | null>(
+    (best, item) =>
+      totalDailyTokens(item) > (best ? totalDailyTokens(best) : 0)
+        ? item
+        : best,
+    null,
+  );
+  const rangeStatus =
+    rangeLoading && summary && range !== loadedRange
+      ? `正在加载 ${usageRangeTitles[range]} · 下方暂时显示 ${usageRangeTitles[loadedRange]}`
+      : "";
+
+  const periodNote = summary
+    ? summary.totalRequests
+      ? `请求 ${n(summary.totalRequests)} 次 · 成功率 ${summary.successRate.toFixed(1)}%`
+      : "暂无请求记录"
+    : !runningInTauri
+      ? "浏览器预览不读取本机数据"
+      : busy
+        ? "正在读取…"
+        : "暂无统计";
+  const filesNote = !runningInTauri
+    ? "浏览器预览不读取"
+    : syncing
+      ? "正在同步…"
+      : syncFailure
+        ? "同步失败"
+        : sessionFiles !== null
+          ? `已读取 ${n(sessionFiles)} 个`
+          : "等待同步";
+  const groupingNote = !summary
+    ? "—"
+    : conversationsAvailable && conversations
+      ? `${n(conversations.totalConversations)} 个对话`
+      : `${activeBuckets.length} ${bucketUnit}有用量`;
+
   const emptyTitle = !runningInTauri
     ? "浏览器预览不读取本机会话记录"
     : sessionFiles === 0
       ? "本机还没有 Codex 会话记录"
       : `${usageRangeTitles[displayedRange]}没有 Codex 用量记录`;
-  const conversationNote = !summary
-    ? "等待同步"
-    : conversationsAvailable
-      ? conversations
-        ? `${conversations.totalConversations.toLocaleString("zh-CN")} 个对话`
-        : "正在汇总…"
-      : `${activeBuckets.length} ${bucketUnit}有用量`;
+  const emptyText = !runningInTauri
+    ? "在 Chimera++ 应用里打开用量页，即可查看本机记录。"
+    : sessionFiles === 0
+      ? "用量来自 Codex 在本机保存的会话记录。用 Codex 完成一次对话后，点“刷新”即可看到。"
+      : "换个时间范围看看，或用 Codex 完成对话后点“刷新”。";
+
+  const failureReasons = [...new Set([statsError, syncFailure])].filter(
+    Boolean,
+  );
+  const failureTitle = statsError
+    ? summary
+      ? "统计未更新"
+      : "无法读取用量统计"
+    : "本机会话同步失败";
+  const failureDetail = statsError
+    ? summary
+      ? `下方仍是上次成功读取的结果（${usageRangeTitles[loadedRange]}）。`
+      : ""
+    : summary
+      ? "下方是已导入的记录，可能不是最新。"
+      : "";
+
+  const liveStatus = busy
+    ? "正在更新统计"
+    : !runningInTauri
+      ? "浏览器预览不会读取本机会话数据"
+      : statsError
+        ? summary
+          ? "统计未更新，显示上次结果"
+          : "无法读取用量统计"
+        : summary
+          ? `统计加载完成，${usageRangeTitles[loadedRange]}共 ${formatUsageTokens(total)} 词元`
+          : "";
 
   const exportUsage = () => {
     const rows = [
@@ -370,60 +437,47 @@ export function UsageView() {
       <header className="usage-design-heading">
         <div>
           <h1>用量</h1>
-          <p>Codex&nbsp; · &nbsp;只统计本机会话记录</p>
+          <p>Codex · 本机会话记录与本地代理请求</p>
         </div>
         <button
-          className="usage-export"
+          type="button"
+          className="usage-secondary-button"
           onClick={exportUsage}
           disabled={!hasData}
+          title={hasData ? "导出所选范围的每日用量" : "没有可导出的用量"}
         >
-          <Download size={15} /> 导出 CSV
+          <Download size={15} aria-hidden="true" /> 导出 CSV
         </button>
       </header>
 
-      <section className="usage-status-board" aria-label="用量总览">
+      <section
+        className="usage-status-board"
+        aria-label="用量总览"
+        data-signboard=""
+      >
         <div className="usage-status-period">
-          <span>
-            近{" "}
-            {displayedRange === "today"
-              ? "1"
-              : displayedRange === "7d"
-                ? "7"
-                : "30"}{" "}
-            天&nbsp; · &nbsp;{rangeLabel}
-          </span>
-          <strong>{summary ? formatUsageTokens(total) : "—"}</strong>
-          <small>
-            {syncing
-              ? "正在后台同步本机会话记录，已有数据仍可查看…"
-              : syncError
-                ? syncNote
-                : summary
-                  ? summary.totalRequests
-                    ? `请求 ${summary.totalRequests.toLocaleString("zh-CN")} 次 · 成功率 ${summary.successRate.toFixed(1)}%`
-                    : "暂无请求记录"
-                  : syncNote}
-          </small>
+          <span>{usageRangeTitles[displayedRange]}</span>
+          <strong title={summary ? exact(total) : undefined}>
+            {summary ? formatUsageTokens(total) : "—"}
+            {summary && <small>词元</small>}
+          </strong>
+          <span>{periodNote}</span>
         </div>
         <div className="usage-status-step">
-          <i />
+          <i aria-hidden="true" />
           <b>会话文件</b>
-          <span>
-            {summary
-              ? `${summary.totalRequests.toLocaleString("zh-CN")} 条记录`
-              : "等待同步"}
-          </span>
+          <span>{filesNote}</span>
         </div>
         <div className="usage-status-step">
-          <i />
-          <b>
-            汇总 ·{" "}
-            {summary
-              ? new Date().toLocaleTimeString("zh-CN", {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                })
-              : "—"}
+          <i aria-hidden="true" />
+          <b
+            title={
+              loadedAt
+                ? `统计读取于 ${formatUsageDateTime(loadedAt / 1000)}`
+                : undefined
+            }
+          >
+            汇总 · {loadedAt ? clock(loadedAt) : "—"}
           </b>
           <span>
             {hasData
@@ -432,7 +486,7 @@ export function UsageView() {
           </span>
         </div>
         <div className="usage-status-step">
-          <i />
+          <i aria-hidden="true" />
           <b>
             {conversationsAvailable
               ? "按对话"
@@ -440,122 +494,75 @@ export function UsageView() {
                 ? "按小时"
                 : "按日"}
           </b>
-          <span>{conversationNote}</span>
+          <span>{groupingNote}</span>
         </div>
-        <button
-          className="usage-status-help"
-          aria-label="用量说明"
-          title="用量说明"
-        >
-          ?
-        </button>
+        <HelpTip title="用量说明" align="end" className="usage-status-help">
+          统计 Codex
+          本机会话记录和经过本地代理的请求；词元含缓存，按本地时间分日。
+        </HelpTip>
       </section>
 
-      <div className="usage-legacy-a11y">
-        <section aria-label="词元总量与构成">
-          <strong title={summary ? exact(total) : undefined}>
-            {summary ? total.toLocaleString("zh-CN") : "—"}
-          </strong>
-          <span title={exact(input)}>{input.toLocaleString("zh-CN")}</span>
-          <span title={exact(output)}>{output.toLocaleString("zh-CN")}</span>
-          <span title={exact(cache)}>{cache.toLocaleString("zh-CN")}</span>
-          <span>
-            {input + output + (summary?.totalCacheCreationTokens ?? 0)
-              ? (
-                  (input /
-                    (input +
-                      output +
-                      (summary?.totalCacheCreationTokens ?? 0))) *
-                  100
-                ).toFixed(1)
-              : "0.0"}
-            % · 占总量
-          </span>
-        </section>
-        <section aria-label="模型词元分布">
-          {topModels.map((model) => (
-            <span key={model.model} title={model.model}>
-              {model.model}
-            </span>
-          ))}
-          {topModels.map((model) => (
-            <span key={model.model + "-ratio"}>
-              {modelTotal
-                ? ((model.totalTokens / modelTotal) * 100).toFixed(0)
-                : "0"}
-              %
-            </span>
-          ))}
-          <button onClick={() => setAllModelsOpen(true)}>查看全部</button>
-        </section>
-        <h2>{loadedHourly ? "每小时消耗光谱" : "每日消耗光谱"}</h2>
-        {(() => {
-          const peak = trends.reduce<DailyStats | null>(
-            (best, item) =>
-              !best || totalDailyTokens(item) > totalDailyTokens(best)
-                ? item
-                : best,
-            null,
-          );
-          return (
-            <span>
-              {peak
-                ? usageBucketLabel(peak.date, loadedHourly) +
-                  " 峰值 " +
-                  exact(totalDailyTokens(peak))
-                : ""}
-            </span>
-          );
-        })()}
-        <span>{rangeLabel} · 含缓存</span>
-        <svg>
-          {(usageTrendTicks(trends) ?? trends.map((item) => item.date)).map(
-            (date) => (
-              <tspan key={date}>{usageBucketLabel(date, loadedHourly)}</tspan>
-            ),
-          )}
-        </svg>
-      </div>
-      {error && (
-        <div className="usage-load-error" role="alert">
-          <CircleAlert size={16} />{" "}
-          <span>
-            无法更新统计。
-            {summary
-              ? `保留上次成功结果（${rangeLabel}）。`
-              : "尚无可显示的统计。"}
-          </span>
-          <button onClick={() => void loadUsage(range, true)} disabled={busy}>
+      {failureReasons.length > 0 && (
+        <div className="usage-notice is-error" role="alert">
+          <CircleAlert size={16} aria-hidden="true" />
+          <div className="usage-notice-body">
+            <strong>{failureTitle}</strong>
+            {failureDetail && <span>{failureDetail}</span>}
+            <small>原因：{failureReasons.join("；")}</small>
+          </div>
+          <button
+            type="button"
+            className="usage-notice-action"
+            onClick={() => void loadUsage(range, true)}
+            disabled={busy}
+          >
             重试
           </button>
         </div>
       )}
-      {rebuildResult && (
-        <div className="usage-rebuild-result is-success" role="status">
-          <ShieldCheck size={16} />
-          <span>
-            重建完成：扫描 {rebuildResult.filesScanned} 个文件，导入{" "}
-            {rebuildResult.imported} 条。
-          </span>
-          {rebuildResult.backupPath && (
-            <small title={rebuildResult.backupPath}>
-              <DatabaseBackup size={12} /> 重建前备份：
-              {rebuildResult.backupPath.split("\\").pop()}
-            </small>
-          )}
+      {rebuilding && (
+        <div className="usage-notice is-info" role="status">
+          <RefreshCw size={16} className="spin" aria-hidden="true" />
+          <div className="usage-notice-body">
+            <span>正在备份并重建…</span>
+          </div>
         </div>
       )}
-      {rebuilding && (
-        <div className="usage-rebuild-result is-info" role="status">
-          <RefreshCw size={16} className="spin" />
-          <span>正在备份并重建…</span>
+      {rebuildResult && (
+        <div className="usage-notice is-success" role="status">
+          <ShieldCheck size={16} aria-hidden="true" />
+          <div className="usage-notice-body">
+            <span>
+              重建完成：扫描 {n(rebuildResult.filesScanned)} 个文件，导入{" "}
+              {n(rebuildResult.imported)} 条记录。
+            </span>
+            {rebuildResult.backupPath && (
+              <small title={rebuildResult.backupPath}>
+                <DatabaseBackup size={12} aria-hidden="true" /> 重建前备份：
+                {rebuildResult.backupPath.split(/[\\/]/).pop()}
+              </small>
+            )}
+          </div>
+          <button
+            type="button"
+            className="usage-notice-dismiss"
+            aria-label="关闭重建结果"
+            onClick={() => setRebuildResult(null)}
+          >
+            <X size={14} aria-hidden="true" />
+          </button>
         </div>
       )}
       {rebuildError && (
-        <div className="usage-rebuild-result is-error" role="alert">
-          <CircleAlert size={16} />
-          <span>{rebuildError}</span>
+        <div className="usage-notice is-error" role="alert">
+          <CircleAlert size={16} aria-hidden="true" />
+          <div className="usage-notice-body">
+            <strong>重建未完成，原有统计没有改动。</strong>
+            <small>原因：{rebuildError}</small>
+          </div>
           <button
+            type="button"
+            className="usage-notice-action"
             onClick={() => {
               setRebuildError("");
               setRebuildDialogOpen(true);
@@ -565,56 +572,82 @@ export function UsageView() {
           </button>
         </div>
       )}
+      <UsageCoverageNote result={coverage} />
 
       <div className="usage-design-toolbar">
-        <div>
+        <div className="usage-toolbar-title">
           <strong>{loadedHourly ? "每小时词元" : "每日词元"}</strong>
-          <span>按输入、输出、缓存分段</span>
+          {hasData && !tableMode && !rangeStatus && (
+            <ul className="usage-legend" aria-label="图例">
+              <li>
+                <i className="is-input" aria-hidden="true" />
+                输入
+              </li>
+              <li>
+                <i className="is-output" aria-hidden="true" />
+                输出
+              </li>
+              <li>
+                <i className="is-cache" aria-hidden="true" />
+                缓存
+              </li>
+            </ul>
+          )}
+          <p
+            className="usage-range-status"
+            role="status"
+            aria-live="polite"
+            title={rangeStatus || undefined}
+          >
+            {rangeStatus}
+          </p>
         </div>
         <div className="usage-toolbar-actions">
           <button
-            className={tableMode ? "is-active" : ""}
+            type="button"
+            className="usage-tool-button"
+            aria-pressed={tableMode}
             onClick={() => setTableMode((value) => !value)}
             disabled={!hasData}
           >
-            <Table2 size={14} /> 表格视图
+            <Table2 size={14} aria-hidden="true" /> 表格视图
           </button>
-          {(
-            [
-              ["7d", "近 7 天"],
-              ["30d", "近 30 天"],
-              ["today", "今日"],
-            ] as const
-          ).map(([id, label]) => (
-            <button
-              key={id}
-              className={range === id ? "is-active" : ""}
-              aria-label={
-                id === "today" ? "今日" : id === "7d" ? "7 天" : "30 天"
-              }
-              aria-pressed={range === id}
-              onClick={() => setRange(id)}
-              disabled={rebuilding}
-            >
-              {label}
-            </button>
-          ))}
+          <div className="usage-range-seg" role="group" aria-label="时间范围">
+            {RANGE_OPTIONS.map((id) => (
+              <button
+                type="button"
+                key={id}
+                aria-pressed={range === id}
+                onClick={() => setRange(id)}
+                disabled={rebuilding}
+              >
+                {usageRangeTitles[id]}
+              </button>
+            ))}
+          </div>
           <button
-            className="usage-refresh"
+            type="button"
+            className="usage-tool-button usage-icon-button"
             onClick={() => void loadUsage(range, true)}
             disabled={!runningInTauri || busy}
-            aria-label="同步词元记录"
+            aria-label="刷新用量"
+            title="同步本机会话记录并刷新"
           >
-            <RefreshCw size={15} className={busy ? "spin" : ""} />
+            <RefreshCw
+              size={15}
+              className={busy ? "spin" : ""}
+              aria-hidden="true"
+            />
           </button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button
-                className="usage-more"
+                type="button"
+                className="usage-tool-button usage-icon-button"
                 aria-label="更多统计操作"
                 disabled={busy}
               >
-                <MoreHorizontal size={18} />
+                <MoreHorizontal size={18} aria-hidden="true" />
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
@@ -644,11 +677,11 @@ export function UsageView() {
             </div>
           </div>
           <div className="usage-model-card">
-            {SKELETON_BARS.slice(0, 3).map((width, index) => (
+            {SKELETON_LINES.map((width) => (
               <span
                 className="usage-skeleton-line"
-                key={index}
-                style={{ width: `${width + 20}%` }}
+                key={width}
+                style={{ width: `${width}%` }}
               />
             ))}
           </div>
@@ -665,138 +698,203 @@ export function UsageView() {
           </span>
           <div>
             <h2 id="usage-empty-title">{emptyTitle}</h2>
-            <p>
-              {runningInTauri
-                ? "用量来自 Codex 在本机保存的会话记录。用 Codex 完成一次对话后，点“刷新”即可看到。"
-                : "在 Chimera++ 应用里打开用量页，即可查看本机记录。"}
-            </p>
+            <p>{emptyText}</p>
           </div>
           {runningInTauri && (
             <button
               type="button"
-              className="usage-export"
+              className="usage-secondary-button"
               onClick={() => void loadUsage(range, true)}
+              disabled={busy}
             >
-              <RefreshCw size={15} /> 刷新
+              <RefreshCw size={15} aria-hidden="true" /> 刷新
             </button>
           )}
         </section>
       )}
 
       {hasData && summary && (
-        <section className="usage-analysis-grid">
+        <section
+          className={[
+            "usage-analysis-grid",
+            tableMode && "is-table",
+            rangeStatus && "is-stale",
+          ]
+            .filter(Boolean)
+            .join(" ")}
+          aria-busy={rangeStatus ? true : undefined}
+        >
           <div className="usage-chart-card">
             {tableMode ? (
-              <div
-                className="usage-daily-table"
-                role="table"
-                aria-label="每日词元表格"
-              >
-                <div className="usage-daily-row usage-daily-head">
-                  <span>{loadedHourly ? "时段" : "日期"}</span>
-                  <span>请求</span>
-                  <span>总词元</span>
-                  <span>输入 / 输出</span>
-                </div>
-                {trends.slice(-14).map((day) => (
-                  <div className="usage-daily-row" key={day.date}>
-                    <span>{usageBucketLabel(day.date, loadedHourly)}</span>
-                    <span>{day.requestCount}</span>
-                    <b>{formatUsageTokens(totalDailyTokens(day))}</b>
-                    <span>
-                      {formatUsageTokens(day.totalInputTokens)} /{" "}
-                      {formatUsageTokens(day.totalOutputTokens)}
-                    </span>
-                  </div>
-                ))}
+              <div className="usage-summary-scroll" tabIndex={0}>
+                <table className="usage-summary-table">
+                  <caption className="sr-only">
+                    {loadedHourly ? "每小时词元表格" : "每日词元表格"}
+                  </caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">{loadedHourly ? "时段" : "日期"}</th>
+                      <th scope="col">请求</th>
+                      <th scope="col">总词元</th>
+                      <th scope="col">输入</th>
+                      <th scope="col">输出</th>
+                      <th scope="col">缓存</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {trends.map((day) => {
+                      const value = totalDailyTokens(day);
+                      const idle = !value && !day.requestCount;
+                      return (
+                        <tr
+                          key={day.date}
+                          className={idle ? "is-idle" : undefined}
+                        >
+                          <th scope="row">
+                            {usageBucketLabel(day.date, loadedHourly)}
+                          </th>
+                          <td>{idle ? "—" : n(day.requestCount)}</td>
+                          <td>
+                            {idle ? "—" : <b>{formatTokenCell(value)}</b>}
+                          </td>
+                          <td>
+                            {idle ? "—" : formatTokenCell(day.totalInputTokens)}
+                          </td>
+                          <td>
+                            {idle
+                              ? "—"
+                              : formatTokenCell(day.totalOutputTokens)}
+                          </td>
+                          <td>
+                            {idle
+                              ? "—"
+                              : formatTokenCell(
+                                  day.totalCacheCreationTokens +
+                                    day.totalCacheReadTokens,
+                                )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
             ) : (
               <div
-                className="usage-bars"
+                className={`usage-bars${dense ? " is-dense" : ""}`}
                 role="img"
-                aria-label={loadedHourly ? "每小时词元图" : "每日词元图"}
+                aria-label={`${usageRangeTitles[loadedRange]}${loadedHourly ? "每小时" : "每日"}词元柱状图${
+                  peak
+                    ? `，峰值 ${usageBucketLabel(peak.date, loadedHourly)} ${formatUsageTokens(totalDailyTokens(peak))}`
+                    : ""
+                }`}
               >
-                {days.map((day) => {
+                {trends.map((day, index) => {
                   const value = totalDailyTokens(day);
-                  const height =
-                    value > 0 ? Math.max(4, (value / maxDay) * 100) : 0;
-                  const inputHeight = value
+                  const height = value
+                    ? Math.max(2, (value / maxBucket) * 100)
+                    : 0;
+                  const input = value
                     ? (day.totalInputTokens / value) * 100
                     : 0;
-                  const outputHeight = value
+                  const output = value
                     ? (day.totalOutputTokens / value) * 100
                     : 0;
+                  const cache = value ? Math.max(0, 100 - input - output) : 0;
+                  const label = usageBucketLabel(day.date, loadedHourly);
+                  const current = index === trends.length - 1;
                   return (
-                    <div className="usage-bar-column" key={day.date}>
-                      <strong>{formatUsageTokens(value)}</strong>
+                    <div
+                      className={`usage-bar-column${current ? " is-current" : ""}`}
+                      key={day.date}
+                    >
+                      {!dense && (
+                        <strong aria-hidden="true">
+                          {value ? formatUsageTokens(value) : ""}
+                        </strong>
+                      )}
                       <div
                         className="usage-bar"
                         style={{ height: `${height}%` }}
-                        title={`${day.date} · ${exact(value)}`}
+                        title={`${label} · ${exact(value)}`}
                       >
-                        <i
-                          style={{
-                            height: `${Math.max(0, 100 - inputHeight - outputHeight)}%`,
-                          }}
-                        />
-                        <b style={{ height: `${outputHeight}%` }} />
-                        <span style={{ height: `${inputHeight}%` }} />
-                      </div>
-                      <small>
-                        {usageBucketLabel(day.date, loadedHourly).replace(
-                          "/",
-                          "-",
+                        {cache > 0 && (
+                          <span
+                            className="is-cache"
+                            style={{ height: `${cache}%` }}
+                          />
                         )}
-                      </small>
+                        {output > 0 && (
+                          <span
+                            className="is-output"
+                            style={{ height: `${output}%` }}
+                          />
+                        )}
+                        {input > 0 && (
+                          <span
+                            className="is-input"
+                            style={{ height: `${input}%` }}
+                          />
+                        )}
+                      </div>
+                      <small>{axisLabels.has(day.date) ? label : ""}</small>
                     </div>
                   );
                 })}
-                {!days.some((day) => totalDailyTokens(day) > 0) && (
+                {!peak && (
                   <div className="usage-chart-empty">
-                    最近 {days.length} {bucketUnit}没有用量
+                    {usageRangeTitles[loadedRange]}没有词元用量
                   </div>
                 )}
               </div>
             )}
             <footer>
-              <span>总计 {formatUsageTokens(total)} · 含缓存</span>
-              <span>
-                请求 {summary.totalRequests.toLocaleString("zh-CN")} · 成功率{" "}
-                {summary.successRate.toFixed(1)}%
-              </span>
+              <span>总计 {formatUsageTokens(total)} 词元 · 含缓存</span>
+              {peak && (
+                <span>
+                  峰值 {usageBucketLabel(peak.date, loadedHourly)} ·{" "}
+                  {formatUsageTokens(totalDailyTokens(peak))}
+                </span>
+              )}
             </footer>
           </div>
-          <aside className="usage-model-card" aria-label="按线路模型排行">
-            <header>
-              <strong>按线路</strong>
-              <span>模型即该线路的默认模型</span>
-            </header>
-            {topModels.length ? (
-              topModels.map((model, index) => {
-                const ratio = modelTotal ? model.totalTokens / modelTotal : 0;
-                return (
+          {!tableMode && (
+            <aside className="usage-model-card" aria-label="按模型排行">
+              <header>
+                <strong>按模型</strong>
+                <span>按词元总量排序</span>
+              </header>
+              {topModels.length ? (
+                topModels.map((model, index) => (
                   <div className="usage-model-item" key={model.model}>
-                    <i className={`usage-model-dot tone-${index % 6}`} />
+                    <i
+                      className={`usage-model-dot tone-${index % 6}`}
+                      aria-hidden="true"
+                    />
                     <div>
-                      <strong>{shortModelName(model.model)}</strong>
-                      <code>{model.model}</code>
+                      <strong title={model.model}>{model.model}</strong>
+                      <small>{n(model.requestCount)} 次请求</small>
                     </div>
-                    <span>{formatUsageTokens(model.totalTokens)}</span>
-                    <em>{(ratio * 100).toFixed(0)}%</em>
+                    <span title={exact(model.totalTokens)}>
+                      {formatUsageTokens(model.totalTokens)}
+                    </span>
+                    <em>{share(model.totalTokens, modelTotal)}</em>
                   </div>
-                );
-              })
-            ) : (
-              <p className="usage-chart-empty">暂无模型统计</p>
-            )}
-            <button
-              className="usage-view-all"
-              onClick={() => setAllModelsOpen(true)}
-              disabled={!models.length}
-            >
-              查看全部模型 →
-            </button>
-          </aside>
+                ))
+              ) : (
+                <p className="usage-model-empty">暂无模型统计</p>
+              )}
+              <button
+                type="button"
+                className="usage-view-all"
+                onClick={() => setAllModelsOpen(true)}
+                disabled={!models.length}
+              >
+                查看全部 {models.length} 个模型
+                <ChevronRight size={14} aria-hidden="true" />
+              </button>
+            </aside>
+          )}
         </section>
       )}
 
@@ -809,7 +907,7 @@ export function UsageView() {
         />
       )}
 
-      {hasData && summary && (
+      {hasData && summary && !tableMode && (
         <section
           className="usage-summary-section"
           aria-labelledby="usage-daily-title"
@@ -821,9 +919,7 @@ export function UsageView() {
               </h2>
               <span>只列出有请求的{loadedHourly ? "时段" : "日期"}</span>
             </div>
-            <span>
-              全部 {summary.totalRequests.toLocaleString("zh-CN")} 次请求
-            </span>
+            <span>共 {n(summary.totalRequests)} 次请求</span>
           </header>
           <div className="usage-summary-scroll" tabIndex={0}>
             <table className="usage-summary-table">
@@ -848,14 +944,14 @@ export function UsageView() {
                         ? usageBucketLabel(day.date, true)
                         : day.date.slice(0, 10)}
                     </th>
-                    <td>{day.requestCount.toLocaleString("zh-CN")}</td>
+                    <td>{n(day.requestCount)}</td>
                     <td>
-                      <b>{formatUsageTokens(totalDailyTokens(day))}</b>
+                      <b>{formatTokenCell(totalDailyTokens(day))}</b>
                     </td>
-                    <td>{formatUsageTokens(day.totalInputTokens)}</td>
-                    <td>{formatUsageTokens(day.totalOutputTokens)}</td>
+                    <td>{formatTokenCell(day.totalInputTokens)}</td>
+                    <td>{formatTokenCell(day.totalOutputTokens)}</td>
                     <td>
-                      {formatUsageTokens(
+                      {formatTokenCell(
                         day.totalCacheCreationTokens + day.totalCacheReadTokens,
                       )}
                     </td>
@@ -872,7 +968,8 @@ export function UsageView() {
           <DialogHeader>
             <DialogTitle>全部模型排行</DialogTitle>
             <DialogDescription>
-              共 {models.length} 个模型 · 按当前范围内的真实词元总量排序。
+              共 {models.length} 个模型 · 按{usageRangeTitles[loadedRange]}
+              的词元总量（含缓存）排序。
             </DialogDescription>
             <DialogClose
               className="usage-models-close"
@@ -900,12 +997,7 @@ export function UsageView() {
                   <code>{exact(model.totalTokens)}</code>
                 </div>
                 <span>{formatUsageTokens(model.totalTokens)}</span>
-                <em>
-                  {modelTotal
-                    ? ((model.totalTokens / modelTotal) * 100).toFixed(0)
-                    : "0"}
-                  %
-                </em>
+                <em>{share(model.totalTokens, modelTotal)}</em>
               </div>
             ))}
           </div>
@@ -921,41 +1013,39 @@ export function UsageView() {
         onConfirm={() => void rebuildUsage()}
         onCancel={() => setRebuildDialogOpen(false)}
       />
-      <section aria-label="成本与请求明细" className="mt-6">
+      <section aria-label="成本与请求明细" className="usage-advanced">
         <button
           type="button"
-          className="usage-export"
+          className="usage-secondary-button usage-advanced-toggle"
           aria-expanded={advancedOpen}
           aria-controls="advanced-usage"
           disabled={!runningInTauri}
+          title={runningInTauri ? undefined : "浏览器预览不读取本机数据"}
           onClick={() => setAdvancedOpen((open) => !open)}
         >
+          <ChevronRight size={15} aria-hidden="true" />
           {advancedOpen ? "收起成本与请求明细" : "成本、计价与请求明细"}
         </button>
         {advancedOpen && (
-          <div id="advanced-usage" className="mt-4">
-            <p>
-              以下为本地数据库中的代理及已导入会话记录；成本按模型定价估算，不是服务商账单。自动刷新默认关闭。
-            </p>
-            <Suspense fallback={<p role="status">正在加载请求明细…</p>}>
-              <AdvancedUsageDashboard refreshIntervalMs={0} />
+          <div id="advanced-usage" className="usage-advanced-body">
+            <Suspense
+              fallback={
+                <p role="status" className="usage-advanced-loading">
+                  正在加载请求明细…
+                </p>
+              }
+            >
+              <AdvancedUsageDashboard
+                refreshIntervalMs={0}
+                initialRange={{ preset: range }}
+                initialAppType="codex"
+              />
             </Suspense>
           </div>
         )}
       </section>
-      <span className="usage-legacy-status">
-        {busy
-          ? "正在读取统计…"
-          : runningInTauri
-            ? "统计加载完成"
-            : "浏览器预览无本机数据"}
-      </span>
-      <div className="sr-only" role="status">
-        {busy
-          ? "正在更新统计"
-          : runningInTauri
-            ? `统计加载完成，累计 ${formatUsageTokens(total)} 词元`
-            : "浏览器预览不会读取本机会话数据"}
+      <div className="sr-only usage-live-status" role="status">
+        {liveStatus}
       </div>
     </section>
   );

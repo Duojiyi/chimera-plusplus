@@ -6,6 +6,7 @@ use tauri::State;
 use crate::app_config::AppType;
 use crate::error::AppError;
 use crate::prompt::{Prompt, PromptCategory};
+use crate::services::prompt::{CodexPromptResolution, CodexPromptStatus};
 use crate::services::PromptService;
 use crate::store::AppState;
 
@@ -102,13 +103,73 @@ pub async fn adopt_foreign_codex_prompt(
     run_blocking(move || PromptService::adopt_foreign_codex(&state, &expected_content)).await
 }
 
+/// Whether the enabled Codex prompts are what Codex actually reads.
+#[tauri::command]
+pub async fn get_codex_prompt_status(
+    state: State<'_, AppState>,
+) -> Result<CodexPromptStatus, String> {
+    crate::product_policy::require(crate::product_policy::Capability::Prompts)
+        .map_err(|error| error.to_string())?;
+    let state = state.inner().clone();
+    let guard = state.proxy_service.lock_switch_for_app("codex").await;
+    run_blocking(move || {
+        let _guard = guard;
+        PromptService::codex_status(&state)
+    })
+    .await
+}
+
+/// User-confirmed resolution of a removed or hand-edited Chimera block.
+#[tauri::command]
+pub async fn resolve_codex_prompt_file(
+    action: CodexPromptResolution,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    crate::product_policy::require(crate::product_policy::Capability::Prompts)
+        .map_err(|error| error.to_string())?;
+    let state = state.inner().clone();
+    let guard = state.proxy_service.lock_switch_for_app("codex").await;
+    run_blocking(move || {
+        let _guard = guard;
+        PromptService::resolve_codex_file(&state, action)
+    })
+    .await
+}
+
 async fn run_blocking<T: Send + 'static>(
     job: impl FnOnce() -> Result<T, AppError> + Send + 'static,
 ) -> Result<T, String> {
     tauri::async_runtime::spawn_blocking(job)
         .await
         .map_err(|_| "提示词后台任务执行失败，请重试。".to_string())?
-        .map_err(|e| e.to_string())
+        .map_err(ipc_error)
+}
+
+/// Errors cross IPC as plain strings. Lead with a localized error's stable key
+/// so the page can map it to guidance without parsing the localized prose.
+fn ipc_error(error: AppError) -> String {
+    match &error {
+        AppError::Localized { key, .. } => format!("[{key}] {error}"),
+        _ => error.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn localized_errors_lead_with_their_stable_code() {
+        let coded = AppError::localized("prompt.managed.duplicate", "重复", "Duplicate");
+        assert_eq!(
+            ipc_error(coded),
+            "[prompt.managed.duplicate] 重复 (Duplicate)"
+        );
+        assert_eq!(
+            ipc_error(AppError::InvalidInput("启用的提示词不能为空。".into())),
+            "无效输入: 启用的提示词不能为空。"
+        );
+    }
 }
 
 #[tauri::command]

@@ -235,6 +235,9 @@ export interface ProviderMeta {
   providerType?: string;
   // GitHub Copilot 关联账号 ID（旧字段，保留兼容读取）
   githubAccountId?: string;
+  // 线路站牌简称（用户自定义）。后端读入时去首尾空白、空串视为未设置、
+  // 最多保留 3 个 Unicode 字符；未设置时由界面按名称生成。
+  badgeText?: string;
 }
 
 // Skill 同步方式

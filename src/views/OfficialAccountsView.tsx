@@ -10,6 +10,7 @@ import {
   Trash2,
   AlertTriangle as Warning,
   RotateCw as ArrowsClockwise,
+  Info,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -22,35 +23,164 @@ import {
 import { settingsApi } from "@/lib/api/settings";
 import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
 import "./OfficialAccountsView.css";
-import type { SubscriptionQuota } from "@/types/subscription";
 import {
   officialAccountsApi,
   type OfficialAccountDto,
+  type OfficialQuota,
   type StartedLoginDto,
 } from "@/lib/api/officialAccounts";
 
-type AccountRow = OfficialAccountDto & {
-  id: string;
-  shortBadge: string;
-  status: "valid" | "expired" | "unknown";
+const UNREADABLE_MESSAGE =
+  "无法读取（可能因系统密码重置或配置迁移），请重新登录或删除";
+const QUOTA_FAILED = "额度查询失败，请刷新重试";
+const NO_WINDOWS = "服务未返回额度数据";
+
+/** Backend messages read "中文 (English)"; the interface is Chinese only. */
+function displayError(message: string): string {
+  const text = message.trim();
+  const open = text.lastIndexOf(" (");
+  if (open > 0 && text.endsWith(")")) {
+    const head = text.slice(0, open);
+    const tail = text.slice(open + 2, -1);
+    if (/[一-鿿]/.test(head) && !/[一-鿿]/.test(tail)) return head;
+  }
+  return text;
+}
+
+const errorText = (cause: unknown) =>
+  displayError(cause instanceof Error ? cause.message : String(cause));
+
+const pad = (value: number) => String(value).padStart(2, "0");
+const clockTime = (ms: number) => {
+  const date = new Date(ms);
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+};
+const exactTime = (ms: number) => {
+  const date = new Date(ms);
+  return `${date.getMonth() + 1}月${date.getDate()}日 ${clockTime(ms)}`;
 };
 
-type QuotaMetric = { remaining: number; resetTime: string };
+type QuotaWindow = {
+  label: string;
+  seconds: number;
+  remaining: number;
+  resetsAt: number | null;
+};
 
-function quotaMetric(
-  quota: SubscriptionQuota | undefined,
-  tierName: string,
-): QuotaMetric | null {
-  if (!quota?.success) return null;
-  const tier = quota.tiers.find((item) => item.name === tierName);
-  if (!tier || !Number.isFinite(tier.utilization)) return null;
-  return {
-    remaining: Math.max(0, Math.min(100, 100 - tier.utilization)),
-    resetTime: tier.resetsAt
-      ? `重置于 ${new Date(tier.resetsAt).toLocaleString()}`
-      : "重置时间未知",
-  };
+function tierSeconds(name: string): number | null {
+  if (name === "five_hour") return 5 * 3_600;
+  if (name === "seven_day") return 7 * 86_400;
+  const match = /^(\d{1,4})_(hour|day)$/.exec(name);
+  return match
+    ? Number(match[1]) * (match[2] === "day" ? 86_400 : 3_600)
+    : null;
 }
+
+function windowLabel(seconds: number | null): string {
+  if (!seconds) return "其他";
+  return seconds % 86_400 === 0
+    ? `${seconds / 86_400} 天`
+    : `${Math.round(seconds / 3_600)} 小时`;
+}
+
+/** Every window the service returned, shortest first. */
+function quotaWindows(quota: OfficialQuota | undefined): QuotaWindow[] {
+  if (!quota?.success) return [];
+  return quota.tiers
+    .filter((tier) => Number.isFinite(tier.utilization))
+    .map((tier) => {
+      const seconds = tierSeconds(tier.name);
+      const resetsAt = tier.resetsAt ? Date.parse(tier.resetsAt) : Number.NaN;
+      return {
+        label: windowLabel(seconds),
+        seconds: seconds ?? Number.POSITIVE_INFINITY,
+        remaining: Math.max(0, Math.min(100, 100 - tier.utilization)),
+        resetsAt: Number.isFinite(resetsAt) ? resetsAt : null,
+      };
+    })
+    .sort((a, b) => a.seconds - b.seconds);
+}
+
+function percentText(remaining: number): string {
+  const digits =
+    remaining > 0 && remaining < 10 && !Number.isInteger(remaining) ? 1 : 0;
+  return `${Number(remaining.toFixed(digits))}%`;
+}
+
+function resetText(
+  resetsAt: number | null,
+  now: number,
+  compact: boolean,
+): string {
+  if (resetsAt === null) return "重置时间未知";
+  if (resetsAt <= now) return "已到重置时间";
+  const minutes = Math.ceil((resetsAt - now) / 60_000);
+  const days = Math.floor(minutes / 1_440);
+  const hours = Math.floor((minutes % 1_440) / 60);
+  const rest = minutes % 60;
+  if (days)
+    return compact || !hours
+      ? `${days} 天后重置`
+      : `${days} 天 ${hours} 小时后重置`;
+  if (hours)
+    return compact || !rest
+      ? `${hours} 小时后重置`
+      : `${hours} 小时 ${rest} 分钟后重置`;
+  return `${minutes} 分钟后重置`;
+}
+
+const PLAN_LABELS: Record<string, string> = {
+  free: "免费版",
+  go: "Go",
+  plus: "Plus",
+  pro: "Pro",
+  prolite: "Pro Lite",
+  team: "Team",
+  business: "Business",
+  enterprise: "Enterprise",
+  edu: "Edu",
+};
+
+function planLabel(planType?: string | null): string | null {
+  const raw = planType?.trim();
+  if (!raw) return null;
+  const key = raw.toLowerCase().replace(/[-_\s]+/g, "");
+  return Object.prototype.hasOwnProperty.call(PLAN_LABELS, key)
+    ? PLAN_LABELS[key]
+    : raw;
+}
+
+/** The line's own name unless it is just the default "ChatGPT · email". */
+function accountTitle(account: OfficialAccountDto): string {
+  const line = account.lineName?.trim();
+  if (line && line !== account.displayName) return line;
+  if (account.unreadable) return account.displayName;
+  return account.email || account.displayName;
+}
+
+function accountSubtitle(account: OfficialAccountDto): string | null {
+  const title = accountTitle(account);
+  const subtitle = account.unreadable ? account.displayName : account.email;
+  return subtitle && subtitle !== title ? subtitle : null;
+}
+
+function avatarText(account: OfficialAccountDto): string {
+  const source = account.email || accountTitle(account);
+  return Array.from(source.trim())[0]?.toUpperCase() ?? "?";
+}
+
+type AccountRow = {
+  account: OfficialAccountDto;
+  title: string;
+  subtitle: string | null;
+  plan: string | null;
+  quota?: OfficialQuota;
+  windows: QuotaWindow[];
+  needsRelogin: boolean;
+  accessExpired: boolean;
+  pending: boolean;
+  error?: string;
+};
 
 interface OfficialAccountsViewProps {
   onAccountSwitched?: () => void;
@@ -71,17 +201,73 @@ function readRefreshMinutes(): number {
   }
 }
 
+/** Which quotas a list load also queries: entry and manual refresh query
+ * every account, the timer only Codex's current one, focus none. */
+type QuotaScope = "all" | "current" | "none";
+
+const queryable = (account: OfficialAccountDto) =>
+  !account.needsRelogin && !account.accessExpired;
+
+function PlanTag({ plan }: { plan: string | null }) {
+  return plan ? <span className="account-plan">{plan}</span> : null;
+}
+
+function QuotaMeter({
+  window: quota,
+  now,
+  compact = false,
+}: {
+  window: QuotaWindow;
+  now: number;
+  compact?: boolean;
+}) {
+  const value = percentText(quota.remaining);
+  const reset = resetText(quota.resetsAt, now, compact);
+  const exact = quota.resetsAt === null ? null : exactTime(quota.resetsAt);
+  const low = quota.remaining <= 10;
+  return (
+    <div
+      className={compact ? "quota-meter is-compact" : "quota-meter"}
+      data-low={low || undefined}
+    >
+      <span className="quota-meter-label">
+        {compact ? quota.label : `${quota.label} · 剩余`}
+      </span>
+      <strong className="quota-meter-value">{value}</strong>
+      <div
+        className="quota-meter-bar"
+        role="progressbar"
+        aria-label={`${quota.label}额度剩余`}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={Math.round(quota.remaining)}
+        aria-valuetext={`剩余 ${value}`}
+      >
+        <span style={{ width: `${quota.remaining}%` }} />
+      </div>
+      <small
+        className="quota-meter-reset"
+        title={compact && exact ? `${exact} 重置` : undefined}
+      >
+        {compact || !exact ? reset : `${reset} · ${exact}`}
+      </small>
+    </div>
+  );
+}
+
 let loginStartupPending = false;
 
 export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
   onAccountSwitched,
 }) => {
   const [accounts, setAccounts] = useState<OfficialAccountDto[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [listLoading, setListLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const accountsGeneration = useRef(0);
   const accountsRequest = useRef<Promise<void> | null>(null);
+  const alive = useRef(true);
   const [refreshMinutes, setRefreshMinutes] = useState(readRefreshMinutes);
-  const [refreshError, setRefreshError] = useState(false);
+  const [listStale, setListStale] = useState(false);
   const addAccountRef = useRef<HTMLButtonElement>(null);
   const dialogTriggerRef = useRef<HTMLElement | null>(null);
   const restoreDialogFocus = (event: Event) => {
@@ -91,9 +277,14 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
     else addAccountRef.current?.focus();
   };
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [quotas, setQuotas] = useState<Record<string, SubscriptionQuota>>({});
-  const [loadingQuotas, setLoadingQuotas] = useState(false);
-  const [quotaErrors, setQuotaErrors] = useState<Set<string>>(new Set());
+  const [quotas, setQuotas] = useState<Record<string, OfficialQuota>>({});
+  const [quotaErrors, setQuotaErrors] = useState<Record<string, string>>({});
+  const [pendingQuotas, setPendingQuotas] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  // Relative reset times stay current without another request.
+  const [, setClock] = useState(0);
+  const now = Date.now();
 
   // Device Code Login State (03B)
   const [loginModalOpen, setLoginModalOpen] = useState(false);
@@ -117,44 +308,50 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
   // Switch Confirmation Dialog State (03C)
   const [confirmTarget, setConfirmTarget] = useState<AccountRow | null>(null);
   const [switching, setSwitching] = useState(false);
+  const [removeTarget, setRemoveTarget] = useState<AccountRow | null>(null);
+  const [removing, setRemoving] = useState(false);
   useLightweightCloseBlocker(
     startingLogin ||
       loginModalOpen ||
       importingLogin ||
       switching ||
-      Boolean(confirmTarget),
+      removing ||
+      Boolean(confirmTarget) ||
+      Boolean(removeTarget),
   );
 
-  const mergedAccounts: AccountRow[] = React.useMemo(
-    () =>
-      accounts.map((dto) => {
-        const needsRelogin =
-          dto.needsRelogin || quotas[dto.key]?.credentialStatus === "expired";
-        return {
-          ...dto,
-          needsRelogin,
-          id: dto.providerId || dto.key,
-          shortBadge: dto.displayName.trim().slice(0, 1) || "官",
-          status: needsRelogin ? "expired" : "valid",
-        };
-      }),
-    [accounts, quotas],
-  );
+  const rows: AccountRow[] = accounts.map((account) => {
+    const quota = quotas[account.key];
+    // Only a rejected login asks for a new one; an expired access token is
+    // renewed by Codex when the account is used.
+    const needsRelogin =
+      account.needsRelogin || quota?.credentialStatus === "expired";
+    return {
+      account,
+      title: accountTitle(account),
+      subtitle: accountSubtitle(account),
+      plan: planLabel(account.planType),
+      quota,
+      windows: quotaWindows(quota),
+      needsRelogin,
+      accessExpired:
+        !needsRelogin && Boolean(account.accessExpired || quota?.accessExpired),
+      pending: pendingQuotas.has(account.key),
+      error: quotaErrors[account.key],
+    };
+  });
 
-  const activeLiveAccount = mergedAccounts.find((a) => a.isCurrent) ?? null;
-  const activeQuota = activeLiveAccount
-    ? quotas[activeLiveAccount.key]
-    : undefined;
-  const activeFiveHour = quotaMetric(activeQuota, "five_hour");
-  const activeWeekly = quotaMetric(activeQuota, "seven_day");
-  const activeQuotaMessage = activeLiveAccount?.needsRelogin
-    ? "重新登录后可查询额度"
-    : loadingQuotas
-      ? "正在查询…"
-      : (activeLiveAccount && quotaErrors.has(activeLiveAccount.key)) ||
-          (activeQuota && !activeQuota.success)
-        ? "额度查询失败，请刷新重试"
-        : "尚未获取额度";
+  const current = rows.find((row) => row.account.isCurrent) ?? null;
+  const selected = rows.find((row) => row.account.isSelected) ?? null;
+  const liveState = accounts[0]?.liveState;
+  const quotaFailed = rows.some((row) => row.error !== undefined);
+  const queriedTimes = rows
+    .map((row) => (row.quota?.success ? row.quota.queriedAt : null))
+    .filter((time): time is number => typeof time === "number");
+  // The oldest shown result: every value on the page is at least this fresh.
+  const oldestQueriedAt = queriedTimes.length
+    ? Math.min(...queriedTimes)
+    : null;
 
   const clearPollTimer = () => {
     if (pollTimerRef.current) {
@@ -167,7 +364,48 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
     }
   };
 
-  const loadAccounts = async (background = false): Promise<void> => {
+  const applyQuotaResults = (
+    keys: string[],
+    results: PromiseSettledResult<OfficialQuota>[],
+  ) => {
+    const fresh: Record<string, OfficialQuota> = {};
+    const failed: Record<string, string> = {};
+    results.forEach((result, index) => {
+      const key = keys[index];
+      if (result.status === "rejected") {
+        failed[key] = QUOTA_FAILED;
+        return;
+      }
+      const quota = result.value;
+      // Keep last known values on transient failure, but never mask an
+      // explicit expired credential response from the service.
+      if (
+        quota.success ||
+        quota.accessExpired ||
+        quota.credentialStatus === "expired"
+      )
+        fresh[key] = quota;
+      if (!quota.success && !quota.accessExpired)
+        failed[key] =
+          quota.credentialStatus === "expired"
+            ? QUOTA_FAILED
+            : displayError(quota.error ?? "") || QUOTA_FAILED;
+    });
+    setQuotas((previous) => ({ ...previous, ...fresh }));
+    setQuotaErrors((previous) => {
+      const next = { ...previous };
+      for (const key of keys) {
+        if (failed[key] === undefined) delete next[key];
+        else next[key] = failed[key];
+      }
+      return next;
+    });
+  };
+
+  const loadAccounts = async ({
+    background = false,
+    scope = "all",
+  }: { background?: boolean; scope?: QuotaScope } = {}): Promise<void> => {
     // Background ticks are skipped; account mutations still get a fresh reload
     // after the current request, so an older list cannot hide a new account.
     const waitingGeneration = accountsGeneration.current;
@@ -177,67 +415,75 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
       if (waitingGeneration !== accountsGeneration.current) return;
     }
     const generation = ++accountsGeneration.current;
+    const isLatest = () => generation === accountsGeneration.current;
     const request = (async () => {
       try {
-        if (!background) setLoading(true);
-        setLoadingQuotas(true);
+        if (!background) setListLoading(true);
+        if (scope === "all") setRefreshing(true);
         const list = await officialAccountsApi.list();
-        if (generation !== accountsGeneration.current) return;
+        if (!isLatest()) return;
         setAccounts(list);
         setLoadError(null);
-        const queryAccounts = list.filter((account) => !account.needsRelogin);
-        const quotaResults = await Promise.allSettled(
-          queryAccounts.map((account) =>
-            officialAccountsApi.getQuota(account.key),
-          ),
+        setListStale(false);
+        setListLoading(false);
+        const keys = new Set(list.map((account) => account.key));
+        const keep = <T,>(previous: Record<string, T>) =>
+          Object.fromEntries(
+            Object.entries(previous).filter(([key]) => keys.has(key)),
+          );
+        setQuotas(keep);
+        setQuotaErrors(keep);
+        const targets = list.filter(
+          (account) =>
+            queryable(account) &&
+            (scope === "all" || (scope === "current" && account.isCurrent)),
         );
-        if (generation !== accountsGeneration.current) return;
-        const nextQuotas: Record<string, SubscriptionQuota> = {};
-        const nextErrors = new Set<string>();
-        quotaResults.forEach((result, index) => {
-          const key = queryAccounts[index].key;
-          if (
-            result.status === "fulfilled" &&
-            (result.value.success ||
-              result.value.credentialStatus === "expired")
-          )
-            nextQuotas[key] = result.value;
-          if (result.status === "rejected" || !result.value.success)
-            nextErrors.add(key);
-        });
-        setQuotas((previous) => {
-          for (const account of queryAccounts) {
-            // Keep last known values on transient failure, but never mask an
-            // explicit expired credential response from the service.
-            if (!nextQuotas[account.key] && previous[account.key])
-              nextQuotas[account.key] = previous[account.key];
-          }
-          return nextQuotas;
-        });
-        setQuotaErrors(nextErrors);
-        setRefreshError(nextErrors.size > 0);
-      } catch (err: any) {
-        if (generation !== accountsGeneration.current) return;
+        if (!targets.length) return;
+        const targetKeys = targets.map((account) => account.key);
+        setPendingQuotas(new Set(targetKeys));
+        const results = await Promise.allSettled(
+          targetKeys.map((key) => officialAccountsApi.getQuota(key)),
+        );
+        if (!isLatest()) return;
+        applyQuotaResults(targetKeys, results);
+      } catch (cause) {
+        if (!isLatest()) return;
         if (background) {
-          setRefreshError(true);
+          setListStale(true);
           return;
         }
-        const message = err?.message || String(err);
+        const message = errorText(cause);
         setLoadError(
           message.includes("undefined") && message.includes("invoke")
             ? "暂未连接本机账号服务，请在桌面应用中重试"
-            : message || "无法读取官方账号，请重试",
+            : message || "请稍后重试",
         );
       } finally {
-        if (generation === accountsGeneration.current) {
-          setLoadingQuotas(false);
-          setLoading(false);
+        if (isLatest()) {
+          setListLoading(false);
+          setRefreshing(false);
+          setPendingQuotas(new Set());
         }
       }
     })();
     accountsRequest.current = request;
     await request;
     if (accountsRequest.current === request) accountsRequest.current = null;
+  };
+
+  /** On demand for one account, outside the list request queue. */
+  const queryQuota = async (key: string) => {
+    setPendingQuotas((previous) => new Set(previous).add(key));
+    const results = await Promise.allSettled([
+      officialAccountsApi.getQuota(key),
+    ]);
+    if (!alive.current) return;
+    applyQuotaResults([key], results);
+    setPendingQuotas((previous) => {
+      const next = new Set(previous);
+      next.delete(key);
+      return next;
+    });
   };
 
   const refreshRef = useRef(loadAccounts);
@@ -248,14 +494,36 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
   useEffect(() => {
     if (!refreshMinutes) return;
     const timer = window.setInterval(() => {
-      if (document.visibilityState !== "hidden") void refreshRef.current(true);
+      if (document.visibilityState !== "hidden")
+        void refreshRef.current({ background: true, scope: "current" });
     }, refreshMinutes * 60_000);
     return () => window.clearInterval(timer);
   }, [refreshMinutes]);
 
   useEffect(() => {
+    // Returning to the window re-reads the local list only, no network.
+    const refreshList = () => {
+      if (document.visibilityState !== "hidden")
+        void refreshRef.current({ background: true, scope: "none" });
+    };
+    const timer = window.setInterval(
+      () => setClock((tick) => tick + 1),
+      60_000,
+    );
+    window.addEventListener("focus", refreshList);
+    document.addEventListener("visibilitychange", refreshList);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refreshList);
+      document.removeEventListener("visibilitychange", refreshList);
+    };
+  }, []);
+
+  useEffect(() => {
+    alive.current = true;
     void loadAccounts();
     return () => {
+      alive.current = false;
       accountsGeneration.current++;
       loginGeneration.current++;
       clearPollTimer();
@@ -303,7 +571,7 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
       if (!isCurrent()) return;
       loginGeneration.current++;
       clearPollTimer();
-      setLoginError(message);
+      setLoginError(displayError(message));
       setPollWarning(null);
       startingLoginRef.current = false;
       setStartingLogin(false);
@@ -383,8 +651,7 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
           }
         } catch (cause) {
           if (!isCurrent()) return;
-          const message =
-            cause instanceof Error ? cause.message : String(cause);
+          const message = errorText(cause);
           consecutiveErrors++;
           if (consecutiveErrors >= 3)
             failLogin("连续 3 次无法获取授权状态：" + message);
@@ -397,7 +664,7 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
         }
       }, 2500);
     } catch (cause) {
-      failLogin(cause instanceof Error ? cause.message : String(cause));
+      failLogin(errorText(cause));
     } finally {
       startingLoginRef.current = false;
       loginStartupPending = false;
@@ -425,9 +692,7 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
       await loadAccounts();
       onAccountSwitched?.();
     } catch (cause) {
-      toast.error("未能导入本机登录", {
-        description: cause instanceof Error ? cause.message : String(cause),
-      });
+      toast.error("未能导入本机登录", { description: errorText(cause) });
     } finally {
       setImportingLogin(false);
     }
@@ -450,41 +715,162 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
     }
   };
 
+  const openSwitch = (row: AccountRow, trigger: HTMLElement) => {
+    dialogTriggerRef.current = trigger;
+    setConfirmTarget(row);
+  };
+
   const handlePerformSwitch = async () => {
     if (!confirmTarget) return;
     try {
       setSwitching(true);
-      const targetKey = confirmTarget.key;
-      await officialAccountsApi.switchAccount(targetKey);
+      await officialAccountsApi.switchAccount(confirmTarget.account.key);
       toast.success(
-        `已切换到 ${confirmTarget.displayName || "官方账号"}，请重启已打开的 Codex 以使用新账号`,
+        `已切换到 ${confirmTarget.title}，请重启已打开的 Codex 以使用新账号`,
       );
       setConfirmTarget(null);
       await loadAccounts();
       if (onAccountSwitched) onAccountSwitched();
-    } catch (err: any) {
-      toast.error(err?.message || "切换官方账号失败");
+    } catch (cause) {
+      toast.error("切换账号失败", { description: errorText(cause) });
     } finally {
       setSwitching(false);
     }
   };
 
-  const handleRemoveAccount = async (account: AccountRow) => {
-    if (
-      !window.confirm(
-        `确认移除官方账号“${account.displayName}”？本机保险库中的凭证也会被移除。`,
-      )
-    ) {
-      return;
-    }
+  const handleRemoveAccount = async () => {
+    if (!removeTarget) return;
     try {
-      await officialAccountsApi.removeAccount(account.key);
-      toast.success("官方账号已移除");
+      setRemoving(true);
+      await officialAccountsApi.removeAccount(removeTarget.account.key);
+      toast.success(`已删除账号 ${removeTarget.title}`);
+      setRemoveTarget(null);
       await loadAccounts();
       if (onAccountSwitched) onAccountSwitched();
-    } catch (err: any) {
-      toast.error(err?.message || "移除官方账号失败");
+    } catch (cause) {
+      toast.error("删除账号失败", { description: errorText(cause) });
+    } finally {
+      setRemoving(false);
     }
+  };
+
+  const cliMissing = loginError?.includes("未找到 Codex CLI") ?? false;
+  const busyLogin = importingLogin || startingLogin || loginModalOpen;
+
+  const rowQuota = (row: AccountRow) => {
+    const { account } = row;
+    if (account.unreadable)
+      return (
+        <p className="account-quota-note is-warning">{UNREADABLE_MESSAGE}</p>
+      );
+    if (row.needsRelogin)
+      return <p className="account-quota-note">重新登录后可查询额度</p>;
+    if (row.accessExpired)
+      return (
+        <p className="account-quota-note">
+          {account.isCurrent
+            ? "令牌已过期 · Codex 下次使用时续期"
+            : "令牌已过期 · 切换后由 Codex 续期"}
+        </p>
+      );
+    if (row.quota?.success)
+      return row.windows.length ? (
+        <div className="account-quota-meters" title="剩余额度">
+          {row.windows.map((meter, index) => (
+            <QuotaMeter
+              key={`${meter.label}-${index}`}
+              window={meter}
+              now={now}
+              compact
+            />
+          ))}
+        </div>
+      ) : (
+        <p className="account-quota-note">{NO_WINDOWS}</p>
+      );
+    if (row.pending)
+      return (
+        <p className="account-quota-note" role="status">
+          额度查询中…
+        </p>
+      );
+    if (row.error !== undefined)
+      return <p className="account-quota-note is-warning">{row.error}</p>;
+    return (
+      <p className="account-quota-note">
+        尚未查询额度
+        <button
+          type="button"
+          className="account-quota-query"
+          onClick={() => void queryQuota(account.key)}
+        >
+          查询
+        </button>
+      </p>
+    );
+  };
+
+  const currentQuota = (row: AccountRow) => {
+    // Codex is signed in to this very account, so its live login repairs it.
+    if (row.account.unreadable)
+      return (
+        <div className="account-current-message">
+          <p>
+            已保存的登录无法读取。Codex 正在使用这个账号，导入本机登录即可修复。
+          </p>
+          <Button
+            size="sm"
+            variant="outline"
+            className="account-current-action"
+            disabled={busyLogin}
+            onClick={() => void handleImportLogin()}
+          >
+            导入本机登录
+          </Button>
+        </div>
+      );
+    if (row.needsRelogin)
+      return <p className="account-current-message">重新登录后可查询额度</p>;
+    if (row.accessExpired)
+      return (
+        <p className="account-current-message">
+          令牌已过期，Codex 下次使用时会自动续期，之后即可查询额度
+        </p>
+      );
+    if (row.quota?.success)
+      return row.windows.length ? (
+        <>
+          <div className="account-current-meters">
+            {row.windows.map((meter, index) => (
+              <QuotaMeter
+                key={`${meter.label}-${index}`}
+                window={meter}
+                now={now}
+              />
+            ))}
+          </div>
+          {typeof row.quota.queriedAt === "number" && (
+            <small className="account-current-checked">
+              查询于 {clockTime(row.quota.queriedAt)}
+            </small>
+          )}
+        </>
+      ) : (
+        <p className="account-current-message">{NO_WINDOWS}</p>
+      );
+    if (row.pending)
+      return (
+        <div className="account-current-meters is-loading" role="status">
+          <span className="sr-only">正在查询额度…</span>
+          <span aria-hidden="true" />
+          <span aria-hidden="true" />
+        </div>
+      );
+    return (
+      <p className="account-current-message">
+        {row.error ?? "尚未查询额度，可点击下方“刷新”"}
+      </p>
+    );
   };
 
   return (
@@ -492,25 +878,25 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
       <header className="accounts-heading">
         <div>
           <h1>官方账号</h1>
-          <p>管理 ChatGPT 账号与额度。</p>
+          <p>保存多个 ChatGPT 账号，查看额度并一键切换。</p>
         </div>
         <div className="accounts-header-actions">
           <Button
             variant="outline"
-            disabled={importingLogin || startingLogin || loginModalOpen}
+            disabled={busyLogin}
             onClick={() => void handleStartLogin("device")}
           >
             设备码登录
           </Button>
           <Button
             variant="outline"
-            disabled={importingLogin || startingLogin || loginModalOpen}
+            disabled={busyLogin}
             onClick={() => void handleImportLogin()}
           >
             {importingLogin ? "正在导入…" : "导入本机登录"}
           </Button>
           {/* With no account yet, the empty card holds the only add action. */}
-          {(mergedAccounts.length > 0 || loadError) && (
+          {(rows.length > 0 || loadError) && (
             <Button
               ref={addAccountRef}
               onClick={() => void handleStartLogin()}
@@ -522,41 +908,19 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
           )}
         </div>
       </header>
-      <div className="accounts-refresh-settings">
-        <label htmlFor="official-accounts-refresh">自动刷新额度</label>
-        <select
-          id="official-accounts-refresh"
-          value={refreshMinutes}
-          onChange={(event) => {
-            const minutes = Number(event.target.value);
-            setRefreshMinutes(minutes);
-            try {
-              localStorage.setItem(REFRESH_STORAGE_KEY, String(minutes));
-            } catch {
-              // Storage may be unavailable; the setting still works this visit.
-            }
-          }}
-        >
-          {REFRESH_MINUTES.map((minutes) => (
-            <option key={minutes} value={minutes}>
-              {minutes ? `每 ${minutes} 分钟` : "关闭"}
-            </option>
-          ))}
-        </select>
-        {refreshError && (
-          <span className="accounts-refresh-error">
-            部分额度未更新，已显示的额度可能不是最新值。可手动刷新重试。
-          </span>
-        )}
-      </div>
-      {loading && (
+      {listLoading && rows.length === 0 && !loadError && (
         <div className="accounts-notice" role="status">
-          正在读取本机官方账号…
+          <CircleNotch size={16} className="animate-spin" />
+          正在读取本机保存的账号…
         </div>
       )}
-      {loadError && !loading && (
-        <div className="accounts-notice" role="alert">
-          <span>{loadError}</span>
+      {loadError && !listLoading && (
+        <div className="accounts-notice is-error" role="alert">
+          <Warning size={16} />
+          <div>
+            <strong>无法读取已保存的账号</strong>
+            <p>{loadError}</p>
+          </div>
           <Button
             variant="outline"
             size="sm"
@@ -566,34 +930,87 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
           </Button>
         </div>
       )}
-      {activeLiveAccount && (
-        <section className="account-current" aria-label="当前官方账号">
+      {liveState === "unsaved" && (
+        <div className="accounts-banner" role="status">
+          <Info size={16} />
           <div>
-            <span className="account-eyebrow">当前线路 · 官方账号</span>
-            <h2>{activeLiveAccount.displayName}</h2>
-            <p>{activeLiveAccount.email}</p>
+            <strong>Codex 当前登录的账号还没有保存</strong>
+            <p>导入后，可以随时从这里切换回这个账号。</p>
           </div>
-          <div className="account-current-quota">
-            <span>5 小时 · 剩余</span>
-            <strong>
-              {activeFiveHour ? activeFiveHour.remaining + "%" : "—"}
-            </strong>
-            <small>{activeFiveHour?.resetTime ?? activeQuotaMessage}</small>
+          <Button
+            size="sm"
+            disabled={busyLogin}
+            onClick={() => void handleImportLogin()}
+          >
+            {importingLogin ? "正在导入…" : "导入本机登录"}
+          </Button>
+        </div>
+      )}
+      {liveState === "mismatch" && (
+        <div className="accounts-banner is-warning" role="status">
+          <Warning size={16} />
+          <div>
+            <strong>Codex 当前没有使用所选账号</strong>
+            <p>
+              {selected
+                ? `线路选的是「${selected.title}」，但 Codex 中的登录不是它。重新应用后，Codex 改用这个账号。`
+                : "Codex 中的登录与所选线路不一致。"}
+            </p>
           </div>
-          <div className="account-current-quota">
-            <span>本周 · 剩余</span>
-            <strong>{activeWeekly ? activeWeekly.remaining + "%" : "—"}</strong>
-            <small>{activeWeekly?.resetTime ?? activeQuotaMessage}</small>
+          {selected &&
+            (selected.needsRelogin ? (
+              <Button
+                size="sm"
+                disabled={startingLogin || switching}
+                onClick={() => void handleStartLogin()}
+              >
+                重新登录
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                disabled={startingLogin || switching}
+                onClick={(event) => openSwitch(selected, event.currentTarget)}
+              >
+                重新应用
+              </Button>
+            ))}
+        </div>
+      )}
+      {liveState === "third_party" && !current && rows.length > 0 && (
+        <p className="accounts-route-note">
+          <Info size={14} />
+          Codex 正在使用第三方线路。切换到下方任一账号后，Codex 改用官方登录。
+        </p>
+      )}
+      {current && (
+        <section className="account-current" aria-label="Codex 当前登录">
+          <div className="account-current-identity">
+            <span className="account-eyebrow">Codex 当前登录</span>
+            <h2 title={current.title}>{current.title}</h2>
+            {(current.subtitle || current.plan) && (
+              <p>
+                {current.subtitle && (
+                  <span title={current.subtitle}>{current.subtitle}</span>
+                )}
+                <PlanTag plan={current.plan} />
+              </p>
+            )}
           </div>
+          <div className="account-current-quota">{currentQuota(current)}</div>
         </section>
       )}
-      {!loading && !loadError && mergedAccounts.length === 0 && (
+      {!listLoading && !loadError && rows.length === 0 && (
         <section className="accounts-empty">
           <div className="accounts-empty-icon">
             <UserRound size={28} strokeWidth={1.5} />
           </div>
           <h2>连接第一个官方账号</h2>
-          <p>在浏览器中登录 ChatGPT，返回后即可添加账号。</p>
+          <p>
+            在浏览器中登录 ChatGPT，返回后即可添加账号。
+            <br />
+            已在 Codex 中登录？也可以用“导入本机登录”直接保存。
+          </p>
           <Button
             ref={addAccountRef}
             onClick={() => void handleStartLogin()}
@@ -604,92 +1021,114 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
           </Button>
         </section>
       )}
-      {mergedAccounts.length > 0 && (
+      {rows.length > 0 && (
         <section className="accounts-list" aria-label="已保存的官方账号">
           <div className="accounts-list-heading">
             <h2>
-              已保存账号 <span>{mergedAccounts.length}</span>
+              已保存账号 <span>{rows.length}</span>
             </h2>
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={loading || loadingQuotas}
-              onClick={() => void loadAccounts()}
-            >
-              <ArrowsClockwise size={14} />
-              刷新
-            </Button>
+            <div className="accounts-list-tools">
+              {oldestQueriedAt !== null && (
+                <span className="accounts-checked">
+                  查询于 {clockTime(oldestQueriedAt)}
+                </span>
+              )}
+              <label htmlFor="official-accounts-refresh">自动刷新额度</label>
+              <select
+                id="official-accounts-refresh"
+                title="只自动刷新 Codex 当前登录的账号；其他账号在打开页面或点“刷新”时查询"
+                value={refreshMinutes}
+                onChange={(event) => {
+                  const minutes = Number(event.target.value);
+                  setRefreshMinutes(minutes);
+                  try {
+                    localStorage.setItem(REFRESH_STORAGE_KEY, String(minutes));
+                  } catch {
+                    // Storage may be unavailable; the setting still works this visit.
+                  }
+                }}
+              >
+                {REFRESH_MINUTES.map((minutes) => (
+                  <option key={minutes} value={minutes}>
+                    {minutes ? `每 ${minutes} 分钟` : "关闭"}
+                  </option>
+                ))}
+              </select>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={refreshing}
+                onClick={() => void loadAccounts()}
+              >
+                <ArrowsClockwise
+                  size={14}
+                  className={refreshing ? "animate-spin" : undefined}
+                />
+                刷新
+              </Button>
+            </div>
           </div>
-          {mergedAccounts.map((account) => {
-            const accountQuota = quotas[account.key];
-            const fiveHour = quotaMetric(accountQuota, "five_hour");
-            const weekly = quotaMetric(accountQuota, "seven_day");
+          {(quotaFailed || listStale) && (
+            <p className="accounts-refresh-error" role="status">
+              {quotaFailed
+                ? "部分额度未更新，已显示的额度可能不是最新值。可手动刷新重试。"
+                : "账号状态未更新，显示的可能不是最新信息。可手动刷新重试。"}
+            </p>
+          )}
+          {rows.map((row) => {
+            const { account } = row;
             return (
               <article
                 className="account-row"
-                key={account.id}
+                key={account.providerId || account.key}
                 data-current={account.isCurrent}
+                data-attention={row.needsRelogin || undefined}
               >
-                <div className="account-avatar">{account.shortBadge}</div>
-                <div className="account-identity">
-                  <strong>
-                    {account.displayName}
-                    {account.isCurrent && <span>使用中</span>}
-                  </strong>
-                  <small>{account.email}</small>
-                  <span
-                    className={
-                      account.needsRelogin
-                        ? "account-status expired"
-                        : "account-status"
-                    }
-                  >
-                    {account.needsRelogin ? (
-                      <Warning size={12} />
-                    ) : (
-                      <UserRound size={12} />
-                    )}
-                    {account.needsRelogin ? "需要重新登录" : "已保存登录"}
-                  </span>
-                </div>
-                <div className="account-row-quota">
-                  {account.needsRelogin ? (
-                    <span>重新登录后可查询额度</span>
-                  ) : fiveHour || weekly ? (
-                    <>
-                      <span>
-                        5 小时剩余{" "}
-                        <b>{fiveHour ? fiveHour.remaining + "%" : "—"}</b>
-                      </span>
-                      <span>
-                        本周剩余 <b>{weekly ? weekly.remaining + "%" : "—"}</b>
-                      </span>
-                    </>
+                <div
+                  className="account-avatar"
+                  data-unreadable={account.unreadable || undefined}
+                  aria-hidden="true"
+                >
+                  {account.unreadable ? (
+                    <Warning size={15} />
                   ) : (
-                    <span>
-                      {loadingQuotas
-                        ? "额度查询中…"
-                        : quotaErrors.has(account.key) ||
-                            (accountQuota && !accountQuota.success)
-                          ? "额度查询失败，请刷新重试"
-                          : "尚未获取额度"}
+                    avatarText(account)
+                  )}
+                </div>
+                <div className="account-identity">
+                  <div className="account-title">
+                    <strong title={row.title}>{row.title}</strong>
+                    {account.isCurrent && (
+                      <span className="account-current-tag">使用中</span>
+                    )}
+                  </div>
+                  {(row.subtitle || row.plan) && (
+                    <div className="account-meta">
+                      {row.subtitle && (
+                        <small title={row.subtitle}>{row.subtitle}</small>
+                      )}
+                      <PlanTag plan={row.plan} />
+                    </div>
+                  )}
+                  {row.needsRelogin && !account.unreadable && (
+                    <span className="account-status">
+                      <Warning size={12} />
+                      需要重新登录
                     </span>
                   )}
                 </div>
+                <div className="account-row-quota">{rowQuota(row)}</div>
                 <div className="account-row-actions">
                   <Button
                     variant="outline"
                     size="sm"
                     disabled={startingLogin || switching}
                     onClick={(event) => {
-                      if (account.needsRelogin) void handleStartLogin();
-                      else {
-                        dialogTriggerRef.current = event.currentTarget;
-                        setConfirmTarget(account);
-                      }
+                      if (row.needsRelogin) void handleStartLogin();
+                      else openSwitch(row, event.currentTarget);
                     }}
                   >
-                    {account.needsRelogin
+                    {row.needsRelogin
                       ? "重新登录"
                       : account.isCurrent
                         ? "重新应用"
@@ -698,8 +1137,14 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
                   <Button
                     variant="ghost"
                     size="icon"
-                    aria-label={"移除" + account.displayName}
-                    onClick={() => void handleRemoveAccount(account)}
+                    className="account-remove"
+                    aria-label={"删除" + row.title}
+                    title="删除账号"
+                    disabled={removing}
+                    onClick={(event) => {
+                      dialogTriggerRef.current = event.currentTarget;
+                      setRemoveTarget(row);
+                    }}
                   >
                     <Trash2 size={15} />
                   </Button>
@@ -711,7 +1156,7 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
       )}
       <footer className="accounts-privacy">
         <ShieldCheck size={16} />
-        <p>登录凭据仅保存在本机。</p>
+        <p>登录凭据仅保存在本机，界面不会显示令牌。</p>
       </footer>
 
       <Dialog
@@ -749,12 +1194,23 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
                 : "正在获取一次性代码…"}
             </div>
           )}
-          {loginError && (
-            <div className="account-login-error" role="alert">
-              <strong>授权未完成</strong>
-              <p>{loginError}</p>
-            </div>
-          )}
+          {loginError &&
+            (cliMissing ? (
+              <div className="account-login-error" role="alert">
+                <strong>未找到 Codex CLI</strong>
+                <p>
+                  已在 PATH、常见安装位置和 Codex 桌面版自带的 CLI
+                  中查找，都没有找到。可以先在 Codex 中登录
+                  ChatGPT，再用“导入本机登录”保存这个账号；安装 Codex CLI
+                  后也可以重新检测。
+                </p>
+              </div>
+            ) : (
+              <div className="account-login-error" role="alert">
+                <strong>授权未完成</strong>
+                <p>{loginError}</p>
+              </div>
+            ))}
           {activeLogin && !loginError && (
             <>
               <div className="account-login-address">
@@ -813,43 +1269,73 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
               </p>
             </>
           )}
-          <div className="account-login-help">
-            <p>
-              {loginMethod === "device"
-                ? "设备码登录需要在 ChatGPT 安全设置中开启；工作区可能需要管理员授权。未开启时可改用浏览器登录。"
-                : "浏览器登录需要本机回调端口可用；若回调受阻，可改用设备码登录或导入本机登录。"}
-            </p>
-            <strong>浏览器报错或无法继续？</strong>
-            <p>
-              本应用无法读取浏览器中的报错。若显示{" "}
-              <code>unsupported_country_region_territory</code>
-              ，表示服务不支持当前国家或地区，继续等待不会完成授权。请取消登录并核对服务可用范围。
-            </p>
-            <p>
-              若本机 Codex
-              已成功登录，可关闭弹窗后选择“导入本机登录”。这只读取已有凭据，不会绕过服务限制；系统钥匙串中的凭据可能无法导入。
-            </p>
-          </div>
+          {!cliMissing && (
+            <div className="account-login-help">
+              <p>
+                {loginMethod === "device"
+                  ? "设备码登录需要在 ChatGPT 安全设置中开启；工作区可能需要管理员授权。未开启时可改用浏览器登录。"
+                  : "浏览器登录需要本机回调端口可用；若回调受阻，可改用设备码登录或导入本机登录。"}
+              </p>
+              <details open={Boolean(loginError)}>
+                <summary>浏览器报错或无法继续？</summary>
+                <p>
+                  本应用无法读取浏览器中的报错。若显示{" "}
+                  <code>unsupported_country_region_territory</code>
+                  ，表示服务不支持当前国家或地区，继续等待不会完成授权。请取消登录并核对服务可用范围。
+                </p>
+                <p>
+                  若本机 Codex
+                  已成功登录，可关闭弹窗后选择“导入本机登录”。这只读取已有凭据，不会绕过服务限制；系统钥匙串中的凭据可能无法导入。
+                </p>
+              </details>
+            </div>
+          )}
           <footer className="account-dialog-actions">
             <Button variant="outline" onClick={() => void handleCancelLogin()}>
-              取消登录
+              {cliMissing ? "取消" : "取消登录"}
             </Button>
-            <Button
-              disabled={startingLogin}
-              onClick={() =>
-                void handleStartLogin(
-                  loginMethod === "browser" ? "device" : "browser",
-                )
-              }
-            >
-              {loginMethod === "browser" ? "改用设备码登录" : "改用浏览器登录"}
-            </Button>
-            <Button
-              disabled={startingLogin}
-              onClick={() => void handleStartLogin(loginMethod)}
-            >
-              {loginMethod === "browser" ? "重新登录" : "重新获取代码"}
-            </Button>
+            {cliMissing ? (
+              <>
+                <Button
+                  variant="outline"
+                  disabled={startingLogin}
+                  onClick={() => void handleStartLogin(loginMethod)}
+                >
+                  重新检测
+                </Button>
+                <Button
+                  disabled={importingLogin}
+                  onClick={() => {
+                    void handleCancelLogin();
+                    void handleImportLogin();
+                  }}
+                >
+                  导入本机登录
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button
+                  variant="outline"
+                  disabled={startingLogin}
+                  onClick={() =>
+                    void handleStartLogin(
+                      loginMethod === "browser" ? "device" : "browser",
+                    )
+                  }
+                >
+                  {loginMethod === "browser"
+                    ? "改用设备码登录"
+                    : "改用浏览器登录"}
+                </Button>
+                <Button
+                  disabled={startingLogin}
+                  onClick={() => void handleStartLogin(loginMethod)}
+                >
+                  {loginMethod === "browser" ? "重新登录" : "重新获取代码"}
+                </Button>
+              </>
+            )}
           </footer>
         </DialogContent>
       </Dialog>
@@ -864,16 +1350,19 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
           className="account-dialog"
           overlayClassName="backdrop-blur-none"
         >
-          <DialogTitle>
-            切换到 {confirmTarget?.displayName || "官方账号"}？
-          </DialogTitle>
+          <DialogTitle>切换到 {confirmTarget?.title}？</DialogTitle>
           <DialogDescription className="account-dialog-description">
             将更新 Codex 的本机登录信息与当前线路。已经打开的 Codex
             需要你手动重启后使用新账号，本次操作不会自动关闭或重启 Codex。
           </DialogDescription>
           <dl className="account-switch-preview">
             <dt>目标账号</dt>
-            <dd>{confirmTarget?.displayName || "官方账号"}</dd>
+            <dd>
+              {confirmTarget?.title}
+              {confirmTarget?.subtitle && (
+                <small>{confirmTarget.subtitle}</small>
+              )}
+            </dd>
             <dt>更新内容</dt>
             <dd>Codex 登录凭据与官方线路配置</dd>
             <dt>会话记录</dt>
@@ -893,9 +1382,46 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
             >
               <ArrowsClockwise
                 size={15}
-                className={switching ? "animate-spin" : ""}
+                className={switching ? "animate-spin" : undefined}
               />
               {switching ? "正在切换…" : "确认切换"}
+            </Button>
+          </footer>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={Boolean(removeTarget)}
+        onOpenChange={(open) => {
+          if (!open && !removing) setRemoveTarget(null);
+        }}
+      >
+        <DialogContent
+          role="alertdialog"
+          onCloseAutoFocus={restoreDialogFocus}
+          className="account-dialog"
+          overlayClassName="backdrop-blur-none"
+        >
+          <DialogTitle>删除账号“{removeTarget?.title}”？</DialogTitle>
+          <DialogDescription className="account-dialog-description">
+            {removeTarget?.account.unreadable
+              ? "这个账号保存的登录已无法读取，删除后可以重新登录添加。"
+              : "将删除本机为这个账号保存的登录凭据，Codex 与 ChatGPT 中已有的登录不受影响。"}
+            使用它的线路会保留，之后切换到这些线路时沿用 Codex 当前的登录。
+          </DialogDescription>
+          <footer className="account-dialog-actions">
+            <Button
+              variant="outline"
+              onClick={() => setRemoveTarget(null)}
+              disabled={removing}
+            >
+              取消
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => void handleRemoveAccount()}
+              disabled={removing}
+            >
+              {removing ? "正在删除…" : "删除账号"}
             </Button>
           </footer>
         </DialogContent>

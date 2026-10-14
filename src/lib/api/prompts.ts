@@ -18,6 +18,36 @@ export interface PromptCategory {
   name: string;
 }
 
+/** What Codex actually reads, compared with the enabled entries. */
+export type CodexPromptState =
+  | "in_sync"
+  | "missing"
+  | "edited"
+  | "malformed"
+  | "foreign"
+  | "overridden"
+  | "linked"
+  | "unreadable";
+
+export interface CodexPromptStatus {
+  state: CodexPromptState;
+  enabledCount: number;
+  /** Bytes of the merged enabled entries; only present while they are in effect. */
+  managedBytes?: number;
+}
+
+/** `rewrite` backs up AGENTS.md first; `keep_edits` never writes the file. */
+export type CodexPromptResolution = "rewrite" | "keep_edits";
+
+/**
+ * Prompt commands prefix coded errors with their stable key, e.g.
+ * "[prompt.managed.duplicate] …". Returns that key, or null for uncoded errors.
+ */
+export function promptErrorCode(reason: unknown): string | null {
+  const text = reason instanceof Error ? reason.message : String(reason ?? "");
+  return /^\[([a-z0-9_.]+)\]/.exec(text)?.[1] ?? null;
+}
+
 export const promptsApi = {
   async getCategories(app: AppId): Promise<PromptCategory[]> {
     return await invoke("get_prompt_categories", { app });
@@ -78,5 +108,15 @@ export const promptsApi = {
 
   async getCurrentFileContent(app: AppId): Promise<string | null> {
     return await invoke("get_current_prompt_file_content", { app });
+  },
+
+  async getCodexStatus(): Promise<CodexPromptStatus> {
+    return await invoke("get_codex_prompt_status");
+  },
+
+  async resolveCodexFile(
+    action: CodexPromptResolution,
+  ): Promise<string | null> {
+    return await invoke("resolve_codex_prompt_file", { action });
   },
 };

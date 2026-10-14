@@ -81,9 +81,15 @@ fn grokbuild_import_and_switch_write_live_config() {
     switch_provider_test_hook(&state, AppType::GrokBuild, "relay")
         .expect("switch Grok Build provider");
 
+    // Live is the line plus `[models].session_summary`, which follows the
+    // line's default profile when the line does not choose one.
     assert_eq!(
         std::fs::read_to_string(&live_path).expect("read switched Grok Build config"),
-        next_config
+        next_config.replacen(
+            "default = \"grok-4.5\"\n",
+            "default = \"grok-4.5\"\nsession_summary = \"grok-4.5\"\n",
+            1,
+        )
     );
     assert_eq!(
         state

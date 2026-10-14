@@ -6,42 +6,47 @@ use crate::error::AppError;
 use base64::prelude::*;
 use url::Url;
 
+/// Why a link with `configUrl` is refused (parser) or cannot be merged.
+pub(super) const REMOTE_CONFIG_UNSUPPORTED: &str =
+    "链接使用了远程配置（configUrl），Chimera++ 不支持从网络下载配置。请让链接提供方改用内嵌配置（config）。";
+
 /// Validate that a string is a safe HTTP(S) URL.
 ///
 /// Deep links are untrusted input. In addition to the scheme, require a host,
 /// reject userinfo and fragments, and cap the length before handing the URL to
-/// config writers or HTTP clients.
+/// config writers or HTTP clients. The messages name the field, never the
+/// value: the confirm dialog shows them, and a URL can carry a token.
 pub fn validate_url(url_str: &str, field_name: &str) -> Result<(), AppError> {
     const MAX_URL_BYTES: usize = 4096;
 
     if url_str.len() > MAX_URL_BYTES {
         return Err(AppError::InvalidInput(format!(
-            "URL for '{field_name}' is too long (max {MAX_URL_BYTES} bytes)"
+            "链接中的“{field_name}”地址过长（最多 {MAX_URL_BYTES} 字节）。"
         )));
     }
 
     let url = Url::parse(url_str)
-        .map_err(|_| AppError::InvalidInput(format!("Invalid URL for '{field_name}'")))?;
+        .map_err(|_| AppError::InvalidInput(format!("链接中的“{field_name}”不是有效的网址。")))?;
 
     let scheme = url.scheme();
     if scheme != "http" && scheme != "https" {
         return Err(AppError::InvalidInput(format!(
-            "Invalid URL scheme for '{field_name}': must be http or https"
+            "链接中的“{field_name}”必须是 http 或 https 地址。"
         )));
     }
     if url.host_str().is_none() {
         return Err(AppError::InvalidInput(format!(
-            "URL for '{field_name}' must include a host"
+            "链接中的“{field_name}”缺少主机名。"
         )));
     }
     if !url.username().is_empty() || url.password().is_some() {
         return Err(AppError::InvalidInput(format!(
-            "URL for '{field_name}' must not include userinfo"
+            "链接中的“{field_name}”不能包含用户名或密码。"
         )));
     }
     if url.fragment().is_some() {
         return Err(AppError::InvalidInput(format!(
-            "URL for '{field_name}' must not include a fragment"
+            "链接中的“{field_name}”不能包含“#”片段。"
         )));
     }
 

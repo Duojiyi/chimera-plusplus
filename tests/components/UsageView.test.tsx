@@ -94,10 +94,20 @@ function deferred<T>() {
   });
   return { promise, resolve, reject };
 }
-async function loaded() {
+/** Bar-chart axis labels (the chart is now HTML bars, not an SVG). */
+const AXIS = ".usage-bar-column small";
+const STALE_STATUS = /^统计未更新，显示上次结果$/;
+/** The screen-reader-only live region that announces load progress/results. */
+function liveStatus() {
+  const region = document.querySelector<HTMLElement>(".usage-live-status");
+  expect(region).not.toBeNull();
+  expect(region).toHaveAttribute("role", "status");
+  return region!;
+}
+async function loaded(status: RegExp = /^统计加载完成/) {
   await waitFor(() => {
-    expect(screen.getByText("统计加载完成")).toBeVisible();
-    expect(screen.getByRole("button", { name: "同步词元记录" })).toBeEnabled();
+    expect(liveStatus()).toHaveTextContent(status);
+    expect(screen.getByRole("button", { name: "刷新用量" })).toBeEnabled();
   });
 }
 async function openRebuild(user: ReturnType<typeof userEvent.setup>) {
@@ -189,15 +199,13 @@ describe("UsageView", () => {
     expect(api.getUsageTrends).toHaveBeenLastCalledWith(...args);
     expect(api.getModelStats).toHaveBeenLastCalledWith(...args);
     expect(api.getUsageSummary).toHaveBeenCalledTimes(2);
-    const metrics = within(
-      screen.getByRole("region", { name: "词元总量与构成" }),
-    );
+    const metrics = within(screen.getByRole("region", { name: "用量总览" }));
     expect(metrics.getByTitle("2,000 词元")).toHaveTextContent("2,000");
-    expect(metrics.getByTitle("1,000 词元")).toHaveTextContent("1,000");
-    expect(metrics.getByText("50.0% · 占总量")).toBeVisible();
-    expect(screen.getByText("09/18 峰值 2,000 词元")).toBeVisible();
+    expect(metrics.getByText("缓存命中 50%")).toBeVisible();
+    expect(liveStatus()).toHaveTextContent("统计加载完成，近 30 天共 2,000 词元");
+    expect(screen.getByText("峰值 09/18 · 2,000")).toBeVisible();
     const ranking = within(
-      screen.getByRole("region", { name: "模型词元分布" }),
+      screen.getByRole("complementary", { name: "按模型排行" }),
     );
     expect(
       ranking.getAllByTitle(/^model-/).map((el) => el.textContent),
@@ -266,9 +274,8 @@ describe("UsageView", () => {
     render(<UsageView />);
 
     expect(await screen.findByTitle("2,000 词元")).toBeVisible();
-    expect(
-      screen.getByText("正在后台同步本机会话记录，已有数据仍可查看…"),
-    ).toBeVisible();
+    expect(screen.getByText("正在同步…")).toBeVisible();
+    expect(liveStatus()).toHaveTextContent("正在更新统计");
     expect(api.getUsageSummary).toHaveBeenCalled();
     expect(api.syncCodexSessionUsage).toHaveBeenCalledTimes(1);
 
@@ -291,12 +298,10 @@ describe("UsageView", () => {
       await loaded();
 
       expect(screen.getByTitle("2,000 词元")).toBeVisible();
-      expect(
-        screen.getByText("本机会话同步失败，正在显示已有记录", {
-          exact: false,
-        }),
-      ).toBeVisible();
-      expect(screen.getByRole("alert")).toHaveTextContent("无法更新统计");
+      const alert = screen.getByRole("alert");
+      expect(alert).toHaveTextContent("本机会话同步失败");
+      expect(alert).toHaveTextContent("下方是已导入的记录，可能不是最新。");
+      expect(alert).toHaveTextContent("history unavailable");
     },
   );
 
@@ -310,10 +315,10 @@ describe("UsageView", () => {
     render(<UsageView />);
     await loaded();
     for (const label of ["08/20", "08/27", "09/03", "09/10", "09/18"]) {
-      expect(screen.getByText(label, { selector: "tspan" })).toBeVisible();
+      expect(screen.getByText(label, { selector: AXIS })).toBeVisible();
     }
     expect(
-      screen.queryByText("08/21", { selector: "tspan" }),
+      screen.queryByText("08/21", { selector: AXIS }),
     ).not.toBeInTheDocument();
   });
 
@@ -328,31 +333,27 @@ describe("UsageView", () => {
       "今日",
     );
     await user.click(screen.getByRole("button", { name: "今日" }));
-    await loaded();
-    expect(screen.getByText("09:00 峰值 2,000 词元")).toBeVisible();
-    expect(
-      screen.getByRole("heading", { name: "每小时消耗光谱" }),
-    ).toBeVisible();
-    expect(
-      screen.getByText("09:00", { selector: "tspan" }),
-    ).toBeInTheDocument();
+    await loaded(/^统计加载完成，今日共/);
+    expect(screen.getByText("峰值 09:00 · 2,000")).toBeVisible();
+    expect(screen.getByText("每小时词元")).toBeVisible();
+    expect(screen.getByText("09:00", { selector: AXIS })).toBeInTheDocument();
     const args = api.getUsageSummary.mock.calls.at(-1)!;
     expect(api.getUsageTrends).toHaveBeenLastCalledWith(...args);
     expect(api.getModelStats).toHaveBeenLastCalledWith(...args);
     expect(args[2]).toBe("codex");
     expect(new Date(args[0]! * 1000).getHours()).toBe(0);
     api.getUsageSummary.mockRejectedValueOnce(new Error("range offline"));
-    await user.click(screen.getByRole("button", { name: "7 天" }));
-    await loaded();
+    await user.click(screen.getByRole("button", { name: "近 7 天" }));
+    await loaded(STALE_STATUS);
     expect(screen.getByRole("alert")).toHaveTextContent(
-      "保留上次成功结果（今日）",
+      "下方仍是上次成功读取的结果（今日）",
     );
-    expect(screen.getByText("今日 · 含缓存")).toBeVisible();
+    expect(screen.getByRole("alert")).toHaveTextContent("range offline");
     expect(document.querySelector(".usage-status-period")).toHaveTextContent(
-      /近 1 天\s*·\s*今日/,
+      /^今日/,
     );
-    expect(screen.getByText("09:00 峰值 2,000 词元")).toBeVisible();
-    expect(screen.getByRole("button", { name: "7 天" })).toHaveAttribute(
+    expect(screen.getByText("峰值 09:00 · 2,000")).toBeVisible();
+    expect(screen.getByRole("button", { name: "近 7 天" })).toHaveAttribute(
       "aria-pressed",
       "true",
     );
@@ -391,12 +392,12 @@ describe("UsageView", () => {
         "codex",
       );
       const hourly = duration <= 86400;
-      const heading = hourly ? "每小时消耗光谱" : "每日消耗光谱";
+      const heading = hourly ? "每小时词元" : "每日词元";
       const label = hourly ? "00:00" : "11/01";
-      expect(screen.getByRole("heading", { name: heading })).toBeVisible();
-      expect(screen.getByText(label + " 峰值 2,000 词元")).toBeVisible();
-      expect(screen.getByText(label, { selector: "tspan" })).toBeVisible();
-      expect(screen.getByText("今日 · 含缓存")).toBeVisible();
+      expect(screen.getByText(heading)).toBeVisible();
+      expect(screen.getByText(`峰值 ${label} · 2,000`)).toBeVisible();
+      expect(screen.getByText(label, { selector: AXIS })).toBeVisible();
+      expect(liveStatus()).toHaveTextContent(/^统计加载完成，今日共/);
 
       // A new query with the opposite grain must not relabel the retained data.
       windowMock.mockReturnValue({
@@ -406,16 +407,18 @@ describe("UsageView", () => {
       const pending = deferred<UsageSummary>();
       api.syncCodexSessionUsage.mockResolvedValueOnce({ ...sync, imported: 0 });
       api.getUsageSummary.mockReturnValueOnce(pending.promise);
-      await user.click(screen.getByRole("button", { name: "同步词元记录" }));
-      expect(screen.getByRole("heading", { name: heading })).toBeVisible();
+      await user.click(screen.getByRole("button", { name: "刷新用量" }));
+      expect(screen.getByText(heading)).toBeVisible();
       await act(async () => pending.reject(new Error("refresh offline")));
-      await loaded();
+      await loaded(STALE_STATUS);
       expect(screen.getByRole("alert")).toHaveTextContent(
-        "保留上次成功结果（今日）",
+        "下方仍是上次成功读取的结果（今日）",
       );
-      expect(screen.getByText("今日 · 含缓存")).toBeVisible();
-      expect(screen.getByRole("heading", { name: heading })).toBeVisible();
-      expect(screen.getByText(label + " 峰值 2,000 词元")).toBeVisible();
+      expect(document.querySelector(".usage-status-period")).toHaveTextContent(
+        /^今日/,
+      );
+      expect(screen.getByText(heading)).toBeVisible();
+      expect(screen.getByText(`峰值 ${label} · 2,000`)).toBeVisible();
     },
   );
 
@@ -428,16 +431,15 @@ describe("UsageView", () => {
         <UsageView />
       </StrictMode>,
     );
-    expect(screen.getAllByText("正在读取统计…")[0]).toBeVisible();
-    expect(screen.getByRole("button", { name: "同步词元记录" })).toBeDisabled();
+    expect(liveStatus()).toHaveTextContent("正在更新统计");
+    expect(screen.getByRole("button", { name: "刷新用量" })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: "今日" }));
     expect(api.syncCodexSessionUsage).toHaveBeenCalledTimes(1);
     expect(api.getUsageSummary).toHaveBeenCalled();
     await act(async () => pending.resolve(sync));
-    await loaded();
+    await loaded(/^统计加载完成，今日共/);
     expect(api.getUsageSummary).toHaveBeenCalledTimes(4);
-    expect(screen.getByText("今日 · 含缓存")).toBeVisible();
-    expect(screen.getByRole("button", { name: "同步词元记录" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "刷新用量" })).toBeEnabled();
   });
 
   it.each(["resolve", "reject"] as const)(
@@ -448,20 +450,20 @@ describe("UsageView", () => {
       await loaded();
       const stale = deferred<UsageSummary>();
       api.getUsageSummary.mockReturnValueOnce(stale.promise);
-      await user.click(screen.getByRole("button", { name: "7 天" }));
+      await user.click(screen.getByRole("button", { name: "近 7 天" }));
       api.getUsageSummary.mockResolvedValueOnce({
         ...summary,
         realTotalTokens: 9000,
       });
       await user.click(screen.getByRole("button", { name: "今日" }));
-      await loaded();
+      await loaded(/^统计加载完成，今日共 9,000 词元/);
       await act(async () => {
         if (outcome === "resolve")
           stale.resolve({ ...summary, realTotalTokens: 7000 });
         else stale.reject(new Error("stale failure"));
       });
       expect(screen.getByTitle("9,000 词元")).toBeVisible();
-      expect(screen.getByText("今日 · 含缓存")).toBeVisible();
+      expect(liveStatus()).toHaveTextContent("统计加载完成，今日共 9,000 词元");
       expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     },
   );
@@ -486,7 +488,7 @@ describe("UsageView", () => {
     expect(api.rebuildCodexUsage).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("button", { name: "今日" })).toBeDisabled();
     expect(screen.getByText("正在备份并重建…")).toBeVisible();
-    const refresh = screen.getByRole("button", { name: "同步词元记录" });
+    const refresh = screen.getByRole("button", { name: "刷新用量" });
     expect(refresh).toBeDisabled();
     expect(refresh.querySelector("svg")).toHaveClass("spin");
     expect(screen.getByRole("button", { name: "更多统计操作" })).toBeDisabled();
@@ -529,8 +531,9 @@ describe("UsageView", () => {
     api.syncCodexSessionUsage.mockResolvedValueOnce({ ...sync, imported: 0 });
     api.getUsageSummary.mockRejectedValueOnce(new Error("offline"));
     render(<UsageView />);
-    await loaded();
-    expect(screen.getByRole("alert")).toHaveTextContent("尚无可显示的统计");
+    await loaded(/^无法读取用量统计$/);
+    expect(screen.getByRole("alert")).toHaveTextContent("无法读取用量统计");
+    expect(screen.getByRole("alert")).toHaveTextContent("offline");
     expect(
       screen.queryByRole("region", { name: /没有 Codex 用量记录/ }),
     ).not.toBeInTheDocument();
@@ -553,7 +556,7 @@ describe("UsageView", () => {
       screen.getByRole("region", { name: /没有 Codex 用量记录/ }),
     ).toBeVisible();
     expect(
-      screen.queryByRole("complementary", { name: "按线路模型排行" }),
+      screen.queryByRole("complementary", { name: "按模型排行" }),
     ).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "导出 CSV" })).toBeDisabled();
   });
@@ -572,7 +575,7 @@ it("does not paint token bars for zero usage", async () => {
   ]);
   render(<UsageView />);
   await loaded();
-  expect(screen.getByText(/最近.*没有用量/)).toBeVisible();
+  expect(screen.getByText("近 30 天没有词元用量")).toBeVisible();
   const bars = document.querySelectorAll<HTMLElement>(".usage-bar");
   expect(bars.length).toBeGreaterThan(0);
   bars.forEach((bar) => expect(bar.style.height).toBe("0%"));

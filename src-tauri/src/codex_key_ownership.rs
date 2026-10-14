@@ -458,14 +458,56 @@ pub(crate) const LINE_OWNED_ROOT_KEYS: &[&str] = &[
     "requires_openai_auth",
 ];
 
-/// ① `[features]` paths a line owns: `goals` (saved per line by the editor)
-/// and, per W7, `token_budget.use_history_notes_extension`, which Codex
-/// 0.156+ rejects at session start on a model without experimental context
-/// support, so it must never be filled in from live.
-pub(crate) const LINE_OWNED_FEATURE_PATHS: &[&[&str]] = &[
+/// ① nested paths a line owns inside tables that otherwise stay ④ local
+/// shared: only these keys follow the line, sibling keys in the same table
+/// (for example `[agents].max_threads`) are kept from live.
+/// - `[features]`: `goals` (saved per line by the editor) and, per W7,
+///   `token_budget.use_history_notes_extension`, which Codex 0.156+ rejects at
+///   session start on a model without experimental context support, so it
+///   must never be filled in from live.
+/// - `[agents]` and `[memories]`: model names and the sub-agent reasoning
+///   effort. They name models of the line that wrote them, so carrying them
+///   to the next line would send sub-agents or memory jobs to a model that
+///   line may not serve (same set as cc-switch `CODEX_FLOOR_NESTED`, MIT).
+pub(crate) const LINE_OWNED_NESTED_PATHS: &[&[&str]] = &[
     &["features", "goals"],
     &["features", "token_budget", "use_history_notes_extension"],
+    &["agents", "default_subagent_model"],
+    &["agents", "default_subagent_reasoning_effort"],
+    &["memories", "extract_model"],
+    &["memories", "consolidation_model"],
 ];
+
+/// Whether `path` is exactly one of the line-owned nested paths.
+fn is_line_owned_nested_path<S: AsRef<str>>(path: &[S]) -> bool {
+    LINE_OWNED_NESTED_PATHS.iter().any(|owned| {
+        owned.len() == path.len()
+            && owned
+                .iter()
+                .zip(path)
+                .all(|(expected, key)| *expected == key.as_ref())
+    })
+}
+
+/// Whether `item` at `path` holds nothing but line-owned nested paths (an
+/// empty table counts), so a stored line carrying it still has an effect.
+fn nested_item_is_line_owned(path: &mut Vec<String>, item: &Item) -> bool {
+    if is_line_owned_nested_path(path.as_slice()) {
+        return true;
+    }
+    let Some(table) = item.as_table_like() else {
+        return false;
+    };
+    for (key, child) in table.iter() {
+        path.push(key.to_string());
+        let owned = nested_item_is_line_owned(path, child);
+        path.pop();
+        if !owned {
+            return false;
+        }
+    }
+    true
+}
 
 /// ② keys a switch never takes from live. `forced_*` are excluded: while
 /// `official_accounts` is off they are the user's own choice and stay ④
@@ -611,7 +653,7 @@ fn snippet_root_is_projected_elsewhere(root: &str) -> bool {
 /// Starts from live (④ local shared, including every `[mcp_servers]` entry;
 /// the DB ledger re-projects its own entries right after the write, ③) and
 /// then:
-/// - ① takes every line-owned root key and feature path from `line_text`;
+/// - ① takes every line-owned root key and nested path from `line_text`;
 ///   unset means removed (`model_catalog_json` excepted: the catalog step
 ///   decides it and keeps a user's own file). Provider tables we wrote
 ///   (the live-active one, our fixed ids, the line's own ids) are replaced
@@ -727,7 +769,7 @@ pub fn project_codex_line_onto_live(
         }
     }
 
-    for &path in LINE_OWNED_FEATURE_PATHS {
+    for &path in LINE_OWNED_NESTED_PATHS {
         match get_path(line.as_table(), path) {
             Some(item) => set_path(out.as_table_mut(), path, item.clone()),
             None => {
@@ -761,11 +803,7 @@ fn project_common_snippet(out: &mut DocumentMut, snippet: &CodexCommonSnippet) {
     let mut leaves = Vec::new();
     leaf_paths(snippet_doc.as_table(), &mut Vec::new(), &mut leaves);
     for (path, item) in leaves {
-        if snippet_root_is_projected_elsewhere(&path[0])
-            || LINE_OWNED_FEATURE_PATHS
-                .iter()
-                .any(|owned| owned.iter().eq(path.iter()))
-        {
+        if snippet_root_is_projected_elsewhere(&path[0]) || is_line_owned_nested_path(&path) {
             continue;
         }
         if snippet.enabled {
@@ -809,7 +847,7 @@ pub fn codex_line_config_for_backfill(
             }
         }
     }
-    for &path in LINE_OWNED_FEATURE_PATHS {
+    for &path in LINE_OWNED_NESTED_PATHS {
         if let Some(item) = get_path(live.as_table(), path) {
             set_path(out.as_table_mut(), path, item.clone());
         }
@@ -833,18 +871,16 @@ pub fn codex_line_keys_without_effect(line_text: &str) -> Vec<String> {
     };
     let mut keys = Vec::new();
     for (key, item) in doc.iter() {
-        if key == "features" {
-            if let Some(features) = item.as_table_like() {
-                for (feature, value) in features.iter() {
-                    let owned = feature == "goals"
-                        || (feature == "token_budget"
-                            && value.as_table_like().is_some_and(|budget| {
-                                budget
-                                    .iter()
-                                    .all(|(name, _)| name == "use_history_notes_extension")
-                            }));
-                    if !owned {
-                        keys.push(format!("features.{feature}"));
+        if LINE_OWNED_NESTED_PATHS
+            .iter()
+            .any(|owned| owned.first() == Some(&key))
+        {
+            // A table that hosts line-owned paths: list only its other entries.
+            if let Some(table) = item.as_table_like() {
+                for (child, value) in table.iter() {
+                    let mut path = vec![key.to_string(), child.to_string()];
+                    if !nested_item_is_line_owned(&mut path, value) {
+                        keys.push(format!("{key}.{child}"));
                     }
                 }
             }
@@ -1521,6 +1557,175 @@ command = "from-line"
         );
     }
 
+    /// Live after a line that set sub-agent and memory models, next to the
+    /// user's own `[agents].max_threads`.
+    fn live_with_relay_agent_models() -> String {
+        format!(
+            "{USER_LIVE}\n[agents]\nmax_threads = 4\ndefault_subagent_model = \"relay-mini\"\ndefault_subagent_reasoning_effort = \"low\"\n\n[memories]\nextract_model = \"relay-mini\"\nconsolidation_model = \"relay-large\"\n"
+        )
+    }
+
+    const OTHER_LINE: &str = "model_provider = \"b\"\nmodel = \"b-large\"\n\n[model_providers.b]\nname = \"B\"\nbase_url = \"https://b.example/v1\"\n";
+
+    const LINE_WITH_AGENT_MODELS: &str = "model_provider = \"c\"\nmodel = \"c-large\"\n\n[model_providers.c]\nname = \"C\"\nbase_url = \"https://c.example/v1\"\n\n[agents]\ndefault_subagent_model = \"c-mini\"\n\n[memories]\nconsolidation_model = \"c-large\"\n";
+
+    #[test]
+    fn agent_and_memory_models_are_removed_for_a_line_without_them() {
+        let live = live_with_relay_agent_models();
+        let text = project_codex_line_onto_live(OTHER_LINE, &live, false, None).unwrap();
+        let doc = parse(&text);
+        let agents = doc["agents"].as_table().unwrap();
+        assert!(agents.get("default_subagent_model").is_none(), "{text}");
+        assert!(agents.get("default_subagent_reasoning_effort").is_none());
+        assert_eq!(
+            agents.get("max_threads").and_then(|v| v.as_integer()),
+            Some(4),
+            "④ sibling keys stay"
+        );
+        assert!(doc.get("memories").is_none(), "an emptied table is pruned");
+        assert_local_shared_kept(&text);
+    }
+
+    #[test]
+    fn agent_and_memory_models_of_the_line_are_written() {
+        let live = live_with_relay_agent_models();
+        let doc = parse(
+            &project_codex_line_onto_live(LINE_WITH_AGENT_MODELS, &live, false, None).unwrap(),
+        );
+        assert_eq!(
+            doc["agents"]["default_subagent_model"].as_str(),
+            Some("c-mini")
+        );
+        assert!(
+            doc["agents"]
+                .get("default_subagent_reasoning_effort")
+                .is_none(),
+            "unset on the line means removed"
+        );
+        assert_eq!(doc["agents"]["max_threads"].as_integer(), Some(4));
+        assert_eq!(
+            doc["memories"]["consolidation_model"].as_str(),
+            Some("c-large")
+        );
+        assert!(doc["memories"].get("extract_model").is_none());
+
+        // Written into a live config that has no such tables yet.
+        let doc = parse(
+            &project_codex_line_onto_live(LINE_WITH_AGENT_MODELS, USER_LIVE, false, None).unwrap(),
+        );
+        assert_eq!(
+            doc["agents"]["default_subagent_model"].as_str(),
+            Some("c-mini")
+        );
+        assert!(doc["agents"].get("max_threads").is_none());
+    }
+
+    #[test]
+    fn agent_and_memory_models_are_backfilled_to_the_outgoing_line() {
+        let kept = parse(
+            &codex_line_config_for_backfill(&live_with_relay_agent_models(), RELAY_LINE).unwrap(),
+        );
+        assert_eq!(
+            kept["agents"]["default_subagent_model"].as_str(),
+            Some("relay-mini")
+        );
+        assert_eq!(
+            kept["agents"]["default_subagent_reasoning_effort"].as_str(),
+            Some("low")
+        );
+        assert!(
+            kept["agents"].get("max_threads").is_none(),
+            "④ is never frozen into a line"
+        );
+        assert_eq!(
+            kept["memories"]["extract_model"].as_str(),
+            Some("relay-mini")
+        );
+        assert_eq!(
+            kept["memories"]["consolidation_model"].as_str(),
+            Some("relay-large")
+        );
+    }
+
+    #[test]
+    fn common_snippet_never_sets_or_removes_agent_and_memory_models() {
+        let live = live_with_relay_agent_models();
+        let on = CodexCommonSnippet {
+            text: "[agents]\ndefault_subagent_model = \"shared-mini\"\nmax_threads = 8\n\n[memories]\nextract_model = \"shared\"\n".to_string(),
+            enabled: true,
+        };
+        let doc =
+            parse(&project_codex_line_onto_live(OTHER_LINE, &live, false, Some(&on)).unwrap());
+        assert!(
+            doc["agents"].get("default_subagent_model").is_none(),
+            "⑤ cannot pick a line's model"
+        );
+        assert_eq!(
+            doc["agents"]["max_threads"].as_integer(),
+            Some(8),
+            "other keys of the table stay ⑤"
+        );
+        assert!(doc.get("memories").is_none());
+
+        // A disabled snippet holding the line's own value does not remove it.
+        let off = CodexCommonSnippet {
+            text: "[agents]\ndefault_subagent_model = \"c-mini\"\n".to_string(),
+            enabled: false,
+        };
+        let doc = parse(
+            &project_codex_line_onto_live(LINE_WITH_AGENT_MODELS, &live, false, Some(&off))
+                .unwrap(),
+        );
+        assert_eq!(
+            doc["agents"]["default_subagent_model"].as_str(),
+            Some("c-mini")
+        );
+    }
+
+    #[test]
+    fn golden_subagent_model_round_trip_stays_with_its_line() {
+        let official_a = "model = \"gpt-5.5\"\n";
+        let third_party_b = "model_provider = \"b\"\nmodel = \"b-large\"\n\n[model_providers.b]\nname = \"B\"\nbase_url = \"https://b.example/v1\"\n\n[agents]\ndefault_subagent_model = \"b-mini\"\ndefault_subagent_reasoning_effort = \"low\"\n";
+        let user_live = format!("{USER_LIVE}\n[agents]\nmax_threads = 4\n");
+        for unified in [false, true] {
+            let mut stored_a = official_a.to_string();
+            let mut stored_b = third_party_b.to_string();
+            let mut live = write_line(&user_live, &stored_a, true, unified, None);
+            for _ in 0..2 {
+                let doc = parse(&live);
+                assert!(
+                    doc["agents"].get("default_subagent_model").is_none(),
+                    "{live}"
+                );
+                assert_eq!(doc["agents"]["max_threads"].as_integer(), Some(4));
+                stored_a = backfill(&live, &stored_a, true);
+                live = write_line(&live, &stored_b, false, unified, None);
+                let doc = parse(&live);
+                assert_eq!(
+                    doc["agents"]["default_subagent_model"].as_str(),
+                    Some("b-mini")
+                );
+                assert_eq!(
+                    doc["agents"]["default_subagent_reasoning_effort"].as_str(),
+                    Some("low")
+                );
+                assert_eq!(doc["agents"]["max_threads"].as_integer(), Some(4));
+                stored_b = backfill(&live, &stored_b, false);
+                live = write_line(&live, &stored_a, true, unified, None);
+            }
+            assert!(
+                parse(&stored_a).get("agents").is_none(),
+                "the official line never picks up B's sub-agent model"
+            );
+            let stored_b = parse(&stored_b);
+            assert_eq!(
+                stored_b["agents"]["default_subagent_model"].as_str(),
+                Some("b-mini")
+            );
+            assert!(stored_b["agents"].get("max_threads").is_none());
+        }
+    }
+
     #[test]
     fn official_line_takes_only_allowlisted_route_keys() {
         let line = "chatgpt_base_url = \"https://chatgpt.com/backend-api/\"\nopenai_base_url = \"https://relay.example/v1\"\notel = { exporter = \"otlp-http\" }\n";
@@ -1545,6 +1750,18 @@ command = "from-line"
         );
         assert!(codex_line_keys_without_effect("model = \"x\"\n").is_empty());
         assert!(codex_line_keys_without_effect("not toml [").is_empty());
+        assert!(codex_line_keys_without_effect(
+            "[features.token_budget]\nuse_history_notes_extension = true\n"
+        )
+        .is_empty());
+
+        // Line-owned model keys still apply; the rest of their tables does not.
+        assert_eq!(
+            codex_line_keys_without_effect(
+                "[agents]\ndefault_subagent_model = \"x\"\nmax_threads = 4\n\n[memories]\nextract_model = \"x\"\n"
+            ),
+            ["agents.max_threads"]
+        );
     }
 
     #[test]

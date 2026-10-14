@@ -209,7 +209,7 @@ export function UsageHero({
 
   const cacheWriteDisplay = {
     value:
-      cacheWriteState === "na" ? "N/A" : formatTokensShort(cacheWrite, lang),
+      cacheWriteState === "na" ? "未上报" : formatTokensShort(cacheWrite, lang),
     muted: cacheWriteState === "na",
     tooltip:
       cacheWriteState === "na"
@@ -270,7 +270,7 @@ export function UsageHero({
                         <span className="text-muted-foreground/30">•</span>
                       </>
                     )}
-                    {t("usage.realTotal", "真实消耗 Tokens")}
+                    总词元（含缓存）
                   </div>
                   <div className="flex items-baseline gap-2">
                     <span
@@ -301,7 +301,7 @@ export function UsageHero({
                   <span className="text-[10px] text-muted-foreground uppercase tracking-wider font-medium">
                     {t("usage.totalCost")}
                   </span>
-                  <span className="font-semibold text-green-500 text-sm tabular-nums">
+                  <span className="font-semibold text-sm tabular-nums">
                     {totalCost == null ? "--" : fmtUsd(totalCost, 4)}
                   </span>
                 </div>
@@ -318,13 +318,13 @@ export function UsageHero({
               />
               <MiniStat
                 icon={<ArrowUpFromLine className="h-3.5 w-3.5" />}
-                label={t("usage.output")}
+                label="输出"
                 value={formatTokensShort(output, lang)}
                 accent="text-purple-500"
               />
               <MiniStat
                 icon={<Database className="h-3.5 w-3.5" />}
-                label={t("usage.cacheWrite", "缓存写入")}
+                label="缓存写入"
                 value={cacheWriteDisplay.value}
                 accent="text-amber-500"
                 muted={cacheWriteDisplay.muted}
@@ -332,7 +332,7 @@ export function UsageHero({
               />
               <MiniStat
                 icon={<Sparkles className="h-3.5 w-3.5" />}
-                label={t("usage.cacheRead", "缓存命中")}
+                label="缓存命中"
                 value={formatTokensShort(cacheRead, lang)}
                 accent="text-emerald-500"
               />

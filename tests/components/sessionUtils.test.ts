@@ -1,10 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildSessionExport,
+  describeSessionReadError,
   extractCodexPromptPreview,
   formatSessionMessagePreview,
+  getProviderLabel,
   groupSessionsByProviderAndDirectory,
+  isArchivedSession,
+  isTruncatedMessage,
   shouldHideCodexMessageFromToc,
 } from "@/components/sessions/utils";
+import type {
+  SessionListEntry,
+  SessionTranscriptEntry,
+} from "@/lib/api/sessions";
 import type { SessionMeta } from "@/types";
 
 describe("session utils", () => {
@@ -220,5 +229,95 @@ describe("session utils", () => {
     expect(
       groups[0].directories[0].sessions.map((session) => session.sessionId),
     ).toEqual(["newest", "oldest"]);
+  });
+
+  it("names tools by their product names, as the application filter does", () => {
+    expect(getProviderLabel("codex")).toBe("Codex");
+    expect(getProviderLabel("claude")).toBe("Claude Code");
+    expect(getProviderLabel("gemini")).toBe("Gemini CLI");
+    expect(getProviderLabel("opencode")).toBe("OpenCode");
+    expect(getProviderLabel("grokbuild")).toBe("Grok Build");
+    expect(getProviderLabel("future-tool")).toBe("future-tool");
+  });
+
+  it("reads the optional archived and truncated flags", () => {
+    const archived: SessionListEntry = {
+      providerId: "codex",
+      sessionId: "a",
+      archived: true,
+    };
+    expect(isArchivedSession(archived)).toBe(true);
+    expect(isArchivedSession({ providerId: "codex", sessionId: "b" })).toBe(
+      false,
+    );
+    const cut: SessionTranscriptEntry = {
+      role: "tool",
+      content: "x",
+      truncated: true,
+    };
+    expect(isTruncatedMessage(cut)).toBe(true);
+    expect(isTruncatedMessage({ role: "tool", content: "x" })).toBe(false);
+  });
+
+  it("leaves tool output and the record location out of an export unless asked", () => {
+    const session: SessionMeta = {
+      providerId: "codex",
+      sessionId: "s1",
+      title: "T",
+      projectDir: "C:\\work\\app",
+      sourcePath: "C:\\Users\\lin\\.codex\\sessions\\rollout.jsonl",
+    };
+    const messages = [
+      { role: "user", content: "run it" },
+      { role: "assistant", content: "[Tool: shell]" },
+      { role: "tool", content: "TOKEN=secret" },
+      { role: "Tool", content: "TOKEN=secret-2" },
+    ];
+    const plain = buildSessionExport(session, messages, {
+      includeToolOutput: false,
+    });
+    expect(plain.version).toBe(1);
+    expect(plain.session).not.toHaveProperty("sourcePath");
+    expect(plain.session.projectDir).toBe("C:\\work\\app");
+    expect(plain.messages.map((message) => message.content)).toEqual([
+      "run it",
+      "[Tool: shell]",
+    ]);
+    expect(JSON.stringify(plain)).not.toContain("secret");
+    // The page's own copy of the session keeps its location.
+    expect(session.sourcePath).toContain("rollout.jsonl");
+
+    const full = buildSessionExport(session, messages, {
+      includeToolOutput: true,
+    });
+    expect(full.messages).toHaveLength(4);
+    expect(full.session).not.toHaveProperty("sourcePath");
+  });
+
+  it("turns read errors into a plain cause", () => {
+    expect(
+      describeSessionReadError(
+        "Failed to read session file C:\\a.jsonl: 另一个程序正在使用此文件，进程无法访问。 (os error 32)",
+      ),
+    ).toEqual({ tooLarge: false, hint: "文件正被其他程序占用，请稍后重试。" });
+    expect(
+      describeSessionReadError(
+        "Failed to read session file /a: Permission denied (os error 13)",
+      ).hint,
+    ).toBe("没有读取这个文件的权限。");
+    expect(
+      describeSessionReadError(
+        "Failed to read session file /a: No such file or directory (os error 2)",
+      ).hint,
+    ).toContain("已不存在");
+    expect(
+      describeSessionReadError(
+        "Failed to read session file /a.jsonl.zst: session decoded output exceeds byte limit",
+      ),
+    ).toMatchObject({ tooLarge: true });
+    expect(describeSessionReadError("Unknown frame descriptor")).toEqual({
+      tooLarge: false,
+      hint: "",
+    });
   });
 });

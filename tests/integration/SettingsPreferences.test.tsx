@@ -117,9 +117,12 @@ describe("atomic preference saves", () => {
     expect(
       container.querySelectorAll(".settings-backups-columns span"),
     ).toHaveLength(5);
-    expect(screen.getByLabelText("设置摘要")).toHaveTextContent(
-      "备份服务 尚未开放",
-    );
+    // The decorative header summary was removed; the header only states the
+    // version and where configuration is stored.
+    expect(screen.queryByLabelText("设置摘要")).not.toBeInTheDocument();
+    expect(
+      container.querySelector(".settings-page-header"),
+    ).not.toHaveTextContent("备份服务");
   });
 
   it("always opens at the tools section and follows history changes", async () => {
@@ -347,7 +350,7 @@ describe("atomic preference saves", () => {
     });
     await waitFor(() => expect(checks).toBeEnabled());
     fireEvent.click(checks);
-    fireEvent.click(screen.getByRole("switch", { name: /显示供应商余额/ }));
+    fireEvent.click(screen.getByRole("switch", { name: /显示线路余额/ }));
     await waitFor(() => expect(mocks.patch).toHaveBeenCalledTimes(1));
     expect(checks).toBeDisabled();
     expect(mocks.patch).toHaveBeenNthCalledWith(1, {
@@ -362,7 +365,7 @@ describe("atomic preference saves", () => {
     });
     await waitFor(() =>
       expect(
-        screen.getByRole("switch", { name: /显示供应商余额/ }),
+        screen.getByRole("switch", { name: /显示线路余额/ }),
       ).toHaveAttribute("aria-checked", "true"),
     );
     expect(checks).toHaveAttribute("aria-checked", "false");
@@ -377,7 +380,7 @@ describe("atomic preference saves", () => {
     });
     renderSettings();
     openSection("Codex 偏好");
-    const balance = screen.getByRole("switch", { name: /显示供应商余额/ });
+    const balance = screen.getByRole("switch", { name: /显示线路余额/ });
     await waitFor(() => expect(balance).toBeEnabled());
     fireEvent.click(balance);
     await waitFor(() => expect(mocks.error).toHaveBeenCalled());

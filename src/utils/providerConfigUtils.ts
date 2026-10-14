@@ -1626,6 +1626,29 @@ export const setCodexTopLevelInt = (
   return finalizeTomlText(lines);
 };
 
+/**
+ * Removes a single-line top-level assignment (`key = …`, bare or quoted key)
+ * from Codex TOML. Comments, tables and every other key are kept as written;
+ * text without the key comes back unchanged.
+ */
+export const removeCodexTopLevelKey = (
+  configText: string,
+  key: string,
+): string => {
+  const lines = configText.split("\n");
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const assignment = new RegExp(
+    `^\\s*(?:${escaped}|"${escaped}"|'${escaped}')\\s*=`,
+  );
+  const topLevelEnd = getTopLevelEndIndex(lines);
+  const index = lines.findIndex(
+    (line, lineIndex) => lineIndex < topLevelEnd && assignment.test(line),
+  );
+  if (index === -1) return configText;
+  lines.splice(index, 1);
+  return lines.join("\n");
+};
+
 // 从 Codex TOML 配置中移除顶级字段行
 export const removeCodexTopLevelField = (
   configText: string,

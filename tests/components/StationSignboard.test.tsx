@@ -10,9 +10,14 @@ describe("station signboard uses measured data", () => {
   it("keeps unknown state explicit without fixture claims or actions", () => {
     render(<StationSignboard currentProvider={provider} />);
     expect(screen.getByText("未命名线路")).toBeVisible();
-    expect(screen.getByText("未设置端点")).toBeVisible();
+    expect(screen.getByText("未设置请求地址")).toBeVisible();
     expect(screen.getByText("未设置模型")).toBeVisible();
-    expect(screen.getByText("未测速")).toBeVisible();
+    expect(screen.getByText("未测速", { selector: ".station-state" })).toBeVisible();
+    // No protocol persisted: the line goes through the local router for auto-detection.
+    expect(screen.getByText("自动识别协议")).toBeVisible();
+    expect(
+      screen.getByRole("list", { name: "请求路径：经 Chimera++ 本地路由" }),
+    ).toBeVisible();
     expect(
       screen.queryByRole("button", { name: "切回" }),
     ).not.toBeInTheDocument();
@@ -29,7 +34,8 @@ describe("station signboard uses measured data", () => {
     const { rerender } = render(
       <StationSignboard currentProvider={provider} latencyMs={0} />,
     );
-    expect(screen.getByText("测速完成")).toBeVisible();
+    expect(screen.getByText("0 ms")).toBeVisible();
+    expect(screen.getByText("地址可达", { selector: ".station-state" })).toBeVisible();
     rerender(
       <StationSignboard
         currentProvider={provider}
@@ -37,11 +43,12 @@ describe("station signboard uses measured data", () => {
         testingLatency
       />,
     );
-    expect(screen.getByText("测速中")).toBeVisible();
-    expect(screen.queryByText("端点测速完成")).not.toBeInTheDocument();
+    expect(screen.getByText("测速中", { selector: ".station-state" })).toBeVisible();
+    expect(screen.queryByText("0 ms")).not.toBeInTheDocument();
+    expect(screen.queryByText("地址可达")).not.toBeInTheDocument();
   });
 
-  it("labels Responses providers from the raw API format", () => {
+  it("labels a native Responses provider as a direct API-key line", () => {
     render(
       <StationSignboard
         currentProvider={{
@@ -50,8 +57,13 @@ describe("station signboard uses measured data", () => {
         }}
       />,
     );
-    expect(screen.getByText("第三方 · Responses")).toBeVisible();
-    expect(screen.getByText("协议 · Responses")).toBeVisible();
+    // The kind label names the auth method only; protocol is not mixed in.
+    expect(screen.getByText("第三方 · API 密钥")).toBeVisible();
+    expect(screen.queryByText(/Responses/)).not.toBeInTheDocument();
+    // Native Responses needs no local router.
+    expect(screen.getByRole("list", { name: "请求路径：直连" })).toBeVisible();
+    expect(screen.getByText("直连 · 未测速")).toBeVisible();
+    expect(screen.queryByText("本地路由")).not.toBeInTheDocument();
   });
 
   it("does not label a UI receipt as a persisted backup", () => {
@@ -127,7 +139,9 @@ describe("station design sample isolation", () => {
       expect(
         screen.queryByText(CANONICAL_STATION.receipt),
       ).not.toBeInTheDocument();
-      expect(screen.getByText("未测速")).toBeVisible();
+      expect(
+        screen.getByText("未测速", { selector: ".station-state" }),
+      ).toBeVisible();
     },
   );
   it.each([-1, NaN, Infinity])(
@@ -136,8 +150,11 @@ describe("station design sample isolation", () => {
       render(
         <StationSignboard currentProvider={provider} latencyMs={latencyMs} />,
       );
-      expect(screen.getByText("未测速")).toBeVisible();
-      expect(screen.queryByText("测速完成")).not.toBeInTheDocument();
+      expect(
+        screen.getByText("未测速", { selector: ".station-state" }),
+      ).toBeVisible();
+      expect(screen.queryByText("地址可达")).not.toBeInTheDocument();
+      expect(screen.getByText("— ms")).toBeVisible();
     },
   );
 });

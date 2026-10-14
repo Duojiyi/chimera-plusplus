@@ -9,6 +9,7 @@ import React, {
 import type { UpdateInfo } from "../lib/updater";
 import { checkForUpdate } from "../lib/updater";
 import { settingsApi } from "@/lib/api/settings";
+import { extractErrorMessage } from "@/utils/errorUtils";
 import { isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
@@ -219,7 +220,9 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       }
     } catch (err) {
       console.error("检查更新失败:", err);
-      setError(err instanceof Error ? err.message : "检查更新失败");
+      // Tauri commands reject with plain strings, not Error objects; keep the
+      // backend's reason (for example a timeout) instead of a generic label.
+      setError(extractErrorMessage(err) || "检查更新失败");
       setErrorOperation("check");
       throw err; // 抛出错误让调用方处理
     } finally {
@@ -271,7 +274,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
         // A failed pre-download is not user-facing: the install path falls back
         // to downloading normally, so this only costs the head start.
         console.error("预下载更新失败:", err);
-        setError(err instanceof Error ? err.message : "预下载更新失败");
+        setError(extractErrorMessage(err) || "预下载更新失败");
         setErrorOperation("stage");
       })
       .finally(() => {
@@ -320,8 +323,11 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       return installed;
     } catch (err) {
       console.error("安装应用更新失败:", err);
-      setError(err instanceof Error ? err.message : "应用更新失败");
+      setError(extractErrorMessage(err) || "应用更新失败");
       setErrorOperation("install");
+      // The install takes the staged package out of the backend slot before it
+      // can fail, so a retry downloads again; stop offering an instant install.
+      setStagedVersion(null);
       throw err;
     } finally {
       progressUnlistenRef.current?.();

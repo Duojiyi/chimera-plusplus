@@ -1,0 +1,121 @@
+.operation-receipt {
+  --receipt-accent: var(--success-fg);
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  gap: 12px;
+  padding: 14px 12px 14px 16px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--bg-surface);
+  color: var(--text-1);
+  text-align: left;
+}
+.operation-receipt.is-warning {
+  --receipt-accent: var(--warning-fg);
+  border-color: var(--warning-border);
+}
+.operation-receipt.is-error {
+  --receipt-accent: var(--danger-fg);
+  border-color: var(--danger-border);
+}
+.operation-receipt-icon {
+  padding-top: 1px;
+  color: var(--receipt-accent);
+}
+.operation-receipt-body {
+  min-width: 0;
+}
+.operation-receipt h3 {
+  margin: 0;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 700;
+}
+.operation-receipt p,
+.operation-receipt ul {
+  margin: 4px 0 0;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.operation-receipt h3 + p {
+  color: var(--text-1);
+}
+.operation-receipt .operation-receipt-meta {
+  margin: 0 0 2px;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 16px;
+}
+.operation-receipt ul {
+  padding-left: 18px;
+}
+.operation-receipt-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+.operation-receipt-copy,
+.operation-receipt-detail summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 12px;
+  cursor: pointer;
+}
+.operation-receipt-copy {
+  margin-left: auto;
+}
+.operation-receipt-copy:hover,
+.operation-receipt-detail summary:hover {
+  color: var(--text-1);
+  background: var(--bg-hover);
+}
+.operation-receipt-detail {
+  margin-top: 6px;
+}
+.operation-receipt-detail summary {
+  width: fit-content;
+}
+.operation-receipt-detail pre {
+  max-height: 168px;
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  overflow: auto;
+  border-radius: 4px;
+  background: var(--code-display-bg);
+  color: var(--text-2);
+  font: 12px / 1.55 var(--font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.operation-receipt-dismiss {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin: -6px -2px 0 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+}
+.operation-receipt-dismiss:hover {
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
+.operation-receipt :focus-visible {
+  outline: 2px solid var(--focus-ring, var(--focus));
+  outline-offset: 2px;
+}

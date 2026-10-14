@@ -2,6 +2,7 @@ import { Fragment, useState } from "react";
 import { ChevronRight, Search } from "lucide-react";
 import type {
   ConversationProviderUsage,
+  ConversationThreadUsage,
   ConversationUsage,
   ConversationUsageReport,
 } from "@/types/usage";
@@ -16,6 +17,25 @@ export const CONVERSATION_PREVIEW_ROWS = 10;
 /** Requests found only in session files; they do not record a line. */
 const SESSION_PROVIDER_ID = "_codex_session";
 const SKELETON_ROWS = [0, 1, 2];
+
+/** Local "M/D HH:mm", enough to tell untitled threads apart. */
+function shortDateTime(epochSeconds: number): string {
+  const date = new Date(epochSeconds * 1000);
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return `${date.getMonth() + 1}/${date.getDate()} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+/** Threads without a title or first message are named by when they ran. */
+export function conversationLabel(conversation: ConversationUsage): string {
+  return (
+    conversation.title ??
+    `未命名对话 · ${shortDateTime(conversation.firstActivityAt)}`
+  );
+}
+
+export function threadLabel(thread: ConversationThreadUsage): string {
+  return thread.title ?? `未命名 · ${shortDateTime(thread.lastActivityAt)}`;
+}
 
 interface ConversationUsageSectionProps {
   /** `null` until the first report arrives. */
@@ -143,9 +163,9 @@ export function ConversationUsageSection({
                         <ChevronRight size={14} aria-hidden="true" />
                         <span
                           className={conversation.title ? "" : "is-untitled"}
-                          title={conversation.title ?? undefined}
+                          title={conversationLabel(conversation)}
                         >
-                          {conversation.title ?? "未命名对话"}
+                          {conversationLabel(conversation)}
                         </span>
                       </button>
                     </td>
@@ -288,11 +308,8 @@ function ConversationDetail({
               <span className="usage-child-kind">
                 {child.isFork ? "分叉" : "子代理"}
               </span>
-              <span
-                className="usage-child-title"
-                title={child.title ?? undefined}
-              >
-                {child.title ?? "未命名"}
+              <span className="usage-child-title" title={threadLabel(child)}>
+                {threadLabel(child)}
               </span>
               <span>{child.requestCount} 次</span>
               <b>{formatUsageTokens(child.totalTokens)}</b>

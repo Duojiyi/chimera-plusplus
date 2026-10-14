@@ -9,12 +9,19 @@ import {
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { PromptsView } from "@/views/PromptsView";
 import { bundledPromptTemplates } from "@/config/promptTemplates";
-import { promptsApi, type Prompt } from "@/lib/api/prompts";
+import {
+  promptsApi,
+  type CodexPromptStatus,
+  type Prompt,
+} from "@/lib/api/prompts";
+import { settingsApi } from "@/lib/api/settings";
 import { toast } from "sonner";
 import { open } from "@tauri-apps/plugin-dialog";
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
-vi.mock("@/lib/api/prompts", () => ({
+vi.mock("@/lib/api/prompts", async (original) => ({
+  // Keep the real error-code parser; only the IPC calls are mocked.
+  ...(await original<typeof import("@/lib/api/prompts")>()),
   promptsApi: {
     getPrompts: vi.fn(),
     getCategories: vi.fn(),
@@ -28,7 +35,12 @@ vi.mock("@/lib/api/prompts", () => ({
     importFromFile: vi.fn(),
     deletePrompt: vi.fn(),
     adoptForeignCodex: vi.fn(),
+    getCodexStatus: vi.fn(),
+    resolveCodexFile: vi.fn(),
   },
+}));
+vi.mock("@/lib/api/settings", () => ({
+  settingsApi: { openConfigFolder: vi.fn() },
 }));
 vi.mock("sonner", () => ({ toast: { error: vi.fn() } }));
 vi.mock("@/components/MarkdownEditor", () => ({
@@ -61,6 +73,8 @@ const template = bundledPromptTemplates[0];
 let rows: Record<string, Prompt>;
 let live: string | null;
 let categories: { id: string; name: string }[];
+// null = the status query is unavailable; the page keeps the library summary.
+let codexStatus: CodexPromptStatus | null;
 const card = (name: string) => screen.getByRole("article", { name });
 const toggle = (name = item.name) =>
   screen.getByRole("switch", { name: `启用 ${name}` });
@@ -97,6 +111,12 @@ beforeEach(() => {
   vi.resetAllMocks();
   rows = { real: { ...item } };
   live = "Actual user file\n";
+  codexStatus = null;
+  vi.mocked(promptsApi.getCodexStatus).mockImplementation(
+    async () => codexStatus as CodexPromptStatus,
+  );
+  vi.mocked(promptsApi.resolveCodexFile).mockResolvedValue(null);
+  vi.mocked(settingsApi.openConfigFolder).mockResolvedValue(undefined);
   categories = [
     { id: "software-development", name: "软件开发" },
     { id: "writing", name: "写作" },
@@ -989,7 +1009,7 @@ describe("explicit Codex-X takeover", () => {
     expect(
       await screen.findByLabelText("AGENTS.md 当前内容"),
     ).toHaveTextContent("Foreign");
-    fireEvent.click(screen.getByRole("button", { name: "接管 Codex-X 区块" }));
+    fireEvent.click(screen.getByRole("button", { name: "接管这个区块" }));
     await screen.findByRole("button", { name: "确认接管" });
   };
   it("requires preview and consent, serializes adoption and uses the observed snapshot", async () => {
@@ -1023,7 +1043,7 @@ describe("explicit Codex-X takeover", () => {
       ).not.toBeInTheDocument(),
     );
     expect(
-      screen.queryByRole("button", { name: "接管 Codex-X 区块" }),
+      screen.queryByRole("button", { name: "接管这个区块" }),
     ).not.toBeInTheDocument();
     expect(screen.getByLabelText("AGENTS.md 当前内容")).toHaveTextContent(
       "CHIMERA:",
@@ -1036,7 +1056,7 @@ describe("explicit Codex-X takeover", () => {
     await openAdoption();
     fireEvent.click(screen.getByRole("button", { name: "取消" }));
     expect(promptsApi.adoptForeignCodex).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "接管 Codex-X 区块" }));
+    fireEvent.click(screen.getByRole("button", { name: "接管这个区块" }));
     fireEvent.click(screen.getByRole("checkbox"));
     vi.mocked(promptsApi.adoptForeignCodex).mockRejectedValueOnce(
       new Error("private-file"),
@@ -1047,7 +1067,7 @@ describe("explicit Codex-X takeover", () => {
         screen.queryByRole("button", { name: "确认接管" }),
       ).not.toBeInTheDocument(),
     );
-    fireEvent.click(screen.getByRole("button", { name: "接管 Codex-X 区块" }));
+    fireEvent.click(screen.getByRole("button", { name: "接管这个区块" }));
     expect(screen.getByRole("checkbox")).not.toBeChecked();
     expect(screen.getByRole("button", { name: "确认接管" })).toBeDisabled();
     expect(toast.error).toHaveBeenCalledWith(
@@ -1426,5 +1446,267 @@ describe("audited prompt write races", () => {
     expect(screen.getByLabelText("Prompt content")).toHaveValue(
       "Keep my draft",
     );
+  });
+});
+
+describe("instruction file read failures", () => {
+  it("keeps the library usable when the file is a link and explains why enabling is refused", async () => {
+    vi.mocked(promptsApi.getCurrentFileContent).mockRejectedValue(
+      new Error(
+        "[prompt.file.linked] AGENTS.md 是链接文件，Chimera++ 不会跟随链接读写。 (AGENTS.md is a link; Chimera++ does not read or write through links.)",
+      ),
+    );
+    render(<PromptsView />);
+    await ready();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "新建提示词" })).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: `编辑 ${item.name}` }),
+    ).toBeEnabled();
+    expect(
+      screen.getByRole("region", { name: "当前提示词状态" }),
+    ).toHaveTextContent("AGENTS.md 是链接文件，Chimera++ 只读不写");
+    expect(toggle()).toBeDisabled();
+    expect(toggle()).toHaveAccessibleDescription(/启用和停用已暂停/);
+    await openFile();
+    expect(
+      within(screen.getByRole("dialog")).getByRole("heading", {
+        name: "AGENTS.md 是链接文件，Chimera++ 只读不写",
+      }),
+    ).toBeVisible();
+    expect(
+      screen.queryByLabelText("AGENTS.md 当前内容"),
+    ).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("does not read");
+  });
+  it("shows an unreadable file without its path and leaves enabling alone", async () => {
+    vi.mocked(promptsApi.getCurrentFileContent).mockRejectedValue(
+      "IO 错误: C:\\Users\\private\\.codex\\AGENTS.md: 拒绝访问。 (os error 5)",
+    );
+    render(<PromptsView />);
+    await ready();
+    expect(
+      screen.getByRole("region", { name: "当前提示词状态" }),
+    ).toHaveTextContent("无法读取 AGENTS.md");
+    expect(toggle()).toBeEnabled();
+    expect(document.body.textContent).not.toContain("private");
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    await waitFor(() =>
+      expect(promptsApi.getCurrentFileContent).toHaveBeenCalledTimes(2),
+    );
+  });
+  it("also refuses whole-file writes for a linked file on other tools", async () => {
+    vi.mocked(promptsApi.getCurrentFileContent).mockRejectedValue(
+      "[prompt.file.linked] CLAUDE.md 是链接文件，Chimera++ 不会跟随链接读写。",
+    );
+    render(<PromptsView initialApp="claude" />);
+    await ready();
+    expect(
+      screen.getByRole("button", { name: `设为当前 ${item.name}` }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("region", { name: "当前提示词状态" }),
+    ).toHaveTextContent("CLAUDE.md 是链接文件，Chimera++ 只读不写");
+    expect(promptsApi.getCodexStatus).not.toHaveBeenCalled();
+  });
+});
+
+describe("coded ownership errors", () => {
+  const raw = (code: string) =>
+    new Error(`[${code}] C:\\Users\\private\\.codex\\AGENTS.md (raw)`);
+  it.each([
+    ["prompt.managed.unbalanced", "标记不完整"],
+    ["prompt.managed.duplicate", "重复的 Chimera 区块"],
+    ["prompt.managed.marker_inline", "各占一行"],
+    ["prompt.managed.nested", "互相嵌套"],
+    ["prompt.managed.malformed", "无法完整读取"],
+    ["prompt.managed.edited", "被手动修改过"],
+    ["prompt.managed.empty_block", "区块是空的"],
+    ["prompt.managed.legacy_mismatch", "旧版提示词不能自动迁移"],
+    ["prompt.managed.foreign_legacy", "其他工具的区块"],
+    ["prompt.managed.foreign_missing", "没有找到可接管的区块"],
+    ["config.changeset_conflict", "被其他程序修改"],
+  ])(
+    "maps %s to guidance that opens the current instruction",
+    async (code, text) => {
+      vi.mocked(promptsApi.setPromptEnabled).mockRejectedValueOnce(raw(code));
+      render(<PromptsView />);
+      await ready();
+      fireEvent.click(toggle());
+      await waitFor(() => expect(toast.error).toHaveBeenCalledTimes(1));
+      const [message, options] = vi.mocked(toast.error).mock.calls[0];
+      expect(message).toContain(text);
+      expect(message).not.toContain("private");
+      const action = (
+        options as { action: { label: string; onClick: () => void } }
+      ).action;
+      expect(action.label).toBe("查看当前指令");
+      act(() => action.onClick());
+      expect(
+        await screen.findByRole("heading", { name: "当前指令" }),
+      ).toBeVisible();
+    },
+  );
+  it.each([
+    ["prompt.managed.takeover_conflict", "先停用全部提示词"],
+    ["prompt.body.reserved_marker", "<!-- CHIMERA:"],
+    ["prompt.file.linked", "AGENTS.md 是链接文件"],
+    ["prompt.file.too_large", "8 MiB"],
+    ["prompt.file.encoding", "UTF-8"],
+    ["prompt.file.unreadable", "无法读取 AGENTS.md"],
+  ])("maps %s to a specific message", async (code, text) => {
+    vi.mocked(promptsApi.setPromptEnabled).mockRejectedValueOnce(raw(code));
+    render(<PromptsView />);
+    await ready();
+    fireEvent.click(toggle());
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(expect.stringContaining(text)),
+    );
+    expect(vi.mocked(toast.error).mock.calls[0]).toHaveLength(1);
+    expect(String(vi.mocked(toast.error).mock.calls[0][0])).not.toContain(
+      "private",
+    );
+  });
+  it("explains import refusals instead of a generic failure", async () => {
+    vi.mocked(promptsApi.importFromFile).mockRejectedValueOnce(
+      "无效输入: 不能导入空提示词。",
+    );
+    render(<PromptsView />);
+    await ready();
+    fireEvent.click(screen.getByRole("button", { name: "导入 .md" }));
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith("不能导入空提示词。"),
+    );
+  });
+});
+
+describe("file actually in effect", () => {
+  it("reports a synced block with its size", async () => {
+    rows.real.enabled = true;
+    codexStatus = { state: "in_sync", enabledCount: 1, managedBytes: 4300 };
+    render(<PromptsView />);
+    await ready();
+    const summary = screen.getByRole("region", { name: "当前提示词状态" });
+    expect(summary).toHaveTextContent("已写入 AGENTS.md · 1 条 · 4.2 KB");
+    expect(within(summary).getByText("已生效")).toBeVisible();
+    expect(within(card(item.name)).getByText("已启用")).toBeVisible();
+  });
+  it("warns when AGENTS.override.md is in effect and never claims the prompts work", async () => {
+    rows.real.enabled = true;
+    codexStatus = { state: "overridden", enabledCount: 1 };
+    render(<PromptsView />);
+    await ready();
+    const summary = screen.getByRole("region", { name: "当前提示词状态" });
+    expect(summary).toHaveTextContent("Codex 正在使用 AGENTS.override.md");
+    expect(within(summary).getByText("被覆盖")).toBeVisible();
+    expect(screen.queryByText("已生效")).not.toBeInTheDocument();
+    expect(within(card(item.name)).getByText("已启用 · 未生效")).toBeVisible();
+    fireEvent.click(
+      within(summary).getByRole("button", { name: "打开所在文件夹" }),
+    );
+    expect(settingsApi.openConfigFolder).toHaveBeenCalledWith("codex");
+  });
+  it("rewrites a removed block in one step and says a backup was taken", async () => {
+    rows.real.enabled = true;
+    codexStatus = { state: "missing", enabledCount: 1 };
+    vi.mocked(promptsApi.resolveCodexFile).mockImplementation(async () => {
+      codexStatus = { state: "in_sync", enabledCount: 1, managedBytes: 17 };
+      return null;
+    });
+    render(<PromptsView />);
+    await ready();
+    expect(within(card(item.name)).getByText("已启用 · 未生效")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "重新写入" }));
+    expect(
+      await screen.findByText("已重新写入 AGENTS.md，写入前已自动备份。"),
+    ).toBeVisible();
+    expect(promptsApi.resolveCodexFile).toHaveBeenCalledExactlyOnceWith(
+      "rewrite",
+    );
+    expect(
+      screen.getByRole("region", { name: "当前提示词状态" }),
+    ).toHaveTextContent("已写入 AGENTS.md · 1 条 · 17 B");
+  });
+  it("asks which version to keep before overwriting a hand-edited block", async () => {
+    rows.real.enabled = true;
+    codexStatus = { state: "edited", enabledCount: 1 };
+    render(<PromptsView />);
+    await ready();
+    fireEvent.click(screen.getByRole("button", { name: "处理修改" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("手动修改会被替换");
+    expect(dialog).toHaveTextContent("写入前自动备份当前文件");
+    fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+    expect(promptsApi.resolveCodexFile).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "处理修改" }));
+    fireEvent.click(
+      within(await screen.findByRole("dialog")).getByRole("button", {
+        name: "保留修改",
+      }),
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+    expect(promptsApi.resolveCodexFile).toHaveBeenCalledExactlyOnceWith(
+      "keep_edits",
+    );
+    expect(
+      screen.getByText("已保留文件中的修改，并存为一条启用的提示词。"),
+    ).toBeVisible();
+  });
+  it("offers takeover from the summary when only another tool's block exists", async () => {
+    live =
+      "User\n<!-- CODEX-X:INSTRUCTIONS:BEGIN -->\nForeign\n<!-- CODEX-X:INSTRUCTIONS:END -->";
+    codexStatus = { state: "foreign", enabledCount: 0 };
+    render(<PromptsView />);
+    await ready();
+    expect(screen.getAllByRole("button", { name: /查看与接管/ })).toHaveLength(
+      1,
+    );
+    expect(
+      screen.getByRole("region", { name: "当前提示词状态" }),
+    ).toHaveTextContent("AGENTS.md 中有其他工具写入的区块");
+  });
+});
+
+describe("current instruction drawer", () => {
+  it("labels the user's text, the Chimera block and other tools' blocks", async () => {
+    rows.real.enabled = true;
+    codexStatus = { state: "edited", enabledCount: 1 };
+    live =
+      "User rules\n\n<!-- CHIMERA:INSTRUCTIONS:BEGIN -->\nManaged rules\n<!-- CHIMERA:INSTRUCTIONS:END -->\n<!-- CODEX-X:INSTRUCTIONS:BEGIN -->\nForeign rules\n<!-- CODEX-X:INSTRUCTIONS:END -->\n";
+    render(<PromptsView />);
+    await ready();
+    await openFile();
+    const content = screen.getByLabelText("AGENTS.md 当前内容");
+    const headings = within(content)
+      .getAllByRole("heading")
+      .map((heading) => heading.textContent);
+    expect(headings).toEqual([
+      "你的内容（Chimera 不改动）",
+      "Chimera 受管区块（1 条）已手动修改",
+      "其他工具的区块（只读）",
+    ]);
+    expect(content).toHaveTextContent("Managed rules");
+  });
+  it("shows broken markers as the raw file", async () => {
+    live = "User\n<!-- CHIMERA:INSTRUCTIONS:BEGIN -->\nDangling\n";
+    render(<PromptsView />);
+    await ready();
+    await openFile();
+    expect(screen.getByText("区块标记不完整，按原文显示。")).toBeVisible();
+    expect(screen.getByLabelText("AGENTS.md 当前内容")).toHaveTextContent(
+      "Dangling",
+    );
+  });
+});
+
+describe("template copies", () => {
+  it("marks a saved copy that differs from its template as locally modified", async () => {
+    rows.real = { ...rows.real, templateId: template.id, name: template.name };
+    render(<PromptsView />);
+    await screen.findByRole("article", { name: template.name });
+    expect(within(card(template.name)).getByText("本地已修改")).toBeVisible();
+    expect(within(card("问题调试")).queryByText("本地已修改")).toBeNull();
   });
 });

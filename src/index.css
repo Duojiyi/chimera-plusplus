@@ -32,30 +32,33 @@
     --radius: 0.5rem;
   }
 
+  /* Mirrors the graphite design tokens in theme/tokens.css (bg-base,
+     bg-surface, bg-subtle, text-1, text-2, border-subtle) so component-library
+     surfaces match the shell instead of near-white text on a zinc ground. */
   .dark {
-    --background: 240 5% 12%;
-    --foreground: 0 0% 98%;
-    --card: 240 5% 16%;
-    --card-foreground: 0 0% 98%;
-    --popover: 240 5% 16%;
-    --popover-foreground: 0 0% 98%;
+    --background: 210 11% 11%;
+    --foreground: 216 17% 94%;
+    --card: 213 13% 14%;
+    --card-foreground: 216 17% 94%;
+    --popover: 213 13% 14%;
+    --popover-foreground: 216 17% 94%;
 
     --primary: 200 100% 31%;
     --primary-foreground: 0 0% 100%;
 
-    --secondary: 240 5% 18%;
-    --secondary-foreground: 0 0% 98%;
+    --secondary: 207 11% 17%;
+    --secondary-foreground: 216 17% 94%;
 
-    --muted: 240 5% 18%;
-    --muted-foreground: 240 5% 64.9%;
-    --accent: 240 5% 18%;
-    --accent-foreground: 0 0% 98%;
+    --muted: 207 11% 17%;
+    --muted-foreground: 210 6% 72%;
+    --accent: 207 11% 17%;
+    --accent-foreground: 216 17% 94%;
 
     --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 0 0% 98%;
+    --destructive-foreground: 216 17% 94%;
 
-    --border: 240 5% 24%;
-    --input: 240 5% 24%;
+    --border: 216 9% 22%;
+    --input: 216 9% 22%;
     --ring: 200 100% 31%;
   }
 }

@@ -7,6 +7,7 @@ import {
 } from "@/components/ui/dialog";
 import { useRequestDetail } from "@/lib/query/usage";
 import { getFreshInputTokens, isUnpricedUsage } from "@/types/usage";
+import { usageTable } from "./usageTable";
 
 interface RequestDetailPanelProps {
   requestId: string;
@@ -32,7 +33,7 @@ export function RequestDetailPanel({
     return (
       <Dialog open onOpenChange={onClose}>
         <DialogContent className="max-w-2xl">
-          <div className="h-[400px] animate-pulse rounded bg-gray-100" />
+          <div className={usageTable.skeleton} aria-hidden="true" />
         </DialogContent>
       </Dialog>
     );

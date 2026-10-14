@@ -25,6 +25,10 @@ pub struct SessionMeta {
     pub source_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resume_command: Option<String>,
+    /// Codex only: the rollout lives in `archived_sessions` or its thread is
+    /// marked archived. Omitted when false.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub archived: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -34,6 +38,10 @@ pub struct SessionMessage {
     pub content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ts: Option<i64>,
+    /// The reader shortened this entry, or it stands in for content too large
+    /// to load. Omitted when false.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

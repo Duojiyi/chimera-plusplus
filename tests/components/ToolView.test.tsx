@@ -359,13 +359,15 @@ describe("explicit native configuration import", () => {
       local: {
         id: "local",
         name: "Existing route",
-        settingsConfig: { env: {} },
+        settingsConfig: { provider: {} },
       },
     });
-    vi.mocked(providersApi.importDefault).mockRejectedValue(
+    // Single-line tools hide the import offer once a custom line exists (the
+    // backend would skip it), so the retry path is exercised on an additive tool.
+    vi.mocked(providersApi.importOpenCodeFromLive).mockRejectedValue(
       new Error("TOML line: token = secret-test-token"),
     );
-    render(<ToolView toolId="claude-code" native />);
+    render(<ToolView toolId="opencode" native />);
     fireEvent.click(
       await screen.findByRole("button", { name: "导入本机配置" }),
     );
@@ -421,7 +423,7 @@ describe("explicit native configuration import", () => {
     "does not offer a database import for native-backed %s",
     async (toolId) => {
       render(<ToolView toolId={toolId} />);
-      await screen.findByText("原生配置线路");
+      await screen.findByText(/还没有 Pi 线路/);
       expect(
         screen.queryByRole("button", { name: "导入本机配置" }),
       ).not.toBeInTheDocument();
@@ -755,9 +757,17 @@ describe("list-level route deletion", () => {
     vi.mocked(providersApi.getAll).mockResolvedValue({ [route.id]: route });
     vi.mocked(providersApi.getCurrent).mockResolvedValue(route.id);
     render(<ToolView toolId="claude-code" native />);
-    expect(
-      await screen.findByRole("button", { name: "删除Removable route" }),
-    ).toBeDisabled();
+    const remove = await screen.findByRole("button", {
+      name: "删除Removable route",
+    });
+    // The current line stays focusable so it can explain why it is locked.
+    expect(remove).toHaveAttribute("aria-disabled", "true");
+    expect(remove).toHaveAccessibleDescription(
+      "当前线路正在使用，请先切换到其他线路再删除。",
+    );
+    fireEvent.click(remove);
+    expect(screen.queryByRole("button", { name: "确认删除" })).toBeNull();
+    expect(providersApi.delete).not.toHaveBeenCalled();
     expect(
       screen.queryByRole("button", { name: "删除Claude Official" }),
     ).not.toBeInTheDocument();
