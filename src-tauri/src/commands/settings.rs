@@ -256,7 +256,7 @@ pub async fn save_settings(
         // 不只是开关字段——所以这里的回滚只收窄到本代码路径真正拥有的两个
         // unify 字段，其余已合并的字段保持已提交状态（幂等，重新保存即可）。
         if let Err(err) =
-            crate::services::provider::reapply_current_codex_official_live(state.inner())
+            crate::services::provider::reapply_current_codex_official_live(state.inner()).await
         {
             log::warn!("统一 Codex 会话历史开关变更后重写 live 配置失败，回滚设置: {err}");
             // Revert only the fields this code path owns, inside a fresh

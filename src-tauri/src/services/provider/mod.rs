@@ -69,7 +69,7 @@ pub fn official_provider_supports_proxy_takeover(app_type: &AppType, provider: &
 /// live 配置，使开关即时生效（无需等下一次切换）。
 /// 当前供应商非官方（或不存在）时为 no-op：注入只作用于官方配置，
 /// 第三方 live 配置不受开关影响。
-pub fn reapply_current_codex_official_live(state: &AppState) -> Result<bool, AppError> {
+pub async fn reapply_current_codex_official_live(state: &AppState) -> Result<bool, AppError> {
     let current_id = ProviderService::current(state, AppType::Codex)?;
     if current_id.is_empty() {
         return Ok(false);
@@ -85,26 +85,26 @@ pub fn reapply_current_codex_official_live(state: &AppState) -> Result<bool, App
     // 代理接管期间 live 归代理所有（开启代理时官方供应商只警告不拦截，
     // 二者可以共存）。与切换/保存路径一致：以 backup/占位符为所有权信号，
     // 先更新备份（注入后的配置由接管释放时的恢复路径落盘）。
-    let has_live_backup =
-        futures::executor::block_on(state.db.get_live_backup(AppType::Codex.as_str()))
-            .ok()
-            .flatten()
-            .is_some();
+    let has_live_backup = state
+        .db
+        .get_live_backup(AppType::Codex.as_str())
+        .await
+        .ok()
+        .flatten()
+        .is_some();
     let live_taken_over = state
         .proxy_service
         .detect_takeover_in_live_config_for_app(&AppType::Codex);
     if has_live_backup || live_taken_over {
-        let _switch_guard = futures::executor::block_on(
-            state
-                .proxy_service
-                .lock_switch_for_app(AppType::Codex.as_str()),
-        );
-        futures::executor::block_on(
-            state
-                .proxy_service
-                .update_live_backup_from_provider_inner(AppType::Codex.as_str(), provider),
-        )
-        .map_err(|e| AppError::Message(format!("更新 Live 备份失败: {e}")))?;
+        let _switch_guard = state
+            .proxy_service
+            .lock_switch_for_app(AppType::Codex.as_str())
+            .await;
+        state
+            .proxy_service
+            .update_live_backup_from_provider_inner(AppType::Codex.as_str(), provider)
+            .await
+            .map_err(|e| AppError::Message(format!("更新 Live 备份失败: {e}")))?;
         // 2.8.6 起接管路由沿用直连时的会话桶（开关开 = custom 镜像，关 =
         // openai_base_url），所以接管中的 live 也要按新开关重写，否则到释放前
         // 新会话仍落旧桶。与保存供应商路径相同，只在代理运行且锁内复核仍处于
@@ -113,13 +113,13 @@ pub fn reapply_current_codex_official_live(state: &AppState) -> Result<bool, App
         if state
             .proxy_service
             .detect_takeover_in_live_config_for_app(&AppType::Codex)
-            && futures::executor::block_on(state.proxy_service.is_running())
+            && state.proxy_service.is_running().await
         {
-            if let Err(err) = futures::executor::block_on(
-                state
-                    .proxy_service
-                    .sync_codex_live_from_provider_while_proxy_active(provider),
-            ) {
+            if let Err(err) = state
+                .proxy_service
+                .sync_codex_live_from_provider_while_proxy_active(provider)
+                .await
+            {
                 log::warn!(
                     "统一会话开关变更后重写接管中的 Codex live 失败（释放接管时按备份落盘）: {err}"
                 );
@@ -1814,7 +1814,10 @@ requires_openai_auth = true
         );
 
         set_unified(true);
-        assert!(reapply_current_codex_official_live(&state).expect("reapply with unify on"));
+        assert!(
+            futures::executor::block_on(reapply_current_codex_official_live(&state))
+                .expect("reapply with unify on")
+        );
         assert_eq!(
             codex_official_proxy_route(&live(), |_| true),
             Some(CodexOfficialProxyRoute::UnifiedMirror),
@@ -1826,7 +1829,10 @@ requires_openai_auth = true
             .contains("model_provider = \"custom\""));
 
         set_unified(false);
-        assert!(reapply_current_codex_official_live(&state).expect("reapply with unify off"));
+        assert!(
+            futures::executor::block_on(reapply_current_codex_official_live(&state))
+                .expect("reapply with unify off")
+        );
         assert!(
             matches!(
                 codex_official_proxy_route(&live(), |_| true),
