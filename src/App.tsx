@@ -28,7 +28,7 @@ type PendingDeepLink = { id: string; request: DeepLinkImportRequest };
 /**
  * A link whose confirmation cannot be rendered is dismissed, not left to the
  * window-wide boundary: it would stay queued and fail again after every
- * reload, leaving the app unusable. Nothing is imported.
+ * reload, leaving the app unusable. A link not yet confirmed is not imported.
  */
 class DeepLinkDialogBoundary extends Component<
   { onFailure: (error: unknown) => void; children: ReactNode },
@@ -53,6 +53,9 @@ export default function App() {
   const [pending, setPending] = useState<PendingDeepLink | null>(null);
   const [providerRefreshVersion, setProviderRefreshVersion] = useState(0);
   const refreshPendingRef = useRef<() => Promise<void>>(async () => {});
+  // The link whose import already succeeded: if its dialog fails after that,
+  // the message must not claim nothing was written.
+  const importedIdRef = useRef<string | null>(null);
   useLightweightCloseBlocker(Boolean(pending));
 
   useEffect(() => {
@@ -142,7 +145,9 @@ export default function App() {
             reportFrontendError("deeplink.dialog", error);
             toast.error("无法显示这个导入链接", {
               description:
-                "确认框无法显示链接里的内容，这次导入已取消，没有写入任何配置。",
+                importedIdRef.current === pending.id
+                  ? "导入已经完成，配置已写入；确认框随后出错，已关闭。"
+                  : "确认框无法显示链接里的内容，这次导入已取消，没有写入任何配置。",
               duration: Infinity,
             });
             void dismissPending(pending.id).catch(() => undefined);
@@ -154,6 +159,7 @@ export default function App() {
               request={pending.request}
               onHandled={() => dismissPending(pending.id)}
               onImported={() => {
+                importedIdRef.current = pending.id;
                 setProviderRefreshVersion((value) => value + 1);
                 // The tray lists every line, so a new import must show up
                 // there too. Best effort: the import itself already succeeded.

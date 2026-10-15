@@ -683,7 +683,10 @@ describe("default App deep-link handoff", () => {
       await waitFor(() =>
         expect(mocks.toast.error).toHaveBeenCalledWith(
           "无法显示这个导入链接",
-          expect.objectContaining({ duration: Infinity }),
+          expect.objectContaining({
+            description: expect.stringContaining("没有写入任何配置"),
+            duration: Infinity,
+          }),
         ),
       );
       await waitFor(() => expect(queue).toHaveLength(0));
