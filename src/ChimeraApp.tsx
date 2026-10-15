@@ -2,7 +2,7 @@ import { RetainedToolPage } from "@/components/RetainedToolPage";
 import { ToolVisibilityView } from "./views/ToolVisibilityView";
 import { isProductToolVisible } from "@/lib/productCapabilities";
 import { WindowControls } from "@/components/WindowControls";
-import { isMac } from "@/lib/platform";
+import { DRAG_REGION_ATTR, isMac } from "@/lib/platform";
 import {
   useLightweightClose,
   useLightweightCloseBlocker,
@@ -1214,10 +1214,13 @@ export default function ChimeraApp({
         return;
       }
 
+      // A drag region is handled by Tauri's own drag script (drag.js), which
+      // also turns a double-click there into maximize; starting a second drag
+      // from here would race it.
       const target = event.target as HTMLElement;
       if (
         target.closest(
-          'button, input, textarea, select, a, [role="button"], [data-tauri-no-drag]',
+          'button, input, textarea, select, a, [role="button"], [data-tauri-no-drag], [data-tauri-drag-region]',
         )
       ) {
         return;
@@ -2513,7 +2516,7 @@ export default function ChimeraApp({
           <div
             data-pencil-name="字标区"
             className="box-border w-full h-[40px] shrink-0 flex flex-row gap-0 p-[0px_8px] justify-start items-center"
-            data-tauri-drag-region
+            {...DRAG_REGION_ATTR}
           >
             {isMac() && <WindowControls closeDisabled={Boolean(editor)} />}
             <div
@@ -2771,7 +2774,7 @@ export default function ChimeraApp({
           <div
             data-pencil-name="左"
             className="box-border flex-1 min-w-0 h-[40px] flex flex-row p-[0px_12px] justify-start items-center gap-2"
-            data-tauri-drag-region
+            {...DRAG_REGION_ATTR}
           >
             {isMac() && editor && (
               <WindowControls closeDisabled={Boolean(editor)} />
@@ -7426,7 +7429,7 @@ function StandaloneOnboarding({
 }) {
   return (
     <main className="chimera-shell onboarding-screen">
-      <div className="onboarding-titlebar" data-tauri-drag-region>
+      <div className="onboarding-titlebar" {...DRAG_REGION_ATTR}>
         <WindowControls />
       </div>
       <section className="onboarding onboarding-card">
