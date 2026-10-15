@@ -388,6 +388,7 @@ pub async fn restart_app(app: AppHandle) -> Result<bool, String> {
         // Live 备份，无法恢复被接管的 Live 配置。因此必须趁旧实例的事件循环
         // 仍存活，在这里同步完成恢复（保留代理状态，新实例启动时自动重新接管）。
         crate::cleanup_before_exit(&app).await;
+        crate::lightweight::request_window_on_next_start(&app);
         app.restart();
     });
     Ok(true)
@@ -663,6 +664,9 @@ pub async fn install_update_and_restart(
     };
 
     log::info!("开始安装应用更新: {}", update.version);
+    // The installer (or the re-exec below) relaunches the app: show the window
+    // then even with silent startup on, since the user started this update.
+    crate::lightweight::request_window_on_next_start(&app);
 
     #[cfg(target_os = "windows")]
     {

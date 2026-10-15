@@ -20,7 +20,6 @@ import { message } from "@tauri-apps/plugin-dialog";
 import { exit } from "@tauri-apps/plugin-process";
 import { FrontendErrorBoundary } from "./components/FrontendErrorBoundary";
 import { loadChimeraHubTemplate } from "./config/codexTemplates";
-import { revealMainWindow } from "./lib/startupWindow";
 import {
   installGlobalErrorHandlers,
   reportFrontendError,
@@ -156,15 +155,9 @@ async function bootstrap() {
       </FrontendErrorBoundary>
     </React.StrictMode>,
   );
-
-  // 显式唤出并聚焦主窗口，杜绝隐藏启动或无句柄状态；仅尊重用户开启的静默启动
-  if (isTauri()) {
-    try {
-      await revealMainWindow();
-    } catch {
-      // 忽略非桌面环境异常
-    }
-  }
+  // Window visibility is the backend's: the window is created visible and only
+  // silent startup hides it (lib.rs setup). The webview has no permission to
+  // show or focus windows (capabilities/default.json).
 }
 
 void bootstrap();

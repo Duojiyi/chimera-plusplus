@@ -1587,6 +1587,9 @@ pub fn run() {
 
             // 静默启动：根据设置决定是否显示主窗口
             let settings = crate::settings::get_settings();
+            // Consumed on every start, so a request left by a restart or update
+            // the user asked for applies to that one relaunch only.
+            let shown_after_restart = crate::lightweight::take_window_on_next_start(app.handle());
             if let Some(window) = app.get_webview_window("main") {
                 // 在窗口首次显示前同步装饰状态，避免前端加载后再切换导致标题栏闪烁
                 // 仅 Linux 生效：解决 Wayland 下系统窗口按钮不可用的问题
@@ -1595,13 +1598,13 @@ pub fn run() {
                 if settings.silent_startup && !settings.show_in_tray {
                     log::warn!("静默启动需要托盘图标，当前已关闭托盘，改为显示主窗口");
                 }
-                // A launch from an import link, and a start that has to explain
-                // an initialization failure, must not hide the window: the
-                // dialog or the recovery screen would be told to no one.
+                // A launch from an import link, a start that has to explain an
+                // initialization failure, and the relaunch after a restart or
+                // update the user asked for must not hide the window.
                 let starts_hidden = settings.starts_hidden()
                     && !opened_by_link
+                    && !shown_after_restart
                     && crate::init_status::get_init_error().is_none();
-                crate::lightweight::set_started_hidden(starts_hidden);
                 if starts_hidden {
                     // 静默启动模式：保持窗口隐藏
                     let _ = window.hide();
@@ -2011,7 +2014,6 @@ pub fn run() {
             commands::enter_lightweight_mode,
             commands::exit_lightweight_mode,
             commands::is_lightweight_mode,
-            commands::take_started_hidden,
         ]);
 
     let app = builder
