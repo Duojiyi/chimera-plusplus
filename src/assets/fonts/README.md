@@ -14,3 +14,12 @@ SIL Open Font License notices are distributed in `src/public/licenses/`.
 - License: `src/public/licenses/NotoSansSC-OFL.txt`.
 
 Overpass and Overpass Mono are also bundled; their OFL notices are in the same license directory.
+
+## Overpass (patched)
+
+- File: `Overpass-Variable.ttf` (variable, `wght` 100–900).
+- Upstream SHA-256: `970717df17a7f9911dee45f60695d05bfa9d745fa0a11fc5c348371fa21f0073`
+- Patch: the GDEF glyph class of `periodcentered` (U+00B7 `·`) is changed from mark (3) to base (1). Upstream classes it as a mark, so text shapers give it zero advance and every ` · ` separator in the interface collapsed onto the next character. No other glyph or table changes; `head` differs only in its checksum.
+- Reproduce with fontTools 4.63.0: `font = TTFont(path, recalcTimestamp=False)`, then `font["GDEF"].table.GlyphClassDef.classDefs["periodcentered"] = 1` and `font.save(path)`.
+- Patched SHA-256: `186c0cc254888074c1d4eb9953be8c5caa26d41813087e8d7c29e552e1f37eff` (checked by `tests/lib/bundledFonts.test.ts`).
+- License: `src/public/licenses/Overpass-OFL.txt`. The license names no Reserved Font Name, so the modified file keeps its name.
