@@ -279,7 +279,7 @@ describe("maskStoredValue", () => {
         },
         local: {
           command: "/opt/acme/mcp-server",
-          args: ["--access-token", "tok-ARG-SECRET-9900"],
+          args: ["--access-token=tok-ARG-SECRET-9900"],
           env: { ACME_TOKEN: "tok-ENV-SECRET-1122", PORT: 8080 },
         },
       },
@@ -298,7 +298,7 @@ describe("maskStoredValue", () => {
       "https://user:••••4455@mcp.example.com/sse?api_key=••••7788&v=2",
     );
     expect(text).toContain('"Authorization":"Bearer ••••3344"');
-    expect(text).toContain('"args":["--access-token","••••9900"]');
+    expect(text).toContain('"args":["--access-token=••••9900"]');
     expect(text).toContain('"PORT":8080');
   });
 
@@ -344,6 +344,12 @@ describe("maskStoredValue", () => {
 });
 
 describe("maskUrl", () => {
+  it("leaves the path alone, including a ;name= in it", () => {
+    expect(
+      maskUrl("https://h.example/a;token=abcdef123456/b?key=sk-QUERY-778899"),
+    ).toBe("https://h.example/a;token=abcdef123456/b?key=••••8899");
+  });
+
   it("masks query values in any encoding and userinfo, nothing else", () => {
     expect(maskUrl("https://h.example/sse?token=AbC+dEf/GhIjKlMn==")).toBe(
       "https://h.example/sse?token=••••Mn==",
@@ -372,12 +378,10 @@ describe("maskUrl", () => {
 });
 
 describe("maskArgs", () => {
-  it("masks the credential forms of a program's command line", () => {
+  it("masks the self-describing credential forms of a command line", () => {
     expect(
       maskArgs(
         [
-          "--api-key",
-          "sk-arg-ARGSECRET-9900",
           "--auth-token=tok-INLINE-1122",
           "-H",
           "Authorization: Bearer sk-head-HEADER-3344",
@@ -390,12 +394,13 @@ describe("maskArgs", () => {
           "8080",
           "--max-tokens",
           "4096",
+          "--token-limit=100000",
+          "-H",
+          "Authorization: ${AUTH_HEADER}",
         ],
         "/opt/acme/mcp-server",
       ),
     ).toEqual([
-      "--api-key",
-      "••••9900",
       "--auth-token=••••1122",
       "-H",
       "Authorization: Bearer ••••3344",
@@ -408,30 +413,27 @@ describe("maskArgs", () => {
       "8080",
       "--max-tokens",
       "4096",
+      // A count, and a reference to a local variable, are not credentials.
+      "--token-limit=100000",
+      "-H",
+      "Authorization: ${AUTH_HEADER}",
     ]);
   });
 
-  it("does not hide the argument after a flag a launcher may not know", () => {
-    // `--api-key=` and headers are unambiguous; a separate value may be the
-    // package the launcher runs.
+  it("never hides the argument after a flag, whatever the command", () => {
+    // Without knowing whether a flag takes a value, the next argument may be
+    // what runs: npx reads an unknown flag as a switch, and a wrapper such as
+    // conhost.exe, env or wsl passes the launcher on unchanged.
+    for (const [command, args] of [
+      ["npx.cmd", ["-y", "--auth-token", "@evil/mcp-backdoor"]],
+      ["conhost.exe", ["npx", "-y", "--auth-token", "@evil/mcp-backdoor"]],
+      ["/opt/acme/mcp-server", ["--api-key", "sk-shown-9900"]],
+    ] as const) {
+      expect(maskArgs([...args], command), command).toEqual([...args]);
+    }
     expect(
-      maskArgs(
-        [
-          "-y",
-          "@acme/mcp-server",
-          "--api-key",
-          "sk-shown-9900",
-          "--token=tok-hidden-1122",
-        ],
-        "npx.cmd",
-      ),
-    ).toEqual([
-      "-y",
-      "@acme/mcp-server",
-      "--api-key",
-      "sk-shown-9900",
-      "--token=••••1122",
-    ]);
+      maskArgs(["-y", "@acme/mcp-server", "--token=tok-hidden-1122"], "npx"),
+    ).toEqual(["-y", "@acme/mcp-server", "--token=••••1122"]);
   });
 
   it("does not take the next flag for a credential", () => {

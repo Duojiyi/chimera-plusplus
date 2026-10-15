@@ -207,43 +207,6 @@ const INLINE_CODE_FLAGS: Record<string, RegExp> = {
 };
 
 /**
- * 启动器：参数里写着要运行什么（`npx 包名`、`uvx 包名`、`docker run 镜像`…）。
- * 它们把不认识的开关当布尔开关，紧跟其后的参数可能正是要运行的包，所以
- * 「凭据开关后面那一项」在这类命令里不遮盖。
- */
-const LAUNCHERS = new Set([
-  "npx",
-  "npm",
-  "pnpm",
-  "pnpx",
-  "yarn",
-  "bunx",
-  "bun",
-  "uvx",
-  "uv",
-  "pipx",
-  "deno",
-  "node",
-  "nodejs",
-  "python",
-  "python3",
-  "python2",
-  "py",
-  "pypy",
-  "pypy3",
-  "docker",
-  "podman",
-  "nerdctl",
-  "java",
-  "dotnet",
-  "go",
-  "cargo",
-  "ruby",
-  "perl",
-  "php",
-]);
-
-/**
  * 键名里出现这些词时，其取值按凭据处理。按词比较而不是按子串：
  * `MAX_OUTPUT_TOKENS` 是计数，`MONKEY` 也不是 key。连写的小写形式
  * （`accesstoken`）和国内云常见的 AK/SK 写法单独列出。
@@ -276,12 +239,28 @@ const SENSITIVE_WORDS = new Set([
   "AUTHTOKEN",
 ]);
 
+/** 以这些词结尾的是数量或时限（`TOKEN_LIMIT`、`KEY_TTL`），不是凭据。 */
+const COUNT_WORDS = new Set([
+  "LIMIT",
+  "LIMITS",
+  "COUNT",
+  "SIZE",
+  "BUDGET",
+  "TIMEOUT",
+  "TTL",
+  "LENGTH",
+]);
+
 export function isSensitiveKey(key: string): boolean {
-  return key
+  const words = key
     .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
     .toUpperCase()
     .split(/[^A-Z0-9]+/)
-    .some((word) => SENSITIVE_WORDS.has(word));
+    .filter(Boolean);
+  return (
+    !COUNT_WORDS.has(words.at(-1) ?? "") &&
+    words.some((word) => SENSITIVE_WORDS.has(word))
+  );
 }
 
 /** 凭据只露末 4 位，与确认框里 API Key 的「末 4 位」同一口径。 */
@@ -312,12 +291,16 @@ export function maskSecret(value: string): string {
 }
 
 /** 够长、不是环境变量名也不是本机路径的取值才可能是凭据；数字也算（密码、PIN）。 */
+/** `${TOKEN}`、`$TOKEN`（可带认证方案）是对本机环境变量的引用，不是凭据本身。 */
+const ENV_REFERENCE = /^(?:(?:Bearer|Basic|Token)\s+)?\$\{?[A-Za-z_]\w*\}?$/i;
+
 function isMaskableValue(value: unknown): value is string | number {
   if (typeof value !== "string" && typeof value !== "number") return false;
   const text = String(value).trim();
   return (
     text.length >= MIN_SECRET_LENGTH &&
     !ENV_VAR_NAME.test(text) &&
+    !ENV_REFERENCE.test(text) &&
     !LOCAL_PATH.test(text)
   );
 }
@@ -415,15 +398,22 @@ export function maskUrl(url: string): string {
       "@";
     rest = rest.slice(at + 1);
   }
+  // Only the query and the fragment carry parameters; a `;name=` in the path
+  // is left alone so it cannot swallow the rest of the address.
+  const query = rest.search(/[?#]/);
+  if (query === -1) return head + rest;
   return (
     head +
-    rest.replace(
-      /([?&#;])([^=&#;]*)=([^&#;]*)/g,
-      (whole, separator: string, name: string, value: string) =>
-        shouldMask(decodePart(name), decodePart(value))
-          ? `${separator}${name}=${maskSecret(decodePart(value))}`
-          : whole,
-    )
+    rest.slice(0, query) +
+    rest
+      .slice(query)
+      .replace(
+        /([?&#])([^=&#]*)=([^&#]*)/g,
+        (whole, separator: string, name: string, value: string) =>
+          shouldMask(decodePart(name), decodePart(value))
+            ? `${separator}${name}=${maskSecret(decodePart(value))}`
+            : whole,
+      )
   );
 }
 
@@ -434,13 +424,6 @@ function hasUserinfo(url: string): boolean {
   } catch {
     return false;
   }
-}
-
-/** `--api-key`、`--access-token`、`-token`：开关名本身是凭据类键名。 */
-function isSecretFlag(arg: string): boolean {
-  return (
-    /^--?[A-Za-z0-9][\w-]*$/.test(arg) && isSensitiveKey(arg.replace(/^-+/, ""))
-  );
 }
 
 const isHeaderFlag = (arg: string) => arg === "-H" || /^--?header$/i.test(arg);
@@ -456,14 +439,15 @@ const maskHeaderLines = (text: string) =>
   text.split("\n").map(maskHeader).join("\n");
 
 /**
- * 命令参数里的凭据：`--api-key=x` 与 `API_KEY=x` 的取值、`-H` / `--header`
- * 后面请求头的取值、URL 里的凭据，以及直接运行的程序在凭据开关后面的那一项
- * （`--api-key x`）。
+ * 命令参数里的凭据，只在自带名字的写法里遮盖：`--api-key=x` 与 `API_KEY=x`
+ * 的取值、`-H` / `--header` 后面请求头的取值（请求头名照常显示）、URL 里的
+ * 凭据，以及 `Bearer x` 这种取值。
  *
- * 启动器（`npx`、`uvx`、`docker`…）的「凭据开关后面那一项」不遮盖：它们把
- * 不认识的开关当布尔开关，`npx -y --auth-token @evil/pkg` 运行的正是
- * `@evil/pkg`。用 `node -e`、`sh -c` 这类方式运行一段代码时，代码能读到任何
- * 参数，所以一个都不遮盖。
+ * 「凭据开关后面的那一项」（`--api-key x`）不遮盖。不知道开关带不带值时，
+ * 那一项可能正是要运行的东西：npx 把不认识的开关当布尔开关，
+ * `npx -y --auth-token @evil/pkg` 运行的就是 `@evil/pkg`；外面再包一层
+ * `conhost.exe`、`env`、`wsl` 也一样，这类命令列不完。用 `node -e`、`sh -c`
+ * 这类方式运行一段代码时，代码能读到任何参数，所以一个都不遮盖。
  */
 export function maskArgs(
   args: readonly unknown[],
@@ -471,18 +455,9 @@ export function maskArgs(
 ): string[] {
   const list = args.map(String);
   if (classifyCommand(command, list)) return list;
-  const launcher = LAUNCHERS.has(commandName(command));
   return list.map((arg, index) => {
     const previous = index > 0 ? list[index - 1] : "";
     if (isHeaderFlag(previous)) return maskHeader(arg);
-    if (
-      !launcher &&
-      isSecretFlag(previous) &&
-      !arg.startsWith("-") &&
-      isMaskableValue(arg)
-    ) {
-      return maskSecret(arg);
-    }
     if (/^-H\S/.test(arg)) return `-H${maskHeader(arg.slice(2))}`;
     const pair = /^(-{0,2})([\w.-]+)=([\s\S]*)$/.exec(arg);
     if (pair) {
@@ -531,7 +506,7 @@ export function maskToml(text: string): string {
 }
 
 /**
- * 「将保存的完整内容」（后端 JSON 预览解析后的值）里的凭据：凭据类键名下的
+ * 「将保存的配置」（后端 JSON 预览解析后的值）里的凭据：凭据类键名下的
  * 取值（含其下整个对象或数组）、URL 与请求头里的凭据、命令参数里的凭据
  * （按同一对象里的 `command` 判断，见 `maskArgs`），以及 config.toml 文本。
  * 返回新值，不改动传入的值。
