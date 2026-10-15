@@ -1635,6 +1635,9 @@ export default function ChimeraApp({
     baseUrl: string,
     providerName = "Codex",
     target: "home" | "draft" = "home",
+    // The automatic check after startup reports success on the station sign
+    // only; a toast for it would cover whatever the user opened meanwhile.
+    { quietSuccess = false }: { quietSuccess?: boolean } = {},
   ) => {
     if (designPreview) return false;
     const started = performance.now();
@@ -1664,9 +1667,11 @@ export default function ChimeraApp({
         providerName,
         performance.now() - started,
       );
-      toast.success("地址可达", {
-        description: `响应时间 ${result.latency} ms · 未验证密钥或模型`,
-      });
+      if (!quietSuccess) {
+        toast.success("地址可达", {
+          description: `响应时间 ${result.latency} ms · 未验证密钥或模型`,
+        });
+      }
       return true;
     } catch (error) {
       if (seq !== seqRef.current) return false;
@@ -1700,7 +1705,10 @@ export default function ChimeraApp({
         const endpoint = extractCodexBaseUrl(
           String(current.settingsConfig?.config ?? ""),
         );
-        if (endpoint) void testConnection(endpoint, current.name);
+        if (endpoint)
+          void testConnection(endpoint, current.name, "home", {
+            quietSuccess: true,
+          });
       })
       .catch(() => {
         // Startup validation is optional and must never block the main window.
