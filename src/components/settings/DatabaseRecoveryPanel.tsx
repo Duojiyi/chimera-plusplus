@@ -9,6 +9,7 @@ import {
 } from "@/lib/api/config";
 import { promptCodexImportReview } from "@/utils/codexImportReview";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { restoreRefusal } from "./restoreRefusal";
 import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
 
 export function DatabaseRecoveryPanel({
@@ -53,7 +54,8 @@ export function DatabaseRecoveryPanel({
       setNotice(
         restored
           ? "数据库已恢复，但 Live/运行态同步未完成。请重新应用当前供应商，不要重复恢复。"
-          : "数据库备份操作失败，未确认完成，请刷新后重试。",
+          : (restoreRefusal(error) ??
+              "数据库备份操作失败，未确认完成，请刷新后重试。"),
       );
     } finally {
       try {
@@ -74,62 +76,114 @@ export function DatabaseRecoveryPanel({
     }
   };
   return (
-    <section aria-label="应用数据库备份" className="space-y-3">
+    <section aria-label="应用数据库备份" className="db-backups">
       <h3>应用数据库备份</h3>
       <p>
         恢复将替换应用 DB，后端会先创建安全备份，并可能重同步工具 Live
         配置。不是完整应用或登录凭据备份；Codex
         导入配置仍需审核确认。不会启用定时备份或云同步。
       </p>
-      {notice && <p role="alert">{notice}</p>}
-      <button
-        className="secondary"
-        disabled={busy || query.isFetching}
-        onClick={() => void query.refetch()}
-      >
-        刷新数据库备份
-      </button>{" "}
-      <button
-        className="secondary"
-        disabled={busy || query.isPending || query.isError}
-        onClick={() => void run(backupsApi.createDbBackup)}
-      >
-        创建数据库备份
-      </button>
+      {notice && (
+        <p role="alert" className="db-backups-notice">
+          {notice}
+        </p>
+      )}
+      <div className="db-backups-toolbar">
+        <span className="db-backups-count">
+          {query.data ? `共 ${query.data.length} 份` : ""}
+        </span>
+        <div className="db-backups-actions">
+          <button
+            type="button"
+            className="secondary"
+            disabled={busy || query.isFetching}
+            onClick={() => void query.refetch()}
+          >
+            刷新数据库备份
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            disabled={busy || query.isPending || query.isError}
+            onClick={() => void run(backupsApi.createDbBackup)}
+          >
+            创建数据库备份
+          </button>
+        </div>
+      </div>
       {query.isPending ? (
-        <p role="status">正在读取数据库备份…</p>
+        <p role="status" className="db-backups-empty">
+          正在读取数据库备份…
+        </p>
       ) : query.isError ? (
-        <p role="alert">数据库备份读取失败，请刷新重试。</p>
+        <p role="alert" className="db-backups-notice">
+          数据库备份读取失败，请刷新重试。
+        </p>
       ) : query.data?.length ? (
-        <ul>
-          {query.data.map((backup) => (
-            <li key={backup.filename}>
-              <span>
-                {backup.filename} ·{" "}
-                {new Date(backup.createdAt).toLocaleString()} ·{" "}
-                {(backup.sizeBytes / 1024).toFixed(1)} KiB
-              </span>{" "}
-              <button
-                disabled={busy || query.isFetching}
-                onClick={() =>
-                  setAction({ kind: "restore", filename: backup.filename })
-                }
-              >
-                恢复 {backup.filename}
-              </button>{" "}
-              <button
-                disabled={busy || query.isFetching}
-                onClick={() =>
-                  setAction({ kind: "delete", filename: backup.filename })
-                }
-              >
-                删除 {backup.filename}
-              </button>
-            </li>
-          ))}
-        </ul>
+        <table className="db-backups-table">
+          <thead>
+            <tr>
+              <th scope="col">文件</th>
+              <th scope="col" className="is-time">
+                时间
+              </th>
+              <th scope="col" className="is-size">
+                大小
+              </th>
+              <th scope="col" className="is-actions">
+                <span className="sr-only">操作</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {query.data.map((backup) => (
+              <tr key={backup.filename}>
+                <td>
+                  <span className="db-backups-name" title={backup.filename}>
+                    {backup.filename}
+                  </span>
+                </td>
+                <td className="is-time">
+                  {new Date(backup.createdAt).toLocaleString("zh-CN", {
+                    year: "numeric",
+                    month: "2-digit",
+                    day: "2-digit",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                </td>
+                <td className="is-size">
+                  {(backup.sizeBytes / 1024).toFixed(1)} KiB
+                </td>
+                <td className="is-actions">
+                  <button
+                    type="button"
+                    aria-label={`恢复 ${backup.filename}`}
+                    disabled={busy || query.isFetching}
+                    onClick={() =>
+                      setAction({ kind: "restore", filename: backup.filename })
+                    }
+                  >
+                    恢复
+                  </button>
+                  <button
+                    type="button"
+                    className="is-danger"
+                    aria-label={`删除 ${backup.filename}`}
+                    disabled={busy || query.isFetching}
+                    onClick={() =>
+                      setAction({ kind: "delete", filename: backup.filename })
+                    }
+                  >
+                    删除
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       ) : (
-        <p>暂无数据库备份。</p>
+        <p className="db-backups-empty">暂无数据库备份。</p>
       )}
       <ConfirmDialog
         isOpen={action !== null}

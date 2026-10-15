@@ -292,7 +292,7 @@ export default function AppearanceView({
     }
   };
   const importLocal = async () => {
-    const path = await settingsApi.openFileDialog();
+    const path = await settingsApi.openSkinFileDialog();
     if (path) await run("导入皮肤", "import_skin_package", { path });
   };
   if (!enabled) return <Empty label="此版本暂未开放 Codex 皮肤。" />;

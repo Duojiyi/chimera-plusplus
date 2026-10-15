@@ -182,6 +182,10 @@ export const settingsApi = {
     return await invoke("open_file_dialog");
   },
 
+  async openSkinFileDialog(): Promise<string | null> {
+    return await invoke("open_skin_file_dialog");
+  },
+
   async exportConfigToFile(filePath: string): Promise<ConfigTransferResult> {
     return await invoke("export_config_to_file", { filePath });
   },

@@ -66,6 +66,8 @@ export async function promptCodexImportReview(t: TFunction): Promise<void> {
       ].join("\n"),
       duration: Infinity,
       closeButton: true,
+      // Keeps the review's line breaks and a one-line confirm button.
+      className: "codex-import-review-toast",
       action: {
         label: t("settings.codexImportReview.confirm", {
           defaultValue: "确认并同步",

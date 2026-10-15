@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
 import type { AppId } from "@/lib/api/types";
 import { liveBackupsApi, type LiveBackup } from "@/lib/api/liveBackups";
+import { restoreRefusal } from "@/components/settings/restoreRefusal";
 
 const reasons: Record<LiveBackup["reason"], string> = {
   manual: "手动备份",
@@ -75,9 +76,12 @@ export function LiveBackupsPanel({
     try {
       await job();
       if (mounted.current) setAction(null);
-    } catch {
+    } catch (error) {
       if (mounted.current)
-        toast.error("备份操作失败，未确认完成。请检查配置后重试。");
+        toast.error(
+          restoreRefusal(error) ??
+            "备份操作失败，未确认完成。请检查配置后重试。",
+        );
     } finally {
       if (mounted.current) await load();
       pending.current = false;

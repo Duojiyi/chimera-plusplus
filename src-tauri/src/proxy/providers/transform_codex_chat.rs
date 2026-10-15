@@ -328,12 +328,25 @@ pub fn responses_to_chat_completions_with_reasoning_for_upstream(
 
     apply_reasoning_options(&mut result, &body, model, reasoning_config);
 
-    let tools = tool_context.chat_tools();
+    let allowed = body
+        .get("tool_choice")
+        .and_then(|choice| allowed_tools_choice_to_chat(choice, &tool_context));
+    let tools: Vec<Value> = match &allowed {
+        Some((_, names)) => tool_context
+            .chat_tools()
+            .iter()
+            .filter(|tool| chat_tool_name(tool).is_some_and(|name| names.contains(name)))
+            .cloned()
+            .collect(),
+        None => tool_context.chat_tools().to_vec(),
+    };
     if !tools.is_empty() {
         result["tools"] = json!(tools);
     }
 
-    if let Some(tool_choice) = body.get("tool_choice") {
+    if let Some((choice, _)) = allowed {
+        result["tool_choice"] = choice;
+    } else if let Some(tool_choice) = body.get("tool_choice") {
         result["tool_choice"] = responses_tool_choice_to_chat(tool_choice, &tool_context);
     }
 
@@ -611,9 +624,10 @@ fn append_responses_input_as_chat_messages(
     let mut pending_reasoning: Option<String> = None;
     let mut last_assistant_index: Option<usize> = None;
     let mut pending_media: Vec<Value> = Vec::new();
-    // Chat ids of the tool calls converted so far; a tool result goes out as
-    // `role:"tool"` only when its call_id is among them.
-    let mut known_tool_call_ids: HashSet<String> = HashSet::new();
+    // Call ids already answered by a `role:"tool"` message. A replayed result
+    // for one of them is a duplicate and is dropped: its content already went
+    // out once, and a second `tool` message for one call is rejected.
+    let mut answered_tool_call_ids: HashSet<String> = HashSet::new();
     // Unpaired results wait for the end of the current run of results: a user
     // message between two paired results (`tool, user, tool`) is rejected too.
     let mut pending_orphan_outputs: Vec<&Value> = Vec::new();
@@ -633,22 +647,23 @@ fn append_responses_input_as_chat_messages(
     for item in items {
         if is_responses_tool_result_item(item) {
             let call_id = item.get("call_id").and_then(Value::as_str).unwrap_or("");
-            if call_id.is_empty() || !known_tool_call_ids.contains(call_id) {
+            if !call_id.is_empty() && answered_tool_call_ids.contains(call_id) {
+                log::debug!("[CodexChat] dropped duplicate tool result call_id={call_id}");
+                continue;
+            }
+            if call_id.is_empty()
+                || !tool_result_answers_open_call(messages, &pending_tool_calls, call_id)
+            {
                 pending_orphan_outputs.push(item);
                 continue;
             }
+            answered_tool_call_ids.insert(call_id.to_string());
         } else {
             // Any other item ends the run of tool results. Media moved out of
             // the paired results goes first so their "moved to the following
             // user message" marker stays true, then the held orphans.
             flush_pending_chat_tool_media(messages, &mut pending_media);
             flush_pending_orphan_tool_outputs(messages, &mut pending_orphan_outputs);
-            if is_responses_tool_call_item(item) {
-                let call_id = responses_call_item_chat_id(item);
-                if !call_id.is_empty() {
-                    known_tool_call_ids.insert(call_id.to_string());
-                }
-            }
         }
         append_responses_item_as_chat_message(
             item,
@@ -678,8 +693,69 @@ fn append_responses_input_as_chat_messages(
         last_assistant_index,
         &mut pending_reasoning,
     );
+    answer_unanswered_tool_calls(messages);
     backfill_tool_call_reasoning_placeholders(messages);
     Ok(())
+}
+
+/// Content of the `tool` message added for a call whose result never came, or
+/// came too late to be placed (it then follows as a marked user message).
+const MISSING_TOOL_RESULT_PLACEHOLDER: &str = "[no tool result was recorded for this call]";
+
+/// Give every assistant tool call a `tool` reply in the run directly after it.
+///
+/// Chat requires one reply per `tool_calls` id before the next non-tool
+/// message, and strict upstreams reject the whole request otherwise. Replies
+/// can be missing when a result was replayed out of turn (it became an orphan
+/// user message) or was never recorded; a placeholder is appended to the end
+/// of that call's run of tool messages.
+fn answer_unanswered_tool_calls(messages: &mut Vec<Value>) {
+    let mut index = 0;
+    while index < messages.len() {
+        let call_ids: Vec<String> =
+            if messages[index].get("role").and_then(Value::as_str) == Some("assistant") {
+                messages[index]
+                    .get("tool_calls")
+                    .and_then(Value::as_array)
+                    .map(|calls| {
+                        calls
+                            .iter()
+                            .filter_map(|call| call.get("id").and_then(Value::as_str))
+                            .filter(|id| !id.is_empty())
+                            .map(ToString::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+        index += 1;
+        if call_ids.is_empty() {
+            continue;
+        }
+        let mut answered: HashSet<String> = HashSet::new();
+        while index < messages.len()
+            && messages[index].get("role").and_then(Value::as_str) == Some("tool")
+        {
+            if let Some(id) = messages[index].get("tool_call_id").and_then(Value::as_str) {
+                answered.insert(id.to_string());
+            }
+            index += 1;
+        }
+        for id in call_ids {
+            if answered.insert(id.clone()) {
+                messages.insert(
+                    index,
+                    json!({
+                        "role": "tool",
+                        "tool_call_id": id,
+                        "content": MISSING_TOOL_RESULT_PLACEHOLDER
+                    }),
+                );
+                index += 1;
+            }
+        }
+    }
 }
 
 fn append_responses_item_as_chat_message(
@@ -884,18 +960,52 @@ fn flush_pending_chat_tool_media(messages: &mut Vec<Value>, pending_media: &mut 
     }));
 }
 
-fn is_responses_tool_call_item(item: &Value) -> bool {
-    matches!(
-        item.get("type").and_then(Value::as_str),
-        Some("function_call" | "custom_tool_call" | "tool_search_call")
-    )
-}
-
 fn is_responses_tool_result_item(item: &Value) -> bool {
     matches!(
         item.get("type").and_then(Value::as_str),
         Some("function_call_output" | "custom_tool_call_output" | "tool_search_output")
     )
+}
+
+/// Whether a tool result for `call_id` can go out as `role:"tool"` right now.
+///
+/// Chat accepts a tool message only inside the run of tool messages directly
+/// after the assistant message whose `tool_calls` carries that id. Calls that
+/// are still pending become that assistant message when the result flushes
+/// them; otherwise the last emitted messages must be that assistant message
+/// followed only by tool messages, none of which answered the id yet. A
+/// result that arrives after anything else (a user message, a later call
+/// turn) can no longer be placed validly and is treated as an orphan.
+fn tool_result_answers_open_call(
+    messages: &[Value],
+    pending_tool_calls: &[Value],
+    call_id: &str,
+) -> bool {
+    let call_ids_of = |calls: &[Value]| -> bool {
+        calls
+            .iter()
+            .any(|call| call.get("id").and_then(Value::as_str) == Some(call_id))
+    };
+    if !pending_tool_calls.is_empty() {
+        return call_ids_of(pending_tool_calls);
+    }
+    for message in messages.iter().rev() {
+        match message.get("role").and_then(Value::as_str) {
+            Some("tool") => {
+                if message.get("tool_call_id").and_then(Value::as_str) == Some(call_id) {
+                    return false;
+                }
+            }
+            Some("assistant") => {
+                return message
+                    .get("tool_calls")
+                    .and_then(Value::as_array)
+                    .is_some_and(|calls| call_ids_of(calls));
+            }
+            _ => return false,
+        }
+    }
+    false
 }
 
 /// Chat tool-call id of a Responses call item (`call_id`, else `id`); tool
@@ -1784,6 +1894,81 @@ fn responses_tool_search_call_to_chat_tool_call(item: &Value) -> Value {
     })
 }
 
+fn chat_tool_name(tool: &Value) -> Option<&str> {
+    tool.get("function")
+        .and_then(|function| function.get("name"))
+        .and_then(Value::as_str)
+}
+
+/// Map a Responses `allowed_tools` selector to Chat: the chat tool names it
+/// allows and the strictest Chat `tool_choice` with the same meaning.
+///
+/// Chat has no allowed-tools selector, so the tools list itself is narrowed to
+/// the allowed set. `mode: "required"` becomes `"required"`, or a named
+/// function when exactly one tool is allowed; any other mode stays `"auto"`.
+/// Returns `None` when none of the allowed tools reaches the Chat tools list
+/// (only hosted tools such as web_search); the caller then degrades the
+/// selector like any other hosted one.
+fn allowed_tools_choice_to_chat(
+    tool_choice: &Value,
+    tool_context: &CodexToolContext,
+) -> Option<(Value, HashSet<String>)> {
+    if tool_choice.get("type").and_then(Value::as_str) != Some("allowed_tools") {
+        return None;
+    }
+    let entries = tool_choice
+        .get("tools")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let mut requested: HashSet<String> = HashSet::new();
+    for entry in entries {
+        let name = entry.get("name").and_then(Value::as_str).unwrap_or("");
+        match entry.get("type").and_then(Value::as_str) {
+            Some("function") => {
+                let namespace = entry.get("namespace").and_then(Value::as_str);
+                requested.insert(tool_context.chat_name_for_response_function(name, namespace));
+            }
+            Some("custom") => {
+                requested.insert(name.to_string());
+            }
+            Some("tool_search") => {
+                requested.insert(TOOL_SEARCH_PROXY_NAME.to_string());
+            }
+            Some("namespace") => {
+                requested.extend(
+                    tool_context
+                        .chat_name_to_spec
+                        .iter()
+                        .filter(|(_, spec)| spec.namespace.as_deref() == Some(name))
+                        .map(|(chat_name, _)| chat_name.clone()),
+                );
+            }
+            _ => {}
+        }
+    }
+    let names: HashSet<String> = tool_context
+        .chat_tools()
+        .iter()
+        .filter_map(chat_tool_name)
+        .filter(|name| requested.contains(*name))
+        .map(ToString::to_string)
+        .collect();
+    if names.is_empty() {
+        return None;
+    }
+    let required = tool_choice.get("mode").and_then(Value::as_str) == Some("required");
+    let choice = match names.iter().next() {
+        Some(only) if required && names.len() == 1 => json!({
+            "type": "function",
+            "function": {"name": only}
+        }),
+        _ if required => json!("required"),
+        _ => json!("auto"),
+    };
+    Some((choice, names))
+}
+
 fn responses_tool_choice_to_chat(tool_choice: &Value, tool_context: &CodexToolContext) -> Value {
     match tool_choice {
         Value::Object(obj) if obj.get("type").and_then(|v| v.as_str()) == Some("function") => {
@@ -1815,8 +2000,9 @@ fn responses_tool_choice_to_chat(tool_choice: &Value, tool_context: &CodexToolCo
             })
         }
         // Hosted-tool selectors (web_search, web_search_preview, file_search,
-        // image_generation, allowed_tools, ...) point at tools the tool context
-        // never forwards, and strict gateways 400 on the raw OpenAI object.
+        // image_generation, an allowed_tools list with only hosted tools, ...)
+        // point at tools the tool context never forwards, and strict gateways
+        // 400 on the raw OpenAI object.
         // Degrade to "auto" like the Anthropic bridge; when no tools remain,
         // tool_choice is dropped further down.
         Value::Object(_) => json!("auto"),
@@ -4089,6 +4275,110 @@ mod tests {
         );
     }
 
+    /// Every `tool` message must sit in the run of tool messages directly after
+    /// the assistant message whose `tool_calls` holds its id, at most once.
+    fn assert_valid_chat_tool_sequence(messages: &[Value]) {
+        let mut open: Option<Vec<String>> = None;
+        let mut answered: Vec<String> = Vec::new();
+        for (index, message) in messages.iter().enumerate() {
+            match message["role"].as_str().unwrap_or_default() {
+                "tool" => {
+                    let id = message["tool_call_id"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string();
+                    let calls = open
+                        .as_ref()
+                        .unwrap_or_else(|| panic!("tool message {index} has no open call turn"));
+                    assert!(
+                        calls.contains(&id),
+                        "tool message {index} answers {id} out of turn"
+                    );
+                    assert!(!answered.contains(&id), "tool message {index} repeats {id}");
+                    answered.push(id);
+                }
+                role => {
+                    open = (role == "assistant")
+                        .then(|| message["tool_calls"].as_array())
+                        .flatten()
+                        .map(|calls| {
+                            calls
+                                .iter()
+                                .map(|call| call["id"].as_str().unwrap_or_default().to_string())
+                                .collect()
+                        });
+                    answered.clear();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tool_output_after_an_intervening_user_message_becomes_an_orphan() {
+        let messages = chat_messages_for(json!([
+            {"type": "function_call", "call_id": "call_a", "name": "read", "arguments": "{}"},
+            {"role": "user", "content": [{"type": "input_text", "text": "still there?"}]},
+            {"type": "function_call_output", "call_id": "call_a", "output": "late-a"}
+        ]));
+
+        assert_valid_chat_tool_sequence(&messages);
+        assert_eq!(chat_roles(&messages), ["assistant", "tool", "user", "user"]);
+        assert_eq!(messages[1]["tool_call_id"], "call_a");
+        assert_eq!(messages[1]["content"], MISSING_TOOL_RESULT_PLACEHOLDER);
+        assert_eq!(
+            messages[3]["content"],
+            format!(
+                "{ORPHAN_TOOL_OUTPUT_MARKER} (call_id: call_a)
+late-a"
+            )
+        );
+    }
+
+    #[test]
+    fn duplicated_tool_output_is_sent_once() {
+        let messages = chat_messages_for(json!([
+            {"type": "function_call", "call_id": "call_a", "name": "read", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call_a", "output": "ok-a"},
+            {"type": "function_call_output", "call_id": "call_a", "output": "ok-a"},
+            {"role": "user", "content": [{"type": "input_text", "text": "next"}]},
+            {"type": "function_call_output", "call_id": "call_a", "output": "ok-a"}
+        ]));
+
+        assert_valid_chat_tool_sequence(&messages);
+        assert_eq!(chat_roles(&messages), ["assistant", "tool", "user"]);
+        assert_eq!(messages[1]["content"], "ok-a");
+    }
+
+    #[test]
+    fn tool_output_for_an_earlier_call_turn_becomes_an_orphan() {
+        let messages = chat_messages_for(json!([
+            {"type": "function_call", "call_id": "call_a", "name": "read", "arguments": "{}"},
+            {"type": "function_call", "call_id": "call_b", "name": "read", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call_a", "output": "ok-a"},
+            {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "next step"}]},
+            {"type": "function_call", "call_id": "call_c", "name": "read", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call_b", "output": "late-b"},
+            {"type": "function_call_output", "call_id": "call_c", "output": "ok-c"}
+        ]));
+
+        assert_valid_chat_tool_sequence(&messages);
+        assert_eq!(
+            chat_roles(&messages),
+            ["assistant", "tool", "tool", "assistant", "tool", "user"]
+        );
+        assert_eq!(messages[1]["tool_call_id"], "call_a");
+        assert_eq!(messages[2]["tool_call_id"], "call_b");
+        assert_eq!(messages[2]["content"], MISSING_TOOL_RESULT_PLACEHOLDER);
+        assert_eq!(messages[4]["tool_call_id"], "call_c");
+        assert_eq!(
+            messages[5]["content"],
+            format!(
+                "{ORPHAN_TOOL_OUTPUT_MARKER} (call_id: call_b)
+late-b"
+            )
+        );
+    }
+
     #[test]
     fn orphan_tool_output_keeps_media_as_parts() {
         let image = "data:image/png;base64,iVBORw0KGgo=";
@@ -4999,6 +5289,71 @@ mod tests {
             assert_eq!(tools.len(), 1, "{tool_choice}");
             assert_eq!(tools[0]["function"]["name"], "get_weather");
         }
+    }
+
+    fn allowed_tools_request(mode: &str, allowed: Value) -> Value {
+        responses_to_chat_completions(json!({
+            "model": "gpt-5.4",
+            "tools": [
+                {"type": "function", "name": "get_weather", "parameters": {"type": "object"}},
+                {"type": "function", "name": "get_time", "parameters": {"type": "object"}},
+                {"type": "function", "name": "send_mail", "parameters": {"type": "object"}},
+                {"type": "web_search"}
+            ],
+            "tool_choice": {"type": "allowed_tools", "mode": mode, "tools": allowed},
+            "input": "hi"
+        }))
+        .unwrap()
+    }
+
+    fn chat_tool_names(result: &Value) -> Vec<&str> {
+        result["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .map(|tool| tool["function"]["name"].as_str().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn allowed_tools_required_with_several_tools_stays_required() {
+        let result = allowed_tools_request(
+            "required",
+            json!([
+                {"type": "function", "name": "get_weather"},
+                {"type": "function", "name": "get_time"},
+                {"type": "web_search"}
+            ]),
+        );
+
+        assert_eq!(result["tool_choice"], "required");
+        assert_eq!(chat_tool_names(&result), ["get_weather", "get_time"]);
+    }
+
+    #[test]
+    fn allowed_tools_required_with_one_tool_names_it() {
+        let result = allowed_tools_request(
+            "required",
+            json!([{"type": "function", "name": "get_time"}]),
+        );
+
+        assert_eq!(result["tool_choice"]["type"], "function");
+        assert_eq!(result["tool_choice"]["function"]["name"], "get_time");
+        assert_eq!(chat_tool_names(&result), ["get_time"]);
+    }
+
+    #[test]
+    fn allowed_tools_auto_narrows_the_tools_list() {
+        let result = allowed_tools_request(
+            "auto",
+            json!([
+                {"type": "function", "name": "send_mail"},
+                {"type": "function", "name": "not_declared"}
+            ]),
+        );
+
+        assert_eq!(result["tool_choice"], "auto");
+        assert_eq!(chat_tool_names(&result), ["send_mail"]);
     }
 
     #[test]

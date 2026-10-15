@@ -175,6 +175,17 @@ describe("Live backup panel", () => {
     );
     expect(liveBackupsApi.list).toHaveBeenCalledTimes(2);
   });
+  it("shows the backend's refusal reason for a refused restore", async () => {
+    vi.mocked(liveBackupsApi.restore).mockRejectedValueOnce(
+      "无效输入: 请先关闭接管再恢复备份。",
+    );
+    render(<LiveBackupsPanel />);
+    await confirmRestore();
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith("请先关闭接管再恢复备份。"),
+    );
+  });
+
   it("keeps failures retryable and sanitizes native errors", async () => {
     vi.mocked(liveBackupsApi.restore).mockRejectedValueOnce(
       new Error("secret-path"),

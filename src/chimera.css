@@ -3334,3 +3334,63 @@ body.is-mac
     gap: 12px;
   }
 }
+
+/* tool pages & shell (2.8.6)
+   Sidebar active and focus states. The Codex capability rows carry the
+   vertical tree (rail + station dot) in their first 28px; a full-width fill
+   or an outset focus outline would paint over that rail. The active surface
+   and the focus ring are drawn on a ::before that starts after the tree
+   column, so the rail stays continuous and the highlight sits beside it. */
+.chimera-sidebar .chimera-navigation button[data-pencil-name^="能力 · "] {
+  position: relative;
+  isolation: isolate;
+  background: transparent;
+}
+.chimera-sidebar
+  .chimera-navigation
+  button[data-pencil-name^="能力 · "]::before {
+  content: "";
+  position: absolute;
+  inset: 2px 0 2px 36px;
+  z-index: -1;
+  border-radius: var(--radius-control, 4px);
+  background: transparent;
+  transition: background-color var(--dur-instant, 100ms) var(--ease-out, ease);
+}
+.chimera-sidebar
+  .chimera-navigation
+  button[data-pencil-name^="能力 · "]:hover:not(:disabled)::before {
+  background: #1a1e24;
+}
+.chimera-sidebar
+  .chimera-navigation
+  button[data-pencil-name^="能力 · "][aria-current="page"]::before {
+  background: #23282d;
+  box-shadow: inset 2px 0 0 #7b9bc3;
+}
+.chimera-sidebar
+  .chimera-navigation
+  button[data-pencil-name^="能力 · "]:focus-visible {
+  outline: none;
+}
+.chimera-sidebar
+  .chimera-navigation
+  button[data-pencil-name^="能力 · "]:focus-visible::before {
+  outline: 2px solid var(--focus-on-plate);
+  outline-offset: -2px;
+}
+/* Every other sidebar row: keep the focus ring inside the 216px rail so it
+   is not clipped by the nav scroller or drawn over neighbouring rows. */
+.chimera-sidebar button:not([data-pencil-name^="能力 · "]):focus-visible {
+  outline: 2px solid var(--focus-on-plate);
+  outline-offset: -2px;
+}
+/* Other tools: the active row gets the same left accent as the tree rows. */
+.chimera-sidebar
+  .chimera-navigation
+  button[data-pencil-name^="工具 · "][aria-current="page"],
+.chimera-sidebar
+  .chimera-navigation
+  button[data-pencil-name="添加工具"][aria-current="page"] {
+  box-shadow: inset 2px 0 0 #7b9bc3;
+}

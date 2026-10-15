@@ -74,6 +74,33 @@ describe("database recovery", () => {
       screen.queryByRole("button", { name: "确认恢复数据库" }),
     ).not.toBeInTheDocument();
   });
+  it("shows the backend's refusal reason but never raw native errors", async () => {
+    vi.mocked(backupsApi.restoreDbBackup).mockRejectedValueOnce(
+      "配置错误: 请关闭接管并停止代理后再恢复该备份。",
+    );
+    mount();
+    fireEvent.click(
+      await screen.findByRole("button", { name: "恢复 saved.db" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "确认恢复数据库" }));
+    // The confirm dialog stays open (modal), so query the notice by text.
+    expect(
+      await screen.findByText("请关闭接管并停止代理后再恢复该备份。"),
+    ).toBeInTheDocument();
+    vi.mocked(backupsApi.restoreDbBackup).mockRejectedValueOnce(
+      new Error("IO 错误: C:\\private: 拒绝访问。"),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "确认恢复数据库" }),
+      ).toBeEnabled(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "确认恢复数据库" }));
+    expect(
+      await screen.findByText("数据库备份操作失败，未确认完成，请刷新后重试。"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/private/)).not.toBeInTheDocument();
+  });
   it("does not present a failed list as empty and allows retry", async () => {
     vi.mocked(backupsApi.listDbBackups).mockRejectedValueOnce(
       new Error("private path"),

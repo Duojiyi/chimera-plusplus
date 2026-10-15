@@ -1077,6 +1077,12 @@ pub fn run() {
                         }
                     }
 
+                    // 旧版本（2.8.6 之前）官方接管记在 cc-switch-official 桶下的会话先迁回
+                    // 官方当前所在的桶：live 不再选这个 id 时它们会从列表消失。必须排在
+                    // 统一迁移之前，迁回 openai 的会话才能随后按正常流程进入统一账本。
+                    // 函数内部自门控（live 仍选着这个 id 时跳过），无事可做时只扫描头部。
+                    crate::codex_history_migration::migrate_codex_official_proxy_history_bucket_if_needed();
+
                     // 统一会话开关的官方历史迁移：开关开启但上次未完成（如文件被占用
                     // 中途失败）时在启动期重试；函数内部自门控，开关关闭时直接跳过。
                     match crate::codex_history_migration::maybe_migrate_codex_official_history_to_unified_bucket() {
@@ -1826,6 +1832,7 @@ pub fn run() {
             commands::save_file_dialog,
             commands::open_file_dialog,
             commands::open_zip_file_dialog,
+            commands::open_skin_file_dialog,
             commands::create_db_backup,
             commands::list_db_backups,
             commands::restore_db_backup,

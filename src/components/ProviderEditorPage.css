@@ -21,11 +21,11 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  background: #fff;
+  background: var(--bg-surface);
   border: 0;
   border-radius: 0;
   box-shadow: none;
-  color: #12161c;
+  color: var(--text-1);
   font-size: 14px;
 }
 .provider-editor-page .editor-page-header {
@@ -36,8 +36,8 @@
   margin: 0;
   min-height: 64px;
   padding: 8px 24px;
-  background: #fff;
-  border-bottom: 1px solid #dde0e3;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-subtle);
 }
 .provider-editor-page .editor-heading {
   min-width: 0;
@@ -51,11 +51,11 @@
 }
 .provider-editor-page .editor-heading > span {
   font-size: 13px;
-  color: #646970;
+  color: var(--text-3);
 }
 .provider-editor-page .editor-draft-status {
   font-size: 13px;
-  color: #8c4b25;
+  color: var(--warning-fg);
   margin-right: auto;
   flex: 0 0 auto;
 }
@@ -90,7 +90,7 @@
 .provider-editor-page .editor-basic h3 small {
   margin-left: 8px;
   font-size: 12px;
-  color: #646970;
+  color: var(--text-3);
   font-weight: 400;
 }
 .provider-editor-page .editor-basic-grid {
@@ -122,10 +122,10 @@
   width: 100%;
   min-height: 36px;
   padding: 7px 10px;
-  border: 1px solid #81878d;
+  border: 1px solid var(--border-control);
   border-radius: 4px;
-  background: #fff;
-  color: #12161c;
+  background: var(--bg-surface);
+  color: var(--text-1);
   font-size: 14px;
   line-height: 1.45;
 }
@@ -151,10 +151,10 @@
   font-size: 14px;
 }
 .provider-editor-page button.primary {
-  background: #006aa0;
+  background: var(--brand);
 }
 .provider-editor-page button.primary:hover:not(:disabled) {
-  background: #005580;
+  background: var(--brand-hover);
 }
 .provider-editor-page button:disabled {
   cursor: not-allowed;
@@ -162,7 +162,7 @@
 }
 .provider-editor-page
   :is(button, input, select, textarea, summary):focus-visible {
-  outline: 2px solid #276aa6;
+  outline: 2px solid var(--focus-ring);
   outline-offset: 3px;
 }
 .provider-editor-page .editor-heading h2:focus {
@@ -184,7 +184,7 @@
 .provider-editor-page .toggle-field small {
   font-size: 13px;
   line-height: 1.6;
-  color: #646970;
+  color: var(--text-3);
 }
 .provider-editor-page .advanced-section-heading button {
   flex-shrink: 0;
@@ -200,13 +200,13 @@
 .provider-editor-page .mapping-head {
   font-size: 12px;
   padding: 0;
-  color: #646970;
+  color: var(--text-3);
 }
 .provider-editor-page .mapping-row {
   padding: 0;
   border: 0;
   align-items: start;
-  border-color: #dde0e3;
+  border-color: var(--border-subtle);
 }
 .provider-editor-page .mapping-field {
   min-width: 0;
@@ -217,19 +217,19 @@
 .provider-editor-page .mapping-field > span {
   display: none;
   font-size: 13px;
-  color: #646970;
+  color: var(--text-3);
 }
 .provider-editor-page .mapping-row input {
   min-height: 32px;
   padding: 5px 6px;
   font-size: 12px;
-  background: #f9fafc;
+  background: var(--input-bg);
 }
 .provider-editor-page .mapping-row .reasoning-trigger {
   height: 32px;
   width: 100%;
   font-size: 14px;
-  background: #f9fafc;
+  background: var(--input-bg);
 }
 .provider-editor-page .mapping-actions {
   justify-content: flex-end;
@@ -251,24 +251,24 @@
   font-size: 12px;
 }
 .provider-editor-page .mapping-actions .icon-button {
-  color: #b33229;
+  color: var(--danger-fg);
 }
 .provider-editor-page .mapping-empty {
   margin: 0;
   padding: 22px;
-  border: 1px dashed #81878d;
+  border: 1px dashed var(--border-control);
   border-radius: 10px;
   font-size: 14px;
-  color: #646970;
+  color: var(--text-3);
 }
 .provider-editor-page .mapping-error {
   grid-column: 1 / -1;
   margin: 0;
-  color: #b33229;
+  color: var(--danger-fg);
   font-size: 13px;
 }
 .provider-editor-page [aria-invalid="true"] {
-  border-color: #b33229;
+  border-color: var(--danger-fg);
 }
 .provider-editor-page .reasoning-panel,
 .provider-editor-page .instructions-panel {
@@ -348,9 +348,9 @@
 .provider-editor-page .editor-model-error {
   margin: 0;
   padding: 12px 14px;
-  color: #9c3029;
-  background: #fff0ed;
-  border: 1px solid #edc2ba;
+  color: var(--danger-fg);
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-border);
   border-radius: 4px;
   font-size: 14px;
   overflow-wrap: anywhere;
@@ -358,12 +358,12 @@
 .provider-editor-page .editor-test-scope {
   margin: 0;
   font-size: 13px;
-  color: #646970;
+  color: var(--text-3);
 }
 .provider-editor-page .editor-bottom {
   flex: 0 0 auto;
-  background: #fff;
-  border-top: 1px solid #dde0e3;
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border-subtle);
 }
 .provider-editor-page .provider-editor > .editor-bottom > footer {
   position: static;
@@ -495,9 +495,9 @@
 }
 .provider-editor-page .editor-preview {
   padding: 16px;
-  border: 1px solid #dde0e3;
+  border: 1px solid var(--border-subtle);
   border-radius: 8px;
-  background: #f5f7f9;
+  background: var(--bg-sunken);
   display: grid;
   gap: 12px;
   overflow-wrap: anywhere;
@@ -505,13 +505,13 @@
 .provider-editor-page .editor-preview p,
 .provider-editor-page .editor-preview dl {
   margin: 0;
-  color: #646970;
+  color: var(--text-3);
   font-size: 12px;
   line-height: 1.6;
 }
 .provider-editor-page .editor-preview dd {
   margin: 0 0 8px;
-  color: #484e55;
+  color: var(--text-2);
 }
 .provider-editor-page .editor-route-preview {
   margin: 0;
@@ -519,20 +519,20 @@
 }
 .provider-editor-page .editor-route-preview li {
   padding: 0 0 16px 12px;
-  border-left: 1px solid #dde0e3;
+  border-left: 1px solid var(--border-subtle);
   list-style: none;
   position: relative;
   font-size: 13px;
 }
 .provider-editor-page .editor-route-preview small {
   display: block;
-  color: #646970;
+  color: var(--text-3);
   font-size: 12px;
 }
 .provider-editor-page .password-field,
 .provider-editor-page .model-input {
   height: 36px;
-  border-color: #81878d;
+  border-color: var(--border-control);
   border-radius: 4px;
 }
 .provider-editor-page .password-field > input,
@@ -551,7 +551,7 @@
   gap: 6px;
 }
 .provider-editor-page .editor-format small {
-  color: #646970;
+  color: var(--text-3);
   font-size: 12px;
   line-height: 1.5;
 }
@@ -559,8 +559,8 @@
   display: flex;
   width: fit-content;
   max-width: 100%;
-  background: #f5f7f9;
-  border: 1px solid #dde0e3;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border-subtle);
   border-radius: 4px;
   padding: 1px;
 }
@@ -582,12 +582,12 @@
   border-radius: 2px;
 }
 .provider-editor-page .editor-format-options input:checked + span {
-  background: #fff;
-  box-shadow: 0 1px 3px #0002;
-  color: #12161c;
+  background: var(--bg-surface);
+  box-shadow: 0 1px 3px var(--shadow-soft);
+  color: var(--text-1);
 }
 .provider-editor-page .editor-format-options input:focus-visible + span {
-  outline: 2px solid #006aa0;
+  outline: 2px solid var(--brand);
   outline-offset: 2px;
 }
 .provider-editor-page .editor-template-actions {
@@ -597,18 +597,18 @@
   justify-content: space-between;
   gap: 8px 12px;
   padding: 10px 12px;
-  border: 1px solid #dde0e3;
+  border: 1px solid var(--border-subtle);
   border-radius: 8px;
-  background: #f8fafb;
+  background: var(--bg-sunken);
   font-size: 12px;
-  color: #646970;
+  color: var(--text-3);
 }
 .provider-editor-page .editor-template-actions.has-warning {
-  border-color: #e3c4a4;
-  background: #fdf8f2;
+  border-color: var(--warning-border);
+  background: var(--warning-bg);
 }
 .provider-editor-page .editor-template-actions.has-warning small {
-  color: #8c4b25;
+  color: var(--warning-fg);
 }
 .provider-editor-page .editor-template-text {
   min-width: 0;
@@ -618,7 +618,7 @@
   display: block;
   font-size: 13px;
   font-weight: 600;
-  color: #12161c;
+  color: var(--text-1);
 }
 .provider-editor-page .editor-template-actions small {
   display: block;
@@ -646,9 +646,9 @@
   left: -4px;
   width: 7px;
   height: 7px;
-  border: 1px solid #81878d;
+  border: 1px solid var(--border-control);
   border-radius: 50%;
-  background: #f5f7f9;
+  background: var(--bg-sunken);
 }
 
 .provider-editor-page .editor-name-row {
@@ -666,7 +666,7 @@
   gap: 10px;
   height: 36px;
   padding: 0 8px 0 12px;
-  background: #f2f4f6;
+  background: var(--bg-subtle);
   border-radius: 4px;
   font-size: 13px;
   cursor: pointer;
@@ -690,8 +690,8 @@
   right: 0;
   width: 100%;
   padding: 12px;
-  background: #f5f7f9;
-  border: 1px solid #dde0e3;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border-subtle);
   border-radius: 4px;
 }
 .provider-editor-page .editor-format-line {
@@ -762,7 +762,7 @@
   min-width: 0;
 }
 .provider-editor-page .omp-discovery-key small {
-  color: #646970;
+  color: var(--text-3);
   font-size: 13px;
 }
 .provider-editor-page .omp-model-options {
@@ -781,4 +781,273 @@
 }
 .provider-editor-page .omp-model-options input {
   flex-shrink: 0;
+}
+
+/* editor & runtime (2.8.6)
+   Styles for the editor's semantic field classes, plus shell layering:
+   - every full-screen panel owns the whole width under the title bar, like
+     the Codex line editor (no sidebar block over the panel header);
+   - the editor never scrolls the shell itself, so a scrollIntoView inside it
+     cannot push the title bar off-screen. */
+.chimera-main.is-editing-provider,
+.provider-editor-page {
+  overflow: clip;
+}
+/* macOS keeps the sidebar: its brand row carries the traffic lights. */
+body:not(.is-mac):has([data-fullscreen-panel]) .chimera-shell > aside {
+  display: none;
+}
+.provider-editor-page .provider-editor {
+  color: var(--text-1);
+}
+.provider-editor-page .editor-section-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 24px;
+}
+.provider-editor-page .editor-section-head h3 {
+  margin: 0;
+}
+.provider-editor-page .editor-section-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: var(--radius-pill);
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 500;
+  white-space: nowrap;
+}
+/* A field not filled in yet is a to-do, not an error: neutral, with a dot. */
+.provider-editor-page .editor-section-status.is-pending {
+  background: var(--bg-subtle);
+  color: var(--text-2);
+}
+.provider-editor-page .editor-section-status.is-pending::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+.provider-editor-page .editor-section-status.is-done {
+  background: var(--success-bg);
+  color: var(--success-fg);
+}
+.provider-editor-page .editor-field {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  min-width: 0;
+}
+.provider-editor-page .editor-field > small,
+.provider-editor-page .editor-format > small {
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.provider-editor-page .editor-field-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  color: var(--text-1);
+  font-size: 14px;
+  line-height: 20px;
+}
+.provider-editor-page .editor-field-label > label {
+  cursor: default;
+}
+.provider-editor-page .toggle-field-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.provider-editor-page .toggle-field-text small {
+  margin: 0;
+  color: var(--text-3);
+}
+/* Protocol: a segmented control of names; each note stays the option's
+   accessible description and the line below states the result. */
+.provider-editor-page .editor-format-options {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-panel);
+  background: var(--bg-subtle);
+  border-color: var(--border-subtle);
+}
+.provider-editor-page .editor-format-options .editor-format-option-text {
+  display: block;
+  padding: 5px 12px;
+  border-radius: 6px;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 20px;
+  white-space: nowrap;
+  transition: background var(--dur-fast) var(--ease-out);
+}
+.provider-editor-page .editor-format-option-text b {
+  font-weight: 500;
+}
+.provider-editor-page .editor-format-option-text small {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.provider-editor-page .editor-format-option:hover input:not(:checked) + span {
+  color: var(--text-1);
+  background: var(--bg-hover);
+}
+.provider-editor-page .editor-format-options input:checked + span {
+  background: var(--bg-surface);
+  color: var(--text-1);
+  box-shadow:
+    0 0 0 1px var(--border-subtle),
+    0 1px 2px var(--shadow-soft);
+}
+.provider-editor-page .editor-format-option-text b::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin: 0 7px 1px 0;
+  border-radius: 50%;
+  background: transparent;
+  vertical-align: middle;
+}
+.provider-editor-page
+  .editor-format-options
+  input:checked
+  + .editor-format-option-text
+  b::before {
+  background: var(--brand-indicator);
+}
+.provider-editor-page .editor-routing {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 2px 0 0;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 18px;
+}
+.provider-editor-page .editor-routing:empty {
+  display: none;
+}
+.provider-editor-page .editor-routing > span + span::before {
+  content: "·";
+  margin-right: 14px;
+  color: var(--border-control);
+}
+/* Appearance popover */
+.provider-editor-page .editor-appearance summary {
+  background: var(--bg-subtle);
+  color: var(--text-1);
+  list-style: none;
+}
+.provider-editor-page .editor-appearance summary::-webkit-details-marker {
+  display: none;
+}
+.provider-editor-page .editor-appearance summary:hover {
+  background: var(--bg-selected);
+}
+.provider-editor-page .editor-appearance[open] summary svg {
+  transform: rotate(180deg);
+}
+.provider-editor-page .editor-appearance-panel {
+  position: absolute;
+  z-index: 3;
+  top: calc(100% + 6px);
+  right: 0;
+  width: 100%;
+  min-width: 260px;
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel);
+  background: var(--bg-raised);
+  box-shadow: 0 8px 24px var(--shadow-overlay);
+}
+/* Model mapping heading */
+.provider-editor-page .model-mapping .advanced-section-heading {
+  align-items: center;
+}
+.provider-editor-page .model-mapping .editor-field-label b {
+  font-size: 15px;
+  font-weight: 700;
+}
+.provider-editor-page .mapping-count {
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  display: inline-grid;
+  place-items: center;
+  margin-left: 4px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-subtle);
+  color: var(--text-2);
+  font: 600 12px / 1 var(--font-mono);
+}
+.provider-editor-page .mapping-heading-actions {
+  display: inline-flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.provider-editor-page .mapping-head .editor-field-label {
+  font-size: inherit;
+  color: inherit;
+}
+.provider-editor-page .mapping-effort-notice,
+.provider-editor-page .editor-model-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--info-border);
+  border-radius: var(--radius-control);
+  background: var(--info-bg);
+  color: var(--text-1);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.provider-editor-page .editor-model-notice {
+  border-color: var(--border-subtle);
+  background: var(--bg-sunken);
+  color: var(--text-2);
+}
+.provider-editor-page .editor-model-notice.is-error {
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
+  color: var(--text-1);
+}
+.provider-editor-page .editor-model-notice.is-error > svg {
+  color: var(--danger-fg);
+  flex-shrink: 0;
+}
+.provider-editor-page .editor-model-notice > span {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+/* The shell itself must never scroll while an editor is open: a
+   scrollIntoView inside the form used to lift the title bar off-screen. */
+.chimera-shell:has(.provider-editor-page),
+.chimera-shell:has(.provider-editor-page) > .chimera-main {
+  overflow: clip;
+}
+/* Generic full-screen panels (tool editors, MCP, pricing) share the line
+   editor's header rule so every panel reads as one shell. */
+[data-fullscreen-panel]:not(.provider-editor-page)
+  > .flex-shrink-0:first-child {
+  border-bottom: 1px solid var(--border-subtle);
 }

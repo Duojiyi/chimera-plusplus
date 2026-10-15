@@ -106,7 +106,6 @@ import {
   codexProbeModels,
   extractCodexMappingRows,
   loadOperationRecords,
-  persistedCodexModelApiFormats,
   pickDefaultFetchedModel,
   previousCatalogAsFetched,
   saveOperationRecords,
@@ -160,6 +159,7 @@ import { useSettingsQuery } from "@/lib/query/queries";
 import routeGateIcon from "@/assets/icons/chimera-dragon-mark.png";
 import "./chimera.css";
 import "./components/ProviderEditorPage.css";
+import "./components/CodexRuntimePage.css";
 
 const runningInTauri =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -285,6 +285,12 @@ type RuntimeStatus = {
   canUninstall: boolean;
   /** The current install, then the version a rollback restores (`previous`). */
   history?: Array<{ version: string; state: string }>;
+  /** `flat` | `nested` | `interrupted` for the portable root. */
+  portableLayout?: string | null;
+  /** One Chinese sentence about the portable layout, when relevant. */
+  layoutNotice?: string | null;
+  /** A registered MSIX next to the managed portable install. */
+  unmanagedStandardVersion?: string | null;
 };
 export type CodexProcessStatus = {
   supported: boolean;
@@ -316,7 +322,35 @@ type CodexLaunchResult = {
   modelUnlockInjected: boolean;
   modelUnlockModelCount: number;
   modelUnlockError?: string | null;
+  /** Running, but no stable main window within 30 s: launched, not failed. */
+  startupSlow?: boolean;
+  startupNotice?: string | null;
+  layoutMigration?: { state: string; message: string } | null;
 };
+
+/**
+ * Layout warnings already shown in this window, by state and message. A
+ * deferred migration (Codex still running) is retried on every launch; the
+ * user is told once per app session, not on every open.
+ */
+const shownLayoutWarnings = new Set<string>();
+
+/** Startup and layout follow-ups of a launch, shown after its success toast. */
+export function notifyLaunchFollowUps(result: CodexLaunchResult) {
+  if (result.startupSlow && result.startupNotice) {
+    toast.warning("Codex 启动较慢", { description: result.startupNotice });
+  }
+  const migration = result.layoutMigration;
+  if (migration?.state === "migrated" || migration?.state === "recovered") {
+    shownLayoutWarnings.clear();
+    toast.info("免安装版目录结构已更新", { description: migration.message });
+  } else if (migration && migration.state !== "not-needed") {
+    const key = `${migration.state}\n${migration.message}`;
+    if (shownLayoutWarnings.has(key)) return;
+    shownLayoutWarnings.add(key);
+    toast.warning("免安装版目录结构未升级", { description: migration.message });
+  }
+}
 type ReleaseStatus = {
   currentVersion?: string | null;
   latestVersion: string;
@@ -649,31 +683,12 @@ type CodexEndpointInput = {
   customUserAgent: string;
 };
 
-// Protocol probe results for one upstream identity. `formats` may cover more
-// models than the current probe set; whatever is missing is probed on save.
-type CodexApiFormatDetection = {
-  identity: string;
-  formats: Record<string, DetectedCodexApiFormat>;
-  failures: Record<string, string>;
-};
-
 function codexEndpointIdentity(input: CodexEndpointInput): string {
   return JSON.stringify([
     input.baseUrl.trim(),
     input.apiKey,
     input.isFullUrl,
     input.modelsUrl.trim(),
-    input.customUserAgent.trim(),
-  ]);
-}
-
-// The fields a protocol probe actually depends on. `modelsUrl` only affects
-// model discovery, so changing it must not throw detection results away.
-function codexProtocolIdentity(input: CodexEndpointInput): string {
-  return JSON.stringify([
-    input.baseUrl.trim(),
-    input.apiKey,
-    input.isFullUrl,
     input.customUserAgent.trim(),
   ]);
 }
@@ -803,19 +818,6 @@ export function providerDraftFromSeed(seed: PresetDraftSeed, id: string) {
   };
 }
 
-// Detection results saved with a provider, keyed to the draft's protocol
-// identity so a re-opened editor saves without re-probing until the endpoint,
-// key, full-URL flag or User-Agent changes.
-function detectionFromProvider(
-  provider: Provider | null | undefined,
-  draft: ReturnType<typeof providerDraft>,
-): CodexApiFormatDetection | null {
-  if (!provider || draft.apiFormat !== "auto") return null;
-  const formats = persistedCodexModelApiFormats(provider.meta);
-  if (!Object.keys(formats).length) return null;
-  return { identity: codexProtocolIdentity(draft), formats, failures: {} };
-}
-
 export default function ChimeraApp({
   providerRefreshVersion = 0,
 }: { providerRefreshVersion?: number } = {}) {
@@ -925,11 +927,6 @@ export default function ChimeraApp({
   const [modelFetchIdentity, setModelFetchIdentity] = useState<string | null>(
     null,
   );
-  const [apiFormatDetection, setApiFormatDetection] =
-    useState<CodexApiFormatDetection | null>(null);
-  const [apiFormatDetectionError, setApiFormatDetectionError] = useState<
-    string | null
-  >(null);
   const [modelFetchError, setModelFetchError] =
     useState<ModelFetchIssue | null>(null);
   // Default model filled in from the latest list because the field was empty.
@@ -953,7 +950,6 @@ export default function ChimeraApp({
   const startupRuntimeCheckRef = useRef(false);
   const fetchModelsSeqRef = useRef(0);
   const providerLoadSeqRef = useRef(0);
-  const protocolProbeSeqRef = useRef(0);
   const runtimeCheckSeqRef = useRef(0);
   const testConnectionSeqRef = useRef(0);
   const draftTestSeqRef = useRef(0);
@@ -1003,7 +999,6 @@ export default function ChimeraApp({
   }, [activeProvider?.id, currentEndpoint]);
 
   const activeEndpointIdentity = editor ? codexEndpointIdentity(editor) : null;
-  const activeProtocolIdentity = editor ? codexProtocolIdentity(editor) : null;
 
   useLayoutEffect(() => {
     editorRef.current = editor;
@@ -1021,14 +1016,6 @@ export default function ChimeraApp({
       fetchModelsSeqRef.current += 1;
     };
   }, [activeEndpointIdentity, editor?.id]);
-
-  useEffect(() => {
-    protocolProbeSeqRef.current += 1;
-    setApiFormatDetection((current) =>
-      current && current.identity === activeProtocolIdentity ? current : null,
-    );
-    setApiFormatDetectionError(null);
-  }, [activeProtocolIdentity, editor?.id]);
 
   useEffect(() => {
     setShowKey(false);
@@ -1058,8 +1045,6 @@ export default function ChimeraApp({
   }, [Boolean(editor)]);
 
   void runtime;
-  void apiFormatDetection;
-  void apiFormatDetectionError;
   void modelFetchError;
   void commonConfigLoading;
   void fetchingModels;
@@ -1080,7 +1065,6 @@ export default function ChimeraApp({
     editorBaselineRef.current = editorDraftSignature(draft);
     setEditorAppId(appId);
     setEditor(draft);
-    setApiFormatDetection(detectionFromProvider(draft.original, draft));
   };
 
   const openToolEditor = async (lineId: string, appId: AppId) => {
@@ -1471,6 +1455,7 @@ export default function ChimeraApp({
             ? "已打开 Codex"
             : "Codex 已启动",
       );
+      notifyLaunchFollowUps(result);
       if (result.modelUnlockError) {
         toast.warning("模型目录已保存；桌面端模型选择器增强未连接", {
           description: result.modelUnlockError,
@@ -1732,7 +1717,6 @@ export default function ChimeraApp({
     if (draft !== editor) {
       editorRef.current = draft;
       setEditor(draft);
-      setApiFormatDetectionError(null);
     }
     if (
       !draft.name.trim() ||
@@ -1877,7 +1861,6 @@ export default function ChimeraApp({
         );
         resolvedApiFormat = codexApiFormatForModel(draft.model);
         resolvedAnthropicAuthField = draft.anthropicAuthField;
-        setApiFormatDetectionError(null);
       }
 
       if (editorRef.current !== draft) {
@@ -2168,7 +2151,6 @@ export default function ChimeraApp({
     const fetchSeq = ++fetchModelsSeqRef.current;
     setFetchingModels(true);
     setModelFetchError(null);
-    setApiFormatDetectionError(null);
     try {
       const result = await fetchModelsForConfig(
         draft.baseUrl,
@@ -2223,7 +2205,6 @@ export default function ChimeraApp({
       note("获取模型", "error", String(error), draft.name || "未命名供应商");
       setModels([]);
       setModelFetchIdentity(endpointIdentity);
-      setApiFormatDetection(null);
       setModelFetchError({
         kind: "error",
         code: classifyModelFetchError(error),
@@ -3197,6 +3178,7 @@ export default function ChimeraApp({
               setPendingModelReload(null);
               setCodexRestartRequired(false);
               toast.success("Codex 已重新加载模型列表");
+              notifyLaunchFollowUps(result);
               if (result.modelUnlockError) {
                 toast.warning("模型目录已保存；桌面端模型选择器增强未连接", {
                   description: result.modelUnlockError,
@@ -3948,6 +3930,19 @@ export function NewRuntimeView({
                       ? "安装后显示版本与位置"
                       : "正在读取安装状态"}
             </small>
+            {runningInTauri &&
+              (runtime?.layoutNotice || runtime?.unmanagedStandardVersion) && (
+                <small role="status">
+                  {[
+                    runtime.layoutNotice,
+                    runtime.unmanagedStandardVersion
+                      ? `另检测到标准安装 ${runtime.unmanagedStandardVersion}（不由 Chimera++ 管理）。`
+                      : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
+                </small>
+              )}
           </div>
           <div className="runtime-info-strip">
             <div>

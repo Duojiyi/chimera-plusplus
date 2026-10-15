@@ -162,6 +162,20 @@ pub async fn open_zip_file_dialog<R: tauri::Runtime>(
     Ok(result.map(|p| p.to_string()))
 }
 
+/// 打开 Codex 皮肤包选择对话框
+#[tauri::command]
+pub async fn open_skin_file_dialog<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<Option<String>, String> {
+    let dialog = app.dialog();
+    let result = dialog
+        .file()
+        .add_filter("Codex 皮肤", &["codexskin"])
+        .blocking_pick_file();
+
+    Ok(result.map(|p| p.to_string()))
+}
+
 // ─── Database backup management ─────────────────────────────
 
 /// Manually create a database backup

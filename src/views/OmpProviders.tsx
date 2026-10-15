@@ -13,7 +13,6 @@ import { getChimeraHubTemplate } from "@/config/codexTemplates";
 import { useContext, useEffect, useRef, useState } from "react";
 import { FullScreenPanel } from "@/components/common/FullScreenPanel";
 import { ToolPageActiveContext } from "@/components/RetainedToolPage";
-import { Button } from "@/components/ui/button";
 import "@/components/ProviderEditorPage.css";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
@@ -214,21 +213,25 @@ export function OmpProviders({
     <>
       <button
         type="button"
-        className="h-[32px] px-[10px] flex items-center gap-[6px] rounded-[4px] border border-[var(--border-control)] bg-transparent cursor-pointer disabled:opacity-50"
+        className="tool-btn"
         disabled={!native || busy}
         onClick={() => (draft ? setPending("reload") : void load())}
       >
-        <RefreshCw size={15} className={busy ? "animate-spin" : ""} />
+        <RefreshCw
+          size={14}
+          aria-hidden="true"
+          className={busy ? "animate-spin" : ""}
+        />
         刷新线路
       </button>
       {!draft && (
         <button
           type="button"
-          className="h-[32px] px-[12px] flex items-center gap-[6px] rounded-[4px] border-0 bg-[#006AA0] text-white cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          className="tool-btn is-primary"
           disabled={!native || busy || !document}
           onClick={() => edit(null)}
         >
-          <Plus size={16} />
+          <Plus size={15} aria-hidden="true" />
           添加线路
         </button>
       )}
@@ -242,21 +245,20 @@ export function OmpProviders({
         <div className="tool-actions">{actions}</div>
       )}
       {!native && (
-        <p className="text-sm text-[var(--text-3)]">
-          请在桌面应用中管理本地线路。
+        <p className="tool-install-note">请在桌面应用中管理本地线路。</p>
+      )}
+      {busy && (
+        <p role="status" className="tool-loading">
+          正在处理线路配置…
         </p>
       )}
-      {busy && <p role="status">正在处理线路配置…</p>}
       {error && !draft && (
-        <p
-          role="alert"
-          className="text-sm text-destructive whitespace-pre-wrap"
-        >
+        <p role="alert" className="tool-load-error">
           {error}
         </p>
       )}
       {notice && (
-        <p role="status" className="text-sm">
+        <p role="status" className="tool-notice">
           {notice}
         </p>
       )}
@@ -552,31 +554,36 @@ export function OmpProviders({
             </table>
           </div>
         ) : (
-          <div className="rounded-xl border border-dashed p-8 text-center">
-            <h3 className="font-medium">尚未配置自定义线路</h3>
-            <p className="mt-2 text-sm text-[var(--text-3)]">
+          <div className="tool-empty">
+            <h3>尚未配置自定义线路</h3>
+            <p>
               添加 API 地址和模型即可接入。OMP
               内置服务商及已有登录不会在这里列出。
             </p>
-            <Button
-              className="mt-4"
+            <button
+              type="button"
+              className="tool-btn is-primary"
               disabled={!native || busy}
               onClick={() => edit(null)}
             >
+              <Plus size={15} aria-hidden="true" />
               添加第一条线路
-            </Button>
+            </button>
           </div>
         ))
       )}
       {document && (
-        <details className="tool-installation text-[var(--text-3)]">
-          <summary className="cursor-pointer">配置位置与保存说明</summary>
-          <p className="mt-2 break-all">{document.path}</p>
-          <p className="mt-2">
-            跟随应用进程环境中的 OMP profile，仅管理该配置，不扫描其他
-            profile。保存保留未编辑字段，但会规范化 YAML 排版并移除注释。不读取
-            auth 文件、不执行密钥命令，也不会自动切换默认模型。
-          </p>
+        <details className="tool-installation">
+          <summary>配置位置与保存说明</summary>
+          <div className="tool-installation-content">
+            <p className="tool-install-path">{document.path}</p>
+            <p className="tool-install-note">
+              跟随应用进程环境中的 OMP profile，仅管理该配置，不扫描其他
+              profile。保存保留未编辑字段，但会规范化 YAML
+              排版并移除注释。不读取 auth
+              文件、不执行密钥命令，也不会自动切换默认模型。
+            </p>
+          </div>
         </details>
       )}
       <ConfirmDialog

@@ -713,7 +713,7 @@ mod tests {
         let events = [json!({"type": "response.completed", "response": responses})];
         for parsed in [
             TokenUsage::from_openai_response(&chat),
-            TokenUsage::from_openai_stream_events(&[chat.clone()]),
+            TokenUsage::from_openai_stream_events(std::slice::from_ref(&chat)),
             TokenUsage::from_codex_response_auto(&chat),
             TokenUsage::from_codex_stream_events_auto(&[chat]),
             TokenUsage::from_codex_response(&responses),

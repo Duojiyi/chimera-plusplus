@@ -267,6 +267,13 @@ fn live_login(
             Ok(config) => config,
             Err(_) => return LiveLogin::Unknown,
         }
+    } else if crate::codex_config::codex_config_routes_official_to_proxy(
+        config,
+        crate::codex_config::is_loopback_codex_proxy_base_url,
+    ) {
+        // Our official route shape while its proxy ownership is not confirmed
+        // (any shape, legacy included): where the login goes is unknown.
+        return LiveLogin::Unknown;
     } else {
         config.to_string()
     };
@@ -903,15 +910,38 @@ mod live_account_tests {
         let a = chatgpt_login("a", "2020-01-01T00:00:00Z");
         let key = save(&fx, "line-a", &a);
         fx.write_live(&a);
-        let config =
-            crate::codex_config::apply_codex_official_proxy_route("", "http://127.0.0.1:15721/v1")
-                .unwrap();
-        std::fs::write(fx.codex_dir().join("config.toml"), config).unwrap();
-        assert!(current_keys(&list(&fx, Some("line-a"), false)).is_empty());
-        assert_eq!(
-            current_keys(&list(&fx, Some("line-a"), true)),
-            vec![key.as_str()]
-        );
+        // Current shapes (unified off/on) and the legacy cc-switch-official route.
+        let unified_direct = crate::codex_config::inject_codex_unified_session_bucket("").unwrap();
+        for config in [
+            crate::codex_config::apply_codex_official_proxy_route(
+                "",
+                "http://127.0.0.1:15721/v1",
+                false,
+            )
+            .unwrap(),
+            crate::codex_config::apply_codex_official_proxy_route(
+                &unified_direct,
+                "http://127.0.0.1:15721/v1",
+                true,
+            )
+            .unwrap(),
+            "model_provider = \"cc-switch-official\"\n\n[model_providers.cc-switch-official]\nname = \"OpenAI\"\nrequires_openai_auth = true\nsupports_websockets = false\nwire_api = \"responses\"\nbase_url = \"http://127.0.0.1:15721/v1\"\n".to_string(),
+        ] {
+            std::fs::write(fx.codex_dir().join("config.toml"), &config).unwrap();
+            let unconfirmed = list(&fx, Some("line-a"), false);
+            assert!(current_keys(&unconfirmed).is_empty(), "{config}");
+            // Not a third-party route nor another login: just unconfirmed.
+            assert_eq!(
+                unconfirmed[0].live_state,
+                OfficialLiveState::Unknown,
+                "{config}"
+            );
+            assert_eq!(
+                current_keys(&list(&fx, Some("line-a"), true)),
+                vec![key.as_str()],
+                "{config}"
+            );
+        }
     }
 }
 

@@ -11,7 +11,10 @@ const testMutateAsyncMock = vi.fn();
 const scanMutateAsyncMock = vi.fn();
 
 vi.mock("@/hooks/useGlobalProxy", () => ({
-  useGlobalProxyUrl: () => ({ data: "http://127.0.0.1:7890", isLoading: false }),
+  useGlobalProxyUrl: () => ({
+    data: "http://127.0.0.1:7890",
+    isLoading: false,
+  }),
   useSetGlobalProxyUrl: () => ({
     mutateAsync: mutateAsyncMock,
     isPending: false,
@@ -39,10 +42,8 @@ describe("GlobalProxySettings", () => {
     const urlInput = screen.getByPlaceholderText(
       "http://127.0.0.1:7890 / socks5://127.0.0.1:1080",
     );
-    // URL 对象会在末尾添加斜杠
-    await waitFor(() =>
-      expect(urlInput).toHaveValue("http://127.0.0.1:7890/"),
-    );
+    // The saved value is shown as stored, without an added trailing slash.
+    await waitFor(() => expect(urlInput).toHaveValue("http://127.0.0.1:7890"));
   });
 
   it("saves proxy URL when save button is clicked", async () => {
@@ -70,9 +71,7 @@ describe("GlobalProxySettings", () => {
     );
 
     // Wait for initial value to load
-    await waitFor(() =>
-      expect(urlInput).toHaveValue("http://127.0.0.1:7890/"),
-    );
+    await waitFor(() => expect(urlInput).toHaveValue("http://127.0.0.1:7890"));
 
     // Click clear button
     const clearButton = screen.getByTitle("settings.globalProxy.clear");

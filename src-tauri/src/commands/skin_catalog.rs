@@ -275,10 +275,11 @@ pub async fn install_catalog_skin(
                     serde_json::json!({ "downloaded": downloaded, "total": total }),
                 );
             });
-        // Same client and proxy as the catalog request above; this runs on the
-        // blocking thread that holds the runtime operation lock.
+        // Same proxy as the catalog request above, with a client that refuses
+        // any non-HTTPS redirect hop; this runs on the blocking thread that
+        // holds the runtime operation lock.
         crate::services::bounded_download::download_to_file_blocking(
-            crate::proxy::http_client::get(),
+            crate::proxy::http_client::get_for_download()?,
             url,
             staging.clone(),
             total,
@@ -337,7 +338,7 @@ fn close_codex(
 }
 
 fn close_and_launch(portable_root: &Path, debug_port: Option<u16>) -> Result<(), String> {
-    let installed = codex_win_engine::detect_installed_codex(portable_root)
+    let installed = super::codex_runtime::detect_managed_codex(portable_root)
         .ok_or_else(|| NOT_INSTALLED_MESSAGE.to_string())?;
     if debug_port.is_some() && !super::codex_runtime::renderer_unlock_available(&installed) {
         return Err(MSIX_CUSTOM_HOME_MESSAGE.to_string());
@@ -348,6 +349,7 @@ fn close_and_launch(portable_root: &Path, debug_port: Option<u16>) -> Result<(),
         codex_win_engine::LaunchOptions {
             disable_codex_self_updates: true,
             remote_debugging_port: debug_port,
+            ..Default::default()
         },
     )
     .map_err(|error| format!("重启 Codex 以应用皮肤失败：{error}"))
@@ -396,7 +398,7 @@ pub async fn apply_skin_package(skin_id: String, confirm: bool) -> Result<(), St
             .map_err(|error| format!("读取皮肤失败：{error}"))?;
         let loaded = codex_theme_engine::theme::load_theme(&dir)
             .map_err(|error| format!("读取皮肤失败：{error}"))?;
-        let installed = codex_win_engine::detect_installed_codex(&portable_root)
+        let installed = super::codex_runtime::detect_managed_codex(&portable_root)
             .ok_or_else(|| NOT_INSTALLED_MESSAGE.to_string())?;
         if !super::codex_runtime::renderer_unlock_available(&installed) {
             return Err(MSIX_CUSTOM_HOME_MESSAGE.to_string());
@@ -432,6 +434,7 @@ pub async fn apply_skin_package(skin_id: String, confirm: bool) -> Result<(), St
             codex_win_engine::LaunchOptions {
                 disable_codex_self_updates: true,
                 remote_debugging_port: Some(theme_cdp_port()),
+                ..Default::default()
             },
         )
         .map_err(|error| format!("重启 Codex 以应用皮肤失败：{error}"))
@@ -490,7 +493,7 @@ pub async fn restore_skin_package(confirm: bool) -> Result<(), String> {
     let active = active_path();
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = super::codex_runtime::acquire_operation_lock("restore_skin_package")?;
-        let installed = codex_win_engine::detect_installed_codex(&portable_root)
+        let installed = super::codex_runtime::detect_managed_codex(&portable_root)
             .ok_or_else(|| NOT_INSTALLED_MESSAGE.to_string())?;
         close_codex(&installed, &portable_root)
             .map_err(|error| format!("恢复外观前无法关闭 Codex：{error}"))?;

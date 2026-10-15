@@ -32,10 +32,21 @@ function extractAuth(url: string): {
     // 移除认证信息，获取基础 URL
     parsed.username = "";
     parsed.password = "";
-    return { baseUrl: parsed.toString(), username, password };
+    return { baseUrl: withoutAddedSlash(parsed, url), username, password };
   } catch {
     return { baseUrl: url, username: "", password: "" };
   }
+}
+
+/** URL.toString() adds "/" to a bare host; drop it unless the input had one. */
+function withoutAddedSlash(parsed: URL, input: string): string {
+  const text = parsed.toString();
+  return parsed.pathname === "/" &&
+    !parsed.search &&
+    !parsed.hash &&
+    !input.trim().endsWith("/")
+    ? text.slice(0, -1)
+    : text;
 }
 
 /** 将认证信息合并到 URL */
@@ -55,7 +66,7 @@ function mergeAuth(
     if (password) {
       parsed.password = password;
     }
-    return parsed.toString();
+    return withoutAddedSlash(parsed, baseUrl);
   } catch {
     // URL 解析失败，尝试手动插入（此时需要手动编码）
     const match = baseUrl.match(/^(\w+:\/\/)(.+)$/);

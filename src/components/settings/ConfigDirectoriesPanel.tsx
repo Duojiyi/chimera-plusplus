@@ -11,6 +11,10 @@ const directories = [
 ] as const;
 type DirectoryField = (typeof directories)[number][2];
 
+/** get_app_config_path points at config.json; this field is the folder. */
+const configFolder = (path: string) =>
+  /\.json$/i.test(path) ? path.replace(/[\\/][^\\/]+$/, "") : path;
+
 export function ConfigDirectoriesPanel({
   onBusyChange,
 }: {
@@ -44,7 +48,7 @@ export function ConfigDirectoriesPanel({
         ),
       });
       setResolved({
-        app: appPath,
+        app: configFolder(appPath),
         ...Object.fromEntries(
           directories.map(([, , field], index) => [field, paths[index]]),
         ),
@@ -83,7 +87,7 @@ export function ConfigDirectoriesPanel({
       );
       const pathNow =
         field === "app"
-          ? await settingsApi.getAppConfigPath()
+          ? configFolder(await settingsApi.getAppConfigPath())
           : await settingsApi.getConfigDir(
               directories.find(([, , key]) => key === field)![0],
             );
@@ -100,41 +104,48 @@ export function ConfigDirectoriesPanel({
     }
   };
   return (
-    <section aria-label="配置目录" className="space-y-3">
-      <p>
+    <section aria-label="配置目录" className="config-dir-panel">
+      <p className="config-dir-intro">
         留空并保存可恢复默认目录。Windows 下可填写
         \\wsl.localhost\发行版\home\用户\目录；不会安装
         WSL、迁移文件或自动重启。修改目录后请重新打开依赖旧路径的页面。
       </p>
-      {message && <p role="status">{message}</p>}
+      {message && (
+        <p role="status" className="config-dir-message">
+          {message}
+        </p>
+      )}
       {!loaded && (
-        <button disabled={busy} onClick={() => void load()}>
+        <button type="button" disabled={busy} onClick={() => void load()}>
           重新读取目录
         </button>
       )}
-      <fieldset disabled={!loaded || busy} className="space-y-3">
+      <fieldset disabled={!loaded || busy} className="config-dir-list">
         {(
           [
             ["app", "应用数据目录"],
             ...directories.map(([, label, field]) => [field, label] as const),
           ] as const
         ).map(([field, label]) => (
-          <div key={field}>
-            <label>
-              {label}
-              <input
-                aria-label={`${label}目录`}
-                value={values[field] ?? ""}
-                placeholder="留空使用默认目录"
-                onChange={(event) =>
-                  setValues((current) => ({
-                    ...current,
-                    [field]: event.target.value,
-                  }))
-                }
-              />
-            </label>
+          <div key={field} className="config-dir-field">
+            <label htmlFor={`config-dir-${field}`}>{label}</label>
+            <input
+              id={`config-dir-${field}`}
+              className="config-dir-input"
+              aria-label={`${label}目录`}
+              value={values[field] ?? ""}
+              placeholder="留空使用默认目录"
+              spellCheck={false}
+              onChange={(event) =>
+                setValues((current) => ({
+                  ...current,
+                  [field]: event.target.value,
+                }))
+              }
+            />
             <button
+              type="button"
+              aria-label={`浏览 ${label}`}
               onClick={() =>
                 void (async () => {
                   try {
@@ -152,10 +163,19 @@ export function ConfigDirectoriesPanel({
                 })()
               }
             >
-              浏览 {label}
-            </button>{" "}
-            <button onClick={() => void save(field)}>保存 {label}</button>
-            <p>
+              浏览
+            </button>
+            <button
+              type="button"
+              aria-label={`保存 ${label}`}
+              onClick={() => void save(field)}
+            >
+              保存
+            </button>
+            <p
+              className="config-dir-current"
+              title={resolved[field] || undefined}
+            >
               当前生效路径：<code>{resolved[field] || "未读取"}</code>
             </p>
           </div>

@@ -4,6 +4,7 @@ pub mod bounded_download;
 pub mod cc_switch_import;
 pub mod codex_install_journal;
 pub mod codex_oauth_models;
+pub mod codex_portable_layout;
 pub mod coding_plan;
 pub mod config;
 pub mod env_checker;

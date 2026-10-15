@@ -283,3 +283,573 @@
   flex-shrink: 0;
   white-space: nowrap;
 }
+
+/* ===== Tool page header (2.8.6) =====
+   Mirrors the Codex 线路 heading: 28px title, muted lede, quiet controls. */
+.tool-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  min-height: 64px;
+  padding: 4px 0 8px;
+}
+.tool-mark {
+  --tool-color: var(--brand);
+  position: relative;
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-panel, 8px);
+  background: var(--tool-color);
+  color: #fff;
+  font:
+    700 13px/1 var(--font-latin),
+    var(--font-cjk),
+    sans-serif;
+  letter-spacing: 0.02em;
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, #000 12%, transparent),
+    inset 0 1px 0 color-mix(in srgb, #fff 22%, transparent);
+}
+.tool-title {
+  flex: 1;
+  min-width: 0;
+}
+.tool-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.tool-title h1 {
+  margin: 0;
+  color: var(--text-1);
+  font-size: 28px;
+  line-height: 36px;
+  font-weight: 700;
+}
+.tool-title > p {
+  margin: 2px 0 0;
+  color: var(--text-3);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.tool-kind {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill, 999px);
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+/* Shared control used by header, empty state and load-error retry. */
+.tool-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-control, 4px);
+  background: transparent;
+  color: var(--text-1);
+  font-size: 14px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color var(--dur-instant, 100ms) var(--ease-out, ease);
+}
+.tool-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+.tool-btn.is-primary {
+  border-color: var(--brand);
+  background: var(--brand);
+  color: var(--text-on-accent);
+}
+.tool-btn.is-primary:hover:not(:disabled) {
+  border-color: var(--brand-hover);
+  background: var(--brand-hover);
+}
+.tool-btn.is-primary:active:not(:disabled) {
+  background: var(--brand-pressed);
+}
+.tool-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+/* ===== Line list (2.8.6) =====
+   Same rhythm as the Codex 线路 table: quiet head row, 44px rows, a brand
+   indicator on the current/enabled line instead of a heavy fill. */
+.tool-lines-caption {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 18px;
+  padding: 2px 2px 0;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 18px;
+}
+.tool-lines-current {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-2);
+  font-weight: 700;
+}
+.tool-lines-current::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--border-control);
+}
+.tool-lines-current[data-active]::before {
+  background: var(--success-solid);
+  box-shadow: 0 0 0 3px
+    color-mix(in srgb, var(--success-solid) 18%, transparent);
+}
+.tool-lines-source {
+  margin-left: auto;
+  font-family: var(--font-latin), var(--font-cjk), sans-serif;
+}
+.tool-lines {
+  --tool-line-cols: 44px minmax(140px, 1.1fr) minmax(170px, 1.7fr)
+    minmax(110px, 1fr) 156px;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel, 8px);
+  background: var(--bg-surface);
+}
+.tool-line-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: var(--tool-line-cols);
+  align-items: center;
+  gap: 12px;
+  min-width: 700px;
+  min-height: 48px;
+  padding: 0 12px 0 14px;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-1);
+  font-size: 13px;
+  line-height: 18px;
+}
+.tool-line-row > * {
+  min-width: 0;
+}
+.tool-line-row:not(.tool-line-head):hover {
+  background: var(--row-bg-hover, var(--bg-subtle));
+}
+.tool-line-row[data-current] {
+  background: var(--row-bg-current, var(--bg-subtle));
+}
+.tool-line-row[data-current]::before {
+  content: "";
+  position: absolute;
+  top: 12px;
+  bottom: 12px;
+  left: 0;
+  width: 3px;
+  border-radius: 0 2px 2px 0;
+  background: var(--brand-indicator, var(--brand));
+}
+.tool-line-head {
+  min-height: 34px;
+  border-top: 0;
+  background: var(--bg-subtle);
+  color: var(--text-3);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.tool-line-status {
+  display: flex;
+  align-items: center;
+}
+.tool-line-dot {
+  display: block;
+  width: 9px;
+  height: 9px;
+  margin-left: 4px;
+  border-radius: 50%;
+  background: transparent;
+  box-shadow: inset 0 0 0 2px var(--border-control);
+}
+[data-current] .tool-line-dot {
+  background: var(--success-solid);
+  box-shadow: 0 0 0 3px
+    color-mix(in srgb, var(--success-solid) 20%, transparent);
+}
+.tool-line-toggle {
+  display: inline-flex;
+  align-items: center;
+  width: 30px;
+  height: 18px;
+  padding: 2px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--border-control);
+  cursor: pointer;
+  transition: background-color var(--dur-fast, 150ms) var(--ease-out, ease);
+}
+.tool-line-toggle > span {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.25);
+  transition: transform var(--dur-fast, 150ms) var(--ease-out, ease);
+}
+.tool-line-toggle[aria-pressed="true"] {
+  background: var(--success-solid);
+}
+.tool-line-toggle[aria-pressed="true"] > span {
+  transform: translateX(12px);
+}
+.tool-line-toggle:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.tool-line-name {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.tool-line-name > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+}
+[data-current] .tool-line-name > span:last-child {
+  font-weight: 700;
+}
+.tool-line-mono {
+  overflow: hidden;
+  color: var(--text-2);
+  font:
+    12px/18px var(--font-mono),
+    monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool-line-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  text-align: right;
+}
+.tool-line-switch,
+.tool-line-current {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 52px;
+  height: 27px;
+  padding: 0 10px;
+  border-radius: var(--radius-control, 4px);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.tool-line-switch {
+  border: 1px solid var(--border-control);
+  background: transparent;
+  color: var(--text-1);
+  cursor: pointer;
+}
+.tool-line-switch:hover:not(:disabled) {
+  border-color: var(--brand);
+  background: var(--brand);
+  color: var(--text-on-accent);
+}
+.tool-line-switch:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.tool-line-current {
+  border: 0;
+  background: var(--tag-current-bg, var(--text-1));
+  color: var(--tag-current-fg, var(--text-inverse));
+  border-radius: var(--radius-pill, 999px);
+  height: 22px;
+  cursor: default;
+}
+.tool-line-current:disabled {
+  opacity: 1;
+}
+.tool-line-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: var(--radius-control, 4px);
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+}
+.tool-line-icon:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
+.tool-line-icon:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.tool-line-spinner {
+  color: var(--text-3);
+}
+.tool-line-actions .tool-provider-delete {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+}
+.tool-line-actions .tool-provider-delete:hover:not(:disabled) {
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
+}
+/* ===== Page states (2.8.6) ===== */
+.tool-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 32px 0;
+  color: var(--text-3);
+  font-size: 13px;
+}
+.tool-empty {
+  display: grid;
+  justify-items: center;
+  gap: 14px;
+  padding: 36px 24px;
+  border: 1px dashed var(--border-control);
+  border-radius: var(--radius-panel, 8px);
+  background: var(--bg-subtle);
+  color: var(--text-3);
+  font-size: 13px;
+  line-height: 1.6;
+  text-align: center;
+}
+.tool-empty p {
+  max-width: 420px;
+  margin: 0;
+}
+.tool-load-error {
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px;
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-panel, 8px);
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.tool-load-error-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.tool-load-error p {
+  margin: 0;
+  color: var(--text-2);
+}
+.tool-load-error pre {
+  margin: 0;
+  max-height: 160px;
+  overflow: auto;
+  padding: 8px 10px;
+  border-radius: var(--radius-control, 4px);
+  background: var(--bg-surface);
+  color: var(--text-1);
+  font:
+    12px/1.6 var(--font-mono),
+    monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.tool-load-error .tool-btn {
+  height: 28px;
+  background: var(--bg-surface);
+  font-size: 13px;
+}
+.tool-discovery-text {
+  flex: 1;
+  min-width: 240px;
+}
+.tool-discovery-heading strong {
+  font-size: 14px;
+}
+.tool-discovery-button {
+  height: 30px;
+  white-space: nowrap;
+}
+.tool-official-guide p.tool-official-note {
+  color: var(--text-3);
+  font-size: 12px;
+}
+.tool-install-note {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.tool-install-panel {
+  display: grid;
+  gap: 12px;
+  padding: 16px 20px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel, 8px);
+  background: var(--bg-surface);
+}
+.tool-install-panel h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+/* 安装与环境检查: a contained disclosure card with a brand focus ring, not
+   the user-agent black outline around the summary. */
+.tool-view .tool-installation {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel, 8px);
+  background: var(--bg-surface);
+}
+.tool-view .tool-installation[open] {
+  background: var(--bg-subtle);
+}
+.tool-view .tool-installation > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-radius: calc(var(--radius-panel, 8px) - 1px);
+  color: var(--text-1);
+  font-weight: 700;
+  list-style: none;
+  outline: none;
+}
+.tool-view .tool-installation > summary::-webkit-details-marker {
+  display: none;
+}
+.tool-view .tool-installation > summary::before {
+  content: "";
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  margin: 0 4px 0 2px;
+  border-right: 1.5px solid var(--text-3);
+  border-bottom: 1.5px solid var(--text-3);
+  transform: rotate(-45deg);
+  transition: transform var(--dur-fast, 150ms) var(--ease-out, ease);
+}
+.tool-view .tool-installation[open] > summary::before {
+  transform: rotate(45deg);
+}
+.tool-view .tool-installation > summary:hover {
+  background: var(--bg-hover);
+}
+.tool-view .tool-installation > summary:focus-visible {
+  outline: 2px solid var(--focus-ring, var(--focus));
+  outline-offset: -2px;
+}
+.tool-view .tool-installation-hint {
+  margin-left: 4px;
+  font-weight: 400;
+}
+.tool-view .tool-installation[open] > summary {
+  border-bottom: 1px solid var(--border-subtle);
+  border-radius: calc(var(--radius-panel, 8px) - 1px)
+    calc(var(--radius-panel, 8px) - 1px) 0 0;
+}
+.tool-view .tool-installation-content {
+  padding: 14px 16px 16px;
+  background: var(--bg-surface);
+  border-radius: 0 0 calc(var(--radius-panel, 8px) - 1px)
+    calc(var(--radius-panel, 8px) - 1px);
+}
+
+/* Shared focus ring for every tool-page control. */
+.tool-view
+  :is(
+    .tool-btn,
+    .tool-line-toggle,
+    .tool-line-switch,
+    .tool-line-icon,
+    .tool-section-nav button
+  ):focus-visible {
+  outline: 2px solid var(--focus-ring, var(--focus));
+  outline-offset: 2px;
+}
+@media (max-width: 760px) {
+  .tool-header {
+    flex-wrap: wrap;
+  }
+}
+
+/* Multi-line tools show state with the toggle itself; the indicator bar and
+   row fill are reserved for the one current line of switch-type tools. */
+.tool-view:not([data-kind="switch"]) .tool-line-row[data-current] {
+  background: transparent;
+}
+.tool-view:not([data-kind="switch"]) .tool-line-row[data-current]:hover {
+  background: var(--row-bg-hover, var(--bg-subtle));
+}
+.tool-view:not([data-kind="switch"]) .tool-line-row[data-current]::before {
+  display: none;
+}
+
+/* oh-my-pi routes page (2.8.6): empty-state heading, notices, config path. */
+.tool-empty h3 {
+  margin: 0;
+  color: var(--text-1);
+  font-size: 15px;
+  font-weight: 700;
+}
+.tool-notice {
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--success-border);
+  border-radius: var(--radius-control, 4px);
+  background: var(--success-bg);
+  color: var(--success-fg);
+  font-size: 13px;
+}
+p.tool-load-error {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+p.tool-loading {
+  margin: 0;
+  padding: 12px 0;
+}
+.tool-install-path {
+  margin: 0 0 8px;
+  color: var(--text-2);
+  font:
+    12px/1.6 var(--font-mono),
+    monospace;
+  overflow-wrap: anywhere;
+}

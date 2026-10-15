@@ -406,9 +406,13 @@ export function UsageView() {
         ? summary
           ? "统计未更新，显示上次结果"
           : "无法读取用量统计"
-        : summary
-          ? `统计加载完成，${usageRangeTitles[loadedRange]}共 ${formatUsageTokens(total)} 词元`
-          : "";
+        : syncFailure
+          ? summary
+            ? "本机会话同步失败，显示已导入的记录"
+            : "本机会话同步失败"
+          : summary
+            ? `统计加载完成，${usageRangeTitles[loadedRange]}共 ${formatUsageTokens(total)} 词元`
+            : "";
 
   const exportUsage = () => {
     const rows = [

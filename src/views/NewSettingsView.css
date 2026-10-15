@@ -998,9 +998,14 @@ button.settings-reference-row:hover:not(:disabled) > svg {
   color: var(--text-3);
 }
 .cc-switch-confirm-dialog .cc-switch-row-conflict {
-  grid-template-columns: minmax(90px, 0.7fr) minmax(0, 1.4fr) auto;
+  grid-template-columns: minmax(140px, 0.8fr) minmax(0, 1.6fr);
+  align-items: start;
   min-height: 36px;
+  padding-block: 8px;
 }
+/* settings (2.8.6): the three choices take their own line under the reason,
+   instead of squeezing the reason into a one-word column. */
+.cc-switch-confirm-dialog .cc-switch-row-conflict > fieldset,
 .cc-switch-confirm-dialog .cc-switch-row-conflict > small {
   grid-column: 2 / -1;
 }
@@ -1042,5 +1047,103 @@ button.settings-reference-row:hover:not(:disabled) > svg {
   }
   .cc-switch-confirm-dialog .cc-switch-row-conflict > small {
     grid-column: auto;
+  }
+}
+
+/* settings (2.8.6): rows that open a folder or file in the OS. */
+.settings-link-row > svg {
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+button.settings-link-row:hover:not(:disabled) > svg {
+  transform: translateX(2px);
+}
+button.settings-link-row:hover:not(:disabled) b {
+  color: var(--brand-text);
+}
+/* settings (2.8.6): DatabaseRecoveryPanel now uses the .db-backups layout above. */
+.db-backups > h3,
+.db-backups > p {
+  margin: 0;
+}
+.db-backups > p:not([class]) {
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.7;
+}
+p.db-backups-notice {
+  margin: 0;
+  color: var(--danger-fg);
+  font-size: 13px;
+}
+/* settings (2.8.6): ConfigDirectoriesPanel now uses the .config-dir layout above. */
+.config-dir-panel {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.config-dir-intro,
+.config-dir-message {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.config-dir-message {
+  color: var(--text-1);
+}
+fieldset.config-dir-list {
+  min-width: 0;
+  border: 0;
+}
+.config-dir-current code {
+  font-family: var(--font-mono);
+  color: var(--text-2);
+}
+/* settings (2.8.6): tool registry list and the per-status cc-switch rows. */
+.settings-tools-list {
+  display: grid;
+  border-top: 1px solid var(--border-subtle);
+}
+/* new: selectable; conflict: styled above; unsupported: informational only.
+   identical rows render as .cc-switch-identical-summary, but keep a rule. */
+.cc-switch-row-new {
+  border-left: 2px solid transparent;
+}
+.cc-switch-row-new:has(input:checked) {
+  border-left-color: var(--brand-text);
+  background: var(--bg-subtle);
+}
+.cc-switch-row-identical,
+.cc-switch-row-unsupported {
+  color: var(--text-3);
+}
+.cc-switch-row-unsupported strong {
+  color: var(--text-2);
+}
+/* settings (2.8.6): Codex import review toast. The description is a list
+   joined with "\n", and the confirm action wrapped one character per line. */
+[data-sonner-toast].codex-import-review-toast {
+  flex-wrap: wrap;
+}
+[data-sonner-toast].codex-import-review-toast [data-description] {
+  white-space: pre-line;
+}
+[data-sonner-toast].codex-import-review-toast [data-button] {
+  flex-shrink: 0;
+  margin-left: auto;
+  white-space: nowrap;
+}
+/* settings (2.8.6): at the minimum window the size column ate the filename;
+   fold size under the time instead. */
+@media (max-width: 1100px) {
+  .db-backups-table .is-size {
+    display: none;
+  }
+  .db-backups-table .is-time {
+    width: 132px;
+  }
+  .db-backups-table .is-actions {
+    width: 100px;
   }
 }

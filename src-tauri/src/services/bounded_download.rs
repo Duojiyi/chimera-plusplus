@@ -7,7 +7,9 @@
 //! proxy entirely. Users behind a system proxy could see "Codex X available"
 //! and then fail to download it. Payload downloads now use the client the
 //! caller passes in (production passes `proxy::http_client::get()`), so checks
-//! and downloads share one proxy and TLS stack.
+//! and downloads share one proxy and TLS stack. Production passes
+//! `proxy::http_client::get_for_download()`, the shared proxy settings with a
+//! redirect policy that refuses any non-HTTPS hop.
 //!
 //! Bytes land in `<dest>.part` and are renamed into place only after exactly
 //! the expected size arrived; every failure removes the partial file.
@@ -44,7 +46,10 @@ pub struct DownloadOptions {
     /// hundreds of events per second. The final size is always reported.
     pub progress_interval: Duration,
     /// Refuse plain-HTTP URLs, including the final URL after redirects. The
-    /// engine's curl enforced this with `--proto =https --proto-redir =https`.
+    /// engine's curl enforced this with `--proto =https --proto-redir =https`;
+    /// the hops in between are refused by the client's redirect policy
+    /// (`http_client::get_for_download`), since only the first and final URL
+    /// are visible here.
     pub require_https: bool,
 }
 
@@ -879,6 +884,51 @@ mod tests {
         );
         assert!(error.to_string().starts_with("无法连接到服务器"), "{error}");
         assert!(!error.to_string().contains("payload.bin"), "{error}");
+        assert_nothing_left(&dest);
+    }
+
+    /// The download client's redirect policy refuses a plain-HTTP hop and the
+    /// refusal is final: retrying would hit the same redirect.
+    #[tokio::test]
+    async fn the_download_redirect_policy_refuses_a_plain_http_hop() {
+        let target = serve(vec![Reply::Send(http_response("200 OK", Some(4), b"evil"))]);
+        let redirect = format!(
+            "HTTP/1.1 302 Found\r\nconnection: close\r\nlocation: {}\r\ncontent-length: 0\r\n\r\n",
+            target.url
+        );
+        let start = serve(vec![
+            Reply::Send(redirect.clone().into_bytes()),
+            Reply::Send(redirect.into_bytes()),
+        ]);
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(crate::proxy::http_client::https_only_redirect_policy())
+            .build()
+            .expect("build client");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dest = dir.path().join("package.bin");
+        let options = DownloadOptions {
+            max_retries: 1,
+            ..test_options()
+        };
+
+        let error = download_to_file(&client, &start.url, &dest, 4, &options, &|_: u64| {})
+            .await
+            .expect_err("a plain-HTTP hop must be refused");
+
+        assert!(
+            matches!(
+                error,
+                DownloadError::Transport {
+                    retryable: false,
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+        assert!(error.to_string().starts_with("服务器重定向无效"), "{error}");
+        assert_eq!(start.connections.load(Ordering::SeqCst), 1, "not retried");
+        assert_eq!(target.connections.load(Ordering::SeqCst), 0);
         assert_nothing_left(&dest);
     }
 

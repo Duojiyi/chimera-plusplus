@@ -540,6 +540,22 @@ impl Database {
         Ok(count > 0)
     }
 
+    /// 同步读取全局监听地址与端口（claude 行，三行镜像一致）；读不到时返回默认值。
+    ///
+    /// 用于同步路径核对 Live 里的代理地址（Codex 官方路由没有占位符，只能按地址认）。
+    pub fn get_proxy_listen_sync(&self) -> (String, u16) {
+        let default = ("127.0.0.1".to_string(), 15721);
+        let Ok(conn) = self.conn.lock() else {
+            return default;
+        };
+        conn.query_row(
+            "SELECT listen_address, listen_port FROM proxy_config WHERE app_type = 'claude'",
+            [],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i32>(1)? as u16)),
+        )
+        .unwrap_or(default)
+    }
+
     /// 同步版本：检查是否有任一 app 的 enabled = true
     ///
     /// 用于 `ProfileService::apply` 等 sync 路径判断是否需要停止代理服务。

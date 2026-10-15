@@ -81,6 +81,24 @@ describe("cc-switch file preview", () => {
       screen.getByText("当前版本未开放导入写入，只能核对。"),
     ).toBeVisible();
   });
+  it("names the tool when identical lines share a name", async () => {
+    vi.mocked(open).mockResolvedValue("C:/config.json");
+    vi.mocked(ccSwitchImportApi.preview).mockResolvedValue({
+      ...inventory,
+      rows: ["codex", "claude"].map((app, index) => ({
+        ...inventory.rows[1],
+        app,
+        sourceId: `same-${index}`,
+        name: "智谱 GLM",
+      })),
+    });
+    render(<CcSwitchImportPreview native />);
+    fireEvent.click(screen.getByRole("button", { name: "选择文件并预览" }));
+    const identical = await screen.findByRole("region", { name: "与现有相同" });
+    expect(
+      within(identical).getByText("智谱 GLM（Codex）、智谱 GLM（Claude Code）"),
+    ).toBeVisible();
+  });
   it("treats dialog cancellation as no operation", async () => {
     vi.mocked(open).mockResolvedValue(null);
     render(<CcSwitchImportPreview native />);

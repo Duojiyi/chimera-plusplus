@@ -3,6 +3,15 @@ import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 export const GROK_BUILD_DEFAULT_MODEL = "grok-4.5";
 export const GROK_BUILD_DEFAULT_API_BACKEND = "responses";
 export const GROK_BUILD_DEFAULT_CONTEXT_WINDOW = 500000;
+/** api_backend values the Grok CLI understands (see grokApiBackendFromApiFormat). */
+export const GROK_BUILD_API_BACKENDS = [
+  "responses",
+  "chat_completions",
+  "messages",
+] as const;
+/** Returned by validateGrokBuildConfig when only the credential is absent:
+ * a required field the user has not filled in yet, not a broken file. */
+export const GROK_BUILD_MISSING_KEY_ERROR = "Missing api_key or env_key";
 
 export interface GrokBuildConfigValues {
   /** Client-visible profile selected by [models].default. */
@@ -141,7 +150,7 @@ export function validateGrokBuildConfig(configToml: string): string | null {
       !asString(selected.api_key).trim() &&
       !asString(selected.env_key).trim()
     ) {
-      return "Missing api_key or env_key";
+      return GROK_BUILD_MISSING_KEY_ERROR;
     }
     const contextWindow = selected.context_window;
     if (

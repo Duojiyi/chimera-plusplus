@@ -163,6 +163,49 @@ describe("GrokBuildProviderForm", () => {
     expect(selected.base_url).toBe("https://relay.example.com/v1");
   }, 15_000);
 
+  it("treats a key not entered yet as a required field, not a format error", () => {
+    render(
+      <GrokBuildProviderForm
+        submitLabel="Save"
+        onSubmit={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    expect(screen.queryByText(/Invalid config\.toml/)).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("status")).toHaveTextContent("填写 API Key 后");
+
+    // The key still reaches the generated config after the user types it.
+    fireEvent.change(screen.getByLabelText("API Key"), {
+      target: { value: "typed-key" },
+    });
+    expect(
+      (screen.getByLabelText("raw-config") as HTMLTextAreaElement).value,
+    ).toContain('api_key = "typed-key"');
+    expect(screen.queryByText(/填写 API Key 后/)).toBeNull();
+  });
+
+  it("offers the fixed api_backend values as a choice", () => {
+    render(
+      <GrokBuildProviderForm
+        submitLabel="Save"
+        onSubmit={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    const select = screen.getByLabelText(/API Backend/) as HTMLSelectElement;
+    expect(select.tagName).toBe("SELECT");
+    expect([...select.options].map((option) => option.value)).toEqual([
+      "responses",
+      "chat_completions",
+      "messages",
+    ]);
+    fireEvent.change(select, { target: { value: "chat_completions" } });
+    expect(
+      (screen.getByLabelText("raw-config") as HTMLTextAreaElement).value,
+    ).toContain('api_backend = "chat_completions"');
+  });
+
   it("renders localized validation feedback for malformed TOML", async () => {
     const onSubmit = vi.fn();
     render(

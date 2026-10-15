@@ -23,6 +23,11 @@ export interface DeleteSessionResult extends DeleteSessionOptions {
   sourceDeleted: boolean;
   cleanupPending: boolean;
   error?: string;
+  /**
+   * Records left behind on purpose because no retry can clean them (a newer
+   * Codex store, an oversized history). The delete still succeeded.
+   */
+  cleanupNote?: string;
 }
 
 export interface CodexHistoryReclaimResult {

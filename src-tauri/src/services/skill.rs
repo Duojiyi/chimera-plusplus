@@ -2882,11 +2882,21 @@ impl SkillService {
         let results: Vec<Result<Vec<DiscoverableSkill>>> =
             futures::future::join_all(fetch_tasks).await;
 
+        let mut failures = Vec::new();
+        let repo_count = enabled_repos.len();
         for (repo, result) in enabled_repos.into_iter().zip(results) {
             match result {
                 Ok(repo_skills) => skills.extend(repo_skills),
-                Err(e) => log::warn!("获取仓库 {}/{} 技能失败: {}", repo.owner, repo.name, e),
+                Err(e) => {
+                    log::warn!("获取仓库 {}/{} 技能失败: {}", repo.owner, repo.name, e);
+                    failures.push(format!("{}/{}", repo.owner, repo.name));
+                }
             }
+        }
+        // Every enabled repo failed: that is a fetch error, not "no skills".
+        // Partial failures keep the skills that did load.
+        if repo_count > 0 && failures.len() == repo_count {
+            return Err(anyhow!("无法读取任何已启用的仓库：{}", failures.join("、")));
         }
 
         // 去重并排序

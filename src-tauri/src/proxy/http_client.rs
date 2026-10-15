@@ -237,6 +237,35 @@ pub fn get_for_forwarding() -> Client {
         })
 }
 
+/// 下载安装包、皮肤包等大文件使用的客户端。
+///
+/// 与 [`get`] 共用代理配置（应用代理，否则跟随系统代理），但重定向链上的
+/// 每一跳都必须是 HTTPS：默认策略允许 https→http→https，明文那一跳可被
+/// 篡改，把下载引到任意 HTTPS 主机。构建失败直接返回错误，不退回宽松客户端。
+/// 代理转发客户端的重定向策略不受影响。
+pub fn get_for_download() -> Result<Client, String> {
+    build_client_with_redirect_policy(
+        get_current_proxy_url().as_deref(),
+        https_only_redirect_policy(),
+    )
+}
+
+/// 与 reqwest 默认策略相同的跳数上限。
+const MAX_DOWNLOAD_REDIRECTS: usize = 10;
+
+/// 每一跳都必须是 HTTPS，最多跟随 [`MAX_DOWNLOAD_REDIRECTS`] 次。
+pub(crate) fn https_only_redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.url().scheme() != "https" {
+            attempt.error("download redirect refused: every hop must use HTTPS")
+        } else if attempt.previous().len() >= MAX_DOWNLOAD_REDIRECTS {
+            attempt.error("download redirect refused: too many redirects")
+        } else {
+            attempt.follow()
+        }
+    })
+}
+
 /// 同主机 http→https 升级之外的重定向一律拒绝（MH-8e）。
 fn forward_redirect_policy() -> reqwest::redirect::Policy {
     reqwest::redirect::Policy::custom(|attempt| {

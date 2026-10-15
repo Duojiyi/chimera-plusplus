@@ -382,7 +382,15 @@ export function CcSwitchImportPreview({
                         {status === "identical" ? (
                           <div className="cc-switch-identical-summary">
                             <span>
-                              {rows.map((row) => row.name).join("、") || "无"}
+                              {rows
+                                .map((row) =>
+                                  rows.filter(
+                                    (other) => other.name === row.name,
+                                  ).length > 1
+                                    ? `${row.name}（${toolName(row.app)}）`
+                                    : row.name,
+                                )
+                                .join("、") || "无"}
                             </span>
                             <small>自动跳过，不重复导入</small>
                           </div>

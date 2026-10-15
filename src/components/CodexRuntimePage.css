@@ -1,0 +1,134 @@
+/* editor & runtime (2.8.6)
+   Codex 线路 heading/signboard and Codex 管理 classes that shipped in 2.8.5
+   markup without styles. Tokens only, so light and dark both resolve. */
+
+/* 线路 page */
+.provider-page-heading-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.provider-page-heading-tools:empty {
+  display: none;
+}
+.provider-current-unresolved {
+  display: grid;
+  gap: 2px;
+  margin-bottom: 10px;
+  padding: 10px 14px 10px 16px;
+  border: 1px solid var(--warning-border);
+  border-left: 3px solid var(--warning-solid);
+  border-radius: var(--radius-panel);
+  background: var(--warning-bg);
+  color: var(--text-1);
+}
+.provider-current-unresolved strong {
+  font-size: 14px;
+  line-height: 20px;
+}
+.provider-current-unresolved p {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* Codex 管理 */
+.runtime-receipt {
+  margin-top: 12px;
+}
+.runtime-dialog-receipt {
+  margin-bottom: 12px;
+}
+.runtime-inline-alert {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-panel);
+  background: var(--danger-bg);
+  color: var(--text-1);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.runtime-inline-alert > svg {
+  flex-shrink: 0;
+  color: var(--danger-fg);
+}
+.runtime-inline-alert > span {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+.runtime-inline-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 0;
+  color: var(--text-2);
+  font-size: 13px;
+}
+.runtime-inline-status::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--info-solid);
+}
+.runtime-version-list {
+  display: grid;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel);
+  background: var(--bg-surface);
+  overflow: hidden;
+}
+.runtime-version-list > li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 14px;
+  min-height: 40px;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.runtime-version-list > li + li {
+  border-top: 1px solid var(--border-subtle);
+}
+.runtime-version-list code {
+  min-width: 128px;
+  color: var(--text-1);
+  font: 600 13px / 20px var(--font-mono);
+}
+.runtime-version-list > li.is-current code::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin: 0 8px 2px 0;
+  border-radius: 50%;
+  background: var(--success-solid);
+  vertical-align: middle;
+}
+.runtime-version-note {
+  color: var(--text-3);
+}
+/* The back control was a 50% radius ellipse; match the editor's back button. */
+.runtime-maintenance-workspace header button {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--bg-surface);
+  color: var(--text-1);
+}
+.runtime-maintenance-workspace header button:hover {
+  background: var(--bg-hover);
+}
+.runtime-maintenance-workspace header button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}

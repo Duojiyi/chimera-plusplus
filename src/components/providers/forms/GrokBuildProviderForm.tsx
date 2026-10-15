@@ -47,6 +47,8 @@ import {
   extractCodexWireApi,
 } from "@/utils/providerConfigUtils";
 import {
+  GROK_BUILD_API_BACKENDS,
+  GROK_BUILD_MISSING_KEY_ERROR,
   buildGrokBuildConfig,
   parseGrokBuildConfig,
   updateGrokBuildConfig,
@@ -74,6 +76,18 @@ export const grokApiBackendFromApiFormat = (format: CodexApiFormat): string => {
   if (format === "openai_chat") return "chat_completions";
   if (format === "anthropic") return "messages";
   return "responses";
+};
+
+/** A real config.toml problem; a missing credential is a required field. */
+const configFormatError = (config: string): string | null => {
+  const error = validateGrokBuildConfig(config);
+  return error === GROK_BUILD_MISSING_KEY_ERROR ? null : error;
+};
+
+const API_BACKEND_LABELS: Record<string, string> = {
+  responses: "Responses",
+  chat_completions: "Chat Completions",
+  messages: "Anthropic Messages",
 };
 
 const grokApiFormatFromApiBackend = (backend: string): CodexApiFormat => {
@@ -264,8 +278,10 @@ export function GrokBuildProviderForm({
     return Array.from(urls).map((url) => ({ url }));
   }, [baseUrl, draftCustomEndpoints, presetEndpoints]);
 
+  // Only a broken file blocks syncing; a key not entered yet must still let
+  // the API Key field write into the generated config.
   const invalidRawDraft = useRef(
-    Boolean(initialConfigText && validateGrokBuildConfig(initialConfigText)),
+    Boolean(initialConfigText && configFormatError(initialConfigText)),
   );
 
   const syncStructuredConfig = (
@@ -361,7 +377,7 @@ export function GrokBuildProviderForm({
 
   const handleRawConfigChange = (value: string) => {
     setRawConfig(value);
-    invalidRawDraft.current = Boolean(validateGrokBuildConfig(value));
+    invalidRawDraft.current = Boolean(configFormatError(value));
     if (invalidRawDraft.current) return;
     const parsed = parseGrokBuildConfig(value, form.getValues("name"));
     setProfile(parsed.model);
@@ -393,7 +409,8 @@ export function GrokBuildProviderForm({
       return;
     }
 
-    const draftError = validateGrokBuildConfig(rawConfig);
+    // A missing key is reported by the required-fields check below.
+    const draftError = configFormatError(rawConfig);
     if (draftError) {
       toast.error(
         t("grokBuild.invalidToml", {
@@ -535,7 +552,15 @@ export function GrokBuildProviderForm({
     await onSubmit(payload);
   };
 
-  const rawConfigError = validateGrokBuildConfig(rawConfig);
+  const rawConfigError = configFormatError(rawConfig);
+  const keyMissing =
+    !rawConfigError &&
+    validateGrokBuildConfig(rawConfig) === GROK_BUILD_MISSING_KEY_ERROR;
+  const backendOptions = (
+    GROK_BUILD_API_BACKENDS as readonly string[]
+  ).includes(apiBackend)
+    ? GROK_BUILD_API_BACKENDS
+    : [apiBackend, ...GROK_BUILD_API_BACKENDS];
 
   return (
     <Form {...form}>
@@ -651,17 +676,26 @@ export function GrokBuildProviderForm({
                         defaultValue: "API Backend",
                       })}
                     </FormLabel>
-                    <Input
+                    <select
                       id="grokbuild-api-backend"
+                      className="flex h-9 w-full rounded-md border border-border-default bg-background px-3 text-sm text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       value={apiBackend}
                       onChange={(event) => {
                         const value = event.target.value;
                         setApiBackend(value);
                         syncStructuredConfig({ apiBackend: value });
+                        // Keep the protocol selector in step with the backend.
+                        setApiFormat(grokApiFormatFromApiBackend(value));
                       }}
-                      placeholder="responses"
-                      autoComplete="off"
-                    />
+                    >
+                      {backendOptions.map((value) => (
+                        <option key={value} value={value}>
+                          {API_BACKEND_LABELS[value]
+                            ? `${API_BACKEND_LABELS[value]} (${value})`
+                            : value}
+                        </option>
+                      ))}
+                    </select>
                   </FormItem>
 
                   <FormItem>
@@ -700,8 +734,14 @@ export function GrokBuildProviderForm({
                     showValidation={false}
                     language="javascript"
                   />
+                  {keyMissing && (
+                    <p className="text-xs text-muted-foreground" role="status">
+                      填写 API Key 后会写入 api_key；也可在这里改用 env_key
+                      读取环境变量。
+                    </p>
+                  )}
                   {rawConfigError && (
-                    <p className="text-xs text-destructive">
+                    <p className="text-xs text-destructive" role="alert">
                       {t("grokBuild.invalidToml", {
                         error: rawConfigError,
                         defaultValue: `Invalid config.toml: ${rawConfigError}`,
