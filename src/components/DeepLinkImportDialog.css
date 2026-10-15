@@ -316,6 +316,9 @@
   font-size: 13px;
   font-weight: 700;
   line-height: 18px;
+  /* Hosts and model ids get <wbr> after their separators (see `breakable`),
+     which are the preferred breaks; `anywhere` stays as the last resort and
+     keeps one long run from widening the grid column past the plate. */
   overflow-wrap: anywhere;
 }
 .dl-stop-name.dl-mono {

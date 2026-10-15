@@ -5,6 +5,8 @@ import type { DeepLinkImportRequest } from "@/lib/api/deeplink";
 import {
   classifyCommand,
   classifyEndpoint,
+  maskArgs,
+  maskUrl,
   maskValue,
   riskI18nKey,
   type RiskKind,
@@ -108,11 +110,17 @@ export function McpConfirmation({
           <ul className="dl-servers">
             {servers.map(([id, spec]) => {
               const commandRisk = classifyCommand(spec.command, spec.args);
-              const args = Array.isArray(spec.args)
-                ? spec.args.map(String)
-                : [];
-              const url = typeof spec.url === "string" ? spec.url : null;
-              const urlRisk = url ? classifyEndpoint(url) : null;
+              // Credentials after `--api-key`, in `--token=x`, in a header
+              // or in a URL show their last 4 only, like every other
+              // credential in this dialog. Masked in place, so nothing else
+              // in an arg can be hidden by a link that picks its own "key".
+              const args = Array.isArray(spec.args) ? maskArgs(spec.args) : [];
+              const url =
+                typeof spec.url === "string" ? maskUrl(spec.url) : null;
+              const urlRisk =
+                typeof spec.url === "string"
+                  ? classifyEndpoint(spec.url)
+                  : null;
               const env =
                 spec.env && typeof spec.env === "object"
                   ? Object.entries(spec.env as Record<string, unknown>)
@@ -186,7 +194,7 @@ export function McpConfirmation({
                                 className="dl-mono"
                                 data-risk={envRisk(key) ? true : undefined}
                               >
-                                {key}={maskValue(key, String(value))}
+                                {key}={maskValue(key, value)}
                               </li>
                             ))}
                           </ol>

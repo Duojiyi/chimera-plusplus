@@ -122,6 +122,39 @@ export type ImportResult =
     }
   | { type: "skill"; key: string };
 
+/**
+ * What to tell the user when the backend refuses a link before queueing it.
+ * Links opened from a website and links pasted into settings use the same
+ * reason codes (`commands/deeplink.rs`); the codes never carry the link.
+ */
+export function describeDeepLinkRefusal(reason: string): {
+  title: string;
+  description: string;
+} {
+  switch (reason) {
+    case "DEEP_LINK_PARSE_FAILED":
+      return {
+        title: "无法识别这个导入链接",
+        description: "链接可能不完整，或用于 Chimera++ 不支持的工具或资源。",
+      };
+    case "DEEP_LINK_TARGET_UNAVAILABLE":
+      return {
+        title: "无法导入这个链接",
+        description: "链接要导入到的工具在当前版本不可用。",
+      };
+    case "DEEP_LINK_QUEUE_FULL":
+      return {
+        title: "待确认的导入太多",
+        description: "请先处理已打开的导入确认，再重试这个链接。",
+      };
+    default:
+      return {
+        title: "无法处理导入链接",
+        description: "请稍后重试这个链接。",
+      };
+  }
+}
+
 export const deeplinkApi = {
   /** Queue a pasted link for the existing confirmation UI; never import here. */
   submitImport: async (url: string): Promise<void> => {

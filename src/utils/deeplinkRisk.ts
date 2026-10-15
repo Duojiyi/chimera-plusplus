@@ -195,83 +195,247 @@ export function isSensitiveKey(key: string): boolean {
 /** 凭据只露末 4 位，与确认框里 API Key 的「末 4 位」同一口径。 */
 const MASK = "••••";
 
+/**
+ * 最短按凭据遮盖的长度。行内展示与「完整内容」都经 `shouldMask` 判断，
+ * 两处不会再各遮各的。
+ */
+const MIN_SECRET_LENGTH = 6;
+
+/** `OPENAI_API_KEY` 这类取值是环境变量名（如 Codex 的 `env_key`），不是凭据本身。 */
+const ENV_VAR_NAME = /^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/;
+
+/** 认证方案名不是秘密，留着更看得懂：`Bearer ••••cdef`。 */
+const AUTH_SCHEME = /^(\s*(?:Bearer|Basic|Token)\s+)(\S[\s\S]*)$/i;
+
 export function maskSecret(value: string): string {
-  return value.length > 8 ? `${MASK}${value.slice(-4)}` : MASK;
+  const scheme = AUTH_SCHEME.exec(value);
+  if (scheme) return `${scheme[1]}${maskSecret(scheme[2])}`;
+  const text = value.trim();
+  return text.length > 8 ? `${MASK}${text.slice(-4)}` : MASK;
 }
 
 /**
- * 凭据类取值的展示脱敏。
+ * 凭据类键名下够长的字符串才遮盖。数字是计数或端口，不是凭据；
+ * 短值不遮，否则连「是不是空的」都看不出来。
+ */
+export function shouldMask(key: string, value: unknown): boolean {
+  return (
+    typeof value === "string" &&
+    isSensitiveKey(key) &&
+    value.trim().length >= MIN_SECRET_LENGTH &&
+    !ENV_VAR_NAME.test(value.trim())
+  );
+}
+
+/**
+ * 凭据类取值的展示脱敏（供应商与 MCP 的环境变量行共用）。
  *
  * 原先是 `DeepLinkImportDialog` 内的组件闭包；MCP 确认页也要展示 env，抽出来是
  * 为了两处共用同一套规则——各写一份迟早会漂移成两种脱敏口径。
- * 短值不脱敏：否则连"是不是空的"都看不出来。
  */
-export function maskValue(key: string, value: string): string {
-  if (isSensitiveKey(key) && value.length > 8) return maskSecret(value);
+export function maskValue(key: string, value: unknown): string {
+  return typeof value === "string" && shouldMask(key, value)
+    ? maskSecret(value)
+    : String(value);
+}
+
+/*
+ * 以下都按位置脱敏：只换凭据所在的那一段，其余字符原样保留。
+ * 不能按「已知凭据」在全文里做替换——取值来自链接本身，链接把某个
+ * 「凭据」设成和要执行的包名、主机名一样，就能把它们从确认框里藏起来。
+ */
+
+const decodePart = (text: string) => {
+  try {
+    return decodeURIComponent(text.replace(/\+/g, " "));
+  } catch {
+    return text;
+  }
+};
+
+const URL_SCHEME = /^[a-z][a-z0-9+.-]*:\/\//i;
+
+function maskLongEnough(decoded: string, raw: string): string {
+  return decoded.trim().length >= MIN_SECRET_LENGTH ? maskSecret(decoded) : raw;
+}
+
+/** URL 里的凭据：userinfo，以及查询串与片段里凭据类参数的值。 */
+export function maskUrl(url: string): string {
+  const scheme = URL_SCHEME.exec(url);
+  if (!scheme) return url;
+  let head = scheme[0];
+  let rest = url.slice(head.length);
+  const authorityEnd = rest.search(/[/?#]/);
+  const authority = authorityEnd === -1 ? rest : rest.slice(0, authorityEnd);
+  const at = authority.lastIndexOf("@");
+  if (at !== -1) {
+    const userinfo = authority.slice(0, at);
+    const colon = userinfo.indexOf(":");
+    // 只有用户名时，它通常就是令牌（`https://TOKEN@host`）。
+    head +=
+      colon === -1
+        ? maskLongEnough(decodePart(userinfo), userinfo)
+        : userinfo.slice(0, colon + 1) +
+          maskLongEnough(
+            decodePart(userinfo.slice(colon + 1)),
+            userinfo.slice(colon + 1),
+          );
+    head += "@";
+    rest = rest.slice(at + 1);
+  }
+  return (
+    head +
+    rest.replace(
+      /([?&#;])([^=&#;]*)=([^&#;]*)/g,
+      (whole, separator: string, name: string, value: string) =>
+        shouldMask(decodePart(name), decodePart(value))
+          ? `${separator}${name}=${maskSecret(decodePart(value))}`
+          : whole,
+    )
+  );
+}
+
+/** `--api-key`、`--access-token`、`-token`：开关名本身是凭据类键名。 */
+function isSecretFlag(arg: string): boolean {
+  return (
+    /^--?[A-Za-z0-9][\w-]*$/.test(arg) && isSensitiveKey(arg.replace(/^-+/, ""))
+  );
+}
+
+const isHeaderFlag = (arg: string) => arg === "-H" || /^--?header$/i.test(arg);
+
+/** `Authorization: Bearer x` 这样的请求头：键名是凭据时遮盖取值。 */
+function maskHeader(header: string): string {
+  const parts = /^(\s*([A-Za-z0-9-]+)\s*:\s*)([\s\S]*)$/.exec(header);
+  if (!parts || !shouldMask(parts[2], parts[3])) return header;
+  return `${parts[1]}${maskSecret(parts[3])}`;
+}
+
+/**
+ * 命令参数里的凭据：凭据开关后面的那一项（`--api-key x`）、`--api-key=x` 与
+ * `API_KEY=x` 的取值、`-H`/`--header` 后面请求头的取值，以及 URL 里的凭据。
+ */
+export function maskArgs(args: readonly unknown[]): string[] {
+  const list = args.map(String);
+  return list.map((arg, index) => {
+    const previous = index > 0 ? list[index - 1] : "";
+    if (isHeaderFlag(previous)) return maskHeader(arg);
+    if (
+      isSecretFlag(previous) &&
+      !arg.startsWith("-") &&
+      arg.trim().length >= MIN_SECRET_LENGTH
+    ) {
+      return maskSecret(arg);
+    }
+    const pair = /^(-{0,2})([\w.-]+)=([\s\S]*)$/.exec(arg);
+    if (pair) {
+      const [, dashes, name, value] = pair;
+      if (isHeaderFlag(`${dashes}${name}`)) {
+        return `${dashes}${name}=${maskHeader(value)}`;
+      }
+      if (shouldMask(name, value)) {
+        return `${dashes}${name}=${maskSecret(value)}`;
+      }
+    }
+    return URL_SCHEME.test(arg) ? maskUrl(arg) : arg;
+  });
+}
+
+/** TOML 里的 `key = "value"`，也匹配内联表里的 `"Authorization" = "…"`。 */
+const TOML_PAIR =
+  /((?:^|[{,])[ \t]*)((?:"[^"\n]*"|'[^'\n]*'|[\w-]+)(?:[ \t]*\.[ \t]*(?:"[^"\n]*"|'[^'\n]*'|[\w-]+))*)([ \t]*=[ \t]*)("(?:[^"\\\n]|\\.)*"|'[^'\n]*')/gm;
+
+/** config.toml 文本（Codex、Grok Build）里凭据类键的取值，以及 URL 里的凭据。 */
+export function maskToml(text: string): string {
+  return text.replace(
+    TOML_PAIR,
+    (whole, lead: string, path: string, equals: string, literal: string) => {
+      const key = (path.split(".").pop() ?? "")
+        .trim()
+        .replace(/^["']|["']$/g, "");
+      const value = literal.slice(1, -1);
+      const masked = shouldMask(key, value)
+        ? maskSecret(value)
+        : URL_SCHEME.test(value)
+          ? maskUrl(value)
+          : value;
+      if (masked === value) return whole;
+      const quote = literal[0];
+      return `${lead}${path}${equals}${quote}${masked}${quote}`;
+    },
+  );
+}
+
+/**
+ * 「将保存的完整内容」（后端 JSON 预览解析后的值）里的凭据：凭据类键名下的
+ * 字符串、URL 与命令参数里的凭据，以及 config.toml 文本里的凭据。
+ * 返回新值，不改动传入的值。
+ */
+export function maskStoredValue(value: unknown, key = "", depth = 0): unknown {
+  if (depth > 32) return value;
+  if (typeof value === "string") {
+    if (shouldMask(key, value)) return maskSecret(value);
+    if (key === "config" && value.includes("\n")) return maskToml(value);
+    return URL_SCHEME.test(value) ? maskUrl(value) : value;
+  }
+  if (Array.isArray(value)) {
+    return key === "args"
+      ? maskArgs(value)
+      : value.map((item) => maskStoredValue(item, key, depth + 1));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([child, item]) => [
+        child,
+        maskStoredValue(item, child, depth + 1),
+      ]),
+    );
+  }
   return value;
 }
 
-/** 最短按凭据遮盖的长度：更短的串很可能也出现在别处（模型名、路径），遮了反而看不懂。 */
-const MIN_SECRET_LENGTH = 6;
+/** 像凭据的值：至少 8 位，只含令牌常用字符，没有空白、引号、括号或冒号。 */
+const CREDENTIAL_SHAPE = /^[\w.~+/=-]{8,}$/;
+
+const isWordChar = (char: string | undefined) =>
+  char !== undefined && /[\w$]/.test(char);
 
 /**
- * 「将保存的完整内容」里出现的凭据：凭据类键名下的字符串值。
- * 内容来自后端的 JSON 预览；解析失败时返回空，只靠调用方传入的已知凭据遮盖。
+ * 用量脚本是不透明的代码，只能按链接给出的凭据替换文本。为免链接借「凭据」
+ * 藏起脚本里的其他内容，只替换像凭据（同时有字母和数字）的值，而且只在
+ * 完整的词上替换。
  */
-export function collectSecretValues(content: string): string[] {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(content);
-  } catch {
-    return [];
-  }
-  const found = new Set<string>();
-  const walk = (value: unknown, key: string, depth: number) => {
-    if (depth > 32 || value === null) return;
-    if (typeof value === "string") {
-      // 纯数字是计数或开关，不是凭据。
-      if (
-        key &&
-        isSensitiveKey(key) &&
-        value.trim().length >= MIN_SECRET_LENGTH &&
-        /[A-Za-z]/.test(value)
-      ) {
-        found.add(value);
+export function maskScriptSecrets(
+  code: string,
+  secrets: Iterable<string | undefined>,
+): string {
+  const values = [
+    ...new Set([...secrets].map((secret) => (secret ?? "").trim())),
+  ]
+    .filter(
+      (value) =>
+        CREDENTIAL_SHAPE.test(value) &&
+        /[A-Za-z]/.test(value) &&
+        /\d/.test(value),
+    )
+    // 长的先换：一个凭据可能包含另一个。
+    .sort((a, b) => b.length - a.length);
+  return values.reduce((text, value) => {
+    let result = "";
+    let from = 0;
+    for (
+      let at = text.indexOf(value);
+      at !== -1;
+      at = text.indexOf(value, at + value.length)
+    ) {
+      if (isWordChar(text[at - 1]) || isWordChar(text[at + value.length])) {
+        continue;
       }
-      return;
+      result += `${text.slice(from, at)}${maskSecret(value)}`;
+      from = at + value.length;
     }
-    if (Array.isArray(value)) {
-      value.forEach((item) => walk(item, key, depth + 1));
-      return;
-    }
-    if (typeof value === "object") {
-      for (const [child, item] of Object.entries(value)) {
-        walk(item, child, depth + 1);
-      }
-    }
-  };
-  walk(parsed, "", 0);
-  return [...found];
-}
-
-/**
- * 把文本里的凭据换成「末 4 位」形式，只用于展示。
- * 同时替换原文和 JSON 转义后的写法：预览内容是 JSON，凭据在其中以转义形式出现。
- */
-export function maskSecrets(text: string, secrets: Iterable<string>): string {
-  const forms = new Map<string, string>();
-  for (const secret of secrets) {
-    for (const value of [secret, secret.trim()]) {
-      if (value.length < MIN_SECRET_LENGTH) continue;
-      const masked = maskSecret(value);
-      forms.set(value, masked);
-      forms.set(JSON.stringify(value).slice(1, -1), masked);
-    }
-  }
-  // 长的先换：一个凭据可能包含另一个。
-  return [...forms.entries()]
-    .sort(([a], [b]) => b.length - a.length)
-    .reduce((result, [form, masked]) => result.split(form).join(masked), text);
+    return result + text.slice(from);
+  }, code);
 }
 
 /** 风险种类 → i18n key。 */

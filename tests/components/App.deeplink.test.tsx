@@ -59,6 +59,7 @@ const request = (name: string): DeepLinkImportRequest => ({
   apiKey: "fake-secret-do-not-display",
 });
 let queue: Pending[];
+let refusals: string[];
 let preview: DeepLinkImportPreview;
 type EventHandler = (event?: { payload: unknown }) => void;
 const handlers = new Map<string, Set<EventHandler>>();
@@ -97,6 +98,7 @@ const importReady = () => waitFor(() => expect(importButton()).toBeEnabled());
 beforeEach(() => {
   handlers.clear();
   queue = [{ id: "first", request: request("Cold Start") }];
+  refusals = [];
   preview = {
     targetPaths: ["/home/test/.codex/config.toml"],
     writesLive: false,
@@ -114,6 +116,11 @@ beforeEach(() => {
         if (command === "dismiss_pending_deeplink") {
           queue = queue.filter((pending) => pending.id !== payload?.id);
           return;
+        }
+        if (command === "take_deeplink_refusals") {
+          const taken = refusals;
+          refusals = [];
+          return taken;
         }
         if (command === "import_from_deeplink_unified")
           return { type: "provider", id: "provider-new" };
@@ -401,6 +408,125 @@ describe("default App deep-link handoff", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("lists in the full content only the env keys that will be stored", async () => {
+    queue[0].request = {
+      ...request("Env Claude"),
+      app: "claude",
+      config: btoa(
+        JSON.stringify({
+          env: { VENDOR_FLAG: "1", HTTPS_PROXY: "http://10.8.0.1:7890" },
+        }),
+      ),
+      configFormat: "json",
+    };
+    preview = {
+      ...preview,
+      content: JSON.stringify(
+        {
+          env: {
+            ANTHROPIC_BASE_URL: "http://127.0.0.1:8080/v1",
+            VENDOR_FLAG: "1",
+            HTTPS_PROXY: "http://10.8.0.1:7890",
+          },
+        },
+        null,
+        2,
+      ),
+      env: [
+        { key: "ANTHROPIC_BASE_URL", status: "allowed" },
+        { key: "VENDOR_FLAG", status: "needsConfirmation" },
+        { key: "HTTPS_PROXY", status: "denied" },
+      ],
+    };
+    mount();
+    await screen.findByText("Env Claude");
+    await importReady();
+    fireEvent.click(screen.getByText("查看将保存的完整内容"));
+    const stored = () =>
+      screen.getByRole("region", { name: /将保存的内容/ }).textContent ?? "";
+    // Denied and unticked keys are not stored, so they are not shown as stored.
+    expect(stored()).toContain('"ANTHROPIC_BASE_URL"');
+    expect(stored()).not.toContain("HTTPS_PROXY");
+    expect(stored()).not.toContain("VENDOR_FLAG");
+    // Ticking a key adds it to what will be stored.
+    fireEvent.click(screen.getByRole("checkbox"));
+    expect(stored()).toContain('"VENDOR_FLAG": "1"');
+    expect(stored()).not.toContain("HTTPS_PROXY");
+  });
+
+  it("masks a usage script's inline credentials like every other secret", async () => {
+    queue[0].request.usageApiKey = "sk-live-AAAABBBBCCCCDDDD9z7q";
+    queue[0].request.usageAccessToken = "acc-XYZ-SECRET-5678";
+    preview = {
+      ...preview,
+      usage: {
+        code: [
+          "({",
+          '  headers: { Authorization: "Bearer sk-live-AAAABBBBCCCCDDDD9z7q" },',
+          '  token: "acc-XYZ-SECRET-5678",',
+          "})",
+        ].join("\n"),
+        hosts: ["127.0.0.1:8080"],
+        linkRequestsEnabled: false,
+      },
+    };
+    mount();
+    await screen.findByText("Cold Start");
+    await importReady();
+    const script = screen.getByRole("region", { name: "用量查询脚本代码" });
+    expect(script).toHaveTextContent('Authorization: "Bearer ••••9z7q"');
+    expect(script).toHaveTextContent('token: "••••5678"');
+    expect(script).not.toHaveTextContent("AAAABBBB");
+    expect(script).not.toHaveTextContent("XYZ-SECRET");
+  });
+
+  it("masks MCP credentials in server URLs and args, in the rows and the full content", async () => {
+    queue[0].request = {
+      version: "v1",
+      resource: "mcp",
+      apps: "claude",
+      name: "Secrets",
+    };
+    preview = {
+      ...preview,
+      content: JSON.stringify(
+        {
+          mcpServers: {
+            remote: {
+              url: "https://mcp.example.com/sse?api_key=sk%2fmcp%2fQUERYSECRET-7788",
+            },
+            local: {
+              command: "npx",
+              args: ["-y", "mcp-server", "--api-key", "sk-arg-ARGSECRET-9900"],
+            },
+            // A "key" chosen to match the package only hides itself.
+            sneaky: {
+              command: "npx",
+              args: ["-y", "@evil/mcp-server", "--api-key", "@evil/mcp-server"],
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    };
+    mount();
+    await screen.findByText("https://mcp.example.com/sse?api_key=••••7788");
+    await importReady();
+    expect(screen.queryByText(/QUERYSECRET/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/ARGSECRET/)).not.toBeInTheDocument();
+    expect(screen.getByText("••••9900")).toBeInTheDocument();
+    expect(screen.getByText("@evil/mcp-server")).toBeInTheDocument();
+    fireEvent.click(screen.getByText(/查看完整配置/));
+    const stored =
+      screen.getByRole("region", { name: /将保存的内容/ }).textContent ?? "";
+    expect(stored).not.toContain("QUERYSECRET");
+    expect(stored).not.toContain("ARGSECRET");
+    expect(stored).toContain("••••7788");
+    expect(stored).toContain("••••9900");
+    expect(stored).toContain('"@evil/mcp-server"');
+  });
+
   it("switches lines only after the user turns the switch on", async () => {
     queue[0].request.enabled = true;
     preview = { ...preview, mayActivate: true };
@@ -494,26 +620,52 @@ describe("default App deep-link handoff", () => {
   });
 
   it.each([
-    [
-      { url: "ccswitch://v1", error: "DEEP_LINK_PARSE_FAILED" },
-      "无法识别这个导入链接",
-    ],
-    [{ error: "DEEP_LINK_QUEUE_FULL" }, "待确认的导入太多"],
-    [{ error: "此功能在当前版本未开放: multi_tool" }, "无法导入这个链接"],
-    [null, "无法处理导入链接"],
-  ])("explains why a link was refused (%j)", async (payload, title) => {
+    ["DEEP_LINK_PARSE_FAILED", "无法识别这个导入链接"],
+    ["DEEP_LINK_QUEUE_FULL", "待确认的导入太多"],
+    ["DEEP_LINK_TARGET_UNAVAILABLE", "无法导入这个链接"],
+    ["DEEP_LINK_QUEUE_UNAVAILABLE", "无法处理导入链接"],
+  ])(
+    "explains a link refused while the app runs (%s)",
+    async (reason, title) => {
+      queue = [];
+      mount();
+      await waitFor(() => expect(handlers.get("deeplink-error")?.size).toBe(1));
+      expect(mocks.toast.error).not.toHaveBeenCalled();
+      // The event only wakes the reader; the reason waits in the buffer.
+      refusals = [reason];
+      act(() => {
+        handlers.get("deeplink-error")?.forEach((handler) => handler());
+      });
+      await waitFor(() =>
+        expect(mocks.toast.error).toHaveBeenCalledWith(
+          title,
+          expect.objectContaining({ description: expect.any(String) }),
+        ),
+      );
+      expect(refusals).toEqual([]);
+    },
+  );
+
+  it("explains a link refused before the window could listen, once", async () => {
+    // A cold start, or the window rebuilt after lightweight mode: the event
+    // fired before anyone subscribed, so only the buffer remembers it.
     queue = [];
-    mount();
-    await waitFor(() => expect(handlers.get("deeplink-error")?.size).toBe(1));
-    act(() => {
-      handlers
-        .get("deeplink-error")
-        ?.forEach((handler) => handler({ payload }));
-    });
-    expect(mocks.toast.error).toHaveBeenCalledWith(
-      title,
-      expect.objectContaining({ description: expect.any(String) }),
+    refusals = ["DEEP_LINK_PARSE_FAILED"];
+    mount(true);
+    await waitFor(() =>
+      expect(mocks.toast.error).toHaveBeenCalledWith(
+        "无法识别这个导入链接",
+        expect.anything(),
+      ),
     );
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+      handlers.get("deeplink-error")?.forEach((handler) => handler());
+    });
+    await waitFor(() =>
+      expect(calls("take_deeplink_refusals").length).toBeGreaterThan(1),
+    );
+    expect(mocks.toast.error).toHaveBeenCalledTimes(1);
   });
 
   it("blocks the import when the backend preview fails", async () => {

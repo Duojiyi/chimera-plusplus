@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { toast } from "sonner";
 import type { DeepLinkImportRequest } from "@/lib/api/deeplink";
+import { describeDeepLinkRefusal } from "@/lib/api/deeplink";
 import { providersApi } from "@/lib/api/providers";
 import ChimeraApp from "./ChimeraApp";
 import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
@@ -14,36 +15,6 @@ const DeepLinkImportDialog = lazy(() =>
 );
 
 type PendingDeepLink = { id: string; request: DeepLinkImportRequest };
-
-/**
- * A link the backend refused before queueing it (lib.rs handle_deeplink_url).
- * The payload names the reason, never the link: it may carry a key.
- */
-function showDeepLinkError(payload: unknown) {
-  const reason =
-    payload &&
-    typeof payload === "object" &&
-    typeof (payload as { error?: unknown }).error === "string"
-      ? (payload as { error: string }).error
-      : "";
-  if (reason === "DEEP_LINK_PARSE_FAILED") {
-    toast.error("无法识别这个导入链接", {
-      description: "链接可能不完整，或用于 Chimera++ 不支持的工具或资源。",
-    });
-  } else if (reason === "DEEP_LINK_QUEUE_FULL") {
-    toast.error("待确认的导入太多", {
-      description: "请先处理已打开的导入确认，再重新打开这个链接。",
-    });
-  } else if (reason.includes("multi_tool")) {
-    toast.error("无法导入这个链接", {
-      description: "链接要导入到的工具在当前版本不可用。",
-    });
-  } else {
-    toast.error("无法处理导入链接", {
-      description: "请稍后重新打开这个链接。",
-    });
-  }
-}
 
 export default function App() {
   const [pending, setPending] = useState<PendingDeepLink | null>(null);
@@ -69,14 +40,30 @@ export default function App() {
         if (active && seq === sequence) toast.error("无法读取待确认的导入请求");
       }
     };
+    // Links the backend refused wait in a buffer too (lib.rs
+    // handle_deeplink_url), so one refused before this window could listen
+    // (cold start, lightweight mode) is still explained. Reading clears the
+    // buffer, so what was read is shown even if this effect has ended.
+    const readRefusals = async () => {
+      try {
+        const reasons = await invoke<string[]>("take_deeplink_refusals");
+        for (const reason of reasons ?? []) {
+          const { title, description } = describeDeepLinkRefusal(reason);
+          toast.error(title, { description });
+        }
+      } catch {
+        // Nothing to explain this round; the next refusal wakes us again.
+      }
+    };
+    const readAll = () => {
+      void refresh();
+      void readRefusals();
+    };
     refreshPendingRef.current = refresh;
-    window.addEventListener("focus", refresh);
-    const register = async (
-      event: string,
-      handler: (payload: unknown) => void,
-    ) => {
-      const dispose = await listen(event, (received) => {
-        if (active) handler(received?.payload);
+    window.addEventListener("focus", readAll);
+    const register = async (event: string, handler: () => void) => {
+      const dispose = await listen(event, () => {
+        if (active) handler();
       });
       if (active) disposers.push(dispose);
       else dispose();
@@ -85,20 +72,20 @@ export default function App() {
     // or cancellation, so duplicate notifications and StrictMode cannot lose it.
     void Promise.all([
       register("deeplink-import", () => void refresh()),
-      register("deeplink-error", showDeepLinkError),
+      register("deeplink-error", () => void readRefusals()),
     ])
       .then(() => {
-        if (active) void refresh();
+        if (active) readAll();
       })
       .catch(() => {
         if (active) {
           toast.error("无法订阅导入请求，请重新加载应用");
-          void refresh();
+          readAll();
         }
       });
     return () => {
       active = false;
-      window.removeEventListener("focus", refresh);
+      window.removeEventListener("focus", readAll);
       refreshPendingRef.current = async () => {};
       disposers.forEach((dispose) => dispose());
     };

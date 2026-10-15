@@ -26,9 +26,9 @@ import { SkillConfirmation } from "./deeplink/SkillConfirmation";
 import { isAdditiveTool, toolName } from "./deeplink/tools";
 import {
   classifyEndpoint,
-  collectSecretValues,
   isSensitiveKey,
-  maskSecrets,
+  maskScriptSecrets,
+  maskStoredValue,
   maskValue,
   riskI18nKey,
 } from "@/utils/deeplinkRisk";
@@ -144,6 +144,47 @@ function missingMessage(items: string[]): string {
 
 const lineCount = (text: string) =>
   text.replace(/\r\n?/g, "\n").replace(/\n$/, "").split("\n").length;
+
+/**
+ * The preview content as the user should review it: what will be stored,
+ * with credentials masked in place. Env keys the backend refuses, and keys
+ * that need confirmation but are not ticked, are left out exactly as the
+ * import leaves them out (`deeplink/env_allowlist.rs`); every app keeps them
+ * under `env` in the preview (`deeplink/preview.rs`). Content that is not
+ * JSON is returned as is.
+ */
+function contentForReview(
+  content: string,
+  excludedEnvKeys: ReadonlySet<string>,
+): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return content;
+  }
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    const env = (parsed as Record<string, unknown>).env;
+    if (env && typeof env === "object" && !Array.isArray(env)) {
+      for (const key of excludedEnvKeys) {
+        delete (env as Record<string, unknown>)[key];
+      }
+    }
+  }
+  return JSON.stringify(maskStoredValue(parsed), null, 2);
+}
+
+/**
+ * A host or model id with a break opportunity after each separator, so a
+ * long value wraps at `.`, `/`, `-` or `_` instead of mid-word. Copy is
+ * unaffected: <wbr> adds no characters.
+ */
+function breakable(value: string) {
+  const parts = value.match(/[^./_:-]*[./_:-]?/g)?.filter(Boolean) ?? [value];
+  return parts.flatMap((part, index) =>
+    index === 0 ? [part] : [<wbr key={index} />, part],
+  );
+}
 
 /**
  * The stored content as blocks. A config.toml the backend keeps as one JSON
@@ -342,25 +383,48 @@ export function DeepLinkImportDialog({
   const loadState: "loading" | "ready" | "failed" =
     blockingError !== null ? "failed" : preview ? "ready" : "loading";
 
-  // Credentials in the full-content view show their last 4 only, like the
-  // API Key line above it.
-  const secrets = useMemo(
+  // A usage script is opaque code, so its credentials can only be masked by
+  // value: the link's own key and token, and its credential env values.
+  const scriptSecrets = useMemo(
     () => [
-      request.apiKey ?? "",
+      request.apiKey,
+      request.usageApiKey,
+      request.usageAccessToken,
       ...Object.entries(envValues)
         .filter(([key]) => isSensitiveKey(key))
         .map(([, value]) => value),
     ],
-    [request.apiKey, envValues],
+    [request.apiKey, request.usageApiKey, request.usageAccessToken, envValues],
   );
-  const contentParts = useMemo(() => {
-    if (!preview) return [];
-    const masked = maskSecrets(preview.content, [
-      ...collectSecretValues(preview.content),
-      ...secrets,
-    ]);
-    return storedParts(masked);
-  }, [preview, secrets]);
+  // The full-content view shows what will be stored, so env keys the backend
+  // refuses, and keys that need confirmation but are not ticked, are left
+  // out of it, exactly as the import does (`deeplink/env_allowlist.rs`).
+  const excludedEnvKeys = useMemo(
+    () =>
+      new Set(
+        (preview?.env ?? [])
+          .filter(
+            (entry) =>
+              entry.status === "denied" ||
+              (entry.status === "needsConfirmation" &&
+                !confirmedEnvKeys.includes(entry.key)),
+          )
+          .map((entry) => entry.key),
+      ),
+    [preview, confirmedEnvKeys],
+  );
+  // Credentials show their last 4 only, like the API Key line above it.
+  const contentParts = useMemo(
+    () =>
+      preview
+        ? storedParts(contentForReview(preview.content, excludedEnvKeys))
+        : [],
+    [preview, excludedEnvKeys],
+  );
+  const usageCode = useMemo(
+    () => (usage ? maskScriptSecrets(usage.code, scriptSecrets) : ""),
+    [usage, scriptSecrets],
+  );
 
   const toggleEnvKey = (key: string, confirmed: boolean) =>
     setConfirmedEnvKeys((current) =>
@@ -656,7 +720,7 @@ export function DeepLinkImportDialog({
                       </span>
                       {primaryHost ? (
                         <span className="dl-stop-name dl-mono">
-                          {primaryHost}
+                          {breakable(primaryHost)}
                         </span>
                       ) : (
                         <span className="dl-stop-name">
@@ -677,7 +741,7 @@ export function DeepLinkImportDialog({
                           <span className="dl-dot" />
                         </span>
                         <span className="dl-stop-name dl-mono">
-                          {request.model}
+                          {breakable(request.model)}
                         </span>
                         <span className="dl-stop-note">
                           {claudeFamily ? "主模型" : "默认模型"}
@@ -902,7 +966,7 @@ export function DeepLinkImportDialog({
                         ) : null}
                       </dl>
                       <CodeBlock
-                        code={usage.code}
+                        code={usageCode}
                         caption={`JavaScript · ${usageLines} 行`}
                         meta="启用后在本机运行"
                         label="用量查询脚本代码"

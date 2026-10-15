@@ -20,12 +20,64 @@ pub struct PendingDeepLink {
 #[derive(Default)]
 pub struct PendingDeepLinks(Mutex<VecDeque<PendingDeepLink>>);
 
+/// Links the backend refused before queueing them, kept until the frontend has
+/// read them. Unlike the import queue there is nothing to acknowledge, so an
+/// error would otherwise be lost whenever no window was listening yet: a link
+/// opened while the app runs hidden, a cold start that cannot subscribe before
+/// `setup` runs, or the rebuilt window that follows lightweight mode.
+///
+/// Only the reason code is kept, never the link itself, which may carry a key.
+/// Reading drains the buffer, so each refusal is explained once.
+#[derive(Default)]
+pub struct DeepLinkRefusals(Mutex<VecDeque<String>>);
+
+/// Enough for every refusal a burst of links can produce, bounded so a broken
+/// sender cannot grow the buffer without limit.
+const MAX_DEEP_LINK_REFUSALS: usize = 8;
+
+impl DeepLinkRefusals {
+    fn record(&self, reason: String) {
+        let mut buffer = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        buffer.push_back(reason);
+        while buffer.len() > MAX_DEEP_LINK_REFUSALS {
+            buffer.pop_front();
+        }
+    }
+
+    fn take(&self) -> Vec<String> {
+        let mut buffer = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        buffer.drain(..).collect()
+    }
+}
+
+/// Records a refusal and wakes the frontend with a payload-free event.
+pub(crate) fn record_deeplink_refusal(app: &tauri::AppHandle, reason: impl Into<String>) {
+    app.state::<DeepLinkRefusals>().record(reason.into());
+    if let Err(failed) = app.emit("deeplink-error", ()) {
+        log::error!("✗ Failed to emit deeplink-error event: {failed}");
+    }
+}
+
+/// Reason codes of the refusals the frontend has not shown yet, oldest first.
+#[tauri::command]
+pub fn take_deeplink_refusals(state: State<'_, DeepLinkRefusals>) -> Vec<String> {
+    state.take()
+}
+
 impl PendingDeepLinks {
+    /// Errors use the same codes as links opened from the system
+    /// (`record_deeplink_refusal`), so the frontend explains both alike.
     fn submit_url(&self, url: &str) -> Result<(), String> {
         let url = url.trim();
-        let request = parse_deeplink_url(url).map_err(|_| "INVALID_IMPORT_LINK".to_string())?;
+        let request = parse_deeplink_url(url).map_err(|_| "DEEP_LINK_PARSE_FAILED".to_string())?;
         crate::deeplink::ensure_targets_allowed(&request)
-            .map_err(|_| "IMPORT_TARGET_UNAVAILABLE".to_string())?;
+            .map_err(|_| "DEEP_LINK_TARGET_UNAVAILABLE".to_string())?;
         self.enqueue(url, request)
     }
 
@@ -266,5 +318,36 @@ mod pending_tests {
         );
         assert_eq!(queue.peek().unwrap().unwrap().id, first_id);
         assert_eq!(queue.0.lock().unwrap().len(), 16);
+    }
+
+    #[test]
+    fn manual_submission_reports_the_codes_system_links_use() {
+        let queue = PendingDeepLinks::default();
+        assert_eq!(
+            queue.submit_url("not an import link"),
+            Err("DEEP_LINK_PARSE_FAILED".to_string())
+        );
+        assert!(queue.peek().unwrap().is_none());
+    }
+
+    #[test]
+    fn refusals_wait_for_one_reader_and_keep_the_newest() {
+        let refusals = DeepLinkRefusals::default();
+        assert!(refusals.take().is_empty());
+        refusals.record("DEEP_LINK_PARSE_FAILED".to_string());
+        assert_eq!(refusals.take(), vec!["DEEP_LINK_PARSE_FAILED".to_string()]);
+        // Drained on read: a second reader has nothing to show again.
+        assert!(refusals.take().is_empty());
+
+        for index in 0..MAX_DEEP_LINK_REFUSALS + 3 {
+            refusals.record(format!("E{index}"));
+        }
+        let kept = refusals.take();
+        assert_eq!(kept.len(), MAX_DEEP_LINK_REFUSALS);
+        assert_eq!(kept[0], "E3");
+        assert_eq!(
+            kept.last().unwrap(),
+            &format!("E{}", MAX_DEEP_LINK_REFUSALS + 2)
+        );
     }
 }

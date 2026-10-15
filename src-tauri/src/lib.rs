@@ -376,38 +376,18 @@ fn handle_deeplink_url(
 
             if let Err(error) = crate::deeplink::ensure_targets_allowed(&request) {
                 log::warn!("Deep link for a tool that is not enabled was ignored: {error}");
-                let _ = app.emit(
-                    "deeplink-error",
-                    serde_json::json!({ "error": error.to_string() }),
-                );
+                commands::record_deeplink_refusal(app, "DEEP_LINK_TARGET_UNAVAILABLE");
                 return true;
             }
             if let Err(error) = commands::queue_deeplink(app, url_str, request) {
                 log::error!("Failed to queue deep link: {error}");
-                let _ = app.emit("deeplink-error", serde_json::json!({ "error": error }));
+                commands::record_deeplink_refusal(app, error);
                 return true;
             }
             if let Err(e) = app.emit("deeplink-import", ()) {
                 log::error!("✗ Failed to emit deeplink-import event: {e}");
             } else {
                 log::info!("✓ Emitted deeplink-import event to frontend");
-            }
-
-            if focus_main_window {
-                if let Some(window) = app.get_webview_window("main") {
-                    #[cfg(target_os = "windows")]
-                    {
-                        let _ = window.set_skip_taskbar(false);
-                    }
-                    let _ = window.unminimize();
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                    #[cfg(target_os = "linux")]
-                    {
-                        linux_fix::nudge_main_window(window.clone());
-                    }
-                    log::info!("✓ Window shown and focused");
-                }
             }
         }
         Err(e) => {
@@ -416,17 +396,29 @@ fn handle_deeplink_url(
                 redact_url_origin_for_log(url_str)
             );
 
-            if let Err(emit_err) = app.emit(
-                "deeplink-error",
-                serde_json::json!({
-                    // Never forward the raw deep-link URL to the frontend: query,
-                    // fragment and embedded base64/API credentials are untrusted.
-                    "url": redact_url_origin_for_log(url_str),
-                    "error": "DEEP_LINK_PARSE_FAILED"
-                }),
-            ) {
-                log::error!("✗ Failed to emit deeplink-error event: {emit_err}");
+            // The frontend learns the reason code only: query, fragment and
+            // embedded base64/API credentials in the link are untrusted, and a
+            // redacted origin still names the site the user just came from.
+            commands::record_deeplink_refusal(app, "DEEP_LINK_PARSE_FAILED");
+        }
+    }
+
+    // Unconditional on the outcome: a refused link must still bring the window
+    // up, otherwise the reason is told to a window nobody can see.
+    if focus_main_window {
+        if let Some(window) = app.get_webview_window("main") {
+            #[cfg(target_os = "windows")]
+            {
+                let _ = window.set_skip_taskbar(false);
             }
+            let _ = window.unminimize();
+            let _ = window.show();
+            let _ = window.set_focus();
+            #[cfg(target_os = "linux")]
+            {
+                linux_fix::nudge_main_window(window.clone());
+            }
+            log::info!("✓ Window shown and focused");
         }
     }
 
@@ -473,7 +465,9 @@ pub fn run() {
     // 设置 panic hook，在应用崩溃时记录日志到 Chimera++ 配置目录。
     panic_hook::setup_panic_hook();
 
-    let mut builder = tauri::Builder::default().manage(commands::PendingDeepLinks::default());
+    let mut builder = tauri::Builder::default()
+        .manage(commands::PendingDeepLinks::default())
+        .manage(commands::DeepLinkRefusals::default());
 
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     {
@@ -1848,6 +1842,7 @@ pub fn run() {
             // Deep link import
             commands::get_pending_deeplink,
             commands::dismiss_pending_deeplink,
+            commands::take_deeplink_refusals,
             commands::parse_deeplink,
             commands::submit_deeplink_import,
             commands::preview_cc_switch_file,
