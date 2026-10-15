@@ -303,10 +303,12 @@ const LOCAL_PATH = /^(?:[A-Za-z]:[\\/]|~[\\/]|\.{1,2}[\\/])/;
 const AUTH_SCHEME = /^(\s*(?:Bearer|Basic|Token)\s+)(\S[\s\S]*)$/i;
 
 export function maskSecret(value: string): string {
+  // One scheme word stays; the rest is masked as a whole. No recursion: a
+  // value of thousands of "Basic " words must not overflow the stack.
   const scheme = AUTH_SCHEME.exec(value);
-  if (scheme) return `${scheme[1]}${maskSecret(scheme[2])}`;
-  const text = value.trim();
-  return text.length > 8 ? `${MASK}${text.slice(-4)}` : MASK;
+  const prefix = scheme ? scheme[1] : "";
+  const text = (scheme ? scheme[2] : value).trim();
+  return `${prefix}${text.length > 8 ? `${MASK}${text.slice(-4)}` : MASK}`;
 }
 
 /** 够长、不是环境变量名也不是本机路径的取值才可能是凭据；数字也算（密码、PIN）。 */

@@ -150,6 +150,10 @@ describe("classifyCommand", () => {
 
 describe("maskValue", () => {
   it("masks credential-shaped keys but keeps ordinary values readable", () => {
+    // A value of thousands of scheme words must not overflow the stack.
+    expect(maskValue("API_KEY", `${"Basic ".repeat(20000)}tok-123456789`)).toBe(
+      "Basic ••••6789",
+    );
     // 与确认框里 API Key 的「末 4 位」同一口径：开头不露
     expect(maskValue("ANTHROPIC_AUTH_TOKEN", "sk-ant-1234567890abcdef")).toBe(
       "••••cdef",

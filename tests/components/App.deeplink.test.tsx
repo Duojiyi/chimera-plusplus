@@ -669,6 +669,31 @@ describe("default App deep-link handoff", () => {
     expect(mocks.toast.error).toHaveBeenCalledTimes(1);
   });
 
+  it("dismisses a link whose confirmation cannot be shown instead of failing the window", async () => {
+    // A malformed preview stands in for any value that breaks rendering.
+    preview = {
+      ...preview,
+      targetPaths: "C:\\not-a-list" as unknown as string[],
+    };
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    try {
+      mount();
+      await waitFor(() =>
+        expect(mocks.toast.error).toHaveBeenCalledWith(
+          "无法显示这个导入链接",
+          expect.objectContaining({ duration: Infinity }),
+        ),
+      );
+      await waitFor(() => expect(queue).toHaveLength(0));
+      expect(calls("import_from_deeplink_unified")).toHaveLength(0);
+      expect(screen.getByTestId("provider-refresh")).toBeInTheDocument();
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
   it("blocks the import when the backend preview fails", async () => {
     const normal = mocks.invoke.getMockImplementation()!;
     mocks.invoke.mockImplementation((command, payload) =>

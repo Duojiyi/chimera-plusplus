@@ -1,10 +1,19 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import {
+  Component,
+  lazy,
+  Suspense,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { toast } from "sonner";
 import type { DeepLinkImportRequest } from "@/lib/api/deeplink";
 import { describeDeepLinkRefusal } from "@/lib/api/deeplink";
 import { providersApi } from "@/lib/api/providers";
+import { reportFrontendError } from "@/lib/frontendLogger";
 import ChimeraApp from "./ChimeraApp";
 import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
 
@@ -15,6 +24,30 @@ const DeepLinkImportDialog = lazy(() =>
 );
 
 type PendingDeepLink = { id: string; request: DeepLinkImportRequest };
+
+/**
+ * A link whose confirmation cannot be rendered is dismissed, not left to the
+ * window-wide boundary: it would stay queued and fail again after every
+ * reload, leaving the app unusable. Nothing is imported.
+ */
+class DeepLinkDialogBoundary extends Component<
+  { onFailure: (error: unknown) => void; children: ReactNode },
+  { failed: boolean }
+> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidCatch(error: unknown) {
+    this.props.onFailure(error);
+  }
+
+  render() {
+    return this.state.failed ? null : this.props.children;
+  }
+}
 
 export default function App() {
   const [pending, setPending] = useState<PendingDeepLink | null>(null);
@@ -93,29 +126,42 @@ export default function App() {
     };
   }, []);
 
+  const dismissPending = async (id: string) => {
+    await invoke("dismiss_pending_deeplink", { id });
+    setPending((current) => (current?.id === id ? null : current));
+    await refreshPendingRef.current();
+  };
+
   return (
     <>
       <ChimeraApp providerRefreshVersion={providerRefreshVersion} />
       {pending && (
-        <Suspense fallback={null}>
-          <DeepLinkImportDialog
-            key={pending.id}
-            request={pending.request}
-            onHandled={async () => {
-              await invoke("dismiss_pending_deeplink", { id: pending.id });
-              setPending((current) =>
-                current?.id === pending.id ? null : current,
-              );
-              await refreshPendingRef.current();
-            }}
-            onImported={() => {
-              setProviderRefreshVersion((value) => value + 1);
-              // The tray lists every line, so a new import must show up there
-              // too. Best effort: the import itself already succeeded.
-              void providersApi.updateTrayMenu().catch(() => undefined);
-            }}
-          />
-        </Suspense>
+        <DeepLinkDialogBoundary
+          key={pending.id}
+          onFailure={(error) => {
+            reportFrontendError("deeplink.dialog", error);
+            toast.error("无法显示这个导入链接", {
+              description:
+                "确认框无法显示链接里的内容，这次导入已取消，没有写入任何配置。",
+              duration: Infinity,
+            });
+            void dismissPending(pending.id).catch(() => undefined);
+          }}
+        >
+          <Suspense fallback={null}>
+            <DeepLinkImportDialog
+              key={pending.id}
+              request={pending.request}
+              onHandled={() => dismissPending(pending.id)}
+              onImported={() => {
+                setProviderRefreshVersion((value) => value + 1);
+                // The tray lists every line, so a new import must show up
+                // there too. Best effort: the import itself already succeeded.
+                void providersApi.updateTrayMenu().catch(() => undefined);
+              }}
+            />
+          </Suspense>
+        </DeepLinkDialogBoundary>
       )}
     </>
   );
