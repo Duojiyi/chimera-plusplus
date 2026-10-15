@@ -35,7 +35,7 @@ describe("offline design fonts", () => {
       )
       .digest("hex");
     expect(digest).toBe(
-      "186c0cc254888074c1d4eb9953be8c5caa26d41813087e8d7c29e552e1f37eff",
+      "bd881e331aa3eb5eb5ddd04d2ae2737d3a0f50836e0b46ac5f2f14ac7e798f1d",
     );
   });
   it("uses WOFF2 for the complete CJK font without a system-font shortcut or CDN", () => {
