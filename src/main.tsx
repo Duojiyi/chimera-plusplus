@@ -6,6 +6,7 @@ import { UpdateProvider } from "./contexts/UpdateContext";
 import "./theme/fonts.css";
 import "./theme/tokens.css";
 import "./index.css";
+import "./components/ui/disclosure.css";
 // 导入国际化配置
 import i18n, { i18nReady } from "./i18n";
 import { QueryClientProvider } from "@tanstack/react-query";

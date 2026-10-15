@@ -1758,22 +1758,47 @@ fn push_env_codex_cli_candidates(candidates: &mut Vec<PathBuf>, seen: &mut HashS
             }
         }
 
-        // The official Codex Desktop installer bundles the CLI under the
-        // Electron resources directory rather than adding `codex` to PATH.
-        // This is the path used by the Windows desktop installation.
-        for (env_key, relative) in [
-            ("LOCALAPPDATA", "Programs/Codex/resources/codex.exe"),
-            ("LOCALAPPDATA", "Programs/Codex/codex.exe"),
-            ("PROGRAMFILES", "Codex/resources/codex.exe"),
-            ("PROGRAMFILES", "OpenAI/Codex/resources/codex.exe"),
-        ] {
-            if let Some(root) = std::env::var_os(env_key) {
-                push_existing_codex_cli_candidate(
-                    candidates,
-                    seen,
-                    PathBuf::from(root).join(relative),
-                );
-            }
+        // The Codex desktop app bundles its CLI under the Electron resources
+        // directory rather than adding `codex` to PATH. The managed portable
+        // root comes first: it may be a custom location.
+        let mut app_roots = Vec::new();
+        if let Ok(portable_root) = crate::settings::resolve_codex_portable_root() {
+            app_roots.push(portable_root);
+        }
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            app_roots.push(PathBuf::from(local).join("Programs").join("Codex"));
+        }
+        if let Some(program_files) = std::env::var_os("PROGRAMFILES") {
+            let program_files = PathBuf::from(program_files);
+            app_roots.push(program_files.join("Codex"));
+            app_roots.push(program_files.join("OpenAI").join("Codex"));
+        }
+        push_windows_desktop_cli_candidates(candidates, seen, &app_roots);
+    }
+}
+
+/// Where a Windows Codex desktop install keeps its CLI, relative to the
+/// install root: the nested `app/` layout of managed portable installs
+/// first, then the flat layout. A root-level `codex.exe` is deliberately
+/// absent: on a case-insensitive volume it resolves to the GUI app or, in
+/// the nested layout, to a launcher stub that forwards every argument to it.
+#[cfg(any(windows, test))]
+const WINDOWS_DESKTOP_CLI_LAYOUTS: &[&str] = &[
+    "app/resources/codex.exe",
+    "app/resources/bin/codex.exe",
+    "resources/codex.exe",
+    "resources/bin/codex.exe",
+];
+
+#[cfg(any(windows, test))]
+fn push_windows_desktop_cli_candidates(
+    candidates: &mut Vec<PathBuf>,
+    seen: &mut HashSet<String>,
+    app_roots: &[PathBuf],
+) {
+    for root in app_roots {
+        for relative in WINDOWS_DESKTOP_CLI_LAYOUTS {
+            push_existing_codex_cli_candidate(candidates, seen, root.join(relative));
         }
     }
 }
@@ -7587,6 +7612,43 @@ base_url = "https://relay.example/v1"
             candidates.iter().filter(|path| **path == candidate).count(),
             1,
             "duplicate candidates should be removed"
+        );
+    }
+
+    #[test]
+    fn windows_desktop_cli_candidates_skip_root_launchers() {
+        let temp = tempfile::tempdir().expect("create temp roots");
+        // Managed portable install, nested layout: launcher stubs at the root
+        // forward argv to the GUI app; the CLI lives under app/resources.
+        let nested = temp.path().join("nested");
+        for stub in [
+            "Codex.exe",
+            "ChatGPT.exe",
+            "LaunchCodex.exe",
+            "app/ChatGPT.exe",
+        ] {
+            create_cli_candidate(&nested.join(stub));
+        }
+        create_cli_candidate(&nested.join("app/resources/codex.exe"));
+        // Flat layout: the GUI app at the root, the CLI under resources.
+        let flat = temp.path().join("flat");
+        create_cli_candidate(&flat.join("Codex.exe"));
+        create_cli_candidate(&flat.join("resources/codex.exe"));
+
+        let mut candidates = Vec::new();
+        let mut seen = HashSet::new();
+        push_windows_desktop_cli_candidates(
+            &mut candidates,
+            &mut seen,
+            &[nested.clone(), flat.clone()],
+        );
+
+        assert_eq!(
+            candidates,
+            vec![
+                nested.join("app/resources/codex.exe"),
+                flat.join("resources/codex.exe"),
+            ]
         );
     }
 

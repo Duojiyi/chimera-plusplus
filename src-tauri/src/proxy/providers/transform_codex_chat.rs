@@ -626,7 +626,9 @@ fn append_responses_input_as_chat_messages(
     let mut pending_media: Vec<Value> = Vec::new();
     // Call ids already answered by a `role:"tool"` message. A replayed result
     // for one of them is a duplicate and is dropped: its content already went
-    // out once, and a second `tool` message for one call is rejected.
+    // out once, and a second `tool` message for one call is rejected. A later
+    // call that reuses the id reopens it (upstreams without ids, and this
+    // bridge, number calls per response: `call_0` recurs every turn).
     let mut answered_tool_call_ids: HashSet<String> = HashSet::new();
     // Unpaired results wait for the end of the current run of results: a user
     // message between two paired results (`tool, user, tool`) is rejected too.
@@ -659,6 +661,12 @@ fn append_responses_input_as_chat_messages(
             }
             answered_tool_call_ids.insert(call_id.to_string());
         } else {
+            if matches!(
+                item.get("type").and_then(Value::as_str),
+                Some("function_call" | "custom_tool_call" | "tool_search_call")
+            ) {
+                answered_tool_call_ids.remove(responses_call_item_chat_id(item));
+            }
             // Any other item ends the run of tool results. Media moved out of
             // the paired results goes first so their "moved to the following
             // user message" marker stays true, then the held orphans.
@@ -4347,6 +4355,26 @@ late-a"
         assert_valid_chat_tool_sequence(&messages);
         assert_eq!(chat_roles(&messages), ["assistant", "tool", "user"]);
         assert_eq!(messages[1]["content"], "ok-a");
+    }
+
+    #[test]
+    fn a_call_id_reused_in_a_later_turn_keeps_its_result() {
+        let messages = chat_messages_for(json!([
+            {"type": "function_call", "call_id": "call_0", "name": "read", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call_0", "output": "first"},
+            {"role": "user", "content": [{"type": "input_text", "text": "again"}]},
+            {"type": "function_call", "call_id": "call_0", "name": "read", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call_0", "output": "second"},
+            {"type": "function_call_output", "call_id": "call_0", "output": "second"}
+        ]));
+
+        assert_valid_chat_tool_sequence(&messages);
+        assert_eq!(
+            chat_roles(&messages),
+            ["assistant", "tool", "user", "assistant", "tool"]
+        );
+        assert_eq!(messages[1]["content"], "first");
+        assert_eq!(messages[4]["content"], "second");
     }
 
     #[test]

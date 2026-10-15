@@ -1,0 +1,97 @@
+/* Shared disclosure: one chevron, one focus ring, no user-agent triangle.
+   Markup: <details class="chimera-disclosure"> <summary>…</summary>
+   <div class="chimera-disclosure-body">…</div> </details>.
+   `.chimera-disclosure` is the contained card used for page sections (the
+   tool pages' 安装与环境检查 is the reference); add `is-inline` for small
+   in-flow toggles inside forms and dialogs. */
+
+.chimera-disclosure {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel, 8px);
+  background: var(--bg-surface);
+}
+.chimera-disclosure[open] {
+  background: var(--bg-subtle);
+}
+.chimera-disclosure > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-radius: calc(var(--radius-panel, 8px) - 1px);
+  color: var(--text-1);
+  font-weight: 700;
+  list-style: none;
+  cursor: pointer;
+  outline: none;
+}
+.chimera-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+.chimera-disclosure > summary::before {
+  content: "";
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  margin: 0 4px 0 2px;
+  border-right: 1.5px solid var(--text-3);
+  border-bottom: 1.5px solid var(--text-3);
+  transform: rotate(-45deg);
+  transition: transform var(--dur-fast, 150ms) var(--ease-out, ease);
+}
+.chimera-disclosure[open] > summary::before {
+  transform: rotate(45deg);
+}
+.chimera-disclosure > summary:hover {
+  background: var(--bg-hover);
+}
+.chimera-disclosure > summary:focus-visible {
+  outline: 2px solid var(--focus-ring, var(--focus));
+  outline-offset: -2px;
+}
+.chimera-disclosure[open] > summary {
+  border-bottom: 1px solid var(--border-subtle);
+  border-radius: calc(var(--radius-panel, 8px) - 1px)
+    calc(var(--radius-panel, 8px) - 1px) 0 0;
+}
+.chimera-disclosure-body {
+  padding: 14px 16px 16px;
+  background: var(--bg-surface);
+  border-radius: 0 0 calc(var(--radius-panel, 8px) - 1px)
+    calc(var(--radius-panel, 8px) - 1px);
+}
+
+/* Inline: no card, the same chevron and ring around the summary text. */
+.chimera-disclosure.is-inline,
+.chimera-disclosure.is-inline[open] {
+  border: 0;
+  background: transparent;
+}
+.chimera-disclosure.is-inline > summary {
+  display: inline-flex;
+  gap: 6px;
+  padding: 2px 4px;
+  margin-left: -4px;
+  border-radius: 4px;
+  color: var(--text-2);
+  font-weight: 500;
+}
+.chimera-disclosure.is-inline > summary:hover {
+  background: transparent;
+  color: var(--text-1);
+}
+.chimera-disclosure.is-inline[open] > summary {
+  border-bottom: 0;
+  border-radius: 4px;
+}
+.chimera-disclosure.is-inline > .chimera-disclosure-body {
+  padding: 8px 0 0;
+  background: transparent;
+  border-radius: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chimera-disclosure > summary::before {
+    transition: none;
+  }
+}
