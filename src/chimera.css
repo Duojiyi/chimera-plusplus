@@ -77,6 +77,9 @@
   --line: var(--border-subtle);
   --ch-muted: var(--text-3);
   --shell-edge: var(--p-white-a16);
+  /* The light --focus blue is about 2.5:1 on the dark surfaces; the theme's
+     ring keeps every focus outline in the shell above 3:1. */
+  --focus: var(--focus-ring);
   color: var(--text-1);
   background: var(--bg-base);
 }
@@ -1754,6 +1757,12 @@ body.is-mac
 .model-input > button:hover {
   background: var(--bg-hover);
   color: var(--ink);
+}
+/* The group clips what lies outside it: the side button's ring goes inside. */
+.password-field > button:focus-visible,
+.model-input > button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -3px;
 }
 .runtime-reference-view {
   width: 100%;

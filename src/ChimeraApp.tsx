@@ -6143,6 +6143,8 @@ export function ProviderEditor({
                     </div>
                     <input
                       aria-label={`${label} 菜单显示名`}
+                      autoComplete="off"
+                      spellCheck={false}
                       value={slot.name}
                       disabled={!slot.model.trim()}
                       onChange={(event) =>
