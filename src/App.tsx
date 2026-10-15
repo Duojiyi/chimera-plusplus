@@ -15,6 +15,36 @@ const DeepLinkImportDialog = lazy(() =>
 
 type PendingDeepLink = { id: string; request: DeepLinkImportRequest };
 
+/**
+ * A link the backend refused before queueing it (lib.rs handle_deeplink_url).
+ * The payload names the reason, never the link: it may carry a key.
+ */
+function showDeepLinkError(payload: unknown) {
+  const reason =
+    payload &&
+    typeof payload === "object" &&
+    typeof (payload as { error?: unknown }).error === "string"
+      ? (payload as { error: string }).error
+      : "";
+  if (reason === "DEEP_LINK_PARSE_FAILED") {
+    toast.error("无法识别这个导入链接", {
+      description: "链接可能不完整，或用于 Chimera++ 不支持的工具或资源。",
+    });
+  } else if (reason === "DEEP_LINK_QUEUE_FULL") {
+    toast.error("待确认的导入太多", {
+      description: "请先处理已打开的导入确认，再重新打开这个链接。",
+    });
+  } else if (reason.includes("multi_tool")) {
+    toast.error("无法导入这个链接", {
+      description: "链接要导入到的工具在当前版本不可用。",
+    });
+  } else {
+    toast.error("无法处理导入链接", {
+      description: "请稍后重新打开这个链接。",
+    });
+  }
+}
+
 export default function App() {
   const [pending, setPending] = useState<PendingDeepLink | null>(null);
   const [providerRefreshVersion, setProviderRefreshVersion] = useState(0);
@@ -41,9 +71,12 @@ export default function App() {
     };
     refreshPendingRef.current = refresh;
     window.addEventListener("focus", refresh);
-    const register = async (event: string, handler: () => void) => {
-      const dispose = await listen(event, () => {
-        if (active) handler();
+    const register = async (
+      event: string,
+      handler: (payload: unknown) => void,
+    ) => {
+      const dispose = await listen(event, (received) => {
+        if (active) handler(received?.payload);
       });
       if (active) disposers.push(dispose);
       else dispose();
@@ -52,9 +85,7 @@ export default function App() {
     // or cancellation, so duplicate notifications and StrictMode cannot lose it.
     void Promise.all([
       register("deeplink-import", () => void refresh()),
-      register("deeplink-error", () =>
-        toast.error("无法处理导入链接，请检查链接或待处理请求数量"),
-      ),
+      register("deeplink-error", showDeepLinkError),
     ])
       .then(() => {
         if (active) void refresh();

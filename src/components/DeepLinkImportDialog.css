@@ -1,48 +1,184 @@
-/* Deep-link import confirmation. Colors come from the semantic tokens in
-   src/theme/tokens.css, so light and dark follow the root `.dark` class. The
-   dialog renders in a portal outside `.chimera-shell`, hence the explicit
-   monospace fallbacks. */
+/* Deep-link import confirmation (DeepLinkImportDialog and deeplink/*).
 
-.dl-body {
-  display: grid;
-  gap: var(--space-16);
-  max-height: 62vh;
-  overflow-y: auto;
-  padding: var(--space-16) var(--space-24);
+   One flat dialog surface like the redesigned 管理线路, account and model
+   picker dialogs: no tinted header or footer bands, hairlines where the body
+   scrolls, the app's focus ring and the --switch-* switch. A provider line is
+   previewed as a small station plate (the 线路 signboard's material and route
+   bar), so the address its requests go to is read first.
+
+   The dialog renders in a portal outside .chimera-shell: fonts and colours
+   come from the global tokens in theme/tokens.css and follow the root .dark
+   class. Mono is only for keys, addresses, paths and model ids; CJK falls
+   back to the UI face instead of a serif. */
+
+.dl-dialog[role="dialog"] {
+  width: min(600px, calc(100vw - 48px));
+  max-width: none;
+  max-height: calc(100vh - 48px);
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--dialog-border);
+  border-radius: var(--radius-panel);
+  background: var(--dialog-bg);
   color: var(--text-1);
+  box-shadow:
+    0 1px 2px var(--shadow-soft),
+    0 16px 40px var(--shadow-overlay);
+  font-family: var(--font-latin), var(--font-cjk), sans-serif;
   font-size: 13px;
   line-height: var(--lh-ui);
-  scrollbar-width: thin;
+}
+.dl-dialog[role="dialog"]:focus-visible {
+  outline: none;
 }
 
-.dl-mono,
-.dl-host-name,
-.dl-host-url,
-.dl-paths li,
-.dl-chips li,
-.dl-code {
-  font-family: var(--font-mono), ui-monospace, monospace;
+/* The app's focus ring everywhere: one 2px outline, no extra inner ring. */
+.dl-dialog :is(button, input, pre[tabindex]):focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  box-shadow: none;
 }
 
 .dl-mono {
+  font-family: var(--font-mono), var(--font-cjk), monospace;
   font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0;
+  font-variant-ligatures: none;
   overflow-wrap: anywhere;
 }
-
-.dl-section {
-  display: grid;
-  gap: var(--space-8);
+.dl-strong {
+  font-weight: 700;
+}
+.dl-mono.dl-strong {
+  font-weight: 600;
+}
+.dl-muted {
+  color: var(--text-3);
 }
 
-.dl-section-title,
-.dl-host-label {
+/* Header, body, footer */
+.dl-header {
+  display: grid;
+  flex: none;
+  gap: 6px;
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.dl-dialog .dl-title {
+  margin: 0;
+  color: var(--text-1);
+  font-size: 17px;
+  font-weight: 700;
+  line-height: var(--lh-title);
+  letter-spacing: 0;
+}
+.dl-dialog .dl-description {
   margin: 0;
   color: var(--text-2);
-  font-size: 12px;
-  font-weight: 700;
-  line-height: var(--lh-ui);
+  font-size: 13px;
+  line-height: var(--lh-help);
 }
 
+.dl-body {
+  display: grid;
+  flex: 1 1 auto;
+  align-content: start;
+  /* Rows keep their content height when the body scrolls; an auto row would
+     shrink an overflow-clipped child (the plate) to nothing. */
+  grid-auto-rows: max-content;
+  gap: 20px;
+  min-height: 0;
+  padding: 18px 24px 22px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+/* Status, the reason an import is blocked, and the actions: always in view
+   under the scrolling body. */
+.dl-bottom {
+  display: grid;
+  flex: none;
+  gap: 12px;
+  padding: 14px 24px 18px;
+  border-top: 1px solid var(--border-subtle);
+}
+.dl-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+/* The trust reminder sits with the decision, left of the buttons. */
+.dl-trust {
+  flex: 1 1 200px;
+  min-width: 0;
+  margin: 0 8px 0 0;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: var(--lh-help);
+}
+.dl-footer button {
+  min-width: 76px;
+  height: 34px;
+  font-size: 13px;
+  font-weight: 600;
+}
+/* Secondary action on the dialog surface, as in the confirm dialogs. */
+.dl-footer .dl-cancel {
+  border-color: var(--border-control);
+  background: transparent;
+  color: var(--text-1);
+}
+.dl-footer .dl-cancel:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
+
+.dl-status,
+.dl-alert {
+  margin: 0;
+  font-size: 12px;
+  line-height: var(--lh-help);
+}
+.dl-status {
+  color: var(--text-2);
+}
+.dl-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-control);
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+  overflow-wrap: anywhere;
+}
+.dl-alert > svg {
+  flex: none;
+  margin-top: 1px;
+}
+.dl-alert > span {
+  min-width: 0;
+}
+
+/* Sections */
+.dl-section {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.dl-section-title {
+  margin: 0;
+  color: var(--text-1);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 20px;
+}
 .dl-note {
   margin: 0;
   color: var(--text-2);
@@ -50,302 +186,638 @@
   line-height: var(--lh-help);
 }
 
-/* Who and what */
-.dl-summary {
-  display: flex;
-  align-items: center;
-  gap: var(--space-12);
-}
-
-.dl-summary-text {
-  display: grid;
-  gap: var(--space-2);
-  min-width: 0;
-}
-
-.dl-summary-name {
-  color: var(--text-1);
-  font-size: 15px;
-  font-weight: 700;
-  line-height: var(--lh-title);
-  overflow-wrap: anywhere;
-}
-
-.dl-summary-tool {
-  color: var(--text-3);
-  font-size: 12px;
-}
-
-/* Where requests go: the one thing to check before anything else. */
-.dl-host {
-  display: grid;
-  gap: var(--space-4);
-  padding: var(--space-12) var(--space-16);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-panel);
-  background: var(--bg-subtle);
-}
-
-.dl-host p {
-  margin: 0;
-}
-
-.dl-host-name {
-  color: var(--text-1);
-  font-size: 17px;
-  font-weight: 600;
-  line-height: var(--lh-title);
-  overflow-wrap: anywhere;
-}
-
-.dl-host-url {
-  color: var(--text-2);
-  font-size: 12px;
-  overflow-wrap: anywhere;
-}
-
-.dl-host-risk {
-  color: var(--warning-fg);
-  font-size: 12px;
-  line-height: var(--lh-help);
-}
-
-.dl-host-spares {
-  display: grid;
-  gap: var(--space-2);
-  margin-top: var(--space-4);
-  color: var(--text-3);
-  font-size: 12px;
-}
-
 /* Label / value pairs */
-.dl-fields {
+.dl-facts {
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
-  gap: var(--space-6) var(--space-16);
+  gap: 8px 20px;
   margin: 0;
-}
-
-.dl-fields dt {
-  color: var(--text-3);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 20px;
 }
-
-.dl-fields dd {
+.dl-facts dt {
+  color: var(--text-3);
+}
+.dl-facts dd {
+  min-width: 0;
   margin: 0;
   color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.dl-facts dd.dl-mono {
   line-height: 20px;
+}
+.dl-facts.is-compact {
+  gap: 4px 16px;
+  font-size: 12px;
+}
+.dl-key-tail {
+  padding: 0 4px;
+  border-radius: var(--radius-control);
+  background: var(--bg-well);
+  color: var(--text-1);
+}
+
+/* The line preview: a small station plate in the signboard's material. */
+.dl-plate {
+  --dl-line: var(--id-cobalt);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: var(--radius-panel);
+  outline: 1px solid var(--plate-border);
+  outline-offset: -1px;
+  background: var(--plate-bg);
+  color: var(--plate-fg-1);
+}
+.dl-plate-band {
+  flex: none;
+  height: 3px;
+  background: var(--dl-line);
+}
+.dl-plate-body {
+  display: grid;
+  gap: 16px;
+  padding: 14px 18px 16px;
+}
+.dl-plate-top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.dl-plate-title {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.dl-plate-eyebrow {
+  color: var(--plate-fg-3);
+  font-size: 12px;
+  line-height: 16px;
+}
+.dl-plate-name {
+  color: var(--plate-fg-1);
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 24px;
   overflow-wrap: anywhere;
 }
 
-.dl-paths {
+/* Route bar: tool -> address -> model, one stop each. Values wrap instead of
+   being cut: nothing a link carries may be hidden by CSS. */
+.dl-route {
+  display: flex;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.dl-stop {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  min-width: 0;
+  padding-right: 14px;
+}
+.dl-stop[data-last] {
+  padding-right: 0;
+}
+.dl-track {
+  display: flex;
+  align-items: center;
+  height: 12px;
+  margin: 0 -14px 9px 0;
+}
+.dl-stop[data-last] .dl-track {
+  margin-right: 0;
+}
+.dl-dot {
+  box-sizing: border-box;
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--dl-line);
+  border-radius: 50%;
+  background: var(--plate-bg);
+}
+.dl-stop[data-last] .dl-dot {
+  background: var(--dl-line);
+}
+.dl-rail {
+  flex: 1;
+  height: 2px;
+  background: var(--dl-line);
+}
+.dl-stop[data-last] .dl-rail {
+  display: none;
+}
+.dl-stop-name {
+  color: var(--plate-fg-1);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+.dl-stop-name.dl-mono {
+  font-size: 13px;
+  font-weight: 400;
+}
+/* The address is the one thing to check before anything else. */
+.dl-stop.is-host .dl-stop-name.dl-mono {
+  font-weight: 600;
+}
+.dl-stop-note {
+  margin-top: 3px;
+  color: var(--plate-fg-3);
+  font-size: 12px;
+  line-height: 16px;
+}
+.dl-stop[data-tone="warn"] .dl-dot {
+  border-color: var(--plate-warning);
+}
+.dl-stop[data-tone="warn"] .dl-stop-note {
+  color: var(--plate-warning);
+}
+
+.dl-plate-urls {
   display: grid;
-  gap: var(--space-2);
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 14px;
+  margin: 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--plate-control-hover);
+  font-size: 12px;
+  line-height: 18px;
+}
+.dl-plate-urls dt {
+  color: var(--plate-fg-3);
+}
+.dl-plate-urls dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--plate-fg-2);
+}
+.dl-plate-list {
+  display: grid;
+  gap: 2px;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-.dl-paths li {
-  color: var(--text-2);
-  font-size: 12px;
-  overflow-wrap: anywhere;
-}
-
-.dl-paths li.dl-usage-host {
-  color: var(--text-1);
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.dl-files {
-  display: grid;
-  gap: var(--space-4);
-}
-
-/* The plain-language promise that nothing is switched. */
-.dl-statement {
+/* Notes in a box: a risk to look at, or where something will show up. */
+.dl-callout {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
   margin: 0;
-  padding: var(--space-8) var(--space-12);
-  border-left: 2px solid var(--success-solid);
+  padding: 10px 12px;
+  border: 1px solid var(--warning-border);
   border-radius: var(--radius-control);
-  background: var(--bg-subtle);
+  background: var(--warning-bg);
   color: var(--text-1);
   font-size: 12px;
   line-height: var(--lh-help);
 }
+.dl-callout > svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--warning-fg);
+}
+.dl-callout[data-tone="info"] {
+  border-color: var(--banner-info-border);
+  background: var(--banner-info-bg);
+}
+.dl-callout[data-tone="info"] > svg {
+  color: var(--text-2);
+}
+.dl-callout-list {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
 
+/* A bordered card: the outcome, the usage script. */
+.dl-card {
+  display: grid;
+  min-width: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel);
+}
+.dl-card > * + * {
+  border-top: 1px solid var(--border-subtle);
+}
+.dl-card-body {
+  display: grid;
+  gap: 12px;
+  padding: 12px 14px 14px;
+  min-width: 0;
+}
+.dl-card-note {
+  margin: 0;
+  padding: 10px 14px;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: var(--lh-help);
+}
+
+.dl-outcome {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 12px 14px;
+  list-style: none;
+}
+.dl-outcome > li {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  gap: 10px;
+  color: var(--text-1);
+  font-size: 13px;
+  line-height: 20px;
+}
+.dl-outcome > li > svg {
+  margin-top: 3px;
+  color: var(--success-fg);
+}
+.dl-outcome > li[data-tone="active"] > svg {
+  color: var(--brand-text);
+}
+
+/* A switch with its label and what it changes. */
 .dl-toggle {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: var(--space-16);
-  padding: var(--space-8) 0;
+  gap: 16px;
+  padding: 12px 14px;
 }
-
 .dl-toggle-text {
   display: grid;
-  gap: var(--space-2);
+  gap: 2px;
   min-width: 0;
 }
-
 .dl-toggle label {
   color: var(--text-1);
   font-size: 13px;
   font-weight: 700;
+  line-height: 20px;
   cursor: pointer;
 }
 
-.dl-toggle [role="switch"] {
-  margin-top: var(--space-2);
+/* The app's one switch (管理工具, 设置): --switch-* tokens, ink track when
+   on, outlined track with a muted thumb when off. Drawn over Radix Switch. */
+.dl-dialog button[role="switch"] {
+  flex: none;
+  width: 36px;
+  height: 20px;
+  margin-top: 1px;
+  padding: 3px;
+  border: 1px solid var(--switch-off-border);
+  border-radius: var(--radius-pill);
+  background: var(--switch-off-bg);
+  box-shadow: none;
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+}
+.dl-dialog button[role="switch"] > span {
+  width: 12px;
+  height: 12px;
+  background: var(--switch-thumb-off);
+  box-shadow: none;
+  transform: translateX(0);
+  transition:
+    transform var(--dur-fast) var(--ease-out),
+    background-color var(--dur-fast) var(--ease-out);
+}
+.dl-dialog button[role="switch"][data-state="checked"] {
+  border-color: var(--switch-on-bg);
+  background: var(--switch-on-bg);
+}
+.dl-dialog button[role="switch"][data-state="checked"] > span {
+  background: var(--switch-thumb-on);
+  transform: translateX(16px);
+}
+.dl-dialog button[role="switch"]:disabled {
+  opacity: 0.45;
 }
 
-.dl-usage {
-  padding: var(--space-12) var(--space-16);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-panel);
-}
-
-/* Collapsed script and stored content */
-.dl-details summary {
-  width: fit-content;
-  color: var(--text-2);
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.dl-details summary:hover {
-  color: var(--text-1);
-}
-
-.dl-details summary:focus-visible,
-.dl-code:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
-}
-
-.dl-code {
-  max-height: 240px;
-  margin: var(--space-8) 0 0;
-  padding: var(--space-8) var(--space-12);
-  overflow: auto;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-control);
-  background: var(--code-display-bg);
-  color: var(--text-1);
-  font-size: 12px;
-  line-height: 1.5;
-  white-space: pre;
-  tab-size: 2;
-}
-
-.dl-code-wrap {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-/* Environment variables */
-.dl-env {
+.dl-files {
   display: grid;
-  gap: var(--space-8);
+  gap: 4px;
+  padding: 10px 14px 12px;
+}
+.dl-paths {
+  display: grid;
+  gap: 2px;
   margin: 0;
   padding: 0;
   list-style: none;
 }
-
-.dl-env-row {
-  display: grid;
-  gap: var(--space-2);
+.dl-paths li {
+  color: var(--text-1);
+  line-height: 18px;
 }
 
+/* Code: the usage script, the stored content, a prompt. */
+.dl-code-figure {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--code-display-bg);
+}
+.dl-code-figure + .dl-code-figure {
+  margin-top: 8px;
+}
+.dl-code-caption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 18px;
+}
+.dl-code-title {
+  min-width: 0;
+  font-weight: 600;
+}
+.dl-code-meta {
+  flex: none;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.dl-code {
+  max-height: 240px;
+  margin: 0;
+  padding: 8px 0;
+  overflow: auto;
+  color: var(--text-1);
+  font:
+    400 12px/1.6 var(--font-mono),
+    var(--font-cjk),
+    monospace;
+  font-variant-ligatures: none;
+  white-space: pre;
+  tab-size: 2;
+  counter-reset: dl-line;
+  scrollbar-width: thin;
+}
+.dl-code[data-wrap] {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.dl-code:focus-visible {
+  outline-offset: -2px;
+}
+.dl-code-line {
+  position: relative;
+  display: block;
+  padding: 0 14px 0 calc(3ch + 24px);
+}
+.dl-code-line::before {
+  position: absolute;
+  left: 10px;
+  width: 3ch;
+  color: var(--text-3);
+  text-align: right;
+  content: counter(dl-line);
+  counter-increment: dl-line;
+  user-select: none;
+}
+/* Prose (a prompt): the UI face, no line numbers. */
+.dl-code[data-prose] {
+  padding: 10px 14px;
+  font:
+    400 13px/1.7 var(--font-latin),
+    var(--font-cjk),
+    sans-serif;
+}
+.dl-code[data-prose] .dl-code-line {
+  padding: 0;
+}
+.dl-code[data-prose] .dl-code-line::before {
+  content: none;
+}
+
+/* Environment variables */
+.dl-env-group {
+  display: grid;
+  gap: 6px;
+}
+.dl-env {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  list-style: none;
+}
+.dl-env-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  min-height: 36px;
+  padding: 7px 12px;
+}
+.dl-env-row + .dl-env-row {
+  border-top: 1px solid var(--border-subtle);
+}
+.dl-env-row > .dl-mono {
+  min-width: 0;
+}
+.dl-env-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+  cursor: pointer;
+}
+.dl-env-check input {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  margin: 1px 0 0;
+  accent-color: var(--check-on-bg);
+  cursor: pointer;
+}
 .dl-env-value {
   color: var(--text-3);
 }
 
-.dl-env-denied {
-  color: var(--warning-fg);
-  font-size: 12px;
-}
-
-.dl-env-confirm {
-  display: flex;
+.dl-tag {
+  display: inline-flex;
+  flex: none;
   align-items: center;
-  gap: var(--space-8);
+  height: 20px;
+  padding: 0 8px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-well);
   color: var(--text-2);
   font-size: 12px;
-  cursor: pointer;
+  line-height: 20px;
+  white-space: nowrap;
 }
 
-.dl-env-confirm input {
-  accent-color: var(--text-1);
-}
-
-/* Ignored settings */
-.dl-chips {
+/* Names left out of the import */
+.dl-chips,
+.dl-tags {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-4);
+  gap: 6px;
   margin: 0;
   padding: 0;
   list-style: none;
 }
-
-.dl-chips li {
-  padding: 1px var(--space-6);
+.dl-chips > li {
+  max-width: 100%;
+  padding: 1px 8px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-control);
   background: var(--bg-subtle);
   color: var(--text-2);
-  font-size: 11px;
+  font:
+    400 12px/18px var(--font-mono),
+    var(--font-cjk),
+    monospace;
   overflow-wrap: anywhere;
 }
-
-.dl-chips li.dl-chips-more {
-  border-style: dashed;
+.dl-chips > li.dl-chips-more {
+  padding: 0;
+  border: 0;
+  background: none;
+}
+.dl-chips-more button {
+  height: 22px;
+  padding: 0 8px;
+  border: 1px dashed var(--border-control);
+  border-radius: var(--radius-control);
   background: transparent;
-  font-family: inherit;
+  color: var(--text-2);
+  font:
+    400 12px/20px var(--font-latin),
+    var(--font-cjk),
+    sans-serif;
+  cursor: pointer;
+}
+.dl-chips-more button:hover {
+  border-color: var(--text-3);
+  color: var(--text-1);
+}
+.dl-tags > li {
+  padding: 0 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  color: var(--text-1);
+  font-size: 12px;
+  line-height: 20px;
 }
 
-.dl-footnote {
+/* MCP servers */
+.dl-servers {
+  display: grid;
+  gap: 8px;
   margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.dl-server {
+  min-width: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+}
+.dl-server[data-risk] {
+  border-color: var(--warning-border);
+}
+.dl-server-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.dl-server-name {
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 20px;
+  overflow-wrap: anywhere;
+}
+.dl-server-rows {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 14px;
+  margin: 0;
+  padding: 8px 12px 10px;
+}
+.dl-server-rows dt {
   color: var(--text-3);
   font-size: 12px;
-  line-height: var(--lh-help);
+  line-height: 18px;
+}
+.dl-server-rows dd {
+  min-width: 0;
+  margin: 0;
+  line-height: 18px;
+}
+.dl-args {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.dl-server-rows [data-risk] {
+  color: var(--warning-fg);
+  font-weight: 600;
 }
 
-/* Messages under the scroll area */
-.dl-status,
-.dl-alert {
-  margin: 0 var(--space-24) var(--space-12);
+/* Full stored content */
+.dl-content > summary {
+  font-size: 13px;
+}
+.dl-summary-hint {
+  color: var(--text-3);
   font-size: 12px;
-  line-height: var(--lh-help);
+  font-weight: 400;
 }
 
-.dl-status {
-  color: var(--text-2);
-}
-
-.dl-alert {
-  padding: var(--space-8) var(--space-12);
-  border: 1px solid var(--danger-border);
-  border-radius: var(--radius-control);
-  background: var(--danger-bg);
-  color: var(--danger-fg);
-  overflow-wrap: anywhere;
-}
-
-@media (max-width: 600px) {
-  .dl-body {
-    padding: var(--space-12) var(--space-16);
+@media (max-width: 640px) {
+  .dl-header,
+  .dl-body,
+  .dl-bottom {
+    padding-right: 16px;
+    padding-left: 16px;
   }
-
-  .dl-fields {
+  .dl-route {
+    flex-direction: column;
+    gap: 10px;
+  }
+  .dl-track {
+    display: none;
+  }
+  .dl-facts {
     grid-template-columns: minmax(0, 1fr);
-    gap: var(--space-2);
+    gap: 2px;
   }
+  .dl-facts dd {
+    margin-bottom: 6px;
+  }
+}
 
-  .dl-fields dd {
-    margin-bottom: var(--space-6);
+@media (prefers-reduced-motion: reduce) {
+  .dl-dialog button[role="switch"],
+  .dl-dialog button[role="switch"] > span {
+    transition: none;
   }
 }

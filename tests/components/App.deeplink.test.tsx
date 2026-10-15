@@ -60,7 +60,8 @@ const request = (name: string): DeepLinkImportRequest => ({
 });
 let queue: Pending[];
 let preview: DeepLinkImportPreview;
-const handlers = new Map<string, Set<() => void>>();
+type EventHandler = (event?: { payload: unknown }) => void;
+const handlers = new Map<string, Set<EventHandler>>();
 const notify = () =>
   act(() => {
     handlers.get("deeplink-import")?.forEach((handler) => handler());
@@ -123,7 +124,7 @@ beforeEach(() => {
     );
   mocks.listen
     .mockReset()
-    .mockImplementation(async (name: string, handler: () => void) => {
+    .mockImplementation(async (name: string, handler: EventHandler) => {
       const set = handlers.get(name) ?? new Set();
       handlers.set(name, set);
       set.add(handler);
@@ -357,6 +358,162 @@ describe("default App deep-link handoff", () => {
     );
     const [, payload] = calls("import_from_deeplink_unified")[0];
     expect(payload.request.confirmedEnvKeys).toEqual(["VENDOR_FLAG"]);
+  });
+
+  it("starts on the safe action and ignores a held Enter", async () => {
+    mount();
+    await screen.findByText("Cold Start");
+    await importReady();
+    const cancel = screen.getByRole("button", { name: "common.cancel" });
+    expect(cancel).toHaveFocus();
+    // A key held down from where the link was pasted must not reach a button.
+    expect(fireEvent.keyDown(cancel, { key: "Enter", repeat: true })).toBe(
+      false,
+    );
+    expect(fireEvent.keyDown(cancel, { key: "Enter" })).toBe(true);
+    expect(calls("import_from_deeplink_unified")).toHaveLength(0);
+  });
+
+  it("shows stored credentials by their last four characters only", async () => {
+    queue[0].request.app = "claude";
+    preview = {
+      ...preview,
+      content: JSON.stringify(
+        {
+          env: {
+            ANTHROPIC_AUTH_TOKEN: "fake-secret-do-not-display",
+            ANTHROPIC_BASE_URL: "http://127.0.0.1:8080/v1",
+          },
+        },
+        null,
+        2,
+      ),
+    };
+    mount();
+    await screen.findByText("Cold Start");
+    await importReady();
+    fireEvent.click(screen.getByText("查看将保存的完整内容"));
+    expect(
+      screen.getByText(/"ANTHROPIC_AUTH_TOKEN": "••••play"/),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/fake-secret-do-not-display/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("switches lines only after the user turns the switch on", async () => {
+    queue[0].request.enabled = true;
+    preview = { ...preview, mayActivate: true };
+    mount();
+    await screen.findByText("Cold Start");
+    await importReady();
+    const activate = screen.getByRole("switch", {
+      name: "导入后立即切换到这条线路",
+    });
+    // The link asked for it; the switch still starts off.
+    expect(activate).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(activate);
+    fireEvent.click(screen.getByRole("button", { name: "导入并切换" }));
+    await waitFor(() =>
+      expect(calls("import_from_deeplink_unified")).toHaveLength(1),
+    );
+    const [, payload] = calls("import_from_deeplink_unified")[0];
+    expect(payload.request.enabled).toBe(true);
+  });
+
+  it("enables a link's usage script only with explicit consent", async () => {
+    queue[0].request.usageEnabled = true;
+    preview = {
+      ...preview,
+      usage: {
+        code: "({\n  request: { url: '{{baseUrl}}/usage' }\n})",
+        hosts: ["127.0.0.1:8080"],
+        linkRequestsEnabled: true,
+        autoIntervalMinutes: 30,
+      },
+    };
+    mount();
+    await screen.findByText("Cold Start");
+    await importReady();
+    expect(
+      screen.getByRole("region", { name: "用量查询脚本代码" }),
+    ).toHaveTextContent("request: { url: '{{baseUrl}}/usage' }");
+    const consent = screen.getByRole("switch", {
+      name: "导入后启用用量查询",
+    });
+    expect(consent).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(importButton());
+    await waitFor(() =>
+      expect(calls("import_from_deeplink_unified")).toHaveLength(1),
+    );
+    const [, payload] = calls("import_from_deeplink_unified")[0];
+    expect(payload.request.confirmedUsageEnabled).toBe(false);
+    expect(payload.request.enabled).toBe(false);
+  });
+
+  it("says where to find a line whose tool is not in the sidebar", async () => {
+    queue[0].request.app = "claude";
+    const normal = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation((command, payload) =>
+      command === "get_settings"
+        ? Promise.resolve({ visibleApps: { codex: true, claude: false } })
+        : normal(command, payload),
+    );
+    mount();
+    expect(
+      await screen.findByText(/Claude Code 目前没有显示在侧栏/),
+    ).toBeInTheDocument();
+  });
+
+  it("reports an MCP import that the backend refused as a whole", async () => {
+    const normal = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation((command, payload) =>
+      command === "import_from_deeplink_unified"
+        ? Promise.resolve({
+            type: "mcp",
+            importedCount: 0,
+            importedIds: [],
+            failed: [{ id: "broken-one", error: "invalid" }],
+          })
+        : normal(command, payload),
+    );
+    mount();
+    await screen.findByText("Cold Start");
+    await importReady();
+    fireEvent.click(importButton());
+    await waitFor(() =>
+      expect(mocks.toast.error).toHaveBeenCalledWith(
+        "MCP 服务器未导入",
+        expect.objectContaining({
+          description: expect.stringContaining("broken-one"),
+        }),
+      ),
+    );
+    expect(mocks.toast.success).not.toHaveBeenCalled();
+    expect(mocks.toast.warning).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      { url: "ccswitch://v1", error: "DEEP_LINK_PARSE_FAILED" },
+      "无法识别这个导入链接",
+    ],
+    [{ error: "DEEP_LINK_QUEUE_FULL" }, "待确认的导入太多"],
+    [{ error: "此功能在当前版本未开放: multi_tool" }, "无法导入这个链接"],
+    [null, "无法处理导入链接"],
+  ])("explains why a link was refused (%j)", async (payload, title) => {
+    queue = [];
+    mount();
+    await waitFor(() => expect(handlers.get("deeplink-error")?.size).toBe(1));
+    act(() => {
+      handlers
+        .get("deeplink-error")
+        ?.forEach((handler) => handler({ payload }));
+    });
+    expect(mocks.toast.error).toHaveBeenCalledWith(
+      title,
+      expect.objectContaining({ description: expect.any(String) }),
+    );
   });
 
   it("blocks the import when the backend preview fails", async () => {

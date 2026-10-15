@@ -168,18 +168,110 @@ export function classifyCommand(
 }
 
 /**
+ * 键名里出现这些词时，其取值按凭据处理。按词比较而不是按子串：
+ * `MAX_OUTPUT_TOKENS` 是计数，`MONKEY` 也不是 key。
+ */
+const SENSITIVE_WORDS = new Set([
+  "TOKEN",
+  "KEY",
+  "APIKEY",
+  "SECRET",
+  "PASSWORD",
+  "PASSWD",
+  "AUTHORIZATION",
+  "CREDENTIAL",
+  "CREDENTIALS",
+  "COOKIE",
+]);
+
+export function isSensitiveKey(key: string): boolean {
+  return key
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .toUpperCase()
+    .split(/[^A-Z0-9]+/)
+    .some((word) => SENSITIVE_WORDS.has(word));
+}
+
+/** 凭据只露末 4 位，与确认框里 API Key 的「末 4 位」同一口径。 */
+const MASK = "••••";
+
+export function maskSecret(value: string): string {
+  return value.length > 8 ? `${MASK}${value.slice(-4)}` : MASK;
+}
+
+/**
  * 凭据类取值的展示脱敏。
  *
  * 原先是 `DeepLinkImportDialog` 内的组件闭包；MCP 确认页也要展示 env，抽出来是
  * 为了两处共用同一套规则——各写一份迟早会漂移成两种脱敏口径。
+ * 短值不脱敏：否则连"是不是空的"都看不出来。
  */
 export function maskValue(key: string, value: string): string {
-  const sensitiveKeys = ["TOKEN", "KEY", "SECRET", "PASSWORD"];
-  const isSensitive = sensitiveKeys.some((k) => key.toUpperCase().includes(k));
-  if (isSensitive && value.length > 8) {
-    return `${value.substring(0, 8)}${"*".repeat(12)}`;
-  }
+  if (isSensitiveKey(key) && value.length > 8) return maskSecret(value);
   return value;
+}
+
+/** 最短按凭据遮盖的长度：更短的串很可能也出现在别处（模型名、路径），遮了反而看不懂。 */
+const MIN_SECRET_LENGTH = 6;
+
+/**
+ * 「将保存的完整内容」里出现的凭据：凭据类键名下的字符串值。
+ * 内容来自后端的 JSON 预览；解析失败时返回空，只靠调用方传入的已知凭据遮盖。
+ */
+export function collectSecretValues(content: string): string[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return [];
+  }
+  const found = new Set<string>();
+  const walk = (value: unknown, key: string, depth: number) => {
+    if (depth > 32 || value === null) return;
+    if (typeof value === "string") {
+      // 纯数字是计数或开关，不是凭据。
+      if (
+        key &&
+        isSensitiveKey(key) &&
+        value.trim().length >= MIN_SECRET_LENGTH &&
+        /[A-Za-z]/.test(value)
+      ) {
+        found.add(value);
+      }
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach((item) => walk(item, key, depth + 1));
+      return;
+    }
+    if (typeof value === "object") {
+      for (const [child, item] of Object.entries(value)) {
+        walk(item, child, depth + 1);
+      }
+    }
+  };
+  walk(parsed, "", 0);
+  return [...found];
+}
+
+/**
+ * 把文本里的凭据换成「末 4 位」形式，只用于展示。
+ * 同时替换原文和 JSON 转义后的写法：预览内容是 JSON，凭据在其中以转义形式出现。
+ */
+export function maskSecrets(text: string, secrets: Iterable<string>): string {
+  const forms = new Map<string, string>();
+  for (const secret of secrets) {
+    for (const value of [secret, secret.trim()]) {
+      if (value.length < MIN_SECRET_LENGTH) continue;
+      const masked = maskSecret(value);
+      forms.set(value, masked);
+      forms.set(JSON.stringify(value).slice(1, -1), masked);
+    }
+  }
+  // 长的先换：一个凭据可能包含另一个。
+  return [...forms.entries()]
+    .sort(([a], [b]) => b.length - a.length)
+    .reduce((result, [form, masked]) => result.split(form).join(masked), text);
 }
 
 /** 风险种类 → i18n key。 */

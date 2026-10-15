@@ -1,58 +1,84 @@
-import { useMemo } from "react";
+import { useId } from "react";
 import { useTranslation } from "react-i18next";
-import { DeepLinkImportRequest } from "../../lib/api/deeplink";
-import { decodeBase64Utf8 } from "../../lib/utils/base64";
+import { Check } from "lucide-react";
+import type { DeepLinkImportRequest } from "@/lib/api/deeplink";
+import { CodeBlock } from "./CodeBlock";
+import { toolName } from "./tools";
 
 export function PromptConfirmation({
   request,
+  state,
+  content,
+  targetPath,
 }: {
   request: DeepLinkImportRequest;
+  /** Whether the backend preview has loaded, or refused the link. */
+  state: "loading" | "ready" | "failed";
+  /** The backend preview's decoded content: exactly what will be stored. */
+  content: string;
+  /** The tool's prompt file, written only once the prompt is enabled. */
+  targetPath?: string;
 }) {
   const { t } = useTranslation();
-
-  const decodedContent = useMemo(() => {
-    if (!request.content) return "";
-    return decodeBase64Utf8(request.content);
-  }, [request.content]);
+  const ids = useId();
+  const lines = content
+    ? content.replace(/\r\n?/g, "\n").replace(/\n$/, "").split("\n").length
+    : 0;
+  const fileName = targetPath?.split(/[\\/]/).pop();
 
   return (
-    <div className="space-y-4">
-      <h3 className="text-lg font-semibold">{t("deeplink.prompt.title")}</h3>
+    <>
+      <dl className="dl-facts">
+        <dt>{t("deeplink.prompt.name")}</dt>
+        <dd className="dl-strong">{request.name}</dd>
+        <dt>{t("deeplink.prompt.app")}</dt>
+        <dd>{toolName(request.app)}</dd>
+        {request.description && (
+          <>
+            <dt>{t("deeplink.prompt.description")}</dt>
+            <dd>{request.description}</dd>
+          </>
+        )}
+      </dl>
 
-      <div>
-        <label className="block text-sm font-medium text-muted-foreground">
-          {t("deeplink.prompt.app")}
-        </label>
-        <div className="mt-1 text-sm capitalize">{request.app}</div>
-      </div>
-
-      <div>
-        <label className="block text-sm font-medium text-muted-foreground">
-          {t("deeplink.prompt.name")}
-        </label>
-        <div className="mt-1 text-sm">{request.name}</div>
-      </div>
-
-      {request.description && (
-        <div>
-          <label className="block text-sm font-medium text-muted-foreground">
-            {t("deeplink.prompt.description")}
-          </label>
-          <div className="mt-1 text-sm">{request.description}</div>
-        </div>
+      {state === "ready" && (
+        <CodeBlock
+          code={content}
+          caption={`${t("deeplink.prompt.contentPreview")} · Markdown`}
+          meta={`${lines} 行`}
+          label={t("deeplink.prompt.contentPreview")}
+          prose
+        />
       )}
+      {state === "loading" && <p className="dl-note">正在读取提示词内容…</p>}
 
-      <div>
-        <label className="block text-sm font-medium text-muted-foreground">
-          {t("deeplink.prompt.contentPreview")}
-        </label>
-        <pre className="mt-1 max-h-48 overflow-auto bg-muted/50 p-2 rounded text-xs whitespace-pre-wrap border">
-          {decodedContent.substring(0, 500)}
-          {decodedContent.length > 500 && "..."}
-        </pre>
-      </div>
-
-      {/* Prompt links always import disabled (MH-4), so no enable warning. */}
-    </div>
+      {/* Prompt links always import disabled (MH-4). */}
+      {state === "ready" && (
+        <section className="dl-section" aria-labelledby={`${ids}-outcome`}>
+          <h3 id={`${ids}-outcome`} className="dl-section-title">
+            确认后
+          </h3>
+          <div className="dl-card">
+            <ul className="dl-outcome">
+              <li>
+                <Check size={14} aria-hidden="true" />
+                <span>
+                  保存到提示词库，保持停用
+                  {fileName ? `，不会改动 ${fileName}` : ""}。
+                </span>
+              </li>
+            </ul>
+            {targetPath && (
+              <div className="dl-files">
+                <span className="dl-note">在「提示词」中启用后才会写入：</span>
+                <ul className="dl-paths">
+                  <li className="dl-mono">{targetPath}</li>
+                </ul>
+              </div>
+            )}
+          </div>
+        </section>
+      )}
+    </>
   );
 }

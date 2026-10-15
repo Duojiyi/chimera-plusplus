@@ -1,46 +1,51 @@
+import { useId } from "react";
 import { useTranslation } from "react-i18next";
-import { DeepLinkImportRequest } from "../../lib/api/deeplink";
+import { Check } from "lucide-react";
+import type { DeepLinkImportRequest } from "@/lib/api/deeplink";
 
 export function SkillConfirmation({
   request,
+  state,
 }: {
   request: DeepLinkImportRequest;
+  /** Whether the backend preview has loaded, or refused the link. */
+  state: "loading" | "ready" | "failed";
 }) {
   const { t } = useTranslation();
+  const ids = useId();
 
   return (
-    <div className="space-y-4">
-      <h3 className="text-lg font-semibold">{t("deeplink.skill.title")}</h3>
+    <>
+      <dl className="dl-facts">
+        <dt>{t("deeplink.skill.repo")}</dt>
+        <dd className="dl-mono dl-strong">{request.repo}</dd>
+        <dt>{t("deeplink.skill.branch")}</dt>
+        <dd className="dl-mono">{request.branch || "main"}</dd>
+        {request.directory && (
+          <>
+            <dt>{t("deeplink.skill.directory")}</dt>
+            <dd className="dl-mono">{request.directory}</dd>
+          </>
+        )}
+      </dl>
 
-      <div>
-        <label className="block text-sm font-medium text-muted-foreground">
-          {t("deeplink.skill.repo")}
-        </label>
-        <div className="mt-1 text-sm font-mono bg-muted/50 p-2 rounded border">
-          {request.repo}
-        </div>
-      </div>
-
-      <div>
-        <label className="block text-sm font-medium text-muted-foreground">
-          {t("deeplink.skill.directory")}
-        </label>
-        <div className="mt-1 text-sm font-mono bg-muted/50 p-2 rounded border">
-          {request.directory}
-        </div>
-      </div>
-
-      <div>
-        <label className="block text-sm font-medium text-muted-foreground">
-          {t("deeplink.skill.branch")}
-        </label>
-        <div className="mt-1 text-sm">{request.branch || "main"}</div>
-      </div>
-
-      <div className="text-blue-600 dark:text-blue-400 text-sm bg-blue-50 dark:bg-blue-950/30 p-3 rounded border border-blue-200 dark:border-blue-800">
-        <p>ℹ️ {t("deeplink.skill.hint")}</p>
-        <p className="mt-1">{t("deeplink.skill.hintDetail")}</p>
-      </div>
-    </div>
+      {/* Skill repositories always import disabled (MH-4). */}
+      {state === "ready" && (
+        <section className="dl-section" aria-labelledby={`${ids}-outcome`}>
+          <h3 id={`${ids}-outcome`} className="dl-section-title">
+            确认后
+          </h3>
+          <div className="dl-card">
+            <ul className="dl-outcome">
+              <li>
+                <Check size={14} aria-hidden="true" />
+                <span>{t("deeplink.skill.hint")}</span>
+              </li>
+            </ul>
+            <p className="dl-card-note">{t("deeplink.skill.hintDetail")}</p>
+          </div>
+        </section>
+      )}
+    </>
   );
 }

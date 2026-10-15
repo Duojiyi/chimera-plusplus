@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { classifyCommand, classifyEndpoint, maskValue } from "./deeplinkRisk";
+import {
+  classifyCommand,
+  classifyEndpoint,
+  collectSecretValues,
+  isSensitiveKey,
+  maskSecrets,
+  maskValue,
+} from "./deeplinkRisk";
 
 describe("classifyEndpoint", () => {
   it("flags loopback, RFC 1918 and cloud metadata addresses", () => {
@@ -124,13 +131,63 @@ describe("classifyCommand", () => {
 
 describe("maskValue", () => {
   it("masks credential-shaped keys but keeps ordinary values readable", () => {
+    // 与确认框里 API Key 的「末 4 位」同一口径：开头不露
     expect(maskValue("ANTHROPIC_AUTH_TOKEN", "sk-ant-1234567890abcdef")).toBe(
-      "sk-ant-1************",
+      "••••cdef",
+    );
+    expect(maskValue("Authorization", "Bearer 1234567890abcdef")).toBe(
+      "••••cdef",
     );
     expect(maskValue("ANTHROPIC_BASE_URL", "https://example.com")).toBe(
       "https://example.com",
     );
     // 短值不脱敏，否则连"是不是空的"都看不出来
     expect(maskValue("API_KEY", "short")).toBe("short");
+  });
+
+  it("matches credential words, not substrings", () => {
+    for (const key of ["apiKey", "x-api-key", "OPENAI_APIKEY", "accessToken"]) {
+      expect(isSensitiveKey(key), key).toBe(true);
+    }
+    // 计数和普通名字不是凭据
+    for (const key of ["CLAUDE_CODE_MAX_OUTPUT_TOKENS", "MONKEY", "keyboard"]) {
+      expect(isSensitiveKey(key), key).toBe(false);
+    }
+  });
+});
+
+describe("maskSecrets", () => {
+  it("hides every credential of a JSON preview but its last four characters", () => {
+    const content = JSON.stringify(
+      {
+        auth: { OPENAI_API_KEY: "sk-qa-0000helio-6a1c" },
+        env: {
+          ANTHROPIC_BASE_URL: "https://api.example.com",
+          VENDOR_SESSION_TOKEN: 'xh-"quoted"-5d21',
+          ENABLE_TOOL_SEARCH: "true",
+        },
+        // 嵌在 TOML 文本里的同一把 key 由调用方作为已知凭据传入
+        config: 'api_key = "xai-qa-0000grok-d4e2"\nmodel = "grok-4"',
+      },
+      null,
+      2,
+    );
+    const secrets = collectSecretValues(content);
+    expect(secrets).toEqual(["sk-qa-0000helio-6a1c", 'xh-"quoted"-5d21']);
+    const masked = maskSecrets(content, [...secrets, "xai-qa-0000grok-d4e2"]);
+    expect(masked).not.toContain("sk-qa-0000helio");
+    expect(masked).not.toContain("quoted");
+    expect(masked).not.toContain("xai-qa-0000grok");
+    expect(masked).toContain('"OPENAI_API_KEY": "••••6a1c"');
+    expect(masked).toContain('"VENDOR_SESSION_TOKEN": "••••5d21"');
+    expect(masked).toContain('api_key = \\"••••d4e2\\"');
+    // 非凭据的值原样保留
+    expect(masked).toContain('"ANTHROPIC_BASE_URL": "https://api.example.com"');
+    expect(masked).toContain('"ENABLE_TOOL_SEARCH": "true"');
+  });
+
+  it("leaves text alone when it is not JSON or a secret is too short to mask safely", () => {
+    expect(collectSecretValues("repo: a/b")).toEqual([]);
+    expect(maskSecrets("model = gpt-5", ["gpt"])).toBe("model = gpt-5");
   });
 });
