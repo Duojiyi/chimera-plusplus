@@ -14,11 +14,15 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import {
-  EditorLabel,
+  EditorChoice,
   EditorToggle,
+  OneMCheck,
+  ROUTED_PROTOCOL_NOTE,
   SectionStatus,
+  type EditorChoiceOption,
 } from "@/components/providers/ProviderEditorFields";
-import { BasicFormFields } from "./BasicFormFields";
+import { HelpTip } from "@/components/ui/help-tip";
+import { BasicFormFields, MoreInfoFields } from "./BasicFormFields";
 import { CodexOAuthSection } from "./CodexOAuthSection";
 import { CopilotAuthSection } from "./CopilotAuthSection";
 import { XaiOAuthSection } from "./XaiOAuthSection";
@@ -78,6 +82,8 @@ export interface ClaudeDesktopProviderFormProps {
   onDirtyChange?: () => void;
   /** The line name as typed, for the editor header. */
   onNameChange?: (name: string) => void;
+  /** The request address as typed (null when the line has none). */
+  onBaseUrlChange?: (url: string | null) => void;
   initialData?: {
     name?: string;
     websiteUrl?: string;
@@ -108,15 +114,15 @@ const LEGACY_ONE_M_MARKER = "[1m]";
 const ROLE_ROUTE_IDS = CLAUDE_DESKTOP_ROLE_ROUTE_IDS;
 const ROLE_ORDER: RouteRole[] = ["sonnet", "opus", "fable", "haiku"];
 
-// The protocol control of the line editor: one segmented choice, the note
+// The protocol control of the line editors, in their order; the note is
 // read as each option's description.
 const DESKTOP_FORMAT_CHOICES: ReadonlyArray<
-  readonly [ClaudeApiFormat, string, string]
+  EditorChoiceOption<ClaudeApiFormat>
 > = [
+  ["openai_responses", "Responses", ROUTED_PROTOCOL_NOTE],
+  ["openai_chat", "Chat Completions", ROUTED_PROTOCOL_NOTE],
   ["anthropic", "Anthropic Messages", "Claude Desktop 原生协议"],
-  ["openai_chat", "Chat Completions", "需开启路由，经本地路由转换"],
-  ["openai_responses", "Responses", "需开启路由，经本地路由转换"],
-  ["gemini_native", "Gemini", "需开启路由，经本地路由转换"],
+  ["gemini_native", "Gemini", ROUTED_PROTOCOL_NOTE],
 ];
 
 function envString(
@@ -252,6 +258,7 @@ export function ClaudeDesktopProviderForm({
   onSubmittingChange,
   onDirtyChange,
   onNameChange,
+  onBaseUrlChange,
   initialData,
   showButtons = true,
 }: ClaudeDesktopProviderFormProps) {
@@ -437,6 +444,9 @@ export function ClaudeDesktopProviderForm({
     isOAuthProviderType(activeProviderType);
   const effectiveMode: "direct" | "proxy" = usesManagedOAuth ? "proxy" : mode;
   const needsModelMapping = effectiveMode === "proxy";
+  useEffect(() => {
+    onBaseUrlChange?.(isOfficial ? null : baseUrl);
+  }, [baseUrl, isOfficial, onBaseUrlChange]);
 
   // API Key 获取/邀请链接（与 Claude Code 表单同款，见 ClaudeFormFields）
   const apiKeyLinkCategory = activePreset?.category ?? initialData?.category;
@@ -886,6 +896,28 @@ export function ClaudeDesktopProviderForm({
               </p>
             )}
 
+            {!isOfficial && (
+              <EndpointField
+                id="baseUrl"
+                label="API 请求地址"
+                required={!usesManagedOAuth}
+                value={baseUrl}
+                onChange={(v) => setBaseUrl(v)}
+                placeholder={t("providerForm.apiEndpointPlaceholder")}
+                hint={
+                  needsModelMapping && apiFormat === "openai_responses"
+                    ? t("providerForm.apiHintResponses")
+                    : needsModelMapping && apiFormat === "openai_chat"
+                      ? t("providerForm.apiHintOAI")
+                      : needsModelMapping && apiFormat === "gemini_native"
+                        ? t("providerForm.apiHintGeminiNative")
+                        : t("providerForm.apiHint")
+                }
+                help="不需要模型映射时，Claude Desktop 在这个地址后拼接 /v1/messages；需要模型映射时，本地路由按所选协议转发到这个地址。"
+                showManageButton={false}
+              />
+            )}
+
             {!isOfficial &&
               (usesManagedOAuth ? (
                 <div className="editor-managed-auth">
@@ -918,29 +950,10 @@ export function ClaudeDesktopProviderForm({
                   websiteUrl={apiKeyLinkWebsiteUrl}
                   isPartner={apiKeyLinkIsPartner}
                   partnerPromotionKey={apiKeyLinkPromotionKey}
+                  help="密钥只保存在本机，写入 Claude Desktop 的第三方接入配置。"
                 />
               ))}
-
-            {!isOfficial && (
-              <EndpointField
-                id="baseUrl"
-                label={t("providerForm.apiEndpoint")}
-                required={!usesManagedOAuth}
-                value={baseUrl}
-                onChange={(v) => setBaseUrl(v)}
-                placeholder={t("providerForm.apiEndpointPlaceholder")}
-                hint={
-                  needsModelMapping && apiFormat === "openai_responses"
-                    ? t("providerForm.apiHintResponses")
-                    : needsModelMapping && apiFormat === "openai_chat"
-                      ? t("providerForm.apiHintOAI")
-                      : needsModelMapping && apiFormat === "gemini_native"
-                        ? t("providerForm.apiHintGeminiNative")
-                        : t("providerForm.apiHint")
-                }
-                showManageButton={false}
-              />
-            )}
+            <MoreInfoFields form={form} />
           </div>
         </section>
 
@@ -976,70 +989,41 @@ export function ClaudeDesktopProviderForm({
             </div>
 
             {needsModelMapping && activeProviderType !== "xai_oauth" && (
-              <div className="editor-format">
-                <EditorLabel
-                  id="desktop-format-label"
-                  label="协议"
-                  help="Anthropic Messages 是 Claude Desktop 的原生协议；其余协议由本地路由转换，使用期间需保持 Chimera++ 运行。"
-                />
-                <div
-                  className="editor-format-options"
-                  role="radiogroup"
-                  aria-labelledby="desktop-format-label"
-                >
-                  {DESKTOP_FORMAT_CHOICES.map(([value, label, description]) => (
-                    <label key={value} className="editor-format-option">
-                      <input
-                        type="radio"
-                        name="claude-desktop-api-format"
-                        value={value}
-                        checked={apiFormat === value}
-                        onChange={() => setApiFormat(value)}
-                        aria-labelledby={`desktop-format-${value}`}
-                        aria-describedby={`desktop-format-${value}-note`}
-                      />
-                      <span className="editor-format-option-text">
-                        <b id={`desktop-format-${value}`}>{label}</b>
-                        <small id={`desktop-format-${value}-note`}>
-                          {description}
-                        </small>
-                      </span>
-                    </label>
-                  ))}
-                </div>
-              </div>
+              <EditorChoice
+                name="claude-desktop-api-format"
+                label="协议"
+                help="Anthropic Messages 是 Claude Desktop 的原生协议；其余协议由本地路由转换，使用期间需保持 Chimera++ 运行。"
+                value={apiFormat}
+                options={DESKTOP_FORMAT_CHOICES}
+                onChange={setApiFormat}
+              />
             )}
 
             {needsModelMapping && (
               <div className="advanced-group model-mapping">
                 <div className="advanced-section-heading">
-                  <div>
+                  <span className="editor-field-label">
                     <b>
                       {t("claudeDesktop.routeMapTitle", {
                         defaultValue: "模型映射",
                       })}
                     </b>
-                    <small>
+                    <HelpTip title="模型映射说明">
                       {t("claudeDesktop.routeMapHint", {
                         defaultValue:
                           "填写实际模型 ID；空白角色沿用 Sonnet 或首个已填模型。",
                       })}
-                    </small>
-                  </div>
-                  {fetchModelsButton}
+                      勾选 1M 会向 Claude Desktop 声明这个模型支持 1M 上下文。
+                    </HelpTip>
+                  </span>
+                  <span className="mapping-heading-actions">
+                    {fetchModelsButton}
+                  </span>
                 </div>
                 {routes.length > 0 && (
-                  <div className="mapping-head is-desktop" aria-hidden="true">
-                    <span>
-                      {t("claudeDesktop.routeModelLabel", {
-                        defaultValue: "模型角色",
-                      })}
-                    </span>
-                    <span>
-                      {t("claudeDesktop.labelOverrideLabel", {
-                        defaultValue: "菜单显示名",
-                      })}
-                    </span>
+                  <div className="mapping-head is-tiers" aria-hidden="true">
+                    <span>档位</span>
+                    <span>菜单显示名（可选）</span>
                     <span>
                       {t("claudeDesktop.upstreamModelLabel", {
                         defaultValue: "实际请求模型",
@@ -1080,7 +1064,7 @@ export function ClaudeDesktopProviderForm({
                     ? "deepseek-v4-flash"
                     : "deepseek-v4-pro";
                   return (
-                    <div key={route.rowId} className="mapping-row is-desktop">
+                    <div key={route.rowId} className="mapping-row is-tiers">
                       <span className="mapping-role">{roleLabel}</span>
                       <input
                         aria-label={`${roleLabel} 菜单显示名`}
@@ -1117,20 +1101,13 @@ export function ClaudeDesktopProviderForm({
                           />
                         )}
                       </div>
-                      <label className="mapping-check">
-                        <input
-                          type="checkbox"
-                          checked={route.supports1m}
-                          onChange={(event) =>
-                            updateRoute(index, {
-                              supports1m: event.target.checked,
-                            })
-                          }
-                        />
-                        {t("claudeDesktop.supports1mShort", {
-                          defaultValue: "1M",
-                        })}
-                      </label>
+                      <OneMCheck
+                        label={roleLabel}
+                        checked={route.supports1m}
+                        onChange={(supports1m) =>
+                          updateRoute(index, { supports1m })
+                        }
+                      />
                     </div>
                   );
                 })}
@@ -1213,20 +1190,13 @@ export function ClaudeDesktopProviderForm({
                           />
                         )}
                       </div>
-                      <label className="mapping-check">
-                        <input
-                          type="checkbox"
-                          checked={route.supports1m}
-                          onChange={(event) =>
-                            updateRoute(index, {
-                              supports1m: event.target.checked,
-                            })
-                          }
-                        />
-                        {t("claudeDesktop.supports1mShort", {
-                          defaultValue: "1M",
-                        })}
-                      </label>
+                      <OneMCheck
+                        label={`模型 ${index + 1}`}
+                        checked={route.supports1m}
+                        onChange={(supports1m) =>
+                          updateRoute(index, { supports1m })
+                        }
+                      />
                       <button
                         type="button"
                         className="icon-button mapping-delete"

@@ -835,11 +835,12 @@ describe("native tool editor ownership", () => {
       fireEvent.click(screen.getByRole("button", { name: "添加线路" }));
       await screen.findByRole("region", { name: "新建线路" });
       expect(screen.queryByText("Codex 功能")).not.toBeInTheDocument();
-      // Claude Code reads the line's model list like Codex; the other tools
-      // take a typed model ID.
-      const fetchModels = screen.queryByRole("button", { name: "获取模型" });
-      if (appId === "claude") expect(fetchModels).toBeInTheDocument();
-      else expect(fetchModels).not.toBeInTheDocument();
+      // Every line editor reads the line's model list (or takes a typed ID),
+      // and every new line starts from the template card.
+      expect(
+        screen.getByRole("button", { name: "获取模型" }),
+      ).toBeInTheDocument();
+      expect(screen.getByText("配置模板 · ChimeraHub")).toBeInTheDocument();
       fillField("provider-name", "Native");
       fillField("provider-base-url", "https://new.example/custom");
       fillField("provider-api-key", "new-key");
@@ -947,6 +948,74 @@ describe("native tool editor ownership", () => {
       );
     },
   );
+
+  it("says when the edited line is the one in use and lists a 1M tier as current", async () => {
+    enableTools();
+    const native = {
+      id: "native",
+      name: "Native",
+      settingsConfig: {
+        env: {
+          ANTHROPIC_BASE_URL: "https://old.example",
+          ANTHROPIC_AUTH_TOKEN: "old-key",
+          ANTHROPIC_MODEL: "main-1",
+          ANTHROPIC_DEFAULT_OPUS_MODEL: "big-1[1M]",
+        },
+      },
+    };
+    const spare = {
+      id: "spare",
+      name: "Spare",
+      settingsConfig: { env: { ANTHROPIC_BASE_URL: "https://spare.example" } },
+    };
+    mocks.getAll.mockImplementation(async (app: string) =>
+      app === "codex"
+        ? { Alpha: provider("Alpha"), Beta: provider("Beta") }
+        : { native, spare },
+    );
+    mocks.getCurrent.mockImplementation(async (app: string) =>
+      app === "claude" ? "native" : "Alpha",
+    );
+    mocks.fetchModels.mockResolvedValue([
+      { id: "big-1", ownedBy: null },
+      { id: "big-2", ownedBy: null },
+    ]);
+    mount();
+    await openTool("Claude Code");
+    // A line the tool does not use: no notice.
+    fireEvent.click(await screen.findByRole("button", { name: "编辑Spare" }));
+    await screen.findByRole("region", { name: "编辑线路" });
+    expect(screen.queryByText(/这是正在使用的线路/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "返回线路" }));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("region", { name: "编辑线路" }),
+      ).not.toBeInTheDocument(),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "编辑Native" }));
+    await screen.findByRole("region", { name: "编辑线路" });
+    expect(screen.getByText(/这是正在使用的线路/)).toHaveTextContent(
+      "保存后立即写入 Claude Code 的配置",
+    );
+    // The stored Opus model carries [1M]; the picker's 当前 tag ignores it.
+    fireEvent.click(
+      screen.getByRole("button", { name: "从模型列表选择 Opus 模型" }),
+    );
+    const picker = await screen.findByRole("dialog", { name: "选择模型" });
+    expect(
+      within(picker).getByRole("button", { name: /^big-1/ }),
+    ).toHaveTextContent("当前");
+    expect(
+      within(picker).getByRole("button", { name: /^big-2/ }),
+    ).not.toHaveTextContent("当前");
+    fireEvent.click(within(picker).getByRole("button", { name: /^big-2/ }));
+    expect(
+      document.querySelector('[name="provider-claude-opus-model"]'),
+    ).toHaveValue("big-2");
+    expect(
+      screen.getByRole("checkbox", { name: "Opus 声明支持 1M" }),
+    ).toBeChecked();
+  });
 
   async function beginDelayedOpen(
     label: string,

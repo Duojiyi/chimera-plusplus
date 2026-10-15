@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Zap } from "lucide-react";
 import { EditorLabel } from "@/components/providers/ProviderEditorFields";
@@ -18,6 +19,8 @@ interface EndpointFieldProps {
   onFullUrlChange?: (value: boolean) => void;
   /** Mark the label as required (" *"), like the line editor. */
   required?: boolean;
+  /** The "?" card: how the tool turns this address into requests. */
+  help?: ReactNode;
 }
 
 /**
@@ -40,6 +43,7 @@ export function EndpointField({
   isFullUrl = false,
   onFullUrlChange,
   required = false,
+  help,
 }: EndpointFieldProps) {
   const { t } = useTranslation();
 
@@ -63,7 +67,11 @@ export function EndpointField({
   return (
     <div className="editor-field">
       <div className="editor-field-row">
-        <EditorLabel htmlFor={id} label={required ? `${label} *` : label} />
+        <EditorLabel
+          htmlFor={id}
+          label={required ? `${label} *` : label}
+          help={help}
+        />
         {(hasFullUrlToggle || hasManage) && (
           <span className="editor-field-tools">
             {hasFullUrlToggle && (

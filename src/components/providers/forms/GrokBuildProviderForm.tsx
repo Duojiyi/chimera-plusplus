@@ -14,8 +14,10 @@ import {
 } from "@/components/ui/form";
 import JsonEditor from "@/components/JsonEditor";
 import {
+  EditorAdvanced,
   EditorField,
   EditorLabel,
+  EditorSelect,
   SectionStatus,
 } from "@/components/providers/ProviderEditorFields";
 import { useDarkMode } from "@/hooks/useDarkMode";
@@ -34,7 +36,7 @@ import type {
   ProviderMeta,
 } from "@/types";
 import type { ProviderFormProps, ProviderFormValues } from "./ProviderForm";
-import { BasicFormFields } from "./BasicFormFields";
+import { BasicFormFields, MoreInfoFields } from "./BasicFormFields";
 import { CodexFormFields } from "./CodexFormFields";
 import { ProviderPresetSelector } from "./ProviderPresetSelector";
 import {
@@ -108,6 +110,7 @@ export function GrokBuildProviderForm({
   onSubmittingChange,
   onDirtyChange,
   onNameChange,
+  onBaseUrlChange,
   initialData,
   showButtons = true,
 }: GrokBuildProviderFormProps) {
@@ -226,6 +229,9 @@ export function GrokBuildProviderForm({
   useEffect(() => {
     onNameChange?.(watchedName ?? "");
   }, [watchedName, onNameChange]);
+  useEffect(() => {
+    onBaseUrlChange?.(category === "official" ? null : baseUrl);
+  }, [baseUrl, category, onBaseUrlChange]);
   // The raw editor opens on a broken file and stays open while it is fixed.
   const [rawConfigOpen, setRawConfigOpen] = useState(() =>
     Boolean(initialConfigText && configFormatError(initialConfigText)),
@@ -616,7 +622,7 @@ export function GrokBuildProviderForm({
             <TriangleAlert size={15} aria-hidden="true" />
             <span>
               这份 config.toml
-              的写法无法逐项修改：改动下面的地址、密钥或模型会按标准格式重写整个文件，其中的注释会被删除。要保留注释，请在“高级设置”里直接编辑原始配置。
+              的写法无法逐项修改：改动下面的地址、密钥或模型会按标准格式重写整个文件，其中的注释会被删除。要保留注释，请在“客户端档位与原始配置”里直接编辑。
             </span>
           </p>
         )}
@@ -632,6 +638,7 @@ export function GrokBuildProviderForm({
               <p className="editor-model-notice">
                 官方入口使用 Grok Build 自身的登录，无需填写地址、密钥或模型。
               </p>
+              <MoreInfoFields form={form} />
             </div>
           </section>
         ) : (
@@ -640,9 +647,12 @@ export function GrokBuildProviderForm({
               appId="grokbuild"
               providerId={providerId}
               basicLead={<BasicFormFields form={form} />}
+              basicTail={<MoreInfoFields form={form} />}
               basicStatus={<SectionStatus missing={basicMissing} />}
               protocolStatus={<SectionStatus missing={protocolMissing} />}
               codexApiKey={apiKey}
+              apiKeyRequired={!envKey}
+              apiKeyHelp="密钥写入 Grok Build 的 config.toml（api_key）；也可以在原始配置里改用 env_key 读取环境变量。"
               onApiKeyChange={(value) => {
                 setApiKey(value);
                 syncStructuredConfig({ apiKey: value });
@@ -654,6 +664,7 @@ export function GrokBuildProviderForm({
               partnerPromotionKey={partnerPromotionKey}
               shouldShowSpeedTest
               codexBaseUrl={baseUrl}
+              addressHelp="Grok Build 按所选协议在这个地址后拼接请求路径，例如 Responses 拼接 /responses；开启完整 URL 时按原样请求。"
               onBaseUrlChange={(value) => {
                 setBaseUrl(value);
                 syncStructuredConfig({ baseUrl: value });
@@ -698,126 +709,119 @@ export function GrokBuildProviderForm({
               onLocalProxyBodyOverrideChange={setBodyOverride}
             />
 
-            <details
-              className="chimera-disclosure editor-raw-config"
+            <EditorAdvanced
+              className="editor-raw-config"
+              title="客户端档位与原始配置"
+              summary="config.toml"
               open={rawConfigOpen}
-              onToggle={(event) => setRawConfigOpen(event.currentTarget.open)}
+              onToggle={setRawConfigOpen}
             >
-              <summary>
-                高级设置：客户端档位与原始配置
-                <small>config.toml</small>
-              </summary>
-              <div className="chimera-disclosure-body editor-advanced-body">
-                <div className="editor-grok-profile">
-                  <EditorField
-                    label={t("grokBuild.profile", {
-                      defaultValue: "客户端模型档位",
-                    })}
-                    htmlFor="grokbuild-profile"
-                  >
-                    <input
-                      id="grokbuild-profile"
-                      value={profile}
-                      onChange={(event) => {
-                        const value = event.target.value;
-                        setProfile(value);
-                        syncStructuredConfig({ model: value });
-                      }}
-                      placeholder="grok-4.5"
-                      autoComplete="off"
-                      spellCheck={false}
-                    />
-                  </EditorField>
-
-                  <EditorField
-                    label={t("grokBuild.apiBackend", {
-                      defaultValue: "API Backend",
-                    })}
-                    htmlFor="grokbuild-api-backend"
-                  >
-                    <select
-                      id="grokbuild-api-backend"
-                      value={apiBackend}
-                      onChange={(event) => {
-                        const value = event.target.value;
-                        setApiBackend(value);
-                        syncStructuredConfig({ apiBackend: value });
-                        // Keep the protocol selector in step with the backend.
-                        setApiFormat(grokApiFormatFromApiBackend(value));
-                      }}
-                    >
-                      {backendOptions.map((value) => (
-                        <option key={value} value={value}>
-                          {API_BACKEND_LABELS[value]
-                            ? `${API_BACKEND_LABELS[value]} (${value})`
-                            : value}
-                        </option>
-                      ))}
-                    </select>
-                  </EditorField>
-
-                  <EditorField
-                    label={t("grokBuild.contextWindow", {
-                      defaultValue: "上下文窗口",
-                    })}
-                    htmlFor="grokbuild-context-window"
-                  >
-                    <input
-                      id="grokbuild-context-window"
-                      type="number"
-                      min={1}
-                      step={1}
-                      value={contextWindow}
-                      onChange={(event) => {
-                        const value = event.target.value;
-                        setContextWindow(value);
-                        syncStructuredConfig({
-                          contextWindow: Number.parseInt(value, 10),
-                        });
-                      }}
-                    />
-                  </EditorField>
-                </div>
-
-                <div className="editor-field">
-                  <EditorLabel
-                    id="grokbuild-config-toml-label"
-                    label={t("grokBuild.rawConfig", {
-                      defaultValue: "config.toml",
-                    })}
+              <div className="editor-grok-profile">
+                <EditorField
+                  label={t("grokBuild.profile", {
+                    defaultValue: "客户端模型档位",
+                  })}
+                  htmlFor="grokbuild-profile"
+                >
+                  <input
+                    id="grokbuild-profile"
+                    value={profile}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      setProfile(value);
+                      syncStructuredConfig({ model: value });
+                    }}
+                    placeholder="grok-4.5"
+                    autoComplete="off"
+                    spellCheck={false}
                   />
-                  <div
-                    className="editor-code-editor"
-                    role="group"
-                    aria-labelledby="grokbuild-config-toml-label"
-                  >
-                    <JsonEditor
-                      value={rawConfig}
-                      onChange={handleRawConfigChange}
-                      placeholder=""
-                      darkMode={isDarkMode}
-                      rows={12}
-                      showValidation={false}
-                      language="javascript"
-                    />
-                  </div>
-                  {keyMissing && (
-                    <small role="status">
-                      填写 API Key 后会写入 api_key；也可在这里改用 env_key
-                      读取环境变量。
-                    </small>
-                  )}
-                  {rawConfigError && (
-                    <small className="is-error" role="alert">
-                      {t("grokBuild.invalidToml", {
-                        error: rawConfigError,
-                        defaultValue: `Invalid config.toml: ${rawConfigError}`,
-                      })}
-                    </small>
-                  )}
-                </div>
+                </EditorField>
+
+                <EditorField
+                  label={t("grokBuild.apiBackend", {
+                    defaultValue: "API Backend",
+                  })}
+                  htmlFor="grokbuild-api-backend"
+                >
+                  <EditorSelect
+                    id="grokbuild-api-backend"
+                    value={apiBackend}
+                    onChange={(value) => {
+                      setApiBackend(value);
+                      syncStructuredConfig({ apiBackend: value });
+                      // Keep the protocol selector in step with the backend.
+                      setApiFormat(grokApiFormatFromApiBackend(value));
+                    }}
+                    options={backendOptions.map((value) => [
+                      value,
+                      API_BACKEND_LABELS[value]
+                        ? `${API_BACKEND_LABELS[value]} (${value})`
+                        : value,
+                    ])}
+                  />
+                </EditorField>
+
+                <EditorField
+                  label={t("grokBuild.contextWindow", {
+                    defaultValue: "上下文窗口",
+                  })}
+                  htmlFor="grokbuild-context-window"
+                >
+                  <input
+                    id="grokbuild-context-window"
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={contextWindow}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      setContextWindow(value);
+                      syncStructuredConfig({
+                        contextWindow: Number.parseInt(value, 10),
+                      });
+                    }}
+                  />
+                </EditorField>
               </div>
-            </details>
+
+              <div className="editor-field">
+                <EditorLabel
+                  id="grokbuild-config-toml-label"
+                  label={t("grokBuild.rawConfig", {
+                    defaultValue: "config.toml",
+                  })}
+                />
+                <div
+                  className="editor-code-editor"
+                  role="group"
+                  aria-labelledby="grokbuild-config-toml-label"
+                >
+                  <JsonEditor
+                    value={rawConfig}
+                    onChange={handleRawConfigChange}
+                    placeholder=""
+                    darkMode={isDarkMode}
+                    rows={12}
+                    showValidation={false}
+                    language="javascript"
+                  />
+                </div>
+                {keyMissing && (
+                  <small role="status">
+                    填写 API Key 后会写入 api_key；也可在这里改用 env_key
+                    读取环境变量。
+                  </small>
+                )}
+                {rawConfigError && (
+                  <small className="is-error" role="alert">
+                    {t("grokBuild.invalidToml", {
+                      error: rawConfigError,
+                      defaultValue: `Invalid config.toml: ${rawConfigError}`,
+                    })}
+                  </small>
+                )}
+              </div>
+            </EditorAdvanced>
           </>
         )}
 

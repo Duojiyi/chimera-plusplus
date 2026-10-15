@@ -6,8 +6,15 @@ import {
   within,
   waitFor,
 } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ProviderEditor, providerDraft } from "@/ChimeraApp";
+
+// The styled select scrolls its selected option into view; jsdom has no
+// layout to scroll.
+beforeEach(() => {
+  Element.prototype.scrollIntoView = vi.fn();
+});
 
 function setup(overrides: Partial<ComponentProps<typeof ProviderEditor>> = {}) {
   const onSave = vi.fn();
@@ -88,12 +95,13 @@ describe("full-page provider editor", () => {
     ).toBeInTheDocument();
   });
 
-  it("edits the persisted line color and restores the default without changing credentials", () => {
+  it("edits the persisted line color and restores the default without changing credentials", async () => {
+    const user = userEvent.setup();
     const { onDraftChange } = setup();
     fireEvent.click(screen.getByLabelText("修改线路外观"));
-    fireEvent.change(screen.getByLabelText("线路颜色"), {
-      target: { value: "#8F6446" },
-    });
+    // The editors' styled select, not a native one.
+    await user.click(screen.getByRole("combobox", { name: "线路颜色" }));
+    await user.click(screen.getByRole("option", { name: "赭石" }));
     expect(onDraftChange.mock.lastCall![0]).toMatchObject({
       iconColor: "#8F6446",
       apiKey: "test-key",
@@ -101,13 +109,13 @@ describe("full-page provider editor", () => {
     expect(screen.getByLabelText("修改线路外观")).toHaveTextContent(
       "赭石 · 自动简称",
     );
-    fireEvent.change(screen.getByLabelText("线路颜色"), {
-      target: { value: "" },
-    });
+    await user.click(screen.getByRole("combobox", { name: "线路颜色" }));
+    await user.click(screen.getByRole("option", { name: "默认（钴蓝）" }));
     expect(onDraftChange.mock.lastCall![0].iconColor).toBeUndefined();
   });
 
-  it("retains existing custom colors and provider metadata in the draft", () => {
+  it("retains existing custom colors and provider metadata in the draft", async () => {
+    const user = userEvent.setup();
     const original = {
       id: "existing",
       name: "自定义",
@@ -121,7 +129,9 @@ describe("full-page provider editor", () => {
     expect(draft.original).toBe(original);
     setup({ editor: draft });
     fireEvent.click(screen.getByLabelText("修改线路外观"));
-    expect(screen.getByLabelText("线路颜色")).toHaveValue("#123456");
+    const color = screen.getByRole("combobox", { name: "线路颜色" });
+    expect(color).toHaveTextContent("当前自定义颜色");
+    await user.click(color);
     expect(
       screen.getByRole("option", { name: "当前自定义颜色" }),
     ).toBeInTheDocument();
@@ -144,12 +154,15 @@ describe("full-page provider editor", () => {
     fireEvent.change(screen.getByLabelText("线路名称 *"), {
       target: { value: "预览线路" },
     });
-    fireEvent.change(screen.getByLabelText(/API 请求地址/, { selector: "input" }), {
-      target: {
-        value:
-          "https://user:password@example.com/private-token?key=query-secret#fragment",
+    fireEvent.change(
+      screen.getByLabelText(/API 请求地址/, { selector: "input" }),
+      {
+        target: {
+          value:
+            "https://user:password@example.com/private-token?key=query-secret#fragment",
+        },
       },
-    });
+    );
     fireEvent.change(screen.getByLabelText(/默认模型/, { selector: "input" }), {
       target: { value: "example-model" },
     });
@@ -165,9 +178,12 @@ describe("full-page provider editor", () => {
       "fragment",
     ])
       expect(preview).not.toHaveTextContent(secret);
-    fireEvent.change(screen.getByLabelText(/API 请求地址/, { selector: "input" }), {
-      target: { value: "not-a-url secret-key" },
-    });
+    fireEvent.change(
+      screen.getByLabelText(/API 请求地址/, { selector: "input" }),
+      {
+        target: { value: "not-a-url secret-key" },
+      },
+    );
     expect(preview).toHaveTextContent("尚未填写有效地址");
     expect(preview).not.toHaveTextContent("secret-key");
   });

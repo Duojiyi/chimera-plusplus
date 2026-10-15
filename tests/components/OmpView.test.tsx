@@ -86,12 +86,12 @@ describe("OMP native routes and hierarchy", () => {
       "type",
       "password",
     );
-    fireEvent.change(screen.getByLabelText("API 地址"), {
+    fireEvent.change(screen.getByLabelText(/^API 请求地址( \*)?$/), {
       target: { value: "https://new.example/v1" },
     });
     fireEvent.click(screen.getByRole("button", { name: "插件市场" }));
     fireEvent.click(screen.getByRole("button", { name: "模型线路" }));
-    expect(screen.getByLabelText("API 地址")).toHaveValue(
+    expect(screen.getByLabelText(/^API 请求地址( \*)?$/)).toHaveValue(
       "https://new.example/v1",
     );
     await submit();
@@ -105,12 +105,12 @@ describe("OMP native routes and hierarchy", () => {
     vi.mocked(ompApi.save).mockRejectedValue(new Error("外部修改冲突"));
     render(<OmpView native />);
     await edit();
-    fireEvent.change(screen.getByLabelText("API 地址"), {
+    fireEvent.change(screen.getByLabelText(/^API 请求地址( \*)?$/), {
       target: { value: "https://draft.example/v1" },
     });
     await submit();
     expect(await screen.findByRole("alert")).toHaveTextContent("外部修改冲突");
-    expect(screen.getByLabelText("API 地址")).toHaveValue(
+    expect(screen.getByLabelText(/^API 请求地址( \*)?$/)).toHaveValue(
       "https://draft.example/v1",
     );
     fireEvent.click(screen.getByRole("button", { name: "刷新线路" }));
@@ -136,20 +136,19 @@ describe("OMP native routes and hierarchy", () => {
     render(<OmpView native />);
     await screen.findByText("test");
     fireEvent.click(screen.getByRole("button", { name: "添加线路" }));
-    fireEvent.change(screen.getByLabelText("线路 ID"), {
+    fireEvent.change(screen.getByLabelText(/^线路 ID( \*)?$/), {
       target: { value: "test" },
     });
     fireEvent.click(screen.getByRole("button", { name: "保存线路" }));
     expect(screen.getByRole("alert")).toHaveTextContent("线路 ID 已存在");
-    fireEvent.change(screen.getByLabelText("线路 ID"), {
+    fireEvent.change(screen.getByLabelText(/^线路 ID( \*)?$/), {
       target: { value: "local" },
     });
-    fireEvent.change(screen.getByLabelText("API 地址"), {
+    fireEvent.change(screen.getByLabelText(/^API 请求地址( \*)?$/), {
       target: { value: "http://localhost:1234/v1" },
     });
-    fireEvent.change(screen.getByLabelText("认证方式"), {
-      target: { value: "none" },
-    });
+    fireEvent.click(screen.getByText("高级配置"));
+    fireEvent.click(screen.getByRole("radio", { name: "免认证（本地服务）" }));
     fireEvent.change(screen.getByLabelText("模型 ID"), {
       target: { value: "local-model" },
     });
@@ -227,9 +226,22 @@ it("prefills Chimera, offers protocol choices and allows checking the credential
       screen.getByDisplayValue("https://api.chimerahub.org/v1"),
     ).toBeVisible(),
   );
-  expect(screen.getByRole("combobox", { name: "API 协议" })).toHaveValue(
+  const protocol = screen.getByRole("radiogroup", { name: "协议" });
+  expect(
+    within(protocol)
+      .getAllByRole("radio")
+      .map((radio) => radio.getAttribute("value")),
+  ).toEqual([
+    "openai-responses",
     "openai-completions",
-  );
+    "anthropic-messages",
+    "google-generative-ai",
+    "__other__",
+  ]);
+  expect(
+    within(protocol).getByRole("radio", { name: "Chat Completions" }),
+  ).toBeChecked();
+  expect(screen.getByText("配置模板 · ChimeraHub")).toBeInTheDocument();
   expect(screen.getByLabelText("API Key / 环境变量名")).toHaveAttribute(
     "type",
     "password",
@@ -252,7 +264,7 @@ it("uses the shared full-screen editor and confirms closing without losing edits
   const save = within(panel).getByRole("button", { name: "保存线路" });
   expect(save).toHaveAttribute("form", "omp-provider-form");
   expect(save.closest("form")).toBeNull();
-  fireEvent.change(screen.getByLabelText("API 地址"), {
+  fireEvent.change(screen.getByLabelText(/^API 请求地址( \*)?$/), {
     target: { value: "https://draft.example/v1" },
   });
   fireEvent.click(within(panel).getByRole("button", { name: "取消" }));

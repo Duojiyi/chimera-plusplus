@@ -286,14 +286,17 @@ describe("ProviderPresetSelector", () => {
     },
   };
 
-  it("only exposes the Chimera built-in template", () => {
+  it("only exposes the Chimera built-in template, as the line editors' card", () => {
     renderSelector({ entries: [...presetEntries, builtin] });
     expect(
+      screen.getByText(`配置模板 · ${builtin.preset.name}`),
+    ).toBeInTheDocument();
+    expect(
       screen.getAllByRole("button").map((button) => button.textContent),
-    ).toEqual([builtin.preset.name]);
+    ).toEqual(["恢复 Chimera 模板"]);
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
   });
-  it("selects the template with a keyboard and preserves accessible selection state", async () => {
+  it("restores the template from the keyboard only after confirmation", async () => {
     const user = userEvent.setup();
     const onPresetChange = vi.fn();
     renderSelector({
@@ -301,11 +304,12 @@ describe("ProviderPresetSelector", () => {
       selectedPresetId: "builtin",
       onPresetChange,
     });
-    const button = screen.getByRole("button", { name: builtin.preset.name });
-    expect(button).toHaveAttribute("aria-pressed", "true");
+    const button = screen.getByRole("button", { name: "恢复 Chimera 模板" });
     await user.tab();
     expect(button).toHaveFocus();
     await user.keyboard("{Enter}");
+    expect(onPresetChange).not.toHaveBeenCalled();
+    await user.click(await screen.findByRole("button", { name: "恢复模板" }));
     expect(onPresetChange).toHaveBeenCalledWith("builtin");
   });
   it("does not expose legacy presets when the template is unavailable", () => {

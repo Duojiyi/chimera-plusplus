@@ -13,6 +13,8 @@ interface ApiKeyInputProps {
   id?: string;
   /** Visible line under the field, such as where to get a key. */
   hint?: React.ReactNode;
+  /** The "?" card: where the key goes. */
+  help?: React.ReactNode;
 }
 
 /** The line editor's key field: masked input with a show/hide side button. */
@@ -25,6 +27,7 @@ const ApiKeyInput: React.FC<ApiKeyInputProps> = ({
   label = "API Key",
   id = "apiKey",
   hint,
+  help,
 }) => {
   const { t } = useTranslation();
   const [showKey, setShowKey] = useState(false);
@@ -32,7 +35,11 @@ const ApiKeyInput: React.FC<ApiKeyInputProps> = ({
 
   return (
     <div className="editor-field">
-      <EditorLabel htmlFor={id} label={required ? `${label} *` : label} />
+      <EditorLabel
+        htmlFor={id}
+        label={required ? `${label} *` : label}
+        help={help}
+      />
       <div className="password-field">
         <input
           type={showKey ? "text" : "password"}

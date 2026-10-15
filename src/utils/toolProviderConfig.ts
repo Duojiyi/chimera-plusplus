@@ -41,6 +41,38 @@ export type ClaudeTierModels = Record<
   { model: string; name: string }
 >;
 
+/** The tiers in the order the line editors list them (Claude Desktop's). */
+export const CLAUDE_TIER_ROWS: readonly ClaudeModelTier[] = [
+  "sonnet",
+  "opus",
+  "fable",
+  "haiku",
+];
+
+/**
+ * Claude Code's 1M context declaration: a `[1M]` suffix on a model ID, in any
+ * case. Claude Code strips it before the request and gives the model a 1M
+ * window. Drafts keep the stored value as it is; the editor shows the bare ID
+ * with a 1M checkbox.
+ */
+export const CLAUDE_ONE_M_MARKER = "[1M]";
+
+export function hasClaudeOneMMarker(model: string): boolean {
+  return model.trimEnd().toLowerCase().endsWith("[1m]");
+}
+
+export function stripClaudeOneMMarker(model: string): string {
+  const trimmedEnd = model.trimEnd();
+  if (!trimmedEnd.toLowerCase().endsWith("[1m]")) return model;
+  return trimmedEnd.slice(0, -CLAUDE_ONE_M_MARKER.length).trimEnd();
+}
+
+export function setClaudeOneMMarker(model: string, enabled: boolean): string {
+  const base = stripClaudeOneMMarker(model).trim();
+  if (!base) return "";
+  return enabled ? `${base}${CLAUDE_ONE_M_MARKER}` : base;
+}
+
 const claudeTierKey = (tier: ClaudeModelTier) =>
   `ANTHROPIC_DEFAULT_${tier.toUpperCase()}_MODEL`;
 
@@ -113,14 +145,17 @@ type ClaudeModelFields = Pick<
   "model" | "claudeTiers" | "subagentModel"
 >;
 
+export function claudeTierLabel(tier: ClaudeModelTier): string {
+  return CLAUDE_MODEL_TIERS.find(([id]) => id === tier)?.[1] ?? tier;
+}
+
 export function claudeModelFieldLabel(field: ClaudeModelField): string {
   if (field === "default") return "默认模型";
   if (field === "subagent") return "子代理模型";
-  const tier = CLAUDE_MODEL_TIERS.find(([id]) => id === field);
-  return `${tier?.[1] ?? field} 模型`;
+  return `${claudeTierLabel(field)} 模型`;
 }
 
-export function claudeModelValue(
+function storedClaudeModel(
   fields: ClaudeModelFields,
   field: ClaudeModelField,
 ): string {
@@ -129,8 +164,7 @@ export function claudeModelValue(
   return fields.claudeTiers[field].model;
 }
 
-/** The same fields with one model replaced. */
-export function withClaudeModel<T extends ClaudeModelFields>(
+function withStoredClaudeModel<T extends ClaudeModelFields>(
   fields: T,
   field: ClaudeModelField,
   model: string,
@@ -144,6 +178,53 @@ export function withClaudeModel<T extends ClaudeModelFields>(
       [field]: { ...fields.claudeTiers[field], model },
     },
   };
+}
+
+/** The model ID of one field without its 1M marker, as the inputs and the
+ * model picker (and its 当前 tag) show it. */
+export function claudeModelValue(
+  fields: ClaudeModelFields,
+  field: ClaudeModelField,
+): string {
+  return stripClaudeOneMMarker(storedClaudeModel(fields, field));
+}
+
+/** Whether one field declares 1M context. */
+export function claudeModelOneM(
+  fields: ClaudeModelFields,
+  field: ClaudeModelField,
+): boolean {
+  return hasClaudeOneMMarker(storedClaudeModel(fields, field));
+}
+
+/** The same fields with one model replaced. Its 1M declaration stays; a model
+ * typed or picked with the marker turns it on. */
+export function withClaudeModel<T extends ClaudeModelFields>(
+  fields: T,
+  field: ClaudeModelField,
+  model: string,
+): T {
+  const oneM =
+    hasClaudeOneMMarker(storedClaudeModel(fields, field)) ||
+    hasClaudeOneMMarker(model);
+  return withStoredClaudeModel(
+    fields,
+    field,
+    oneM ? setClaudeOneMMarker(model, true) : model,
+  );
+}
+
+/** The same fields with one model's 1M declaration set or cleared. */
+export function withClaudeOneM<T extends ClaudeModelFields>(
+  fields: T,
+  field: ClaudeModelField,
+  enabled: boolean,
+): T {
+  return withStoredClaudeModel(
+    fields,
+    field,
+    setClaudeOneMMarker(storedClaudeModel(fields, field), enabled),
+  );
 }
 
 /** Read the same native shape we write; never fall back to a Codex template. */
@@ -294,10 +375,6 @@ export function toolProviderSummary(
   if (isNativeToolAppId(appId)) return toolProviderFields(appId, provider);
   const settings = object(provider.settingsConfig);
   if (appId === "grokbuild") return parseGrokBuildConfig(text(settings.config));
-  {
-  }
-  {
-  }
   if (appId === "claude-desktop")
     return {
       baseUrl:

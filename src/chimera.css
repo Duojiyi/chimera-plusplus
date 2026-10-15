@@ -550,74 +550,28 @@
   font-size: 13px;
   line-height: 1.5;
 }
-/* Advanced options base classes. The scoped rules further down set
-   grid-template-columns but never declared a display, so the tracks were
-   inert until these bases landed. */
-.advanced-options summary {
-  cursor: pointer;
-  padding: 10px 13px;
-  border-radius: 8px;
-  color: var(--ink);
-  font-size: 12px;
-  font-weight: 700;
-  list-style: none;
-}
-.advanced-options summary::-webkit-details-marker {
-  display: none;
-}
-.advanced-options-body {
-  display: grid;
-  gap: 13px;
-  padding: 4px 13px 13px;
-}
-.advanced-intro {
-  margin: 0;
-  color: var(--ch-muted);
-  font-size: 11px;
-  line-height: 1.6;
-}
+/* Line editor rows shared by the editors (ProviderEditorPage.css styles
+   the sheet around them). */
 .advanced-group {
   display: grid;
   gap: 11px;
 }
 .advanced-section-heading {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
-}
-.advanced-section-heading b {
-  font-size: 12px;
 }
 .advanced-section-heading small {
   display: block;
   margin-top: 3px;
-  color: var(--ch-muted);
-  font-size: 10px;
   font-weight: 400;
-  line-height: 1.45;
 }
 .toggle-field {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
   align-items: center;
-  font-size: 12px;
-}
-.toggle-field > span {
-  min-width: 0;
-}
-.toggle-field b {
-  display: block;
-  font-size: 12px;
-}
-.toggle-field small {
-  display: block;
-  margin-top: 3px;
-  color: var(--ch-muted);
-  font-size: 10px;
-  font-weight: 400;
-  line-height: 1.45;
 }
 .experimental-tag {
   margin-left: 6px;
@@ -630,52 +584,23 @@
   font-weight: 700;
   vertical-align: middle;
 }
+.mapping-head,
 .mapping-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 84px 110px 34px 34px;
-  gap: 8px;
-  align-items: center;
 }
 .mapping-head {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 84px 110px 34px 34px;
-  gap: 8px;
   align-items: center;
-  /* Match .mapping-row's card inset (10px padding + 1px border) so the
-     header columns line up with the row inputs. */
-  padding: 0 11px;
-  color: var(--ch-muted);
-  font-size: 10px;
   font-weight: 600;
-}
-.mapping-row input,
-.mapping-row select {
-  min-width: 0;
-  height: 34px;
-  padding: 0 9px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--input-bg);
-  color: var(--ink);
-  font-size: 11px;
-  font-weight: 400;
-}
-.mapping-row select {
-  padding-right: 5px;
 }
 .reasoning-trigger {
   min-width: 0;
-  height: 34px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 6px;
   padding: 0 9px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--input-bg);
+  border: 1px solid;
   color: var(--ink);
-  font-size: 11px;
   font-weight: 400;
   cursor: pointer;
 }
@@ -698,19 +623,16 @@
 .reasoning-panel-head {
   margin-bottom: 9px;
   color: var(--ch-muted);
-  font-size: 10px;
   font-weight: 600;
 }
 .reasoning-checkboxes {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px;
 }
 .reasoning-level-option {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 11px;
   color: var(--ink);
   cursor: pointer;
 }
@@ -732,16 +654,6 @@
   padding-top: 11px;
   border-top: 1px solid var(--border-subtle);
   color: var(--ch-muted);
-  font-size: 11px;
-}
-.reasoning-panel-default select {
-  height: 30px;
-  padding: 0 8px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--input-bg);
-  color: var(--ink);
-  font-size: 11px;
 }
 .instructions-trigger {
   width: 34px;
@@ -773,7 +685,6 @@
 .instructions-panel-head {
   margin-bottom: 9px;
   color: var(--ch-muted);
-  font-size: 10px;
   font-weight: 600;
 }
 .instructions-panel textarea {
@@ -813,48 +724,6 @@
   background: var(--bg-hover);
   color: var(--text-1);
 }
-/* Advanced-options label rows are direct children of .advanced-options-body,
-   not .editor-form, so they need their own stacking rule. */
-.advanced-options-body > label,
-.advanced-group > label {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  font-size: 12px;
-  font-weight: 400;
-  color: var(--ink);
-}
-.advanced-options-body > label.toggle-field,
-.advanced-group > label.toggle-field {
-  display: grid;
-  flex-direction: unset;
-}
-/* Exclude checkboxes: the toggle switches carry their own fixed 38x22 pill
-   sizing, and they set `height` but not `min-height`, so the 36px below does not
-   conflict — it just wins, inflating the pill to 38x36 which `border-radius:
-   999px` then renders as a circle. This rule is for text inputs and selects. */
-.advanced-options-body > label > input:not([type="checkbox"]),
-.advanced-options-body > label > select,
-.advanced-group > label > input:not([type="checkbox"]),
-.advanced-group > label > select {
-  width: 100%;
-  min-height: 36px;
-  padding: 0 10px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--input-bg);
-  color: var(--ink);
-  font-size: 12px;
-  font-weight: 400;
-}
-.advanced-options-body > label > small,
-.advanced-group > label > small {
-  color: var(--ch-muted);
-  font-size: 10px;
-  font-weight: 400;
-  line-height: 1.45;
-}
-
 /* Chimera 2.0 interaction states and real-data surfaces. */
 .setting-row {
   width: 100%;
@@ -1671,41 +1540,6 @@ body.is-mac
   z-index: 10;
   background: var(--scrim);
 }
-.provider-editor {
-  padding: 26px;
-  background: var(--bg-surface);
-  color: var(--text-1);
-}
-.provider-editor > header {
-  /* Badge sits beside the title, not above it. The outer .provider-editor
-     padding is the single source of inset, so the V1 `padding: 22px` on this
-     element is zeroed here rather than compounding to 48px. */
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 0;
-  margin-bottom: 18px;
-}
-.provider-editor > header > div {
-  min-width: 0;
-}
-.provider-editor > header h2 {
-  margin: 0;
-  font-size: 17px;
-  line-height: 1.25;
-}
-.provider-editor > header p {
-  margin: 4px 0 0;
-  color: var(--ch-muted);
-  font-size: 11px;
-  line-height: 1.45;
-}
-.provider-editor .editor-form {
-  display: flex;
-  flex-direction: column;
-  gap: 13px;
-  padding: 0;
-}
 /* password-field and model-input inside editor labels */
 .password-field,
 .model-input {
@@ -2509,60 +2343,11 @@ body.is-mac
   width: 100%;
   justify-content: center;
 }
-.advanced-options {
-  overflow: hidden;
-  border: 1px solid var(--border-subtle);
-  background: var(--bg-surface);
-}
-.advanced-options summary {
-  padding: 2px 0;
-}
-.advanced-options-body {
-  grid-template-columns: minmax(0, 1fr);
-}
 /* Rows of a .toggle-list: the list draws the frame and the dividers. */
 .advanced-options .toggle-field {
   position: relative;
   width: 100%;
-  grid-template-columns: minmax(0, 1fr) auto;
   padding: 12px 14px;
-}
-/* Same switch as 设置 and 工具显示: ink track when on, outlined when off. */
-.advanced-options .toggle-field input[type="checkbox"] {
-  appearance: none;
-  width: 38px;
-  height: 22px;
-  margin: 0;
-  border: 1px solid var(--switch-off-border);
-  border-radius: 999px;
-  background:
-    radial-gradient(
-      circle at 10px 50%,
-      var(--switch-thumb-off) 0 6px,
-      transparent 6.5px
-    ),
-    var(--switch-off-bg);
-  transition:
-    background 180ms var(--ease),
-    border-color 180ms var(--ease);
-}
-.advanced-options .toggle-field input[type="checkbox"]:checked {
-  border-color: var(--switch-on-bg);
-  background:
-    radial-gradient(
-      circle at 26px 50%,
-      var(--switch-thumb-on) 0 6px,
-      transparent 6.5px
-    ),
-    var(--switch-on-bg);
-}
-.advanced-options .toggle-field input[type="checkbox"]:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
-}
-.advanced-options .toggle-field input[type="checkbox"]:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
 }
 .codex-feature-options .advanced-section-heading {
   margin-bottom: 4px;
@@ -2600,19 +2385,6 @@ body.is-mac
 .common-config-editor textarea:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
-}
-.advanced-group.model-mapping {
-  gap: 10px;
-}
-.mapping-row {
-  padding: 10px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 10px;
-  background: var(--bg-surface);
-}
-.mapping-row .icon-button,
-.mapping-row .instructions-trigger {
-  border-radius: 10px;
 }
 @media (max-width: 760px) {
   .route-radar {

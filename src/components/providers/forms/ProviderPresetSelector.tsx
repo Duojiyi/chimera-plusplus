@@ -1,6 +1,8 @@
-import { useId } from "react";
+import { useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Check } from "lucide-react";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { EditorTemplateCard } from "@/components/providers/ProviderEditorFields";
 import type { ProviderPreset } from "@/config/claudeProviderPresets";
 import type { CodexProviderPreset } from "@/config/codexProviderPresets";
 import type { GeminiProviderPreset } from "@/config/geminiProviderPresets";
@@ -155,6 +157,7 @@ export function ProviderPresetSelector({
 }: Readonly<ProviderPresetSelectorProps>) {
   const { t } = useTranslation();
   const labelId = useId();
+  const [confirmRestore, setConfirmRestore] = useState(false);
   // Keep legacy helpers available, but never render the provider catalog.
   const visiblePresetEntries = presetEntries.filter(({ preset }) =>
     isBuiltinTemplate(preset),
@@ -166,7 +169,32 @@ export function ProviderPresetSelector({
     })),
   ];
 
-  // The same template card as the Codex line editor (CodexPresetStart).
+  // One template: the line editors' template card, and restoring it asks
+  // first like theirs, since it replaces what was typed.
+  if (choices.length === 1 && !onManageUniversalProviders) {
+    const [only] = choices;
+    return (
+      <>
+        <EditorTemplateCard
+          name={only.name}
+          onRestore={() => setConfirmRestore(true)}
+        />
+        <ConfirmDialog
+          isOpen={confirmRestore}
+          title="恢复默认模板？"
+          message="这会用模板重新填写线路名称、地址、密钥和模型，当前填写的内容不会保留。"
+          confirmText="恢复模板"
+          cancelText="取消"
+          onConfirm={() => {
+            setConfirmRestore(false);
+            onPresetChange(only.id);
+          }}
+          onCancel={() => setConfirmRestore(false)}
+        />
+      </>
+    );
+  }
+
   return (
     <div
       className="editor-template-actions"

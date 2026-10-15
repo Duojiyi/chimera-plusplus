@@ -86,36 +86,14 @@
   line-height: 21px;
   font-weight: 700;
 }
-.provider-editor-page .editor-basic h3 small {
-  margin-left: 8px;
-  font-size: 12px;
-  color: var(--text-3);
-  font-weight: 400;
-}
 .provider-editor-page .editor-basic-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 12px;
 }
-.provider-editor-page .editor-default-model {
-  grid-column: 1 / -1;
-}
-.provider-editor-page .editor-protocol > label,
-.provider-editor-page .editor-basic-grid > label,
-.provider-editor-page .editor-name-row > label,
-.provider-editor-page .advanced-options-body > label,
-.provider-editor-page .advanced-group > label:not(.toggle-field) {
-  display: grid;
-  align-content: start;
-  gap: 6px;
-  min-width: 0;
-  font-size: 14px;
-  line-height: 20px;
-}
 .provider-editor-page
   .editor-form
   input:not([type="checkbox"]):not([type="radio"]),
-.provider-editor-page .editor-form select,
 .provider-editor-page .editor-form textarea {
   min-width: 0;
   width: 100%;
@@ -159,8 +137,7 @@
   cursor: not-allowed;
   opacity: 0.55;
 }
-.provider-editor-page
-  :is(button, input, select, textarea, summary):focus-visible {
+.provider-editor-page :is(button, input, textarea, summary):focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 3px;
 }
@@ -181,9 +158,6 @@
 .provider-editor-page .editor-heading h2:focus {
   outline: none;
 }
-.provider-editor-page .advanced-section-heading {
-  align-items: center;
-}
 .provider-editor-page .advanced-section-heading > div {
   min-width: 0;
 }
@@ -193,7 +167,6 @@
 }
 .provider-editor-page .advanced-section-heading small,
 .provider-editor-page label > small,
-.provider-editor-page .advanced-intro,
 .provider-editor-page .toggle-field small {
   font-size: 13px;
   line-height: 1.6;
@@ -207,7 +180,7 @@
 }
 .provider-editor-page .mapping-head,
 .provider-editor-page .mapping-row {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 64px 84px 62px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 88px 84px 62px;
   gap: 8px;
 }
 .provider-editor-page .mapping-head {
@@ -232,17 +205,13 @@
   font-size: 13px;
   color: var(--text-3);
 }
-.provider-editor-page .mapping-row input {
-  min-height: 32px;
-  padding: 5px 6px;
-  font-size: 12px;
-  background: var(--input-bg);
-}
 .provider-editor-page .mapping-row .reasoning-trigger {
-  height: 32px;
+  height: 36px;
   width: 100%;
+  border-color: var(--border-control);
+  border-radius: 4px;
+  background: var(--bg-surface);
   font-size: 14px;
-  background: var(--input-bg);
 }
 .provider-editor-page .mapping-actions {
   justify-content: flex-end;
@@ -252,7 +221,7 @@
 }
 .provider-editor-page .mapping-actions button {
   min-width: 28px;
-  height: 32px;
+  height: 36px;
   padding: 0 4px;
   flex-shrink: 0;
 }
@@ -280,28 +249,33 @@
   color: var(--danger-fg);
   font-size: 13px;
 }
-/* Claude Code maps a fixed row per model tier instead of Codex's free list.
-   Same specificity as the rules above, so these win by coming later. */
-.claude-model-mapping .mapping-head,
-.claude-model-mapping .mapping-row {
-  grid-template-columns: 64px minmax(0, 1.5fr) minmax(0, 1fr);
+/* Fixed tier rows (Claude Code, Claude Desktop): role, menu name, upstream
+   model, 1M. Same specificity as the rules above, so these win by coming
+   later. */
+.provider-editor-page .mapping-head.is-tiers,
+.provider-editor-page .mapping-row.is-tiers {
+  grid-template-columns: 88px minmax(0, 1fr) minmax(0, 1.2fr) 92px;
   align-items: center;
 }
-.claude-model-mapping .model-input > button {
+.provider-editor-page .mapping-row .model-input > button {
   padding: 0 10px;
   font-size: 13px;
-}
-.mapping-tier {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-2);
 }
 .mapping-note {
   font-size: 12px;
   color: var(--text-3);
 }
+/* The model field with its 1M box (Claude Code). */
+.provider-editor-page .editor-model-line {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.provider-editor-page .editor-model-line > .model-input {
+  flex: 1;
+}
 /* A menu name waits for its model: say so in the field, not just the hint. */
-.provider-editor-page .claude-model-mapping .mapping-row > input:disabled {
+.provider-editor-page .mapping-row > input:disabled {
   border-style: dashed;
   background: var(--bg-subtle);
   color: var(--text-3);
@@ -338,9 +312,16 @@
   justify-content: space-between;
   gap: 16px;
   padding: 14px 16px;
-  font-size: 15px;
-  cursor: pointer;
+  border-radius: 8px;
   background: var(--bg-subtle);
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 700;
+  list-style: none;
+  cursor: pointer;
+}
+.provider-editor-page .advanced-options > summary::-webkit-details-marker {
+  display: none;
 }
 .provider-editor-page .advanced-options > summary:hover {
   background: var(--bg-selected);
@@ -374,18 +355,23 @@
   transform: rotate(180deg);
 }
 .provider-editor-page .advanced-options-body {
-  padding: 16px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 18px;
+  padding: 16px;
 }
-.provider-editor-page .toggle-field b {
-  font-size: 14px;
+.provider-editor-page
+  .advanced-options-body
+  > .advanced-group
+  + .advanced-group {
+  padding-top: 18px;
+  border-top: 1px solid var(--border-subtle);
 }
 .provider-editor-page .common-config-actions {
   flex-wrap: wrap;
   font-size: 13px;
 }
-.provider-editor-page .editor-feedback,
-.provider-editor-page .editor-model-error {
+.provider-editor-page .editor-feedback {
   margin: 0;
   padding: 12px 14px;
   color: var(--danger-fg);
@@ -547,22 +533,6 @@
   margin: 0 0 8px;
   color: var(--text-2);
 }
-.provider-editor-page .editor-route-preview {
-  margin: 0;
-  padding-left: 18px;
-}
-.provider-editor-page .editor-route-preview li {
-  padding: 0 0 16px 12px;
-  border-left: 1px solid var(--border-subtle);
-  list-style: none;
-  position: relative;
-  font-size: 13px;
-}
-.provider-editor-page .editor-route-preview small {
-  display: block;
-  color: var(--text-3);
-  font-size: 12px;
-}
 .provider-editor-page .password-field,
 .provider-editor-page .model-input {
   height: 36px;
@@ -574,29 +544,21 @@
   height: 34px;
   min-height: 34px;
 }
-@media (max-width: 1000px) {
-  .provider-editor-page .editor-scroll {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
 
 .provider-editor-page .editor-format {
   display: grid;
   gap: 6px;
 }
-.provider-editor-page .editor-format small {
-  color: var(--text-3);
-  font-size: 12px;
-  line-height: 1.5;
-}
 .provider-editor-page .editor-format-options {
-  display: flex;
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
   width: fit-content;
   max-width: 100%;
-  background: var(--bg-sunken);
+  padding: 2px;
   border: 1px solid var(--border-subtle);
-  border-radius: 4px;
-  padding: 1px;
+  border-radius: var(--radius-panel);
+  background: var(--bg-subtle);
 }
 .provider-editor-page .editor-format-options label {
   position: relative;
@@ -607,18 +569,6 @@
   opacity: 0;
   width: 1px;
   height: 1px;
-}
-.provider-editor-page .editor-format-options span {
-  display: block;
-  padding: 4px 12px;
-  font-size: 12px;
-  line-height: 20px;
-  border-radius: 2px;
-}
-.provider-editor-page .editor-format-options input:checked + span {
-  background: var(--bg-surface);
-  box-shadow: 0 1px 3px var(--shadow-soft);
-  color: var(--text-1);
 }
 .provider-editor-page .editor-format-options input:focus-visible + span {
   outline: 2px solid var(--brand);
@@ -636,13 +586,6 @@
   background: var(--bg-sunken);
   font-size: 12px;
   color: var(--text-3);
-}
-.provider-editor-page .editor-template-actions.has-warning {
-  border-color: var(--warning-border);
-  background: var(--warning-bg);
-}
-.provider-editor-page .editor-template-actions.has-warning small {
-  color: var(--warning-fg);
 }
 .provider-editor-page .editor-template-text {
   min-width: 0;
@@ -673,17 +616,6 @@
 .provider-editor-page .mapping-actions .instructions-trigger > span {
   display: none;
 }
-.provider-editor-page .editor-route-preview li::before {
-  content: "";
-  position: absolute;
-  top: 5px;
-  left: -4px;
-  width: 7px;
-  height: 7px;
-  border: 1px solid var(--border-control);
-  border-radius: 50%;
-  background: var(--bg-sunken);
-}
 
 .provider-editor-page .editor-name-row {
   display: grid;
@@ -694,29 +626,37 @@
 .provider-editor-page .editor-appearance {
   position: relative;
 }
-.provider-editor-page .editor-appearance summary {
+/* 外观 beside the name: a popover for badge lines, the icon picker for the
+   tools that store an icon; both read as the same pill. */
+.provider-editor-page
+  :is(.editor-appearance summary, .editor-appearance-button) {
   display: flex;
   align-items: center;
   gap: 10px;
   height: 36px;
   padding: 0 8px 0 12px;
-  background: var(--bg-subtle);
+  border: 0;
   border-radius: 4px;
+  background: var(--bg-subtle);
+  color: var(--text-1);
   font-size: 13px;
+  list-style: none;
   cursor: pointer;
 }
-.provider-editor-page .editor-appearance summary > span:nth-of-type(2) {
+.provider-editor-page
+  :is(.editor-appearance summary, .editor-appearance-button):hover {
+  background: var(--bg-selected);
+}
+.provider-editor-page .editor-appearance summary::-webkit-details-marker {
+  display: none;
+}
+.provider-editor-page .editor-appearance summary > span:nth-of-type(2),
+.provider-editor-page .editor-appearance-button > span:last-of-type {
   flex: 1;
 }
-.provider-editor-page .editor-appearance > label {
-  position: absolute;
-  z-index: 2;
-  right: 0;
-  width: 100%;
-  padding: 12px;
-  background: var(--bg-sunken);
-  border: 1px solid var(--border-subtle);
-  border-radius: 4px;
+.provider-editor-page .editor-appearance-button {
+  padding-right: 12px;
+  text-align: left;
 }
 .provider-editor-page .editor-format-line {
   display: flex;
@@ -736,9 +676,6 @@
   input:not([type="radio"]):not([type="checkbox"]) {
   height: 36px;
   line-height: 20px;
-}
-.provider-editor-page .editor-basic label > small {
-  line-height: 18px;
 }
 .provider-editor-page .model-mapping .advanced-section-heading {
   min-height: 28px;
@@ -889,17 +826,8 @@ body:not(.is-mac):has([data-fullscreen-panel]) .chimera-shell > aside {
   margin: 0;
   color: var(--text-3);
 }
-/* Protocol: a segmented control of names; each note stays the option's
+/* Segmented choice (协议, 认证方式, …): each note stays the option's
    accessible description and the line below states the result. */
-.provider-editor-page .editor-format-options {
-  display: inline-flex;
-  flex-wrap: wrap;
-  gap: 2px;
-  padding: 2px;
-  border-radius: var(--radius-panel);
-  background: var(--bg-subtle);
-  border-color: var(--border-subtle);
-}
 .provider-editor-page .editor-format-options .editor-format-option-text {
   display: block;
   padding: 5px 12px;
@@ -967,17 +895,6 @@ body:not(.is-mac):has([data-fullscreen-panel]) .chimera-shell > aside {
   color: var(--border-control);
 }
 /* Appearance popover */
-.provider-editor-page .editor-appearance summary {
-  background: var(--bg-subtle);
-  color: var(--text-1);
-  list-style: none;
-}
-.provider-editor-page .editor-appearance summary::-webkit-details-marker {
-  display: none;
-}
-.provider-editor-page .editor-appearance summary:hover {
-  background: var(--bg-selected);
-}
 .provider-editor-page .editor-appearance[open] summary svg {
   transform: rotate(180deg);
 }
@@ -997,9 +914,6 @@ body:not(.is-mac):has([data-fullscreen-panel]) .chimera-shell > aside {
   box-shadow: 0 8px 24px var(--shadow-overlay);
 }
 /* Model mapping heading */
-.provider-editor-page .model-mapping .advanced-section-heading {
-  align-items: center;
-}
 .provider-editor-page .model-mapping .editor-field-label b {
   font-size: 15px;
   font-weight: 700;
@@ -1196,10 +1110,6 @@ body:not(.is-mac):has([data-fullscreen-panel]) .chimera-shell > aside {
   border-radius: var(--radius-panel);
   background: var(--bg-sunken);
 }
-.provider-editor-page .editor-advanced-body .toggle-list {
-  display: grid;
-  gap: 14px;
-}
 /* Template card: the chosen template reads as selected. */
 .provider-editor-page .editor-template-choice[aria-pressed="true"] {
   border-color: var(--border-control);
@@ -1242,17 +1152,6 @@ body:not(.is-mac):has([data-fullscreen-panel]) .chimera-shell > aside {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.provider-editor-page .editor-advanced-body {
-  display: grid;
-  gap: 18px;
-}
-.provider-editor-page
-  .editor-advanced-body
-  > .advanced-group
-  + .advanced-group {
-  padding-top: 18px;
-  border-top: 1px solid var(--border-subtle);
-}
 .provider-editor-page .editor-override-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1288,30 +1187,12 @@ body:not(.is-mac):has([data-fullscreen-panel]) .chimera-shell > aside {
   border-radius: var(--radius-panel);
   background: var(--bg-sunken);
 }
-/* Claude Desktop model rows: role, menu name, upstream model, 1M. */
-.provider-editor-page .mapping-head.is-desktop,
-.provider-editor-page .mapping-row.is-desktop {
-  grid-template-columns: 88px minmax(0, 1fr) minmax(0, 1fr) 92px;
-  align-items: center;
-}
-.provider-editor-page .mapping-head.is-desktop > span {
+.provider-editor-page .mapping-head > span {
   white-space: nowrap;
 }
 .provider-editor-page .mapping-row.is-direct {
   grid-template-columns: minmax(0, 1fr) 64px 36px;
   align-items: center;
-}
-.provider-editor-page .mapping-row:is(.is-desktop, .is-direct) > input {
-  min-height: 36px;
-  padding: 7px 10px;
-  font-size: 13px;
-}
-.provider-editor-page
-  .mapping-row:is(.is-desktop, .is-direct)
-  .model-input
-  > input {
-  padding: 0 10px;
-  font-size: 13px;
 }
 .provider-editor-page .mapping-role {
   display: flex;
@@ -1351,8 +1232,19 @@ body:not(.is-mac):has([data-fullscreen-panel]) .chimera-shell > aside {
 .provider-editor-page .mapping-row .mapping-delete:hover {
   background: var(--danger-bg);
 }
-.provider-editor-page .advanced-section-heading .mapping-heading-actions {
-  align-self: center;
+/* The styled select (Radix) drawn like the editor's inputs. */
+.provider-editor-page .editor-select {
+  height: 36px;
+  border-color: var(--border-control);
+  border-radius: 4px;
+  background: var(--bg-surface);
+  color: var(--text-1);
+  font-size: 14px;
+}
+.provider-editor-page .editor-save-note {
+  margin-right: 4px;
+  color: var(--text-3);
+  font-size: 13px;
 }
 @media (max-width: 760px) {
   .provider-editor-page .editor-grok-profile,

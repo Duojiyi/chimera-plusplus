@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { parse as parseToml } from "smol-toml";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   GrokBuildProviderForm,
   grokApiBackendFromApiFormat,
@@ -23,6 +23,12 @@ vi.mock("@/components/JsonEditor", () => ({
   ),
 }));
 
+// The styled select scrolls its selected option into view; jsdom has no
+// layout to scroll.
+beforeEach(() => {
+  Element.prototype.scrollIntoView = vi.fn();
+});
+
 describe("GrokBuildProviderForm", () => {
   it("only offers Chimera and prefills its address", async () => {
     const { container } = render(
@@ -39,10 +45,9 @@ describe("GrokBuildProviderForm", () => {
 
     expect(screen.queryByRole("button", { name: /PatewayAI/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /Grok Official/ })).toBeNull();
-    expect(screen.getByRole("button", { name: "ChimeraHub" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
+    // The line editors' template card: the template is named in the title and
+    // the one action restores it.
+    expect(screen.getByText("配置模板 · ChimeraHub")).toBeInTheDocument();
     expect(
       container.querySelector<HTMLInputElement>("#codexBaseUrl")?.value,
     ).toBe("https://api.chimerahub.org/v1");
@@ -55,7 +60,8 @@ describe("GrokBuildProviderForm", () => {
     const configBefore = (
       screen.getByLabelText("raw-config") as HTMLTextAreaElement
     ).value;
-    fireEvent.click(screen.getByRole("button", { name: "ChimeraHub" }));
+    fireEvent.click(screen.getByRole("button", { name: "恢复 Chimera 模板" }));
+    fireEvent.click(await screen.findByRole("button", { name: "恢复模板" }));
     expect(screen.getByLabelText("raw-config")).toHaveValue(configBefore);
   });
 
@@ -81,7 +87,7 @@ describe("GrokBuildProviderForm", () => {
     fireEvent.change(baseUrlInput!, {
       target: { value: "https://relay.example.com/v1" },
     });
-    fireEvent.change(screen.getByLabelText("API Key"), {
+    fireEvent.change(screen.getByLabelText(/^API Key( \*)?$/), {
       target: { value: "secret-key" },
     });
     await user.click(screen.getByRole("button", { name: "Save" }));
@@ -129,7 +135,7 @@ describe("GrokBuildProviderForm", () => {
     fireEvent.change(document.querySelector("#codexBaseUrl")!, {
       target: { value: "https://relay.example.com/v1" },
     });
-    await user.type(screen.getByLabelText("API Key"), "secret-key");
+    await user.type(screen.getByLabelText(/^API Key( \*)?$/), "secret-key");
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     expect(onSubmit).toHaveBeenCalledTimes(1);
@@ -156,7 +162,7 @@ describe("GrokBuildProviderForm", () => {
     expect(screen.getByRole("status")).toHaveTextContent("填写 API Key 后");
 
     // The key still reaches the generated config after the user types it.
-    fireEvent.change(screen.getByLabelText("API Key"), {
+    fireEvent.change(screen.getByLabelText(/^API Key( \*)?$/), {
       target: { value: "typed-key" },
     });
     expect(
@@ -165,7 +171,8 @@ describe("GrokBuildProviderForm", () => {
     expect(screen.queryByText(/填写 API Key 后/)).toBeNull();
   });
 
-  it("offers the fixed api_backend values as a choice", () => {
+  it("offers the fixed api_backend values as a choice", async () => {
+    const user = userEvent.setup();
     render(
       <GrokBuildProviderForm
         submitLabel="Save"
@@ -173,14 +180,21 @@ describe("GrokBuildProviderForm", () => {
         onCancel={() => {}}
       />,
     );
-    const select = screen.getByLabelText(/API Backend/) as HTMLSelectElement;
-    expect(select.tagName).toBe("SELECT");
-    expect([...select.options].map((option) => option.value)).toEqual([
-      "responses",
-      "chat_completions",
-      "messages",
+    // The editors' styled select, not a native one.
+    const select = screen.getByRole("combobox", { name: /API Backend/ });
+    await user.click(select);
+    expect(
+      screen.getAllByRole("option").map((option) => option.textContent),
+    ).toEqual([
+      "Responses (responses)",
+      "Chat Completions (chat_completions)",
+      "Anthropic Messages (messages)",
     ]);
-    fireEvent.change(select, { target: { value: "chat_completions" } });
+    await user.click(
+      screen.getByRole("option", {
+        name: "Chat Completions (chat_completions)",
+      }),
+    );
     expect(
       (screen.getByLabelText("raw-config") as HTMLTextAreaElement).value,
     ).toContain('api_backend = "chat_completions"');
@@ -196,13 +210,13 @@ describe("GrokBuildProviderForm", () => {
       />,
     );
 
-    fireEvent.change(screen.getByLabelText("API Key"), {
+    fireEvent.change(screen.getByLabelText(/^API Key( \*)?$/), {
       target: { value: "test-key" },
     });
     fireEvent.change(screen.getByLabelText("raw-config"), {
       target: { value: "[models" },
     });
-    fireEvent.change(screen.getByLabelText("API Key"), {
+    fireEvent.change(screen.getByLabelText(/^API Key( \*)?$/), {
       target: { value: "changed-key" },
     });
     expect(screen.getByLabelText("raw-config")).toHaveValue("[models");
@@ -222,7 +236,7 @@ describe("GrokBuildProviderForm", () => {
         onCancel={() => {}}
       />,
     );
-    fireEvent.change(screen.getByLabelText("API Key"), {
+    fireEvent.change(screen.getByLabelText(/^API Key( \*)?$/), {
       target: { value: "test-key" },
     });
     const raw = screen.getByLabelText("raw-config") as HTMLTextAreaElement;
@@ -233,7 +247,7 @@ describe("GrokBuildProviderForm", () => {
       )
       .replace(/context_window = \d+/, "context_window = 0");
     fireEvent.change(raw, { target: { value: edited } });
-    fireEvent.change(screen.getByLabelText("API Key"), {
+    fireEvent.change(screen.getByLabelText(/^API Key( \*)?$/), {
       target: { value: "changed-while-raw-invalid" },
     });
     expect(raw).toHaveValue(edited);

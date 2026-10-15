@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import ApiKeyInput from "../ApiKeyInput";
 import type { ProviderCategory } from "@/types";
@@ -17,6 +18,7 @@ interface ApiKeySectionProps {
   disabled?: boolean;
   isPartner?: boolean;
   partnerPromotionKey?: string;
+  help?: ReactNode;
 }
 
 export function ApiKeySection({
@@ -29,6 +31,7 @@ export function ApiKeySection({
   websiteUrl,
   placeholder,
   disabled,
+  help,
 }: ApiKeySectionProps) {
   const { t } = useTranslation();
 
@@ -55,6 +58,7 @@ export function ApiKeySection({
           : finalPlaceholder.thirdParty
       }
       disabled={disabled ?? category === "official"}
+      help={help}
       hint={
         shouldShowLink && websiteUrl ? (
           <a

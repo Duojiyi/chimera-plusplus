@@ -1,9 +1,16 @@
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { ChevronLeft, LoaderCircle } from "lucide-react";
+import { ChevronLeft } from "lucide-react";
 import { FullScreenPanel } from "@/components/common/FullScreenPanel";
+import {
+  EditorInUseNotice,
+  EditorSaveActions,
+  EditorTestAction,
+  SaveLabel,
+  useAddressTest,
+} from "@/components/providers/ProviderEditorFields";
 import {
   ProviderForm,
   type ProviderFormValues,
@@ -36,8 +43,29 @@ export default function ToolViewEditor({
   const [dirty, setDirty] = useState(false);
   const [confirmClose, setConfirmClose] = useState(false);
   const [draftName, setDraftName] = useState(provider?.name ?? "");
+  const [draftUrl, setDraftUrl] = useState<string | null>(null);
+  const [inUse, setInUse] = useState(false);
+  const { connection, test, reset } = useAddressTest();
   const toolName = additionalToolNames[appId];
   useLightweightCloseBlocker(busy || dirty);
+  // Saving the line the tool uses also rewrites its live config; the editor
+  // says so above the form. Only a notice, so a failed read stays silent.
+  useEffect(() => {
+    if (!provider) return;
+    let active = true;
+    providersApi
+      .getCurrent(appId)
+      .then((current) => {
+        if (active) setInUse(current === provider.id);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [appId, provider]);
+  useEffect(() => {
+    reset();
+  }, [draftUrl, reset]);
   const requestClose = () => {
     if (busy) return;
     if (dirty) setConfirmClose(true);
@@ -120,39 +148,41 @@ export default function ToolViewEditor({
       }
       footer={
         <>
-          <span className="editor-test-scope">
-            {provider
-              ? "保存已启用线路可能同步更新本机配置。"
-              : "仅保存线路，稍后在列表中切换或启用。"}
-          </span>
-          <div className="editor-save-actions">
-            <button
-              type="button"
-              className="secondary"
+          {draftUrl !== null && (
+            <EditorTestAction
+              connection={connection}
+              onTest={() => void test(draftUrl)}
               disabled={busy}
-              onClick={requestClose}
-            >
-              取消
-            </button>
+            />
+          )}
+          <EditorSaveActions
+            note={
+              !provider
+                ? "仅保存，稍后在列表中切换"
+                : inUse
+                  ? undefined
+                  : "仅保存，不切换到这条线路"
+            }
+            onCancel={requestClose}
+            disabled={busy}
+          >
             <button
               type="submit"
               className="primary"
               form="provider-form"
               disabled={busy}
             >
-              {busy ? (
-                <>
-                  <LoaderCircle className="spin" size={15} aria-hidden="true" />
-                  正在保存…
-                </>
-              ) : (
-                "保存线路"
-              )}
+              <SaveLabel busy={busy} label="保存线路" />
             </button>
-          </div>
+          </EditorSaveActions>
         </>
       }
     >
+      {inUse && (
+        <EditorInUseNotice>
+          这是正在使用的线路。保存后同步写入 {toolName} 的配置。
+        </EditorInUseNotice>
+      )}
       <div onChangeCapture={() => setDirty(true)}>
         <ProviderForm
           appId={appId}
@@ -165,8 +195,14 @@ export default function ToolViewEditor({
           onSubmittingChange={setBusy}
           onDirtyChange={() => setDirty(true)}
           onNameChange={setDraftName}
+          onBaseUrlChange={setDraftUrl}
         />
       </div>
+      {connection.kind === "error" && (
+        <p className="editor-feedback" role="alert">
+          {connection.message}
+        </p>
+      )}
       <ConfirmDialog
         isOpen={confirmClose}
         title="放弃未保存的修改？"
