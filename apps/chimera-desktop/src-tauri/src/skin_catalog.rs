@@ -254,6 +254,7 @@ fn close_and_launch(portable_root: &Path, debug_port: Option<u16>) -> Result<(),
         codex_win_engine::LaunchOptions {
             disable_codex_self_updates: true,
             remote_debugging_port: debug_port,
+            ..Default::default()
         },
     )
     .map_err(|_| "Could not restart Codex for skin injection.".to_string())
@@ -313,6 +314,7 @@ pub async fn apply_skin_package(skin_id: String, state: State<'_, AppState>) -> 
             codex_win_engine::LaunchOptions {
                 disable_codex_self_updates: true,
                 remote_debugging_port: Some(THEME_CDP_PORT),
+                ..Default::default()
             },
         )
         .map_err(|_| "Could not restart Codex for skin injection.".to_string())
