@@ -154,6 +154,7 @@ import {
 } from "@/lib/operationReceipt";
 import {
   CLAUDE_MODEL_TIERS,
+  CLAUDE_TIERS_FOLLOWING_DEFAULT,
   claudeModelFieldLabel,
   claudeModelValue,
   emptyClaudeTiers,
@@ -6093,10 +6094,9 @@ export function ProviderEditor({
                   <b>模型映射</b>
                   <HelpTip title="模型映射说明">
                     Claude Code 按 Haiku、Sonnet、Opus、Fable
-                    档位请求模型，这里填写每档对应的上游实际模型。显示名是
-                    Claude Code
-                    模型菜单里看到的名字。留空的档位经本地路由时，Fable 沿用
-                    Opus，其余沿用默认模型。
+                    档位请求模型，这里填写每档对应的上游实际模型。Haiku、Sonnet、Opus
+                    留空时跟随默认模型；Fable 留空时，经本地路由会沿用
+                    Opus。显示名是 Claude Code 模型菜单里看到的名字。
                   </HelpTip>
                 </span>
               </div>
@@ -6107,6 +6107,9 @@ export function ProviderEditor({
               </div>
               {CLAUDE_MODEL_TIERS.map(([tier, label]) => {
                 const slot = editor.claudeTiers[tier];
+                const followsDefault =
+                  CLAUDE_TIERS_FOLLOWING_DEFAULT.includes(tier) &&
+                  editor.model.trim() !== "";
                 return (
                   <div className="mapping-row" key={tier}>
                     <span className="mapping-tier">{label}</span>
@@ -6122,7 +6125,11 @@ export function ProviderEditor({
                             withClaudeModel(editor, tier, event.target.value),
                           )
                         }
-                        placeholder="未设置"
+                        placeholder={
+                          followsDefault
+                            ? `跟随默认模型（${editor.model.trim()}）`
+                            : "未设置"
+                        }
                       />
                       <button
                         type="button"

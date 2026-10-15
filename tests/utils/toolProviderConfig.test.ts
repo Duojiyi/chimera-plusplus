@@ -234,7 +234,7 @@ describe("Claude Code model tiers", () => {
     },
   };
 
-  it("reads what earlier versions saved and writes it back unchanged", () => {
+  it("reads what earlier versions saved and writes it back", () => {
     const fields = toolProviderFields("claude", provider);
     expect(fields.claudeTiers).toEqual({
       haiku: { model: "small-1", name: "" },
@@ -243,9 +243,13 @@ describe("Claude Code model tiers", () => {
       fable: { model: "", name: "" },
     });
     expect(fields.subagentModel).toBe("agent-1");
-    expect(updateToolProviderConfig("claude", provider, fields)).toEqual(
-      provider.settingsConfig,
-    );
+    // Only the legacy small/fast key goes: the Haiku row replaces it.
+    const { ANTHROPIC_SMALL_FAST_MODEL: _legacy, ...rest } = (
+      provider.settingsConfig as { env: Record<string, string> }
+    ).env;
+    expect(updateToolProviderConfig("claude", provider, fields)).toEqual({
+      env: rest,
+    });
   });
 
   it("sets, clears and names tiers without touching other keys", () => {
@@ -271,9 +275,55 @@ describe("Claude Code model tiers", () => {
       ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "Mid",
       ANTHROPIC_DEFAULT_FABLE_MODEL: "top-1",
       ANTHROPIC_DEFAULT_FABLE_MODEL_NAME: "Top",
-      // The legacy small/fast key is not shown, so it is left alone.
-      ANTHROPIC_SMALL_FAST_MODEL: "legacy-small",
     });
+  });
+
+  it("shows tiers stored as the default model as following it", () => {
+    // How the backend stores an empty Haiku, Sonnet or Opus tier
+    // (normalize_claude_models_in_value) after every save.
+    const filled: Provider = {
+      id: "filled",
+      name: "Filled",
+      settingsConfig: {
+        env: {
+          ANTHROPIC_MODEL: "glm-4.6",
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: "glm-4.5-air",
+          ANTHROPIC_DEFAULT_SONNET_MODEL: "glm-4.6",
+          ANTHROPIC_DEFAULT_OPUS_MODEL: "glm-4.6",
+          ANTHROPIC_DEFAULT_OPUS_MODEL_NAME: "GLM",
+          ANTHROPIC_DEFAULT_FABLE_MODEL: "glm-4.6",
+        },
+      },
+    };
+    const fields = toolProviderFields("claude", filled);
+    expect(fields.claudeTiers).toEqual({
+      haiku: { model: "glm-4.5-air", name: "" },
+      sonnet: { model: "", name: "" },
+      // A menu name makes it a deliberate mapping; Fable is never filled.
+      opus: { model: "glm-4.6", name: "GLM" },
+      fable: { model: "glm-4.6", name: "" },
+    });
+    // Saved empty, Sonnet is filled with the new default by the backend.
+    const saved = updateToolProviderConfig("claude", filled, {
+      ...fields,
+      model: "glm-4.7",
+    }) as { env: Record<string, string> };
+    expect(saved.env).not.toHaveProperty("ANTHROPIC_DEFAULT_SONNET_MODEL");
+    expect(saved.env.ANTHROPIC_MODEL).toBe("glm-4.7");
+  });
+
+  it("shows a legacy small/fast model in the Haiku row", () => {
+    const fields = toolProviderFields("claude", {
+      id: "legacy",
+      name: "Legacy",
+      settingsConfig: {
+        env: {
+          ANTHROPIC_MODEL: "main-1",
+          ANTHROPIC_SMALL_FAST_MODEL: "small-legacy",
+        },
+      },
+    });
+    expect(fields.claudeTiers.haiku.model).toBe("small-legacy");
   });
 
   it("fills one model field from the model list", () => {

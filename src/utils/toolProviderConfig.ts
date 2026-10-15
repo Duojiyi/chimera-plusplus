@@ -57,6 +57,42 @@ const claudeTiers = (env: Record<string, unknown>): ClaudeTierModels =>
 
 export const emptyClaudeTiers = () => claudeTiers({});
 
+/**
+ * Tiers the backend fills with the default model whenever they are empty:
+ * every save runs `normalize_claude_models_in_value`, so that Claude Code
+ * talking to a relay directly never asks for a model the relay lacks.
+ */
+export const CLAUDE_TIERS_FOLLOWING_DEFAULT: readonly ClaudeModelTier[] = [
+  "haiku",
+  "sonnet",
+  "opus",
+];
+
+/**
+ * The tiers as the editor shows them. One that equals the default model and
+ * has no menu name is how the backend stores "follow the default", so it
+ * shows empty and saving it empty lets the backend fill in the current
+ * default again. A legacy `ANTHROPIC_SMALL_FAST_MODEL` is the Haiku tier,
+ * which is what saving turns it into.
+ */
+function readClaudeTiers(env: Record<string, unknown>): ClaudeTierModels {
+  const tiers = claudeTiers(env);
+  if (!tiers.haiku.model) {
+    tiers.haiku = {
+      ...tiers.haiku,
+      model: text(env.ANTHROPIC_SMALL_FAST_MODEL),
+    };
+  }
+  const model = text(env.ANTHROPIC_MODEL).trim();
+  for (const tier of CLAUDE_TIERS_FOLLOWING_DEFAULT) {
+    const slot = tiers[tier];
+    if (model && slot.model.trim() === model && !slot.name.trim()) {
+      tiers[tier] = { model: "", name: "" };
+    }
+  }
+  return tiers;
+}
+
 export type ToolProviderFields = {
   baseUrl: string;
   apiKey: string;
@@ -136,7 +172,7 @@ export function toolProviderFields(
         baseUrl: text(env.ANTHROPIC_BASE_URL),
         apiKey: text(env[anthropicAuthField]),
         model: text(env.ANTHROPIC_MODEL),
-        claudeTiers: claudeTiers(env),
+        claudeTiers: readClaudeTiers(env),
         subagentModel: text(env.CLAUDE_CODE_SUBAGENT_MODEL),
       };
     case "gemini":
@@ -199,6 +235,8 @@ export function updateToolProviderConfig(
     if (appId === "claude") {
       delete env.ANTHROPIC_API_KEY;
       delete env.ANTHROPIC_AUTH_TOKEN;
+      // The Haiku row shows and replaces the legacy small/fast model.
+      delete env.ANTHROPIC_SMALL_FAST_MODEL;
       for (const [tier] of CLAUDE_MODEL_TIERS) {
         const key = claudeTierKey(tier);
         const tierModel = fields.claudeTiers[tier].model.trim();
