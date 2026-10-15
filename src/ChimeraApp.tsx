@@ -153,10 +153,16 @@ import {
   type ReceiptNextStep,
 } from "@/lib/operationReceipt";
 import {
+  CLAUDE_MODEL_TIERS,
+  claudeModelFieldLabel,
+  claudeModelValue,
+  emptyClaudeTiers,
   isNativeToolAppId,
   nativeToolNames,
   toolProviderFields,
   updateToolProviderConfig,
+  withClaudeModel,
+  type ClaudeModelField,
 } from "@/utils/toolProviderConfig";
 import { useSettingsQuery } from "@/lib/query/queries";
 import routeGateIcon from "@/assets/icons/chimera-dragon-mark.png";
@@ -801,6 +807,8 @@ export function providerDraft(
     catalogModels: extractCodexMappingRows(provider),
     original: provider ?? null,
     nativeProtocol: "",
+    claudeTiers: emptyClaudeTiers(),
+    subagentModel: "",
     ...native,
     ...(!provider && native
       ? { baseUrl: getChimeraHubTemplate().baseUrl }
@@ -980,6 +988,9 @@ export default function ChimeraApp({
     execute: () => void;
   } | null>(null);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  // The Claude Code field the model list fills when it opens.
+  const [modelPickTarget, setModelPickTarget] =
+    useState<ClaudeModelField>("default");
   const [pendingEditorDiscard, setPendingEditorDiscard] = useState(false);
   // Editor-local connection test result: the home banner reflects the active
   // line only and must never change because a draft was tested.
@@ -2193,8 +2204,9 @@ export default function ChimeraApp({
       // An empty default model gets a suggestion (the first fetched entry that
       // is not an embedding / rerank / speech / image model). The picker that
       // opens next shows the count and the suggestion, so no toast repeats it.
+      // Claude Code leaves an empty default model to the tool itself.
       let suggested: string | null = null;
-      if (!latest.model.trim()) {
+      if (editorAppId === "codex" && !latest.model.trim()) {
         suggested = pickDefaultFetchedModel(result) ?? null;
         if (suggested) {
           const value = suggested;
@@ -3080,7 +3092,10 @@ export default function ChimeraApp({
                 setCommonConfigSnippet(value);
                 setCommonConfigDirty(value !== commonConfigBaselineRef.current);
               }}
-              onFetchModels={() => void fetchModels()}
+              onFetchModels={(target = "default") => {
+                setModelPickTarget(target);
+                void fetchModels();
+              }}
               connection={draftConnection}
               onTest={() =>
                 void testConnection(
@@ -3150,7 +3165,21 @@ export default function ChimeraApp({
           if (provider) openEditor(providerDraft(provider));
         }}
       />
-      {editor && models && modelPickerOpen && (
+      {editor && models && modelPickerOpen && editorAppId === "claude" && (
+        <CodexModelPicker
+          models={models}
+          defaultModel={claudeModelValue(editor, modelPickTarget)}
+          target={claudeModelFieldLabel(modelPickTarget)}
+          refetching={fetchingModels}
+          onPick={(model) => {
+            setEditor(withClaudeModel(editor, modelPickTarget, model));
+            setModelPickerOpen(false);
+          }}
+          onRefetch={() => void fetchModels({ refetch: true })}
+          onClose={() => setModelPickerOpen(false)}
+        />
+      )}
+      {editor && models && modelPickerOpen && editorAppId !== "claude" && (
         <CodexModelPicker
           models={models}
           defaultModel={editor.model}
@@ -5437,8 +5466,9 @@ export function ProviderEditor({
   commonConfigLoading: boolean;
   commonConfigLoaded: boolean;
   onCommonConfigChange: (value: string) => void;
-  /** Opens the loaded model list, or fetches it first. */
-  onFetchModels: () => void;
+  /** Opens the loaded model list, or fetches it first; for Claude Code, the
+   * field the list fills (the default model unless a tier is named). */
+  onFetchModels: (target?: ClaudeModelField) => void;
   connection: ConnectionState;
   onTest: () => void;
   onSave: () => void;
@@ -5453,6 +5483,9 @@ export function ProviderEditor({
   deleteBlockedReason?: string | null;
 }) {
   const isCodex = appId === "codex";
+  // Codex and Claude Code read the line's model list; the other tools take a
+  // model ID as typed.
+  const canFetchModels = isCodex || appId === "claude";
   const toolName = isNativeToolAppId(appId) ? nativeToolNames[appId] : "Codex";
   const needsModel = appId !== "claude" && appId !== "gemini";
   const nativeProtocolOptions =
@@ -6022,13 +6055,15 @@ export function ProviderEditor({
                   placeholder={
                     isCodex
                       ? "先获取模型列表，或手动输入"
-                      : "填写服务商提供的模型 ID"
+                      : canFetchModels
+                        ? "留空由工具决定，可获取模型列表或手动输入"
+                        : "填写服务商提供的模型 ID"
                   }
                 />
-                {isCodex && (
+                {canFetchModels && (
                   <button
                     type="button"
-                    onClick={onFetchModels}
+                    onClick={() => onFetchModels()}
                     disabled={fetchingModels || savingProvider}
                   >
                     {fetchingModels ? (
@@ -6042,14 +6077,109 @@ export function ProviderEditor({
                   </button>
                 )}
               </div>
-              {isCodex && modelFetchError && (
+              {canFetchModels && modelFetchError && (
                 <ModelFetchNotice
                   issue={modelFetchError}
                   onAction={onModelFetchAction}
+                  canSetModelsUrl={isCodex}
                 />
               )}
             </EditorField>
           </section>
+          {appId === "claude" && (
+            <div className="advanced-group model-mapping claude-model-mapping">
+              <div className="advanced-section-heading">
+                <span className="editor-field-label">
+                  <b>模型映射</b>
+                  <HelpTip title="模型映射说明">
+                    Claude Code 按 Haiku、Sonnet、Opus、Fable
+                    档位请求模型，这里填写每档对应的上游实际模型。显示名是
+                    Claude Code
+                    模型菜单里看到的名字。留空的档位经本地路由时，Fable 沿用
+                    Opus，其余沿用默认模型。
+                  </HelpTip>
+                </span>
+              </div>
+              <div className="mapping-head" aria-hidden="true">
+                <span>档位</span>
+                <span>实际请求模型</span>
+                <span>菜单显示名（可选）</span>
+              </div>
+              {CLAUDE_MODEL_TIERS.map(([tier, label]) => {
+                const slot = editor.claudeTiers[tier];
+                return (
+                  <div className="mapping-row" key={tier}>
+                    <span className="mapping-tier">{label}</span>
+                    <div className="model-input">
+                      <input
+                        name={`provider-claude-${tier}-model`}
+                        aria-label={`${label} 实际请求模型`}
+                        autoComplete="off"
+                        spellCheck={false}
+                        value={slot.model}
+                        onChange={(event) =>
+                          setEditor(
+                            withClaudeModel(editor, tier, event.target.value),
+                          )
+                        }
+                        placeholder="未设置"
+                      />
+                      <button
+                        type="button"
+                        aria-label={`从模型列表选择 ${label} 模型`}
+                        onClick={() => onFetchModels(tier)}
+                        disabled={fetchingModels || savingProvider}
+                      >
+                        <ListChecks size={14} aria-hidden="true" />
+                        选择
+                      </button>
+                    </div>
+                    <input
+                      aria-label={`${label} 菜单显示名`}
+                      value={slot.name}
+                      disabled={!slot.model.trim()}
+                      onChange={(event) =>
+                        setEditor({
+                          ...editor,
+                          claudeTiers: {
+                            ...editor.claudeTiers,
+                            [tier]: { ...slot, name: event.target.value },
+                          },
+                        })
+                      }
+                      placeholder={slot.model.trim() ? "显示名" : "先填写模型"}
+                    />
+                  </div>
+                );
+              })}
+              <div className="mapping-row">
+                <span className="mapping-tier">子代理</span>
+                <div className="model-input">
+                  <input
+                    name="provider-claude-subagent-model"
+                    aria-label="子代理实际请求模型"
+                    autoComplete="off"
+                    spellCheck={false}
+                    value={editor.subagentModel}
+                    onChange={(event) =>
+                      patch("subagentModel", event.target.value)
+                    }
+                    placeholder="未设置"
+                  />
+                  <button
+                    type="button"
+                    aria-label="从模型列表选择子代理模型"
+                    onClick={() => onFetchModels("subagent")}
+                    disabled={fetchingModels || savingProvider}
+                  >
+                    <ListChecks size={14} aria-hidden="true" />
+                    选择
+                  </button>
+                </div>
+                <span className="mapping-note">Claude Code 子任务使用</span>
+              </div>
+            </div>
+          )}
           {isCodex && (
             <>
               <div className="advanced-group model-mapping">
@@ -6070,7 +6200,7 @@ export function ProviderEditor({
                       <button
                         type="button"
                         className="secondary compact"
-                        onClick={onFetchModels}
+                        onClick={() => onFetchModels()}
                         disabled={fetchingModels}
                       >
                         从列表选择

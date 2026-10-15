@@ -105,6 +105,13 @@
 .model-picker-row:hover {
   background: var(--bg-hover);
 }
+/* Filling one field: no mapping checkbox column. */
+.model-picker-row.is-pick-only {
+  grid-template-columns: minmax(0, 1fr);
+}
+.model-picker-row.is-pick-only .model-picker-pick {
+  padding-left: 12px;
+}
 .model-picker-row.is-default {
   background: var(--bg-selected);
 }

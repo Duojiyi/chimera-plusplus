@@ -835,9 +835,11 @@ describe("native tool editor ownership", () => {
       fireEvent.click(screen.getByRole("button", { name: "添加线路" }));
       await screen.findByRole("region", { name: "新建线路" });
       expect(screen.queryByText("Codex 功能")).not.toBeInTheDocument();
-      expect(
-        screen.queryByRole("button", { name: "获取模型" }),
-      ).not.toBeInTheDocument();
+      // Claude Code reads the line's model list like Codex; the other tools
+      // take a typed model ID.
+      const fetchModels = screen.queryByRole("button", { name: "获取模型" });
+      if (appId === "claude") expect(fetchModels).toBeInTheDocument();
+      else expect(fetchModels).not.toBeInTheDocument();
       fillField("provider-name", "Native");
       fillField("provider-base-url", "https://new.example/custom");
       fillField("provider-api-key", "new-key");

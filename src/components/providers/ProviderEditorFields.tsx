@@ -207,9 +207,12 @@ const MODEL_FETCH_ACTIONS: Record<ModelFetchAction, string> = {
 export function ModelFetchNotice({
   issue,
   onAction,
+  canSetModelsUrl = true,
 }: {
   issue: ModelFetchIssue;
   onAction: (action: ModelFetchAction) => void;
+  /** The editor has a 模型列表地址 field; otherwise retry is offered instead. */
+  canSetModelsUrl?: boolean;
 }) {
   if (issue.kind === "empty") {
     return (
@@ -218,7 +221,9 @@ export function ModelFetchNotice({
       </p>
     );
   }
-  const { text, action } = MODEL_FETCH_ERRORS[issue.code];
+  const { text, action: suggested } = MODEL_FETCH_ERRORS[issue.code];
+  const action =
+    suggested === "models-url" && !canSetModelsUrl ? "retry" : suggested;
   return (
     <p className="editor-model-notice is-error" role="alert">
       <CircleAlert size={15} aria-hidden="true" />

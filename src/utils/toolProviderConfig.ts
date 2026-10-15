@@ -24,13 +24,91 @@ const object = (value: unknown): Record<string, unknown> =>
     : {};
 const text = (value: unknown) => (typeof value === "string" ? value : "");
 
+/**
+ * Claude Code's model tiers. Each maps to `ANTHROPIC_DEFAULT_<TIER>_MODEL`,
+ * with an optional `…_MODEL_NAME` that Claude Code's model menu shows.
+ */
+export const CLAUDE_MODEL_TIERS = [
+  ["haiku", "Haiku"],
+  ["sonnet", "Sonnet"],
+  ["opus", "Opus"],
+  ["fable", "Fable"],
+] as const;
+
+export type ClaudeModelTier = (typeof CLAUDE_MODEL_TIERS)[number][0];
+export type ClaudeTierModels = Record<
+  ClaudeModelTier,
+  { model: string; name: string }
+>;
+
+const claudeTierKey = (tier: ClaudeModelTier) =>
+  `ANTHROPIC_DEFAULT_${tier.toUpperCase()}_MODEL`;
+
+const claudeTiers = (env: Record<string, unknown>): ClaudeTierModels =>
+  Object.fromEntries(
+    CLAUDE_MODEL_TIERS.map(([tier]) => [
+      tier,
+      {
+        model: text(env[claudeTierKey(tier)]),
+        name: text(env[`${claudeTierKey(tier)}_NAME`]),
+      },
+    ]),
+  ) as ClaudeTierModels;
+
+export const emptyClaudeTiers = () => claudeTiers({});
+
 export type ToolProviderFields = {
   baseUrl: string;
   apiKey: string;
   model: string;
   nativeProtocol: string;
   anthropicAuthField: ClaudeApiKeyField;
+  /** Claude Code only: the upstream model and menu name of each tier. */
+  claudeTiers: ClaudeTierModels;
+  /** Claude Code only: `CLAUDE_CODE_SUBAGENT_MODEL`. */
+  subagentModel: string;
 };
+
+/** A Claude Code model field the fetched model list can fill. */
+export type ClaudeModelField = "default" | ClaudeModelTier | "subagent";
+
+type ClaudeModelFields = Pick<
+  ToolProviderFields,
+  "model" | "claudeTiers" | "subagentModel"
+>;
+
+export function claudeModelFieldLabel(field: ClaudeModelField): string {
+  if (field === "default") return "默认模型";
+  if (field === "subagent") return "子代理模型";
+  const tier = CLAUDE_MODEL_TIERS.find(([id]) => id === field);
+  return `${tier?.[1] ?? field} 模型`;
+}
+
+export function claudeModelValue(
+  fields: ClaudeModelFields,
+  field: ClaudeModelField,
+): string {
+  if (field === "default") return fields.model;
+  if (field === "subagent") return fields.subagentModel;
+  return fields.claudeTiers[field].model;
+}
+
+/** The same fields with one model replaced. */
+export function withClaudeModel<T extends ClaudeModelFields>(
+  fields: T,
+  field: ClaudeModelField,
+  model: string,
+): T {
+  if (field === "default") return { ...fields, model };
+  if (field === "subagent") return { ...fields, subagentModel: model };
+  return {
+    ...fields,
+    claudeTiers: {
+      ...fields.claudeTiers,
+      [field]: { ...fields.claudeTiers[field], model },
+    },
+  };
+}
 
 /** Read the same native shape we write; never fall back to a Codex template. */
 export function toolProviderFields(
@@ -45,7 +123,12 @@ export function toolProviderFields(
       : typeof env.ANTHROPIC_API_KEY === "string"
         ? "ANTHROPIC_API_KEY"
         : "ANTHROPIC_AUTH_TOKEN";
-  const common = { nativeProtocol: "", anthropicAuthField };
+  const common = {
+    nativeProtocol: "",
+    anthropicAuthField,
+    claudeTiers: claudeTiers({}),
+    subagentModel: "",
+  };
   switch (appId) {
     case "claude":
       return {
@@ -53,6 +136,8 @@ export function toolProviderFields(
         baseUrl: text(env.ANTHROPIC_BASE_URL),
         apiKey: text(env[anthropicAuthField]),
         model: text(env.ANTHROPIC_MODEL),
+        claudeTiers: claudeTiers(env),
+        subagentModel: text(env.CLAUDE_CODE_SUBAGENT_MODEL),
       };
     case "gemini":
       return {
@@ -99,7 +184,7 @@ export function updateToolProviderConfig(
   const model = fields.model.trim();
   if (appId === "claude" || appId === "gemini") {
     const env = { ...object(settings.env) };
-    const values =
+    const values: Record<string, string> =
       appId === "claude"
         ? {
             ANTHROPIC_BASE_URL: baseUrl,
@@ -114,6 +199,16 @@ export function updateToolProviderConfig(
     if (appId === "claude") {
       delete env.ANTHROPIC_API_KEY;
       delete env.ANTHROPIC_AUTH_TOKEN;
+      for (const [tier] of CLAUDE_MODEL_TIERS) {
+        const key = claudeTierKey(tier);
+        const tierModel = fields.claudeTiers[tier].model.trim();
+        values[key] = tierModel;
+        // A menu name without a model would name nothing.
+        values[`${key}_NAME`] = tierModel
+          ? fields.claudeTiers[tier].name.trim()
+          : "";
+      }
+      values.CLAUDE_CODE_SUBAGENT_MODEL = fields.subagentModel.trim();
     }
     for (const [key, value] of Object.entries(values)) {
       if (value) env[key] = value;

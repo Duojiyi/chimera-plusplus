@@ -20,29 +20,36 @@ import "./CodexModelPicker.css";
 
 export interface CodexModelPickerProps {
   models: FetchedModel[];
-  /** The draft's default model. */
+  /** The draft's default model, or the current value of the field to fill. */
   defaultModel: string;
-  /** The draft's mapping rows. */
-  rows: CodexCatalogModel[];
+  /**
+   * The draft's mapping rows. Without them the list only fills one field
+   * (`target`): no checkboxes and nothing to apply.
+   */
+  rows?: CodexCatalogModel[];
+  /** Names the field a click fills, when there are no mapping rows. */
+  target?: string;
   /** Default model filled in from this list because the field was empty. */
   suggestedModel?: string | null;
   refetching: boolean;
   /** A row was clicked: the new default plus the rows with any checkbox changes. */
   onPick: (model: string, rows: CodexCatalogModel[]) => void;
-  onApply: (rows: CodexCatalogModel[]) => void;
+  onApply?: (rows: CodexCatalogModel[]) => void;
   onRefetch: () => void;
   onClose: () => void;
 }
 
 /**
- * The fetched model list of a Codex line. Clicking a model makes it the
+ * The fetched model list of a line. For Codex, clicking a model makes it the
  * default; the checkbox adds or removes a mapping row, committed by 应用 (or by
- * picking a default) and discarded by 取消.
+ * picking a default) and discarded by 取消. Without mapping rows (a Claude Code
+ * tier, for example) a click fills the one field it was opened for.
  */
 export function CodexModelPicker({
   models,
   defaultModel,
-  rows,
+  rows: mappingRows,
+  target,
   suggestedModel,
   refetching,
   onPick,
@@ -53,6 +60,8 @@ export function CodexModelPicker({
   const dialogRef = useDialogFocus<HTMLElement>(onClose);
   const searchRef = useRef<HTMLInputElement>(null);
   const baseId = useId();
+  const mapping = mappingRows !== undefined;
+  const rows = useMemo(() => mappingRows ?? [], [mappingRows]);
   const [query, setQuery] = useState("");
   const [toggled, setToggled] = useState<ReadonlyMap<string, boolean>>(
     new Map(),
@@ -138,22 +147,26 @@ export function CodexModelPicker({
     return (
       <li
         key={model.id}
-        className={`model-picker-row${isDefault ? " is-default" : ""}`}
+        className={`model-picker-row${isDefault ? " is-default" : ""}${
+          mapping ? "" : " is-pick-only"
+        }`}
       >
-        <label className="model-picker-check">
-          <input
-            type="checkbox"
-            aria-label={`加入模型映射：${model.id}`}
-            aria-describedby={locked ? `${baseId}-locked` : undefined}
-            checked={isChecked(key)}
-            disabled={locked}
-            onChange={(event) =>
-              setToggled((current) =>
-                new Map(current).set(key, event.target.checked),
-              )
-            }
-          />
-        </label>
+        {mapping && (
+          <label className="model-picker-check">
+            <input
+              type="checkbox"
+              aria-label={`加入模型映射：${model.id}`}
+              aria-describedby={locked ? `${baseId}-locked` : undefined}
+              checked={isChecked(key)}
+              disabled={locked}
+              onChange={(event) =>
+                setToggled((current) =>
+                  new Map(current).set(key, event.target.checked),
+                )
+              }
+            />
+          </label>
+        )}
         <button
           type="button"
           className="model-picker-pick"
@@ -169,7 +182,7 @@ export function CodexModelPicker({
           {isDefault && (
             <span className="model-picker-default" aria-hidden="true">
               <Check size={14} />
-              默认
+              {mapping ? "默认" : "当前"}
             </span>
           )}
           <span
@@ -208,7 +221,9 @@ export function CodexModelPicker({
               {suggestedModel
                 ? `已按列表建议默认模型 ${suggestedModel}。`
                 : "列表来自此线路的模型接口。"}
-              点击模型设为默认，勾选加入模型映射。
+              {mapping
+                ? "点击模型设为默认，勾选加入模型映射。"
+                : `点击模型填入「${target ?? "模型"}」。`}
             </p>
           </div>
           <button
@@ -253,7 +268,7 @@ export function CodexModelPicker({
           </label>
           <span className="model-picker-count" aria-live="polite">
             {needle ? `找到 ${shown} 个 · 共 ${total} 个` : `共 ${total} 个`}
-            {` · 已加入映射 ${checked.size} 个`}
+            {mapping && ` · 已加入映射 ${checked.size} 个`}
           </span>
         </div>
         <div className="model-picker-body">
@@ -282,7 +297,10 @@ export function CodexModelPicker({
                 >
                   <ChevronDown size={14} aria-hidden="true" />
                   非对话模型 {nonChat.length} 个
-                  <small>嵌入、重排、语音、图像等，通常不用于 Codex</small>
+                  <small>
+                    嵌入、重排、语音、图像等，
+                    {mapping ? "通常不用于 Codex" : "通常不用于对话"}
+                  </small>
                 </button>
               )}
               {showNonChat && (
@@ -295,30 +313,32 @@ export function CodexModelPicker({
             </div>
           )}
           <span id={`${baseId}-default`} hidden>
-            当前默认模型
+            {mapping ? "当前默认模型" : "当前填写的模型"}
           </span>
           <span id={`${baseId}-locked`} hidden>
             已自定义的映射，请在模型映射表中删除
           </span>
         </div>
-        <footer className="model-picker-footer">
-          <p>
-            {lockedCount
-              ? "“已自定义”的模型需在映射表中删除。"
-              : "勾选的模型会加入模型映射。"}
-          </p>
-          <button type="button" className="secondary" onClick={onClose}>
-            取消
-          </button>
-          <button
-            type="button"
-            className="primary"
-            disabled={!changed}
-            onClick={() => onApply(nextRows())}
-          >
-            应用
-          </button>
-        </footer>
+        {mapping && (
+          <footer className="model-picker-footer">
+            <p>
+              {lockedCount
+                ? "“已自定义”的模型需在映射表中删除。"
+                : "勾选的模型会加入模型映射。"}
+            </p>
+            <button type="button" className="secondary" onClick={onClose}>
+              取消
+            </button>
+            <button
+              type="button"
+              className="primary"
+              disabled={!changed}
+              onClick={() => onApply?.(nextRows())}
+            >
+              应用
+            </button>
+          </footer>
+        )}
       </section>
     </div>
   );
