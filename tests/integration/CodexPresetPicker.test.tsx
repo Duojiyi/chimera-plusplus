@@ -105,12 +105,17 @@ describe("Chimera-only new-line template", () => {
       apiKey: "",
     });
   });
-  it.each(["claude", "gemini", "pi", "opencode"] as const)(
+  // Claude Code and Gemini CLI append /v1/messages and /v1beta themselves, so
+  // they get the origin; OpenCode and Pi take the OpenAI-compatible /v1 base.
+  it.each([
+    ["claude", "https://api.chimerahub.org"],
+    ["gemini", "https://api.chimerahub.org"],
+    ["pi", "https://api.chimerahub.org/v1"],
+    ["opencode", "https://api.chimerahub.org/v1"],
+  ] as const)(
     "prefills %s without changing existing routes",
-    (appId) => {
-      expect(providerDraft(null, "新线路", appId).baseUrl).toBe(
-        "https://api.chimerahub.org/v1",
-      );
+    (appId, baseUrl) => {
+      expect(providerDraft(null, "新线路", appId).baseUrl).toBe(baseUrl);
       expect(
         providerDraft(
           { id: "old", name: "旧线路", settingsConfig: {} },

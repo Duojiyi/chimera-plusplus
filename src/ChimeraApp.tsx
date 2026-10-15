@@ -752,6 +752,18 @@ function codexApiFormatLabel(format: CodexApiFormat): string {
   return "Anthropic Messages";
 }
 
+/**
+ * ChimeraHub's address for a new native-tool line. Claude Code and Gemini CLI
+ * append their own API path (`/v1/messages`, `/v1beta/…`), so they get the
+ * origin; OpenCode and Pi take the OpenAI-compatible `/v1` base as it is.
+ */
+function chimeraHubBaseUrlFor(appId: AppId): string {
+  const baseUrl = getChimeraHubTemplate().baseUrl;
+  return appId === "claude" || appId === "gemini"
+    ? baseUrl.replace(/\/v1\/?$/, "")
+    : baseUrl;
+}
+
 export function providerDraft(
   provider?: Provider | null,
   suggestedName?: string,
@@ -827,9 +839,7 @@ export function providerDraft(
     claudeTiers: emptyClaudeTiers(),
     subagentModel: "",
     ...native,
-    ...(!provider && native
-      ? { baseUrl: getChimeraHubTemplate().baseUrl }
-      : {}),
+    ...(!provider && native ? { baseUrl: chimeraHubBaseUrlFor(appId) } : {}),
   };
 }
 
