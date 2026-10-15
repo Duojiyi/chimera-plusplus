@@ -681,6 +681,8 @@ pub async fn install_update_and_restart(
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         update.install(bytes).map_err(|e| {
             crate::codex_accounts::login::resume_after_failed_shutdown();
+            // The installer never took over, so no relaunch follows.
+            crate::lightweight::take_window_on_next_start(&app);
             // 安装器没有接手，进程会继续运行：把退出前摘掉的托盘图标放回来。
             if let Some(tray) = app.tray_by_id(crate::tray::TRAY_ID) {
                 if let Err(error) = tray.set_visible(true) {
@@ -697,9 +699,11 @@ pub async fn install_update_and_restart(
     #[cfg(not(target_os = "windows"))]
     {
         // macOS/Linux install() 会返回；先安装，避免安装失败时误停代理/撤回接管。
-        update
-            .install(bytes)
-            .map_err(|e| format!("安装更新失败: {e}"))?;
+        update.install(bytes).map_err(|e| {
+            // Not installed, so no relaunch follows.
+            crate::lightweight::take_window_on_next_start(&app);
+            format!("安装更新失败: {e}")
+        })?;
 
         crate::save_window_state_before_exit(&app);
         crate::cleanup_before_exit(&app).await;
