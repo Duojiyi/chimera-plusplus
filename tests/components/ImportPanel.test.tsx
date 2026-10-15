@@ -66,7 +66,7 @@ describe("settings link import", () => {
     expect(deeplinkApi.submitImport).toHaveBeenCalledTimes(2);
   });
   it.each([
-    ["DEEP_LINK_PARSE_FAILED", "无法识别这个导入链接"],
+    ["DEEP_LINK_PARSE_FAILED", "无法使用这个导入链接"],
     ["DEEP_LINK_TARGET_UNAVAILABLE", "链接要导入到的工具在当前版本不可用"],
     ["DEEP_LINK_QUEUE_FULL", "请先处理已打开的导入确认"],
     ["IMPORT_NOTIFICATION_FAILED", "已加入待确认队列"],

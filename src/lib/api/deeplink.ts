@@ -133,9 +133,12 @@ export function describeDeepLinkRefusal(reason: string): {
 } {
   switch (reason) {
     case "DEEP_LINK_PARSE_FAILED":
+      // Also covers links refused for safety (a key that would run a
+      // command, a URL with credentials), so the text names that case too.
       return {
-        title: "无法识别这个导入链接",
-        description: "链接可能不完整，或用于 Chimera++ 不支持的工具或资源。",
+        title: "无法使用这个导入链接",
+        description:
+          "链接可能不完整、用于 Chimera++ 不支持的工具或资源，或含有不能安全导入的内容。",
       };
     case "DEEP_LINK_TARGET_UNAVAILABLE":
       return {

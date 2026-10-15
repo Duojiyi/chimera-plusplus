@@ -497,12 +497,13 @@ describe("default App deep-link handoff", () => {
             },
             local: {
               command: "npx",
-              args: ["-y", "mcp-server", "--api-key", "sk-arg-ARGSECRET-9900"],
+              args: ["-y", "mcp-server", "--api-key=sk-arg-ARGSECRET-9900"],
             },
-            // A "key" chosen to match the package only hides itself.
+            // npm reads an unknown flag as a switch, so the argument after it
+            // may be the package that runs: it stays visible.
             sneaky: {
               command: "npx",
-              args: ["-y", "@evil/mcp-server", "--api-key", "@evil/mcp-server"],
+              args: ["-y", "--auth-token", "@evil/mcp-backdoor"],
             },
           },
         },
@@ -515,16 +516,16 @@ describe("default App deep-link handoff", () => {
     await importReady();
     expect(screen.queryByText(/QUERYSECRET/)).not.toBeInTheDocument();
     expect(screen.queryByText(/ARGSECRET/)).not.toBeInTheDocument();
-    expect(screen.getByText("••••9900")).toBeInTheDocument();
-    expect(screen.getByText("@evil/mcp-server")).toBeInTheDocument();
+    expect(screen.getByText("--api-key=••••9900")).toBeInTheDocument();
+    expect(screen.getByText("@evil/mcp-backdoor")).toBeInTheDocument();
     fireEvent.click(screen.getByText(/查看完整配置/));
     const stored =
       screen.getByRole("region", { name: /将保存的内容/ }).textContent ?? "";
     expect(stored).not.toContain("QUERYSECRET");
     expect(stored).not.toContain("ARGSECRET");
     expect(stored).toContain("••••7788");
-    expect(stored).toContain("••••9900");
-    expect(stored).toContain('"@evil/mcp-server"');
+    expect(stored).toContain("--api-key=••••9900");
+    expect(stored).toContain('"@evil/mcp-backdoor"');
   });
 
   it("switches lines only after the user turns the switch on", async () => {
@@ -620,7 +621,7 @@ describe("default App deep-link handoff", () => {
   });
 
   it.each([
-    ["DEEP_LINK_PARSE_FAILED", "无法识别这个导入链接"],
+    ["DEEP_LINK_PARSE_FAILED", "无法使用这个导入链接"],
     ["DEEP_LINK_QUEUE_FULL", "待确认的导入太多"],
     ["DEEP_LINK_TARGET_UNAVAILABLE", "无法导入这个链接"],
     ["DEEP_LINK_QUEUE_UNAVAILABLE", "无法处理导入链接"],
@@ -654,7 +655,7 @@ describe("default App deep-link handoff", () => {
     mount(true);
     await waitFor(() =>
       expect(mocks.toast.error).toHaveBeenCalledWith(
-        "无法识别这个导入链接",
+        "无法使用这个导入链接",
         expect.anything(),
       ),
     );

@@ -2284,7 +2284,7 @@
     "risk": {
       "envHijack": "Sets environment variables that change how programs load or which certificates they trust. It imports disabled; check the source before enabling it.",
       "privateEndpoint": "The address points to this computer or the local network, usually a service you run yourself (such as Ollama). If you do not run such a service, do not import it.",
-      "shellCommand": "Runs a whole command line through a shell; what actually runs is in the arguments. Review each line before enabling it."
+      "shellCommand": "Runs a command or code given in the arguments (such as sh -c, node -e or python -c); what actually runs is in the arguments. Review each line before enabling it."
     },
     "importSuccessActivated": "Switched to \"{{name}}\".",
     "mcpImportNone": "MCP servers not imported",

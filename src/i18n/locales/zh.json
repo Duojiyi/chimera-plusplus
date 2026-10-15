@@ -2284,7 +2284,7 @@
     "risk": {
       "envHijack": "设置了会改变程序加载方式或证书信任的环境变量。导入后保持停用，启用前请确认来源可信。",
       "privateEndpoint": "地址指向本机或局域网，通常是你自己运行的本地服务（例如 Ollama）。如果你没有运行这样的服务，请不要导入。",
-      "shellCommand": "通过 shell 运行一整段命令，实际执行的内容在参数里。启用前请逐行核对。"
+      "shellCommand": "直接运行参数里的一段命令或代码（如 sh -c、node -e、python -c），实际执行的内容在参数里。启用前请逐行核对。"
     },
     "importSuccessActivated": "已切换到线路“{{name}}”。",
     "mcpImportNone": "MCP 服务器未导入",

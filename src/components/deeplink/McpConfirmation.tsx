@@ -110,11 +110,13 @@ export function McpConfirmation({
           <ul className="dl-servers">
             {servers.map(([id, spec]) => {
               const commandRisk = classifyCommand(spec.command, spec.args);
-              // Credentials after `--api-key`, in `--token=x`, in a header
-              // or in a URL show their last 4 only, like every other
-              // credential in this dialog. Masked in place, so nothing else
-              // in an arg can be hidden by a link that picks its own "key".
-              const args = Array.isArray(spec.args) ? maskArgs(spec.args) : [];
+              // Credentials in `--token=x`, `KEY=x`, a header or a URL show
+              // their last 4 only, like every other credential in this
+              // dialog. Masked in place, and never where an argument could
+              // name what runs (a launcher's next argument, inline code).
+              const args = Array.isArray(spec.args)
+                ? maskArgs(spec.args, spec.command)
+                : [];
               const url =
                 typeof spec.url === "string" ? maskUrl(spec.url) : null;
               const urlRisk =
