@@ -433,50 +433,77 @@
   font-size: 13px;
 }
 
-/* Read failure: what failed, what it means, what to do. */
+/* First run / no lines: the setup card sits under the page heading, aligned
+   with it, instead of floating against the title bar. */
+.provider-page > .onboarding {
+  flex-shrink: 0;
+  width: 100%;
+  margin: 8px 0 0;
+}
+
+/* Read failure: the tool pages' error card (tool-load-error) under the page
+   heading. What failed and 重试, what it means, then the raw detail. */
 .route-load-error {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  column-gap: 12px;
-  align-items: start;
-  max-width: 640px;
-  margin-top: 16px;
-  padding: 20px 24px;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 14px 16px;
   border: 1px solid var(--danger-border);
   border-radius: var(--radius-panel);
-  background: var(--bg-surface);
-}
-.route-load-error > svg {
-  margin-top: 2px;
+  background: var(--danger-bg);
   color: var(--danger-fg);
+  font-size: 13px;
+  line-height: 1.6;
 }
-.route-load-error h3 {
-  margin: 0;
-  font-size: 15px;
-  line-height: 1.4;
+.route-load-error-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.route-load-error-head strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.route-load-error-head svg {
+  flex: none;
+}
+.route-load-error-head button {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-control);
+  background: var(--bg-surface);
+  color: var(--text-1);
+  font-size: 13px;
+  cursor: pointer;
+}
+.route-load-error-head button:hover:not(:disabled) {
+  background: var(--bg-hover);
 }
 .route-load-error p {
-  margin: 6px 0 0;
+  margin: 0;
   color: var(--text-2);
-  font-size: 13px;
-  line-height: 1.7;
 }
-.route-load-error code {
-  display: block;
-  margin-top: 10px;
+.route-load-error pre {
+  margin: 0;
+  max-height: 160px;
+  overflow: auto;
   padding: 8px 10px;
   border-radius: var(--radius-control);
-  background: var(--code-display-bg);
-  color: var(--text-2);
+  background: var(--bg-surface);
+  color: var(--text-1);
   font:
     12px/1.6 var(--font-mono),
     monospace;
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
-}
-.route-load-error-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 16px;
+  user-select: text;
 }
 .provider-page-banner {
   display: flex;

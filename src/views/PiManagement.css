@@ -23,6 +23,10 @@
   margin: 0;
   max-width: 760px;
   color: var(--text-2);
+  /* Break between CJK phrases; with whole phrases, pretty can also keep the
+     last line from being a stranded fragment. */
+  word-break: keep-all;
+  overflow-wrap: anywhere;
 }
 .pi-hint,
 .pi-footnote {
@@ -58,6 +62,7 @@
   color: var(--text-2);
   font:
     12px/1.6 var(--font-mono),
+    var(--font-cjk),
     monospace;
   overflow-wrap: anywhere;
 }
@@ -67,6 +72,7 @@
   color: var(--text-2);
   font:
     12px/1.6 var(--font-mono),
+    var(--font-cjk),
     monospace;
   overflow-wrap: anywhere;
 }
@@ -114,19 +120,50 @@
   font-size: 12px;
   font-weight: 700;
 }
+/* One control system for the Pi and oh-my-pi panels: text fields and selects
+   share the tool pages' 32px height, input tokens and 4px radius, next to
+   .tool-btn buttons. */
+.pi-input,
 .pi-select {
-  height: 36px;
-  min-width: 132px;
+  height: 32px;
   padding: 0 10px;
   border: 1px solid var(--input-border);
   border-radius: var(--radius-control, 4px);
   background: var(--input-bg);
   color: var(--input-fg);
+  font: inherit;
   font-size: 13px;
   font-weight: 400;
+  transition: border-color var(--dur-instant, 100ms) var(--ease-out, ease);
 }
+.pi-input {
+  width: 100%;
+  min-width: 0;
+}
+.pi-select {
+  min-width: 132px;
+  cursor: pointer;
+}
+.pi-field-grid .pi-select {
+  width: 100%;
+}
+.pi-input::placeholder {
+  color: var(--input-placeholder);
+}
+.pi-input:hover:not(:disabled),
 .pi-select:hover:not(:disabled) {
   border-color: var(--input-border-hover);
+}
+.pi-input:focus-visible,
+.pi-select:focus-visible {
+  border-color: var(--input-border-focus);
+  outline: 2px solid var(--focus-ring, var(--focus));
+  outline-offset: 1px;
+}
+.pi-input:disabled,
+.pi-select:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 .pi-code {
   width: 100%;
@@ -138,6 +175,7 @@
   color: var(--input-fg);
   font:
     12px/1.6 var(--font-mono),
+    var(--font-cjk),
     monospace;
   resize: vertical;
 }
@@ -191,6 +229,7 @@
   color: var(--text-1);
   font:
     700 13px/1.5 var(--font-mono),
+    var(--font-cjk),
     monospace;
   overflow-wrap: anywhere;
 }
@@ -257,44 +296,14 @@
   font-weight: 700;
 }
 
-/* Disclosures */
-.pi-disclosure > summary {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 2px 4px;
-  border-radius: var(--radius-control, 4px);
-  color: var(--text-2);
+/* Disclosures: the shared .chimera-disclosure (components/ui/disclosure.css);
+   is-inline in cards and forms, the card form for command output. Only the
+   body rhythm and the code block are set here. */
+.pi-disclosure.is-inline > summary {
   font-size: 12px;
-  cursor: pointer;
-  list-style: none;
 }
-.pi-disclosure > summary::-webkit-details-marker {
-  display: none;
-}
-.pi-disclosure > summary::before {
-  content: "";
-  width: 5px;
-  height: 5px;
-  border-right: 1.5px solid currentColor;
-  border-bottom: 1.5px solid currentColor;
-  transform: rotate(-45deg);
-  transition: transform var(--dur-fast, 150ms) var(--ease-out, ease);
-}
-.pi-disclosure[open] > summary::before {
-  transform: rotate(45deg);
-}
-.pi-disclosure > summary:hover {
-  color: var(--text-1);
-}
-.pi-disclosure > summary:focus-visible {
-  outline: 2px solid var(--focus-ring, var(--focus));
-  outline-offset: 1px;
-}
-.pi-disclosure[open] {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+.pi-disclosure > .chimera-disclosure-body > * + * {
+  margin-top: 10px;
 }
 .pi-disclosure pre {
   margin: 0;
@@ -304,15 +313,10 @@
   color: var(--text-2);
   font:
     11px/1.6 var(--font-mono),
+    var(--font-cjk),
     monospace;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-}
-.pi-disclosure.is-output {
-  padding: 12px 14px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-panel, 8px);
-  background: var(--bg-surface);
 }
 .pi-disclosure.is-output pre {
   max-height: 256px;
@@ -395,11 +399,4 @@
 .pi-field-grid > label > :is(input, select),
 .pi-field > :is(input, select) {
   font-weight: 400;
-}
-/* <details> is not a reliable flex container; space its children directly. */
-.pi-disclosure[open] {
-  display: block;
-}
-.pi-disclosure[open] > * + * {
-  margin-top: 10px;
 }

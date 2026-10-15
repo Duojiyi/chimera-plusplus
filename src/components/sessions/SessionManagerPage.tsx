@@ -1191,7 +1191,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
           <h3>读取失败</h3>
           <p>{readFailure.hint || "无法读取这条会话的记录文件。"}</p>
           {detail ? (
-            <details className="session-state-detail">
+            <details className="session-state-detail chimera-disclosure is-inline">
               <summary>错误详情</summary>
               <code>{detail}</code>
             </details>
@@ -1335,7 +1335,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                 读取本机会话记录时出错。请确认相关工具的数据文件夹可以访问，然后重试。
               </p>
               {extractErrorMessage(listError) ? (
-                <details className="session-state-detail">
+                <details className="session-state-detail chimera-disclosure is-inline">
                   <summary>错误详情</summary>
                   <code>{extractErrorMessage(listError)}</code>
                 </details>

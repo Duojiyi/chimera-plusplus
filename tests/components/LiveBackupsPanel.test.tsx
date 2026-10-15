@@ -7,6 +7,7 @@ import {
 } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { LiveBackupsPanel } from "@/components/LiveBackupsPanel";
+import { formatBackupTime } from "@/components/settings/backupTime";
 import { liveBackupsApi, type LiveBackup } from "@/lib/api/liveBackups";
 import { toast } from "sonner";
 vi.mock("@/lib/api/liveBackups", () => ({
@@ -99,14 +100,23 @@ describe("Live backup panel", () => {
   it("renders native summaries using millisecond timestamps without private paths", async () => {
     render(<LiveBackupsPanel />);
     expect(await screen.findByText("AGENTS.md")).toBeInTheDocument();
+    // Same zero-padded format as the 应用数据库 table.
     expect(
-      screen.getByText(new Date(backup.createdAt).toLocaleString()),
+      screen.getByText(formatBackupTime(backup.createdAt)),
     ).toBeInTheDocument();
-    expect(screen.getByText("提示词写入前")).toBeInTheDocument();
+    // The trigger is the second line of the time cell; the id stays in the
+    // tooltip and in the action names.
+    const time = screen.getByText("提示词写入前").closest("td");
+    expect(time).toHaveAttribute("title", "backup-1");
+    expect(time).toHaveTextContent(formatBackupTime(backup.createdAt));
     expect(screen.getByText("8 KiB")).toBeInTheDocument();
-    expect(screen.getByText("backup-1")).toBeInTheDocument();
-    expect(screen.getAllByRole("columnheader")).toHaveLength(5);
-    expect(screen.getAllByRole("cell")).toHaveLength(5);
+    expect(
+      screen.getByRole("button", { name: "删除备份 backup-1" }),
+    ).toHaveClass("is-danger");
+    expect(
+      screen.getAllByRole("columnheader").map((cell) => cell.textContent),
+    ).toEqual(["时间与触发", "包含文件", "大小", "操作"]);
+    expect(screen.getAllByRole("cell")).toHaveLength(4);
     expect(document.body).not.toHaveTextContent("private");
     expect(liveBackupsApi.list).toHaveBeenCalledWith("codex");
   });
@@ -118,10 +128,10 @@ describe("Live backup panel", () => {
       }),
     );
     render(<LiveBackupsPanel />);
-    expect(screen.getAllByRole("columnheader")).toHaveLength(5);
+    expect(screen.getAllByRole("columnheader")).toHaveLength(4);
     expect(screen.getByRole("status")).toHaveTextContent("正在读取");
     await act(async () => finish([]));
-    expect(screen.getAllByRole("columnheader")).toHaveLength(5);
+    expect(screen.getAllByRole("columnheader")).toHaveLength(4);
     expect(screen.getByText("暂无 Codex 配置备份。")).toBeInTheDocument();
   });
   it("does not invent a size for older summaries", async () => {

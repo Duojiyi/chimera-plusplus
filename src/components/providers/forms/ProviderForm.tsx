@@ -266,6 +266,8 @@ export interface ProviderFormProps {
   onManageUniversalProviders?: () => void;
   onSubmittingChange?: (isSubmitting: boolean) => void;
   onDirtyChange?: () => void;
+  /** The line name as typed, for the editor header. */
+  onNameChange?: (name: string) => void;
   initialData?: {
     name?: string;
     websiteUrl?: string;

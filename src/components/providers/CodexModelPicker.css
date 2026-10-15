@@ -72,6 +72,12 @@
 .model-picker-search input::placeholder {
   color: var(--input-placeholder);
 }
+/* The search box draws the one focus ring (:focus-within above). The
+   global input:focus-visible rule in chimera.css loads after this file, so
+   the input's own ring is cleared with a more specific selector. */
+.model-picker-search input:focus-visible {
+  outline: none;
+}
 .model-picker-count {
   flex-shrink: 0;
   color: var(--text-3);

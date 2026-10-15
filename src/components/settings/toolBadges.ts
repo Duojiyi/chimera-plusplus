@@ -25,5 +25,5 @@ export const toolBadgeMarks: Record<keyof VisibleApps, string> = {
   opencode: "OC",
 
   pi: "Pi",
-  omp: "OMP",
+  omp: "Om",
 };

@@ -1,4 +1,8 @@
+/* Positioned so the sr-only captions and live regions resolve against this
+   scroller, not main.chimera-main; otherwise main gains overflow and a
+   scrollIntoView leaves a blank band under the page. */
 .is-usage-view .chimera-content {
+  position: relative;
   padding: 8px 24px 24px;
   overflow: auto;
 }

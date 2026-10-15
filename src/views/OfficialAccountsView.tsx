@@ -249,7 +249,14 @@ function QuotaMeter({
         className="quota-meter-reset"
         title={compact && exact ? `${exact} 重置` : undefined}
       >
-        {compact || !exact ? reset : `${reset} · ${exact}`}
+        {compact || !exact ? (
+          reset
+        ) : (
+          <>
+            {reset} · {/* Date and time wrap as one unit ("10月13日 13:55"). */}
+            <span className="quota-meter-exact">{exact}</span>
+          </>
+        )}
       </small>
     </div>
   );
@@ -1276,17 +1283,22 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
                   ? "设备码登录需要在 ChatGPT 安全设置中开启；工作区可能需要管理员授权。未开启时可改用浏览器登录。"
                   : "浏览器登录需要本机回调端口可用；若回调受阻，可改用设备码登录或导入本机登录。"}
               </p>
-              <details open={Boolean(loginError)}>
+              <details
+                className="chimera-disclosure is-inline"
+                open={Boolean(loginError)}
+              >
                 <summary>浏览器报错或无法继续？</summary>
-                <p>
-                  本应用无法读取浏览器中的报错。若显示{" "}
-                  <code>unsupported_country_region_territory</code>
-                  ，表示服务不支持当前国家或地区，继续等待不会完成授权。请取消登录并核对服务可用范围。
-                </p>
-                <p>
-                  若本机 Codex
-                  已成功登录，可关闭弹窗后选择“导入本机登录”。这只读取已有凭据，不会绕过服务限制；系统钥匙串中的凭据可能无法导入。
-                </p>
+                <div className="chimera-disclosure-body">
+                  <p>
+                    本应用无法读取浏览器中的报错。若显示{" "}
+                    <code>unsupported_country_region_territory</code>
+                    ，表示服务不支持当前国家或地区，继续等待不会完成授权。请取消登录并核对服务可用范围。
+                  </p>
+                  <p>
+                    若本机 Codex
+                    已成功登录，可关闭弹窗后选择“导入本机登录”。这只读取已有凭据，不会绕过服务限制；系统钥匙串中的凭据可能无法导入。
+                  </p>
+                </div>
               </details>
             </div>
           )}

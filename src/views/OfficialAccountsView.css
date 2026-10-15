@@ -249,6 +249,9 @@
   color: var(--plate-fg-3);
   overflow-wrap: anywhere;
 }
+.quota-meter-exact {
+  white-space: nowrap;
+}
 .quota-meter[data-low] .quota-meter-value,
 .quota-meter[data-low] .quota-meter-label {
   color: var(--plate-warning);
@@ -654,20 +657,16 @@
 .account-login-help p {
   margin: 0;
 }
-.account-login-help details p {
-  margin: 6px 0 0;
+/* 浏览器报错或无法继续？ is the shared inline disclosure
+   (components/ui/disclosure.css); only its spacing in this box is set. */
+.account-login-help .chimera-disclosure {
+  margin-top: 6px;
 }
-.account-login-help summary {
-  margin-top: 8px;
-  width: fit-content;
-  color: var(--text-1);
+.account-login-help .chimera-disclosure > summary {
   font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
 }
-.account-login-help summary:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
+.account-login-help .chimera-disclosure-body p + p {
+  margin-top: 6px;
 }
 .account-login-help code,
 .account-login-error {

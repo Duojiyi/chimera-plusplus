@@ -1,19 +1,11 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { parse as parseToml } from "smol-toml";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   GrokBuildProviderForm,
   grokApiBackendFromApiFormat,
 } from "@/components/providers/forms/GrokBuildProviderForm";
-
-const modelFetchApiMock = vi.hoisted(() => ({
-  detectCodexApiFormats: vi.fn(),
-}));
-
-vi.mock("@/lib/api/model-fetch", () => ({
-  detectCodexApiFormats: modelFetchApiMock.detectCodexApiFormats,
-}));
 
 vi.mock("@/components/JsonEditor", () => ({
   default: ({
@@ -32,17 +24,6 @@ vi.mock("@/components/JsonEditor", () => ({
 }));
 
 describe("GrokBuildProviderForm", () => {
-  beforeEach(() => {
-    modelFetchApiMock.detectCodexApiFormats.mockReset();
-    modelFetchApiMock.detectCodexApiFormats.mockResolvedValue({
-      detected: {
-        "grok-4.5": {
-          apiFormat: "openai_responses",
-        },
-      },
-      failures: {},
-    });
-  });
   it("only offers Chimera and prefills its address", async () => {
     const { container } = render(
       <GrokBuildProviderForm
@@ -113,7 +94,6 @@ describe("GrokBuildProviderForm", () => {
 
     expect(config.models.default).toBe("grok-4.5");
     expect(submitted.meta.apiFormat).toBe("openai_responses");
-    expect(modelFetchApiMock.detectCodexApiFormats).not.toHaveBeenCalled();
     expect(config.model["grok-4.5"]).toEqual({
       model: "gpt-5.6-sol",
       base_url: "https://relay.example.com/v1",
@@ -322,5 +302,97 @@ context_window = 250000
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
     expect(onSubmit.mock.calls[0][0].meta.custom_endpoints).toBeUndefined();
+  });
+
+  it("keeps hand-written comments when a field is edited and saved", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    const config = `# my Grok relay
+[models]
+default = "grok-4.5" # opened by default
+
+[model."grok-4.5"]
+model = "grok-4.5"
+base_url = "https://old.example.com/v1" # EU
+name = "Relay"
+api_key = "key"
+api_backend = "responses"
+context_window = 500000
+`;
+    const { container } = render(
+      <GrokBuildProviderForm
+        providerId="relay"
+        submitLabel="Save"
+        onSubmit={onSubmit}
+        onCancel={() => {}}
+        initialData={{
+          name: "Relay",
+          settingsConfig: { config },
+          meta: { apiFormat: "openai_responses" },
+        }}
+      />,
+    );
+    fireEvent.change(container.querySelector("#codexBaseUrl")!, {
+      target: { value: "https://new.example.com/v1" },
+    });
+    const raw = screen.getByLabelText("raw-config") as HTMLTextAreaElement;
+    expect(raw.value).toBe(
+      config.replace(
+        'base_url = "https://old.example.com/v1" # EU',
+        'base_url = "https://new.example.com/v1" # EU',
+      ),
+    );
+    // A layout the fields can edit in place needs no warning.
+    expect(screen.queryByText(/注释会被删除/)).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const saved = JSON.parse(onSubmit.mock.calls[0][0].settingsConfig).config;
+    expect(saved).toContain("# my Grok relay");
+    expect(saved).toContain('default = "grok-4.5" # opened by default');
+    expect(saved).toContain('base_url = "https://new.example.com/v1" # EU');
+  });
+
+  it("warns before a field edit would rewrite a commented layout", () => {
+    const config = `# dotted keys, written by hand
+models.default = "grok-4.5"
+model."grok-4.5".model = "grok-4.5"
+model."grok-4.5".base_url = "https://a.example/v1"
+model."grok-4.5".name = "A"
+model."grok-4.5".api_key = "k"
+model."grok-4.5".api_backend = "responses"
+model."grok-4.5".context_window = 500000
+`;
+    render(
+      <GrokBuildProviderForm
+        providerId="dotted"
+        submitLabel="Save"
+        onSubmit={() => {}}
+        onCancel={() => {}}
+        initialData={{ name: "A", settingsConfig: { config } }}
+      />,
+    );
+    // Shown before anything is edited, and the text is still the user's own.
+    expect(screen.getByText(/注释会被删除/)).toBeInTheDocument();
+    expect(screen.getByLabelText("raw-config")).toHaveValue(config);
+  });
+
+  it("keeps the raw editor open while a broken config is being fixed", () => {
+    render(
+      <GrokBuildProviderForm
+        submitLabel="Save"
+        onSubmit={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    const raw = screen.getByLabelText("raw-config") as HTMLTextAreaElement;
+    const details = raw.closest("details")!;
+    expect(details).not.toHaveAttribute("open");
+    const valid = raw.value;
+    fireEvent.change(raw, { target: { value: "[models" } });
+    expect(details).toHaveAttribute("open");
+    fireEvent.change(raw, { target: { value: valid } });
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(details).toHaveAttribute("open");
   });
 });

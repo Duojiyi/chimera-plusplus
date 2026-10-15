@@ -115,34 +115,22 @@
   flex-shrink: 0;
   margin-top: 3px;
 }
-.tool-desktop-details {
-  border: 1px solid var(--border-subtle);
-  border-radius: 8px;
+/* 诊断与兼容性: the shared disclosure card (disclosure.css) draws the frame,
+   chevron and an inset focus ring; only the body text is set here. */
+.tool-desktop-details > .chimera-disclosure-body {
   color: var(--text-2);
   font-size: 12px;
   line-height: 1.8;
 }
-.tool-desktop-details summary {
-  padding: 10px 14px;
-  border-radius: inherit;
-  cursor: pointer;
-}
-.tool-desktop-details summary:hover {
-  background: var(--bg-subtle);
-}
-.tool-desktop-details summary:focus-visible,
 .tool-desktop-downloads a:focus-visible {
-  outline: 2px solid var(--brand);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
-}
-.tool-desktop-details > div {
-  padding: 0 14px 12px;
 }
 .tool-desktop-details dl {
   display: grid;
   grid-template-columns: 80px minmax(0, 1fr);
   gap: 8px 12px;
-  margin: 8px 0 12px;
+  margin: 0 0 12px;
 }
 .tool-desktop-details dt {
   color: var(--text-3);

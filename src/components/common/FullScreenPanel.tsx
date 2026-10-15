@@ -1,9 +1,9 @@
 import React from "react";
 import { useTranslation } from "react-i18next";
 import { createPortal } from "react-dom";
-import { ArrowLeft } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { ChevronLeft } from "lucide-react";
 import { DRAG_REGION_ATTR, DRAG_REGION_STYLE } from "@/lib/platform";
+import "./FullScreenPanel.css";
 import { isTextEditableTarget } from "@/utils/domUtils";
 import { cn } from "@/lib/utils";
 
@@ -150,21 +150,21 @@ export const FullScreenPanel: React.FC<FullScreenPanelProps> = ({
               }
             >
               <div
-                className="px-6 w-full flex items-center gap-4"
+                className="px-6 w-full flex items-center gap-3"
                 {...DRAG_REGION_ATTR}
                 style={{ ...DRAG_REGION_STYLE } as React.CSSProperties}
               >
-                <Button
+                {/* The line editor's back pill, not a round icon button. */}
+                <button
                   type="button"
-                  variant="outline"
-                  size="icon"
                   aria-label={t("common.back", { defaultValue: "返回" })}
                   onClick={onClose}
-                  className="rounded-lg select-none"
+                  className="fullscreen-panel-back select-none"
                   style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
                 >
-                  <ArrowLeft className="h-4 w-4" />
-                </Button>
+                  <ChevronLeft size={16} aria-hidden="true" />
+                  {t("common.back", { defaultValue: "返回" })}
+                </button>
                 <h2
                   id={titleId}
                   className="text-lg font-semibold text-foreground select-none"

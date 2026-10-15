@@ -1,7 +1,5 @@
 import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
 import { useRef, useState } from "react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { piPluginCatalog } from "@/config/piPluginCatalog";
 import { piApi } from "@/lib/api/pi";
@@ -169,16 +167,18 @@ export function PiPluginMarket({
       <div className="pi-panel-body" data-panel={panel}>
         {runtime === "omp" && panel !== "plugins" && (
           <div className="pi-actions" role="group" aria-label="运行环境">
-            <Button
-              variant="outline"
+            <button
+              type="button"
+              className="tool-btn"
               disabled={disabled}
               onClick={() => void run("version")}
             >
               检测版本
-            </Button>
+            </button>
             {runtime === "omp" && (
-              <Button
-                variant="outline"
+              <button
+                type="button"
+                className="tool-btn"
                 disabled={disabled}
                 onClick={() =>
                   confirm(
@@ -189,7 +189,7 @@ export function PiPluginMarket({
                 }
               >
                 安装 oh-my-pi
-              </Button>
+              </button>
             )}
           </div>
         )}
@@ -205,7 +205,7 @@ export function PiPluginMarket({
           <p className="pi-lede">
             {runtime === "pi"
               ? "Pi：管理全局扩展包，包括扩展、技能、提示模板和主题。固定版本不会随更新自动升版。"
-              : "oh-my-pi：通过原生管理器管理用户级插件。"}{" "}
+              : "oh-my-pi：通过原生管理器管理用户级插件。"}
             所有操作面向用户级配置，不修改项目配置。Pi 与 OMP 扩展不保证兼容。
           </p>
           {!native && (
@@ -220,27 +220,34 @@ export function PiPluginMarket({
             role="group"
             aria-label="市场视图"
           >
-            <Button
-              variant={view === "catalog" ? "default" : "outline"}
+            <button
+              type="button"
+              className={
+                view === "catalog" ? "tool-btn is-primary" : "tool-btn"
+              }
               aria-pressed={view === "catalog"}
               onClick={() => setView("catalog")}
             >
               {runtime === "pi" ? "精选推荐 · 10" : "原生市场"}
-            </Button>
-            <Button
-              variant={view === "installed" ? "default" : "outline"}
+            </button>
+            <button
+              type="button"
+              className={
+                view === "installed" ? "tool-btn is-primary" : "tool-btn"
+              }
               aria-pressed={view === "installed"}
               onClick={() => setView("installed")}
             >
               {runtime === "pi" ? "本地声明与状态" : "已安装插件"}
-            </Button>
-            <Button
-              variant="outline"
+            </button>
+            <button
+              type="button"
+              className="tool-btn"
               disabled={disabled}
               onClick={() => void run("list")}
             >
               刷新插件状态
-            </Button>
+            </button>
           </div>
           {view === "catalog" && runtime === "pi" && (
             <>
@@ -249,8 +256,10 @@ export function PiPluginMarket({
                 清单；未做逐包运行或安全认证。安装前查看来源、依赖与提示。
               </p>
               <div className="pi-search-row">
-                <Input
-                  className="pi-search"
+                <input
+                  className="pi-input pi-search"
+                  autoComplete="off"
+                  spellCheck={false}
                   aria-label="搜索推荐插件"
                   placeholder="搜索名称、用途"
                   value={search}
@@ -293,13 +302,16 @@ export function PiPluginMarket({
                         {declared ? " · 已声明（不代表已安装）" : ""}
                       </p>
                       <p className="pi-plugin-risk">{plugin.risk}</p>
-                      <details className="pi-disclosure is-compact">
+                      <details className="pi-disclosure chimera-disclosure is-inline">
                         <summary>依赖约束</summary>
-                        <pre>{JSON.stringify(plugin.peers, null, 2)}</pre>
+                        <div className="chimera-disclosure-body">
+                          <pre>{JSON.stringify(plugin.peers, null, 2)}</pre>
+                        </div>
                       </details>
                       <div className="pi-plugin-actions">
-                        <Button
-                          size="sm"
+                        <button
+                          type="button"
+                          className="tool-btn is-primary is-sm"
                           disabled={disabled || declared}
                           onClick={() =>
                             confirm(
@@ -310,14 +322,14 @@ export function PiPluginMarket({
                           }
                         >
                           安装固定版本
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
+                        </button>
+                        <button
+                          type="button"
+                          className="tool-btn is-sm"
                           onClick={() => void openSource(plugin.repository)}
                         >
                           查看源码
-                        </Button>
+                        </button>
                       </div>
                     </article>
                   );
@@ -335,73 +347,83 @@ export function PiPluginMarket({
                 浏览已配置市场，再填写“插件名@市场名”安装。发现结果显示在下方。
               </p>
               <div className="pi-actions">
-                <Button
-                  variant="outline"
+                <button
+                  type="button"
+                  className="tool-btn"
                   disabled={disabled}
                   onClick={() => void run("discover")}
                 >
                   浏览已配置市场
-                </Button>
+                </button>
               </div>
-              <details className="pi-disclosure">
+              <details className="pi-disclosure chimera-disclosure is-inline">
                 <summary>管理市场源</summary>
-                <div className="pi-actions">
-                  <Button
-                    variant="outline"
-                    disabled={disabled}
-                    onClick={() => void run("markets")}
-                  >
-                    查看市场源
-                  </Button>
-                  <Button
-                    variant="outline"
-                    disabled={disabled}
-                    onClick={() => confirm("refreshMarkets")}
-                  >
-                    刷新市场索引
-                  </Button>
-                </div>
-                <label className="pi-field">
-                  市场源（GitHub owner/repo；移除时填市场名称）
-                  <Input
-                    aria-label="OMP 市场源"
-                    value={market}
-                    disabled={busy}
-                    onChange={(e) => setMarket(e.target.value)}
-                    placeholder="例如 anthropics/claude-plugins-official"
-                  />
-                </label>
-                <div className="pi-actions">
-                  <Button
-                    variant="outline"
-                    disabled={
-                      disabled ||
-                      !/^[a-zA-Z0-9][a-zA-Z0-9_-]*\/[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(
-                        market,
-                      ) ||
-                      market.length > 214
-                    }
-                    onClick={() =>
-                      confirm(
-                        "addMarket",
-                        market,
-                        "将下载该 GitHub 仓库的索引；市场兼容不代表每个插件兼容 OMP。",
-                      )
-                    }
-                  >
-                    添加市场源
-                  </Button>
-                  <Button
-                    variant="destructive"
-                    disabled={
-                      disabled ||
-                      !/^[a-z0-9][a-z0-9._-]*$/.test(market) ||
-                      market.length > 214
-                    }
-                    onClick={() => confirm("removeMarket", market)}
-                  >
-                    移除市场源
-                  </Button>
+                <div className="chimera-disclosure-body">
+                  <div className="pi-actions">
+                    <button
+                      type="button"
+                      className="tool-btn"
+                      disabled={disabled}
+                      onClick={() => void run("markets")}
+                    >
+                      查看市场源
+                    </button>
+                    <button
+                      type="button"
+                      className="tool-btn"
+                      disabled={disabled}
+                      onClick={() => confirm("refreshMarkets")}
+                    >
+                      刷新市场索引
+                    </button>
+                  </div>
+                  <label className="pi-field">
+                    市场源（GitHub owner/repo；移除时填市场名称）
+                    <input
+                      className="pi-input"
+                      autoComplete="off"
+                      spellCheck={false}
+                      aria-label="OMP 市场源"
+                      value={market}
+                      disabled={busy}
+                      onChange={(e) => setMarket(e.target.value)}
+                      placeholder="例如 anthropics/claude-plugins-official"
+                    />
+                  </label>
+                  <div className="pi-actions">
+                    <button
+                      type="button"
+                      className="tool-btn"
+                      disabled={
+                        disabled ||
+                        !/^[a-zA-Z0-9][a-zA-Z0-9_-]*\/[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(
+                          market,
+                        ) ||
+                        market.length > 214
+                      }
+                      onClick={() =>
+                        confirm(
+                          "addMarket",
+                          market,
+                          "将下载该 GitHub 仓库的索引；市场兼容不代表每个插件兼容 OMP。",
+                        )
+                      }
+                    >
+                      添加市场源
+                    </button>
+                    <button
+                      type="button"
+                      className="tool-btn is-danger"
+                      disabled={
+                        disabled ||
+                        !/^[a-z0-9][a-z0-9._-]*$/.test(market) ||
+                        market.length > 214
+                      }
+                      onClick={() => confirm("removeMarket", market)}
+                    >
+                      移除市场源
+                    </button>
+                  </div>
                 </div>
               </details>
             </section>
@@ -434,20 +456,21 @@ export function PiPluginMarket({
                             {item.source}
                             {item.filtered ? "（含资源筛选）" : ""}
                           </span>
-                          <Button
-                            size="sm"
-                            variant="destructive"
+                          <button
+                            type="button"
+                            className="tool-btn is-danger is-sm"
                             disabled={disabled || !validPluginTarget(spec)}
                             onClick={() => confirm("remove", spec)}
                           >
                             卸载
-                          </Button>
+                          </button>
                         </div>
                       );
                     })
                   )}
-                  <Button
-                    variant="outline"
+                  <button
+                    type="button"
+                    className="tool-btn"
                     disabled={disabled}
                     onClick={() =>
                       confirm(
@@ -458,7 +481,7 @@ export function PiPluginMarket({
                     }
                   >
                     更新全局扩展
-                  </Button>
+                  </button>
                 </>
               ) : (
                 <>
@@ -483,17 +506,17 @@ export function PiPluginMarket({
                           </p>
                         </div>
                         <div className="pi-actions">
-                          <Button
-                            size="sm"
-                            variant="outline"
+                          <button
+                            type="button"
+                            className="tool-btn is-sm"
                             disabled={disabled || !validPluginTarget(plugin.id)}
                             onClick={() => confirm("update", plugin.id)}
                           >
                             更新
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
+                          </button>
+                          <button
+                            type="button"
+                            className="tool-btn is-sm"
                             disabled={
                               disabled ||
                               !validPluginTarget(plugin.id) ||
@@ -507,15 +530,15 @@ export function PiPluginMarket({
                             }
                           >
                             {plugin.enabled ? "停用" : "启用"}
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="destructive"
+                          </button>
+                          <button
+                            type="button"
+                            className="tool-btn is-danger is-sm"
                             disabled={disabled || !validPluginTarget(plugin.id)}
                             onClick={() => confirm("remove", plugin.id)}
                           >
                             卸载
-                          </Button>
+                          </button>
                         </div>
                       </div>
                     ))
@@ -534,8 +557,10 @@ export function PiPluginMarket({
               。不接受路径、URL 或命令参数。
             </p>
             <div className="pi-search-row">
-              <Input
-                className="pi-search"
+              <input
+                className="pi-input pi-search"
+                autoComplete="off"
+                spellCheck={false}
                 aria-label="插件安装来源"
                 value={target}
                 disabled={busy}
@@ -546,12 +571,14 @@ export function PiPluginMarket({
                     : "package@1.2.3 或 name@marketplace"
                 }
               />
-              <Button
+              <button
+                type="button"
+                className="tool-btn is-primary"
                 disabled={disabled || !validPluginTarget(target)}
                 onClick={() => confirm("install", target)}
               >
                 安装此来源
-              </Button>
+              </button>
             </div>
           </section>
         </div>
@@ -566,9 +593,11 @@ export function PiPluginMarket({
           </p>
         )}
         {output && (
-          <details open className="pi-disclosure is-output">
+          <details open className="pi-disclosure chimera-disclosure is-output">
             <summary>原生命令结果</summary>
-            <pre>{output}</pre>
+            <div className="chimera-disclosure-body">
+              <pre>{output}</pre>
+            </div>
           </details>
         )}
         <p className="pi-footnote">

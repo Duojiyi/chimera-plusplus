@@ -1,6 +1,6 @@
+import { useId } from "react";
 import { useTranslation } from "react-i18next";
-import { FormLabel } from "@/components/ui/form";
-import { Textarea } from "@/components/ui/textarea";
+import { EditorLabel } from "@/components/providers/ProviderEditorFields";
 import {
   parseBodyOverrideJson,
   parseHeaderOverrideJson,
@@ -20,69 +20,77 @@ export function LocalProxyRequestOverridesField({
   onBodyJsonChange,
 }: LocalProxyRequestOverridesFieldProps) {
   const { t } = useTranslation();
+  const id = useId();
   const headerError = parseHeaderOverrideJson(headersJson).error;
   const bodyError = parseBodyOverrideJson(bodyJson).error;
 
   return (
-    <div className="space-y-3">
-      <div className="space-y-1">
-        <FormLabel>
-          {t("providerForm.localProxyRequestOverrides", {
-            defaultValue: "本地代理请求覆盖",
-          })}
-        </FormLabel>
-        <p className="text-xs text-muted-foreground">
-          {t("providerForm.localProxyRequestOverridesHint", {
-            defaultValue:
-              "仅在本地路由/代理接管后生效，应用于协议转换后的上游请求。",
-          })}
-        </p>
-      </div>
+    <div className="editor-field">
+      <EditorLabel
+        id={`${id}-title`}
+        label={t("providerForm.localProxyRequestOverrides", {
+          defaultValue: "本地代理请求覆盖",
+        })}
+      />
+      <small>
+        {t("providerForm.localProxyRequestOverridesHint", {
+          defaultValue:
+            "仅在本地路由/代理接管后生效，应用于协议转换后的上游请求。",
+        })}
+      </small>
 
-      <div className="grid gap-3 md:grid-cols-2">
-        <div className="space-y-2">
-          <FormLabel className="text-xs text-muted-foreground">
-            {t("providerForm.localProxyHeaderOverrides", {
+      <div className="editor-override-grid">
+        <div className="editor-field">
+          <EditorLabel
+            htmlFor={`${id}-headers`}
+            label={t("providerForm.localProxyHeaderOverrides", {
               defaultValue: "Header 覆盖",
             })}
-          </FormLabel>
-          <Textarea
+          />
+          <textarea
+            id={`${id}-headers`}
+            className="editor-code"
             value={headersJson}
             onChange={(event) => onHeadersJsonChange(event.target.value)}
             placeholder={'{\n  "X-Provider": "cc-switch"\n}'}
-            className="min-h-[132px] resize-y font-mono text-xs"
+            spellCheck={false}
             aria-invalid={Boolean(headerError)}
+            aria-describedby={headerError ? `${id}-headers-error` : undefined}
           />
           {headerError && (
-            <p className="text-xs text-destructive">
+            <small id={`${id}-headers-error`} className="is-error">
               {t("providerForm.localProxyHeaderOverridesInvalidDetail", {
                 error: headerError,
                 defaultValue: "Header 覆盖格式错误：{{error}}",
               })}
-            </p>
+            </small>
           )}
         </div>
 
-        <div className="space-y-2">
-          <FormLabel className="text-xs text-muted-foreground">
-            {t("providerForm.localProxyBodyOverrides", {
+        <div className="editor-field">
+          <EditorLabel
+            htmlFor={`${id}-body`}
+            label={t("providerForm.localProxyBodyOverrides", {
               defaultValue: "Body 覆盖",
             })}
-          </FormLabel>
-          <Textarea
+          />
+          <textarea
+            id={`${id}-body`}
+            className="editor-code"
             value={bodyJson}
             onChange={(event) => onBodyJsonChange(event.target.value)}
             placeholder={'{\n  "temperature": 0.2\n}'}
-            className="min-h-[132px] resize-y font-mono text-xs"
+            spellCheck={false}
             aria-invalid={Boolean(bodyError)}
+            aria-describedby={bodyError ? `${id}-body-error` : undefined}
           />
           {bodyError && (
-            <p className="text-xs text-destructive">
+            <small id={`${id}-body-error`} className="is-error">
               {t("providerForm.localProxyBodyOverridesInvalidDetail", {
                 error: bodyError,
                 defaultValue: "Body 覆盖格式错误：{{error}}",
               })}
-            </p>
+            </small>
           )}
         </div>
       </div>

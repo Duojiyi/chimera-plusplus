@@ -8,6 +8,7 @@ import {
   useLightweightCloseBlocker,
 } from "@/hooks/useLightweightClose";
 import {
+  Fragment,
   lazy,
   Suspense,
   useCallback,
@@ -35,6 +36,7 @@ import {
   Eye,
   EyeOff,
   FileText,
+  Info,
   ListChecks,
   LoaderCircle,
   FolderOpen,
@@ -48,6 +50,7 @@ import {
   Search,
   Settings2,
   Trash2,
+  TriangleAlert,
   Users,
   Wrench,
   X,
@@ -125,7 +128,7 @@ import {
   type ModelFetchAction,
   type ModelFetchIssue,
 } from "@/components/providers/ProviderEditorFields";
-import { autoLineBadgeText, lineBadgeText } from "@/utils/lineBadge";
+import { autoLineBadgeText } from "@/utils/lineBadge";
 import { describeCodexRouting } from "@/utils/codexRouting";
 import { readContextWindowState } from "@/utils/codexContextWindow";
 import { Empty } from "@/components/Empty";
@@ -2843,27 +2846,43 @@ export default function ChimeraApp({
           className={`chimera-content${view === "providers" ? " is-provider-view" : ""}`}
         >
           {view === "providers" && loadError && (
-            <section className="route-load-error" role="alert">
-              <CircleAlert size={26} />
-              <h2>无法读取线路列表</h2>
-              <p>{loadError}</p>
-              <div>
-                <button
-                  className="primary"
-                  onClick={() => void retryLoadProviders()}
-                  disabled={loading}
-                  data-autofocus
-                >
-                  {loading ? (
-                    <>
-                      <LoaderCircle className="spin" size={15} /> 正在重试…
-                    </>
-                  ) : (
-                    <>
-                      <RefreshCw size={15} /> 重试
-                    </>
-                  )}
-                </button>
+            <section className="provider-page">
+              <header className="provider-page-heading">
+                <div>
+                  <h2>线路</h2>
+                  <p>Codex 同一时间只走一条线路</p>
+                </div>
+              </header>
+              <div className="route-load-error" role="alert">
+                <div className="route-load-error-head">
+                  <strong>
+                    <CircleAlert size={16} aria-hidden="true" />
+                    无法读取线路列表
+                  </strong>
+                  <button
+                    type="button"
+                    onClick={() => void retryLoadProviders()}
+                    disabled={loading}
+                  >
+                    {loading ? (
+                      <>
+                        <LoaderCircle
+                          className="spin"
+                          size={14}
+                          aria-hidden="true"
+                        />
+                        正在重试…
+                      </>
+                    ) : (
+                      <>
+                        <RefreshCw size={14} aria-hidden="true" />
+                        重试
+                      </>
+                    )}
+                  </button>
+                </div>
+                <p>请稍后重试；读取失败不会修改任何配置。</p>
+                <pre>{loadError}</pre>
               </div>
             </section>
           )}
@@ -3767,6 +3786,30 @@ export function NewRuntimeView({
       ? "标准安装由 Windows 管理，没有本地回滚副本。"
       : "只有通过 Chimera++ 更新过的免安装版才会保留上一版本。";
   const recoveryEntry = recovery[0];
+  // Portable layout and a second, unmanaged standard install: one callout
+  // under the status board. An interrupted migration keeps the Codex files in
+  // the .layout- staging folder, so its title carries the "do not delete".
+  const layoutInterrupted = runtime?.portableLayout === "interrupted";
+  const unmanagedStandard = runtime?.unmanagedStandardVersion;
+  const runtimeNotice =
+    runningInTauri && (runtime?.layoutNotice || unmanagedStandard)
+      ? {
+          tone: layoutInterrupted ? ("warning" as const) : ("info" as const),
+          title: layoutInterrupted
+            ? "免安装版目录升级被中断 · 请勿删除 .layout- 暂存目录"
+            : runtime?.layoutNotice
+              ? "免安装版目录结构待升级"
+              : `另检测到标准安装 ${unmanagedStandard}`,
+          lines: [
+            runtime?.layoutNotice,
+            unmanagedStandard
+              ? runtime?.layoutNotice
+                ? `另检测到标准安装 ${unmanagedStandard}，它不由 Chimera++ 管理。`
+                : "它不由 Chimera++ 管理；本页的更新、修复与卸载只作用于免安装版。"
+              : null,
+          ].filter((line): line is string => Boolean(line)),
+        }
+      : null;
   const saveRuntimePreference = (
     patch: Partial<Pick<Settings, "codexInstallMode" | "codexUpdateSource">>,
   ) => {
@@ -3930,19 +3973,6 @@ export function NewRuntimeView({
                       ? "安装后显示版本与位置"
                       : "正在读取安装状态"}
             </small>
-            {runningInTauri &&
-              (runtime?.layoutNotice || runtime?.unmanagedStandardVersion) && (
-                <small role="status">
-                  {[
-                    runtime.layoutNotice,
-                    runtime.unmanagedStandardVersion
-                      ? `另检测到标准安装 ${runtime.unmanagedStandardVersion}（不由 Chimera++ 管理）。`
-                      : null,
-                  ]
-                    .filter(Boolean)
-                    .join(" ")}
-                </small>
-              )}
           </div>
           <div className="runtime-info-strip">
             <div>
@@ -4015,6 +4045,27 @@ export function NewRuntimeView({
             <FolderOpen size={16} />
           </button>
         </div>
+        {runtimeNotice && (
+          <div
+            className={`runtime-notice is-${runtimeNotice.tone}`}
+            role="status"
+            aria-labelledby="runtime-notice-title"
+          >
+            <span className="runtime-notice-icon" aria-hidden="true">
+              {runtimeNotice.tone === "warning" ? (
+                <TriangleAlert size={18} />
+              ) : (
+                <Info size={18} />
+              )}
+            </span>
+            <div>
+              <h3 id="runtime-notice-title">{runtimeNotice.title}</h3>
+              {runtimeNotice.lines.map((line) => (
+                <p key={line}>{line}</p>
+              ))}
+            </div>
+          </div>
+        )}
         {runtimeUnreadable && runtimeError && (
           <OperationReceipt
             className="runtime-receipt"
@@ -4469,14 +4520,16 @@ export function NewRuntimeView({
                 </button>
               </div>
             </div>
-            <button
-              className="primary runtime-maintenance-primary"
-              onClick={() => startAction("update", selectedPreferences)}
-              disabled={Boolean(operation) || preferencesBusy}
-            >
-              <Download size={15} />
-              下载并安装 {selectedInstallLabel}
-            </button>
+            <footer className="runtime-maintenance-footer">
+              <button
+                className="primary runtime-maintenance-primary"
+                onClick={() => startAction("update", selectedPreferences)}
+                disabled={Boolean(operation) || preferencesBusy}
+              >
+                <Download size={15} />
+                下载并安装 {selectedInstallLabel}
+              </button>
+            </footer>
           </section>
         </div>
       )}
@@ -4904,7 +4957,18 @@ export function NewProvidersView({
                 }${balanceData.unit ?? ""}`
           : "暂无余额数据";
   if (loading) return <Empty label="正在读取线路…" />;
-  if (!providers.length) return <Onboarding onAdd={onAdd} />;
+  if (!providers.length)
+    return (
+      <section className="provider-page">
+        <header className="provider-page-heading">
+          <div>
+            <h2>线路</h2>
+            <p>Codex 同一时间只走一条线路 · 尚未添加线路</p>
+          </div>
+        </header>
+        <Onboarding onAdd={onAdd} />
+      </section>
+    );
   const officialLoginRequired =
     currentIsOfficial && codexProcess?.officialLoginAvailable === false;
   const isOfficialLine = (provider: Provider) =>
@@ -4913,8 +4977,6 @@ export function NewProvidersView({
     lineLabels.get(provider.id)?.name ?? provider.name ?? "未命名线路";
   const lineSource = (provider: Provider) =>
     lineLabels.get(provider.id)?.source ?? "自定义线路";
-  // One badge rule everywhere: the line table, signboards and this manager.
-  const lineMark = (provider: Provider) => lineBadgeText(provider);
   const visibleLines = providers.filter((provider) => {
     const haystack =
       `${lineName(provider)} ${lineSource(provider)} ${provider.name} ${extractCodexModelName(String(provider.settingsConfig?.config ?? ""))}`.toLowerCase();
@@ -5220,20 +5282,23 @@ export function NewProvidersView({
                       type="button"
                       className="route-line-manager-main"
                       aria-label={`切换到${lineName(provider)}`}
+                      aria-current={active ? "true" : undefined}
                       onClick={() => void activateLine(provider)}
                     >
                       <span className="route-line-mark" aria-hidden="true">
                         {switching ? (
                           <LoaderCircle className="spin" size={16} />
                         ) : (
-                          lineMark(provider)
+                          <LineBadge line={provider} />
                         )}
                       </span>
                       <span>
                         <b>{lineName(provider)}</b>
                         <small>{lineSource(provider)}</small>
                       </span>
-                      {active && <Check size={16} aria-label="当前线路" />}
+                      {active && (
+                        <span className="route-line-current">当前</span>
+                      )}
                     </button>
                     {isOfficialLine(provider) ? (
                       <span className="route-line-official-note">
@@ -5699,13 +5764,10 @@ export function ProviderEditor({
                     }}
                   >
                     外观
-                    <span
-                      className="provider-row-badge"
-                      aria-hidden="true"
-                      style={{ background: editor.iconColor || "#537197" }}
-                    >
-                      {lineBadgeText(badgeSource)}
-                    </span>
+                    <LineBadge
+                      line={{ ...badgeSource, iconColor: editor.iconColor }}
+                      size="sm"
+                    />
                     <span>
                       {lineColors.find(
                         ([color]) =>
@@ -6673,30 +6735,35 @@ export function ProviderEditor({
             </p>
           )}
         </fieldset>
-        <details className="editor-preview" aria-label="线路草稿预览">
+        <details
+          className="editor-preview chimera-disclosure is-inline"
+          aria-label="线路草稿预览"
+        >
           <summary>保存详情</summary>
-          <dl className="editor-save-summary">
-            <dt>线路</dt>
-            <dd>{editor.name.trim() || "未命名线路"}</dd>
-            <dt>地址</dt>
-            <dd>{previewOrigin}</dd>
-            <dt>模型</dt>
-            <dd>{editor.model.trim() || "由客户端选择"}</dd>
-            <dt>协议</dt>
-            <dd>{protocolSummary}</dd>
-            {routing && (
-              <>
-                <dt>连接</dt>
-                <dd>{describeCodexRouting(routing)}</dd>
-              </>
-            )}
-          </dl>
-          <p>
-            {appId === "opencode" || appId === "pi"
-              ? `保存并启用，不影响其他 ${toolName} 线路。`
-              : `保存后设为当前 ${toolName} 线路。`}
-            {isCodex && "运行中的 Codex 可能需要重启。"}
-          </p>
+          <div className="chimera-disclosure-body">
+            <dl className="editor-save-summary">
+              <dt>线路</dt>
+              <dd>{editor.name.trim() || "未命名线路"}</dd>
+              <dt>地址</dt>
+              <dd>{previewOrigin}</dd>
+              <dt>模型</dt>
+              <dd>{editor.model.trim() || "由客户端选择"}</dd>
+              <dt>协议</dt>
+              <dd>{protocolSummary}</dd>
+              {routing && (
+                <>
+                  <dt>连接</dt>
+                  <dd>{describeCodexRouting(routing)}</dd>
+                </>
+              )}
+            </dl>
+            <p>
+              {appId === "opencode" || appId === "pi"
+                ? `保存并启用，不影响其他 ${toolName} 线路。`
+                : `保存后设为当前 ${toolName} 线路。`}
+              {isCodex && "运行中的 Codex 可能需要重启。"}
+            </p>
+          </div>
         </details>
       </div>
       <div className="editor-bottom">
@@ -6859,7 +6926,15 @@ function ConfirmOperation({
         <CircleAlert size={26} />
         <h2 id="runtime-confirm-title">确认{label}？</h2>
         {facts.length > 0 && (
-          <p className="confirm-facts">{facts.join(" · ")}</p>
+          <p className="confirm-facts">
+            {facts.map((fact, index) => (
+              <Fragment key={fact}>
+                {index > 0 && " · "}
+                {/* A fact never breaks inside: "788.0 MB" stays whole. */}
+                <span className="runtime-confirm-fact">{fact}</span>
+              </Fragment>
+            ))}
+          </p>
         )}
         <p>{consequence}</p>
         <footer>
@@ -7203,7 +7278,10 @@ function StandaloneOnboarding({
   onSkip: () => void;
 }) {
   return (
-    <main className="onboarding-screen">
+    <main className="chimera-shell onboarding-screen">
+      <div className="onboarding-titlebar" data-tauri-drag-region>
+        <WindowControls />
+      </div>
       <section className="onboarding onboarding-card">
         <div className="onboarding-brand">
           <img src={routeGateIcon} alt="" /> Chimera++
@@ -7244,7 +7322,7 @@ function StandaloneOnboarding({
             开始配置
           </button>
         </footer>
-        <small>Chimera++ 2.0 · 数据仅保存在本机</small>
+        <small>数据仅保存在本机</small>
       </section>
     </main>
   );

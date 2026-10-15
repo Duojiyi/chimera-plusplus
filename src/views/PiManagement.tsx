@@ -1,8 +1,6 @@
 import { useState } from "react";
 import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
 import { toast } from "sonner";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { piApi, type PiDocument, type PiDocumentKind } from "@/lib/api/pi";
 import "./PiManagement.css";
@@ -122,8 +120,9 @@ export function PiManagement({ native }: { native: boolean }) {
           JSON，不保留原文件注释。
         </p>
         <div className="pi-actions">
-          <Button
-            variant="outline"
+          <button
+            type="button"
+            className="tool-btn"
             disabled={!native || busy}
             onClick={() => requestLoad(kinds)}
           >
@@ -132,7 +131,7 @@ export function PiManagement({ native }: { native: boolean }) {
               : kinds.some((kind) => documents[kind] || errors[kind])
                 ? "重新读取"
                 : "读取全局配置"}
-          </Button>
+          </button>
         </div>
         {!native && <p className="pi-notice">配置读写仅在桌面应用中可用。</p>}
         <p className="pi-hint">
@@ -151,13 +150,14 @@ export function PiManagement({ native }: { native: boolean }) {
                   {kind === "settings" ? "默认设置" : "MCP"}：{errors[kind]}
                   。如有外部修改，请保留草稿后重新读取最新配置。
                 </p>
-                <Button
-                  variant="outline"
+                <button
+                  type="button"
+                  className="tool-btn"
                   disabled={!native || loading[kind]}
                   onClick={() => requestLoad([kind])}
                 >
                   {kind === "settings" ? "重试读取默认设置" : "重试读取 MCP"}
-                </Button>
+                </button>
               </>
             )}
           </div>
@@ -169,9 +169,12 @@ export function PiManagement({ native }: { native: boolean }) {
             <div className="pi-field-grid">
               <label>
                 供应商 ID
-                <Input
+                <input
+                  className="pi-input"
                   value={provider}
                   disabled={!native || loading.settings}
+                  autoComplete="off"
+                  spellCheck={false}
                   onChange={(e) => {
                     setProvider(e.target.value);
                   }}
@@ -180,9 +183,12 @@ export function PiManagement({ native }: { native: boolean }) {
               </label>
               <label>
                 模型 ID
-                <Input
+                <input
+                  className="pi-input"
                   value={model}
                   disabled={!native || loading.settings}
+                  autoComplete="off"
+                  spellCheck={false}
                   onChange={(e) => {
                     setModel(e.target.value);
                   }}
@@ -206,12 +212,14 @@ export function PiManagement({ native }: { native: boolean }) {
                 </select>
               </label>
             </div>
-            <Button
+            <button
+              type="button"
+              className="tool-btn is-primary"
               disabled={!native || loading.settings}
               onClick={() => setPending("settings")}
             >
               保存默认设置
-            </Button>
+            </button>
           </section>
         )}
         {documents.mcp && (
@@ -232,12 +240,14 @@ export function PiManagement({ native }: { native: boolean }) {
               }}
               spellCheck={false}
             />
-            <Button
+            <button
+              type="button"
+              className="tool-btn is-primary"
               disabled={!native || loading.mcp}
               onClick={() => setPending("mcp")}
             >
               保存 MCP
-            </Button>
+            </button>
           </section>
         )}
       </div>

@@ -27,19 +27,6 @@
 .tool-official-guide > button {
   flex-shrink: 0;
 }
-.tool-provider-table {
-  flex-shrink: 0;
-}
-.tool-provider-table > div {
-  min-width: 690px;
-}
-.tool-provider-table > div > div {
-  flex-shrink: 0;
-}
-.tool-provider-table > div > div:nth-child(3) {
-  min-width: 100px;
-  flex-shrink: 1;
-}
 
 .tool-actions {
   display: flex;
@@ -47,36 +34,22 @@
   align-items: center;
   gap: 8px;
 }
+/* 安装与环境检查 / 配置位置与保存说明: the shared .chimera-disclosure card
+   (components/ui/disclosure.css); only the page's text size and the muted
+   hint after the title are set here. */
 .tool-installation {
   flex-shrink: 0;
-  border-top: 1px solid var(--border-subtle);
   font-size: 13px;
 }
-.tool-installation > summary {
-  padding: 12px 0;
-  color: var(--text-2);
-  cursor: pointer;
-}
-.tool-installation > summary:focus-visible {
-  outline: 2px solid var(--text-1);
-  outline-offset: 2px;
-  border-radius: 4px;
-}
 .tool-installation-hint {
-  margin-left: 12px;
+  margin-left: 4px;
   color: var(--text-3);
   font-size: 12px;
-}
-.tool-installation-content {
-  padding-bottom: 12px;
+  font-weight: 400;
 }
 @media (max-width: 760px) {
   .tool-actions {
     width: 100%;
-  }
-  .tool-installation-hint {
-    display: block;
-    margin: 4px 0 0 16px;
   }
 }
 
@@ -116,30 +89,28 @@
   color: var(--success-fg);
 }
 
+/* Row delete: a quiet trash icon that turns red-tinted on hover, as on the
+   Codex 线路 page. Deletion always goes through a confirmation dialog. */
 .tool-provider-delete {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  height: 27px;
-  padding: 0 8px;
-  border: 1px solid var(--danger-border);
-  border-radius: 4px;
-  background: var(--danger-bg);
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control, 4px);
+  background: transparent;
   color: var(--danger-fg);
-  font-size: 12px;
   cursor: pointer;
 }
 .tool-provider-delete:hover:not(:disabled) {
-  background: var(--danger-bg-hover, var(--danger-bg));
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
 }
 .tool-provider-delete:disabled {
   opacity: 0.45;
   cursor: not-allowed;
-}
-.tool-provider-delete:focus-visible {
-  outline: 2px solid var(--danger-fg);
-  outline-offset: 2px;
 }
 
 .tool-view [hidden] {
@@ -177,111 +148,6 @@
 
 .tool-section-nav button[aria-current="page"] {
   font-weight: 600;
-}
-
-.omp-provider-table {
-  overflow-x: auto;
-  border: 1px solid var(--border-subtle);
-  border-radius: 6px;
-}
-.omp-provider-table table {
-  width: 100%;
-  min-width: 660px;
-  table-layout: fixed;
-  border-collapse: collapse;
-  font-size: 12px;
-  text-align: left;
-}
-.omp-provider-table th,
-.omp-provider-table td {
-  padding: 10px 12px;
-  overflow-wrap: anywhere;
-}
-.omp-provider-table thead {
-  height: 34px;
-  background: var(--bg-subtle);
-  color: var(--text-3);
-}
-.omp-provider-table thead th {
-  padding-block: 8px;
-}
-.omp-provider-table th:first-child {
-  width: 22%;
-}
-.omp-provider-table th:nth-child(3) {
-  width: 25%;
-}
-.omp-provider-table th:last-child {
-  width: 128px;
-  text-align: right;
-}
-.omp-provider-table tbody tr {
-  height: 52px;
-  border-top: 1px solid var(--border-subtle);
-}
-.omp-provider-table tbody tr:hover {
-  background: var(--bg-subtle);
-}
-.omp-provider-table td {
-  color: var(--text-2);
-}
-.omp-provider-table small {
-  display: block;
-  margin-top: 3px;
-  color: var(--text-3);
-  font-size: 12px;
-}
-.omp-provider-name {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-}
-.omp-provider-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 22px;
-  height: 22px;
-  border-radius: 4px;
-  background: #1a1e24;
-  color: white;
-  font-size: 11px;
-}
-.omp-provider-endpoint {
-  font-family: monospace;
-}
-.omp-provider-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 5px;
-}
-.omp-provider-edit {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 27px;
-  height: 27px;
-  border: 0;
-  background: transparent;
-  color: var(--text-3);
-  cursor: pointer;
-}
-.omp-provider-edit:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-.omp-provider-edit:focus-visible {
-  outline: 2px solid var(--text-1);
-  outline-offset: 2px;
-  border-radius: 4px;
-}
-
-.omp-provider-actions > button {
-  flex-shrink: 0;
-  white-space: nowrap;
 }
 
 /* ===== Tool page header (2.8.6) =====
@@ -337,6 +203,13 @@
   color: var(--text-3);
   font-size: 13px;
   line-height: 1.5;
+  /* A one-sentence subtitle: when it wraps, two even lines broken at the
+     sentence's own punctuation ("…线路，/ 停用后…"), not a full line and a
+     stranded "置。", and not inside a word ("停/用"). keep-all keeps CJK
+     phrases whole; overflow-wrap still breaks a phrase wider than the line. */
+  text-wrap-style: balance;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
 }
 .tool-kind {
   display: inline-flex;
@@ -387,6 +260,20 @@
   opacity: 0.45;
   cursor: not-allowed;
 }
+.tool-btn.is-sm {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 13px;
+}
+/* Quiet destructive action (卸载, 移除市场源); the confirmation dialog that
+   follows carries the solid red button. */
+.tool-btn.is-danger {
+  border-color: var(--danger-border);
+  color: var(--danger-fg);
+}
+.tool-btn.is-danger:hover:not(:disabled) {
+  background: var(--danger-bg);
+}
 /* ===== Line list (2.8.6) =====
    Same rhythm as the Codex 线路 table: quiet head row, 44px rows, a brand
    indicator on the current/enabled line instead of a heavy fill. */
@@ -423,9 +310,14 @@
   margin-left: auto;
   font-family: var(--font-latin), var(--font-cjk), sans-serif;
 }
+/* Columns: status, line, address, model, actions. The minimums add up to
+   about 650px, so the list fits the 694px content width of the 960px minimum
+   window without a hidden horizontal scroll. Multi-line tools have no 切换
+   button, so their action column only holds the busy spinner, edit and
+   delete. */
 .tool-lines {
-  --tool-line-cols: 44px minmax(140px, 1.1fr) minmax(170px, 1.7fr)
-    minmax(110px, 1fr) 156px;
+  --tool-line-cols: 44px minmax(140px, 1.1fr) minmax(160px, 1.7fr)
+    minmax(100px, 1fr) 136px;
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
@@ -435,13 +327,21 @@
   border-radius: var(--radius-panel, 8px);
   background: var(--bg-surface);
 }
+.tool-view[data-kind="accumulate"] .tool-lines {
+  --tool-line-cols: 44px minmax(140px, 1.1fr) minmax(160px, 1.7fr)
+    minmax(100px, 1fr) 80px;
+}
+/* oh-my-pi: line, address, protocol, models, actions (no on/off state). */
+.tool-lines[data-variant="omp"] {
+  --tool-line-cols: minmax(130px, 1fr) minmax(160px, 1.6fr) minmax(84px, 0.6fr)
+    minmax(130px, 1.1fr) 72px;
+}
 .tool-line-row {
   position: relative;
   display: grid;
   grid-template-columns: var(--tool-line-cols);
   align-items: center;
   gap: 12px;
-  min-width: 700px;
   min-height: 48px;
   padding: 0 12px 0 14px;
   border-top: 1px solid var(--border-subtle);
@@ -495,31 +395,39 @@
   box-shadow: 0 0 0 3px
     color-mix(in srgb, var(--success-solid) 20%, transparent);
 }
+/* The app's one switch (管理工具, Skills, 设置, 1M 上下文): --switch-* tokens,
+   ink track when on, outlined track with a muted thumb when off. */
 .tool-line-toggle {
   display: inline-flex;
+  flex-shrink: 0;
   align-items: center;
-  width: 30px;
-  height: 18px;
-  padding: 2px;
-  border: 0;
+  width: 36px;
+  height: 20px;
+  padding: 3px;
+  border: 1px solid var(--switch-off-border);
   border-radius: 999px;
-  background: var(--border-control);
+  background: var(--switch-off-bg);
   cursor: pointer;
-  transition: background-color var(--dur-fast, 150ms) var(--ease-out, ease);
+  transition:
+    background-color var(--dur-fast, 150ms) var(--ease-out, ease),
+    border-color var(--dur-fast, 150ms) var(--ease-out, ease);
 }
 .tool-line-toggle > span {
-  width: 14px;
-  height: 14px;
+  width: 12px;
+  height: 12px;
   border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 1px 2px rgb(0 0 0 / 0.25);
-  transition: transform var(--dur-fast, 150ms) var(--ease-out, ease);
+  background: var(--switch-thumb-off);
+  transition:
+    transform var(--dur-fast, 150ms) var(--ease-out, ease),
+    background-color var(--dur-fast, 150ms) var(--ease-out, ease);
 }
 .tool-line-toggle[aria-pressed="true"] {
-  background: var(--success-solid);
+  border-color: var(--switch-on-bg);
+  background: var(--switch-on-bg);
 }
 .tool-line-toggle[aria-pressed="true"] > span {
-  transform: translateX(12px);
+  transform: translateX(16px);
+  background: var(--switch-thumb-on);
 }
 .tool-line-toggle:disabled {
   opacity: 0.45;
@@ -539,14 +447,45 @@
 [data-current] .tool-line-name > span:last-child {
   font-weight: 700;
 }
-.tool-line-mono {
+/* Cell text. Addresses and model ids are mono; labels and fallbacks such as
+   官方默认端点 stay in the UI face (mono has no CJK and would fall back to a
+   serif). */
+.tool-line-mono,
+.tool-line-text,
+.tool-line-muted {
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool-line-mono {
   color: var(--text-2);
   font:
     12px/18px var(--font-mono),
+    var(--font-cjk),
     monospace;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+}
+.tool-line-text {
+  color: var(--text-2);
+}
+.tool-line-muted {
+  color: var(--text-3);
+  font-size: 12px;
+}
+.tool-line-models {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.tool-line-count {
+  flex-shrink: 0;
+  padding: 0 6px;
+  border-radius: var(--radius-pill, 999px);
+  background: var(--bg-subtle);
+  color: var(--text-3);
+  font:
+    600 11px/18px var(--font-latin),
+    sans-serif;
+  font-variant-numeric: tabular-nums;
 }
 .tool-line-actions {
   display: flex;
@@ -555,40 +494,40 @@
   gap: 4px;
   text-align: right;
 }
+/* 切换 and the 当前 tag follow the Codex 线路 table (the reference): a bold
+   text button with a hover fill, and an ink pill for the current line. */
 .tool-line-switch,
 .tool-line-current {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 52px;
-  height: 27px;
-  padding: 0 10px;
-  border-radius: var(--radius-control, 4px);
-  font-size: 12px;
+  border: 0;
   font-weight: 700;
   white-space: nowrap;
 }
 .tool-line-switch {
-  border: 1px solid var(--border-control);
+  height: 28px;
+  padding: 0 8px;
+  border-radius: var(--radius-control, 4px);
   background: transparent;
   color: var(--text-1);
+  font-size: 13px;
   cursor: pointer;
 }
 .tool-line-switch:hover:not(:disabled) {
-  border-color: var(--brand);
-  background: var(--brand);
-  color: var(--text-on-accent);
+  background: var(--bg-hover);
 }
 .tool-line-switch:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
 .tool-line-current {
-  border: 0;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: var(--radius-pill, 999px);
   background: var(--tag-current-bg, var(--text-1));
   color: var(--tag-current-fg, var(--text-inverse));
-  border-radius: var(--radius-pill, 999px);
-  height: 22px;
+  font-size: 12px;
   cursor: default;
 }
 .tool-line-current:disabled {
@@ -617,17 +556,6 @@
 .tool-line-spinner {
   color: var(--text-3);
 }
-.tool-line-actions .tool-provider-delete {
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  border-color: transparent;
-  background: transparent;
-}
-.tool-line-actions .tool-provider-delete:hover:not(:disabled) {
-  border-color: var(--danger-border);
-  background: var(--danger-bg);
-}
 /* ===== Page states (2.8.6) ===== */
 .tool-loading {
   display: flex;
@@ -654,6 +582,11 @@
 .tool-empty p {
   max-width: 420px;
   margin: 0;
+  /* Centred, so even lines broken between phrases ("…即可接入。/ OMP 内置…")
+     instead of a stranded "列出。". */
+  text-wrap-style: balance;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
 }
 .tool-load-error {
   display: grid;
@@ -686,6 +619,7 @@
   color: var(--text-1);
   font:
     12px/1.6 var(--font-mono),
+    var(--font-cjk),
     monospace;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -730,67 +664,6 @@
   font-weight: 700;
 }
 
-/* 安装与环境检查: a contained disclosure card with a brand focus ring, not
-   the user-agent black outline around the summary. */
-.tool-view .tool-installation {
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-panel, 8px);
-  background: var(--bg-surface);
-}
-.tool-view .tool-installation[open] {
-  background: var(--bg-subtle);
-}
-.tool-view .tool-installation > summary {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 12px 16px;
-  border-radius: calc(var(--radius-panel, 8px) - 1px);
-  color: var(--text-1);
-  font-weight: 700;
-  list-style: none;
-  outline: none;
-}
-.tool-view .tool-installation > summary::-webkit-details-marker {
-  display: none;
-}
-.tool-view .tool-installation > summary::before {
-  content: "";
-  flex-shrink: 0;
-  width: 6px;
-  height: 6px;
-  margin: 0 4px 0 2px;
-  border-right: 1.5px solid var(--text-3);
-  border-bottom: 1.5px solid var(--text-3);
-  transform: rotate(-45deg);
-  transition: transform var(--dur-fast, 150ms) var(--ease-out, ease);
-}
-.tool-view .tool-installation[open] > summary::before {
-  transform: rotate(45deg);
-}
-.tool-view .tool-installation > summary:hover {
-  background: var(--bg-hover);
-}
-.tool-view .tool-installation > summary:focus-visible {
-  outline: 2px solid var(--focus-ring, var(--focus));
-  outline-offset: -2px;
-}
-.tool-view .tool-installation-hint {
-  margin-left: 4px;
-  font-weight: 400;
-}
-.tool-view .tool-installation[open] > summary {
-  border-bottom: 1px solid var(--border-subtle);
-  border-radius: calc(var(--radius-panel, 8px) - 1px)
-    calc(var(--radius-panel, 8px) - 1px) 0 0;
-}
-.tool-view .tool-installation-content {
-  padding: 14px 16px 16px;
-  background: var(--bg-surface);
-  border-radius: 0 0 calc(var(--radius-panel, 8px) - 1px)
-    calc(var(--radius-panel, 8px) - 1px);
-}
-
 /* Shared focus ring for every tool-page control. */
 .tool-view
   :is(
@@ -798,6 +671,7 @@
     .tool-line-toggle,
     .tool-line-switch,
     .tool-line-icon,
+    .tool-provider-delete,
     .tool-section-nav button
   ):focus-visible {
   outline: 2px solid var(--focus-ring, var(--focus));
@@ -837,19 +711,12 @@
   color: var(--success-fg);
   font-size: 13px;
 }
-p.tool-load-error {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-p.tool-loading {
-  margin: 0;
-  padding: 12px 0;
-}
 .tool-install-path {
   margin: 0 0 8px;
   color: var(--text-2);
   font:
     12px/1.6 var(--font-mono),
+    var(--font-cjk),
     monospace;
   overflow-wrap: anywhere;
 }

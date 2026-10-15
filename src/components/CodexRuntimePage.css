@@ -37,6 +37,70 @@
 .runtime-receipt {
   margin-top: 12px;
 }
+/* Portable layout / unmanaged standard install: a callout under the status
+   board, with the receipt geometry (icon column, title, lines). Info is blue,
+   an interrupted migration amber. */
+.runtime-notice {
+  --runtime-notice-accent: var(--info-fg);
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 12px;
+  margin-top: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--info-border);
+  border-radius: var(--radius-panel);
+  background: var(--info-bg);
+  color: var(--text-1);
+  text-align: left;
+}
+.runtime-notice.is-warning {
+  --runtime-notice-accent: var(--warning-fg);
+  border-color: var(--warning-border);
+  background: var(--warning-bg);
+}
+.runtime-notice-icon {
+  padding-top: 1px;
+  color: var(--runtime-notice-accent);
+}
+.runtime-notice h3 {
+  margin: 0;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 700;
+}
+.runtime-notice p {
+  margin: 4px 0 0;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+/* 安装与维护: the list scrolls above a fixed action bar. The divider and a
+   short fade at the scroll edge read as "more below" instead of a row cut
+   by the button. */
+.runtime-maintenance-content {
+  padding-bottom: 24px;
+  scroll-padding-bottom: 24px;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    #000 calc(100% - 24px),
+    transparent
+  );
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent);
+}
+.runtime-maintenance-footer {
+  padding-top: 16px;
+  border-top: 1px solid var(--border-subtle);
+}
+/* The footer divider closes the list; a second rule 24px above it read as
+   a double line. */
+.runtime-maintenance-list {
+  border-bottom: 0;
+}
+/* Facts of a runtime confirmation break between facts, never inside one. */
+.runtime-confirm-fact {
+  white-space: nowrap;
+}
 .runtime-dialog-receipt {
   margin-bottom: 12px;
 }

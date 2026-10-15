@@ -80,8 +80,7 @@
   padding: 0;
 }
 .provider-editor-page .editor-basic h3,
-.provider-editor-page .editor-protocol h3,
-.provider-editor-page .editor-preview h3 {
+.provider-editor-page .editor-protocol h3 {
   margin: 0;
   font-size: 15px;
   line-height: 21px;
@@ -164,6 +163,13 @@
   :is(button, input, select, textarea, summary):focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 3px;
+}
+/* A field group (model search, key or model field with a side button) draws
+   one ring around the whole group; its input must not draw a second one. */
+.provider-editor-page
+  :is(.password-field, .model-input, .model-picker-search)
+  > input:focus-visible {
+  outline: none;
 }
 .provider-editor-page .editor-heading h2:focus {
   outline: none;
@@ -494,12 +500,6 @@
   gap: 12px;
 }
 .provider-editor-page .editor-preview {
-  padding: 16px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 8px;
-  background: var(--bg-sunken);
-  display: grid;
-  gap: 12px;
   overflow-wrap: anywhere;
 }
 .provider-editor-page .editor-preview p,
@@ -674,16 +674,6 @@
 .provider-editor-page .editor-appearance summary > span:nth-of-type(2) {
   flex: 1;
 }
-.provider-editor-page .editor-appearance .provider-row-badge {
-  width: 20px;
-  height: 20px;
-  color: #fdfdfe;
-  border-radius: 4px;
-  text-align: center;
-  font-size: 12px;
-  font-weight: 700;
-  flex-shrink: 0;
-}
 .provider-editor-page .editor-appearance > label {
   position: absolute;
   z-index: 2;
@@ -720,24 +710,19 @@
   min-height: 28px;
 }
 
-/* Match the shared tool editor: one readable column and optional details. */
-.provider-editor-page details.editor-preview {
-  position: static;
-  display: block;
-  width: 100%;
-  padding: 12px 0;
-  border: 0;
-  border-top: 1px solid var(--line);
+/* 保存详情 (line editors, oh-my-pi): an inline chimera-disclosure under a
+   divider. The summary, chevron and focus ring come from disclosure.css;
+   the [open] selector keeps the divider when `.is-inline[open]` resets the
+   border, and the straight rule needs no corner radius. */
+.provider-editor-page details.editor-preview,
+.provider-editor-page details.editor-preview[open] {
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
   border-radius: 0;
-  background: transparent;
 }
-.provider-editor-page .editor-preview > summary {
-  cursor: pointer;
-  font-size: 14px;
-  font-weight: 500;
-}
-.provider-editor-page .editor-preview[open] > summary {
-  margin-bottom: 16px;
+.provider-editor-page .editor-preview > .chimera-disclosure-body {
+  display: grid;
+  gap: 10px;
 }
 
 .provider-editor-page .editor-save-summary {
@@ -1050,4 +1035,294 @@ body:not(.is-mac):has([data-fullscreen-panel]) .chimera-shell > aside {
 [data-fullscreen-panel]:not(.provider-editor-page)
   > .flex-shrink-0:first-child {
   border-bottom: 1px solid var(--border-subtle);
+}
+
+/* Claude Desktop and Grok Build line editors (2.8.6)
+   Their forms use the line editor's own markup (sections, .editor-field,
+   .password-field, .model-input, .toggle-field, the protocol segmented
+   control); these rules only add what those forms have and the Codex editor
+   does not. */
+.provider-editor-page .editor-form :is(input, select, textarea) {
+  box-shadow: none;
+}
+.provider-editor-page .editor-field > small.is-warning {
+  color: var(--warning-fg);
+}
+.provider-editor-page .editor-field > small.is-error,
+.provider-editor-page .editor-field-error {
+  margin: 0;
+  color: var(--danger-fg);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.5;
+}
+.provider-editor-page .editor-field > small .link-button {
+  font-size: inherit;
+}
+/* Links on the editor sheet use the readable brand text colour; the shell's
+   --ch-accent is the dark brand blue in both themes (2.9:1 on dark). */
+.provider-editor-page .link-button {
+  color: var(--brand-text);
+}
+.provider-editor-page .password-field:has(> input:disabled) {
+  background: var(--bg-subtle);
+}
+/* Label row with tools on the right (完整 URL, 管理与测速). */
+.provider-editor-page .editor-field-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 16px;
+  min-height: 22px;
+}
+.provider-editor-page .editor-field-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 16px;
+}
+.provider-editor-page .editor-field-tools .link-button {
+  font-size: 13px;
+  font-weight: 500;
+}
+.provider-editor-page .editor-inline-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 20px;
+  cursor: pointer;
+}
+/* The editor's switch, also outside the Codex 高级配置 card (chimera.css
+   draws it only inside .advanced-options): ink track when on, outlined
+   track with a muted thumb when off. */
+.provider-editor-page .toggle-field > input[type="checkbox"],
+.provider-editor-page .editor-inline-switch > input[type="checkbox"] {
+  appearance: none;
+  flex: none;
+  width: 38px;
+  height: 22px;
+  margin: 0;
+  border: 1px solid var(--switch-off-border);
+  border-radius: var(--radius-pill);
+  background:
+    radial-gradient(
+      circle at 10px 50%,
+      var(--switch-thumb-off) 0 6px,
+      transparent 6.5px
+    ),
+    var(--switch-off-bg);
+  cursor: pointer;
+  transition:
+    background var(--dur-base) var(--ease-out),
+    border-color var(--dur-base) var(--ease-out);
+}
+.provider-editor-page .toggle-field > input[type="checkbox"]:checked {
+  border-color: var(--switch-on-bg);
+  background:
+    radial-gradient(
+      circle at 26px 50%,
+      var(--switch-thumb-on) 0 6px,
+      transparent 6.5px
+    ),
+    var(--switch-on-bg);
+}
+.provider-editor-page .editor-inline-switch > input[type="checkbox"] {
+  width: 30px;
+  height: 18px;
+  background:
+    radial-gradient(
+      circle at 8px 50%,
+      var(--switch-thumb-off) 0 5px,
+      transparent 5.5px
+    ),
+    var(--switch-off-bg);
+}
+.provider-editor-page .editor-inline-switch > input[type="checkbox"]:checked {
+  border-color: var(--switch-on-bg);
+  background:
+    radial-gradient(
+      circle at 20px 50%,
+      var(--switch-thumb-on) 0 5px,
+      transparent 5.5px
+    ),
+    var(--switch-on-bg);
+}
+.provider-editor-page
+  :is(.toggle-field, .editor-inline-switch)
+  > input[type="checkbox"]:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+/* A single switch row standing on its own (需要模型映射). */
+.provider-editor-page .editor-toggle-card {
+  padding: 12px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel);
+  background: var(--bg-sunken);
+}
+.provider-editor-page .editor-advanced-body .toggle-list {
+  display: grid;
+  gap: 14px;
+}
+/* Template card: the chosen template reads as selected. */
+.provider-editor-page .editor-template-choice[aria-pressed="true"] {
+  border-color: var(--border-control);
+  font-weight: 700;
+}
+/* 更多信息: icon, notes and website under the name. */
+.provider-editor-page .editor-more-info > .chimera-disclosure-body {
+  display: grid;
+  gap: 12px;
+}
+.provider-editor-page .editor-icon-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--text-3);
+  font-size: 13px;
+}
+.provider-editor-page .editor-icon-button {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-control);
+  background: var(--bg-surface);
+  cursor: pointer;
+}
+.provider-editor-page .editor-icon-button:hover {
+  border-color: var(--text-3);
+  background: var(--bg-hover);
+}
+/* Disclosure sections of the form (高级选项, 原始配置). */
+.provider-editor-page .chimera-disclosure > summary > small {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: 13px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.provider-editor-page .editor-advanced-body {
+  display: grid;
+  gap: 18px;
+}
+.provider-editor-page
+  .editor-advanced-body
+  > .advanced-group
+  + .advanced-group {
+  padding-top: 18px;
+  border-top: 1px solid var(--border-subtle);
+}
+.provider-editor-page .editor-override-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 4px;
+}
+.provider-editor-page .editor-form textarea.editor-code {
+  min-height: 132px;
+  font:
+    12px / 1.6 var(--font-mono),
+    monospace;
+}
+.provider-editor-page .editor-grok-profile {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.provider-editor-page .editor-code-editor {
+  min-width: 0;
+}
+.provider-editor-page .editor-model-notice.is-warning {
+  border-color: var(--warning-border);
+  background: var(--warning-bg);
+  color: var(--text-1);
+}
+.provider-editor-page .editor-model-notice.is-warning > svg {
+  flex-shrink: 0;
+  color: var(--warning-fg);
+}
+.provider-editor-page .editor-managed-auth {
+  padding: 12px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel);
+  background: var(--bg-sunken);
+}
+/* Claude Desktop model rows: role, menu name, upstream model, 1M. */
+.provider-editor-page .mapping-head.is-desktop,
+.provider-editor-page .mapping-row.is-desktop {
+  grid-template-columns: 88px minmax(0, 1fr) minmax(0, 1fr) 92px;
+  align-items: center;
+}
+.provider-editor-page .mapping-head.is-desktop > span {
+  white-space: nowrap;
+}
+.provider-editor-page .mapping-row.is-direct {
+  grid-template-columns: minmax(0, 1fr) 64px 36px;
+  align-items: center;
+}
+.provider-editor-page .mapping-row:is(.is-desktop, .is-direct) > input {
+  min-height: 36px;
+  padding: 7px 10px;
+  font-size: 13px;
+}
+.provider-editor-page
+  .mapping-row:is(.is-desktop, .is-direct)
+  .model-input
+  > input {
+  padding: 0 10px;
+  font-size: 13px;
+}
+.provider-editor-page .mapping-role {
+  display: flex;
+  align-items: center;
+  height: 36px;
+  padding: 0 10px;
+  border-radius: var(--radius-control);
+  background: var(--bg-subtle);
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 600;
+}
+.provider-editor-page .mapping-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  color: var(--text-2);
+  font-size: 13px;
+  cursor: pointer;
+}
+.provider-editor-page .mapping-check input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--brand-indicator);
+  cursor: inherit;
+}
+.provider-editor-page .mapping-row .mapping-delete {
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--danger-fg);
+}
+.provider-editor-page .mapping-row .mapping-delete:hover {
+  background: var(--danger-bg);
+}
+.provider-editor-page .advanced-section-heading .mapping-heading-actions {
+  align-self: center;
+}
+@media (max-width: 760px) {
+  .provider-editor-page .editor-grok-profile,
+  .provider-editor-page .editor-override-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }

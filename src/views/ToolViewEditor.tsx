@@ -2,7 +2,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
 import { useState } from "react";
 import { toast } from "sonner";
-import { Button } from "@/components/ui/button";
+import { ChevronLeft, LoaderCircle } from "lucide-react";
 import { FullScreenPanel } from "@/components/common/FullScreenPanel";
 import {
   ProviderForm,
@@ -16,6 +16,11 @@ import {
 } from "@/utils/toolProviderConfig";
 import { generateUUID } from "@/utils/uuid";
 
+/**
+ * Line editor of Claude Desktop and Grok Build. It uses the line editor shell
+ * of the other tools (back pill, line name with "工具 · 新建线路", sections,
+ * footer) around the tool's own form.
+ */
 export default function ToolViewEditor({
   appId,
   provider,
@@ -30,6 +35,8 @@ export default function ToolViewEditor({
   const [busy, setBusy] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [confirmClose, setConfirmClose] = useState(false);
+  const [draftName, setDraftName] = useState(provider?.name ?? "");
+  const toolName = additionalToolNames[appId];
   useLightweightCloseBlocker(busy || dirty);
   const requestClose = () => {
     if (busy) return;
@@ -88,26 +95,61 @@ export default function ToolViewEditor({
     <FullScreenPanel
       isOpen
       onClose={requestClose}
-      title={`${provider ? "编辑" : "添加"} ${additionalToolNames[appId]} 线路`}
-      contentClassName="max-w-5xl mx-auto"
-      footer={
+      title={`${provider ? "编辑" : "添加"} ${toolName} 线路`}
+      editorHeader={
         <>
-          <p className="mr-auto text-sm text-muted-foreground">
-            {provider
-              ? "保存已启用线路可能同步更新本机配置。"
-              : "仅保存线路，稍后在列表中切换或启用。"}
-          </p>
-          <Button
+          <button
             type="button"
-            variant="outline"
+            className="secondary editor-back"
+            aria-label="返回线路"
             disabled={busy}
             onClick={requestClose}
           >
-            取消
-          </Button>
-          <Button type="submit" form="provider-form" disabled={busy}>
-            {busy ? "正在保存…" : "保存线路"}
-          </Button>
+            <ChevronLeft size={16} aria-hidden="true" /> 线路
+          </button>
+          <div className="editor-heading">
+            <h2>{draftName.trim() || "未命名线路"}</h2>
+            <span>
+              {toolName} · {provider ? "编辑线路" : "新建线路"}
+            </span>
+          </div>
+          <span className="editor-draft-status" role="status">
+            {busy ? "正在保存…" : dirty ? "未保存修改" : ""}
+          </span>
+        </>
+      }
+      footer={
+        <>
+          <span className="editor-test-scope">
+            {provider
+              ? "保存已启用线路可能同步更新本机配置。"
+              : "仅保存线路，稍后在列表中切换或启用。"}
+          </span>
+          <div className="editor-save-actions">
+            <button
+              type="button"
+              className="secondary"
+              disabled={busy}
+              onClick={requestClose}
+            >
+              取消
+            </button>
+            <button
+              type="submit"
+              className="primary"
+              form="provider-form"
+              disabled={busy}
+            >
+              {busy ? (
+                <>
+                  <LoaderCircle className="spin" size={15} aria-hidden="true" />
+                  正在保存…
+                </>
+              ) : (
+                "保存线路"
+              )}
+            </button>
+          </div>
         </>
       }
     >
@@ -122,6 +164,7 @@ export default function ToolViewEditor({
           onCancel={requestClose}
           onSubmittingChange={setBusy}
           onDirtyChange={() => setDirty(true)}
+          onNameChange={setDraftName}
         />
       </div>
       <ConfirmDialog

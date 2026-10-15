@@ -7,6 +7,7 @@ import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
 import type { AppId } from "@/lib/api/types";
 import { liveBackupsApi, type LiveBackup } from "@/lib/api/liveBackups";
 import { restoreRefusal } from "@/components/settings/restoreRefusal";
+import { formatBackupTime } from "@/components/settings/backupTime";
 
 const reasons: Record<LiveBackup["reason"], string> = {
   manual: "手动备份",
@@ -105,8 +106,10 @@ export function LiveBackupsPanel({
   const disabled = loading || busy || error;
   return (
     <section className="live-backups-panel" aria-label={`${toolName} 配置备份`}>
+      {/* The no-break space keeps "登录凭据 auth.json" on one line, so the
+          balanced lines break at the sentence end. */}
       <p className="live-backups-description">
-        仅保存在本机，每个工具最多保留 20 份；不包含登录凭据
+        仅保存在本机，每个工具最多保留 20 份；不包含登录凭据{"\u00a0"}
         auth.json。其他工具的配置可能含 API 密钥，请妥善保管备份。
       </p>
       <div className="live-backups-toolbar">
@@ -163,21 +166,29 @@ export function LiveBackupsPanel({
       <p id={noteId} className="live-backups-note">
         Pi 暂不支持配置备份；Claude Desktop 仅支持 Windows 和 macOS。
       </p>
+      {/* Same table treatment as 应用数据库 (settings-backup-table). The
+          trigger reads as the second line of the time, so the file names get
+          the width; the backup id stays in the tooltip and button names. */}
       <div className="live-backups-table-wrap">
-        <table className="live-backups-table">
+        <table className="settings-backup-table live-backups-table">
           <thead>
             <tr>
-              <th scope="col">时间</th>
-              <th scope="col">触发</th>
+              <th scope="col" className="is-time">
+                时间与触发
+              </th>
               <th scope="col">包含文件</th>
-              <th scope="col">大小</th>
-              <th scope="col">操作</th>
+              <th scope="col" className="is-size">
+                大小
+              </th>
+              <th scope="col" className="is-actions">
+                操作
+              </th>
             </tr>
           </thead>
           <tbody>
             {(loading || error || backups.length === 0) && (
               <tr>
-                <td colSpan={5} className="live-backups-empty">
+                <td colSpan={4} className="live-backups-empty">
                   {loading ? (
                     <p role="status">正在读取备份…</p>
                   ) : error ? (
@@ -188,49 +199,62 @@ export function LiveBackupsPanel({
                 </td>
               </tr>
             )}
-            {backups.map((backup) => (
-              <tr key={backup.id}>
-                <td>
-                  <div>{new Date(backup.createdAt).toLocaleString()}</div>
-                  <small className="live-backup-id" title={backup.id}>
-                    {backup.id}
-                  </small>
-                </td>
-                <td>{reasons[backup.reason] || "备份"}</td>
-                <td className="live-backup-files">
-                  {backup.files.map(fileName).join("、")}
-                </td>
-                <td className="live-backup-size">
-                  {typeof backup.sizeBytes === "number" &&
-                  Number.isFinite(backup.sizeBytes) &&
-                  backup.sizeBytes >= 0
-                    ? `${(backup.sizeBytes / 1024).toLocaleString(undefined, { maximumFractionDigits: 1 })} KiB`
-                    : "—"}
-                </td>
-                <td>
-                  <div className="live-backup-actions">
-                    <Button
-                      variant="ghost"
-                      size="sm"
+            {backups.map((backup) => {
+              const size =
+                typeof backup.sizeBytes === "number" &&
+                Number.isFinite(backup.sizeBytes) &&
+                backup.sizeBytes >= 0
+                  ? `${(backup.sizeBytes / 1024).toLocaleString(undefined, { maximumFractionDigits: 1 })} KiB`
+                  : null;
+              return (
+                <tr key={backup.id}>
+                  <td className="is-time" title={backup.id}>
+                    <span className="live-backup-time">
+                      {formatBackupTime(backup.createdAt)}
+                    </span>
+                    <small className="settings-backup-subline">
+                      {reasons[backup.reason] || "备份"}
+                      {/* Shown only when the narrow window hides the size
+                          column. */}
+                      {size && (
+                        <span className="is-inline-size"> · {size}</span>
+                      )}
+                    </small>
+                  </td>
+                  <td className="live-backup-files">
+                    {backup.files.map((file, index, files) => (
+                      <span
+                        key={`${file}-${index}`}
+                        className="live-backup-file"
+                      >
+                        {fileName(file)}
+                        {index < files.length - 1 ? "、" : ""}
+                      </span>
+                    ))}
+                  </td>
+                  <td className="is-size">{size ?? "—"}</td>
+                  <td className="is-actions">
+                    <button
+                      type="button"
                       disabled={disabled}
                       aria-label={`恢复备份 ${backup.id}`}
                       onClick={() => setAction({ kind: "restore", backup })}
                     >
                       恢复
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
+                    </button>
+                    <button
+                      type="button"
+                      className="is-danger"
                       disabled={disabled}
                       aria-label={`删除备份 ${backup.id}`}
                       onClick={() => setAction({ kind: "delete", backup })}
                     >
                       删除
-                    </Button>
-                  </div>
-                </td>
-              </tr>
-            ))}
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>

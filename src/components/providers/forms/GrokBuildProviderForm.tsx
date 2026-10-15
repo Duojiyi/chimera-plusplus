@@ -4,17 +4,20 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { Button } from "@/components/ui/button";
+import { TriangleAlert } from "lucide-react";
 import {
   Form,
   FormControl,
   FormField,
   FormItem,
-  FormLabel,
   FormMessage,
 } from "@/components/ui/form";
-import { Input } from "@/components/ui/input";
 import JsonEditor from "@/components/JsonEditor";
+import {
+  EditorField,
+  EditorLabel,
+  SectionStatus,
+} from "@/components/providers/ProviderEditorFields";
 import { useDarkMode } from "@/hooks/useDarkMode";
 import { providerSchema, type ProviderFormData } from "@/lib/schemas/provider";
 import {
@@ -50,6 +53,7 @@ import {
   GROK_BUILD_API_BACKENDS,
   GROK_BUILD_MISSING_KEY_ERROR,
   buildGrokBuildConfig,
+  grokBuildConfigEditDropsComments,
   parseGrokBuildConfig,
   updateGrokBuildConfig,
   validateGrokBuildConfig,
@@ -103,6 +107,7 @@ export function GrokBuildProviderForm({
   onCancel,
   onSubmittingChange,
   onDirtyChange,
+  onNameChange,
   initialData,
   showButtons = true,
 }: GrokBuildProviderFormProps) {
@@ -217,6 +222,14 @@ export function GrokBuildProviderForm({
   });
   const { isSubmitting } = form.formState;
   const websiteUrl = form.watch("websiteUrl") ?? "";
+  const watchedName = form.watch("name");
+  useEffect(() => {
+    onNameChange?.(watchedName ?? "");
+  }, [watchedName, onNameChange]);
+  // The raw editor opens on a broken file and stays open while it is fixed.
+  const [rawConfigOpen, setRawConfigOpen] = useState(() =>
+    Boolean(initialConfigText && configFormatError(initialConfigText)),
+  );
 
   useEffect(() => {
     onSubmittingChange?.(isSubmitting);
@@ -553,21 +566,40 @@ export function GrokBuildProviderForm({
   };
 
   const rawConfigError = configFormatError(rawConfig);
+  useEffect(() => {
+    if (rawConfigError) setRawConfigOpen(true);
+  }, [rawConfigError]);
   const keyMissing =
     !rawConfigError &&
     validateGrokBuildConfig(rawConfig) === GROK_BUILD_MISSING_KEY_ERROR;
+  // A hand-written layout the fields cannot edit in place: the next field
+  // edit rewrites the file in the standard layout and its comments go.
+  const commentsAtRisk = useMemo(
+    () =>
+      !rawConfigError &&
+      category !== "official" &&
+      grokBuildConfigEditDropsComments(rawConfig),
+    [rawConfig, rawConfigError, category],
+  );
   const backendOptions = (
     GROK_BUILD_API_BACKENDS as readonly string[]
   ).includes(apiBackend)
     ? GROK_BUILD_API_BACKENDS
     : [apiBackend, ...GROK_BUILD_API_BACKENDS];
+  const envKey = parseGrokBuildConfig(rawConfig).envKey?.trim();
+  const basicMissing = [
+    watchedName,
+    baseUrl,
+    ...(envKey ? [] : [apiKey]),
+  ].filter((value) => !value?.trim()).length;
+  const protocolMissing = profile.trim() ? 0 : 1;
 
   return (
     <Form {...form}>
       <form
         id="provider-form"
         onSubmit={form.handleSubmit(handleSubmit)}
-        className="space-y-6"
+        className="editor-form"
       >
         {!initialData && (
           <ProviderPresetSelector
@@ -579,13 +611,37 @@ export function GrokBuildProviderForm({
           />
         )}
 
-        <BasicFormFields form={form} />
+        {commentsAtRisk && (
+          <p className="editor-model-notice is-warning" role="status">
+            <TriangleAlert size={15} aria-hidden="true" />
+            <span>
+              这份 config.toml
+              的写法无法逐项修改：改动下面的地址、密钥或模型会按标准格式重写整个文件，其中的注释会被删除。要保留注释，请在“高级设置”里直接编辑原始配置。
+            </span>
+          </p>
+        )}
 
-        {category !== "official" && (
+        {category === "official" ? (
+          <section className="editor-basic" aria-labelledby="grokbuild-basic">
+            <div className="editor-section-head">
+              <h3 id="grokbuild-basic">基础</h3>
+              <SectionStatus missing={watchedName?.trim() ? 0 : 1} />
+            </div>
+            <div className="editor-basic-grid">
+              <BasicFormFields form={form} />
+              <p className="editor-model-notice">
+                官方入口使用 Grok Build 自身的登录，无需填写地址、密钥或模型。
+              </p>
+            </div>
+          </section>
+        ) : (
           <>
             <CodexFormFields
               appId="grokbuild"
               providerId={providerId}
+              basicLead={<BasicFormFields form={form} />}
+              basicStatus={<SectionStatus missing={basicMissing} />}
+              protocolStatus={<SectionStatus missing={protocolMissing} />}
               codexApiKey={apiKey}
               onApiKeyChange={(value) => {
                 setApiKey(value);
@@ -643,21 +699,23 @@ export function GrokBuildProviderForm({
             />
 
             <details
-              className="rounded-lg border border-border-default p-4"
-              open={rawConfigError ? true : undefined}
+              className="chimera-disclosure editor-raw-config"
+              open={rawConfigOpen}
+              onToggle={(event) => setRawConfigOpen(event.currentTarget.open)}
             >
-              <summary className="cursor-pointer text-sm font-medium">
+              <summary>
                 高级设置：客户端档位与原始配置
+                <small>config.toml</small>
               </summary>
-              <div className="mt-4 space-y-4">
-                <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-                  <FormItem>
-                    <FormLabel htmlFor="grokbuild-profile">
-                      {t("grokBuild.profile", {
-                        defaultValue: "客户端模型档位",
-                      })}
-                    </FormLabel>
-                    <Input
+              <div className="chimera-disclosure-body editor-advanced-body">
+                <div className="editor-grok-profile">
+                  <EditorField
+                    label={t("grokBuild.profile", {
+                      defaultValue: "客户端模型档位",
+                    })}
+                    htmlFor="grokbuild-profile"
+                  >
+                    <input
                       id="grokbuild-profile"
                       value={profile}
                       onChange={(event) => {
@@ -667,18 +725,18 @@ export function GrokBuildProviderForm({
                       }}
                       placeholder="grok-4.5"
                       autoComplete="off"
+                      spellCheck={false}
                     />
-                  </FormItem>
+                  </EditorField>
 
-                  <FormItem>
-                    <FormLabel htmlFor="grokbuild-api-backend">
-                      {t("grokBuild.apiBackend", {
-                        defaultValue: "API Backend",
-                      })}
-                    </FormLabel>
+                  <EditorField
+                    label={t("grokBuild.apiBackend", {
+                      defaultValue: "API Backend",
+                    })}
+                    htmlFor="grokbuild-api-backend"
+                  >
                     <select
                       id="grokbuild-api-backend"
-                      className="flex h-9 w-full rounded-md border border-border-default bg-background px-3 text-sm text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       value={apiBackend}
                       onChange={(event) => {
                         const value = event.target.value;
@@ -696,15 +754,15 @@ export function GrokBuildProviderForm({
                         </option>
                       ))}
                     </select>
-                  </FormItem>
+                  </EditorField>
 
-                  <FormItem>
-                    <FormLabel htmlFor="grokbuild-context-window">
-                      {t("grokBuild.contextWindow", {
-                        defaultValue: "上下文窗口",
-                      })}
-                    </FormLabel>
-                    <Input
+                  <EditorField
+                    label={t("grokBuild.contextWindow", {
+                      defaultValue: "上下文窗口",
+                    })}
+                    htmlFor="grokbuild-context-window"
+                  >
+                    <input
                       id="grokbuild-context-window"
                       type="number"
                       min={1}
@@ -718,35 +776,44 @@ export function GrokBuildProviderForm({
                         });
                       }}
                     />
-                  </FormItem>
+                  </EditorField>
                 </div>
 
-                <div className="space-y-2">
-                  <FormLabel htmlFor="grokbuild-config-toml">
-                    {t("grokBuild.rawConfig", { defaultValue: "config.toml" })}
-                  </FormLabel>
-                  <JsonEditor
-                    value={rawConfig}
-                    onChange={handleRawConfigChange}
-                    placeholder=""
-                    darkMode={isDarkMode}
-                    rows={12}
-                    showValidation={false}
-                    language="javascript"
+                <div className="editor-field">
+                  <EditorLabel
+                    id="grokbuild-config-toml-label"
+                    label={t("grokBuild.rawConfig", {
+                      defaultValue: "config.toml",
+                    })}
                   />
+                  <div
+                    className="editor-code-editor"
+                    role="group"
+                    aria-labelledby="grokbuild-config-toml-label"
+                  >
+                    <JsonEditor
+                      value={rawConfig}
+                      onChange={handleRawConfigChange}
+                      placeholder=""
+                      darkMode={isDarkMode}
+                      rows={12}
+                      showValidation={false}
+                      language="javascript"
+                    />
+                  </div>
                   {keyMissing && (
-                    <p className="text-xs text-muted-foreground" role="status">
+                    <small role="status">
                       填写 API Key 后会写入 api_key；也可在这里改用 env_key
                       读取环境变量。
-                    </p>
+                    </small>
                   )}
                   {rawConfigError && (
-                    <p className="text-xs text-destructive" role="alert">
+                    <small className="is-error" role="alert">
                       {t("grokBuild.invalidToml", {
                         error: rawConfigError,
                         defaultValue: `Invalid config.toml: ${rawConfigError}`,
                       })}
-                    </p>
+                    </small>
                   )}
                 </div>
               </div>
@@ -760,7 +827,7 @@ export function GrokBuildProviderForm({
           render={() => (
             <FormItem className="hidden">
               <FormControl>
-                <Input type="hidden" />
+                <input type="hidden" />
               </FormControl>
               <FormMessage />
             </FormItem>
@@ -768,13 +835,13 @@ export function GrokBuildProviderForm({
         />
 
         {showButtons && (
-          <div className="flex justify-end gap-2">
-            <Button variant="outline" type="button" onClick={onCancel}>
-              {t("common.cancel")}
-            </Button>
-            <Button type="submit" disabled={isSubmitting}>
+          <div className="editor-save-actions">
+            <button type="button" className="secondary" onClick={onCancel}>
+              {t("common.cancel", { defaultValue: "取消" })}
+            </button>
+            <button type="submit" className="primary" disabled={isSubmitting}>
               {submitLabel}
-            </Button>
+            </button>
           </div>
         )}
       </form>

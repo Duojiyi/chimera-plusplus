@@ -482,20 +482,22 @@
   max-width: 620px;
   margin: 0 auto;
   padding: 28px;
-  border: 1px solid var(--line);
-  border-radius: var(--r-lg);
-  background: var(--panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel);
+  background: var(--bg-surface);
+  color: var(--text-1);
 }
 .onboarding h1,
 .onboarding h2 {
   margin: 22px 0 8px;
   font-size: 22px;
+  line-height: 1.3;
 }
 .onboarding > p {
   margin: 0;
-  color: var(--ch-muted);
-  font-size: 12px;
-  line-height: 1.65;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.7;
 }
 .onboarding-brand {
   display: inline-flex;
@@ -510,7 +512,7 @@
 }
 .onboarding ol {
   display: grid;
-  gap: 12px;
+  gap: 14px;
   width: 100%;
   margin: 22px 0;
   padding: 0;
@@ -519,7 +521,7 @@
 .onboarding ol li {
   display: grid;
   grid-template-columns: 26px minmax(0, 1fr);
-  gap: 11px;
+  gap: 12px;
   align-items: start;
 }
 .onboarding ol li > b {
@@ -528,20 +530,22 @@
   display: grid;
   place-items: center;
   border-radius: 50%;
-  background: var(--soft);
-  color: var(--ch-accent);
-  font-size: 11px;
+  background: var(--bg-subtle);
+  color: var(--brand-text);
+  font-size: 12px;
   font-weight: 700;
 }
 .onboarding ol li strong {
   display: block;
-  font-size: 12px;
+  font-size: 14px;
+  line-height: 20px;
 }
 .onboarding ol li span {
   display: block;
-  margin-top: 3px;
-  color: var(--ch-muted);
-  font-size: 11px;
+  margin-top: 2px;
+  color: var(--text-3);
+  font-size: 13px;
+  line-height: 1.5;
 }
 /* Advanced options base classes. The scoped rules further down set
    grid-template-columns but never declared a display, so the tracks were
@@ -1004,22 +1008,41 @@
   background: #fff;
   vertical-align: middle;
 }
-.onboarding-screen {
+/* First run, before the shell: rendered as `.chimera-shell.onboarding-screen`
+   so the shell's tokens, fonts, buttons and dark theme apply. The card is
+   centred under a drag bar that keeps the window controls. */
+.chimera-shell.onboarding-screen {
+  position: relative;
   min-height: 100vh;
   display: grid;
   place-items: center;
-  padding: 40px;
-  background: var(--canvas);
-  color: var(--ink);
-  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  padding: 56px 40px 40px;
+  overflow: auto;
+  background: var(--bg-base);
+  color: var(--text-1);
+}
+.onboarding-titlebar {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+body.is-mac .onboarding-titlebar {
+  justify-content: flex-start;
+  padding-left: 12px;
 }
 .onboarding-card {
   width: min(620px, 100%);
-  min-height: 590px;
   margin: 0;
   padding: 32px;
   display: flex;
   flex-direction: column;
+  box-shadow: 0 1px 2px var(--shadow-soft);
 }
 .onboarding-card h1 {
   margin: 28px 0 8px;
@@ -1029,12 +1052,12 @@
   display: flex;
   justify-content: flex-end;
   gap: 10px;
-  margin-top: auto;
+  margin-top: 4px;
 }
 .onboarding-card > small {
-  margin: 24px auto 0;
-  color: var(--ch-muted);
-  font-size: 10px;
+  margin: 20px auto 0;
+  color: var(--text-3);
+  font-size: 12px;
 }
 button:focus-visible,
 input:focus-visible,
@@ -2895,148 +2918,18 @@ body.is-mac
   }
 }
 
-/* Direct line switching keeps the Chimera relay path primary while allowing
-   additional endpoints to scale without changing the home composition. */
-.route-line-switcher {
-  position: absolute;
-  z-index: 3;
-  left: 50%;
-  bottom: 0;
-  width: min(760px, calc(100% - 48px));
-  transform: translateX(-50%);
-}
-.route-line-heading {
-  height: 20px;
-  margin-bottom: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-}
-.route-line-heading > div {
-  min-width: 0;
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-.route-line-heading b {
-  color: #252b31;
-  font-size: 13px;
-}
-.route-line-heading > div span {
-  color: #7b8790;
-  font-size: 11px;
-}
-.route-line-heading > button {
-  min-height: 32px;
-  padding: 0 4px;
-  border: 0;
-  background: transparent;
-  color: #6b7780;
-  font-size: 12px;
-  font-weight: 700;
-}
-.route-line-heading > button:hover {
-  color: var(--ch-accent);
-}
-.route-line-rail {
-  height: 88px;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 140px;
-  gap: 8px;
-  padding: 8px;
-  overflow: hidden;
-  border: 1px solid rgba(147, 161, 170, 0.58);
-  border-radius: 18px;
-  background: rgba(252, 253, 254, 0.92);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.92),
-    0 5px 8px rgba(39, 51, 59, 0.12);
-  -webkit-backdrop-filter: saturate(1.2) contrast(1.03);
-  backdrop-filter: saturate(1.2) contrast(1.03);
-}
+/* 管理线路 (NewProvidersView): a centred dialog on the app's shared dialog
+   surface and scrim, so it follows the theme. Rows use the line table's
+   identity badge; the current row gets the table's current treatment (a
+   selected surface, the indicator bar and the 当前 tag). Focus uses the
+   app's standard ring. */
 .route-line-mark {
-  flex: 0 0 36px;
-  width: 36px;
-  height: 36px;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
   display: grid;
   place-items: center;
-  border-radius: 10px;
-  background: #f0f3f5;
-  color: #6a7680;
-  font-size: 13px;
-  font-weight: 800;
-}
-.route-line-manager article.is-active .route-line-mark {
-  background: #ffe0d8;
-  color: var(--ch-accent);
-}
-.route-line-copy {
-  min-width: 0;
-  display: grid;
-  gap: 3px;
-}
-.route-line-copy b,
-.route-line-copy small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.route-line-copy b {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 13px;
-}
-.route-line-copy b i {
-  flex: 0 0 6px;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--success);
-}
-.route-line-copy small {
-  color: #7a8790;
-  font-size: 11px;
-}
-.route-line-add {
-  height: 64px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 9px;
-  border: 1px solid #dde1e6;
-  border-radius: 12px;
-  background: #fff;
-  color: #31383e;
-  font-size: 12px;
-  font-weight: 800;
-  transition:
-    background 160ms var(--ease),
-    transform 120ms var(--ease);
-}
-.route-line-add > span {
-  width: 26px;
-  height: 26px;
-  display: grid;
-  place-items: center;
-  border-radius: 50%;
-  background: #fff0ec;
-  color: var(--ch-accent);
-}
-.route-line-add:hover {
-  border-color: #ffc3b6;
-  background: #fff9f7;
-}
-.route-line-add:active {
-  transform: scale(0.975);
-}
-.route-line-heading button:focus-visible,
-.route-line-add:focus-visible,
-.route-line-manager button:focus-visible,
-.route-line-search:focus-within {
-  outline: 2px solid rgba(190, 55, 30, 0.9);
-  outline-offset: 2px;
+  color: var(--text-3);
 }
 .route-line-manager-backdrop {
   position: fixed;
@@ -3045,8 +2938,7 @@ body.is-mac
   display: grid;
   place-items: center;
   padding: 24px;
-  border-radius: 16px;
-  background: rgba(247, 249, 250, 0.84);
+  background: var(--scrim);
 }
 .route-line-manager {
   width: min(560px, 100%);
@@ -3056,10 +2948,13 @@ body.is-mac
   gap: 14px;
   padding: 20px;
   overflow: hidden;
-  border: 1px solid #cad4da;
-  border-radius: 14px;
-  background: #fff;
-  box-shadow: 0 8px 14px rgba(39, 51, 59, 0.14);
+  border: 1px solid var(--dialog-border);
+  border-radius: var(--radius-panel);
+  background: var(--dialog-bg);
+  color: var(--text-1);
+  box-shadow:
+    0 1px 2px var(--shadow-soft),
+    0 16px 40px var(--shadow-overlay);
 }
 .route-line-manager > header {
   display: flex;
@@ -3072,79 +2967,102 @@ body.is-mac
   margin: 0;
 }
 .route-line-manager h2 {
-  color: #252b31;
-  font-size: 18px;
+  color: var(--text-1);
+  font-size: 17px;
+  line-height: 1.3;
 }
 .route-line-manager header p {
   margin-top: 4px;
-  color: #7a8790;
-  font-size: 12px;
+  color: var(--text-2);
+  font-size: 13px;
 }
 .route-line-manager header > button,
 .route-line-edit {
-  flex: 0 0 36px;
-  width: 36px;
-  height: 36px;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
   display: grid;
   place-items: center;
   border: 0;
-  border-radius: 50%;
-  background: #f1f4f5;
-  color: #69757e;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-2);
 }
 .route-line-search {
-  height: 40px;
+  height: 36px;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 12px;
-  border-radius: 9px;
-  background: #f1f4f5;
-  color: #7a8790;
+  padding: 0 10px;
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius-control);
+  background: var(--input-bg);
+  color: var(--text-3);
+}
+.route-line-search:hover {
+  border-color: var(--input-border-hover);
 }
 .route-line-search input {
   width: 100%;
+  min-width: 0;
   border: 0;
   outline: 0;
   background: transparent;
-  color: #252b31;
+  color: var(--input-fg);
   font: inherit;
+  font-size: 13px;
+}
+.route-line-search input::placeholder {
+  color: var(--input-placeholder);
 }
 .route-line-manager-list {
   min-height: 76px;
   overflow-y: auto;
 }
 .route-line-manager-list article {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
   gap: 8px;
-  padding: 6px;
-  border-radius: 11px;
+  padding: 2px 6px 2px 8px;
+  border-radius: var(--radius-control);
 }
 .route-line-manager-list article + article {
-  margin-top: 4px;
+  margin-top: 2px;
 }
 .route-line-manager-list article.is-active {
-  background: #fff3ef;
+  background: var(--row-bg-current);
+}
+.route-line-manager-list article.is-active::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 3px;
+  height: 20px;
+  margin-top: -10px;
+  border-radius: var(--radius-inner);
+  background: var(--brand-indicator);
 }
 .route-line-manager-main {
   min-width: 0;
-  min-height: 52px;
+  min-height: 48px;
   display: grid;
-  grid-template-columns: 36px minmax(0, 1fr) auto;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
   gap: 10px;
   align-items: center;
   padding: 4px 8px;
   border: 0;
-  border-radius: 9px;
+  border-radius: var(--radius-control);
   background: transparent;
-  color: #252b31;
+  color: var(--text-1);
   text-align: left;
 }
 .route-line-manager-main:hover,
-.route-line-edit:hover,
+.route-line-edit:hover:not(:disabled),
 .route-line-manager header > button:hover {
-  background: #e9eef0;
+  background: var(--bg-hover);
 }
 .route-line-manager-main > span:nth-child(2) {
   min-width: 0;
@@ -3157,27 +3075,39 @@ body.is-mac
   white-space: nowrap;
 }
 .route-line-manager-main b {
-  font-size: 13px;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+}
+.route-line-manager-list article.is-active .route-line-manager-main b {
+  font-weight: 700;
 }
 .route-line-manager-main small {
-  margin-top: 3px;
-  color: #7a8790;
-  font-size: 11px;
+  margin-top: 2px;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 16px;
 }
-.route-line-manager-main > svg {
-  color: var(--success);
+.route-line-current {
+  padding: 0 8px;
+  border-radius: var(--radius-pill);
+  background: var(--tag-current-bg);
+  color: var(--tag-current-fg);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 20px;
+  white-space: nowrap;
 }
 .route-line-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 .route-line-delete {
-  color: #b83224;
-  background: #fff0ed;
+  color: var(--danger-fg);
 }
 .route-line-delete:hover:not(:disabled) {
-  background: #ffe0d9;
+  background: var(--danger-bg);
 }
 .route-line-actions button:disabled {
   opacity: 0.45;
@@ -3186,22 +3116,31 @@ body.is-mac
 .route-line-official-note {
   align-self: center;
   justify-self: end;
-  padding: 5px 8px;
-  border: 1px solid #d8e2e7;
-  border-radius: 999px;
-  color: #71808a;
-  font-size: 10px;
+  padding: 2px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 18px;
   white-space: nowrap;
 }
 .route-line-empty {
   margin: 0;
   padding: 24px;
-  color: #7a8790;
+  color: var(--text-3);
   font-size: 13px;
   text-align: center;
 }
+.route-line-manager button:focus-visible,
+.route-line-search:focus-within {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.route-line-search input:focus-visible {
+  outline: none;
+}
 .route-line-manager-add {
-  min-height: 42px;
+  min-height: 40px;
   justify-self: stretch;
 }
 
@@ -3366,7 +3305,6 @@ body.is-mac
   .chimera-navigation
   button[data-pencil-name^="能力 · "][aria-current="page"]::before {
   background: #23282d;
-  box-shadow: inset 2px 0 0 #7b9bc3;
 }
 .chimera-sidebar
   .chimera-navigation
@@ -3385,12 +3323,77 @@ body.is-mac
   outline: 2px solid var(--focus-on-plate);
   outline-offset: -2px;
 }
-/* Other tools: the active row gets the same left accent as the tree rows. */
+/* Active accent: one straight 2px bar, 16px tall and centred on the row, at
+   the left edge of the highlight (after the tree column on capability rows).
+   An inset shadow on the rounded highlight bent round its corners into a
+   bracket. Every active sidebar row (capability, tool, 管理工具, 会话, 设置)
+   carries the same bar. */
+.chimera-sidebar button[aria-current="page"] {
+  position: relative;
+}
+.chimera-sidebar button[aria-current="page"]::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 2px;
+  height: 16px;
+  margin-top: -8px;
+  border-radius: 1px;
+  background: #7b9bc3;
+  pointer-events: none;
+}
 .chimera-sidebar
   .chimera-navigation
-  button[data-pencil-name^="工具 · "][aria-current="page"],
-.chimera-sidebar
-  .chimera-navigation
-  button[data-pencil-name="添加工具"][aria-current="page"] {
-  box-shadow: inset 2px 0 0 #7b9bc3;
+  button[data-pencil-name^="能力 · "][aria-current="page"]::after {
+  left: 36px;
+}
+
+/* The tool list scrolls when the window is short (960x640 shows about two
+   thirds of it). Scrollbars are hidden app-wide, so the list fades out at
+   the edge that has more content: the bottom until the end is reached, the
+   top once it has scrolled. Driven by the list's own scroll position; when
+   everything fits the timeline is inactive and nothing fades. Keyboard focus
+   scrolls a row clear of the fade (scroll-padding). */
+@property --chimera-nav-fade-top {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@property --chimera-nav-fade-bottom {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@keyframes chimera-nav-fade {
+  0% {
+    --chimera-nav-fade-top: 0px;
+    --chimera-nav-fade-bottom: 24px;
+  }
+  12% {
+    --chimera-nav-fade-top: 24px;
+  }
+  88% {
+    --chimera-nav-fade-bottom: 24px;
+  }
+  100% {
+    --chimera-nav-fade-top: 24px;
+    --chimera-nav-fade-bottom: 0px;
+  }
+}
+.chimera-sidebar .chimera-navigation {
+  scroll-padding-block: 28px;
+}
+@supports (animation-timeline: scroll()) {
+  .chimera-sidebar .chimera-navigation {
+    mask-image: linear-gradient(
+      to bottom,
+      transparent 0,
+      #000 var(--chimera-nav-fade-top),
+      #000 calc(100% - var(--chimera-nav-fade-bottom)),
+      transparent 100%
+    );
+    animation: chimera-nav-fade linear both;
+    animation-timeline: scroll(self block);
+  }
 }

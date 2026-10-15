@@ -124,6 +124,7 @@ export function EditorToggle({
   note,
   checked,
   disabled,
+  role,
   onChange,
 }: {
   name: string;
@@ -134,6 +135,8 @@ export function EditorToggle({
   note?: ReactNode;
   checked: boolean;
   disabled?: boolean;
+  /** Announce the row as a switch (it is drawn as one) instead of a checkbox. */
+  role?: "switch";
   onChange: (checked: boolean) => void;
 }) {
   const id = `${name}-toggle`;
@@ -148,6 +151,7 @@ export function EditorToggle({
         id={id}
         name={name}
         type="checkbox"
+        role={role}
         checked={checked}
         disabled={disabled}
         aria-describedby={noteId}

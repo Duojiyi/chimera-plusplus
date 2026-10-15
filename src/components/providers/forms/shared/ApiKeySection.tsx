@@ -44,34 +44,31 @@ export function ApiKeySection({
   const finalPlaceholder = placeholder || defaultPlaceholder;
 
   return (
-    <div className="space-y-1">
-      <ApiKeyInput
-        id={id}
-        label={label}
-        value={value}
-        onChange={onChange}
-        placeholder={
-          category === "official"
-            ? finalPlaceholder.official
-            : finalPlaceholder.thirdParty
-        }
-        disabled={disabled ?? category === "official"}
-      />
-      {/* API Key 获取链接 */}
-      {shouldShowLink && websiteUrl && (
-        <div className="space-y-2 -mt-1 pl-1">
+    <ApiKeyInput
+      id={id}
+      label={label}
+      value={value}
+      onChange={onChange}
+      placeholder={
+        category === "official"
+          ? finalPlaceholder.official
+          : finalPlaceholder.thirdParty
+      }
+      disabled={disabled ?? category === "official"}
+      hint={
+        shouldShowLink && websiteUrl ? (
           <a
             href={websiteUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-xs text-blue-400 dark:text-blue-500 hover:text-blue-500 dark:hover:text-blue-400 transition-colors"
+            className="link-button"
           >
             {t("providerForm.getApiKey", {
               defaultValue: "获取 API Key",
             })}
           </a>
-        </div>
-      )}
-    </div>
+        ) : undefined
+      }
+    />
   );
 }

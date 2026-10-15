@@ -10,6 +10,7 @@ import {
 import { promptCodexImportReview } from "@/utils/codexImportReview";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { restoreRefusal } from "./restoreRefusal";
+import { formatBackupTime } from "./backupTime";
 import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
 
 export function DatabaseRecoveryPanel({
@@ -120,7 +121,7 @@ export function DatabaseRecoveryPanel({
           数据库备份读取失败，请刷新重试。
         </p>
       ) : query.data?.length ? (
-        <table className="db-backups-table">
+        <table className="settings-backup-table">
           <thead>
             <tr>
               <th scope="col">文件</th>
@@ -131,7 +132,7 @@ export function DatabaseRecoveryPanel({
                 大小
               </th>
               <th scope="col" className="is-actions">
-                <span className="sr-only">操作</span>
+                操作
               </th>
             </tr>
           </thead>
@@ -144,13 +145,11 @@ export function DatabaseRecoveryPanel({
                   </span>
                 </td>
                 <td className="is-time">
-                  {new Date(backup.createdAt).toLocaleString("zh-CN", {
-                    year: "numeric",
-                    month: "2-digit",
-                    day: "2-digit",
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })}
+                  {formatBackupTime(backup.createdAt)}
+                  {/* Shown only when the narrow window hides the size column. */}
+                  <small className="settings-backup-subline is-inline-size">
+                    {(backup.sizeBytes / 1024).toFixed(1)} KiB
+                  </small>
                 </td>
                 <td className="is-size">
                   {(backup.sizeBytes / 1024).toFixed(1)} KiB

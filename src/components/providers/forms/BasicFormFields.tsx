@@ -8,7 +8,6 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
-import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft } from "lucide-react";
 import {
@@ -29,6 +28,11 @@ interface BasicFormFieldsProps {
   beforeNameSlot?: ReactNode;
 }
 
+/**
+ * Line name, then 更多信息 (icon, notes, website) folded below it. Markup
+ * follows the line editor (`.editor-field`), so the generic tool editors
+ * share its labels and inputs.
+ */
 export function BasicFormFields({
   form,
   beforeNameSlot,
@@ -64,31 +68,33 @@ export function BasicFormFields({
         control={form.control}
         name="name"
         render={({ field }) => (
-          <FormItem>
-            <FormLabel>线路名称 *</FormLabel>
+          <FormItem className="editor-field space-y-0">
+            <FormLabel className="editor-field-label">线路名称 *</FormLabel>
             <FormControl>
-              <Input {...field} placeholder="例如：我的工作线路" />
+              <input
+                {...field}
+                autoComplete="off"
+                spellCheck={false}
+                placeholder="例如：我的工作线路"
+              />
             </FormControl>
-            <FormMessage />
+            <FormMessage className="editor-field-error" />
           </FormItem>
         )}
       />
 
       <details
         ref={moreInfoRef}
-        className="rounded-lg border border-border px-4 py-3"
+        className="chimera-disclosure is-inline editor-more-info"
       >
-        <summary className="cursor-pointer text-sm text-muted-foreground">
-          更多信息 · 图标、备注、官网
-        </summary>
-        <div className="mt-4 space-y-4">
-          {/* 图标选择区域 - 顶部居中，可选 */}
-          <div className="flex items-center gap-3">
+        <summary>更多信息 · 图标、备注、官网</summary>
+        <div className="chimera-disclosure-body">
+          <div className="editor-icon-row">
             <Dialog open={iconDialogOpen} onOpenChange={setIconDialogOpen}>
               <DialogTrigger asChild>
                 <button
                   type="button"
-                  className="h-10 w-10 rounded-md border border-input hover:border-primary transition-colors bg-muted/30 flex items-center justify-center"
+                  className="editor-icon-button"
                   aria-label="修改线路图标"
                   title={
                     currentIcon
@@ -148,24 +154,27 @@ export function BasicFormFields({
                 </div>
               </DialogContent>
             </Dialog>
-            <span className="text-sm text-muted-foreground">
-              线路图标（可选）
-            </span>
+            <span>线路图标（可选）</span>
           </div>
 
           <FormField
             control={form.control}
             name="notes"
             render={({ field }) => (
-              <FormItem>
-                <FormLabel>{t("provider.notes")}</FormLabel>
+              <FormItem className="editor-field space-y-0">
+                <FormLabel className="editor-field-label">
+                  {t("provider.notes", { defaultValue: "备注" })}
+                </FormLabel>
                 <FormControl>
-                  <Input
+                  <input
                     {...field}
-                    placeholder={t("provider.notesPlaceholder")}
+                    autoComplete="off"
+                    placeholder={t("provider.notesPlaceholder", {
+                      defaultValue: "例如：公司专用账号",
+                    })}
                   />
                 </FormControl>
-                <FormMessage />
+                <FormMessage className="editor-field-error" />
               </FormItem>
             )}
           />
@@ -173,15 +182,21 @@ export function BasicFormFields({
             control={form.control}
             name="websiteUrl"
             render={({ field }) => (
-              <FormItem>
-                <FormLabel>{t("provider.websiteUrl")}</FormLabel>
+              <FormItem className="editor-field space-y-0">
+                <FormLabel className="editor-field-label">
+                  {t("provider.websiteUrl", { defaultValue: "官网链接" })}
+                </FormLabel>
                 <FormControl>
-                  <Input
+                  <input
                     {...field}
-                    placeholder={t("providerForm.websiteUrlPlaceholder")}
+                    autoComplete="off"
+                    spellCheck={false}
+                    placeholder={t("providerForm.websiteUrlPlaceholder", {
+                      defaultValue: "https://example.com（可选）",
+                    })}
                   />
                 </FormControl>
-                <FormMessage />
+                <FormMessage className="editor-field-error" />
               </FormItem>
             )}
           />

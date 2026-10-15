@@ -207,6 +207,11 @@ it.each([
     expect(screen.getByRole("radio", { name: "覆盖" })).toBeDisabled();
     expect(screen.getByRole("radio", { name: "作为新线路" })).toBeEnabled();
     expect(screen.getByText(hint)).toBeVisible();
+    // The reason is plain text tied to the disabled choice, not mono.
+    expect(screen.getByText(hint)).toHaveClass("cc-switch-conflict-note");
+    expect(
+      screen.getByRole("radio", { name: "覆盖" }),
+    ).toHaveAccessibleDescription(hint);
     expect(screen.getByRole("status")).toHaveTextContent("已选择 0 条");
     fireEvent.keyDown(document, { key: "Escape" });
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();

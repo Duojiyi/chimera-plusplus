@@ -957,9 +957,13 @@ describe("official account quota windows", () => {
     expect(bars[0]).toHaveAttribute("aria-valuemin", "0");
     expect(bars[0]).toHaveAttribute("aria-valuemax", "100");
     expect(bars[0]).toHaveAttribute("aria-valuetext", "剩余 62%");
-    expect(
-      within(current).getByText("3 小时 31 分钟后重置 · 10月13日 13:55"),
-    ).toBeVisible();
+    const reset = within(current).getByText(/^3 小时 31 分钟后重置 ·/);
+    expect(reset).toBeVisible();
+    expect(reset).toHaveTextContent("3 小时 31 分钟后重置 · 10月13日 13:55");
+    // Date and time wrap as one unit, never "13:55" alone on a line.
+    expect(within(reset).getByText("10月13日 13:55")).toHaveClass(
+      "quota-meter-exact",
+    );
     expect(within(current).getByText("重置时间未知")).toBeVisible();
     expect(within(current).getByText("查询于 10:22")).toBeVisible();
     const row = screen.getByRole("article");
