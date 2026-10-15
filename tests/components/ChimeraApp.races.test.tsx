@@ -60,7 +60,6 @@ vi.mock("@/lib/api/providers", async (original) => {
 });
 vi.mock("@/lib/api/model-fetch", () => ({
   fetchModelsForConfig: mocks.fetchModels,
-  detectCodexApiFormats: vi.fn(),
 }));
 vi.mock("@/lib/api/settings", () => ({
   settingsApi: {

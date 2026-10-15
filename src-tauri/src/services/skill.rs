@@ -3444,6 +3444,10 @@ impl SkillService {
 
     /// 下载仓库
     async fn download_repo(&self, repo: &SkillRepo) -> Result<(PathBuf, String)> {
+        // The archive has no checksum and installs scripts that agents run,
+        // so every redirect hop must stay on HTTPS, as for package downloads.
+        let client =
+            crate::proxy::http_client::get_for_download().map_err(|error| anyhow!(error))?;
         let temp_dir = tempfile::tempdir()?;
         let temp_path = temp_dir.keep();
 
@@ -3465,7 +3469,7 @@ impl SkillService {
                 repo.owner, repo.name, branch
             );
 
-            match self.download_and_extract(&url, &temp_path).await {
+            match Self::download_and_extract(&client, &url, &temp_path).await {
                 Ok(_) => {
                     return Ok((temp_path, branch.to_string()));
                 }
@@ -3484,8 +3488,7 @@ impl SkillService {
     }
 
     /// 下载并解压 ZIP
-    async fn download_and_extract(&self, url: &str, dest: &Path) -> Result<()> {
-        let client = crate::proxy::http_client::get();
+    async fn download_and_extract(client: &reqwest::Client, url: &str, dest: &Path) -> Result<()> {
         let response = client.get(url).send().await?;
         if !response.status().is_success() {
             let status = response.status().as_u16().to_string();
@@ -5181,6 +5184,45 @@ mod tests {
         assert!(portable_archive_name_error("dir\\backslash").is_some());
         assert!(portable_archive_name_error("valid/path/file.txt").is_none());
         assert!(portable_archive_name_error("skill/scripts/run.py").is_none());
+    }
+
+    /// A redirect through plain HTTP could swap the archive: it is refused
+    /// before the hop is requested, and nothing is extracted.
+    #[tokio::test]
+    async fn skill_archive_download_refuses_a_plain_http_redirect_hop() {
+        use crate::proxy::http_client::download_redirect_fixture::{start, START_URL};
+
+        let fixture = start().await;
+        let temp = tempdir().expect("tempdir");
+        let dest = temp.path().join("extracted");
+
+        let error = SkillService::download_and_extract(&fixture.client, START_URL, &dest)
+            .await
+            .expect_err("a plain-HTTP hop must be refused");
+
+        assert!(
+            error
+                .downcast_ref::<reqwest::Error>()
+                .is_some_and(reqwest::Error::is_redirect),
+            "{error:#}"
+        );
+        assert_eq!(fixture.target_hits(), 0);
+        assert!(!dest.exists(), "nothing may be extracted");
+    }
+
+    #[test]
+    fn repo_downloads_use_the_https_only_download_client() {
+        let source = include_str!("skill.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("source before tests");
+        let download = source
+            .split("async fn download_repo(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n    }\n").next())
+            .expect("download_repo body");
+        assert!(download.contains("crate::proxy::http_client::get_for_download()"));
+        assert!(!source.contains("http_client::get()"));
     }
 }
 

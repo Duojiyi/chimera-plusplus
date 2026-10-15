@@ -143,13 +143,38 @@ fn marker_text(root: &Path) -> String {
     root.to_string_lossy().to_string()
 }
 
+/// Whether a marker names `root`. The root path comes from settings and may be
+/// spelled differently from the run that wrote the marker, so the comparison
+/// follows Windows: case, separator style and a trailing separator do not
+/// matter.
+fn marker_names_root(marker: &str, root: &Path) -> bool {
+    codex_win_engine::same_windows_path(Path::new(marker.trim()), root)
+}
+
 fn staging_prefix(root: &Path) -> Option<String> {
     Some(format!("{}.layout-", root.file_name()?.to_str()?))
 }
 
-/// Interrupted migrations for `root`: sibling staging directories that carry
-/// a marker naming this root.
-fn interrupted_stagings(root: &Path) -> Vec<PathBuf> {
+/// What follows `prefix` in `name`, ignoring case as Windows does.
+fn after_staging_prefix(name: &str, prefix: &str) -> Option<String> {
+    name.to_lowercase()
+        .strip_prefix(&prefix.to_lowercase())
+        .map(str::to_string)
+}
+
+/// Exactly the name a migration gives its staging directory:
+/// `<root name>.layout-<pid>-<nanos>`.
+fn is_generated_staging_name(name: &str, prefix: &str) -> bool {
+    let decimal = |text: &str| !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit());
+    after_staging_prefix(name, prefix).is_some_and(|rest| {
+        rest.split_once('-')
+            .is_some_and(|(pid, nanos)| decimal(pid) && decimal(nanos))
+    })
+}
+
+/// Real directories (not links) next to `root` whose name starts with its
+/// staging prefix.
+fn staging_dirs(root: &Path) -> Vec<PathBuf> {
     let (Some(parent), Some(prefix)) = (root.parent(), staging_prefix(root)) else {
         return Vec::new();
     };
@@ -162,17 +187,56 @@ fn interrupted_stagings(root: &Path) -> Vec<PathBuf> {
             entry
                 .file_name()
                 .to_str()
-                .is_some_and(|name| name.starts_with(&prefix))
+                .is_some_and(|name| after_staging_prefix(name, &prefix).is_some())
                 && entry.file_type().is_ok_and(|kind| kind.is_dir())
         })
         .map(|entry| entry.path())
-        .filter(|staging| {
-            fs::read_to_string(staging.join(MARKER_FILE))
-                .is_ok_and(|text| text.trim() == marker_text(root))
-        })
         .collect::<Vec<_>>();
     found.sort();
     found
+}
+
+/// Interrupted migrations for `root`: sibling staging directories that carry
+/// a marker naming this root.
+fn interrupted_stagings(root: &Path) -> Vec<PathBuf> {
+    staging_dirs(root)
+        .into_iter()
+        .filter(|staging| {
+            fs::read_to_string(staging.join(MARKER_FILE))
+                .is_ok_and(|text| marker_names_root(&text, root))
+        })
+        .collect()
+}
+
+/// A crash between creating a staging directory and writing its marker
+/// leaves it empty and unmarked, so marker-driven recovery never sees it.
+/// Remove such directories when they carry exactly a migration's generated
+/// name. Nothing ever moved into them, and `remove_dir` refuses one that is
+/// not empty, so anything found inside is kept.
+fn remove_abandoned_empty_stagings(root: &Path) {
+    let Some(prefix) = staging_prefix(root) else {
+        return;
+    };
+    for staging in staging_dirs(root) {
+        let generated = staging
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| is_generated_staging_name(name, &prefix));
+        let empty = fs::read_dir(&staging).is_ok_and(|mut entries| entries.next().is_none());
+        if !generated || !empty {
+            continue;
+        }
+        match fs::remove_dir(&staging) {
+            Ok(()) => log::info!(
+                "[portable-layout] 已清理上次中断后留下的空暂存目录 {}",
+                staging.display()
+            ),
+            Err(error) => log::warn!(
+                "[portable-layout] 无法清理空暂存目录 {}：{error}",
+                staging.display()
+            ),
+        }
+    }
 }
 
 /// The install root is gone and a staging directory still holds the payload:
@@ -310,11 +374,17 @@ fn needs_attention(staging: &Path, error: &str) -> LayoutMigrationOutcome {
     )
 }
 
-/// The flat layout's launcher copies that ended up in `app\`.
+/// The flat layout's launcher copies that ended up in `app\`. These two names
+/// are manager files, never part of the official payload. Only regular files
+/// inside a real `app` directory are removed; links are not followed.
 fn remove_stale_flat_launchers(root: &Path) {
+    let app = root.join(APP_DIR);
+    if !fs::symlink_metadata(&app).is_ok_and(|meta| meta.is_dir()) {
+        return;
+    }
     for name in FLAT_LAUNCHER_FILES {
-        let stale = root.join(APP_DIR).join(name);
-        if stale.is_file() {
+        let stale = app.join(name);
+        if fs::symlink_metadata(&stale).is_ok_and(|meta| meta.is_file()) {
             if let Err(error) = fs::remove_file(&stale) {
                 log::warn!(
                     "[portable-layout] 清理旧启动器 {} 失败：{error}",
@@ -325,11 +395,12 @@ fn remove_stale_flat_launchers(root: &Path) {
     }
 }
 
-/// Bring `root` to the nested layout. Idempotent: a nested, missing or
-/// unrecognised root is left alone. The caller holds the runtime operation
-/// lock. Checking for a running Codex is advisory — Windows refuses to rename
-/// a directory whose executables are running, so a Codex started in between
-/// makes the first rename fail and nothing changes.
+/// Bring `root` to the nested layout. Idempotent: a missing or unrecognised
+/// root is left alone, and a nested one only loses the two stale flat
+/// launcher files a crash may have left in `app\`. The caller holds the
+/// runtime operation lock. Checking for a running Codex is advisory —
+/// Windows refuses to rename a directory whose executables are running, so a
+/// Codex started in between makes the first rename fail and nothing changes.
 pub fn migrate_flat_to_nested(root: &Path, host: &dyn LayoutHost) -> LayoutMigrationOutcome {
     if under_windows_apps(root) {
         return LayoutMigrationOutcome::new(
@@ -338,7 +409,9 @@ pub fn migrate_flat_to_nested(root: &Path, host: &dyn LayoutHost) -> LayoutMigra
         );
     }
     if !root.exists() {
-        return recover(root, host).unwrap_or_else(|| {
+        let recovered = recover(root, host);
+        remove_abandoned_empty_stagings(root);
+        return recovered.unwrap_or_else(|| {
             LayoutMigrationOutcome::new("not-needed", "未检测到免安装版目录。")
         });
     }
@@ -349,6 +422,7 @@ pub fn migrate_flat_to_nested(root: &Path, host: &dyn LayoutHost) -> LayoutMigra
             discard_staging(&staging);
         }
     }
+    remove_abandoned_empty_stagings(root);
     if fs::symlink_metadata(root).is_ok_and(|meta| meta.file_type().is_symlink()) {
         return LayoutMigrationOutcome::new(
             "skipped-unsupported",
@@ -357,7 +431,13 @@ pub fn migrate_flat_to_nested(root: &Path, host: &dyn LayoutHost) -> LayoutMigra
     }
     match detect_layout(root) {
         PortableLayout::Flat => {}
-        PortableLayout::Nested | PortableLayout::Missing => {
+        PortableLayout::Nested => {
+            // A crash right after the commit rename skipped this cleanup, and
+            // the next run sees a nested root.
+            remove_stale_flat_launchers(root);
+            return LayoutMigrationOutcome::new("not-needed", "免安装版已是新的目录结构。");
+        }
+        PortableLayout::Missing => {
             return LayoutMigrationOutcome::new("not-needed", "免安装版已是新的目录结构。")
         }
         PortableLayout::Unknown => {
@@ -712,6 +792,132 @@ mod tests {
         assert_eq!(outcome.state, "recovered", "{outcome:?}");
         assert_eq!(snapshot(&root), before);
         assert_eq!(siblings(dir.path()), ["Codex"]);
+    }
+
+    /// A crash between creating the staging directory and writing its marker
+    /// left it empty and unmarked. Only that exact shape is removed.
+    #[test]
+    fn an_empty_staging_left_before_its_marker_is_removed_and_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = flat_install(dir.path());
+        for name in [
+            // What the crash leaves, in either spelling of the root's name.
+            "Codex.layout-123-456",
+            "codex.LAYOUT-7-8",
+            // Not a migration's generated name.
+            "Codex.layout-",
+            "Codex.layout-12",
+            "Codex.layout-1-2-3",
+            "Codex.layout-abc-1",
+            "Other.layout-1-2",
+        ] {
+            fs::create_dir(dir.path().join(name)).unwrap();
+        }
+        // Generated name, but not empty: never removed.
+        let occupied = dir.path().join("Codex.layout-9-9");
+        fs::create_dir_all(occupied.join(APP_DIR)).unwrap();
+        fs::write(occupied.join("keep.txt"), b"keep").unwrap();
+
+        let outcome = migrate_flat_to_nested(&root, &FakeHost::default());
+        assert_eq!(outcome.state, "migrated", "{outcome:?}");
+        assert_eq!(
+            siblings(dir.path()),
+            [
+                "Codex",
+                "Codex.layout-",
+                "Codex.layout-1-2-3",
+                "Codex.layout-12",
+                "Codex.layout-9-9",
+                "Codex.layout-abc-1",
+                "Other.layout-1-2",
+            ]
+        );
+        assert_eq!(fs::read(occupied.join("keep.txt")).unwrap(), b"keep");
+        assert!(occupied.join(APP_DIR).is_dir());
+    }
+
+    /// A crash after the commit rename but before the stale flat launchers
+    /// were removed: the next run sees a nested root and still removes them,
+    /// and only them.
+    #[test]
+    fn a_crash_after_the_commit_rename_is_cleaned_up_on_the_next_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = flat_install(dir.path());
+        assert_eq!(
+            migrate_flat_to_nested(&root, &FakeHost::default()).state,
+            "migrated"
+        );
+        let migrated = snapshot(&root);
+        fs::write(root.join(APP_DIR).join(LAUNCHER_FILE), b"old launcher").unwrap();
+        fs::write(root.join(APP_DIR).join(LAUNCH_TARGET_FILE), "ChatGPT.exe").unwrap();
+        fs::write(root.join(MARKER_FILE), marker_text(&root)).unwrap();
+        assert_eq!(detect_layout(&root), PortableLayout::Nested);
+
+        let outcome = migrate_flat_to_nested(&root, &FakeHost::default());
+        assert_eq!(outcome.state, "not-needed", "{outcome:?}");
+        assert_eq!(snapshot(&root), migrated);
+        assert_eq!(siblings(dir.path()), ["Codex"]);
+    }
+
+    /// The nested-layout cleanup removes regular files only: a directory that
+    /// happens to carry a launcher's name is user content and stays.
+    #[test]
+    fn nested_cleanup_never_removes_anything_but_the_stale_launcher_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = flat_install(dir.path());
+        assert_eq!(
+            migrate_flat_to_nested(&root, &FakeHost::default()).state,
+            "migrated"
+        );
+        fs::create_dir(root.join(APP_DIR).join(LAUNCHER_FILE)).unwrap();
+        fs::write(
+            root.join(APP_DIR).join(LAUNCHER_FILE).join("notes.txt"),
+            b"user data",
+        )
+        .unwrap();
+        let before = snapshot(&root);
+
+        assert_eq!(
+            migrate_flat_to_nested(&root, &FakeHost::default()).state,
+            "not-needed"
+        );
+        assert_eq!(snapshot(&root), before);
+    }
+
+    /// The settings may spell the root differently from the run that wrote
+    /// the marker. Windows treats both spellings as one path, and so does
+    /// recovery; a marker naming another root is still ignored.
+    #[test]
+    fn recovery_matches_the_marker_and_staging_name_like_windows_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = flat_install(dir.path());
+        let before = snapshot(&root);
+        let staging = dir.path().join("CODEX.layout-1-2");
+        fs::create_dir(&staging).unwrap();
+        let respelled = format!("{}/", marker_text(&root).to_uppercase().replace('\\', "/"));
+        fs::write(staging.join(MARKER_FILE), respelled).unwrap();
+        fs::rename(&root, staging.join(APP_DIR)).unwrap();
+        let foreign = dir.path().join("Codex.layout-3-4");
+        fs::create_dir_all(foreign.join(APP_DIR)).unwrap();
+        fs::write(
+            foreign.join(MARKER_FILE),
+            marker_text(&dir.path().join("Elsewhere")),
+        )
+        .unwrap();
+        fs::write(foreign.join(APP_DIR).join("keep.txt"), b"keep").unwrap();
+        // An earlier crash before its marker was written, cleaned up on this
+        // path too.
+        fs::create_dir(dir.path().join("codex.layout-5-6")).unwrap();
+        assert!(migration_interrupted(&root));
+
+        let outcome = migrate_flat_to_nested(&root, &FakeHost::default());
+        assert_eq!(outcome.state, "recovered", "{outcome:?}");
+        assert_eq!(snapshot(&root), before);
+        assert_eq!(siblings(dir.path()), ["Codex", "Codex.layout-3-4"]);
+        assert_eq!(
+            fs::read(foreign.join(APP_DIR).join("keep.txt")).unwrap(),
+            b"keep"
+        );
     }
 
     #[test]

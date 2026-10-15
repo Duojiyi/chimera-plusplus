@@ -1049,8 +1049,9 @@ fn extract_version(raw: &str) -> String {
         .unwrap_or_else(|| raw.to_string())
 }
 
-/// 工具未安装时的统一错误文案；WSL 路径会再拼上 `[WSL:{distro}] ` 前缀。
-const NOT_INSTALLED: &str = "not installed or not executable";
+/// 工具未安装时的统一错误文案，原样显示在工具版本卡片上；WSL 路径会再拼上
+/// `[WSL:{distro}] ` 前缀。前端只显示它，不按文案判断状态（见 `installed_but_broken`）。
+const NOT_INSTALLED: &str = "未安装或无法运行";
 
 /// CLI 版本探测的三态结果，跨平台统一各 probe（`try_get_version` /
 /// `try_get_version_wsl` / `scan_cli_version`）的返回，进而在 `ToolVersion` 上给出
@@ -3539,6 +3540,14 @@ mod tests {
 
     use super::*;
     use std::path::{Path, PathBuf};
+
+    /// Shown verbatim on the tool version cards of the Chinese UI. The
+    /// renderer decides with `installed_but_broken`, never by matching it.
+    #[test]
+    fn the_not_installed_text_is_plain_chinese() {
+        assert_eq!(NOT_INSTALLED, "未安装或无法运行");
+        assert!(!NOT_INSTALLED.chars().any(|c| c.is_ascii_alphabetic()));
+    }
 
     #[cfg(unix)]
     fn set_test_executable(path: &Path, executable: bool) {

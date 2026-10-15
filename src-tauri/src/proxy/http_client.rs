@@ -243,11 +243,15 @@ pub fn get_for_forwarding() -> Client {
 /// 每一跳都必须是 HTTPS：默认策略允许 https→http→https，明文那一跳可被
 /// 篡改，把下载引到任意 HTTPS 主机。构建失败直接返回错误，不退回宽松客户端。
 /// 代理转发客户端的重定向策略不受影响。
+///
+/// 决定安装或信任什么的请求也用它：Skill 压缩包、皮肤目录、Codex 镜像的
+/// 发布清单与校验和。
 pub fn get_for_download() -> Result<Client, String> {
-    build_client_with_redirect_policy(
-        get_current_proxy_url().as_deref(),
-        https_only_redirect_policy(),
-    )
+    build_download_client(get_current_proxy_url().as_deref())
+}
+
+fn build_download_client(proxy_url: Option<&str>) -> Result<Client, String> {
+    build_client_with_redirect_policy(proxy_url, https_only_redirect_policy())
 }
 
 /// 与 reqwest 默认策略相同的跳数上限。
@@ -480,6 +484,76 @@ pub fn mask_url(url: &str) -> String {
     }
 }
 
+/// A redirect to plain HTTP, served for the production download client.
+///
+/// Shared by the tests of every fetch that goes through [`get_for_download`].
+/// The fixture is an explicit HTTP proxy, as in the auth-probe test below:
+/// the `.invalid` hosts never resolve, and proxies from the environment
+/// cannot interfere.
+#[cfg(test)]
+pub(crate) mod download_redirect_fixture {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// Answered with a temporary redirect to [`TARGET_URL`].
+    pub(crate) const START_URL: &str = "http://origin.invalid/start";
+    /// Plain HTTP: a download client must never request it after a redirect.
+    pub(crate) const TARGET_URL: &str = "http://target.invalid/payload";
+
+    pub(crate) struct Fixture {
+        /// [`super::get_for_download`]'s client, routed through the fixture.
+        pub(crate) client: reqwest::Client,
+        target_hits: Arc<AtomicUsize>,
+        server: tokio::task::JoinHandle<()>,
+    }
+
+    impl Fixture {
+        /// Requests that reached [`TARGET_URL`].
+        pub(crate) fn target_hits(&self) -> usize {
+            self.target_hits.load(Ordering::SeqCst)
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            self.server.abort();
+        }
+    }
+
+    pub(crate) async fn start() -> Fixture {
+        use axum::response::IntoResponse;
+
+        let target_hits = Arc::new(AtomicUsize::new(0));
+        let hits = target_hits.clone();
+        let router = axum::Router::new().fallback(move |uri: axum::http::Uri| {
+            let hits = hits.clone();
+            async move {
+                if uri.path() == "/start" {
+                    axum::response::Redirect::temporary(TARGET_URL).into_response()
+                } else {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    "served over plain HTTP".into_response()
+                }
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind the fixture proxy");
+        let proxy_url = format!("http://{}", listener.local_addr().expect("fixture address"));
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router)
+                .await
+                .expect("serve the fixture");
+        });
+        Fixture {
+            client: super::build_download_client(Some(&proxy_url))
+                .expect("build the download client"),
+            target_hits,
+            server,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -620,6 +694,34 @@ mod tests {
             assert!(error.is_redirect(), "{error}");
         }
         assert_eq!(destination_hits.load(Ordering::SeqCst), 0);
+    }
+
+    /// The rule covers redirect hops only: a plain-HTTP hop is refused before
+    /// it is requested, while a URL the caller chose is fetched as before.
+    #[tokio::test]
+    async fn download_client_refuses_plain_http_hops_but_not_the_first_url() {
+        use super::download_redirect_fixture::{start, START_URL, TARGET_URL};
+
+        let fixture = start().await;
+        let error = fixture
+            .client
+            .get(START_URL)
+            .timeout(Duration::from_secs(3))
+            .send()
+            .await
+            .expect_err("a plain-HTTP hop must be refused, not followed");
+        assert!(error.is_redirect(), "{error}");
+        assert_eq!(fixture.target_hits(), 0);
+
+        let direct = fixture
+            .client
+            .get(TARGET_URL)
+            .timeout(Duration::from_secs(3))
+            .send()
+            .await
+            .expect("the first URL itself is not a redirect hop");
+        assert_eq!(direct.status(), reqwest::StatusCode::OK);
+        assert_eq!(fixture.target_hits(), 1);
     }
 
     #[test]

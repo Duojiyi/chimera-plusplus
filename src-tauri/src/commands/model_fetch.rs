@@ -58,52 +58,6 @@ pub async fn fetch_models_for_config(
     .await
 }
 
-/// Safely detect whether a custom Codex endpoint implements Responses, Chat
-/// Completions, or Anthropic Messages. The service uses a real model name with
-/// an impossible token-budget type, so validation finishes before inference.
-#[tauri::command(rename_all = "camelCase")]
-pub async fn detect_codex_api_format(
-    base_url: String,
-    api_key: String,
-    is_full_url: Option<bool>,
-    model: Option<String>,
-    custom_user_agent: Option<String>,
-    custom_headers: Option<HashMap<String, String>>,
-) -> Result<model_fetch::DetectedCodexApiFormat, String> {
-    let headers = request_headers(custom_user_agent.as_deref(), custom_headers)?;
-    model_fetch::detect_codex_api_format(
-        &base_url,
-        &api_key,
-        is_full_url.unwrap_or(false),
-        model.as_deref(),
-        headers,
-    )
-    .await
-}
-
-/// Detect the upstream protocol for each selected model independently. Models
-/// that reject the safe probe are omitted while successful detections remain
-/// usable by the Codex router.
-#[tauri::command(rename_all = "camelCase")]
-pub async fn detect_codex_api_formats(
-    base_url: String,
-    api_key: String,
-    is_full_url: Option<bool>,
-    models: Vec<String>,
-    custom_user_agent: Option<String>,
-    custom_headers: Option<HashMap<String, String>>,
-) -> Result<model_fetch::DetectedCodexApiFormats, String> {
-    let headers = request_headers(custom_user_agent.as_deref(), custom_headers)?;
-    model_fetch::detect_codex_api_formats(
-        &base_url,
-        &api_key,
-        is_full_url.unwrap_or(false),
-        models,
-        headers,
-    )
-    .await
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

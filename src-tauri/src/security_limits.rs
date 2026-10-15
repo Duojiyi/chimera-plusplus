@@ -271,6 +271,12 @@ pub fn collect_files_with_extensions(
     Ok(files)
 }
 
+/// Whether `metadata`, read with `symlink_metadata`, describes a symbolic
+/// link or another reparse point: what the readers here refuse to follow.
+pub fn is_link_or_reparse_point(metadata: &fs::Metadata) -> bool {
+    metadata.file_type().is_symlink() || is_reparse_point(metadata)
+}
+
 #[cfg(windows)]
 fn is_reparse_point(metadata: &fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;

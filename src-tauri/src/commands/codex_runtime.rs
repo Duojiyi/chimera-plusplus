@@ -566,7 +566,8 @@ fn detect_managed_install(
 
 /// Finish or undo a layout migration a crash interrupted, so the install root
 /// exists again before detection. Caller holds the runtime operation lock.
-fn recover_interrupted_layout(portable_root: &Path) -> Result<(), String> {
+/// The skin commands, which close and relaunch Codex too, call it the same way.
+pub(crate) fn recover_interrupted_layout(portable_root: &Path) -> Result<(), String> {
     if !codex_portable_layout::migration_interrupted(portable_root) {
         return Ok(());
     }
@@ -1385,9 +1386,25 @@ pub(crate) fn close_codex_for_restart(
 /// those callers still get the legacy default-model check. New renderers pass
 /// the complete mapping (including display names), which catches the exact
 /// failure mode where only Codex's single `custom` entry remains visible.
+///
+/// Async on purpose: Tauri runs a synchronous command on the main thread, and
+/// the runtime cross-check below spawns the Codex CLI with a 10-second
+/// timeout per candidate, which froze the window on every line save. The
+/// work runs on a blocking thread instead.
 #[tauri::command]
-pub fn verify_codex_model_catalog(
+pub async fn verify_codex_model_catalog(
     expected_model: String,
+    expected_models: Option<Vec<ExpectedCodexCatalogModel>>,
+) -> Result<CodexModelCatalogStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        verify_codex_model_catalog_blocking(&expected_model, expected_models)
+    })
+    .await
+    .map_err(|error| format!("校验 Codex 模型目录的任务被中断：{error}"))?
+}
+
+fn verify_codex_model_catalog_blocking(
+    expected_model: &str,
     expected_models: Option<Vec<ExpectedCodexCatalogModel>>,
 ) -> Result<CodexModelCatalogStatus, String> {
     let expected_model = expected_model.trim();
@@ -2613,11 +2630,23 @@ fn mirror_http_error(status: reqwest::StatusCode, headers: &reqwest::header::Hea
     format!("HTTP {status}；请检查网络与应用代理设置，稍后重试或使用离线安装")
 }
 
+/// The release lookups, manifests and checksums decide which package and
+/// SHA-256 the hardened download then trusts, so every redirect hop must stay
+/// on HTTPS, as for the package download itself.
 async fn send_mirror_request(
     method: reqwest::Method,
     url: &str,
 ) -> Result<reqwest::Response, String> {
-    let response = crate::proxy::http_client::get()
+    let client = crate::proxy::http_client::get_for_download()?;
+    send_mirror_request_with(&client, method, url).await
+}
+
+async fn send_mirror_request_with(
+    client: &reqwest::Client,
+    method: reqwest::Method,
+    url: &str,
+) -> Result<reqwest::Response, String> {
+    let response = client
         .request(method, url)
         .header(reqwest::header::USER_AGENT, MIRROR_USER_AGENT)
         .timeout(Duration::from_secs(MIRROR_FETCH_TIMEOUT_SECS))
@@ -4317,6 +4346,66 @@ mod tests {
 
     // ── One network path for checks and downloads ────────────────────────
 
+    /// Tauri runs a synchronous command on the main thread. The catalog check
+    /// spawns the Codex CLI with a 10-second timeout per candidate, so it is
+    /// async and does its work on a blocking thread; so is every other
+    /// command here.
+    #[test]
+    fn codex_cli_probes_never_run_on_the_main_thread() {
+        let source = include_str!("codex_runtime.rs")
+            .split("mod tests {")
+            .next()
+            .unwrap();
+        let check = source
+            .split("pub async fn verify_codex_model_catalog(")
+            .nth(1)
+            .expect("the catalog check is an async command")
+            .split("\n}\n")
+            .next()
+            .unwrap();
+        assert!(check.contains("tauri::async_runtime::spawn_blocking(move || {"));
+        assert!(check.contains("verify_codex_model_catalog_blocking(&expected_model"));
+        let blocking = source
+            .split("fn verify_codex_model_catalog_blocking(")
+            .nth(1)
+            .unwrap();
+        assert!(blocking.contains("crate::codex_config::probe_codex_runtime_models()"));
+        let commands = source
+            .split("#[tauri::command]")
+            .skip(1)
+            .collect::<Vec<_>>();
+        assert!(commands.len() > 10);
+        for command in commands {
+            assert!(
+                command.trim_start().starts_with("pub async fn "),
+                "{}",
+                command
+                    .lines()
+                    .find(|line| !line.trim().is_empty())
+                    .unwrap_or_default()
+            );
+        }
+    }
+
+    /// Release lookups (GET and the HEAD of the latest-release redirect) never
+    /// follow a hop to plain HTTP.
+    #[tokio::test]
+    async fn mirror_requests_refuse_a_plain_http_redirect_hop() {
+        use crate::proxy::http_client::download_redirect_fixture::{start, START_URL};
+
+        let fixture = start().await;
+        for method in [reqwest::Method::GET, reqwest::Method::HEAD] {
+            let error = super::send_mirror_request_with(&fixture.client, method.clone(), START_URL)
+                .await
+                .expect_err("a plain-HTTP hop must be refused");
+            assert!(
+                error.starts_with("请求失败") && error.contains("redirect"),
+                "{method}: {error}"
+            );
+        }
+        assert_eq!(fixture.target_hits(), 0);
+    }
+
     #[test]
     fn package_downloads_use_the_shared_client_instead_of_engine_curl() {
         let runtime = include_str!("codex_runtime.rs")
@@ -4339,6 +4428,28 @@ mod tests {
             .unwrap();
         assert!(skin.contains("bounded_download::download_to_file_blocking("));
         assert!(skin.contains("crate::proxy::http_client::get_for_download()?,"));
+        // What decides the package and its SHA-256 (release lookups,
+        // manifests, checksums, the skin catalog) goes through the same
+        // HTTPS-only client as the downloads.
+        let mirror = runtime
+            .split("async fn send_mirror_request(")
+            .nth(1)
+            .unwrap()
+            .split("\n}\n")
+            .next()
+            .unwrap();
+        assert!(mirror.contains("crate::proxy::http_client::get_for_download()?;"));
+        let catalog = skin
+            .split("async fn fetch_catalog_text()")
+            .nth(1)
+            .unwrap()
+            .split("\n}\n")
+            .next()
+            .unwrap();
+        assert!(catalog.contains("crate::proxy::http_client::get_for_download()"));
+        for source in [runtime, skin] {
+            assert!(!source.contains("http_client::get()"));
+        }
         // Neither the engine's curl downloads nor the runtime crate's
         // curl-based release helpers may come back.
         for source in [runtime, skin] {

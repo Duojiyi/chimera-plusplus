@@ -160,10 +160,18 @@ fn active_id() -> Option<String> {
 /// 取代进程外 `codex_win_engine::fetch_text`（curl）——后者先等进程退出再读
 /// stdout，Windows 匿名管道缓冲仅约 4KB，大响应会使 curl 背压死锁（与 v2.6.3
 /// 历史版本目录同根因，见 docs/plans/v2.6.3-audit.md 修复 2）。
+///
+/// 目录决定随后下载哪个皮肤包、按哪个 SHA-256 校验，所以和皮肤包下载一样
+/// 使用每一跳都必须是 HTTPS 的下载客户端。
 async fn fetch_catalog_text() -> Result<String, String> {
-    let client = crate::proxy::http_client::get();
+    let client = crate::proxy::http_client::get_for_download()
+        .map_err(|error| format!("无法读取皮肤目录：{error}。请检查应用代理设置后重试。"))?;
+    fetch_catalog_text_from(&client, CATALOG_URL).await
+}
+
+async fn fetch_catalog_text_from(client: &reqwest::Client, url: &str) -> Result<String, String> {
     let response = client
-        .get(CATALOG_URL)
+        .get(url)
         .header(reqwest::header::USER_AGENT, SKIN_CATALOG_USER_AGENT)
         .timeout(Duration::from_secs(SKIN_CATALOG_TIMEOUT_SECS))
         .send()
@@ -394,6 +402,7 @@ pub async fn apply_skin_package(skin_id: String, confirm: bool) -> Result<(), St
     let apply_root = root.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = super::codex_runtime::acquire_operation_lock("apply_skin_package")?;
+        super::codex_runtime::recover_interrupted_layout(&portable_root)?;
         let dir = codex_theme_engine::theme::resolve_theme_dir(&apply_root, &id)
             .map_err(|error| format!("读取皮肤失败：{error}"))?;
         let loaded = codex_theme_engine::theme::load_theme(&dir)
@@ -475,6 +484,7 @@ pub async fn try_skin_package(skin_id: String, confirm: bool) -> Result<(), Stri
         // root (the update would see its freshly-launched process holding the
         // directory open and fail, or trigger a spurious auto-rollback).
         let _guard = super::codex_runtime::acquire_operation_lock("try_skin_package")?;
+        super::codex_runtime::recover_interrupted_layout(&portable_root)?;
         close_and_launch(&portable_root, Some(theme_cdp_port()))
     })
     .await
@@ -493,6 +503,7 @@ pub async fn restore_skin_package(confirm: bool) -> Result<(), String> {
     let active = active_path();
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = super::codex_runtime::acquire_operation_lock("restore_skin_package")?;
+        super::codex_runtime::recover_interrupted_layout(&portable_root)?;
         let installed = super::codex_runtime::detect_managed_codex(&portable_root)
             .ok_or_else(|| NOT_INSTALLED_MESSAGE.to_string())?;
         close_codex(&installed, &portable_root)
@@ -545,6 +556,23 @@ mod tests {
         assert!(super::catalog_too_large_message().contains("8 MiB"));
     }
 
+    /// The catalog picks the pack URL and its SHA-256, so a redirect through
+    /// plain HTTP is refused before the hop is requested.
+    #[tokio::test]
+    async fn the_catalog_fetch_refuses_a_plain_http_redirect_hop() {
+        use crate::proxy::http_client::download_redirect_fixture::{start, START_URL};
+
+        let fixture = start().await;
+        let error = super::fetch_catalog_text_from(&fixture.client, START_URL)
+            .await
+            .expect_err("a plain-HTTP hop must be refused");
+        assert!(
+            error.starts_with("无法读取皮肤目录：服务器重定向无效"),
+            "{error}"
+        );
+        assert_eq!(fixture.target_hits(), 0);
+    }
+
     #[test]
     fn skin_commands_keep_underlying_causes_and_chinese_launch_errors() {
         let source = include_str!("skin_catalog.rs")
@@ -567,5 +595,36 @@ mod tests {
         ] {
             assert!(!source.contains(english), "{english}");
         }
+    }
+
+    /// Like the runtime commands, the skin commands that close and relaunch
+    /// Codex first finish or undo an interrupted layout migration, under the
+    /// same operation lock, before they look for the install.
+    #[test]
+    fn skin_relaunches_recover_an_interrupted_layout_before_detection() {
+        let source = include_str!("skin_catalog.rs")
+            .split("mod tests {")
+            .next()
+            .expect("source before tests");
+        for lock in [
+            "\"apply_skin_package\"",
+            "\"try_skin_package\"",
+            "\"restore_skin_package\"",
+        ] {
+            let body = source
+                .split(&format!("acquire_operation_lock({lock})?;"))
+                .nth(1)
+                .unwrap_or_else(|| panic!("{lock} takes the operation lock"));
+            assert!(
+                body.trim_start().starts_with(
+                    "super::codex_runtime::recover_interrupted_layout(&portable_root)?;"
+                ),
+                "{lock} must recover an interrupted layout migration first"
+            );
+        }
+        // Every detection runs on a path that recovered first: the three
+        // commands above, and `close_and_launch`, which only `try` calls.
+        assert_eq!(source.matches("detect_managed_codex(").count(), 3);
+        assert_eq!(source.matches("close_and_launch(").count(), 2);
     }
 }

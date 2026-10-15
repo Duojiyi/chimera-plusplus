@@ -752,13 +752,10 @@ impl SessionCleanup {
             errors.push(format!("{CODEX_SESSION_INDEX_FILENAME}: {error}"));
         }
         let mut notes = Vec::new();
-        match remove_sessions_from_history(
-            &self.config_dir.join(CODEX_HISTORY_FILENAME),
-            &self.thread_ids,
-            Some(&self.backup_dir),
-        ) {
-            Ok(HistoryCleanup::Done) => {}
-            Ok(HistoryCleanup::TooLarge) => notes.push(history_too_large_note()),
+        let history_path = self.config_dir.join(CODEX_HISTORY_FILENAME);
+        match remove_sessions_from_history(&history_path, &self.thread_ids, Some(&self.backup_dir))
+        {
+            Ok(cleanup) => notes.extend(cleanup.note(&history_path)),
             Err(error) => errors.push(format!("{CODEX_HISTORY_FILENAME}: {error}")),
         }
 
@@ -794,7 +791,8 @@ impl SessionCleanup {
 
     /// Re-read every store after the delete: a row or rollout still present
     /// keeps the request pending for a retry. What no retry can clean (a
-    /// newer Codex state DB, an oversized history) goes to `notes` instead.
+    /// newer Codex state DB; a history that is oversized, a link or not a
+    /// regular file) goes to `notes` instead.
     fn verify(&self, errors: &mut Vec<String>, notes: &mut Vec<String>) {
         for home in &self.homes {
             for db in CodexRuntimeDb::DELETE_ORDER {
@@ -815,8 +813,10 @@ impl SessionCleanup {
                 }
             }
             for name in newer_state_dbs(home) {
+                // The rollout is gone, so neither this app nor a retry can
+                // list the session again; Codex can still delete the row.
                 notes.push(format!(
-                    "{} 由更新版本的 Codex 创建，本应用还不能读写它，其中这个会话的记录已保留。重试也无法清理，请更新本应用后再删除一次，或在 Codex 中删除",
+                    "{} 由更新版本的 Codex 创建，本应用不能改写它，这个会话在其中的记录已保留。重试也无法清理；如果这个会话仍显示在 Codex 中，请在 Codex 里删除它，否则无需处理。",
                     home.join(name).display()
                 ));
             }
@@ -825,23 +825,26 @@ impl SessionCleanup {
             errors.push(format!("{}: rollout still present", path.display()));
         }
         let history_path = self.config_dir.join(CODEX_HISTORY_FILENAME);
-        if history_exceeds_rewrite_limit(&history_path) {
-            let note = history_too_large_note();
-            if !notes.contains(&note) {
-                notes.push(note);
+        match history_left_alone(&history_path) {
+            Some(left_alone) => {
+                if let Some(note) = left_alone.note(&history_path) {
+                    if !notes.contains(&note) {
+                        notes.push(note);
+                    }
+                }
             }
-        } else {
-            match history_mentions(&history_path, &self.thread_ids) {
+            None => match history_mentions(&history_path, &self.thread_ids) {
                 Ok(false) => {}
                 Ok(true) => errors.push(format!("{CODEX_HISTORY_FILENAME}: entries remain")),
                 Err(error) => errors.push(format!("{CODEX_HISTORY_FILENAME}: {error}")),
-            }
+            },
         }
     }
 
     /// Report the result, with the problems found while preparing first.
     /// Only `errors` keep the delete pending; `notes` describe records left
-    /// behind on purpose and are reported with a finished delete.
+    /// behind on purpose and are reported with a finished delete. Each note
+    /// is complete sentences, so they are joined as they are.
     fn finish(&self, errors: Vec<String>, notes: Vec<String>) -> SessionDeleteResult {
         let errors: Vec<String> = self.errors.iter().cloned().chain(errors).collect();
         let error = (!errors.is_empty()).then(|| format!(
@@ -851,7 +854,7 @@ impl SessionCleanup {
         if let Some(error) = &error {
             log::warn!("{error}");
         }
-        let cleanup_note = (!notes.is_empty()).then(|| notes.join("；"));
+        let cleanup_note = (!notes.is_empty()).then(|| notes.concat());
         if let Some(note) = &cleanup_note {
             log::info!("[session-delete] 会话已删除，部分记录按设计保留：{note}");
         }
@@ -1202,16 +1205,20 @@ fn commit_index_rewrite(index_path: &Path, plan: LinesRewrite) -> Result<(), Str
 /// With `backup_dir`, the bytes about to be replaced are copied there first,
 /// so a crash mid-write cannot lose prompts.
 ///
-/// A history above [`MAX_HISTORY_REWRITE_BYTES`] is left untouched and
-/// reported as [`HistoryCleanup::TooLarge`]: retrying cannot change that, so
-/// it must not keep the delete pending.
+/// A history above [`MAX_HISTORY_REWRITE_BYTES`], a link or reparse point
+/// (never followed) and a path that is not a regular file are left untouched
+/// and reported as such: retrying cannot change them, so they must not keep
+/// the delete pending.
 fn remove_sessions_from_history(
     history_path: &Path,
     session_ids: &[String],
     backup_dir: Option<&Path>,
 ) -> Result<HistoryCleanup, String> {
-    let Some(mut file) = open_history_for_rewrite(history_path).map_err(|e| e.to_string())? else {
-        return Ok(HistoryCleanup::Done);
+    let mut file = match open_history_for_rewrite(history_path) {
+        Ok(Some(file)) => file,
+        Ok(None) => return Ok(HistoryCleanup::Done),
+        // The open refuses links and non-regular files by design.
+        Err(error) => return history_left_alone(history_path).ok_or_else(|| error.to_string()),
     };
     if file.metadata().map_err(|error| error.to_string())?.len() > MAX_HISTORY_REWRITE_BYTES {
         return Ok(HistoryCleanup::TooLarge);
@@ -1240,27 +1247,56 @@ fn remove_sessions_from_history(
     result.map(|()| HistoryCleanup::Done)
 }
 
-/// What [`remove_sessions_from_history`] did with a history it could open.
+/// What [`remove_sessions_from_history`] did with the history.
 #[derive(Debug, PartialEq, Eq)]
 enum HistoryCleanup {
     /// The sessions' prompts are gone, or there were none.
     Done,
     /// The history is above the rewrite limit and was left as it is.
     TooLarge,
+    /// The history is a symbolic link or another reparse point. It is never
+    /// followed, so neither it nor its target was read or written.
+    Link,
+    /// The history path is not a regular file (a directory, for one).
+    NotRegularFile,
 }
 
-fn history_too_large_note() -> String {
-    format!(
-        "{CODEX_HISTORY_FILENAME} 超过 {} MB，本应用不改写它，这个会话输入过的提示词仍留在其中。重试也无法清理；如需清除，请关闭 Codex 后手动删除或清空该文件",
-        MAX_HISTORY_REWRITE_BYTES / (1024 * 1024)
-    )
+impl HistoryCleanup {
+    /// What a finished delete tells the user about a history it left alone:
+    /// why, that a retry cannot help, and what the user can do instead.
+    fn note(&self, history_path: &Path) -> Option<String> {
+        let path = history_path.display();
+        match self {
+            Self::Done => None,
+            Self::TooLarge => Some(format!(
+                "{path} 超过 {} MB，本应用不改写它，这个会话输入过的提示词仍留在其中。重试也无法清理；如需清除，请关闭 Codex 后手动删除或清空该文件。",
+                MAX_HISTORY_REWRITE_BYTES / (1024 * 1024)
+            )),
+            Self::Link => Some(format!(
+                "{path} 是符号链接或重解析点，本应用不跟随链接读写，没有清理这个会话输入过的提示词，它们可能仍在链接指向的文件中。重试也无法清理；如需清除，请关闭 Codex 后在原文件中手动删除。"
+            )),
+            Self::NotRegularFile => Some(format!(
+                "{path} 不是普通文件，本应用不读写它，没有从中清理这个会话输入过的提示词。重试也无法清理；请关闭 Codex 后检查这个路径，Codex 的输入历史应是一个普通文件。"
+            )),
+        }
+    }
 }
 
-/// Whether the history is too large to rewrite. A missing or unreadable file
-/// is not: those go through the normal check and keep their retry.
-fn history_exceeds_rewrite_limit(history_path: &Path) -> bool {
-    std::fs::symlink_metadata(history_path)
-        .is_ok_and(|metadata| metadata.is_file() && metadata.len() > MAX_HISTORY_REWRITE_BYTES)
+/// Why the history must be left as it is, whatever a retry does: a link or
+/// reparse point, not a regular file, or above the rewrite limit. Read
+/// without following a link. `None` for a missing or ordinary history; the
+/// normal read reports anything else and keeps the retry.
+fn history_left_alone(history_path: &Path) -> Option<HistoryCleanup> {
+    let metadata = std::fs::symlink_metadata(history_path).ok()?;
+    if crate::security_limits::is_link_or_reparse_point(&metadata) {
+        Some(HistoryCleanup::Link)
+    } else if !metadata.is_file() {
+        Some(HistoryCleanup::NotRegularFile)
+    } else if metadata.len() > MAX_HISTORY_REWRITE_BYTES {
+        Some(HistoryCleanup::TooLarge)
+    } else {
+        None
+    }
 }
 
 /// The history opened for reading and writing, or `None` when Codex has not
@@ -3564,6 +3600,12 @@ mod tests {
             "{note}"
         );
         assert!(note.contains("重试也无法清理"), "{note}");
+        // The session is no longer listed once its rollout is gone, so the
+        // note cannot ask for another delete here; Codex can still delete
+        // the row it shows.
+        assert!(!note.contains("再删除一次"), "{note}");
+        assert!(note.contains("请在 Codex 里删除它"), "{note}");
+        assert!(note.ends_with('。'), "{note}");
         // The newer store itself is never touched.
         assert!(std::fs::read(temp.path().join("state_6.sqlite"))
             .unwrap()
@@ -3604,5 +3646,100 @@ mod tests {
             remove_sessions_from_history(&history, &ids(&[ROOT_ID]), None).unwrap(),
             HistoryCleanup::TooLarge
         );
+    }
+
+    /// A linked history is never followed: the delete finishes with a note
+    /// saying why the prompts were not cleaned, instead of staying pending,
+    /// and the link's target keeps every byte.
+    #[test]
+    fn a_linked_history_finishes_the_delete_with_a_note_and_is_not_followed() {
+        let temp = tempdir().unwrap();
+        let (sessions, _) = codex_home_with_sessions(temp.path());
+        let main = sessions.join(rollout_name(ROOT_ID, "jsonl"));
+        write_codex_session(&main, ROOT_ID, "root");
+        let target = temp.path().join("elsewhere.jsonl");
+        let line = format!("{{\"session_id\":\"{ROOT_ID}\",\"ts\":1,\"text\":\"root prompt\"}}\n");
+        std::fs::write(&target, &line).unwrap();
+        let history = temp.path().join(CODEX_HISTORY_FILENAME);
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(&target, &history);
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_file(&target, &history);
+        if let Err(error) = linked {
+            eprintln!("skipping: cannot create a symlink here: {error}");
+            return;
+        }
+
+        let result = delete_session(&sessions, &main, ROOT_ID).unwrap();
+        assert!(
+            result.source_deleted && !result.cleanup_pending,
+            "a retry cannot change a link: {:?}",
+            result.error
+        );
+        assert_eq!(result.error, None);
+        let note = result.cleanup_note.expect("the user is told what stayed");
+        assert!(note.contains(&history.display().to_string()), "{note}");
+        assert!(note.contains("符号链接或重解析点"), "{note}");
+        assert!(note.contains("重试也无法清理"), "{note}");
+        assert!(note.ends_with('。'), "{note}");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), line);
+        assert!(std::fs::symlink_metadata(&history)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            remove_sessions_from_history(&history, &ids(&[ROOT_ID]), None).unwrap(),
+            HistoryCleanup::Link
+        );
+    }
+
+    /// Something other than a regular file at the history path gets the same
+    /// treatment: a finished delete with a note, never a retry that cannot help.
+    #[test]
+    fn a_history_path_that_is_not_a_file_finishes_the_delete_with_a_note() {
+        let temp = tempdir().unwrap();
+        let (sessions, _) = codex_home_with_sessions(temp.path());
+        let main = sessions.join(rollout_name(ROOT_ID, "jsonl"));
+        write_codex_session(&main, ROOT_ID, "root");
+        let history = temp.path().join(CODEX_HISTORY_FILENAME);
+        std::fs::create_dir(&history).unwrap();
+
+        let result = delete_session(&sessions, &main, ROOT_ID).unwrap();
+        assert!(
+            result.source_deleted && !result.cleanup_pending,
+            "{:?}",
+            result.error
+        );
+        let note = result.cleanup_note.expect("the user is told what stayed");
+        assert!(note.contains("不是普通文件"), "{note}");
+        assert!(note.ends_with('。'), "{note}");
+        assert!(history.is_dir());
+        assert_eq!(
+            remove_sessions_from_history(&history, &ids(&[ROOT_ID]), None).unwrap(),
+            HistoryCleanup::NotRegularFile
+        );
+    }
+
+    /// Several notes read as consecutive sentences: each one ends with "。"
+    /// and nothing is glued in between.
+    #[test]
+    fn several_cleanup_notes_are_complete_sentences_in_a_row() {
+        let temp = tempdir().unwrap();
+        let (sessions, _) = codex_home_with_sessions(temp.path());
+        let main = sessions.join(rollout_name(ROOT_ID, "jsonl"));
+        write_codex_session(&main, ROOT_ID, "root");
+        std::fs::write(temp.path().join("state_6.sqlite"), b"").unwrap();
+        std::fs::create_dir(temp.path().join(CODEX_HISTORY_FILENAME)).unwrap();
+
+        let result = delete_session(&sessions, &main, ROOT_ID).unwrap();
+        assert!(!result.cleanup_pending, "{:?}", result.error);
+        let note = result.cleanup_note.expect("both stores are explained");
+        assert!(
+            note.contains("state_6.sqlite") && note.contains("不是普通文件"),
+            "{note}"
+        );
+        assert!(note.ends_with('。'), "{note}");
+        assert!(!note.contains("。；") && !note.contains("。。"), "{note}");
+        assert_eq!(note.matches("重试也无法清理").count(), 2, "{note}");
     }
 }

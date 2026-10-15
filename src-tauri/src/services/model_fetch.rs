@@ -579,6 +579,11 @@ fn describe_probe_failure(outcomes: &[ApiProbeOutcome]) -> String {
 /// Gateways may ignore it and generate billable output; this is not a guaranteed
 /// non-generating probe. Authentication and protocol-agnostic errors cannot
 /// establish protocol support.
+///
+/// No IPC command exposes it any more: saves no longer probe (B-3), and the
+/// proxy's lazy detection uses [`detect_codex_api_formats`]. It stays as the
+/// single-model entry point that the redirect-safety tests drive.
+#[cfg_attr(not(test), allow(dead_code))]
 pub async fn detect_codex_api_format(
     base_url: &str,
     api_key: &str,
