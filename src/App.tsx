@@ -49,7 +49,9 @@ export default function App() {
         const reasons = await invoke<string[]>("take_deeplink_refusals");
         for (const reason of reasons ?? []) {
           const { title, description } = describeDeepLinkRefusal(reason);
-          toast.error(title, { description });
+          // The answer to a link the user just opened stays until closed:
+          // a later toast (a failed startup check) must not bury it unread.
+          toast.error(title, { description, duration: Infinity });
         }
       } catch {
         // Nothing to explain this round; the next refusal wakes us again.

@@ -376,15 +376,11 @@ fn handle_deeplink_url(
 
             if let Err(error) = crate::deeplink::ensure_targets_allowed(&request) {
                 log::warn!("Deep link for a tool that is not enabled was ignored: {error}");
-                commands::record_deeplink_refusal(app, "DEEP_LINK_TARGET_UNAVAILABLE");
-                return true;
-            }
-            if let Err(error) = commands::queue_deeplink(app, url_str, request) {
+                commands::record_deeplink_refusal(app, "DEEP_LINK_TARGET_UNAVAILABLE", url_str);
+            } else if let Err(error) = commands::queue_deeplink(app, url_str, request) {
                 log::error!("Failed to queue deep link: {error}");
-                commands::record_deeplink_refusal(app, error);
-                return true;
-            }
-            if let Err(e) = app.emit("deeplink-import", ()) {
+                commands::record_deeplink_refusal(app, error, url_str);
+            } else if let Err(e) = app.emit("deeplink-import", ()) {
                 log::error!("✗ Failed to emit deeplink-import event: {e}");
             } else {
                 log::info!("✓ Emitted deeplink-import event to frontend");
@@ -399,7 +395,7 @@ fn handle_deeplink_url(
             // The frontend learns the reason code only: query, fragment and
             // embedded base64/API credentials in the link are untrusted, and a
             // redacted origin still names the site the user just came from.
-            commands::record_deeplink_refusal(app, "DEEP_LINK_PARSE_FAILED");
+            commands::record_deeplink_refusal(app, "DEEP_LINK_PARSE_FAILED", url_str);
         }
     }
 
