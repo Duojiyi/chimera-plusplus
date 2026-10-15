@@ -69,7 +69,6 @@ describe("settings link import", () => {
     ["DEEP_LINK_PARSE_FAILED", "无法使用这个导入链接"],
     ["DEEP_LINK_TARGET_UNAVAILABLE", "链接要导入到的工具在当前版本不可用"],
     ["DEEP_LINK_QUEUE_FULL", "请先处理已打开的导入确认"],
-    ["IMPORT_NOTIFICATION_FAILED", "已加入待确认队列"],
   ])("says why the backend refused the link (%s)", async (code, text) => {
     // Tauri rejects with the command's error string as is.
     vi.mocked(deeplinkApi.submitImport).mockRejectedValueOnce(code);
@@ -81,5 +80,22 @@ describe("settings link import", () => {
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent(text);
     expect(alert).not.toHaveTextContent(code);
+    expect(alert).toHaveClass("is-error");
+  });
+  it("treats a queued link whose confirmation did not open as queued", async () => {
+    vi.mocked(deeplinkApi.submitImport).mockRejectedValueOnce(
+      "IMPORT_NOTIFICATION_FAILED",
+    );
+    render(<ImportPanel native />);
+    const input = screen.getByLabelText("导入链接");
+    fireEvent.change(input, {
+      target: { value: "chimera://v1/import?resource=provider" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "预览并确认" }));
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "已加入待确认队列",
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(input).toHaveValue("");
   });
 });

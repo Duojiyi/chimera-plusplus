@@ -399,7 +399,7 @@ describe("default App deep-link handoff", () => {
     mount();
     await screen.findByText("Cold Start");
     await importReady();
-    fireEvent.click(screen.getByText("查看将保存的完整内容"));
+    fireEvent.click(screen.getByText("查看将保存的配置"));
     expect(
       screen.getByText(/"ANTHROPIC_AUTH_TOKEN": "••••play"/),
     ).toBeInTheDocument();
@@ -441,7 +441,7 @@ describe("default App deep-link handoff", () => {
     mount();
     await screen.findByText("Env Claude");
     await importReady();
-    fireEvent.click(screen.getByText("查看将保存的完整内容"));
+    fireEvent.click(screen.getByText("查看将保存的配置"));
     const stored = () =>
       screen.getByRole("region", { name: /将保存的内容/ }).textContent ?? "";
     // Denied and unticked keys are not stored, so they are not shown as stored.

@@ -127,6 +127,15 @@ export function McpConfirmation({
                 spec.env && typeof spec.env === "object"
                   ? Object.entries(spec.env as Record<string, unknown>)
                   : [];
+              // Remote servers send these with every request; Codex calls
+              // them http_headers.
+              const headerSource = spec.headers ?? spec.http_headers;
+              const headers =
+                headerSource &&
+                typeof headerSource === "object" &&
+                !Array.isArray(headerSource)
+                  ? Object.entries(headerSource as Record<string, unknown>)
+                  : [];
               const flagged =
                 Boolean(commandRisk || urlRisk) ||
                 env.some(([key]) => envRisk(key));
@@ -201,6 +210,26 @@ export function McpConfirmation({
                             ))}
                           </ol>
                         </dd>
+                      </>
+                    )}
+                    {headers.length > 0 && (
+                      <>
+                        <dt>请求头</dt>
+                        <dd>
+                          <ol className="dl-args">
+                            {headers.map(([key, value]) => (
+                              <li key={key} className="dl-mono">
+                                {key}: {maskValue(key, value)}
+                              </li>
+                            ))}
+                          </ol>
+                        </dd>
+                      </>
+                    )}
+                    {typeof spec.cwd === "string" && spec.cwd && (
+                      <>
+                        <dt>工作目录</dt>
+                        <dd className="dl-mono">{spec.cwd}</dd>
                       </>
                     )}
                   </dl>

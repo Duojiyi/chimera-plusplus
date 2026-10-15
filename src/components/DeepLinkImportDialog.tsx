@@ -28,6 +28,7 @@ import {
   classifyEndpoint,
   isSensitiveKey,
   maskScriptSecrets,
+  maskSecret,
   maskStoredValue,
   maskValue,
   riskI18nKey,
@@ -964,6 +965,30 @@ export function DeepLinkImportDialog({
                             <dd>每 {usage.autoIntervalMinutes} 分钟</dd>
                           </>
                         ) : null}
+                        {/* Stored with the line (meta.usage_script), not in
+                            the configuration below. */}
+                        {request.usageApiKey?.trim() ? (
+                          <>
+                            <dt>查询用 Key</dt>
+                            <dd className="dl-mono">
+                              {maskSecret(request.usageApiKey)}
+                            </dd>
+                          </>
+                        ) : null}
+                        {request.usageAccessToken?.trim() ? (
+                          <>
+                            <dt>访问令牌</dt>
+                            <dd className="dl-mono">
+                              {maskSecret(request.usageAccessToken)}
+                            </dd>
+                          </>
+                        ) : null}
+                        {request.usageUserId?.trim() ? (
+                          <>
+                            <dt>用户 ID</dt>
+                            <dd className="dl-mono">{request.usageUserId}</dd>
+                          </>
+                        ) : null}
                       </dl>
                       <CodeBlock
                         code={usageCode}
@@ -1118,12 +1143,13 @@ export function DeepLinkImportDialog({
             </>
           )}
 
-          {/* MH-4: exactly what will be stored (credentials show their last 4). */}
+          {/* MH-4: the configuration that will be stored (credentials show their
+              last 4). The usage query key and token are listed above. */}
           {showContent && (
             <details className="chimera-disclosure is-inline dl-content">
               <summary>
                 {isProvider
-                  ? "查看将保存的完整内容"
+                  ? "查看将保存的配置"
                   : t("deeplink.fullContent", { defaultValue: "查看完整配置" })}
                 <span className="dl-summary-hint">
                   {isProvider ? "API Key 只显示末 4 位" : "凭据只显示末 4 位"}

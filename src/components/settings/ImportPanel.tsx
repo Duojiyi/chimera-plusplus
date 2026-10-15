@@ -4,15 +4,14 @@ import { deeplinkApi, describeDeepLinkRefusal } from "@/lib/api/deeplink";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
 
+/** The link was queued, but the confirmation was not told to open. */
+const QUEUED_WITHOUT_NOTICE = "IMPORT_NOTIFICATION_FAILED";
+
 /**
  * Why a pasted link was refused, in the same words the toast uses for a link
  * opened from a website (`App.tsx`). An unknown failure keeps the old advice.
  */
-function describeSubmitFailure(reason: unknown): string {
-  const code = extractErrorMessage(reason) || String(reason);
-  if (code === "IMPORT_NOTIFICATION_FAILED") {
-    return "已加入待确认队列，但确认窗口没有自动打开；切到其他窗口再切回来即可看到。";
-  }
+function describeSubmitFailure(code: string): string {
   if (
     code === "DEEP_LINK_PARSE_FAILED" ||
     code === "DEEP_LINK_TARGET_UNAVAILABLE" ||
@@ -50,8 +49,16 @@ export function ImportPanel({
       setUrl("");
       setMessage("已加入待确认队列，请在确认窗口核对内容；此操作尚未导入。");
     } catch (reason) {
-      setFailed(true);
-      setMessage(describeSubmitFailure(reason));
+      const code = extractErrorMessage(reason) || String(reason);
+      if (code === QUEUED_WITHOUT_NOTICE) {
+        setUrl("");
+        setMessage(
+          "已加入待确认队列，但确认窗口没有自动打开；切到其他窗口再切回来即可看到。",
+        );
+      } else {
+        setFailed(true);
+        setMessage(describeSubmitFailure(code));
+      }
     } finally {
       inFlight.current = false;
       setBusy(false);
@@ -93,7 +100,14 @@ export function ImportPanel({
           浏览器预览无法调用本机导入服务，请在桌面应用中操作。
         </p>
       )}
-      {message && <p role={failed ? "alert" : "status"}>{message}</p>}
+      {message && (
+        <p
+          role={failed ? "alert" : "status"}
+          className={`settings-import-message${failed ? " is-error" : ""}`}
+        >
+          {message}
+        </p>
+      )}
       <CcSwitchImportPreview native={native} onImported={onImported} />
     </section>
   );
