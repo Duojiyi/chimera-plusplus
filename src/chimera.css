@@ -3017,6 +3017,8 @@ body.is-mac
 }
 .route-line-manager-list {
   min-height: 76px;
+  /* Room for the 2px ring + 2px offset of the first and last rows. */
+  padding: 4px 0;
   overflow-y: auto;
 }
 .route-line-manager-list article {
@@ -3131,7 +3133,10 @@ body.is-mac
   font-size: 13px;
   text-align: center;
 }
-.route-line-manager button:focus-visible,
+/* `.provider-page button:focus-visible` (ProviderLineTable.css) has the same
+   specificity and uses the light-only --focus; the dialog's ring must win
+   in both themes, hence the extra class. */
+.route-line-manager.route-line-manager button:focus-visible,
 .route-line-search:focus-within {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
