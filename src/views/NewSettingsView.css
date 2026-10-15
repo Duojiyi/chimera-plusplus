@@ -893,13 +893,7 @@ button.settings-reference-row:hover:not(:disabled) > svg {
 .settings-import-form button {
   justify-self: end;
 }
-.settings-import-message {
-  margin: 12px 0 0;
-  font-size: 13px;
-  line-height: 1.5;
-  color: var(--text-2);
-}
-.settings-import-message.is-error {
+.settings-tools-description.is-error {
   color: var(--danger-fg);
 }
 .settings-import-file-note {

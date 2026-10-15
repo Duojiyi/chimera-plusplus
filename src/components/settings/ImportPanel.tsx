@@ -103,7 +103,7 @@ export function ImportPanel({
       {message && (
         <p
           role={failed ? "alert" : "status"}
-          className={`settings-import-message${failed ? " is-error" : ""}`}
+          className={`settings-tools-description${failed ? " is-error" : ""}`}
         >
           {message}
         </p>

@@ -280,25 +280,23 @@
   color: var(--danger-fg);
   font-size: 13px;
 }
-/* Claude Code maps a fixed row per model tier instead of Codex's free list. */
-.provider-editor-page .claude-model-mapping .mapping-head,
-.provider-editor-page .claude-model-mapping .mapping-row {
+/* Claude Code maps a fixed row per model tier instead of Codex's free list.
+   Same specificity as the rules above, so these win by coming later. */
+.claude-model-mapping .mapping-head,
+.claude-model-mapping .mapping-row {
   grid-template-columns: 64px minmax(0, 1.5fr) minmax(0, 1fr);
   align-items: center;
 }
-.provider-editor-page .claude-model-mapping .model-input > input {
-  min-height: 34px;
-}
-.provider-editor-page .claude-model-mapping .model-input > button {
+.claude-model-mapping .model-input > button {
   padding: 0 10px;
   font-size: 13px;
 }
-.provider-editor-page .mapping-tier {
+.mapping-tier {
   font-size: 13px;
   font-weight: 600;
   color: var(--text-2);
 }
-.provider-editor-page .mapping-note {
+.mapping-note {
   font-size: 12px;
   color: var(--text-3);
 }

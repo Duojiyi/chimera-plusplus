@@ -1758,12 +1758,6 @@ body.is-mac
   background: var(--bg-hover);
   color: var(--ink);
 }
-/* The group clips what lies outside it: the side button's ring goes inside. */
-.password-field > button:focus-visible,
-.model-input > button:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: -3px;
-}
 .runtime-reference-view {
   width: 100%;
   min-height: 0;
