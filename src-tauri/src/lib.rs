@@ -1322,9 +1322,13 @@ pub fn run() {
             log::info!("✓ Deep-link URL handler registered");
             // The plugin retains launch URLs that arrived before on_open_url.
             // Subscribe first, then read; queue deduplication covers the overlap.
+            // A launch from a link always ends up with a visible window: the
+            // confirmation dialog, or the reason the link was refused.
+            let mut opened_by_link = false;
             if let Ok(Some(urls)) = app.deep_link().get_current() {
                 for url in urls {
-                    handle_deeplink_url(app.handle(), url.as_str(), false, "initial URL");
+                    opened_by_link |=
+                        handle_deeplink_url(app.handle(), url.as_str(), false, "initial URL");
                 }
             }
 
@@ -1595,7 +1599,14 @@ pub fn run() {
                 if settings.silent_startup && !settings.show_in_tray {
                     log::warn!("静默启动需要托盘图标，当前已关闭托盘，改为显示主窗口");
                 }
-                if settings.starts_hidden() {
+                // A launch from an import link, and a start that has to explain
+                // an initialization failure, must not hide the window: the
+                // dialog or the recovery screen would be told to no one.
+                let starts_hidden = settings.starts_hidden()
+                    && !opened_by_link
+                    && crate::init_status::get_init_error().is_none();
+                crate::lightweight::set_started_hidden(starts_hidden);
+                if starts_hidden {
                     // 静默启动模式：保持窗口隐藏
                     let _ = window.hide();
                     #[cfg(target_os = "windows")]
@@ -2004,6 +2015,7 @@ pub fn run() {
             commands::enter_lightweight_mode,
             commands::exit_lightweight_mode,
             commands::is_lightweight_mode,
+            commands::take_started_hidden,
         ]);
 
     let app = builder

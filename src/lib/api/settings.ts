@@ -61,6 +61,8 @@ export type PreferencesPatch = Partial<
     | "showProviderBalance"
     | "minimizeToTrayOnClose"
     | "lightweightOnClose"
+    | "silentStartup"
+    | "showInTray"
   >
 >;
 

@@ -350,6 +350,10 @@ export function NewSettingsView({
   };
   // Mirrors the backend default for a preference that was never saved.
   const launchOnStartup = settings?.launchOnStartup ?? true;
+  // What the next launch will do: silent startup only applies with the tray
+  // flag on (`AppSettings::starts_hidden`).
+  const silentStartup =
+    (settings?.silentStartup ?? false) && (settings?.showInTray ?? true);
   const toggleLaunchOnStartup = async () => {
     if (!settings || autoLaunchBusy) return;
     const enabled = !launchOnStartup;
@@ -832,6 +836,41 @@ export function NewSettingsView({
                     <u />
                   </i>
                 </button>
+                {/* The backend only starts hidden when the tray flag is on too
+                    (`AppSettings::starts_hidden`), because the tray icon is
+                    what brings the window back. Turning the switch on sets
+                    both, so the switch always shows what the next launch
+                    will do. */}
+                <button
+                  type="button"
+                  className="settings-reference-row"
+                  role="switch"
+                  aria-checked={silentStartup}
+                  disabled={
+                    !settings ||
+                    pendingKeys.has("silentStartup") ||
+                    pendingKeys.has("showInTray")
+                  }
+                  onClick={() =>
+                    void save(
+                      silentStartup
+                        ? { silentStartup: false }
+                        : { silentStartup: true, showInTray: true },
+                    )
+                  }
+                >
+                  <span>
+                    <b>静默启动</b>
+                    <small>
+                      启动后只在托盘运行，不打开主窗口；从托盘图标打开界面
+                    </small>
+                  </span>
+                  <i
+                    className={`settings-switch ${silentStartup ? "is-on" : ""}`}
+                  >
+                    <u />
+                  </i>
+                </button>
                 <div className="settings-reference-row">
                   <span>
                     <b id="close-behavior-label">关闭主窗口时</b>
@@ -1085,7 +1124,7 @@ export function NewSettingsView({
             <footer className="settings-page-footer">
               <p>
                 将 Codex 偏好、Codex
-                安装方式和「关闭主窗口时」恢复为默认值；主题与开机自启动保持不变。
+                安装方式和「关闭主窗口时」恢复为默认值；主题、开机自启动与静默启动保持不变。
               </p>
               <button
                 type="button"

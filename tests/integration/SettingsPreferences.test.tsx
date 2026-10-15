@@ -82,7 +82,7 @@ describe("atomic preference saves", () => {
     mocks.setAutoLaunch.mockReset().mockResolvedValue(true);
   });
 
-  it("keeps backup and four general rows in design order without fabricating backups", async () => {
+  it("keeps backup and five general rows in design order without fabricating backups", async () => {
     const { container } = renderSettings();
     openSection("备份与恢复");
     await waitFor(() =>
@@ -105,12 +105,15 @@ describe("atomic preference saves", () => {
     const rows = container.querySelectorAll(
       "#settings-general .settings-reference-row",
     );
-    expect(rows).toHaveLength(4);
+    expect(rows).toHaveLength(5);
     expect(rows[0].querySelector("select")).toBeNull();
     expect(rows[0]).toHaveTextContent("当前版本仅提供简体中文界面。");
     expect(rows[1].querySelector('[role="group"]')).not.toBeNull();
     expect(rows[2]).toHaveAttribute("role", "switch");
-    expect(rows[3].querySelector('[role="radiogroup"]')).not.toBeNull();
+    expect(rows[2]).toHaveTextContent("开机自启动");
+    expect(rows[3]).toHaveAttribute("role", "switch");
+    expect(rows[3]).toHaveTextContent("静默启动");
+    expect(rows[4].querySelector('[role="radiogroup"]')).not.toBeNull();
     expect(screen.getByText("备份功能尚未开放")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "打开备份目录" })).toBeDisabled();
     expect(container.querySelector("#settings-backups tbody")).toBeNull();
@@ -305,6 +308,56 @@ describe("atomic preference saves", () => {
       expect(screen.getByRole("switch", { name: /开机自启动/ })).toBeEnabled(),
     );
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("saves silent startup on its own, off by default", async () => {
+    mocks.patch.mockImplementation(async (patch) => ({ ...initial, ...patch }));
+    renderSettings();
+    openSection("通用设置");
+    const toggle = screen.getByRole("switch", { name: /静默启动/ });
+    await waitFor(() => expect(toggle).toBeEnabled());
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    expect(toggle).toHaveTextContent("启动后只在托盘运行");
+    fireEvent.click(toggle);
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"));
+    // The backend only starts hidden with the tray flag on as well.
+    expect(mocks.patch).toHaveBeenLastCalledWith({
+      silentStartup: true,
+      showInTray: true,
+    });
+    await waitFor(() => expect(toggle).toBeEnabled());
+    fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(toggle).toHaveAttribute("aria-checked", "false"),
+    );
+    expect(mocks.patch).toHaveBeenLastCalledWith({ silentStartup: false });
+    expect(mocks.setAutoLaunch).not.toHaveBeenCalled();
+  });
+
+  it("shows a silent startup the backend ignores as off and can turn it on", async () => {
+    // A legacy setting without the tray flag: the next launch shows the window.
+    mocks.get.mockResolvedValue({
+      ...initial,
+      showInTray: false,
+      silentStartup: true,
+    });
+    mocks.patch.mockImplementation(async (patch) => ({
+      ...initial,
+      showInTray: false,
+      silentStartup: true,
+      ...patch,
+    }));
+    renderSettings();
+    openSection("通用设置");
+    const toggle = screen.getByRole("switch", { name: /静默启动/ });
+    await waitFor(() => expect(toggle).toBeEnabled());
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(toggle);
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"));
+    expect(mocks.patch).toHaveBeenCalledWith({
+      silentStartup: true,
+      showInTray: true,
+    });
   });
 
   it("saves all three close behaviors atomically", async () => {

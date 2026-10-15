@@ -4,6 +4,21 @@ use tauri::Manager;
 
 static LIGHTWEIGHT_MODE: AtomicBool = AtomicBool::new(false);
 
+/// Silent startup deliberately left the main window hidden. Read once by the
+/// frontend's first render so its "always show the window" safety net does not
+/// undo the setting; a later reload still reveals a window that should be up,
+/// which is what that safety net is for.
+static STARTED_HIDDEN: AtomicBool = AtomicBool::new(false);
+
+pub fn set_started_hidden(hidden: bool) {
+    STARTED_HIDDEN.store(hidden, Ordering::Release);
+}
+
+/// Whether this launch is expected to stay hidden, consuming the answer.
+pub fn take_started_hidden() -> bool {
+    STARTED_HIDDEN.swap(false, Ordering::AcqRel)
+}
+
 pub fn hide_main_window(app: &tauri::AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("main") {
         window.hide().map_err(|e| e.to_string())?;
@@ -108,4 +123,20 @@ pub fn exit_lightweight_mode(app: &tauri::AppHandle) -> Result<(), String> {
 
 pub fn is_lightweight_mode() -> bool {
     LIGHTWEIGHT_MODE.load(Ordering::Acquire)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_hidden_start_is_reported_to_the_first_reader_only() {
+        set_started_hidden(true);
+        assert!(take_started_hidden());
+        // A later reload (after the tray or a link opened the window, or
+        // leaving lightweight mode) must show the window again.
+        assert!(!take_started_hidden());
+        set_started_hidden(false);
+        assert!(!take_started_hidden());
+    }
 }

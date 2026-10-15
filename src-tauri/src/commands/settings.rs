@@ -116,6 +116,10 @@ pub struct PreferencesPatch {
     show_provider_balance: Option<bool>,
     minimize_to_tray_on_close: Option<bool>,
     lightweight_on_close: Option<bool>,
+    silent_startup: Option<bool>,
+    /// Sent with `silent_startup`: silent startup only applies with the tray
+    /// flag on (`AppSettings::starts_hidden`).
+    show_in_tray: Option<bool>,
 }
 
 impl PreferencesPatch {
@@ -143,6 +147,12 @@ impl PreferencesPatch {
         }
         if let Some(value) = self.minimize_to_tray_on_close {
             settings.minimize_to_tray_on_close = value;
+        }
+        if let Some(value) = self.silent_startup {
+            settings.silent_startup = value;
+        }
+        if let Some(value) = self.show_in_tray {
+            settings.show_in_tray = value;
         }
     }
 }
@@ -917,6 +927,29 @@ mod tests {
                 .is_err()
             );
         }
+    }
+
+    #[test]
+    fn the_silent_startup_switch_sets_both_flags_it_needs() {
+        // A legacy "silent startup without the tray flag" setting, which the
+        // backend ignores; the switch sends both flags to turn it on.
+        let mut current = AppSettings {
+            launch_on_startup: true,
+            silent_startup: true,
+            show_in_tray: false,
+            ..Default::default()
+        };
+        assert!(!current.starts_hidden());
+        let before = serde_json::to_value(&current).unwrap();
+        let patch: super::PreferencesPatch = serde_json::from_value(
+            serde_json::json!({ "silentStartup": true, "showInTray": true }),
+        )
+        .unwrap();
+        patch.apply(&mut current);
+        assert!(current.starts_hidden());
+        let mut expected = before;
+        expected["showInTray"] = serde_json::json!(true);
+        assert_eq!(serde_json::to_value(&current).unwrap(), expected);
     }
 
     #[test]
