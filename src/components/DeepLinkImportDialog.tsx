@@ -1152,7 +1152,9 @@ export function DeepLinkImportDialog({
                   ? "查看将保存的配置"
                   : t("deeplink.fullContent", { defaultValue: "查看完整配置" })}
                 <span className="dl-summary-hint">
-                  {isProvider ? "API Key 只显示末 4 位" : "凭据只显示末 4 位"}
+                  {isProvider
+                    ? "API Key 只显示末 4 位"
+                    : "凭据只显示末 4 位；单独的命令参数原样显示"}
                 </span>
               </summary>
               <div className="chimera-disclosure-body">

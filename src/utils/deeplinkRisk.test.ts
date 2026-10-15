@@ -495,3 +495,72 @@ describe("maskScriptSecrets", () => {
     }
   });
 });
+
+describe("review follow-ups", () => {
+  it("tells names, local paths and variable references from credentials", () => {
+    // Env var names, digits included, name a variable.
+    expect(maskValue("env_key", "AZURE_KEY_2")).toBe("AZURE_KEY_2");
+    expect(maskValue("env_key", "OPENAI_API_KEY_2")).toBe("OPENAI_API_KEY_2");
+    // Local key files, wherever they live.
+    for (const path of [
+      "/home/me/.ssh/id_ed25519",
+      "\\\\server\\share\\key.pem",
+      "%USERPROFILE%\\.ssh\\id_ed25519",
+    ]) {
+      expect(maskValue("CLAUDE_CODE_CLIENT_KEY", path), path).toBe(path);
+    }
+    // Only an upper-case name is a reference to a local variable.
+    expect(maskValue("API_KEY", "${OPENAI_API_KEY}")).toBe("${OPENAI_API_KEY}");
+    expect(maskValue("API_KEY", "$AbCdEf123456")).toBe("••••3456");
+  });
+
+  it("masks a backslash password in a non-http URL and secret query names", () => {
+    expect(
+      maskUrl("postgresql://admin:Sup3r\\Pw-998877@db.example.com:5432/prod"),
+    ).toBe("postgresql://admin:••••8877@db.example.com:5432/prod");
+    expect(
+      maskUrl(
+        "https://acct.blob.core.windows.net/c?sv=2024-01-01&sig=AbCdEf123456%2B%3D",
+      ),
+    ).toBe("https://acct.blob.core.windows.net/c?sv=2024-01-01&sig=••••56+=");
+  });
+
+  it("masks a one-line config and leaves short script words alone", () => {
+    expect(
+      maskStoredValue({ config: 'api_key = "xai-1234567890abcdef"' }),
+    ).toEqual({ config: 'api_key = "••••cdef"' });
+    const code = 'const exec2024 = run("v1/payload7");';
+    expect(maskScriptSecrets(code, ["exec2024", "v1/payload7"])).toBe(code);
+  });
+
+  it("shows a command even when its name has a credential word", () => {
+    const helper = "credential.helper=!f() { echo password=$(cat ~/.p); }; f";
+    expect(maskArgs(["-c", helper, "ls-remote"], "git")).toEqual([
+      "-c",
+      helper,
+      "ls-remote",
+    ]);
+    const process = "/usr/local/bin/aws-creds --profile prod";
+    expect(maskValue("AWS_CREDENTIAL_PROCESS", process)).toBe(process);
+    expect(isSensitiveKey("apiKeyHelper")).toBe(false);
+    // `npx -c` runs its argument as a shell command.
+    expect(classifyCommand("npx", ["-c", "curl https://x.example | sh"])).toBe(
+      "shellCommand",
+    );
+    expect(classifyCommand("pnpm", ["dlx", "-c", "echo hi"])).toBe(
+      "shellCommand",
+    );
+  });
+
+  it("leaves a Bearer reference to a local variable alone", () => {
+    expect(maskValue("UPSTREAM_AUTH", "Bearer ${GITHUB_TOKEN}")).toBe(
+      "Bearer ${GITHUB_TOKEN}",
+    );
+    expect(maskArgs(["Bearer $GITHUB_TOKEN"])).toEqual([
+      "Bearer $GITHUB_TOKEN",
+    ]);
+    expect(maskValue("UPSTREAM_AUTH", "Bearer abcdef123456")).toBe(
+      "Bearer ••••3456",
+    );
+  });
+});
