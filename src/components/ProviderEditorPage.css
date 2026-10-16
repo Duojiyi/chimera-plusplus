@@ -21,11 +21,11 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  background: #fff;
+  background: var(--bg-surface);
   border: 0;
   border-radius: 0;
   box-shadow: none;
-  color: #12161c;
+  color: var(--text-1);
   font-size: 14px;
 }
 .provider-editor-page .editor-page-header {
@@ -36,8 +36,8 @@
   margin: 0;
   min-height: 64px;
   padding: 8px 24px;
-  background: #fff;
-  border-bottom: 1px solid #dde0e3;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-subtle);
 }
 .provider-editor-page .editor-heading {
   min-width: 0;
@@ -51,11 +51,11 @@
 }
 .provider-editor-page .editor-heading > span {
   font-size: 13px;
-  color: #646970;
+  color: var(--text-3);
 }
 .provider-editor-page .editor-draft-status {
   font-size: 13px;
-  color: #8c4b25;
+  color: var(--warning-fg);
   margin-right: auto;
   flex: 0 0 auto;
 }
@@ -80,52 +80,29 @@
   padding: 0;
 }
 .provider-editor-page .editor-basic h3,
-.provider-editor-page .editor-protocol h3,
-.provider-editor-page .editor-preview h3 {
+.provider-editor-page .editor-protocol h3 {
   margin: 0;
   font-size: 15px;
   line-height: 21px;
   font-weight: 700;
-}
-.provider-editor-page .editor-basic h3 small {
-  margin-left: 8px;
-  font-size: 12px;
-  color: #646970;
-  font-weight: 400;
 }
 .provider-editor-page .editor-basic-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 12px;
 }
-.provider-editor-page .editor-default-model {
-  grid-column: 1 / -1;
-}
-.provider-editor-page .editor-protocol > label,
-.provider-editor-page .editor-basic-grid > label,
-.provider-editor-page .editor-name-row > label,
-.provider-editor-page .advanced-options-body > label,
-.provider-editor-page .advanced-group > label:not(.toggle-field) {
-  display: grid;
-  align-content: start;
-  gap: 6px;
-  min-width: 0;
-  font-size: 14px;
-  line-height: 20px;
-}
 .provider-editor-page
   .editor-form
   input:not([type="checkbox"]):not([type="radio"]),
-.provider-editor-page .editor-form select,
 .provider-editor-page .editor-form textarea {
   min-width: 0;
   width: 100%;
   min-height: 36px;
   padding: 7px 10px;
-  border: 1px solid #81878d;
+  border: 1px solid var(--border-control);
   border-radius: 4px;
-  background: #fff;
-  color: #12161c;
+  background: var(--bg-surface);
+  color: var(--text-1);
   font-size: 14px;
   line-height: 1.45;
 }
@@ -151,25 +128,35 @@
   font-size: 14px;
 }
 .provider-editor-page button.primary {
-  background: #006aa0;
+  background: var(--brand);
 }
 .provider-editor-page button.primary:hover:not(:disabled) {
-  background: #005580;
+  background: var(--brand-hover);
 }
 .provider-editor-page button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
 }
-.provider-editor-page
-  :is(button, input, select, textarea, summary):focus-visible {
-  outline: 2px solid #276aa6;
+.provider-editor-page :is(button, input, textarea, summary):focus-visible {
+  outline: 2px solid var(--focus-ring);
   outline-offset: 3px;
+}
+/* A field group (model search, key or model field with a side button) draws
+   one ring around the whole group; its input must not draw a second one. */
+.provider-editor-page
+  :is(.password-field, .model-input, .model-picker-search)
+  > input:focus-visible {
+  outline: none;
+}
+/* The group clips what lies outside it, so a side button draws its ring
+   inside its own box. */
+.provider-editor-page
+  :is(.password-field, .model-input)
+  > button:focus-visible {
+  outline-offset: -3px;
 }
 .provider-editor-page .editor-heading h2:focus {
   outline: none;
-}
-.provider-editor-page .advanced-section-heading {
-  align-items: center;
 }
 .provider-editor-page .advanced-section-heading > div {
   min-width: 0;
@@ -180,11 +167,10 @@
 }
 .provider-editor-page .advanced-section-heading small,
 .provider-editor-page label > small,
-.provider-editor-page .advanced-intro,
 .provider-editor-page .toggle-field small {
   font-size: 13px;
   line-height: 1.6;
-  color: #646970;
+  color: var(--text-3);
 }
 .provider-editor-page .advanced-section-heading button {
   flex-shrink: 0;
@@ -194,19 +180,19 @@
 }
 .provider-editor-page .mapping-head,
 .provider-editor-page .mapping-row {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 64px 84px 62px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 88px 84px 62px;
   gap: 8px;
 }
 .provider-editor-page .mapping-head {
   font-size: 12px;
   padding: 0;
-  color: #646970;
+  color: var(--text-3);
 }
 .provider-editor-page .mapping-row {
   padding: 0;
   border: 0;
   align-items: start;
-  border-color: #dde0e3;
+  border-color: var(--border-subtle);
 }
 .provider-editor-page .mapping-field {
   min-width: 0;
@@ -217,19 +203,15 @@
 .provider-editor-page .mapping-field > span {
   display: none;
   font-size: 13px;
-  color: #646970;
-}
-.provider-editor-page .mapping-row input {
-  min-height: 32px;
-  padding: 5px 6px;
-  font-size: 12px;
-  background: #f9fafc;
+  color: var(--text-3);
 }
 .provider-editor-page .mapping-row .reasoning-trigger {
-  height: 32px;
+  height: 36px;
   width: 100%;
+  border-color: var(--border-control);
+  border-radius: 4px;
+  background: var(--bg-surface);
   font-size: 14px;
-  background: #f9fafc;
 }
 .provider-editor-page .mapping-actions {
   justify-content: flex-end;
@@ -239,7 +221,7 @@
 }
 .provider-editor-page .mapping-actions button {
   min-width: 28px;
-  height: 32px;
+  height: 36px;
   padding: 0 4px;
   flex-shrink: 0;
 }
@@ -251,24 +233,56 @@
   font-size: 12px;
 }
 .provider-editor-page .mapping-actions .icon-button {
-  color: #b33229;
+  color: var(--danger-fg);
 }
 .provider-editor-page .mapping-empty {
   margin: 0;
   padding: 22px;
-  border: 1px dashed #81878d;
+  border: 1px dashed var(--border-control);
   border-radius: 10px;
   font-size: 14px;
-  color: #646970;
+  color: var(--text-3);
 }
 .provider-editor-page .mapping-error {
   grid-column: 1 / -1;
   margin: 0;
-  color: #b33229;
+  color: var(--danger-fg);
   font-size: 13px;
 }
+/* Fixed tier rows (Claude Code, Claude Desktop): role, menu name, upstream
+   model, 1M. Same specificity as the rules above, so these win by coming
+   later. */
+.provider-editor-page .mapping-head.is-tiers,
+.provider-editor-page .mapping-row.is-tiers {
+  grid-template-columns: 88px minmax(0, 1fr) minmax(0, 1.2fr) 92px;
+  align-items: center;
+}
+.provider-editor-page .mapping-row .model-input > button {
+  padding: 0 10px;
+  font-size: 13px;
+}
+.mapping-note {
+  font-size: 12px;
+  color: var(--text-3);
+}
+/* The model field with its 1M box (Claude Code). */
+.provider-editor-page .editor-model-line {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.provider-editor-page .editor-model-line > .model-input {
+  flex: 1;
+}
+/* A menu name waits for its model: say so in the field, not just the hint. */
+.provider-editor-page .mapping-row > input:disabled {
+  border-style: dashed;
+  background: var(--bg-subtle);
+  color: var(--text-3);
+  cursor: not-allowed;
+}
 .provider-editor-page [aria-invalid="true"] {
-  border-color: #b33229;
+  border-color: var(--danger-fg);
 }
 .provider-editor-page .reasoning-panel,
 .provider-editor-page .instructions-panel {
@@ -298,9 +312,16 @@
   justify-content: space-between;
   gap: 16px;
   padding: 14px 16px;
-  font-size: 15px;
-  cursor: pointer;
+  border-radius: 8px;
   background: var(--bg-subtle);
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 700;
+  list-style: none;
+  cursor: pointer;
+}
+.provider-editor-page .advanced-options > summary::-webkit-details-marker {
+  display: none;
 }
 .provider-editor-page .advanced-options > summary:hover {
   background: var(--bg-selected);
@@ -334,23 +355,28 @@
   transform: rotate(180deg);
 }
 .provider-editor-page .advanced-options-body {
-  padding: 16px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 18px;
+  padding: 16px;
 }
-.provider-editor-page .toggle-field b {
-  font-size: 14px;
+.provider-editor-page
+  .advanced-options-body
+  > .advanced-group
+  + .advanced-group {
+  padding-top: 18px;
+  border-top: 1px solid var(--border-subtle);
 }
 .provider-editor-page .common-config-actions {
   flex-wrap: wrap;
   font-size: 13px;
 }
-.provider-editor-page .editor-feedback,
-.provider-editor-page .editor-model-error {
+.provider-editor-page .editor-feedback {
   margin: 0;
   padding: 12px 14px;
-  color: #9c3029;
-  background: #fff0ed;
-  border: 1px solid #edc2ba;
+  color: var(--danger-fg);
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-border);
   border-radius: 4px;
   font-size: 14px;
   overflow-wrap: anywhere;
@@ -358,12 +384,12 @@
 .provider-editor-page .editor-test-scope {
   margin: 0;
   font-size: 13px;
-  color: #646970;
+  color: var(--text-3);
 }
 .provider-editor-page .editor-bottom {
   flex: 0 0 auto;
-  background: #fff;
-  border-top: 1px solid #dde0e3;
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border-subtle);
 }
 .provider-editor-page .provider-editor > .editor-bottom > footer {
   position: static;
@@ -494,45 +520,23 @@
   gap: 12px;
 }
 .provider-editor-page .editor-preview {
-  padding: 16px;
-  border: 1px solid #dde0e3;
-  border-radius: 8px;
-  background: #f5f7f9;
-  display: grid;
-  gap: 12px;
   overflow-wrap: anywhere;
 }
 .provider-editor-page .editor-preview p,
 .provider-editor-page .editor-preview dl {
   margin: 0;
-  color: #646970;
+  color: var(--text-3);
   font-size: 12px;
   line-height: 1.6;
 }
 .provider-editor-page .editor-preview dd {
   margin: 0 0 8px;
-  color: #484e55;
-}
-.provider-editor-page .editor-route-preview {
-  margin: 0;
-  padding-left: 18px;
-}
-.provider-editor-page .editor-route-preview li {
-  padding: 0 0 16px 12px;
-  border-left: 1px solid #dde0e3;
-  list-style: none;
-  position: relative;
-  font-size: 13px;
-}
-.provider-editor-page .editor-route-preview small {
-  display: block;
-  color: #646970;
-  font-size: 12px;
+  color: var(--text-2);
 }
 .provider-editor-page .password-field,
 .provider-editor-page .model-input {
   height: 36px;
-  border-color: #81878d;
+  border-color: var(--border-control);
   border-radius: 4px;
 }
 .provider-editor-page .password-field > input,
@@ -540,29 +544,21 @@
   height: 34px;
   min-height: 34px;
 }
-@media (max-width: 1000px) {
-  .provider-editor-page .editor-scroll {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
 
 .provider-editor-page .editor-format {
   display: grid;
   gap: 6px;
 }
-.provider-editor-page .editor-format small {
-  color: #646970;
-  font-size: 12px;
-  line-height: 1.5;
-}
 .provider-editor-page .editor-format-options {
-  display: flex;
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
   width: fit-content;
   max-width: 100%;
-  background: #f5f7f9;
-  border: 1px solid #dde0e3;
-  border-radius: 4px;
-  padding: 1px;
+  padding: 2px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel);
+  background: var(--bg-subtle);
 }
 .provider-editor-page .editor-format-options label {
   position: relative;
@@ -574,20 +570,8 @@
   width: 1px;
   height: 1px;
 }
-.provider-editor-page .editor-format-options span {
-  display: block;
-  padding: 4px 12px;
-  font-size: 12px;
-  line-height: 20px;
-  border-radius: 2px;
-}
-.provider-editor-page .editor-format-options input:checked + span {
-  background: #fff;
-  box-shadow: 0 1px 3px #0002;
-  color: #12161c;
-}
 .provider-editor-page .editor-format-options input:focus-visible + span {
-  outline: 2px solid #006aa0;
+  outline: 2px solid var(--brand);
   outline-offset: 2px;
 }
 .provider-editor-page .editor-template-actions {
@@ -597,18 +581,11 @@
   justify-content: space-between;
   gap: 8px 12px;
   padding: 10px 12px;
-  border: 1px solid #dde0e3;
+  border: 1px solid var(--border-subtle);
   border-radius: 8px;
-  background: #f8fafb;
+  background: var(--bg-sunken);
   font-size: 12px;
-  color: #646970;
-}
-.provider-editor-page .editor-template-actions.has-warning {
-  border-color: #e3c4a4;
-  background: #fdf8f2;
-}
-.provider-editor-page .editor-template-actions.has-warning small {
-  color: #8c4b25;
+  color: var(--text-3);
 }
 .provider-editor-page .editor-template-text {
   min-width: 0;
@@ -618,7 +595,7 @@
   display: block;
   font-size: 13px;
   font-weight: 600;
-  color: #12161c;
+  color: var(--text-1);
 }
 .provider-editor-page .editor-template-actions small {
   display: block;
@@ -639,17 +616,6 @@
 .provider-editor-page .mapping-actions .instructions-trigger > span {
   display: none;
 }
-.provider-editor-page .editor-route-preview li::before {
-  content: "";
-  position: absolute;
-  top: 5px;
-  left: -4px;
-  width: 7px;
-  height: 7px;
-  border: 1px solid #81878d;
-  border-radius: 50%;
-  background: #f5f7f9;
-}
 
 .provider-editor-page .editor-name-row {
   display: grid;
@@ -660,39 +626,37 @@
 .provider-editor-page .editor-appearance {
   position: relative;
 }
-.provider-editor-page .editor-appearance summary {
+/* 外观 beside the name: a popover for badge lines, the icon picker for the
+   tools that store an icon; both read as the same pill. */
+.provider-editor-page
+  :is(.editor-appearance summary, .editor-appearance-button) {
   display: flex;
   align-items: center;
   gap: 10px;
   height: 36px;
   padding: 0 8px 0 12px;
-  background: #f2f4f6;
+  border: 0;
   border-radius: 4px;
+  background: var(--bg-subtle);
+  color: var(--text-1);
   font-size: 13px;
+  list-style: none;
   cursor: pointer;
 }
-.provider-editor-page .editor-appearance summary > span:nth-of-type(2) {
+.provider-editor-page
+  :is(.editor-appearance summary, .editor-appearance-button):hover {
+  background: var(--bg-selected);
+}
+.provider-editor-page .editor-appearance summary::-webkit-details-marker {
+  display: none;
+}
+.provider-editor-page .editor-appearance summary > span:nth-of-type(2),
+.provider-editor-page .editor-appearance-button > span:last-of-type {
   flex: 1;
 }
-.provider-editor-page .editor-appearance .provider-row-badge {
-  width: 20px;
-  height: 20px;
-  color: #fdfdfe;
-  border-radius: 4px;
-  text-align: center;
-  font-size: 12px;
-  font-weight: 700;
-  flex-shrink: 0;
-}
-.provider-editor-page .editor-appearance > label {
-  position: absolute;
-  z-index: 2;
-  right: 0;
-  width: 100%;
-  padding: 12px;
-  background: #f5f7f9;
-  border: 1px solid #dde0e3;
-  border-radius: 4px;
+.provider-editor-page .editor-appearance-button {
+  padding-right: 12px;
+  text-align: left;
 }
 .provider-editor-page .editor-format-line {
   display: flex;
@@ -713,31 +677,23 @@
   height: 36px;
   line-height: 20px;
 }
-.provider-editor-page .editor-basic label > small {
-  line-height: 18px;
-}
 .provider-editor-page .model-mapping .advanced-section-heading {
   min-height: 28px;
 }
 
-/* Match the shared tool editor: one readable column and optional details. */
-.provider-editor-page details.editor-preview {
-  position: static;
-  display: block;
-  width: 100%;
-  padding: 12px 0;
-  border: 0;
-  border-top: 1px solid var(--line);
+/* 保存详情 (line editors, oh-my-pi): an inline chimera-disclosure under a
+   divider. The summary, chevron and focus ring come from disclosure.css;
+   the [open] selector keeps the divider when `.is-inline[open]` resets the
+   border, and the straight rule needs no corner radius. */
+.provider-editor-page details.editor-preview,
+.provider-editor-page details.editor-preview[open] {
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
   border-radius: 0;
-  background: transparent;
 }
-.provider-editor-page .editor-preview > summary {
-  cursor: pointer;
-  font-size: 14px;
-  font-weight: 500;
-}
-.provider-editor-page .editor-preview[open] > summary {
-  margin-bottom: 16px;
+.provider-editor-page .editor-preview > .chimera-disclosure-body {
+  display: grid;
+  gap: 10px;
 }
 
 .provider-editor-page .editor-save-summary {
@@ -762,7 +718,7 @@
   min-width: 0;
 }
 .provider-editor-page .omp-discovery-key small {
-  color: #646970;
+  color: var(--text-3);
   font-size: 13px;
 }
 .provider-editor-page .omp-model-options {
@@ -781,4 +737,518 @@
 }
 .provider-editor-page .omp-model-options input {
   flex-shrink: 0;
+}
+
+/* editor & runtime (2.8.6)
+   Styles for the editor's semantic field classes, plus shell layering:
+   - every full-screen panel owns the whole width under the title bar, like
+     the Codex line editor (no sidebar block over the panel header);
+   - the editor never scrolls the shell itself, so a scrollIntoView inside it
+     cannot push the title bar off-screen. */
+.chimera-main.is-editing-provider,
+.provider-editor-page {
+  overflow: clip;
+}
+/* macOS keeps the sidebar: its brand row carries the traffic lights. */
+body:not(.is-mac):has([data-fullscreen-panel]) .chimera-shell > aside {
+  display: none;
+}
+.provider-editor-page .provider-editor {
+  color: var(--text-1);
+}
+.provider-editor-page .editor-section-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 24px;
+}
+.provider-editor-page .editor-section-head h3 {
+  margin: 0;
+}
+.provider-editor-page .editor-section-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: var(--radius-pill);
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 500;
+  white-space: nowrap;
+}
+/* A field not filled in yet is a to-do, not an error: neutral, with a dot. */
+.provider-editor-page .editor-section-status.is-pending {
+  background: var(--bg-subtle);
+  color: var(--text-2);
+}
+.provider-editor-page .editor-section-status.is-pending::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+.provider-editor-page .editor-section-status.is-done {
+  background: var(--success-bg);
+  color: var(--success-fg);
+}
+.provider-editor-page .editor-field {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  min-width: 0;
+}
+.provider-editor-page .editor-field > small,
+.provider-editor-page .editor-format > small {
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.provider-editor-page .editor-field-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  color: var(--text-1);
+  font-size: 14px;
+  line-height: 20px;
+}
+.provider-editor-page .editor-field-label > label {
+  cursor: default;
+}
+.provider-editor-page .toggle-field-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.provider-editor-page .toggle-field-text small {
+  margin: 0;
+  color: var(--text-3);
+}
+/* Segmented choice (协议, 认证方式, …): each note stays the option's
+   accessible description and the line below states the result. */
+.provider-editor-page .editor-format-options .editor-format-option-text {
+  display: block;
+  padding: 5px 12px;
+  border-radius: 6px;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 20px;
+  white-space: nowrap;
+  transition: background var(--dur-fast) var(--ease-out);
+}
+.provider-editor-page .editor-format-option-text b {
+  font-weight: 500;
+}
+.provider-editor-page .editor-format-option-text small {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.provider-editor-page .editor-format-option:hover input:not(:checked) + span {
+  color: var(--text-1);
+  background: var(--bg-hover);
+}
+.provider-editor-page .editor-format-options input:checked + span {
+  background: var(--bg-surface);
+  color: var(--text-1);
+  box-shadow:
+    0 0 0 1px var(--border-subtle),
+    0 1px 2px var(--shadow-soft);
+}
+.provider-editor-page .editor-format-option-text b::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin: 0 7px 1px 0;
+  border-radius: 50%;
+  background: transparent;
+  vertical-align: middle;
+}
+.provider-editor-page
+  .editor-format-options
+  input:checked
+  + .editor-format-option-text
+  b::before {
+  background: var(--brand-indicator);
+}
+.provider-editor-page .editor-routing {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 2px 0 0;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 18px;
+}
+.provider-editor-page .editor-routing:empty {
+  display: none;
+}
+.provider-editor-page .editor-routing > span + span::before {
+  content: "·";
+  margin-right: 14px;
+  color: var(--border-control);
+}
+/* Appearance popover */
+.provider-editor-page .editor-appearance[open] summary svg {
+  transform: rotate(180deg);
+}
+.provider-editor-page .editor-appearance-panel {
+  position: absolute;
+  z-index: 3;
+  top: calc(100% + 6px);
+  right: 0;
+  width: 100%;
+  min-width: 260px;
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel);
+  background: var(--bg-raised);
+  box-shadow: 0 8px 24px var(--shadow-overlay);
+}
+/* Model mapping heading */
+.provider-editor-page .model-mapping .editor-field-label b {
+  font-size: 15px;
+  font-weight: 700;
+}
+.provider-editor-page .mapping-count {
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  display: inline-grid;
+  place-items: center;
+  margin-left: 4px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-subtle);
+  color: var(--text-2);
+  font: 600 12px / 1 var(--font-mono);
+}
+.provider-editor-page .mapping-heading-actions {
+  display: inline-flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.provider-editor-page .mapping-head .editor-field-label {
+  font-size: inherit;
+  color: inherit;
+}
+.provider-editor-page .mapping-effort-notice,
+.provider-editor-page .editor-model-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--info-border);
+  border-radius: var(--radius-control);
+  background: var(--info-bg);
+  color: var(--text-1);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.provider-editor-page .editor-model-notice {
+  border-color: var(--border-subtle);
+  background: var(--bg-sunken);
+  color: var(--text-2);
+}
+.provider-editor-page .editor-model-notice.is-error {
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
+  color: var(--text-1);
+}
+.provider-editor-page .editor-model-notice.is-error > svg {
+  color: var(--danger-fg);
+  flex-shrink: 0;
+}
+.provider-editor-page .editor-model-notice > span {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+/* The shell itself must never scroll while an editor is open: a
+   scrollIntoView inside the form used to lift the title bar off-screen. */
+.chimera-shell:has(.provider-editor-page),
+.chimera-shell:has(.provider-editor-page) > .chimera-main {
+  overflow: clip;
+}
+/* Generic full-screen panels (tool editors, MCP, pricing) share the line
+   editor's header rule so every panel reads as one shell. */
+[data-fullscreen-panel]:not(.provider-editor-page)
+  > .flex-shrink-0:first-child {
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+/* Claude Desktop and Grok Build line editors (2.8.6)
+   Their forms use the line editor's own markup (sections, .editor-field,
+   .password-field, .model-input, .toggle-field, the protocol segmented
+   control); these rules only add what those forms have and the Codex editor
+   does not. */
+.provider-editor-page .editor-form :is(input, select, textarea) {
+  box-shadow: none;
+}
+.provider-editor-page .editor-field > small.is-warning {
+  color: var(--warning-fg);
+}
+.provider-editor-page .editor-field > small.is-error,
+.provider-editor-page .editor-field-error {
+  margin: 0;
+  color: var(--danger-fg);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.5;
+}
+.provider-editor-page .editor-field > small .link-button {
+  font-size: inherit;
+}
+/* Links on the editor sheet use the readable brand text colour; the shell's
+   --ch-accent is the dark brand blue in both themes (2.9:1 on dark). */
+.provider-editor-page .link-button {
+  color: var(--brand-text);
+}
+.provider-editor-page .password-field:has(> input:disabled) {
+  background: var(--bg-subtle);
+}
+/* Label row with tools on the right (完整 URL, 管理与测速). */
+.provider-editor-page .editor-field-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 16px;
+  min-height: 22px;
+}
+.provider-editor-page .editor-field-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 16px;
+}
+.provider-editor-page .editor-field-tools .link-button {
+  font-size: 13px;
+  font-weight: 500;
+}
+.provider-editor-page .editor-inline-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 20px;
+  cursor: pointer;
+}
+/* The editor's switch, also outside the Codex 高级配置 card (chimera.css
+   draws it only inside .advanced-options): ink track when on, outlined
+   track with a muted thumb when off. */
+.provider-editor-page .toggle-field > input[type="checkbox"],
+.provider-editor-page .editor-inline-switch > input[type="checkbox"] {
+  appearance: none;
+  flex: none;
+  width: 38px;
+  height: 22px;
+  margin: 0;
+  border: 1px solid var(--switch-off-border);
+  border-radius: var(--radius-pill);
+  background:
+    radial-gradient(
+      circle at 10px 50%,
+      var(--switch-thumb-off) 0 6px,
+      transparent 6.5px
+    ),
+    var(--switch-off-bg);
+  cursor: pointer;
+  transition:
+    background var(--dur-base) var(--ease-out),
+    border-color var(--dur-base) var(--ease-out);
+}
+.provider-editor-page .toggle-field > input[type="checkbox"]:checked {
+  border-color: var(--switch-on-bg);
+  background:
+    radial-gradient(
+      circle at 26px 50%,
+      var(--switch-thumb-on) 0 6px,
+      transparent 6.5px
+    ),
+    var(--switch-on-bg);
+}
+.provider-editor-page .editor-inline-switch > input[type="checkbox"] {
+  width: 30px;
+  height: 18px;
+  background:
+    radial-gradient(
+      circle at 8px 50%,
+      var(--switch-thumb-off) 0 5px,
+      transparent 5.5px
+    ),
+    var(--switch-off-bg);
+}
+.provider-editor-page .editor-inline-switch > input[type="checkbox"]:checked {
+  border-color: var(--switch-on-bg);
+  background:
+    radial-gradient(
+      circle at 20px 50%,
+      var(--switch-thumb-on) 0 5px,
+      transparent 5.5px
+    ),
+    var(--switch-on-bg);
+}
+.provider-editor-page
+  :is(.toggle-field, .editor-inline-switch)
+  > input[type="checkbox"]:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+/* A single switch row standing on its own (需要模型映射). */
+.provider-editor-page .editor-toggle-card {
+  padding: 12px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel);
+  background: var(--bg-sunken);
+}
+/* Template card: the chosen template reads as selected. */
+.provider-editor-page .editor-template-choice[aria-pressed="true"] {
+  border-color: var(--border-control);
+  font-weight: 700;
+}
+/* 更多信息: icon, notes and website under the name. */
+.provider-editor-page .editor-more-info > .chimera-disclosure-body {
+  display: grid;
+  gap: 12px;
+}
+.provider-editor-page .editor-icon-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--text-3);
+  font-size: 13px;
+}
+.provider-editor-page .editor-icon-button {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-control);
+  background: var(--bg-surface);
+  cursor: pointer;
+}
+.provider-editor-page .editor-icon-button:hover {
+  border-color: var(--text-3);
+  background: var(--bg-hover);
+}
+/* Disclosure sections of the form (高级选项, 原始配置). */
+.provider-editor-page .chimera-disclosure > summary > small {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: 13px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.provider-editor-page .editor-override-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 4px;
+}
+.provider-editor-page .editor-form textarea.editor-code {
+  min-height: 132px;
+  font:
+    12px / 1.6 var(--font-mono),
+    monospace;
+}
+.provider-editor-page .editor-grok-profile {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.provider-editor-page .editor-code-editor {
+  min-width: 0;
+}
+.provider-editor-page .editor-model-notice.is-warning {
+  border-color: var(--warning-border);
+  background: var(--warning-bg);
+  color: var(--text-1);
+}
+.provider-editor-page .editor-model-notice.is-warning > svg {
+  flex-shrink: 0;
+  color: var(--warning-fg);
+}
+.provider-editor-page .editor-managed-auth {
+  padding: 12px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel);
+  background: var(--bg-sunken);
+}
+.provider-editor-page .mapping-head > span {
+  white-space: nowrap;
+}
+.provider-editor-page .mapping-row.is-direct {
+  grid-template-columns: minmax(0, 1fr) 64px 36px;
+  align-items: center;
+}
+.provider-editor-page .mapping-role {
+  display: flex;
+  align-items: center;
+  height: 36px;
+  padding: 0 10px;
+  border-radius: var(--radius-control);
+  background: var(--bg-subtle);
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 600;
+}
+.provider-editor-page .mapping-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  color: var(--text-2);
+  font-size: 13px;
+  cursor: pointer;
+}
+.provider-editor-page .mapping-check input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--brand-indicator);
+  cursor: inherit;
+}
+.provider-editor-page .mapping-row .mapping-delete {
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--danger-fg);
+}
+.provider-editor-page .mapping-row .mapping-delete:hover {
+  background: var(--danger-bg);
+}
+/* The styled select (Radix) drawn like the editor's inputs. */
+.provider-editor-page .editor-select {
+  height: 36px;
+  border-color: var(--border-control);
+  border-radius: 4px;
+  background: var(--bg-surface);
+  color: var(--text-1);
+  font-size: 14px;
+}
+.provider-editor-page .editor-save-note {
+  margin-right: 4px;
+  color: var(--text-3);
+  font-size: 13px;
+}
+@media (max-width: 760px) {
+  .provider-editor-page .editor-grok-profile,
+  .provider-editor-page .editor-override-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }

@@ -34,6 +34,9 @@ struct OpenCodeMessageData {
     cost: f64,
     model_id: String,
     timestamp_ms: i64,
+    /// `time.completed - time.created`. opencode.db stores only the message's
+    /// start and end, so the duration is known but the first token is not.
+    latency_ms: i64,
 }
 
 struct OpenCodeMessageQueryResult {
@@ -302,6 +305,19 @@ fn parse_message_data(value: &serde_json::Value) -> Option<OpenCodeMessageData> 
         .and_then(|v| v.as_i64())
         .unwrap_or(0);
 
+    // A missing start (timestamp_ms falls back to 0, which would turn the
+    // difference into an epoch value), a missing end or a clock running
+    // backwards leaves the duration unknown (0, shown as "—").
+    // Adapted from farion1231/cc-switch 81bc1bce
+    let latency_ms = match value
+        .get("time")
+        .and_then(|t| t.get("completed"))
+        .and_then(|v| v.as_i64())
+    {
+        Some(completed) if timestamp_ms > 0 && completed > timestamp_ms => completed - timestamp_ms,
+        _ => 0,
+    };
+
     Some(OpenCodeMessageData {
         input_tokens,
         output_tokens,
@@ -311,6 +327,7 @@ fn parse_message_data(value: &serde_json::Value) -> Option<OpenCodeMessageData> 
         cost,
         model_id,
         timestamp_ms,
+        latency_ms,
     })
 }
 
@@ -423,7 +440,8 @@ fn insert_opencode_message(
             cache_read_cost,
             cache_creation_cost,
             total_cost,
-            0i64,                  // latency_ms
+            msg.latency_ms,
+            // opencode.db has no first-token time to backfill from.
             Option::<i64>::None,   // first_token_ms
             200i64,                // status_code
             Option::<String>::None,// error_message
@@ -475,6 +493,40 @@ mod tests {
         assert!((data.cost - 0.0023113).abs() < 1e-10);
         assert_eq!(data.model_id, "deepseek-v4-pro");
         assert_eq!(data.timestamp_ms, 1779755333700);
+        assert_eq!(data.latency_ms, 1779755350639 - 1779755333700);
+    }
+
+    // Adapted from farion1231/cc-switch 81bc1bce
+    #[test]
+    fn test_parse_message_data_latency_fallbacks() {
+        // No time.completed: duration unknown.
+        let no_completed = serde_json::json!({
+            "role": "assistant",
+            "tokens": { "input": 1000, "output": 200 },
+            "modelID": "m",
+            "time": { "created": 1000i64 }
+        });
+        assert_eq!(parse_message_data(&no_completed).unwrap().latency_ms, 0);
+
+        // completed before created: never negative.
+        let backwards = serde_json::json!({
+            "role": "assistant",
+            "tokens": { "input": 1000, "output": 200 },
+            "modelID": "m",
+            "time": { "created": 2000i64, "completed": 1000i64 }
+        });
+        assert_eq!(parse_message_data(&backwards).unwrap().latency_ms, 0);
+
+        // completed without created: not an epoch-sized duration.
+        let no_created = serde_json::json!({
+            "role": "assistant",
+            "tokens": { "input": 1000, "output": 200 },
+            "modelID": "m",
+            "time": { "completed": 1779755350639i64 }
+        });
+        let data = parse_message_data(&no_created).unwrap();
+        assert_eq!(data.timestamp_ms, 0);
+        assert_eq!(data.latency_ms, 0);
     }
 
     #[test]

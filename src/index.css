@@ -95,26 +95,15 @@
   border: 1px solid hsl(var(--primary) / 0.25);
 }
 
-.glass-header {
-  background: hsl(var(--background));
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-  border: none;
-  border-top: 2px solid hsl(var(--border));
-}
-
-.dark .glass-header {
-  background: hsl(var(--background));
-  border: none;
-  border-top: 2px solid hsl(var(--border));
-}
-
-[data-tauri-drag-region] {
+/* Windows drags only through Tauri's mousedown handler (drag.js). wry enables
+   WebView2's non-client regions, so native app-region CSS there makes WebView2
+   recompute drag regions after every layout (UpdateDraggableRegions), which can
+   pin the UI thread or hang. Adapted from farion1231/cc-switch 09237ebd */
+.is-mac [data-tauri-drag-region] {
   -webkit-app-region: drag;
 }
 
-[data-tauri-no-drag],
-[data-tauri-drag-region] .no-drag {
+[data-tauri-no-drag] {
   -webkit-app-region: no-drag;
 }
 

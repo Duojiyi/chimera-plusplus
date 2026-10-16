@@ -2,12 +2,13 @@ import { RetainedToolPage } from "@/components/RetainedToolPage";
 import { ToolVisibilityView } from "./views/ToolVisibilityView";
 import { isProductToolVisible } from "@/lib/productCapabilities";
 import { WindowControls } from "@/components/WindowControls";
-import { isMac } from "@/lib/platform";
+import { DRAG_REGION_ATTR, isMac } from "@/lib/platform";
 import {
   useLightweightClose,
   useLightweightCloseBlocker,
 } from "@/hooks/useLightweightClose";
 import {
+  Fragment,
   lazy,
   Suspense,
   useCallback,
@@ -35,6 +36,7 @@ import {
   Eye,
   EyeOff,
   FileText,
+  Info,
   ListChecks,
   LoaderCircle,
   FolderOpen,
@@ -48,6 +50,7 @@ import {
   Search,
   Settings2,
   Trash2,
+  TriangleAlert,
   Users,
   Wrench,
   X,
@@ -75,7 +78,6 @@ import {
 } from "@/lib/api/model-fetch";
 import { getChimeraHubTemplate } from "@/config/codexTemplates";
 import { CodexContextWindowField } from "@/components/providers/CodexContextWindowField";
-import { CodexPresetStart } from "@/components/providers/CodexPresetStart";
 import type { PresetDraftSeed } from "@/utils/codexPresetDraft";
 import {
   extractCodexBaseUrl,
@@ -106,7 +108,6 @@ import {
   codexProbeModels,
   extractCodexMappingRows,
   loadOperationRecords,
-  persistedCodexModelApiFormats,
   pickDefaultFetchedModel,
   previousCatalogAsFetched,
   saveOperationRecords,
@@ -117,16 +118,30 @@ import {
 import { DisabledReason, HelpTip } from "@/components/ui/help-tip";
 import { CodexModelPicker } from "@/components/providers/CodexModelPicker";
 import {
+  ANTHROPIC_AUTH_HELP,
+  ANTHROPIC_AUTH_OPTIONS,
+  EditorAdvanced,
+  EditorChoice,
   EditorField,
+  EditorInUseNotice,
   EditorLabel,
+  EditorSaveActions,
+  EditorSelect,
+  EditorTemplateCard,
+  EditorTestAction,
   EditorToggle,
   Field,
   ModelFetchNotice,
+  OneMCheck,
+  PROMPT_CACHE_OPTIONS,
+  ROUTED_PROTOCOL_NOTE,
+  SaveLabel,
   SectionStatus,
+  type EditorChoiceOption,
   type ModelFetchAction,
   type ModelFetchIssue,
 } from "@/components/providers/ProviderEditorFields";
-import { autoLineBadgeText, lineBadgeText } from "@/utils/lineBadge";
+import { autoLineBadgeText } from "@/utils/lineBadge";
 import { describeCodexRouting } from "@/utils/codexRouting";
 import { readContextWindowState } from "@/utils/codexContextWindow";
 import { Empty } from "@/components/Empty";
@@ -151,15 +166,26 @@ import {
   type ReceiptNextStep,
 } from "@/lib/operationReceipt";
 import {
+  CLAUDE_TIER_ROWS,
+  CLAUDE_TIERS_FOLLOWING_DEFAULT,
+  claudeModelFieldLabel,
+  claudeModelOneM,
+  claudeModelValue,
+  claudeTierLabel,
+  emptyClaudeTiers,
   isNativeToolAppId,
   nativeToolNames,
   toolProviderFields,
   updateToolProviderConfig,
+  withClaudeModel,
+  withClaudeOneM,
+  type ClaudeModelField,
 } from "@/utils/toolProviderConfig";
 import { useSettingsQuery } from "@/lib/query/queries";
 import routeGateIcon from "@/assets/icons/chimera-dragon-mark.png";
 import "./chimera.css";
 import "./components/ProviderEditorPage.css";
+import "./components/CodexRuntimePage.css";
 
 const runningInTauri =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -285,6 +311,12 @@ type RuntimeStatus = {
   canUninstall: boolean;
   /** The current install, then the version a rollback restores (`previous`). */
   history?: Array<{ version: string; state: string }>;
+  /** `flat` | `nested` | `interrupted` for the portable root. */
+  portableLayout?: string | null;
+  /** One Chinese sentence about the portable layout, when relevant. */
+  layoutNotice?: string | null;
+  /** A registered MSIX next to the managed portable install. */
+  unmanagedStandardVersion?: string | null;
 };
 export type CodexProcessStatus = {
   supported: boolean;
@@ -316,7 +348,35 @@ type CodexLaunchResult = {
   modelUnlockInjected: boolean;
   modelUnlockModelCount: number;
   modelUnlockError?: string | null;
+  /** Running, but no stable main window within 30 s: launched, not failed. */
+  startupSlow?: boolean;
+  startupNotice?: string | null;
+  layoutMigration?: { state: string; message: string } | null;
 };
+
+/**
+ * Layout warnings already shown in this window, by state and message. A
+ * deferred migration (Codex still running) is retried on every launch; the
+ * user is told once per app session, not on every open.
+ */
+const shownLayoutWarnings = new Set<string>();
+
+/** Startup and layout follow-ups of a launch, shown after its success toast. */
+export function notifyLaunchFollowUps(result: CodexLaunchResult) {
+  if (result.startupSlow && result.startupNotice) {
+    toast.warning("Codex 启动较慢", { description: result.startupNotice });
+  }
+  const migration = result.layoutMigration;
+  if (migration?.state === "migrated" || migration?.state === "recovered") {
+    shownLayoutWarnings.clear();
+    toast.info("免安装版目录结构已更新", { description: migration.message });
+  } else if (migration && migration.state !== "not-needed") {
+    const key = `${migration.state}\n${migration.message}`;
+    if (shownLayoutWarnings.has(key)) return;
+    shownLayoutWarnings.add(key);
+    toast.warning("免安装版目录结构未升级", { description: migration.message });
+  }
+}
 type ReleaseStatus = {
   currentVersion?: string | null;
   latestVersion: string;
@@ -649,31 +709,12 @@ type CodexEndpointInput = {
   customUserAgent: string;
 };
 
-// Protocol probe results for one upstream identity. `formats` may cover more
-// models than the current probe set; whatever is missing is probed on save.
-type CodexApiFormatDetection = {
-  identity: string;
-  formats: Record<string, DetectedCodexApiFormat>;
-  failures: Record<string, string>;
-};
-
 function codexEndpointIdentity(input: CodexEndpointInput): string {
   return JSON.stringify([
     input.baseUrl.trim(),
     input.apiKey,
     input.isFullUrl,
     input.modelsUrl.trim(),
-    input.customUserAgent.trim(),
-  ]);
-}
-
-// The fields a protocol probe actually depends on. `modelsUrl` only affects
-// model discovery, so changing it must not throw detection results away.
-function codexProtocolIdentity(input: CodexEndpointInput): string {
-  return JSON.stringify([
-    input.baseUrl.trim(),
-    input.apiKey,
-    input.isFullUrl,
     input.customUserAgent.trim(),
   ]);
 }
@@ -709,6 +750,18 @@ function codexApiFormatLabel(format: CodexApiFormat): string {
   if (format === "openai_responses") return "Responses";
   if (format === "openai_chat") return "Chat Completions";
   return "Anthropic Messages";
+}
+
+/**
+ * ChimeraHub's address for a new native-tool line. Claude Code and Gemini CLI
+ * append their own API path (`/v1/messages`, `/v1beta/…`), so they get the
+ * origin; OpenCode and Pi take the OpenAI-compatible `/v1` base as it is.
+ */
+function chimeraHubBaseUrlFor(appId: AppId): string {
+  const baseUrl = getChimeraHubTemplate().baseUrl;
+  return appId === "claude" || appId === "gemini"
+    ? baseUrl.replace(/\/v1\/?$/, "")
+    : baseUrl;
 }
 
 export function providerDraft(
@@ -783,10 +836,10 @@ export function providerDraft(
     catalogModels: extractCodexMappingRows(provider),
     original: provider ?? null,
     nativeProtocol: "",
+    claudeTiers: emptyClaudeTiers(),
+    subagentModel: "",
     ...native,
-    ...(!provider && native
-      ? { baseUrl: getChimeraHubTemplate().baseUrl }
-      : {}),
+    ...(!provider && native ? { baseUrl: chimeraHubBaseUrlFor(appId) } : {}),
   };
 }
 
@@ -801,19 +854,6 @@ export function providerDraftFromSeed(seed: PresetDraftSeed, id: string) {
     remoteCompactionEnabled: isCodexRemoteCompactionEnabled(seed.config),
     id,
   };
-}
-
-// Detection results saved with a provider, keyed to the draft's protocol
-// identity so a re-opened editor saves without re-probing until the endpoint,
-// key, full-URL flag or User-Agent changes.
-function detectionFromProvider(
-  provider: Provider | null | undefined,
-  draft: ReturnType<typeof providerDraft>,
-): CodexApiFormatDetection | null {
-  if (!provider || draft.apiFormat !== "auto") return null;
-  const formats = persistedCodexModelApiFormats(provider.meta);
-  if (!Object.keys(formats).length) return null;
-  return { identity: codexProtocolIdentity(draft), formats, failures: {} };
 }
 
 export default function ChimeraApp({
@@ -921,15 +961,11 @@ export default function ChimeraApp({
     null,
   );
   const [editorAppId, setEditorAppId] = useState<AppId>("codex");
+  const [editorInUse, setEditorInUse] = useState(false);
   const [models, setModels] = useState<FetchedModel[] | null>(null);
   const [modelFetchIdentity, setModelFetchIdentity] = useState<string | null>(
     null,
   );
-  const [apiFormatDetection, setApiFormatDetection] =
-    useState<CodexApiFormatDetection | null>(null);
-  const [apiFormatDetectionError, setApiFormatDetectionError] = useState<
-    string | null
-  >(null);
   const [modelFetchError, setModelFetchError] =
     useState<ModelFetchIssue | null>(null);
   // Default model filled in from the latest list because the field was empty.
@@ -953,7 +989,6 @@ export default function ChimeraApp({
   const startupRuntimeCheckRef = useRef(false);
   const fetchModelsSeqRef = useRef(0);
   const providerLoadSeqRef = useRef(0);
-  const protocolProbeSeqRef = useRef(0);
   const runtimeCheckSeqRef = useRef(0);
   const testConnectionSeqRef = useRef(0);
   const draftTestSeqRef = useRef(0);
@@ -981,6 +1016,9 @@ export default function ChimeraApp({
     execute: () => void;
   } | null>(null);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  // The Claude Code field the model list fills when it opens.
+  const [modelPickTarget, setModelPickTarget] =
+    useState<ClaudeModelField>("default");
   const [pendingEditorDiscard, setPendingEditorDiscard] = useState(false);
   // Editor-local connection test result: the home banner reflects the active
   // line only and must never change because a draft was tested.
@@ -1003,7 +1041,6 @@ export default function ChimeraApp({
   }, [activeProvider?.id, currentEndpoint]);
 
   const activeEndpointIdentity = editor ? codexEndpointIdentity(editor) : null;
-  const activeProtocolIdentity = editor ? codexProtocolIdentity(editor) : null;
 
   useLayoutEffect(() => {
     editorRef.current = editor;
@@ -1021,14 +1058,6 @@ export default function ChimeraApp({
       fetchModelsSeqRef.current += 1;
     };
   }, [activeEndpointIdentity, editor?.id]);
-
-  useEffect(() => {
-    protocolProbeSeqRef.current += 1;
-    setApiFormatDetection((current) =>
-      current && current.identity === activeProtocolIdentity ? current : null,
-    );
-    setApiFormatDetectionError(null);
-  }, [activeProtocolIdentity, editor?.id]);
 
   useEffect(() => {
     setShowKey(false);
@@ -1058,8 +1087,6 @@ export default function ChimeraApp({
   }, [Boolean(editor)]);
 
   void runtime;
-  void apiFormatDetection;
-  void apiFormatDetectionError;
   void modelFetchError;
   void commonConfigLoading;
   void fetchingModels;
@@ -1070,6 +1097,10 @@ export default function ChimeraApp({
   const openEditor = (
     draft: ReturnType<typeof providerDraft>,
     appId: AppId = "codex",
+    // Codex knows its own current line; other tools pass theirs in.
+    inUse = appId === "codex" &&
+      Boolean(draft.original) &&
+      draft.original?.id === activeProvider?.id,
   ) => {
     editorOpenSeqRef.current += 1;
     editorRef.current = draft;
@@ -1079,8 +1110,8 @@ export default function ChimeraApp({
     setModelFetchError(null);
     editorBaselineRef.current = editorDraftSignature(draft);
     setEditorAppId(appId);
+    setEditorInUse(inUse);
     setEditor(draft);
-    setApiFormatDetection(detectionFromProvider(draft.original, draft));
   };
 
   const openToolEditor = async (lineId: string, appId: AppId) => {
@@ -1100,11 +1131,26 @@ export default function ChimeraApp({
       return;
     }
     try {
-      const all = await providersApi.getAll(appId);
+      const additive = appId === "opencode" || appId === "pi";
+      const [all, current] = await Promise.all([
+        providersApi.getAll(appId),
+        // Additive tools have no current line; an enabled one is in use. The
+        // current line only decides a notice, so failing to read it is no
+        // reason to keep the editor shut.
+        additive
+          ? Promise.resolve("")
+          : providersApi.getCurrent(appId).catch(() => ""),
+      ]);
       if (!ownsOpen()) return;
       const provider = all[lineId];
       if (!provider) throw new Error("线路不存在或已被删除");
-      openEditor(providerDraft(provider, undefined, appId), appId);
+      openEditor(
+        providerDraft(provider, undefined, appId),
+        appId,
+        additive
+          ? provider.meta?.liveConfigManaged !== false
+          : current === provider.id,
+      );
     } catch (error) {
       if (ownsOpen())
         toast.error("无法打开线路", { description: String(error) });
@@ -1215,10 +1261,13 @@ export default function ChimeraApp({
         return;
       }
 
+      // A drag region is handled by Tauri's own drag script (drag.js), which
+      // also turns a double-click there into maximize; starting a second drag
+      // from here would race it.
       const target = event.target as HTMLElement;
       if (
         target.closest(
-          'button, input, textarea, select, a, [role="button"], [data-tauri-no-drag]',
+          'button, input, textarea, select, a, [role="button"], [data-tauri-no-drag], [data-tauri-drag-region]',
         )
       ) {
         return;
@@ -1471,6 +1520,7 @@ export default function ChimeraApp({
             ? "已打开 Codex"
             : "Codex 已启动",
       );
+      notifyLaunchFollowUps(result);
       if (result.modelUnlockError) {
         toast.warning("模型目录已保存；桌面端模型选择器增强未连接", {
           description: result.modelUnlockError,
@@ -1647,6 +1697,9 @@ export default function ChimeraApp({
     baseUrl: string,
     providerName = "Codex",
     target: "home" | "draft" = "home",
+    // The automatic check after startup reports success on the station sign
+    // only; a toast for it would cover whatever the user opened meanwhile.
+    { quietSuccess = false }: { quietSuccess?: boolean } = {},
   ) => {
     if (designPreview) return false;
     const started = performance.now();
@@ -1676,9 +1729,11 @@ export default function ChimeraApp({
         providerName,
         performance.now() - started,
       );
-      toast.success("地址可达", {
-        description: `响应时间 ${result.latency} ms · 未验证密钥或模型`,
-      });
+      if (!quietSuccess) {
+        toast.success("地址可达", {
+          description: `响应时间 ${result.latency} ms · 未验证密钥或模型`,
+        });
+      }
       return true;
     } catch (error) {
       if (seq !== seqRef.current) return false;
@@ -1712,7 +1767,10 @@ export default function ChimeraApp({
         const endpoint = extractCodexBaseUrl(
           String(current.settingsConfig?.config ?? ""),
         );
-        if (endpoint) void testConnection(endpoint, current.name);
+        if (endpoint)
+          void testConnection(endpoint, current.name, "home", {
+            quietSuccess: true,
+          });
       })
       .catch(() => {
         // Startup validation is optional and must never block the main window.
@@ -1732,7 +1790,6 @@ export default function ChimeraApp({
     if (draft !== editor) {
       editorRef.current = draft;
       setEditor(draft);
-      setApiFormatDetectionError(null);
     }
     if (
       !draft.name.trim() ||
@@ -1877,7 +1934,6 @@ export default function ChimeraApp({
         );
         resolvedApiFormat = codexApiFormatForModel(draft.model);
         resolvedAnthropicAuthField = draft.anthropicAuthField;
-        setApiFormatDetectionError(null);
       }
 
       if (editorRef.current !== draft) {
@@ -2168,7 +2224,6 @@ export default function ChimeraApp({
     const fetchSeq = ++fetchModelsSeqRef.current;
     setFetchingModels(true);
     setModelFetchError(null);
-    setApiFormatDetectionError(null);
     try {
       const result = await fetchModelsForConfig(
         draft.baseUrl,
@@ -2200,8 +2255,9 @@ export default function ChimeraApp({
       // An empty default model gets a suggestion (the first fetched entry that
       // is not an embedding / rerank / speech / image model). The picker that
       // opens next shows the count and the suggestion, so no toast repeats it.
+      // Claude Code leaves an empty default model to the tool itself.
       let suggested: string | null = null;
-      if (!latest.model.trim()) {
+      if (editorAppId === "codex" && !latest.model.trim()) {
         suggested = pickDefaultFetchedModel(result) ?? null;
         if (suggested) {
           const value = suggested;
@@ -2223,7 +2279,6 @@ export default function ChimeraApp({
       note("获取模型", "error", String(error), draft.name || "未命名供应商");
       setModels([]);
       setModelFetchIdentity(endpointIdentity);
-      setApiFormatDetection(null);
       setModelFetchError({
         kind: "error",
         code: classifyModelFetchError(error),
@@ -2508,7 +2563,7 @@ export default function ChimeraApp({
           <div
             data-pencil-name="字标区"
             className="box-border w-full h-[40px] shrink-0 flex flex-row gap-0 p-[0px_8px] justify-start items-center"
-            data-tauri-drag-region
+            {...DRAG_REGION_ATTR}
           >
             {isMac() && <WindowControls closeDisabled={Boolean(editor)} />}
             <div
@@ -2766,7 +2821,7 @@ export default function ChimeraApp({
           <div
             data-pencil-name="左"
             className="box-border flex-1 min-w-0 h-[40px] flex flex-row p-[0px_12px] justify-start items-center gap-2"
-            data-tauri-drag-region
+            {...DRAG_REGION_ATTR}
           >
             {isMac() && editor && (
               <WindowControls closeDisabled={Boolean(editor)} />
@@ -2862,27 +2917,43 @@ export default function ChimeraApp({
           className={`chimera-content${view === "providers" ? " is-provider-view" : ""}`}
         >
           {view === "providers" && loadError && (
-            <section className="route-load-error" role="alert">
-              <CircleAlert size={26} />
-              <h2>无法读取线路列表</h2>
-              <p>{loadError}</p>
-              <div>
-                <button
-                  className="primary"
-                  onClick={() => void retryLoadProviders()}
-                  disabled={loading}
-                  data-autofocus
-                >
-                  {loading ? (
-                    <>
-                      <LoaderCircle className="spin" size={15} /> 正在重试…
-                    </>
-                  ) : (
-                    <>
-                      <RefreshCw size={15} /> 重试
-                    </>
-                  )}
-                </button>
+            <section className="provider-page">
+              <header className="provider-page-heading">
+                <div>
+                  <h2>线路</h2>
+                  <p>Codex 同一时间只走一条线路</p>
+                </div>
+              </header>
+              <div className="route-load-error" role="alert">
+                <div className="route-load-error-head">
+                  <strong>
+                    <CircleAlert size={16} aria-hidden="true" />
+                    无法读取线路列表
+                  </strong>
+                  <button
+                    type="button"
+                    onClick={() => void retryLoadProviders()}
+                    disabled={loading}
+                  >
+                    {loading ? (
+                      <>
+                        <LoaderCircle
+                          className="spin"
+                          size={14}
+                          aria-hidden="true"
+                        />
+                        正在重试…
+                      </>
+                    ) : (
+                      <>
+                        <RefreshCw size={14} aria-hidden="true" />
+                        重试
+                      </>
+                    )}
+                  </button>
+                </div>
+                <p>请稍后重试；读取失败不会修改任何配置。</p>
+                <pre>{loadError}</pre>
               </div>
             </section>
           )}
@@ -3072,7 +3143,10 @@ export default function ChimeraApp({
                 setCommonConfigSnippet(value);
                 setCommonConfigDirty(value !== commonConfigBaselineRef.current);
               }}
-              onFetchModels={() => void fetchModels()}
+              onFetchModels={(target = "default") => {
+                setModelPickTarget(target);
+                void fetchModels();
+              }}
               connection={draftConnection}
               onTest={() =>
                 void testConnection(
@@ -3094,6 +3168,7 @@ export default function ChimeraApp({
                 capabilities,
                 "context_1m",
               )}
+              inUse={editorInUse}
               escapeDisabled={
                 Boolean(pendingProviderDelete) ||
                 savingProvider ||
@@ -3142,7 +3217,27 @@ export default function ChimeraApp({
           if (provider) openEditor(providerDraft(provider));
         }}
       />
-      {editor && models && modelPickerOpen && (
+      {/* The other tools fill one field from the list; Codex also edits its
+          mapping rows there. The 当前 tag compares IDs without a 1M marker. */}
+      {editor && models && modelPickerOpen && editorAppId !== "codex" && (
+        <CodexModelPicker
+          models={models}
+          defaultModel={claudeModelValue(editor, modelPickTarget)}
+          target={claudeModelFieldLabel(modelPickTarget)}
+          refetching={fetchingModels}
+          onPick={(model) => {
+            setEditor(
+              editorAppId === "claude"
+                ? withClaudeModel(editor, modelPickTarget, model)
+                : { ...editor, model },
+            );
+            setModelPickerOpen(false);
+          }}
+          onRefetch={() => void fetchModels({ refetch: true })}
+          onClose={() => setModelPickerOpen(false)}
+        />
+      )}
+      {editor && models && modelPickerOpen && editorAppId === "codex" && (
         <CodexModelPicker
           models={models}
           defaultModel={editor.model}
@@ -3197,6 +3292,7 @@ export default function ChimeraApp({
               setPendingModelReload(null);
               setCodexRestartRequired(false);
               toast.success("Codex 已重新加载模型列表");
+              notifyLaunchFollowUps(result);
               if (result.modelUnlockError) {
                 toast.warning("模型目录已保存；桌面端模型选择器增强未连接", {
                   description: result.modelUnlockError,
@@ -3785,6 +3881,30 @@ export function NewRuntimeView({
       ? "标准安装由 Windows 管理，没有本地回滚副本。"
       : "只有通过 Chimera++ 更新过的免安装版才会保留上一版本。";
   const recoveryEntry = recovery[0];
+  // Portable layout and a second, unmanaged standard install: one callout
+  // under the status board. An interrupted migration keeps the Codex files in
+  // the .layout- staging folder, so its title carries the "do not delete".
+  const layoutInterrupted = runtime?.portableLayout === "interrupted";
+  const unmanagedStandard = runtime?.unmanagedStandardVersion;
+  const runtimeNotice =
+    runningInTauri && (runtime?.layoutNotice || unmanagedStandard)
+      ? {
+          tone: layoutInterrupted ? ("warning" as const) : ("info" as const),
+          title: layoutInterrupted
+            ? "免安装版目录升级被中断 · 请勿删除 .layout- 暂存目录"
+            : runtime?.layoutNotice
+              ? "免安装版目录结构待升级"
+              : `另检测到标准安装 ${unmanagedStandard}`,
+          lines: [
+            runtime?.layoutNotice,
+            unmanagedStandard
+              ? runtime?.layoutNotice
+                ? `另检测到标准安装 ${unmanagedStandard}，它不由 Chimera++ 管理。`
+                : "它不由 Chimera++ 管理；本页的更新、修复与卸载只作用于免安装版。"
+              : null,
+          ].filter((line): line is string => Boolean(line)),
+        }
+      : null;
   const saveRuntimePreference = (
     patch: Partial<Pick<Settings, "codexInstallMode" | "codexUpdateSource">>,
   ) => {
@@ -4020,6 +4140,27 @@ export function NewRuntimeView({
             <FolderOpen size={16} />
           </button>
         </div>
+        {runtimeNotice && (
+          <div
+            className={`runtime-notice is-${runtimeNotice.tone}`}
+            role="status"
+            aria-labelledby="runtime-notice-title"
+          >
+            <span className="runtime-notice-icon" aria-hidden="true">
+              {runtimeNotice.tone === "warning" ? (
+                <TriangleAlert size={18} />
+              ) : (
+                <Info size={18} />
+              )}
+            </span>
+            <div>
+              <h3 id="runtime-notice-title">{runtimeNotice.title}</h3>
+              {runtimeNotice.lines.map((line) => (
+                <p key={line}>{line}</p>
+              ))}
+            </div>
+          </div>
+        )}
         {runtimeUnreadable && runtimeError && (
           <OperationReceipt
             className="runtime-receipt"
@@ -4474,14 +4615,16 @@ export function NewRuntimeView({
                 </button>
               </div>
             </div>
-            <button
-              className="primary runtime-maintenance-primary"
-              onClick={() => startAction("update", selectedPreferences)}
-              disabled={Boolean(operation) || preferencesBusy}
-            >
-              <Download size={15} />
-              下载并安装 {selectedInstallLabel}
-            </button>
+            <footer className="runtime-maintenance-footer">
+              <button
+                className="primary runtime-maintenance-primary"
+                onClick={() => startAction("update", selectedPreferences)}
+                disabled={Boolean(operation) || preferencesBusy}
+              >
+                <Download size={15} />
+                下载并安装 {selectedInstallLabel}
+              </button>
+            </footer>
           </section>
         </div>
       )}
@@ -4909,7 +5052,18 @@ export function NewProvidersView({
                 }${balanceData.unit ?? ""}`
           : "暂无余额数据";
   if (loading) return <Empty label="正在读取线路…" />;
-  if (!providers.length) return <Onboarding onAdd={onAdd} />;
+  if (!providers.length)
+    return (
+      <section className="provider-page">
+        <header className="provider-page-heading">
+          <div>
+            <h2>线路</h2>
+            <p>Codex 同一时间只走一条线路 · 尚未添加线路</p>
+          </div>
+        </header>
+        <Onboarding onAdd={onAdd} />
+      </section>
+    );
   const officialLoginRequired =
     currentIsOfficial && codexProcess?.officialLoginAvailable === false;
   const isOfficialLine = (provider: Provider) =>
@@ -4918,8 +5072,6 @@ export function NewProvidersView({
     lineLabels.get(provider.id)?.name ?? provider.name ?? "未命名线路";
   const lineSource = (provider: Provider) =>
     lineLabels.get(provider.id)?.source ?? "自定义线路";
-  // One badge rule everywhere: the line table, signboards and this manager.
-  const lineMark = (provider: Provider) => lineBadgeText(provider);
   const visibleLines = providers.filter((provider) => {
     const haystack =
       `${lineName(provider)} ${lineSource(provider)} ${provider.name} ${extractCodexModelName(String(provider.settingsConfig?.config ?? ""))}`.toLowerCase();
@@ -5225,20 +5377,23 @@ export function NewProvidersView({
                       type="button"
                       className="route-line-manager-main"
                       aria-label={`切换到${lineName(provider)}`}
+                      aria-current={active ? "true" : undefined}
                       onClick={() => void activateLine(provider)}
                     >
                       <span className="route-line-mark" aria-hidden="true">
                         {switching ? (
                           <LoaderCircle className="spin" size={16} />
                         ) : (
-                          lineMark(provider)
+                          <LineBadge line={provider} />
                         )}
                       </span>
                       <span>
                         <b>{lineName(provider)}</b>
                         <small>{lineSource(provider)}</small>
                       </span>
-                      {active && <Check size={16} aria-label="当前线路" />}
+                      {active && (
+                        <span className="route-line-current">当前</span>
+                      )}
                     </button>
                     {isOfficialLine(provider) ? (
                       <span className="route-line-official-note">
@@ -5318,12 +5473,30 @@ const lineColors = [
   ["#8F6446", "赭石"],
 ] as const;
 
-const CODEX_FORMAT_OPTIONS = [
+/** A colour option: its swatch, then its name. */
+const lineColorOption = (color: string, name: string) => (
+  <>
+    <span
+      aria-hidden="true"
+      style={{
+        display: "inline-block",
+        width: 10,
+        height: 10,
+        marginRight: 8,
+        borderRadius: 3,
+        background: color,
+      }}
+    />
+    {name}
+  </>
+);
+
+const CODEX_FORMAT_OPTIONS: EditorChoiceOption<CodexApiFormatSelection>[] = [
   ["auto", "自动", "按默认模型的名称推断"],
   ["openai_responses", "Responses", "上游原生支持，可直连"],
-  ["openai_chat", "Chat Completions", "经本地路由转换，需保持 Chimera++ 运行"],
-  ["anthropic", "Anthropic Messages", "经本地路由转换，需保持 Chimera++ 运行"],
-] as const;
+  ["openai_chat", "Chat Completions", ROUTED_PROTOCOL_NOTE],
+  ["anthropic", "Anthropic Messages", ROUTED_PROTOCOL_NOTE],
+];
 
 export function ProviderEditor({
   appId = "codex",
@@ -5351,6 +5524,7 @@ export function ProviderEditor({
   context1mEnabled = false,
   preserveOfficialLogin = null,
   deleteBlockedReason = null,
+  inUse = false,
 }: {
   appId?: AppId;
   editor: ReturnType<typeof providerDraft>;
@@ -5369,8 +5543,9 @@ export function ProviderEditor({
   commonConfigLoading: boolean;
   commonConfigLoaded: boolean;
   onCommonConfigChange: (value: string) => void;
-  /** Opens the loaded model list, or fetches it first. */
-  onFetchModels: () => void;
+  /** Opens the loaded model list, or fetches it first; for Claude Code, the
+   * field the list fills (the default model unless a tier is named). */
+  onFetchModels: (target?: ClaudeModelField) => void;
   connection: ConnectionState;
   onTest: () => void;
   onSave: () => void;
@@ -5383,24 +5558,34 @@ export function ProviderEditor({
   preserveOfficialLogin?: boolean | null;
   /** Why the line cannot be deleted right now; null when it can. */
   deleteBlockedReason?: string | null;
+  /** The line being edited is the one the tool uses (or, for OpenCode and
+   * Pi, is enabled), so saving rewrites the tool's live config. */
+  inUse?: boolean;
 }) {
   const isCodex = appId === "codex";
+  const isClaude = appId === "claude";
   const toolName = isNativeToolAppId(appId) ? nativeToolNames[appId] : "Codex";
   const needsModel = appId !== "claude" && appId !== "gemini";
-  const nativeProtocolOptions =
+  const nativeProtocolOptions: EditorChoiceOption<string>[] =
     appId === "opencode"
       ? [
-          ["@ai-sdk/openai-compatible", "Chat Completions"],
           ["@ai-sdk/openai", "Responses"],
+          ["@ai-sdk/openai-compatible", "Chat Completions"],
           ["@ai-sdk/anthropic", "Anthropic Messages"],
           ["@ai-sdk/google", "Gemini"],
         ]
       : [
-          ["openai-completions", "Chat Completions"],
           ["openai-responses", "Responses"],
+          ["openai-completions", "Chat Completions"],
           ["anthropic-messages", "Anthropic Messages"],
           ["google-generative-ai", "Gemini"],
         ];
+  // A protocol this editor has no name for stays selectable as itself.
+  if (
+    editor.nativeProtocol &&
+    !nativeProtocolOptions.some(([value]) => value === editor.nativeProtocol)
+  )
+    nativeProtocolOptions.push([editor.nativeProtocol, editor.nativeProtocol]);
   const [commonConfigOpen, setCommonConfigOpen] = useState(false);
   const [openReasoningRow, setOpenReasoningRow] = useState<number | null>(null);
   const [openInstructionsRow, setOpenInstructionsRow] = useState<number | null>(
@@ -5462,7 +5647,7 @@ export function ProviderEditor({
     setOpenInstructionsRow(null);
     setValidationAttempted(false);
     setEditor({
-      ...providerDraft(null, editor.name || "新线路"),
+      ...providerDraft(null, editor.name || "新线路", appId),
       id: editor.id,
     });
     setRestorePending(false);
@@ -5557,13 +5742,47 @@ export function ProviderEditor({
         : routing.routed
           ? "经本地路由：只填域名时会自动补 /v1。"
           : "直连上游：请填写完整基础地址，通常以 /v1 结尾。";
+  const addressHelp = isCodex
+    ? "Codex 在这个地址后拼接请求路径：直连时拼接 /responses；经本地路由时按协议拼接，只填域名会先补 /v1。"
+    : isClaude
+      ? "Claude Code 在这个地址后拼接 /v1/messages 发送请求。"
+      : appId === "gemini"
+        ? "Gemini CLI 在这个地址后拼接 /v1beta/models/… 等请求路径。"
+        : `${toolName} 在这个地址后拼接所选协议的请求路径，例如 Chat Completions 拼接 /chat/completions。`;
   const protocolSummary = !isCodex
-    ? editor.nativeProtocol || `${toolName} 原生协议`
+    ? (nativeProtocolOptions.find(
+        ([value]) => value === editor.nativeProtocol,
+      )?.[1] ?? `${toolName} 原生协议`)
     : editor.apiFormat !== "auto"
       ? codexApiFormatLabel(editor.apiFormat)
       : lineFormat
         ? `自动（${codexApiFormatLabel(lineFormat)}）`
         : "自动";
+  const additive = appId === "opencode" || appId === "pi";
+  const inUseNote = !inUse
+    ? null
+    : additive
+      ? `这条线路已启用。保存后立即写入 ${toolName} 的配置。`
+      : isCodex
+        ? "这是正在使用的线路。保存后立即写入 Codex 的配置；运行中的 Codex 可能需要重启。"
+        : `这是正在使用的线路。保存后立即写入 ${toolName} 的配置，重新打开 ${toolName} 后生效。`;
+  // Claude Code keeps a `[1M]` suffix on the stored model; the input shows
+  // the bare ID and the 1M box shows the suffix.
+  const defaultModelInput = isClaude
+    ? claudeModelValue(editor, "default")
+    : editor.model;
+  const defaultModelId = defaultModelInput.trim();
+  const defaultModelLabel = `${defaultModelId}${
+    isClaude && claudeModelOneM(editor, "default") ? " · 1M" : ""
+  }`;
+  // An empty tier without a default model makes Claude Code ask for the
+  // original Claude model name, which a third-party service may reject.
+  const unsetTiers =
+    isClaude && !defaultModelId && editor.original?.category !== "official"
+      ? CLAUDE_TIER_ROWS.filter(
+          (tier) => !editor.claudeTiers[tier].model.trim(),
+        ).map((tier) => claudeTierLabel(tier))
+      : [];
   const basicMissing = [
     editor.name,
     editor.baseUrl,
@@ -5659,6 +5878,7 @@ export function ProviderEditor({
       <div className="editor-scroll">
         <fieldset className="editor-form" disabled={savingProvider}>
           <legend className="sr-only">线路配置</legend>
+          {inUseNote && <EditorInUseNotice>{inUseNote}</EditorInUseNotice>}
           {saveError && (
             <p className="editor-feedback" role="alert">
               {saveError}
@@ -5675,8 +5895,11 @@ export function ProviderEditor({
                   : "请填写标有 * 的必填项。"}
               </p>
             )}
-          {isCodex && !editor.original && (
-            <CodexPresetStart onRestore={() => setRestorePending(true)} />
+          {!editor.original && (
+            <EditorTemplateCard
+              name={getChimeraHubTemplate().name}
+              onRestore={() => setRestorePending(true)}
+            />
           )}
           <section
             className="editor-basic"
@@ -5704,13 +5927,10 @@ export function ProviderEditor({
                     }}
                   >
                     外观
-                    <span
-                      className="provider-row-badge"
-                      aria-hidden="true"
-                      style={{ background: editor.iconColor || "#537197" }}
-                    >
-                      {lineBadgeText(badgeSource)}
-                    </span>
+                    <LineBadge
+                      line={{ ...badgeSource, iconColor: editor.iconColor }}
+                      size="sm"
+                    />
                     <span>
                       {lineColors.find(
                         ([color]) =>
@@ -5747,31 +5967,41 @@ export function ProviderEditor({
                       label="线路颜色"
                       htmlFor="provider-line-color-input"
                     >
-                      <select
+                      <EditorSelect
                         id="provider-line-color-input"
                         value={editor.iconColor ?? ""}
-                        onChange={(event) =>
+                        disabled={savingProvider}
+                        onChange={(value) =>
                           setEditor({
                             ...editor,
-                            iconColor: event.target.value || undefined,
+                            iconColor: value || undefined,
                           })
                         }
-                      >
-                        <option value="">默认（钴蓝）</option>
-                        {editor.iconColor &&
+                        options={[
+                          [
+                            "",
+                            lineColorOption(lineColors[0][0], "默认（钴蓝）"),
+                          ],
+                          ...(editor.iconColor &&
                           !lineColors.some(
                             ([color]) => color === editor.iconColor,
-                          ) && (
-                            <option value={editor.iconColor}>
-                              当前自定义颜色
-                            </option>
-                          )}
-                        {lineColors.map(([color, name]) => (
-                          <option key={color} value={color}>
-                            {name}
-                          </option>
-                        ))}
-                      </select>
+                          )
+                            ? [
+                                [
+                                  editor.iconColor,
+                                  lineColorOption(
+                                    editor.iconColor,
+                                    "当前自定义颜色",
+                                  ),
+                                ] as const,
+                              ]
+                            : []),
+                          ...lineColors.map(
+                            ([color, name]) =>
+                              [color, lineColorOption(color, name)] as const,
+                          ),
+                        ]}
+                      />
                     </EditorField>
                   </div>
                 </details>
@@ -5788,11 +6018,7 @@ export function ProviderEditor({
                     : "https://api.example.com/v1"
                 }
                 hint={addressHint}
-                help={
-                  isCodex
-                    ? "Codex 在这个地址后拼接请求路径：直连时拼接 /responses；经本地路由时按协议拼接，只填域名会先补 /v1。"
-                    : undefined
-                }
+                help={addressHelp}
               />
               <EditorField
                 label={isCodex ? "API Key *" : "API Key"}
@@ -5841,6 +6067,25 @@ export function ProviderEditor({
                     : "切换到这条线路会移除 ChatGPT 官方登录，之后切回官方线路需要重新登录。"}
                 </p>
               )}
+              <details className="chimera-disclosure is-inline editor-more-info">
+                <summary>更多信息 · 备注、官网</summary>
+                <div className="chimera-disclosure-body">
+                  <Field
+                    label="备注"
+                    name="provider-notes"
+                    value={editor.notes}
+                    onChange={(value) => patch("notes", value)}
+                    placeholder="例如：公司专用账号"
+                  />
+                  <Field
+                    label="官网链接"
+                    name="provider-website"
+                    value={editor.websiteUrl}
+                    onChange={(value) => patch("websiteUrl", value)}
+                    placeholder="https://example.com"
+                  />
+                </div>
+              </details>
             </div>
           </section>
           <section
@@ -5852,37 +6097,14 @@ export function ProviderEditor({
               <SectionStatus missing={protocolMissing} />
             </div>
             {isCodex && (
-              <div className="editor-format">
-                <EditorLabel
-                  id="editor-format-label"
-                  label="协议"
-                  help="自动：按默认模型的名称选择，GPT 系用 Responses，Claude 系用 Anthropic Messages，其余用 Chat Completions；保存时不探测上游。网关的实际协议不同时请手动指定。"
-                />
-                <div
-                  className="editor-format-options"
-                  role="radiogroup"
-                  aria-labelledby="editor-format-label"
-                >
-                  {CODEX_FORMAT_OPTIONS.map(([value, label, description]) => (
-                    <label key={value} className="editor-format-option">
-                      <input
-                        type="radio"
-                        name="provider-api-format"
-                        value={value}
-                        checked={editor.apiFormat === value}
-                        onChange={() => patch("apiFormat", value)}
-                        aria-labelledby={`editor-format-${value}`}
-                        aria-describedby={`editor-format-${value}-note`}
-                      />
-                      <span className="editor-format-option-text">
-                        <b id={`editor-format-${value}`}>{label}</b>
-                        <small id={`editor-format-${value}-note`}>
-                          {description}
-                        </small>
-                      </span>
-                    </label>
-                  ))}
-                </div>
+              <EditorChoice
+                name="provider-api-format"
+                label="协议"
+                help="自动：按默认模型的名称选择，GPT 系用 Responses，Claude 系用 Anthropic Messages，其余用 Chat Completions；保存时不探测上游。网关的实际协议不同时请手动指定。"
+                value={editor.apiFormat}
+                options={CODEX_FORMAT_OPTIONS}
+                onChange={(value) => patch("apiFormat", value)}
+              >
                 <p className="editor-routing">
                   {editor.apiFormat === "auto" && (
                     <span>
@@ -5895,45 +6117,17 @@ export function ProviderEditor({
                     <span>保存后{describeCodexRouting(routing)}</span>
                   )}
                 </p>
-              </div>
+              </EditorChoice>
             )}
-            {(appId === "opencode" || appId === "pi") && (
-              <EditorField label="接口类型" htmlFor="provider-native-protocol">
-                <select
-                  id="provider-native-protocol"
-                  value={editor.nativeProtocol}
-                  onChange={(event) =>
-                    patch("nativeProtocol", event.target.value)
-                  }
-                >
-                  {!nativeProtocolOptions.some(
-                    ([value]) => value === editor.nativeProtocol,
-                  ) && (
-                    <option value={editor.nativeProtocol}>
-                      {editor.nativeProtocol}
-                    </option>
-                  )}
-                  {nativeProtocolOptions.map(([value, label]) => (
-                    <option key={value} value={value}>
-                      {label}
-                    </option>
-                  ))}
-                </select>
-              </EditorField>
-            )}
-            {appId === "claude" && (
-              <EditorField label="认证方式" htmlFor="provider-claude-auth">
-                <select
-                  id="provider-claude-auth"
-                  value={editor.anthropicAuthField}
-                  onChange={(event) =>
-                    patch("anthropicAuthField", event.target.value)
-                  }
-                >
-                  <option value="ANTHROPIC_AUTH_TOKEN">Bearer Token</option>
-                  <option value="ANTHROPIC_API_KEY">API Key (x-api-key)</option>
-                </select>
-              </EditorField>
+            {additive && (
+              <EditorChoice
+                name="provider-native-protocol"
+                label="协议"
+                help={`${toolName} 按这个协议请求上游；服务商通常在文档里写明支持的协议。`}
+                value={editor.nativeProtocol}
+                options={nativeProtocolOptions}
+                onChange={(value) => patch("nativeProtocol", value)}
+              />
             )}
             <EditorField
               className="editor-default-model"
@@ -5946,24 +6140,36 @@ export function ProviderEditor({
               }
               htmlFor="provider-model-input"
             >
-              <div className="model-input">
-                <input
-                  id="provider-model-input"
-                  name="provider-model"
-                  autoComplete="off"
-                  spellCheck={false}
-                  value={editor.model}
-                  onChange={(event) => patch("model", event.target.value)}
-                  placeholder={
-                    isCodex
-                      ? "先获取模型列表，或手动输入"
-                      : "填写服务商提供的模型 ID"
-                  }
-                />
-                {isCodex && (
+              <div className="editor-model-line">
+                <div className="model-input">
+                  <input
+                    id="provider-model-input"
+                    name="provider-model"
+                    autoComplete="off"
+                    spellCheck={false}
+                    value={isClaude ? defaultModelInput : editor.model}
+                    onChange={(event) =>
+                      setEditor(
+                        isClaude
+                          ? withClaudeModel(
+                              editor,
+                              "default",
+                              event.target.value,
+                            )
+                          : { ...editor, model: event.target.value },
+                      )
+                    }
+                    placeholder={
+                      isCodex
+                        ? "先获取模型列表，或手动输入"
+                        : needsModel
+                          ? "填写服务商提供的模型 ID，或获取模型列表"
+                          : "留空由工具决定，可获取模型列表或手动输入"
+                    }
+                  />
                   <button
                     type="button"
-                    onClick={onFetchModels}
+                    onClick={() => onFetchModels()}
                     disabled={fetchingModels || savingProvider}
                   >
                     {fetchingModels ? (
@@ -5975,16 +6181,160 @@ export function ProviderEditor({
                     )}{" "}
                     {modelsFetched ? "选择模型" : "获取模型"}
                   </button>
+                </div>
+                {isClaude && (
+                  <OneMCheck
+                    label="默认模型"
+                    checked={claudeModelOneM(editor, "default")}
+                    disabled={!defaultModelId}
+                    onChange={(on) =>
+                      setEditor(withClaudeOneM(editor, "default", on))
+                    }
+                  />
                 )}
               </div>
-              {isCodex && modelFetchError && (
+              {modelFetchError && (
                 <ModelFetchNotice
                   issue={modelFetchError}
                   onAction={onModelFetchAction}
+                  canSetModelsUrl={isCodex}
                 />
               )}
             </EditorField>
           </section>
+          {isClaude && (
+            <div className="advanced-group model-mapping">
+              <div className="advanced-section-heading">
+                <span className="editor-field-label">
+                  <b>模型映射</b>
+                  <HelpTip title="模型映射说明">
+                    Claude Code 按 Sonnet、Opus、Fable、Haiku
+                    档位请求模型，这里填写每档对应的上游实际模型。Sonnet、Opus、Haiku
+                    留空时跟随默认模型；Fable 留空时，经本地路由会沿用
+                    Opus。显示名是 Claude Code 模型菜单里看到的名字。勾选 1M
+                    会在模型名后加 [1M]，告诉 Claude Code 这个模型支持 1M
+                    上下文；只在服务商确实支持时勾选。
+                  </HelpTip>
+                </span>
+              </div>
+              <div className="mapping-head is-tiers" aria-hidden="true">
+                <span>档位</span>
+                <span>菜单显示名（可选）</span>
+                <span>实际请求模型</span>
+                <span>声明支持 1M</span>
+              </div>
+              {CLAUDE_TIER_ROWS.map((tier) => {
+                const label = claudeTierLabel(tier);
+                const slot = editor.claudeTiers[tier];
+                const hasModel = Boolean(slot.model.trim());
+                const followsDefault =
+                  CLAUDE_TIERS_FOLLOWING_DEFAULT.includes(tier) &&
+                  defaultModelId !== "";
+                return (
+                  <div className="mapping-row is-tiers" key={tier}>
+                    <span className="mapping-role">{label}</span>
+                    <input
+                      aria-label={`${label} 菜单显示名`}
+                      autoComplete="off"
+                      spellCheck={false}
+                      value={slot.name}
+                      disabled={!hasModel}
+                      onChange={(event) =>
+                        setEditor({
+                          ...editor,
+                          claudeTiers: {
+                            ...editor.claudeTiers,
+                            [tier]: { ...slot, name: event.target.value },
+                          },
+                        })
+                      }
+                      placeholder={hasModel ? "显示名" : "先填写模型"}
+                    />
+                    <div className="model-input">
+                      <input
+                        name={`provider-claude-${tier}-model`}
+                        aria-label={`${label} 实际请求模型`}
+                        autoComplete="off"
+                        spellCheck={false}
+                        value={claudeModelValue(editor, tier)}
+                        onChange={(event) =>
+                          setEditor(
+                            withClaudeModel(editor, tier, event.target.value),
+                          )
+                        }
+                        placeholder={
+                          followsDefault
+                            ? `跟随默认模型（${defaultModelLabel}）`
+                            : "未设置"
+                        }
+                      />
+                      <button
+                        type="button"
+                        aria-label={`从模型列表选择 ${label} 模型`}
+                        onClick={() => onFetchModels(tier)}
+                        disabled={fetchingModels || savingProvider}
+                      >
+                        <ListChecks size={14} aria-hidden="true" />
+                        选择
+                      </button>
+                    </div>
+                    <OneMCheck
+                      label={label}
+                      checked={claudeModelOneM(editor, tier)}
+                      disabled={!hasModel}
+                      onChange={(on) =>
+                        setEditor(withClaudeOneM(editor, tier, on))
+                      }
+                    />
+                  </div>
+                );
+              })}
+              <div className="mapping-row is-tiers">
+                <span className="mapping-role">子代理</span>
+                <span className="mapping-note">子任务使用，不进模型菜单</span>
+                <div className="model-input">
+                  <input
+                    name="provider-claude-subagent-model"
+                    aria-label="子代理实际请求模型"
+                    autoComplete="off"
+                    spellCheck={false}
+                    value={claudeModelValue(editor, "subagent")}
+                    onChange={(event) =>
+                      setEditor(
+                        withClaudeModel(editor, "subagent", event.target.value),
+                      )
+                    }
+                    placeholder="未设置"
+                  />
+                  <button
+                    type="button"
+                    aria-label="从模型列表选择子代理模型"
+                    onClick={() => onFetchModels("subagent")}
+                    disabled={fetchingModels || savingProvider}
+                  >
+                    <ListChecks size={14} aria-hidden="true" />
+                    选择
+                  </button>
+                </div>
+                <OneMCheck
+                  label="子代理"
+                  checked={claudeModelOneM(editor, "subagent")}
+                  disabled={!editor.subagentModel.trim()}
+                  onChange={(on) =>
+                    setEditor(withClaudeOneM(editor, "subagent", on))
+                  }
+                />
+              </div>
+              {unsetTiers.length > 0 && (
+                <p className="editor-model-notice is-warning" role="status">
+                  <TriangleAlert size={15} aria-hidden="true" />
+                  <span>
+                    {`${unsetTiers.join("、")} 未设置，也没有默认模型：Claude Code 会用原始 Claude 模型名请求，第三方服务可能拒绝。`}
+                  </span>
+                </p>
+              )}
+            </div>
+          )}
           {isCodex && (
             <>
               <div className="advanced-group model-mapping">
@@ -6001,21 +6351,27 @@ export function ProviderEditor({
                     </span>
                   </span>
                   <span className="mapping-heading-actions">
-                    {modelsFetched && (
-                      <button
-                        type="button"
-                        className="secondary compact"
-                        onClick={onFetchModels}
-                        disabled={fetchingModels}
-                      >
-                        从列表选择
-                      </button>
-                    )}
+                    <button
+                      type="button"
+                      className="secondary compact"
+                      onClick={() => onFetchModels()}
+                      disabled={fetchingModels}
+                    >
+                      {fetchingModels ? (
+                        <LoaderCircle className="spin" size={14} />
+                      ) : modelsFetched ? (
+                        <ListChecks size={14} aria-hidden="true" />
+                      ) : (
+                        <Download size={14} aria-hidden="true" />
+                      )}
+                      {modelsFetched ? "从列表选择" : "获取模型列表"}
+                    </button>
                     <button
                       type="button"
                       className="secondary compact"
                       onClick={addMappingRow}
                     >
+                      <Plus size={14} aria-hidden="true" />
                       添加模型
                     </button>
                   </span>
@@ -6283,29 +6639,27 @@ export function ProviderEditor({
                         {(item.reasoningLevels?.length ?? 0) > 0 && (
                           <div className="reasoning-panel-default">
                             <span>默认等级</span>
-                            <select
-                              aria-label={`模型 ${index + 1} 默认思考等级`}
+                            <EditorSelect
+                              label={`模型 ${index + 1} 默认思考等级`}
                               value={item.defaultReasoningLevel ?? ""}
-                              onChange={(event) => {
+                              onChange={(value) => {
                                 const catalogModels = [...editor.catalogModels];
                                 const next: CodexCatalogModel = { ...item };
-                                if (event.target.value) {
-                                  next.defaultReasoningLevel =
-                                    event.target.value;
+                                if (value) {
+                                  next.defaultReasoningLevel = value;
                                 } else {
                                   delete next.defaultReasoningLevel;
                                 }
                                 catalogModels[index] = next;
                                 setEditor({ ...editor, catalogModels });
                               }}
-                            >
-                              <option value="">自动</option>
-                              {item.reasoningLevels!.map((level) => (
-                                <option key={level} value={level}>
-                                  {level}
-                                </option>
-                              ))}
-                            </select>
+                              options={[
+                                ["", "自动"],
+                                ...item.reasoningLevels!.map(
+                                  (level) => [level, level] as const,
+                                ),
+                              ]}
+                            />
                           </div>
                         )}
                       </div>
@@ -6343,334 +6697,303 @@ export function ProviderEditor({
                   </div>
                 ))}
               </div>
-              <details className="advanced-options" ref={advancedRef}>
-                <summary>
-                  <span className="advanced-summary-copy">
-                    <b>高级配置</b>
-                    <small>
-                      {advancedActive.length
-                        ? `已启用：${advancedActive.join("、")}`
-                        : "Codex 功能 · 通用配置 · 兼容性"}
-                    </small>
-                  </span>
-                  <span className="advanced-summary-action">
-                    <span className="when-collapsed">展开</span>
-                    <span className="when-expanded">收起</span>
-                    <ChevronDown size={18} aria-hidden="true" />
-                  </span>
-                </summary>
-                <div className="advanced-options-body">
-                  <Field
-                    label="官网链接（可选）"
-                    name="provider-website"
-                    value={editor.websiteUrl}
-                    onChange={(value) => patch("websiteUrl", value)}
-                    placeholder="https://example.com"
-                  />
-                  <div className="advanced-group codex-feature-options">
-                    <div className="advanced-section-heading">
-                      <EditorLabel
-                        label="Codex 功能"
-                        help="每条线路单独保存这些开关；未开启的功能不会写入配置。"
+              <EditorAdvanced
+                ref={advancedRef}
+                summary={
+                  advancedActive.length
+                    ? `已启用：${advancedActive.join("、")}`
+                    : "Codex 功能 · 通用配置 · 兼容性"
+                }
+              >
+                <div className="advanced-group codex-feature-options">
+                  <div className="advanced-section-heading">
+                    <span className="editor-field-label">
+                      <b>Codex 功能</b>
+                      <HelpTip title="Codex 功能说明">
+                        每条线路单独保存这些开关；未开启的功能不会写入配置。
+                      </HelpTip>
+                    </span>
+                  </div>
+                  <div className="toggle-list">
+                    <EditorToggle
+                      name="provider-goal-mode"
+                      label="目标模式"
+                      help="让 Codex 先列出目标，再逐步完成。"
+                      checked={editor.goalModeEnabled}
+                      onChange={(goalModeEnabled) =>
+                        setEditor({ ...editor, goalModeEnabled })
+                      }
+                    />
+                    {context1mEnabled && (
+                      <CodexContextWindowField
+                        value={editor.config}
+                        onChange={(config) => setEditor({ ...editor, config })}
+                        disabled={savingProvider}
                       />
-                    </div>
-                    <div className="toggle-list">
-                      <EditorToggle
-                        name="provider-goal-mode"
-                        label="目标模式"
-                        help="让 Codex 先列出目标，再逐步完成。"
-                        checked={editor.goalModeEnabled}
-                        onChange={(goalModeEnabled) =>
-                          setEditor({ ...editor, goalModeEnabled })
-                        }
-                      />
-                      {context1mEnabled && (
-                        <CodexContextWindowField
-                          value={editor.config}
-                          onChange={(config) =>
-                            setEditor({ ...editor, config })
-                          }
-                          disabled={savingProvider}
-                        />
-                      )}
-                      <EditorToggle
-                        name="provider-remote-compaction"
-                        label="远程上下文压缩"
-                        tag={<em className="experimental-tag">实验性</em>}
-                        note={
-                          remoteCompactionAvailable
-                            ? "只有原生 Responses 上游可用：长对话由上游压缩。"
-                            : "经 Chat 或 Anthropic 转换的线路不支持远程压缩。"
-                        }
-                        checked={
-                          editor.remoteCompactionEnabled &&
-                          remoteCompactionAvailable
-                        }
-                        disabled={!remoteCompactionAvailable}
-                        onChange={(remoteCompactionEnabled) =>
-                          setEditor({ ...editor, remoteCompactionEnabled })
-                        }
-                      />
-                      <EditorToggle
-                        name="provider-common-config"
-                        label="应用通用配置"
-                        help="切换到这条线路时，把共享的 Codex 配置合并进来。"
-                        checked={editor.commonConfigEnabled}
-                        disabled={commonConfigLoading || !commonConfigLoaded}
-                        onChange={(commonConfigEnabled) =>
-                          setEditor({ ...editor, commonConfigEnabled })
-                        }
-                      />
-                    </div>
-                    <div className="common-config-actions">
-                      <span>
-                        {commonConfigLoading
-                          ? "正在读取通用配置…"
-                          : commonConfigLoaded
-                            ? commonConfigSnippet.trim()
-                              ? "已设置通用配置"
-                              : "尚未设置通用配置"
-                            : "通用配置暂时不可用"}
-                      </span>
-                      <button
-                        type="button"
-                        className="link-button"
-                        aria-expanded={commonConfigOpen}
-                        disabled={!commonConfigLoaded}
-                        onClick={() => setCommonConfigOpen(!commonConfigOpen)}
-                      >
-                        {commonConfigOpen ? "收起编辑器" : "编辑通用配置"}
-                      </button>
-                    </div>
-                    {commonConfigOpen && (
-                      <div className="common-config-editor">
-                        <EditorLabel
-                          htmlFor="provider-common-config-input"
-                          label="通用 config.toml"
-                        />
-                        <textarea
-                          id="provider-common-config-input"
-                          name="provider-common-config-snippet"
-                          spellCheck={false}
-                          value={commonConfigSnippet}
-                          onChange={(event) =>
-                            onCommonConfigChange(event.target.value)
-                          }
-                          placeholder="例如 [features] 下需要在多条线路间共享的配置"
-                        />
-                        <small>
-                          共享内容会影响所有启用通用配置的线路；地址、密钥、模型和模型目录不会共享。
-                        </small>
-                        {commonConfigWarning && (
-                          <small className="error-text">
-                            {commonConfigWarning}
-                          </small>
-                        )}
-                      </div>
                     )}
+                    <EditorToggle
+                      name="provider-remote-compaction"
+                      label="远程上下文压缩"
+                      tag={<em className="experimental-tag">实验性</em>}
+                      note={
+                        remoteCompactionAvailable
+                          ? "只有原生 Responses 上游可用：长对话由上游压缩。"
+                          : "经 Chat 或 Anthropic 转换的线路不支持远程压缩。"
+                      }
+                      checked={
+                        editor.remoteCompactionEnabled &&
+                        remoteCompactionAvailable
+                      }
+                      disabled={!remoteCompactionAvailable}
+                      onChange={(remoteCompactionEnabled) =>
+                        setEditor({ ...editor, remoteCompactionEnabled })
+                      }
+                    />
+                    <EditorToggle
+                      name="provider-common-config"
+                      label="应用通用配置"
+                      help="切换到这条线路时，把共享的 Codex 配置合并进来。"
+                      checked={editor.commonConfigEnabled}
+                      disabled={commonConfigLoading || !commonConfigLoaded}
+                      onChange={(commonConfigEnabled) =>
+                        setEditor({ ...editor, commonConfigEnabled })
+                      }
+                    />
                   </div>
-
-                  <div className="advanced-group">
-                    <div className="advanced-section-heading">
-                      <b>兼容性</b>
-                    </div>
-                    <div className="toggle-list">
-                      <EditorToggle
-                        name="provider-full-url"
-                        label="完整 API 地址"
-                        help="地址已经包含完整的请求路径时开启，请求不再补全路径。"
-                        note="开启后，这条线路经本地路由发送请求。"
-                        checked={editor.isFullUrl}
-                        onChange={(isFullUrl) =>
-                          setEditor({ ...editor, isFullUrl })
-                        }
-                      />
-                    </div>
-                    <EditorField
-                      label="模型列表地址（可选）"
-                      htmlFor="provider-models-url-input"
-                      help="上游的模型列表接口和请求地址不在一起时填写，只用于获取模型。"
+                  <div className="common-config-actions">
+                    <span>
+                      {commonConfigLoading
+                        ? "正在读取通用配置…"
+                        : commonConfigLoaded
+                          ? commonConfigSnippet.trim()
+                            ? "已设置通用配置"
+                            : "尚未设置通用配置"
+                          : "通用配置暂时不可用"}
+                    </span>
+                    <button
+                      type="button"
+                      className="link-button"
+                      aria-expanded={commonConfigOpen}
+                      disabled={!commonConfigLoaded}
+                      onClick={() => setCommonConfigOpen(!commonConfigOpen)}
                     >
-                      <input
-                        id="provider-models-url-input"
-                        name="provider-models-url"
-                        type="url"
-                        autoComplete="url"
-                        spellCheck={false}
-                        value={editor.modelsUrl}
-                        onChange={(event) =>
-                          patch("modelsUrl", event.target.value)
-                        }
-                        placeholder="https://api.example.com/v1/models"
-                      />
-                    </EditorField>
-                    <EditorField
-                      label="自定义 User-Agent（可选）"
-                      htmlFor="provider-user-agent-input"
-                      help="部分上游只接受特定客户端标识的请求。"
-                      hint="填写后，这条线路经本地路由发送请求。"
-                      hintId="provider-user-agent-hint"
-                    >
-                      <input
-                        id="provider-user-agent-input"
-                        name="provider-user-agent"
-                        autoComplete="off"
-                        spellCheck={false}
-                        aria-describedby="provider-user-agent-hint"
-                        value={editor.customUserAgent}
-                        onChange={(event) =>
-                          patch("customUserAgent", event.target.value)
-                        }
-                        placeholder="留空使用默认请求标识"
-                      />
-                    </EditorField>
+                      {commonConfigOpen ? "收起编辑器" : "编辑通用配置"}
+                    </button>
                   </div>
-                  {lineFormat === "anthropic" && (
-                    <div className="advanced-group">
-                      <div className="advanced-section-heading">
-                        <b>Anthropic Messages</b>
-                      </div>
-                      <EditorField
-                        label="Anthropic 认证字段"
-                        htmlFor="provider-anthropic-auth-input"
-                      >
-                        <select
-                          id="provider-anthropic-auth-input"
-                          name="provider-anthropic-auth"
-                          value={editor.anthropicAuthField}
-                          onChange={(event) =>
-                            patch("anthropicAuthField", event.target.value)
-                          }
-                        >
-                          <option value="ANTHROPIC_AUTH_TOKEN">
-                            Authorization: Bearer
-                          </option>
-                          <option value="ANTHROPIC_API_KEY">x-api-key</option>
-                        </select>
-                      </EditorField>
-                      <EditorField
-                        label="最大输出 tokens（可选）"
-                        htmlFor="provider-max-output-tokens-input"
-                        help="单次回复最多输出的 tokens，留空时为 8192。"
-                      >
-                        <input
-                          id="provider-max-output-tokens-input"
-                          name="provider-max-output-tokens"
-                          type="number"
-                          min="1"
-                          inputMode="numeric"
-                          value={editor.maxOutputTokens}
-                          onChange={(event) =>
-                            patch(
-                              "maxOutputTokens",
-                              event.target.value.replace(/[^\d]/g, ""),
-                            )
-                          }
-                          placeholder="默认 8192"
-                        />
-                      </EditorField>
-                      <div className="toggle-list">
-                        <EditorToggle
-                          name="provider-impersonate-claude-code"
-                          label="模拟 Claude Code 客户端"
-                          help="只在上游明确要求 Claude Code 的请求特征时开启。"
-                          checked={editor.impersonateClaudeCode}
-                          onChange={(impersonateClaudeCode) =>
-                            setEditor({ ...editor, impersonateClaudeCode })
-                          }
-                        />
-                      </div>
-                    </div>
-                  )}
-                  {lineFormat === "openai_chat" && (
-                    <div className="advanced-group">
-                      <div className="advanced-section-heading">
-                        <b>Chat Completions</b>
-                        {editor.apiFormat === "auto" && (
-                          <small>只对按 Chat 转换的模型生效。</small>
-                        )}
-                      </div>
-                      <EditorField
-                        label="提示词缓存路由"
-                        htmlFor="provider-prompt-cache-routing-input"
-                        help="严格的网关遇到不认识的缓存字段会拒绝请求，这时选择关闭。"
-                      >
-                        <select
-                          id="provider-prompt-cache-routing-input"
-                          name="provider-prompt-cache-routing"
-                          value={editor.promptCacheRouting}
-                          onChange={(event) =>
-                            patch("promptCacheRouting", event.target.value)
-                          }
-                        >
-                          <option value="auto">自动（推荐）</option>
-                          <option value="enabled">开启</option>
-                          <option value="disabled">关闭</option>
-                        </select>
-                      </EditorField>
-                      <div className="toggle-list">
-                        <EditorToggle
-                          name="provider-supports-thinking"
-                          label="支持思考模式"
-                          help="把 Codex 的思考开关转换为上游 Chat 接口的参数。"
-                          checked={
-                            editor.codexChatReasoning.supportsThinking === true
-                          }
-                          onChange={(supportsThinking) =>
-                            setEditor({
-                              ...editor,
-                              codexChatReasoning: {
-                                ...editor.codexChatReasoning,
-                                supportsThinking,
-                                supportsEffort: supportsThinking
-                                  ? editor.codexChatReasoning.supportsEffort
-                                  : false,
-                              },
-                            })
-                          }
-                        />
-                        <EditorToggle
-                          name="provider-supports-effort"
-                          label="支持思考等级"
-                          help="上游支持 low、high、max 等推理强度时开启。"
-                          checked={
-                            editor.codexChatReasoning.supportsEffort === true
-                          }
-                          onChange={(supportsEffort) =>
-                            setEditor({
-                              ...editor,
-                              codexChatReasoning: {
-                                ...editor.codexChatReasoning,
-                                supportsThinking: supportsEffort
-                                  ? true
-                                  : editor.codexChatReasoning.supportsThinking,
-                                supportsEffort,
-                                effortParam: supportsEffort
-                                  ? (editor.codexChatReasoning.effortParam ??
-                                    "reasoning_effort")
-                                  : "none",
-                              },
-                            })
-                          }
-                        />
-                      </div>
+                  {commonConfigOpen && (
+                    <div className="common-config-editor">
+                      <EditorLabel
+                        htmlFor="provider-common-config-input"
+                        label="通用 config.toml"
+                      />
+                      <textarea
+                        id="provider-common-config-input"
+                        name="provider-common-config-snippet"
+                        spellCheck={false}
+                        value={commonConfigSnippet}
+                        onChange={(event) =>
+                          onCommonConfigChange(event.target.value)
+                        }
+                        placeholder="例如 [features] 下需要在多条线路间共享的配置"
+                      />
+                      <small>
+                        共享内容会影响所有启用通用配置的线路；地址、密钥、模型和模型目录不会共享。
+                      </small>
+                      {commonConfigWarning && (
+                        <small className="error-text">
+                          {commonConfigWarning}
+                        </small>
+                      )}
                     </div>
                   )}
                 </div>
-              </details>
+
+                <div className="advanced-group">
+                  <div className="advanced-section-heading">
+                    <b>兼容性</b>
+                  </div>
+                  <div className="toggle-list">
+                    <EditorToggle
+                      name="provider-full-url"
+                      label="完整 API 地址"
+                      help="地址已经包含完整的请求路径时开启，请求不再补全路径。"
+                      note="开启后，这条线路经本地路由发送请求。"
+                      checked={editor.isFullUrl}
+                      onChange={(isFullUrl) =>
+                        setEditor({ ...editor, isFullUrl })
+                      }
+                    />
+                  </div>
+                  <EditorField
+                    label="模型列表地址（可选）"
+                    htmlFor="provider-models-url-input"
+                    help="上游的模型列表接口和请求地址不在一起时填写，只用于获取模型。"
+                  >
+                    <input
+                      id="provider-models-url-input"
+                      name="provider-models-url"
+                      type="url"
+                      autoComplete="url"
+                      spellCheck={false}
+                      value={editor.modelsUrl}
+                      onChange={(event) =>
+                        patch("modelsUrl", event.target.value)
+                      }
+                      placeholder="https://api.example.com/v1/models"
+                    />
+                  </EditorField>
+                  <EditorField
+                    label="自定义 User-Agent（可选）"
+                    htmlFor="provider-user-agent-input"
+                    help="部分上游只接受特定客户端标识的请求。"
+                    hint="填写后，这条线路经本地路由发送请求。"
+                    hintId="provider-user-agent-hint"
+                  >
+                    <input
+                      id="provider-user-agent-input"
+                      name="provider-user-agent"
+                      autoComplete="off"
+                      spellCheck={false}
+                      aria-describedby="provider-user-agent-hint"
+                      value={editor.customUserAgent}
+                      onChange={(event) =>
+                        patch("customUserAgent", event.target.value)
+                      }
+                      placeholder="留空使用默认请求标识"
+                    />
+                  </EditorField>
+                </div>
+                {lineFormat === "anthropic" && (
+                  <div className="advanced-group">
+                    <div className="advanced-section-heading">
+                      <b>Anthropic Messages</b>
+                    </div>
+                    <EditorChoice
+                      name="provider-anthropic-auth"
+                      label="认证方式"
+                      help={ANTHROPIC_AUTH_HELP}
+                      value={editor.anthropicAuthField}
+                      options={ANTHROPIC_AUTH_OPTIONS}
+                      onChange={(value) => patch("anthropicAuthField", value)}
+                    />
+                    <EditorField
+                      label="最大输出 tokens（可选）"
+                      htmlFor="provider-max-output-tokens-input"
+                      help="单次回复最多输出的 tokens，留空时为 8192。"
+                    >
+                      <input
+                        id="provider-max-output-tokens-input"
+                        name="provider-max-output-tokens"
+                        type="number"
+                        min="1"
+                        inputMode="numeric"
+                        value={editor.maxOutputTokens}
+                        onChange={(event) =>
+                          patch(
+                            "maxOutputTokens",
+                            event.target.value.replace(/[^\d]/g, ""),
+                          )
+                        }
+                        placeholder="默认 8192"
+                      />
+                    </EditorField>
+                    <div className="toggle-list">
+                      <EditorToggle
+                        name="provider-impersonate-claude-code"
+                        label="模拟 Claude Code 客户端"
+                        help="只在上游明确要求 Claude Code 的请求特征时开启。"
+                        checked={editor.impersonateClaudeCode}
+                        onChange={(impersonateClaudeCode) =>
+                          setEditor({ ...editor, impersonateClaudeCode })
+                        }
+                      />
+                    </div>
+                  </div>
+                )}
+                {lineFormat === "openai_chat" && (
+                  <div className="advanced-group">
+                    <div className="advanced-section-heading">
+                      <b>Chat Completions</b>
+                      {editor.apiFormat === "auto" && (
+                        <small>只对按 Chat 转换的模型生效。</small>
+                      )}
+                    </div>
+                    <EditorChoice
+                      name="provider-prompt-cache-routing"
+                      label="提示词缓存路由"
+                      help="严格的网关遇到不认识的缓存字段会拒绝请求，这时选择关闭。"
+                      value={editor.promptCacheRouting}
+                      options={PROMPT_CACHE_OPTIONS}
+                      onChange={(value) => patch("promptCacheRouting", value)}
+                    />
+                    <div className="toggle-list">
+                      <EditorToggle
+                        name="provider-supports-thinking"
+                        label="支持思考模式"
+                        help="把 Codex 的思考开关转换为上游 Chat 接口的参数。"
+                        checked={
+                          editor.codexChatReasoning.supportsThinking === true
+                        }
+                        onChange={(supportsThinking) =>
+                          setEditor({
+                            ...editor,
+                            codexChatReasoning: {
+                              ...editor.codexChatReasoning,
+                              supportsThinking,
+                              supportsEffort: supportsThinking
+                                ? editor.codexChatReasoning.supportsEffort
+                                : false,
+                            },
+                          })
+                        }
+                      />
+                      <EditorToggle
+                        name="provider-supports-effort"
+                        label="支持思考等级"
+                        help="上游支持 low、high、max 等推理强度时开启。"
+                        checked={
+                          editor.codexChatReasoning.supportsEffort === true
+                        }
+                        onChange={(supportsEffort) =>
+                          setEditor({
+                            ...editor,
+                            codexChatReasoning: {
+                              ...editor.codexChatReasoning,
+                              supportsThinking: supportsEffort
+                                ? true
+                                : editor.codexChatReasoning.supportsThinking,
+                              supportsEffort,
+                              effortParam: supportsEffort
+                                ? (editor.codexChatReasoning.effortParam ??
+                                  "reasoning_effort")
+                                : "none",
+                            },
+                          })
+                        }
+                      />
+                    </div>
+                  </div>
+                )}
+              </EditorAdvanced>
             </>
           )}
-          {!isCodex && (
-            <p className="editor-test-scope">
-              {appId === "opencode" || appId === "pi"
-                ? "配置此线路的首个模型；已有的其他模型与高级设置会保留。保存后仍需在工具中选择默认模型。"
-                : "使用工具原生协议。模型留空时由工具选择，未填写密钥时沿用工具自身的登录方式。"}
-            </p>
-          )}
-          {(appId === "pi" || appId === "opencode") && (
-            <p className="editor-test-scope">
-              启用此线路不会停用其他线路，也不会切换工具的默认模型。
-            </p>
+          {isClaude && (
+            <EditorAdvanced
+              summary={`认证方式：${
+                ANTHROPIC_AUTH_OPTIONS.find(
+                  ([value]) => value === editor.anthropicAuthField,
+                )?.[1] ?? "Authorization: Bearer"
+              }`}
+            >
+              <EditorChoice
+                name="provider-claude-auth"
+                label="认证方式"
+                help={ANTHROPIC_AUTH_HELP}
+                value={editor.anthropicAuthField}
+                options={ANTHROPIC_AUTH_OPTIONS}
+                onChange={(value) => patch("anthropicAuthField", value)}
+              />
+            </EditorAdvanced>
           )}
           {connection.kind === "error" && (
             <p className="editor-feedback" role="alert">
@@ -6678,82 +7001,60 @@ export function ProviderEditor({
             </p>
           )}
         </fieldset>
-        <details className="editor-preview" aria-label="线路草稿预览">
+        <details
+          className="editor-preview chimera-disclosure is-inline"
+          aria-label="线路草稿预览"
+        >
           <summary>保存详情</summary>
-          <dl className="editor-save-summary">
-            <dt>线路</dt>
-            <dd>{editor.name.trim() || "未命名线路"}</dd>
-            <dt>地址</dt>
-            <dd>{previewOrigin}</dd>
-            <dt>模型</dt>
-            <dd>{editor.model.trim() || "由客户端选择"}</dd>
-            <dt>协议</dt>
-            <dd>{protocolSummary}</dd>
-            {routing && (
-              <>
-                <dt>连接</dt>
-                <dd>{describeCodexRouting(routing)}</dd>
-              </>
-            )}
-          </dl>
-          <p>
-            {appId === "opencode" || appId === "pi"
-              ? `保存并启用，不影响其他 ${toolName} 线路。`
-              : `保存后设为当前 ${toolName} 线路。`}
-            {isCodex && "运行中的 Codex 可能需要重启。"}
-          </p>
+          <div className="chimera-disclosure-body">
+            <dl className="editor-save-summary">
+              <dt>线路</dt>
+              <dd>{editor.name.trim() || "未命名线路"}</dd>
+              <dt>地址</dt>
+              <dd>{previewOrigin}</dd>
+              <dt>模型</dt>
+              <dd>{defaultModelLabel || "由客户端选择"}</dd>
+              <dt>协议</dt>
+              <dd>{protocolSummary}</dd>
+              {routing && (
+                <>
+                  <dt>连接</dt>
+                  <dd>{describeCodexRouting(routing)}</dd>
+                </>
+              )}
+            </dl>
+            <p>
+              {additive
+                ? `保存并启用，不影响其他 ${toolName} 线路，也不切换 ${toolName} 的默认模型。只改这条线路的首个模型，它已有的其他模型与高级设置会保留。`
+                : isCodex
+                  ? "保存后设为当前 Codex 线路。运行中的 Codex 可能需要重启。"
+                  : `保存后设为当前 ${toolName} 线路。模型留空时由 ${toolName} 选择，未填写密钥时沿用它自己的登录方式。`}
+            </p>
+          </div>
         </details>
       </div>
       <div className="editor-bottom">
         <footer>
-          <div className="editor-test-actions">
-            <button
-              type="button"
-              className="secondary"
-              onClick={onTest}
-              disabled={savingProvider || connection.kind === "checking"}
-            >
-              测试地址连通性
-            </button>
-            <small
-              className={`editor-connection is-${connection.kind}`}
-              role="status"
-            >
-              {connection.kind === "error"
-                ? "连接失败，详见正文"
-                : connection.kind === "unknown"
-                  ? "仅测试地址连通性，不验证密钥或模型"
-                  : connection.kind === "connected" &&
-                      connection.latencyMs != null
-                    ? `地址可达 · ${connection.latencyMs} ms`
-                    : connection.message}
-            </small>
-          </div>
-          <div className="editor-save-actions">
-            <button
-              type="button"
-              className="secondary"
-              onClick={onRequestClose}
-              disabled={savingProvider}
-            >
-              取消
-            </button>
+          <EditorTestAction
+            connection={connection}
+            onTest={onTest}
+            disabled={savingProvider}
+          />
+          <EditorSaveActions
+            onCancel={onRequestClose}
+            disabled={savingProvider}
+          >
             <button
               className="primary"
               onClick={submit}
               disabled={savingProvider || fetchingModels}
             >
-              {savingProvider ? (
-                <>
-                  <LoaderCircle className="spin" size={15} /> 正在保存…
-                </>
-              ) : appId === "pi" || appId === "opencode" ? (
-                "保存并启用"
-              ) : (
-                "保存并切换"
-              )}
+              <SaveLabel
+                busy={savingProvider}
+                label={additive ? "保存并启用" : "保存并切换"}
+              />
             </button>
-          </div>
+          </EditorSaveActions>
         </footer>
       </div>
       {restorePending && (
@@ -6864,7 +7165,15 @@ function ConfirmOperation({
         <CircleAlert size={26} />
         <h2 id="runtime-confirm-title">确认{label}？</h2>
         {facts.length > 0 && (
-          <p className="confirm-facts">{facts.join(" · ")}</p>
+          <p className="confirm-facts">
+            {facts.map((fact, index) => (
+              <Fragment key={fact}>
+                {index > 0 && " · "}
+                {/* A fact never breaks inside: "788.0 MB" stays whole. */}
+                <span className="runtime-confirm-fact">{fact}</span>
+              </Fragment>
+            ))}
+          </p>
         )}
         <p>{consequence}</p>
         <footer>
@@ -7208,7 +7517,10 @@ function StandaloneOnboarding({
   onSkip: () => void;
 }) {
   return (
-    <main className="onboarding-screen">
+    <main className="chimera-shell onboarding-screen">
+      <div className="onboarding-titlebar" {...DRAG_REGION_ATTR}>
+        <WindowControls />
+      </div>
       <section className="onboarding onboarding-card">
         <div className="onboarding-brand">
           <img src={routeGateIcon} alt="" /> Chimera++
@@ -7249,7 +7561,7 @@ function StandaloneOnboarding({
             开始配置
           </button>
         </footer>
-        <small>Chimera++ 2.0 · 数据仅保存在本机</small>
+        <small>数据仅保存在本机</small>
       </section>
     </main>
   );

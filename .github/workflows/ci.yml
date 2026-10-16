@@ -30,6 +30,9 @@ jobs:
       - name: Check committed secrets
         run: node scripts/check-committed-secrets.mjs
 
+      - name: Check local-only paths
+        run: node scripts/check-local-only-paths.mjs
+
       - name: Check repository references
         run: node scripts/check-repo-references.mjs
       - name: Check preset promotion data

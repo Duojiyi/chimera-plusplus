@@ -63,12 +63,14 @@ export function ToolRegistryPanel({
           <AboutSection isPortable={false} toolsOnly />
         </Suspense>
       )}
-      <details className="settings-tools-description">
-        <summary className="cursor-pointer">工具支持范围与配置方式</summary>
-        <p>
-          切换型工具每次使用一条线路；增量型工具可同时启用多条。切换与启停会修改本机配置。
-        </p>
-        <p>Claude Desktop 提供官方下载入口，需手动安装。</p>
+      <details className="settings-tools-description chimera-disclosure is-inline">
+        <summary>工具支持范围与配置方式</summary>
+        <div className="chimera-disclosure-body">
+          <p>
+            切换型工具每次使用一条线路；增量型工具可同时启用多条。切换与启停会修改本机配置。
+          </p>
+          <p>Claude Desktop 提供官方下载入口，需手动安装。</p>
+        </div>
       </details>
       {!native && (
         <p className="settings-tools-preview-note" role="status">

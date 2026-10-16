@@ -1,5 +1,5 @@
 import "./CcSwitchImportPreview.css";
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useId, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   ccSwitchImportApi,
@@ -136,6 +136,8 @@ export function CcSwitchImportPreview({
   const [committing, setCommitting] = useState(false);
   const [result, setResult] = useState<CcSwitchImportResult | null>(null);
   const [failure, setFailure] = useState("");
+  // Prefix for the notes that explain why 覆盖 is unavailable on a row.
+  const noteId = useId();
   const pickerRef = useRef<HTMLButtonElement>(null);
   const lastPath = useRef<string | null>(null);
   const inFlight = useRef(false);
@@ -382,12 +384,20 @@ export function CcSwitchImportPreview({
                         {status === "identical" ? (
                           <div className="cc-switch-identical-summary">
                             <span>
-                              {rows.map((row) => row.name).join("、") || "无"}
+                              {rows
+                                .map((row) =>
+                                  rows.filter(
+                                    (other) => other.name === row.name,
+                                  ).length > 1
+                                    ? `${row.name}（${toolName(row.app)}）`
+                                    : row.name,
+                                )
+                                .join("、") || "无"}
                             </span>
                             <small>自动跳过，不重复导入</small>
                           </div>
                         ) : (
-                          rows.map((row) => (
+                          rows.map((row, index) => (
                             <div
                               className={`settings-import-inventory-row cc-switch-row-${status}`}
                               key={rowKey(row)}
@@ -419,27 +429,41 @@ export function CcSwitchImportPreview({
                                   <legend className="sr-only">
                                     {row.name}的冲突处理
                                   </legend>
-                                  {conflictChoices.map(([action, text]) => (
-                                    <label key={action}>
-                                      <input
-                                        type="radio"
-                                        name={rowKey(row)}
-                                        checked={
-                                          (choices[rowKey(row)] ?? "skip") ===
-                                          action
-                                        }
-                                        disabled={
-                                          action === "replace" &&
-                                          !replaceable(row)
-                                        }
-                                        onChange={() => choose(row, action)}
-                                      />
-                                      {text}
-                                    </label>
-                                  ))}
+                                  {conflictChoices.map(([action, text]) => {
+                                    const blocked =
+                                      action === "replace" &&
+                                      !replaceable(row) &&
+                                      row.existingIds.length > 0;
+                                    return (
+                                      <label key={action}>
+                                        <input
+                                          type="radio"
+                                          name={rowKey(row)}
+                                          checked={
+                                            (choices[rowKey(row)] ?? "skip") ===
+                                            action
+                                          }
+                                          disabled={
+                                            action === "replace" &&
+                                            !replaceable(row)
+                                          }
+                                          aria-describedby={
+                                            blocked
+                                              ? `${noteId}-${index}`
+                                              : undefined
+                                          }
+                                          onChange={() => choose(row, action)}
+                                        />
+                                        {text}
+                                      </label>
+                                    );
+                                  })}
                                   {!replaceable(row) &&
                                     row.existingIds.length > 0 && (
-                                      <small>
+                                      <small
+                                        id={`${noteId}-${index}`}
+                                        className="cc-switch-conflict-note"
+                                      >
                                         {row.existingIds.length > 1
                                           ? "匹配到多条现有线路，无法确定覆盖哪一条。"
                                           : "现有线路正在使用或受保护，不能覆盖。"}
@@ -450,7 +474,13 @@ export function CcSwitchImportPreview({
                               {status === "conflict" &&
                                 row.existingIds.length > 0 && (
                                   <small>
-                                    现有线路标识：{row.existingIds.join("、")}
+                                    现有线路标识：
+                                    {row.existingIds.map((id, idIndex) => (
+                                      <Fragment key={id}>
+                                        {idIndex > 0 && "、"}
+                                        <code>{id}</code>
+                                      </Fragment>
+                                    ))}
                                   </small>
                                 )}
                             </div>

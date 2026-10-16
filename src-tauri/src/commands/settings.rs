@@ -116,6 +116,10 @@ pub struct PreferencesPatch {
     show_provider_balance: Option<bool>,
     minimize_to_tray_on_close: Option<bool>,
     lightweight_on_close: Option<bool>,
+    silent_startup: Option<bool>,
+    /// Sent with `silent_startup`: silent startup only applies with the tray
+    /// flag on (`AppSettings::starts_hidden`).
+    show_in_tray: Option<bool>,
 }
 
 impl PreferencesPatch {
@@ -143,6 +147,12 @@ impl PreferencesPatch {
         }
         if let Some(value) = self.minimize_to_tray_on_close {
             settings.minimize_to_tray_on_close = value;
+        }
+        if let Some(value) = self.silent_startup {
+            settings.silent_startup = value;
+        }
+        if let Some(value) = self.show_in_tray {
+            settings.show_in_tray = value;
         }
     }
 }
@@ -256,7 +266,7 @@ pub async fn save_settings(
         // 不只是开关字段——所以这里的回滚只收窄到本代码路径真正拥有的两个
         // unify 字段，其余已合并的字段保持已提交状态（幂等，重新保存即可）。
         if let Err(err) =
-            crate::services::provider::reapply_current_codex_official_live(state.inner())
+            crate::services::provider::reapply_current_codex_official_live(state.inner()).await
         {
             log::warn!("统一 Codex 会话历史开关变更后重写 live 配置失败，回滚设置: {err}");
             // Revert only the fields this code path owns, inside a fresh
@@ -378,6 +388,7 @@ pub async fn restart_app(app: AppHandle) -> Result<bool, String> {
         // Live 备份，无法恢复被接管的 Live 配置。因此必须趁旧实例的事件循环
         // 仍存活，在这里同步完成恢复（保留代理状态，新实例启动时自动重新接管）。
         crate::cleanup_before_exit(&app).await;
+        crate::lightweight::request_window_on_next_start(&app);
         app.restart();
     });
     Ok(true)
@@ -653,6 +664,9 @@ pub async fn install_update_and_restart(
     };
 
     log::info!("开始安装应用更新: {}", update.version);
+    // The installer (or the re-exec below) relaunches the app: show the window
+    // then even with silent startup on, since the user started this update.
+    crate::lightweight::request_window_on_next_start(&app);
 
     #[cfg(target_os = "windows")]
     {
@@ -667,6 +681,8 @@ pub async fn install_update_and_restart(
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         update.install(bytes).map_err(|e| {
             crate::codex_accounts::login::resume_after_failed_shutdown();
+            // The installer never took over, so no relaunch follows.
+            crate::lightweight::take_window_on_next_start(&app);
             // 安装器没有接手，进程会继续运行：把退出前摘掉的托盘图标放回来。
             if let Some(tray) = app.tray_by_id(crate::tray::TRAY_ID) {
                 if let Err(error) = tray.set_visible(true) {
@@ -683,9 +699,11 @@ pub async fn install_update_and_restart(
     #[cfg(not(target_os = "windows"))]
     {
         // macOS/Linux install() 会返回；先安装，避免安装失败时误停代理/撤回接管。
-        update
-            .install(bytes)
-            .map_err(|e| format!("安装更新失败: {e}"))?;
+        update.install(bytes).map_err(|e| {
+            // Not installed, so no relaunch follows.
+            crate::lightweight::take_window_on_next_start(&app);
+            format!("安装更新失败: {e}")
+        })?;
 
         crate::save_window_state_before_exit(&app);
         crate::cleanup_before_exit(&app).await;
@@ -917,6 +935,29 @@ mod tests {
                 .is_err()
             );
         }
+    }
+
+    #[test]
+    fn the_silent_startup_switch_sets_both_flags_it_needs() {
+        // A legacy "silent startup without the tray flag" setting, which the
+        // backend ignores; the switch sends both flags to turn it on.
+        let mut current = AppSettings {
+            launch_on_startup: true,
+            silent_startup: true,
+            show_in_tray: false,
+            ..Default::default()
+        };
+        assert!(!current.starts_hidden());
+        let before = serde_json::to_value(&current).unwrap();
+        let patch: super::PreferencesPatch = serde_json::from_value(
+            serde_json::json!({ "silentStartup": true, "showInTray": true }),
+        )
+        .unwrap();
+        patch.apply(&mut current);
+        assert!(current.starts_hidden());
+        let mut expected = before;
+        expected["showInTray"] = serde_json::json!(true);
+        assert_eq!(serde_json::to_value(&current).unwrap(), expected);
     }
 
     #[test]

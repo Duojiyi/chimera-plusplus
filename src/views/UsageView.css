@@ -1,4 +1,8 @@
+/* Positioned so the sr-only captions and live regions resolve against this
+   scroller, not main.chimera-main; otherwise main gains overflow and a
+   scrollIntoView leaves a blank band under the page. */
 .is-usage-view .chimera-content {
+  position: relative;
   padding: 8px 24px 24px;
   overflow: auto;
 }
@@ -1353,4 +1357,20 @@
   .usage-design-toolbar {
     flex-wrap: wrap;
   }
+}
+
+/* usage (2.8.6): hooks the 2.8.5 markup uses. */
+.usage-conversations .usage-conversation-search input {
+  width: 180px;
+}
+.usage-conversations > header > div:first-child {
+  min-width: 0;
+}
+/* tone-0 is the base cobalt. */
+.usage-model-dot.tone-0 {
+  background: var(--id-cobalt);
+}
+/* The polite live region is visually hidden (sr-only); keep it out of flow. */
+.usage-live-status {
+  position: absolute;
 }

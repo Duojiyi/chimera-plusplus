@@ -1,7 +1,27 @@
 import { useRef, useState } from "react";
 import { CcSwitchImportPreview } from "./CcSwitchImportPreview";
-import { deeplinkApi } from "@/lib/api/deeplink";
+import { deeplinkApi, describeDeepLinkRefusal } from "@/lib/api/deeplink";
+import { extractErrorMessage } from "@/utils/errorUtils";
 import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
+
+/** The link was queued, but the confirmation was not told to open. */
+const QUEUED_WITHOUT_NOTICE = "IMPORT_NOTIFICATION_FAILED";
+
+/**
+ * Why a pasted link was refused, in the same words the toast uses for a link
+ * opened from a website (`App.tsx`). An unknown failure keeps the old advice.
+ */
+function describeSubmitFailure(code: string): string {
+  if (
+    code === "DEEP_LINK_PARSE_FAILED" ||
+    code === "DEEP_LINK_TARGET_UNAVAILABLE" ||
+    code === "DEEP_LINK_QUEUE_FULL"
+  ) {
+    const { title, description } = describeDeepLinkRefusal(code);
+    return `${title}。${description}`;
+  }
+  return "无法提交导入链接，请检查链接格式、目标工具是否已开放，或处理已有的待确认请求后重试。";
+}
 
 export function ImportPanel({
   native,
@@ -28,11 +48,17 @@ export function ImportPanel({
       await deeplinkApi.submitImport(url.trim());
       setUrl("");
       setMessage("已加入待确认队列，请在确认窗口核对内容；此操作尚未导入。");
-    } catch {
-      setFailed(true);
-      setMessage(
-        "无法提交导入链接，请检查链接格式、目标工具是否已开放，或处理已有的待确认请求后重试。",
-      );
+    } catch (reason) {
+      const code = extractErrorMessage(reason) || String(reason);
+      if (code === QUEUED_WITHOUT_NOTICE) {
+        setUrl("");
+        setMessage(
+          "已加入待确认队列，但确认窗口没有自动打开；切到其他窗口再切回来即可看到。",
+        );
+      } else {
+        setFailed(true);
+        setMessage(describeSubmitFailure(code));
+      }
     } finally {
       inFlight.current = false;
       setBusy(false);
@@ -74,7 +100,14 @@ export function ImportPanel({
           浏览器预览无法调用本机导入服务，请在桌面应用中操作。
         </p>
       )}
-      {message && <p role={failed ? "alert" : "status"}>{message}</p>}
+      {message && (
+        <p
+          role={failed ? "alert" : "status"}
+          className={`settings-tools-description${failed ? " is-error" : ""}`}
+        >
+          {message}
+        </p>
+      )}
       <CcSwitchImportPreview native={native} onImported={onImported} />
     </section>
   );

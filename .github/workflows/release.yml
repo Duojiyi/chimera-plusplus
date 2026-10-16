@@ -502,7 +502,8 @@ jobs:
               assert!(report.success, "Codex portable extraction was not successful");
               assert!(root.join("LaunchCodex.exe").is_file(), "native Codex launcher missing");
               assert!(root.join("codex-portable-launcher.txt").is_file());
-              let node_bin = root.join("resources/cua_node/bin");
+              assert!(root.join("Codex.exe").is_file() && root.join("app").is_dir(), "nested portable layout missing");
+              let node_bin = root.join("app/resources/cua_node/bin");
               let output = Command::new(node_bin.join("node.exe"))
                   .arg("-e")
                   .arg("const root=process.argv[1]; console.log(require.resolve('@oai/sky',{paths:[root]})); console.log(require.resolve('@statsig/client-core',{paths:[root]}));")

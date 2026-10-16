@@ -5,6 +5,7 @@ use crate::deeplink::{
 use crate::store::AppState;
 use std::collections::VecDeque;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager, State};
 
 /// Kept in memory until the confirmation UI acknowledges the request. Events
@@ -20,12 +21,92 @@ pub struct PendingDeepLink {
 #[derive(Default)]
 pub struct PendingDeepLinks(Mutex<VecDeque<PendingDeepLink>>);
 
+/// Links the backend refused before queueing them, kept until the frontend has
+/// read them. Unlike the import queue there is nothing to acknowledge, so an
+/// error would otherwise be lost whenever no window was listening yet: a link
+/// opened while the app runs hidden, a cold start that cannot subscribe before
+/// `setup` runs, or the rebuilt window that follows lightweight mode.
+///
+/// Only reason codes reach the frontend, never the link itself, which may
+/// carry a key. Reading drains the buffer, so each refusal is explained once.
+#[derive(Default)]
+pub struct DeepLinkRefusals(Mutex<RefusalBuffer>);
+
+#[derive(Default)]
+struct RefusalBuffer {
+    reasons: VecDeque<String>,
+    /// The last refused link and when. macOS delivers one open through both
+    /// the deep-link plugin and the run loop; the second delivery is the same
+    /// open, not a second refusal to explain.
+    last: Option<(String, Instant)>,
+}
+
+/// Enough for every refusal a burst of links can produce, bounded so a broken
+/// sender cannot grow the buffer without limit.
+const MAX_DEEP_LINK_REFUSALS: usize = 8;
+
+/// How long the same link counts as the same open.
+const SAME_OPEN_WINDOW: Duration = Duration::from_secs(2);
+
+impl DeepLinkRefusals {
+    fn record(&self, reason: String, source_url: &str) {
+        self.record_at(reason, source_url, Instant::now());
+    }
+
+    fn record_at(&self, reason: String, source_url: &str, now: Instant) {
+        let mut buffer = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((last, at)) = &buffer.last {
+            if last == source_url && now.saturating_duration_since(*at) < SAME_OPEN_WINDOW {
+                return;
+            }
+        }
+        buffer.last = Some((source_url.to_string(), now));
+        buffer.reasons.push_back(reason);
+        while buffer.reasons.len() > MAX_DEEP_LINK_REFUSALS {
+            buffer.reasons.pop_front();
+        }
+    }
+
+    fn take(&self) -> Vec<String> {
+        let mut buffer = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        buffer.reasons.drain(..).collect()
+    }
+}
+
+/// Records a refusal of `source_url` and wakes the frontend with a
+/// payload-free event.
+pub(crate) fn record_deeplink_refusal(
+    app: &tauri::AppHandle,
+    reason: impl Into<String>,
+    source_url: &str,
+) {
+    app.state::<DeepLinkRefusals>()
+        .record(reason.into(), source_url);
+    if let Err(failed) = app.emit("deeplink-error", ()) {
+        log::error!("✗ Failed to emit deeplink-error event: {failed}");
+    }
+}
+
+/// Reason codes of the refusals the frontend has not shown yet, oldest first.
+#[tauri::command]
+pub fn take_deeplink_refusals(state: State<'_, DeepLinkRefusals>) -> Vec<String> {
+    state.take()
+}
+
 impl PendingDeepLinks {
+    /// Errors use the same codes as links opened from the system
+    /// (`record_deeplink_refusal`), so the frontend explains both alike.
     fn submit_url(&self, url: &str) -> Result<(), String> {
         let url = url.trim();
-        let request = parse_deeplink_url(url).map_err(|_| "INVALID_IMPORT_LINK".to_string())?;
+        let request = parse_deeplink_url(url).map_err(|_| "DEEP_LINK_PARSE_FAILED".to_string())?;
         crate::deeplink::ensure_targets_allowed(&request)
-            .map_err(|_| "IMPORT_TARGET_UNAVAILABLE".to_string())?;
+            .map_err(|_| "DEEP_LINK_TARGET_UNAVAILABLE".to_string())?;
         self.enqueue(url, request)
     }
 
@@ -266,5 +347,55 @@ mod pending_tests {
         );
         assert_eq!(queue.peek().unwrap().unwrap().id, first_id);
         assert_eq!(queue.0.lock().unwrap().len(), 16);
+    }
+
+    #[test]
+    fn manual_submission_reports_the_codes_system_links_use() {
+        let queue = PendingDeepLinks::default();
+        assert_eq!(
+            queue.submit_url("not an import link"),
+            Err("DEEP_LINK_PARSE_FAILED".to_string())
+        );
+        assert!(queue.peek().unwrap().is_none());
+    }
+
+    #[test]
+    fn refusals_wait_for_one_reader_and_keep_the_newest() {
+        let refusals = DeepLinkRefusals::default();
+        assert!(refusals.take().is_empty());
+        refusals.record("DEEP_LINK_PARSE_FAILED".to_string(), "chimera://bad");
+        assert_eq!(refusals.take(), vec!["DEEP_LINK_PARSE_FAILED".to_string()]);
+        // Drained on read: a second reader has nothing to show again.
+        assert!(refusals.take().is_empty());
+
+        for index in 0..MAX_DEEP_LINK_REFUSALS + 3 {
+            refusals.record(format!("E{index}"), &format!("chimera://{index}"));
+        }
+        let kept = refusals.take();
+        assert_eq!(kept.len(), MAX_DEEP_LINK_REFUSALS);
+        assert_eq!(kept[0], "E3");
+        assert_eq!(
+            kept.last().unwrap(),
+            &format!("E{}", MAX_DEEP_LINK_REFUSALS + 2)
+        );
+    }
+
+    #[test]
+    fn one_open_delivered_twice_is_explained_once() {
+        let refusals = DeepLinkRefusals::default();
+        let start = Instant::now();
+        let reason = || "DEEP_LINK_PARSE_FAILED".to_string();
+        refusals.record_at(reason(), "chimera://bad", start);
+        // macOS: the plugin and the run loop both deliver the same open.
+        refusals.record_at(reason(), "chimera://bad", start + Duration::from_millis(50));
+        assert_eq!(refusals.take().len(), 1);
+        // A different link, or the same one opened again later, is new.
+        refusals.record_at(
+            reason(),
+            "chimera://other",
+            start + Duration::from_millis(60),
+        );
+        refusals.record_at(reason(), "chimera://other", start + SAME_OPEN_WINDOW * 2);
+        assert_eq!(refusals.take().len(), 2);
     }
 }

@@ -7,9 +7,11 @@
   width: 100%;
   padding: 8px 0;
 }
+/* skills (2.8.6): same title scale as 用量 / 配置体检 / 提示词. */
 .skills-mcp-header h1 {
-  font-size: 24px;
-  line-height: 1.4;
+  font-size: 26px;
+  line-height: 36px;
+  font-weight: 700;
   white-space: normal;
 }
 .skills-mcp-subtitle {
@@ -505,4 +507,183 @@ details.skills-lifecycle-panel > button {
 .skills-scan-source {
   color: var(--text-3);
   font-size: 12px;
+}
+
+/* skills (2.8.6): classes the 2.8.5 pass wrote into the markup without styles. */
+.skills-mcp-help {
+  flex-shrink: 0;
+}
+.skills-panel-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+.skills-panel-heading h2 {
+  margin: 0;
+}
+.skills-lifecycle-panel .skills-panel-heading .skills-install-close {
+  width: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.skills-lifecycle-panel .skills-panel-heading .skills-install-close:hover {
+  background: var(--bg-subtle);
+}
+.skills-lifecycle-row {
+  padding: 8px 0;
+  margin-bottom: 0;
+  border-top: 1px solid var(--border-subtle);
+}
+.skills-lifecycle-row > span:first-child {
+  flex: 1 1 200px;
+  min-width: 0;
+  color: var(--text-1);
+}
+
+/* Inline note editor: same height as the row's 28px note slot. */
+.skills-note-input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border-control);
+  border-radius: 4px;
+  background: var(--bg-surface);
+  color: var(--text-1);
+  font: inherit;
+  font-size: 13px;
+}
+/* The note slot clips overflow, so the ring sits inside the border. */
+.skills-mcp-page .skills-note-input:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.skills-note-save {
+  flex-shrink: 0;
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 4px;
+  background: var(--btn-primary-bg);
+  color: var(--btn-primary-fg);
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.skills-note-save:hover {
+  background: var(--btn-primary-bg-hover);
+}
+
+/* Row "more" menu: a small fact card, then the destructive action. */
+.skills-row-menu {
+  width: 280px;
+  max-width: calc(100vw - 24px);
+}
+.skills-row-menu .skills-row-menu-info {
+  display: grid;
+  gap: 4px;
+  padding: 8px 10px;
+  color: var(--text-1);
+  font-weight: 400;
+}
+.skills-row-menu-info > span {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.skills-row-menu-info > small {
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.skills-row-menu-info > small:first-of-type:not(:last-child) {
+  color: var(--text-2);
+}
+.skills-row-menu .skills-row-menu-danger {
+  color: var(--danger-fg);
+  cursor: pointer;
+}
+.skills-row-menu .skills-row-menu-danger:focus,
+.skills-row-menu .skills-row-menu-danger[data-highlighted] {
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+}
+
+/* Local discovery sits under the list as its own block. */
+.skills-discovery {
+  width: 100%;
+  margin-top: 16px;
+}
+.skills-discovery fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.skills-scan-panel > button:last-child {
+  margin-top: 4px;
+  border-color: transparent;
+  background: var(--btn-primary-bg);
+  color: var(--btn-primary-fg);
+}
+.skills-scan-panel > button:last-child:hover:not(:disabled) {
+  background: var(--btn-primary-bg-hover);
+}
+.skills-scan-warning {
+  justify-self: start;
+  padding: 1px 8px;
+  border: 1px solid var(--warning-border);
+  border-radius: 4px;
+  background: var(--warning-bg);
+  color: var(--warning-fg);
+  font-size: 12px;
+}
+
+/* Install drawer results: name + source on the left, action or state right. */
+.skills-install-result {
+  padding: 8px 0;
+  border-top: 1px dashed var(--border-subtle);
+}
+.skills-install-name {
+  display: grid;
+  gap: 2px;
+}
+.skills-install-name strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+.skills-install-name small {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.skills-install-result .skills-install-action {
+  flex-shrink: 0;
+  min-height: 28px;
+  padding: 3px 10px;
+}
+.skills-install-state {
+  flex-shrink: 0;
+  max-width: 45%;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: var(--bg-subtle);
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: right;
 }

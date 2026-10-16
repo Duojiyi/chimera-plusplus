@@ -376,38 +376,14 @@ fn handle_deeplink_url(
 
             if let Err(error) = crate::deeplink::ensure_targets_allowed(&request) {
                 log::warn!("Deep link for a tool that is not enabled was ignored: {error}");
-                let _ = app.emit(
-                    "deeplink-error",
-                    serde_json::json!({ "error": error.to_string() }),
-                );
-                return true;
-            }
-            if let Err(error) = commands::queue_deeplink(app, url_str, request) {
+                commands::record_deeplink_refusal(app, "DEEP_LINK_TARGET_UNAVAILABLE", url_str);
+            } else if let Err(error) = commands::queue_deeplink(app, url_str, request) {
                 log::error!("Failed to queue deep link: {error}");
-                let _ = app.emit("deeplink-error", serde_json::json!({ "error": error }));
-                return true;
-            }
-            if let Err(e) = app.emit("deeplink-import", ()) {
+                commands::record_deeplink_refusal(app, error, url_str);
+            } else if let Err(e) = app.emit("deeplink-import", ()) {
                 log::error!("✗ Failed to emit deeplink-import event: {e}");
             } else {
                 log::info!("✓ Emitted deeplink-import event to frontend");
-            }
-
-            if focus_main_window {
-                if let Some(window) = app.get_webview_window("main") {
-                    #[cfg(target_os = "windows")]
-                    {
-                        let _ = window.set_skip_taskbar(false);
-                    }
-                    let _ = window.unminimize();
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                    #[cfg(target_os = "linux")]
-                    {
-                        linux_fix::nudge_main_window(window.clone());
-                    }
-                    log::info!("✓ Window shown and focused");
-                }
             }
         }
         Err(e) => {
@@ -416,17 +392,29 @@ fn handle_deeplink_url(
                 redact_url_origin_for_log(url_str)
             );
 
-            if let Err(emit_err) = app.emit(
-                "deeplink-error",
-                serde_json::json!({
-                    // Never forward the raw deep-link URL to the frontend: query,
-                    // fragment and embedded base64/API credentials are untrusted.
-                    "url": redact_url_origin_for_log(url_str),
-                    "error": "DEEP_LINK_PARSE_FAILED"
-                }),
-            ) {
-                log::error!("✗ Failed to emit deeplink-error event: {emit_err}");
+            // The frontend learns the reason code only: query, fragment and
+            // embedded base64/API credentials in the link are untrusted, and a
+            // redacted origin still names the site the user just came from.
+            commands::record_deeplink_refusal(app, "DEEP_LINK_PARSE_FAILED", url_str);
+        }
+    }
+
+    // Unconditional on the outcome: a refused link must still bring the window
+    // up, otherwise the reason is told to a window nobody can see.
+    if focus_main_window {
+        if let Some(window) = app.get_webview_window("main") {
+            #[cfg(target_os = "windows")]
+            {
+                let _ = window.set_skip_taskbar(false);
             }
+            let _ = window.unminimize();
+            let _ = window.show();
+            let _ = window.set_focus();
+            #[cfg(target_os = "linux")]
+            {
+                linux_fix::nudge_main_window(window.clone());
+            }
+            log::info!("✓ Window shown and focused");
         }
     }
 
@@ -473,7 +461,9 @@ pub fn run() {
     // 设置 panic hook，在应用崩溃时记录日志到 Chimera++ 配置目录。
     panic_hook::setup_panic_hook();
 
-    let mut builder = tauri::Builder::default().manage(commands::PendingDeepLinks::default());
+    let mut builder = tauri::Builder::default()
+        .manage(commands::PendingDeepLinks::default())
+        .manage(commands::DeepLinkRefusals::default());
 
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     {
@@ -1077,6 +1067,12 @@ pub fn run() {
                         }
                     }
 
+                    // 旧版本（2.8.6 之前）官方接管记在 cc-switch-official 桶下的会话先迁回
+                    // 官方当前所在的桶：live 不再选这个 id 时它们会从列表消失。必须排在
+                    // 统一迁移之前，迁回 openai 的会话才能随后按正常流程进入统一账本。
+                    // 函数内部自门控（live 仍选着这个 id 时跳过），无事可做时只扫描头部。
+                    crate::codex_history_migration::migrate_codex_official_proxy_history_bucket_if_needed();
+
                     // 统一会话开关的官方历史迁移：开关开启但上次未完成（如文件被占用
                     // 中途失败）时在启动期重试；函数内部自门控，开关关闭时直接跳过。
                     match crate::codex_history_migration::maybe_migrate_codex_official_history_to_unified_bucket() {
@@ -1322,9 +1318,13 @@ pub fn run() {
             log::info!("✓ Deep-link URL handler registered");
             // The plugin retains launch URLs that arrived before on_open_url.
             // Subscribe first, then read; queue deduplication covers the overlap.
+            // A launch from a link always ends up with a visible window: the
+            // confirmation dialog, or the reason the link was refused.
+            let mut opened_by_link = false;
             if let Ok(Some(urls)) = app.deep_link().get_current() {
                 for url in urls {
-                    handle_deeplink_url(app.handle(), url.as_str(), false, "initial URL");
+                    opened_by_link |=
+                        handle_deeplink_url(app.handle(), url.as_str(), false, "initial URL");
                 }
             }
 
@@ -1587,6 +1587,9 @@ pub fn run() {
 
             // 静默启动：根据设置决定是否显示主窗口
             let settings = crate::settings::get_settings();
+            // Consumed on every start, so a request left by a restart or update
+            // the user asked for applies to that one relaunch only.
+            let shown_after_restart = crate::lightweight::take_window_on_next_start(app.handle());
             if let Some(window) = app.get_webview_window("main") {
                 // 在窗口首次显示前同步装饰状态，避免前端加载后再切换导致标题栏闪烁
                 // 仅 Linux 生效：解决 Wayland 下系统窗口按钮不可用的问题
@@ -1595,7 +1598,14 @@ pub fn run() {
                 if settings.silent_startup && !settings.show_in_tray {
                     log::warn!("静默启动需要托盘图标，当前已关闭托盘，改为显示主窗口");
                 }
-                if settings.starts_hidden() {
+                // A launch from an import link, a start that has to explain an
+                // initialization failure, and the relaunch after a restart or
+                // update the user asked for must not hide the window.
+                let starts_hidden = settings.starts_hidden()
+                    && !opened_by_link
+                    && !shown_after_restart
+                    && crate::init_status::get_init_error().is_none();
+                if starts_hidden {
                     // 静默启动模式：保持窗口隐藏
                     let _ = window.hide();
                     #[cfg(target_os = "windows")]
@@ -1795,8 +1805,6 @@ pub fn run() {
             commands::apply_profile,
             // model list fetch (OpenAI-compatible /v1/models)
              commands::fetch_models_for_config,
-             commands::detect_codex_api_format,
-             commands::detect_codex_api_formats,
             // ours: endpoint speed test + custom endpoint management
             commands::test_api_endpoints,
             commands::get_custom_endpoints,
@@ -1826,6 +1834,7 @@ pub fn run() {
             commands::save_file_dialog,
             commands::open_file_dialog,
             commands::open_zip_file_dialog,
+            commands::open_skin_file_dialog,
             commands::create_db_backup,
             commands::list_db_backups,
             commands::restore_db_backup,
@@ -1843,6 +1852,7 @@ pub fn run() {
             // Deep link import
             commands::get_pending_deeplink,
             commands::dismiss_pending_deeplink,
+            commands::take_deeplink_refusals,
             commands::parse_deeplink,
             commands::submit_deeplink_import,
             commands::preview_cc_switch_file,

@@ -1,8 +1,7 @@
+import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { FormLabel } from "@/components/ui/form";
-import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
-import { Link2, Zap } from "lucide-react";
+import { Zap } from "lucide-react";
+import { EditorLabel } from "@/components/providers/ProviderEditorFields";
 
 interface EndpointFieldProps {
   id: string;
@@ -18,8 +17,17 @@ interface EndpointFieldProps {
   showFullUrlToggle?: boolean;
   isFullUrl?: boolean;
   onFullUrlChange?: (value: boolean) => void;
+  /** Mark the label as required (" *"), like the line editor. */
+  required?: boolean;
+  /** The "?" card: how the tool turns this address into requests. */
+  help?: ReactNode;
 }
 
+/**
+ * Request address in the line editor's field markup. The label row carries
+ * the 完整 URL switch and the speed-test entry so they stay next to the
+ * address they change.
+ */
 export function EndpointField({
   id,
   label,
@@ -34,6 +42,8 @@ export function EndpointField({
   showFullUrlToggle = false,
   isFullUrl = false,
   onFullUrlChange,
+  required = false,
+  help,
 }: EndpointFieldProps) {
   const { t } = useTranslation();
 
@@ -51,51 +61,46 @@ export function EndpointField({
         (showFullUrlToggle
           ? "填写基础地址（例如 https://api.chimerahub.org/v1）。仅在服务商提供包含 /responses 等请求路径的完整地址时开启完整 URL。"
           : undefined);
+  const hasFullUrlToggle = showFullUrlToggle && Boolean(onFullUrlChange);
+  const hasManage = showManageButton && Boolean(onManageClick);
 
   return (
-    <div className="space-y-2">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex flex-wrap items-center gap-3">
-          <FormLabel htmlFor={id}>{label}</FormLabel>
-          {showFullUrlToggle && onFullUrlChange ? (
-            <div className="flex items-center gap-2 rounded-full border border-border/70 bg-muted/30 px-2.5 py-1">
-              <Link2
-                className={`h-3.5 w-3.5 ${
-                  isFullUrl ? "text-primary" : "text-muted-foreground"
-                }`}
-              />
-              <span
-                className={`text-xs font-medium ${
-                  isFullUrl ? "text-foreground" : "text-muted-foreground"
-                }`}
-              >
+    <div className="editor-field">
+      <div className="editor-field-row">
+        <EditorLabel
+          htmlFor={id}
+          label={required ? `${label} *` : label}
+          help={help}
+        />
+        {(hasFullUrlToggle || hasManage) && (
+          <span className="editor-field-tools">
+            {hasFullUrlToggle && (
+              <label className="editor-inline-switch">
+                <input
+                  type="checkbox"
+                  role="switch"
+                  checked={isFullUrl}
+                  onChange={(event) => onFullUrlChange?.(event.target.checked)}
+                />
                 {t("providerForm.fullUrlLabel", {
                   defaultValue: "完整 URL",
                 })}
-              </span>
-              <Switch
-                checked={isFullUrl}
-                onCheckedChange={onFullUrlChange}
-                aria-label={t("providerForm.fullUrlLabel", {
-                  defaultValue: "完整 URL",
-                })}
-                className="h-5 w-9"
-              />
-            </div>
-          ) : null}
-        </div>
-        {showManageButton && onManageClick ? (
-          <button
-            type="button"
-            onClick={onManageClick}
-            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
-          >
-            <Zap className="h-3.5 w-3.5" />
-            {manageButtonLabel || defaultManageLabel}
-          </button>
-        ) : null}
+              </label>
+            )}
+            {hasManage && (
+              <button
+                type="button"
+                className="link-button"
+                onClick={onManageClick}
+              >
+                <Zap size={13} aria-hidden="true" />
+                {manageButtonLabel || defaultManageLabel}
+              </button>
+            )}
+          </span>
+        )}
       </div>
-      <Input
+      <input
         id={id}
         type="text"
         value={value}
@@ -103,18 +108,15 @@ export function EndpointField({
         placeholder={placeholder}
         aria-describedby={effectiveHint ? `${id}-hint` : undefined}
         autoComplete="off"
+        spellCheck={false}
       />
       {effectiveHint ? (
-        <p
+        <small
           id={`${id}-hint`}
-          className={
-            isFullUrl
-              ? "text-xs text-amber-700 dark:text-amber-400"
-              : "text-xs text-muted-foreground"
-          }
+          className={isFullUrl ? "is-warning" : undefined}
         >
           {effectiveHint.replace(/^💡\s*/, "")}
-        </p>
+        </small>
       ) : null}
     </div>
   );

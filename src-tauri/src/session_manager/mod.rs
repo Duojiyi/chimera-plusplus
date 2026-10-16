@@ -64,6 +64,11 @@ pub struct DeleteSessionOutcome {
     pub cleanup_pending: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Records the delete left behind on purpose because no retry can clean
+    /// them (a newer Codex store, an oversized history). The delete still
+    /// counts as finished; this only tells the user what stayed and why.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cleanup_note: Option<String>,
 }
 
 /// Internal result separates irreversible content deletion from retryable cleanup.
@@ -72,6 +77,8 @@ pub(super) struct SessionDeleteResult {
     pub source_deleted: bool,
     pub cleanup_pending: bool,
     pub error: Option<String>,
+    /// See [`DeleteSessionOutcome::cleanup_note`]. Never makes a delete pending.
+    pub cleanup_note: Option<String>,
 }
 
 impl SessionDeleteResult {
@@ -80,6 +87,7 @@ impl SessionDeleteResult {
             source_deleted: deleted,
             cleanup_pending: false,
             error: None,
+            cleanup_note: None,
         }
     }
 
@@ -296,6 +304,7 @@ where
                     source_deleted: false,
                     cleanup_pending: false,
                     error: Some(error),
+                    cleanup_note: None,
                 },
             };
             let success =
@@ -310,6 +319,7 @@ where
                 error: result
                     .error
                     .or_else(|| (!success).then(|| "Session was not deleted".to_string())),
+                cleanup_note: result.cleanup_note,
             }
         })
         .collect()
@@ -442,6 +452,7 @@ mod tests {
                 source_deleted: true,
                 cleanup_pending: true,
                 error: Some("Content deleted; retry index cleanup".into()),
+                cleanup_note: None,
             })
         });
         let outcome = &outcomes[0];
@@ -454,10 +465,41 @@ mod tests {
         assert!(SessionDeleteResult {
             source_deleted: true,
             cleanup_pending: true,
-            error: Some("retry cleanup".into())
+            error: Some("retry cleanup".into()),
+            cleanup_note: None,
         }
         .into_legacy_result()
         .is_err());
+    }
+
+    #[test]
+    fn a_cleanup_note_finishes_the_delete_without_offering_a_retry() {
+        let requests = [DeleteSessionRequest {
+            provider_id: "codex".into(),
+            session_id: "s1".into(),
+            source_path: "/sessions/s1.jsonl".into(),
+        }];
+        let outcomes = collect_delete_session_outcomes(&requests, |_| {
+            Ok(SessionDeleteResult {
+                source_deleted: true,
+                cleanup_pending: false,
+                error: None,
+                cleanup_note: Some("newer store left alone".into()),
+            })
+        });
+        let outcome = &outcomes[0];
+        assert!(outcome.success && !outcome.cleanup_pending);
+        assert_eq!(outcome.error, None);
+        let json = serde_json::to_value(outcome).unwrap();
+        assert_eq!(json["cleanupNote"], "newer store left alone");
+        assert!(json.get("error").is_none());
+
+        let plain =
+            collect_delete_session_outcomes(&requests, |_| Ok(SessionDeleteResult::complete(true)));
+        assert!(serde_json::to_value(&plain[0])
+            .unwrap()
+            .get("cleanupNote")
+            .is_none());
     }
 
     #[test]

@@ -215,7 +215,7 @@ struct PendingEntry {
 
 #[derive(Debug, Default)]
 struct CodexReplayCaches {
-    parent_signatures: HashMap<(PathBuf, i64), Vec<TokenUsageSignature>>,
+    parent_signatures: HashMap<(PathBuf, i64), (ParentFileStamp, ParentSnapshot)>,
     replay_prefixes: HashMap<(PathBuf, i64, u64), usize>,
     pending: HashMap<PathBuf, PendingEntry>,
 }
@@ -363,14 +363,34 @@ fn non_empty_string(value: Option<&serde_json::Value>) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn thread_id_from_filename(path: &Path) -> Option<String> {
+fn rollout_file_stem(path: &Path) -> Option<&str> {
     let file_name = path.file_name()?.to_str()?;
     // `file_stem` would leave `<uuid>.jsonl` for a compressed rollout.
-    let stem = match file_name.strip_suffix(".jsonl.zst") {
-        Some(stem) => stem,
-        None => path.file_stem()?.to_str()?,
-    };
+    match file_name.strip_suffix(".jsonl.zst") {
+        Some(stem) => Some(stem),
+        None => path.file_stem()?.to_str(),
+    }
+}
+
+fn thread_id_from_filename(path: &Path) -> Option<String> {
+    let stem = rollout_file_stem(path)?;
     let candidate = stem.get(stem.len().checked_sub(36)?..)?;
+    uuid::Uuid::parse_str(candidate)
+        .ok()
+        .map(|value| value.hyphenated().to_string())
+}
+
+/// Codex Desktop continues a long (paginated) or resumed thread in a new page
+/// named `rollout-<time>-<threadId>_<rolloutId>.jsonl`. Returns the thread's
+/// (leading) UUID of such a page; plain rollouts return `None`.
+fn leading_thread_id_from_filename(path: &Path) -> Option<String> {
+    let stem = rollout_file_stem(path)?;
+    let len = stem.len();
+    // Tail layout: …<uuidA>_<uuidB>; uuidB is 36 characters after the '_'.
+    if !stem.get(len.checked_sub(37)?..)?.starts_with('_') {
+        return None;
+    }
+    let candidate = stem.get(len.checked_sub(73)?..len - 37)?;
     uuid::Uuid::parse_str(candidate)
         .ok()
         .map(|value| value.hyphenated().to_string())
@@ -878,9 +898,17 @@ fn build_rollout_index(files: &[PathBuf]) -> RolloutIndex {
         if let Some(thread_id) = thread_id_from_filename(path) {
             index.entry(thread_id).or_default().push(path.clone());
         }
+        // A continuation page is also a segment of its thread: a child forked
+        // after the page turn names the thread, and resolving its parent must
+        // see the pages after the (now frozen) first one.
+        // Adapted from farion1231/cc-switch c05906bb
+        if let Some(thread_id) = leading_thread_id_from_filename(path) {
+            index.entry(thread_id).or_default().push(path.clone());
+        }
     }
     for paths in index.values_mut() {
         paths.sort();
+        paths.dedup();
     }
     index
 }
@@ -1270,14 +1298,37 @@ fn parse_codex_file(
     })
 }
 
-fn parent_signatures_before(
+/// One rollout file of a parent thread, as seen from a child's fork time.
+#[derive(Debug, Clone)]
+struct ParentSnapshot {
+    /// Token signatures written at or before the cutoff, in file order.
+    signatures: Vec<TokenUsageSignature>,
+    /// The latest timestamp in the file, however far past the cutoff.
+    max_timestamp: Option<DateTime<Utc>>,
+}
+
+/// Modification time and size: a snapshot is reused only while both match.
+type ParentFileStamp = (i64, u64);
+
+fn parent_snapshot_before(
     parent_path: &Path,
     cutoff: DateTime<Utc>,
-) -> Result<Vec<TokenUsageSignature>, String> {
+) -> Result<ParentSnapshot, String> {
     let cache_key = (parent_path.to_path_buf(), cutoff.timestamp_micros());
+    let stamp: Option<ParentFileStamp> = fs::metadata(parent_path)
+        .ok()
+        .map(|metadata| (metadata_modified_nanos(&metadata), metadata.len()));
     if let Ok(caches) = replay_caches().lock() {
-        if let Some(signatures) = caches.parent_signatures.get(&cache_key) {
-            return Ok(signatures.clone());
+        if let Some((cached_stamp, snapshot)) = caches.parent_signatures.get(&cache_key) {
+            // Signatures up to a cutoff the file already reached never change as
+            // it grows. An earlier page of a paginated thread stops growing short
+            // of a later child's fork time; reuse it while the file is unchanged.
+            let reached = snapshot
+                .max_timestamp
+                .is_some_and(|timestamp| timestamp >= cutoff);
+            if reached || stamp == Some(*cached_stamp) {
+                return Ok(snapshot.clone());
+            }
         }
     }
 
@@ -1348,19 +1399,16 @@ fn parent_signatures_before(
         }
     }
 
-    if max_timestamp.is_none_or(|timestamp| timestamp < cutoff) {
-        return Err(format!(
-            "父 rollout {} 尚未写到 child fork 时刻",
-            parent_path.display()
-        ));
-    }
-
-    if let Ok(mut caches) = replay_caches().lock() {
+    let snapshot = ParentSnapshot {
+        signatures,
+        max_timestamp,
+    };
+    if let (Some(stamp), Ok(mut caches)) = (stamp, replay_caches().lock()) {
         caches
             .parent_signatures
-            .insert(cache_key, signatures.clone());
+            .insert(cache_key, (stamp, snapshot.clone()));
     }
-    Ok(signatures)
+    Ok(snapshot)
 }
 
 fn resolve_parent_signatures(
@@ -1372,19 +1420,49 @@ fn resolve_parent_signatures(
         return Err(format!("找不到父 rollout: {parent_id}"));
     };
 
-    let mut snapshots = Vec::with_capacity(candidates.len());
-    for candidate in candidates {
-        snapshots.push(parent_signatures_before(candidate, cutoff)?);
+    // One thread id can name several files. Copies of one rollout (sessions/
+    // and archived_sessions/) must agree up to the cutoff and each must reach
+    // it; continuation pages (`<parent_id>_<rolloutId>`) are later segments of
+    // the thread. Once a page fills up the first one stops growing, so the
+    // segments are joined in file-name (start time) order before checking that
+    // the thread was written up to the child's fork time.
+    // Adapted from farion1231/cc-switch c05906bb
+    let mut ordered: Vec<&PathBuf> = candidates.iter().collect();
+    ordered.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
+    let mut segments: Vec<(Option<String>, ParentSnapshot)> = Vec::new();
+    for candidate in ordered {
+        let snapshot = parent_snapshot_before(candidate, cutoff)?;
+        let rollout_id = thread_id_from_filename(candidate);
+        if let Some((_, segment)) = segments.iter_mut().find(|(id, _)| *id == rollout_id) {
+            if segment.signatures != snapshot.signatures {
+                return Err(format!(
+                    "父 rollout UUID {parent_id} 对应多个内容不一致的文件"
+                ));
+            }
+            // A segment counts only as far as its shortest copy was written.
+            segment.max_timestamp = match (segment.max_timestamp, snapshot.max_timestamp) {
+                (Some(current), Some(other)) => Some(current.min(other)),
+                _ => None,
+            };
+            continue;
+        }
+        segments.push((rollout_id, snapshot));
     }
-    let Some(first) = snapshots.first() else {
+    if segments.is_empty() {
         return Err(format!("找不到父 rollout: {parent_id}"));
-    };
-    if snapshots.iter().skip(1).any(|snapshot| snapshot != first) {
-        return Err(format!(
-            "父 rollout UUID {parent_id} 对应多个内容不一致的文件"
-        ));
     }
-    Ok(first.clone())
+
+    let written_until = segments
+        .iter()
+        .filter_map(|(_, segment)| segment.max_timestamp)
+        .max();
+    if written_until.is_none_or(|timestamp| timestamp < cutoff) {
+        return Err(format!("父 rollout {parent_id} 尚未写到 child fork 时刻"));
+    }
+    Ok(segments
+        .into_iter()
+        .flat_map(|(_, segment)| segment.signatures)
+        .collect())
 }
 
 fn matching_replay_prefix(child: &[ParsedTokenEvent], parent: &[TokenUsageSignature]) -> usize {
@@ -1791,6 +1869,7 @@ mod tests {
     const PARENT_ID: &str = "00000000-0000-4000-8000-000000000001";
     const CHILD_A_ID: &str = "00000000-0000-4000-8000-000000000002";
     const CHILD_B_ID: &str = "00000000-0000-4000-8000-000000000003";
+    const PARENT_PAGE_ID: &str = "00000000-0000-4000-8000-000000000004";
 
     fn write_jsonl(path: &Path, values: &[serde_json::Value]) {
         let contents = values
@@ -2990,6 +3069,100 @@ mod tests {
         assert_eq!(
             (result.imported, result.skipped, result.deferred),
             (1, 0, false)
+        );
+        Ok(())
+    }
+
+    // Adapted from farion1231/cc-switch c05906bb
+    #[test]
+    fn continuation_page_names_its_thread_by_the_leading_uuid() {
+        let dir = Path::new("sessions");
+        for suffix in ["jsonl", "jsonl.zst"] {
+            let page = dir.join(format!(
+                "rollout-2026-07-10T03-00-20-{PARENT_ID}_{PARENT_PAGE_ID}.{suffix}"
+            ));
+            assert_eq!(
+                leading_thread_id_from_filename(&page).as_deref(),
+                Some(PARENT_ID)
+            );
+            assert_eq!(
+                thread_id_from_filename(&page).as_deref(),
+                Some(PARENT_PAGE_ID)
+            );
+        }
+        assert_eq!(
+            leading_thread_id_from_filename(&rollout_path(dir, PARENT_ID)),
+            None
+        );
+
+        let page = dir.join(format!(
+            "rollout-2026-07-10T03-00-20-{PARENT_ID}_{PARENT_PAGE_ID}.jsonl"
+        ));
+        let index = build_rollout_index(&[rollout_path(dir, PARENT_ID), page.clone()]);
+        assert_eq!(
+            index.get(PARENT_ID),
+            Some(&vec![rollout_path(dir, PARENT_ID), page.clone()])
+        );
+        assert_eq!(index.get(PARENT_PAGE_ID), Some(&vec![page]));
+    }
+
+    /// After a paginated thread turns the page, the first page stops growing.
+    /// A child forked later must be resolved against both pages instead of
+    /// being deferred forever as "parent has not reached the fork time".
+    #[test]
+    fn test_paginated_parent_pages_are_merged_before_fork_cutoff() -> Result<(), AppError> {
+        clear_codex_replay_caches();
+        let db = Database::memory()?;
+        let temp = tempdir().unwrap();
+        let parent_root = rollout_path(temp.path(), PARENT_ID);
+        let parent_page = temp.path().join(format!(
+            "rollout-2026-07-10T03-00-20-{PARENT_ID}_{PARENT_PAGE_ID}.jsonl"
+        ));
+        let child = rollout_path(temp.path(), CHILD_A_ID);
+        write_jsonl(
+            &parent_root,
+            &[
+                session_meta(PARENT_ID),
+                token_count_at(1_000, 900, 100, "2026-07-10T03:00:01Z"),
+            ],
+        );
+        write_jsonl(
+            &parent_page,
+            &[
+                session_meta_at(PARENT_ID, None, None, "2026-07-10T03:00:20Z"),
+                token_count_at(2_000, 1_800, 200, "2026-07-10T03:00:21Z"),
+                turn_context_at("2026-07-10T03:00:40Z"),
+            ],
+        );
+        write_jsonl(
+            &child,
+            &[
+                session_meta_at(
+                    CHILD_A_ID,
+                    Some(PARENT_ID),
+                    Some(PARENT_ID),
+                    "2026-07-10T03:00:30Z",
+                ),
+                turn_context(),
+                token_count_at(1_000, 900, 100, "2026-07-10T03:00:31Z"),
+                token_count_at(2_000, 1_800, 200, "2026-07-10T03:00:32Z"),
+                token_count_at(2_300, 1_950, 250, "2026-07-10T03:00:33Z"),
+            ],
+        );
+
+        // Without the continuation page the frozen first page never reaches
+        // the fork time.
+        let first_page_only = sync_test_file(&db, &child, &[&parent_root, &child])?;
+        assert!(first_page_only.deferred);
+
+        let result = sync_test_file(&db, &child, &[&parent_root, &parent_page, &child])?;
+        assert_eq!(
+            (result.imported, result.skipped, result.deferred),
+            (1, 2, false)
+        );
+        assert_eq!(
+            imported_usage(&db)?,
+            vec![(request_id(CHILD_A_ID, 3), 300, 150, 50)]
         );
         Ok(())
     }

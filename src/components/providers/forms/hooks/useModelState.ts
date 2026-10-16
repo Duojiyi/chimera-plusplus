@@ -1,4 +1,12 @@
 import { useState, useCallback, useEffect, useRef } from "react";
+import { stripClaudeOneMMarker } from "@/utils/toolProviderConfig";
+
+export {
+  CLAUDE_ONE_M_MARKER,
+  hasClaudeOneMMarker,
+  setClaudeOneMMarker,
+  stripClaudeOneMMarker,
+} from "@/utils/toolProviderConfig";
 
 interface UseModelStateProps {
   settingsConfig: string;
@@ -16,24 +24,6 @@ export type ClaudeModelEnvField =
   | "ANTHROPIC_DEFAULT_FABLE_MODEL"
   | "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME"
   | "CLAUDE_CODE_SUBAGENT_MODEL";
-
-export const CLAUDE_ONE_M_MARKER = "[1M]";
-
-export function hasClaudeOneMMarker(model: string): boolean {
-  return model.trimEnd().toLowerCase().endsWith("[1m]");
-}
-
-export function stripClaudeOneMMarker(model: string): string {
-  const trimmedEnd = model.trimEnd();
-  if (!trimmedEnd.toLowerCase().endsWith("[1m]")) return model;
-  return trimmedEnd.slice(0, -CLAUDE_ONE_M_MARKER.length).trimEnd();
-}
-
-export function setClaudeOneMMarker(model: string, enabled: boolean): string {
-  const base = stripClaudeOneMMarker(model).trim();
-  if (!base) return "";
-  return enabled ? `${base}${CLAUDE_ONE_M_MARKER}` : base;
-}
 
 /**
  * Parse model values from settings config JSON

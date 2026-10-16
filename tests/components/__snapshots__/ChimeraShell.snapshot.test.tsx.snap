@@ -9,7 +9,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
   <div
     class="box-border w-full h-[40px] shrink-0 flex flex-row gap-0 p-[0px_8px] justify-start items-center"
     data-pencil-name="字标区"
-    data-tauri-drag-region="true"
+    data-tauri-drag-region="deep"
   >
     <div
       class="text-[14px]/[20px] box-border text-[#EEF0F3] font-bold text-left whitespace-nowrap"
@@ -537,7 +537,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
   <div
     class="box-border w-full h-[40px] shrink-0 flex flex-row gap-0 p-[0px_8px] justify-start items-center"
     data-pencil-name="字标区"
-    data-tauri-drag-region="true"
+    data-tauri-drag-region="deep"
   >
     <div
       class="text-[14px]/[20px] box-border text-[#EEF0F3] font-bold text-left whitespace-nowrap"
@@ -1064,7 +1064,7 @@ exports[`keeps the shell markup stable across views and the line editor > titleb
   <div
     class="box-border flex-1 min-w-0 h-[40px] flex flex-row p-[0px_12px] justify-start items-center gap-2"
     data-pencil-name="左"
-    data-tauri-drag-region="true"
+    data-tauri-drag-region="deep"
   >
     <span
       class="text-[12px] text-[#646970] dark:text-[#8D9398] truncate"
@@ -1235,7 +1235,7 @@ exports[`keeps the shell markup stable across views and the line editor > titleb
   <div
     class="box-border flex-1 min-w-0 h-[40px] flex flex-row p-[0px_12px] justify-start items-center gap-2"
     data-pencil-name="左"
-    data-tauri-drag-region="true"
+    data-tauri-drag-region="deep"
   >
     <span
       class="text-[12px] text-[#646970] dark:text-[#8D9398] truncate"
@@ -1406,7 +1406,7 @@ exports[`keeps the shell markup stable across views and the line editor > titleb
   <div
     class="box-border flex-1 min-w-0 h-[40px] flex flex-row p-[0px_12px] justify-start items-center gap-2"
     data-pencil-name="左"
-    data-tauri-drag-region="true"
+    data-tauri-drag-region="deep"
   >
     <span
       class="text-[12px] text-[#646970] dark:text-[#8D9398] truncate"

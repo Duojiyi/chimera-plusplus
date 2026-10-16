@@ -1461,6 +1461,13 @@ pub fn create_anthropic_sse_stream_from_responses<E: std::error::Error + Send + 
                     }
                 }
                 Err(e) => {
+                    // A late transport failure cannot invalidate a terminal response
+                    // that was already emitted, nor append a second terminal event.
+                    // Adapted from farion1231/cc-switch 866b93b4
+                    if terminated {
+                        log::debug!("[Claude/Responses] ignoring stream error after terminal event: {e}");
+                        break;
+                    }
                     log::error!("Responses stream error: {e}");
                     let error_event = json!({
                         "type": "error",
@@ -2193,5 +2200,78 @@ mod tests {
             !merged.contains('\u{FFFD}'),
             "output must not contain U+FFFD replacement characters"
         );
+    }
+
+    // Adapted from farion1231/cc-switch 866b93b4
+    async fn assert_late_transport_error_preserves_terminal(
+        event: &str,
+        response: Value,
+        stops: usize,
+        errors: usize,
+    ) {
+        let prefix = format!(
+            "event: response.created\ndata: {{\"type\":\"response.created\",\"response\":{{\"id\":\"resp_1\",\"model\":\"gpt-5\"}}}}\n\nevent: response.output_text.delta\ndata: {{\"type\":\"response.output_text.delta\",\"delta\":\"visible\"}}\n\nevent: {event}\ndata: {}\n\n",
+            json!({"type": event, "response": response})
+        );
+        let expected = convert_stream_text(prefix.clone()).await;
+        assert_eq!(expected.matches("event: message_stop\n").count(), stops);
+        assert_eq!(expected.matches("event: error\n").count(), errors);
+        let upstream = stream::iter(vec![
+            Ok(Bytes::from(prefix)),
+            Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                "late error",
+            )),
+        ]);
+        let actual: String = create_anthropic_sse_stream_from_responses(upstream)
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .map(|chunk| String::from_utf8(chunk.unwrap().to_vec()).unwrap())
+            .collect();
+        assert_eq!(
+            actual, expected,
+            "a terminal response must not gain a second terminal event"
+        );
+    }
+
+    #[tokio::test]
+    async fn late_transport_error_after_completed_is_ignored() {
+        assert_late_transport_error_preserves_terminal(
+            "response.completed",
+            json!({"status": "completed", "usage": {"input_tokens": 1, "output_tokens": 1}}),
+            1,
+            0,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn late_transport_error_after_incomplete_is_ignored() {
+        assert_late_transport_error_preserves_terminal(
+            "response.incomplete",
+            json!({
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            }),
+            1,
+            0,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn late_transport_error_after_failed_is_ignored() {
+        assert_late_transport_error_preserves_terminal(
+            "response.failed",
+            json!({
+                "status": "failed",
+                "error": {"type": "server_error", "message": "semantic failure"}
+            }),
+            0,
+            1,
+        )
+        .await;
     }
 }

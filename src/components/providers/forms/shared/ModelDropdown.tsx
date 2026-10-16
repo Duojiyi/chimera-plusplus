@@ -13,9 +13,15 @@ import type { FetchedModel } from "@/lib/api/model-fetch";
 export function ModelDropdown({
   models,
   onSelect,
+  variant = "button",
+  label = "选择模型",
 }: {
   models: FetchedModel[];
   onSelect: (id: string) => void;
+  /** `addon`: a plain side button inside a `.model-input` field group. */
+  variant?: "button" | "addon";
+  /** Accessible name of the trigger. */
+  label?: string;
 }) {
   const grouped: Record<string, FetchedModel[]> = {};
   for (const model of models) {
@@ -28,9 +34,22 @@ export function ModelDropdown({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="outline" size="icon" className="shrink-0">
-          <ChevronDown className="h-4 w-4" />
-        </Button>
+        {variant === "addon" ? (
+          <button type="button" aria-label={label} title={label}>
+            <ChevronDown size={15} aria-hidden="true" />
+          </button>
+        ) : (
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            className="shrink-0"
+            aria-label={label}
+            title={label}
+          >
+            <ChevronDown className="h-4 w-4" />
+          </Button>
+        )}
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="end"

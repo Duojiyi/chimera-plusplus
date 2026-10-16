@@ -78,29 +78,67 @@ pub fn read_limited(path: &Path, limit: u64) -> io::Result<Vec<u8>> {
 /// failure with no corresponding safety benefit. Callers that read a file
 /// fully into memory should use [`open_limited_regular_file`] instead.
 pub fn open_regular_file_no_symlink(path: &Path) -> io::Result<File> {
+    open_regular_file_no_follow(path, fs::OpenOptions::new().read(true))
+}
+
+/// [`open_regular_file_no_symlink`] for reading and writing through one
+/// handle, without creating or truncating the file.
+///
+/// The link check and the open are not two separate path lookups: the file is
+/// opened without following a final link and the opened handle itself is
+/// checked, so a file swapped for a link or junction after the check cannot
+/// redirect the writes to the link target.
+pub fn open_regular_file_no_symlink_rw(path: &Path) -> io::Result<File> {
+    open_regular_file_no_follow(path, fs::OpenOptions::new().read(true).write(true))
+}
+
+fn open_regular_file_no_follow(path: &Path, options: &mut fs::OpenOptions) -> io::Result<File> {
+    // A path check first, for a clear error in the common case. The handle
+    // check in `open_handle_no_follow` is what closes the race.
     let metadata = fs::symlink_metadata(path)?;
     if metadata.file_type().is_symlink() || is_reparse_point(&metadata) {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            ResourceLimitError::Symlink,
-        ));
+        return Err(symlink_error());
     }
     if !metadata.is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "expected a regular file",
-        ));
+        return Err(not_regular_file_error());
     }
+    open_handle_no_follow(path, options)
+}
 
-    let file = File::open(path)?;
+/// Open `path` without following a final symbolic link or reparse point and
+/// verify, through the handle, that a regular file was opened.
+///
+/// Unix: `O_NOFOLLOW` makes the open fail on a final symlink. Windows:
+/// `FILE_FLAG_OPEN_REPARSE_POINT` opens a reparse point itself instead of its
+/// target, and the handle's attributes then reveal it.
+fn open_handle_no_follow(path: &Path, options: &mut fs::OpenOptions) -> io::Result<File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let file = options.open(path)?;
     let opened_metadata = file.metadata()?;
+    if is_reparse_point(&opened_metadata) || opened_metadata.file_type().is_symlink() {
+        return Err(symlink_error());
+    }
     if !opened_metadata.is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "expected a regular file",
-        ));
+        return Err(not_regular_file_error());
     }
     Ok(file)
+}
+
+fn symlink_error() -> io::Error {
+    io::Error::new(io::ErrorKind::PermissionDenied, ResourceLimitError::Symlink)
+}
+
+fn not_regular_file_error() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, "expected a regular file")
 }
 
 /// Open a regular file after rejecting links/reparse points and enforcing a
@@ -233,6 +271,12 @@ pub fn collect_files_with_extensions(
     Ok(files)
 }
 
+/// Whether `metadata`, read with `symlink_metadata`, describes a symbolic
+/// link or another reparse point: what the readers here refuse to follow.
+pub fn is_link_or_reparse_point(metadata: &fs::Metadata) -> bool {
+    metadata.file_type().is_symlink() || is_reparse_point(metadata)
+}
+
 #[cfg(windows)]
 fn is_reparse_point(metadata: &fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
@@ -283,6 +327,78 @@ mod tests {
         let missing = dir.path().join("does-not-exist.jsonl");
         assert!(open_regular_file_no_symlink(&missing).is_err());
         assert!(open_regular_file_no_symlink(dir.path()).is_err());
+    }
+
+    #[test]
+    fn read_write_open_uses_one_handle_and_keeps_the_content() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("history.jsonl");
+        fs::write(&path, b"abc").unwrap();
+
+        let mut file = open_regular_file_no_symlink_rw(&path).unwrap();
+        let mut content = String::new();
+        file.read_to_string(&mut content).unwrap();
+        assert_eq!(content, "abc");
+        file.write_all(b"def").unwrap();
+        drop(file);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "abcdef");
+
+        let missing = dir.path().join("missing.jsonl");
+        let error = open_regular_file_no_symlink_rw(&missing).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert!(
+            !missing.exists(),
+            "the read-write open must not create files"
+        );
+        assert!(open_regular_file_no_symlink_rw(dir.path()).is_err());
+    }
+
+    /// Creates `link` pointing at `target`, or `None` where the platform
+    /// refuses (Windows without the symlink privilege or developer mode).
+    fn try_file_symlink(target: &Path, link: &Path) -> Option<()> {
+        #[cfg(unix)]
+        let created = std::os::unix::fs::symlink(target, link);
+        #[cfg(windows)]
+        let created = std::os::windows::fs::symlink_file(target, link);
+        match created {
+            Ok(()) => Some(()),
+            Err(error) => {
+                eprintln!("skipping: cannot create a symlink here: {error}");
+                None
+            }
+        }
+    }
+
+    #[test]
+    fn read_write_open_refuses_a_final_symlink() {
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("target.jsonl");
+        let link = dir.path().join("link.jsonl");
+        fs::write(&target, b"target").unwrap();
+        if try_file_symlink(&target, &link).is_none() {
+            return;
+        }
+
+        let error = open_regular_file_no_symlink_rw(&link).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(fs::read(&target).unwrap(), b"target");
+    }
+
+    /// The race itself: the path passed the check as a regular file but is a
+    /// link by the time it is opened. The handle-level open must refuse it.
+    #[test]
+    fn handle_open_refuses_a_link_swapped_in_after_the_path_check() {
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("target.jsonl");
+        let link = dir.path().join("swapped.jsonl");
+        fs::write(&target, b"target").unwrap();
+        if try_file_symlink(&target, &link).is_none() {
+            return;
+        }
+
+        let result = open_handle_no_follow(&link, fs::OpenOptions::new().read(true).write(true));
+        assert!(result.is_err(), "a link must not be opened: {result:?}");
+        assert_eq!(fs::read(&target).unwrap(), b"target");
     }
 
     #[test]

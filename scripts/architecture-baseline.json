@@ -57,7 +57,7 @@
     "services/pi_state.rs": 1,
     "services/prompt.rs": 8,
     "services/provider/live.rs": 2,
-    "services/provider/mod.rs": 18,
+    "services/provider/mod.rs": 16,
     "services/provider/pi.rs": 1,
     "services/proxy.rs": 2,
     "tray.rs": 6

@@ -67,11 +67,15 @@ pub fn map_proxy_error_to_status(error: &ProxyError) -> u16 {
 pub fn get_error_message(error: &ProxyError) -> String {
     match error {
         ProxyError::UpstreamError { status, body } => {
-            if let Some(body) = body {
-                format!("上游错误 ({status}): {body}")
-            } else {
-                format!("上游错误 ({status})")
-            }
+            // Say so when the upstream sent no error body, instead of a dangling
+            // "上游错误 (502): " that reads as if the proxy dropped the message.
+            // Adapted from farion1231/cc-switch c11c7cf1
+            let body = body
+                .as_deref()
+                .map(str::trim)
+                .filter(|body| !body.is_empty())
+                .unwrap_or("上游未返回错误内容");
+            format!("上游错误 ({status}): {body}")
         }
         ProxyError::Timeout(msg) => format!("请求超时: {msg}"),
         ProxyError::ForwardFailed(msg) => format!("转发失败: {msg}"),
@@ -151,6 +155,18 @@ mod tests {
         assert!(msg.contains("上游错误"));
         assert!(msg.contains("500"));
         assert!(msg.contains("Internal Server Error"));
+    }
+
+    // Adapted from farion1231/cc-switch c11c7cf1
+    #[test]
+    fn test_get_error_message_empty_body() {
+        for body in [Some("   ".to_string()), Some(String::new()), None] {
+            let error = ProxyError::UpstreamError { status: 502, body };
+            assert_eq!(
+                get_error_message(&error),
+                "上游错误 (502): 上游未返回错误内容"
+            );
+        }
     }
 
     #[test]

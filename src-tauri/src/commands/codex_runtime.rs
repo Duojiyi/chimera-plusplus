@@ -10,12 +10,13 @@ use std::time::{Duration, Instant};
 
 use chimera_platform::lock::{LockError, LockGuard, OperationLock};
 use chimera_runtime::manager::{
-    detect_portable_codex, detect_windows_codex, diagnose_windows_codex, latest_portable_rollback,
-    maintenance_route, parse_windows_release_plan, rollback_portable_install,
-    uninstall_windows_codex, InstallMode, MaintenanceRoute, UpdateSource, WindowsReleasePlan,
+    detect_portable_codex, latest_portable_rollback, maintenance_route, parse_windows_release_plan,
+    rollback_portable_install, uninstall_windows_codex, InstallMode, MaintenanceRoute,
+    UpdateSource, WindowsReleasePlan,
 };
 
 use crate::services::codex_install_journal::{InstallJournal, InstallJournalEntry};
+use crate::services::codex_portable_layout::{self, LayoutMigrationOutcome, PortableLayout};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_opener::OpenerExt;
@@ -81,6 +82,15 @@ pub struct CodexRuntimeStatus {
     pub can_rollback: bool,
     pub can_uninstall: bool,
     pub history: Vec<CodexRuntimeVersion>,
+    /// `flat` | `nested` | `interrupted` for a portable root; omitted otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub portable_layout: Option<String>,
+    /// One plain-Chinese sentence about the portable layout, when relevant.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layout_notice: Option<String>,
+    /// A registered MSIX found next to the managed portable install.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unmanaged_standard_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -103,6 +113,14 @@ pub struct CodexLaunchResult {
     pub model_unlock_injected: bool,
     pub model_unlock_model_count: usize,
     pub model_unlock_error: Option<String>,
+    /// Codex is running but no stable main window appeared within the
+    /// startup budget: launched, not failed.
+    pub startup_slow: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub startup_notice: Option<String>,
+    /// The portable layout migration run before this launch, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layout_migration: Option<LayoutMigrationOutcome>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -466,9 +484,132 @@ pub(crate) fn codex_desktop_is_running() -> Result<bool, String> {
         return Ok(false);
     }
     let portable_root = portable_root()?;
-    match codex_win_engine::detect_installed_codex(&portable_root) {
+    match detect_managed_codex(&portable_root) {
         Some(installed) => codex_is_running(&installed),
         None => Ok(false),
+    }
+}
+
+/// Which installation Chimera++ manages when a registered MSIX and a portable
+/// install exist side by side. Without a portable preference MSIX wins, as
+/// before; with one the portable install wins, so "install the portable build"
+/// is not followed by launching or uninstalling the Store package.
+fn select_managed(
+    msix: Option<codex_win_engine::InstalledWindowsCodex>,
+    portable: Option<codex_win_engine::InstalledWindowsCodex>,
+    prefer_portable: bool,
+) -> Option<codex_win_engine::InstalledWindowsCodex> {
+    match (msix, portable) {
+        (Some(_), Some(portable)) if prefer_portable => Some(portable),
+        (Some(msix), _) => Some(msix),
+        (None, portable) => portable,
+    }
+}
+
+/// The user chose the portable build: in settings, or by their most recent
+/// completed install through Chimera++.
+fn portable_preferred() -> bool {
+    if crate::settings::get_settings().codex_install_mode == "portable" {
+        return true;
+    }
+    InstallJournal::at(&runtime_root())
+        .load()
+        .iter()
+        .rev()
+        .find(|entry| entry.state == "completed")
+        .is_some_and(|entry| entry.install_mode == "portable")
+}
+
+/// Both candidates: the registered MSIX (if any) and the portable install at
+/// `portable_root` (if any).
+fn detect_candidates(
+    portable_root: &Path,
+) -> (
+    Option<codex_win_engine::InstalledWindowsCodex>,
+    Option<codex_win_engine::InstalledWindowsCodex>,
+) {
+    match codex_win_engine::detect_installed_codex(portable_root) {
+        // MSIX detection runs first; a portable result means there is no MSIX.
+        Some(found) if found.source == "portable" => (None, Some(found)),
+        Some(msix) => (
+            Some(msix),
+            codex_win_engine::detect_portable_install(portable_root),
+        ),
+        None => (None, None),
+    }
+}
+
+pub(crate) fn detect_managed_codex(
+    portable_root: &Path,
+) -> Option<codex_win_engine::InstalledWindowsCodex> {
+    let (msix, portable) = detect_candidates(portable_root);
+    let prefer_portable = portable.is_some() && msix.is_some() && portable_preferred();
+    select_managed(msix, portable, prefer_portable)
+}
+
+fn runtime_install(
+    installed: codex_win_engine::InstalledWindowsCodex,
+) -> chimera_runtime::manager::InstalledCodex {
+    chimera_runtime::manager::InstalledCodex {
+        version: installed.version,
+        path: installed.path,
+        install_mode: process_install_mode(&installed.source),
+    }
+}
+
+/// `detect_managed_codex` in the runtime crate's shape.
+fn detect_managed_install(
+    portable_root: &Path,
+) -> Option<chimera_runtime::manager::InstalledCodex> {
+    detect_managed_codex(portable_root).map(runtime_install)
+}
+
+/// Finish or undo a layout migration a crash interrupted, so the install root
+/// exists again before detection. Caller holds the runtime operation lock.
+/// The skin commands, which close and relaunch Codex too, call it the same way.
+pub(crate) fn recover_interrupted_layout(portable_root: &Path) -> Result<(), String> {
+    if !codex_portable_layout::migration_interrupted(portable_root) {
+        return Ok(());
+    }
+    prepare_portable_layout(portable_root).map(|_| ())
+}
+
+/// While a migration is interrupted the install root is missing, so the
+/// renderer offers neither "open" nor "repair". Status reads therefore heal it
+/// under the operation lock. Returns why it is still interrupted, if it is.
+fn heal_interrupted_layout(portable_root: &Path) -> Option<String> {
+    if !codex_portable_layout::migration_interrupted(portable_root) {
+        return None;
+    }
+    acquire_operation_lock("codex_runtime_layout_recovery")
+        .and_then(|_guard| recover_interrupted_layout(portable_root))
+        .err()
+}
+
+const LAYOUT_FLAT_NOTICE: &str = "免安装版仍是旧的目录结构。下次通过 Chimera++ 启动 Codex 时会自动升级（官方文件移入 app 子目录），会话和配置不受影响。";
+const LAYOUT_INTERRUPTED_NOTICE: &str = "上次免安装版目录结构升级被中断，Codex 文件完整保留在旁边的 .layout- 暂存目录中，请不要手动删除该目录。重新打开“Codex 管理”页面时，Chimera++ 会自动再次尝试恢复。";
+
+/// Layout code and notice for the status DTO. Pure apart from reading `root`.
+fn portable_layout_status(
+    installed_portable: bool,
+    portable_root: &Path,
+) -> (Option<String>, Option<String>) {
+    if codex_portable_layout::migration_interrupted(portable_root) {
+        return (
+            Some("interrupted".to_string()),
+            Some(LAYOUT_INTERRUPTED_NOTICE.to_string()),
+        );
+    }
+    if !installed_portable {
+        return (None, None);
+    }
+    match codex_portable_layout::detect_layout(portable_root) {
+        PortableLayout::Flat => (
+            Some("flat".to_string()),
+            Some(LAYOUT_FLAT_NOTICE.to_string()),
+        ),
+        PortableLayout::Nested => (Some("nested".to_string()), None),
+        PortableLayout::Missing | PortableLayout::Unknown => (None, None),
     }
 }
 
@@ -493,7 +634,7 @@ pub(crate) fn renderer_unlock_available(
 
 fn renderer_unlock_launch_options(
     installed: &codex_win_engine::InstalledWindowsCodex,
-) -> codex_win_engine::LaunchOptions {
+) -> codex_win_engine::LaunchOptions<'static> {
     let mut options = codex_win_engine::LaunchOptions::default();
     if renderer_unlock_available(installed) {
         options.remote_debugging_port = Some(crate::codex_cdp::codex_renderer_debug_port());
@@ -521,7 +662,9 @@ fn launch_result(
     was_running: bool,
     running: bool,
     model_unlock: crate::codex_cdp::CodexModelUnlockStatus,
+    launch: LaunchReport,
 ) -> CodexLaunchResult {
+    let startup_slow = launch.verdict == StartupVerdict::Slow;
     CodexLaunchResult {
         was_running,
         running,
@@ -530,7 +673,25 @@ fn launch_result(
         model_unlock_injected: model_unlock.injected,
         model_unlock_model_count: model_unlock.model_count,
         model_unlock_error: model_unlock.error,
+        startup_slow,
+        startup_notice: startup_slow.then(|| STARTUP_SLOW_NOTICE.to_string()),
+        layout_migration: launch.layout,
     }
+}
+
+/// Launch for the "open / restart Codex" commands: a failed verdict is an
+/// error, a slow one is reported to the renderer as launched-but-slow.
+fn launch_for_command(
+    installed: &codex_win_engine::InstalledWindowsCodex,
+    failure_prefix: &str,
+) -> Result<LaunchReport, String> {
+    let report = launch_codex_checked(installed, renderer_unlock_launch_options(installed))
+        .map_err(|error| format!("{failure_prefix}{error}"))?;
+    if let StartupVerdict::Failed { kind, message } = &report.verdict {
+        log::warn!("Codex 启动未通过就绪检查（{kind}）");
+        return Err(format!("{failure_prefix}{message}"));
+    }
+    Ok(report)
 }
 
 fn official_login_available() -> bool {
@@ -584,37 +745,6 @@ fn wait_for_codex_stopped(
         std::thread::sleep(Duration::from_millis(250));
     }
     Ok(false)
-}
-
-/// The engine's launch-target file. The engine only exports its name on
-/// Windows, but the layout check below must run (and be tested) everywhere.
-const PORTABLE_LAUNCH_TARGET_FILE: &str = "codex-portable-launcher.txt";
-
-const NESTED_PORTABLE_LAYOUT_MESSAGE: &str = "这个免安装版目录已被其他工具更新为新的目录结构（官方文件位于 app 子目录），当前版本的 Chimera++ 无法直接启动它。请在“Codex 管理”中执行“修复”，重新安装为兼容的结构；或在设置中更换免安装版目录。";
-
-/// Whether another tool rewrote this portable install into the nested
-/// layout (official files under `app\`, launcher stubs in the root).
-///
-/// Newer upstream engines use that layout and may share our default
-/// directory. The pinned engine resolves the root stub as the Codex
-/// executable, so `ensure_portable_launcher` would fail with upstream-branded
-/// advice — or, worse, overwrite the other tool's launcher files. Detect it
-/// first and explain the way out instead.
-fn portable_layout_is_nested(root: &Path) -> bool {
-    if !root.join("app").is_dir() {
-        return false;
-    }
-    let Ok(config) = std::fs::read_to_string(root.join(PORTABLE_LAUNCH_TARGET_FILE)) else {
-        return false;
-    };
-    let target = config
-        .lines()
-        .next()
-        .unwrap_or_default()
-        .trim_start_matches('\u{feff}')
-        .trim()
-        .to_ascii_lowercase();
-    target.starts_with("app\\") || target.starts_with("app/")
 }
 
 /// Upstream-branded and English failures the pinned engine reports, paired
@@ -712,15 +842,8 @@ pub(crate) fn engine_error_message(raw: &str) -> String {
 fn portable_command_with_codex_home(
     root: &Path,
     codex_home: &Path,
-    options: codex_win_engine::LaunchOptions,
+    options: codex_win_engine::LaunchOptions<'_>,
 ) -> Result<Command, String> {
-    if portable_layout_is_nested(root) {
-        log::warn!(
-            "Codex 免安装版目录 {} 是嵌套布局（app\\），当前引擎无法直接启动",
-            root.display()
-        );
-        return Err(NESTED_PORTABLE_LAYOUT_MESSAGE.to_string());
-    }
     let launcher = codex_win_engine::portable::ensure_portable_launcher(root).map_err(|error| {
         let raw = error.to_string();
         log::warn!("准备 Codex 免安装版启动器失败：{raw}");
@@ -767,86 +890,209 @@ impl CodexStartupWindows {
         self.dialog_visible |= class == "#32770";
     }
 
-    fn ready(&self) -> Result<bool, String> {
+    fn probe(&self, running: bool) -> StartupProbe {
         if self.dialog_visible {
-            return Err(
-                "Codex 启动时出现原生对话框，无法确认启动成功，请检查 Codex 窗口".to_string(),
-            );
+            StartupProbe::Dialog
+        } else if self.main_visible {
+            StartupProbe::MainWindow
+        } else if running {
+            StartupProbe::Running
+        } else {
+            StartupProbe::NotRunning
         }
-        Ok(self.main_visible)
     }
 }
 
+/// One look at the processes and visible windows of an install root.
+/// Only the Windows probe can observe windows, so elsewhere some variants are
+/// never constructed outside tests.
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartupProbe {
+    NotRunning,
+    Running,
+    MainWindow,
+    Dialog,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StartupVerdict {
+    Ready,
+    /// Still running, but no stable main window within the budget.
+    Slow,
+    Failed {
+        kind: &'static str,
+        message: String,
+    },
+}
+
+const STARTUP_BUDGET: Duration = Duration::from_secs(30);
+const STARTUP_STABLE_FOR: Duration = Duration::from_secs(3);
+const STARTUP_POLL: Duration = Duration::from_millis(250);
+
+const STARTUP_DIALOG_MESSAGE: &str = "Codex 启动时弹出了错误对话框，没有正常打开。请查看对话框中的提示，并在“Codex 管理”中运行诊断。";
+const STARTUP_EXITED_MESSAGE: &str =
+    "Codex 启动后立即退出。请在“Codex 管理”中运行诊断，必要时执行“修复”。";
+const STARTUP_NOT_STARTED_MESSAGE: &str =
+    "Codex 没有启动起来。请在“Codex 管理”中运行诊断，必要时执行“修复”。";
+const STARTUP_SLOW_NOTICE: &str = "Codex 已经启动，但 30 秒内还没有出现稳定的主窗口，可能仍在加载。请稍候查看 Codex 窗口；一直没有出现时，请在“Codex 管理”中运行诊断。";
+
+/// The startup decision, free of clocks and processes so it can be tested.
+/// A dialog fails at once; a main window must stay up for `stable_for`;
+/// at the budget a still-running Codex is slow, a vanished one failed.
+struct StartupTracker {
+    budget: Duration,
+    stable_for: Duration,
+    ready_since: Option<Duration>,
+    saw_process: bool,
+}
+
+impl StartupTracker {
+    fn new(budget: Duration, stable_for: Duration) -> Self {
+        Self {
+            budget,
+            stable_for,
+            ready_since: None,
+            saw_process: false,
+        }
+    }
+
+    fn observe(&mut self, elapsed: Duration, probe: StartupProbe) -> Option<StartupVerdict> {
+        match probe {
+            StartupProbe::Dialog => {
+                return Some(StartupVerdict::Failed {
+                    kind: "startup-dialog",
+                    message: STARTUP_DIALOG_MESSAGE.to_string(),
+                })
+            }
+            StartupProbe::MainWindow => {
+                self.saw_process = true;
+                let since = *self.ready_since.get_or_insert(elapsed);
+                if elapsed.saturating_sub(since) >= self.stable_for {
+                    return Some(StartupVerdict::Ready);
+                }
+            }
+            StartupProbe::Running => {
+                self.saw_process = true;
+                self.ready_since = None;
+            }
+            StartupProbe::NotRunning => self.ready_since = None,
+        }
+        if elapsed < self.budget {
+            return None;
+        }
+        Some(match probe {
+            StartupProbe::Running | StartupProbe::MainWindow => StartupVerdict::Slow,
+            _ if self.saw_process => StartupVerdict::Failed {
+                kind: "immediate-exit",
+                message: STARTUP_EXITED_MESSAGE.to_string(),
+            },
+            _ => StartupVerdict::Failed {
+                kind: "activation-failed",
+                message: STARTUP_NOT_STARTED_MESSAGE.to_string(),
+            },
+        })
+    }
+}
+
+fn wait_for_startup(
+    mut probe: impl FnMut() -> Result<StartupProbe, String>,
+) -> Result<StartupVerdict, String> {
+    let started = Instant::now();
+    let mut tracker = StartupTracker::new(STARTUP_BUDGET, STARTUP_STABLE_FOR);
+    loop {
+        let observed = probe()?;
+        if let Some(verdict) = tracker.observe(started.elapsed(), observed) {
+            return Ok(verdict);
+        }
+        std::thread::sleep(STARTUP_POLL);
+    }
+}
+
+#[cfg(any(windows, test))]
+fn normalized_windows_path(path: &Path) -> String {
+    let text = path.to_string_lossy().replace('/', "\\");
+    let text = if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else {
+        text.strip_prefix(r"\\?\").unwrap_or(&text).to_string()
+    };
+    text.trim_end_matches('\\').to_lowercase()
+}
+
+/// Whether `candidate` lies strictly inside `root`, on a component boundary.
+/// Matching "inside the root" rather than "directly in the root" covers both
+/// portable layouts (`root\ChatGPT.exe`, `root\app\ChatGPT.exe`) and MSIX.
+#[cfg(any(windows, test))]
+fn path_within_root(candidate: &Path, root: &Path) -> bool {
+    let candidate = normalized_windows_path(candidate);
+    let root = normalized_windows_path(root);
+    !root.is_empty()
+        && candidate.len() > root.len()
+        && candidate.starts_with(&root)
+        && candidate[root.len()..].starts_with('\\')
+}
+
+/// Native, path-pinned startup probe. Replaces the PowerShell `Get-Process`
+/// filter, whose `.Path` is often empty for packaged processes.
 #[cfg(windows)]
-fn codex_main_window_ready(root: &Path, deadline: Instant) -> Result<bool, String> {
-    use std::os::windows::process::CommandExt;
-    use windows_sys::Win32::Foundation::{HWND, LPARAM};
+fn codex_startup_probe(root: &Path) -> Result<StartupProbe, String> {
+    use std::collections::HashMap;
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::Foundation::{CloseHandle, HWND, LPARAM};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         EnumWindows, GetClassNameW, GetWindowThreadProcessId, IsWindowVisible,
     };
 
-    let mut command = Command::new("powershell.exe");
-    command.creation_flags(0x08000000);
-    command.env("CHIMERA_CODEX_STARTUP_ROOT", root).args([
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        r#"
-try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch { }
-$ErrorActionPreference = 'Stop'
-$root = (Resolve-Path -LiteralPath $env:CHIMERA_CODEX_STARTUP_ROOT).ProviderPath.TrimEnd('\')
-$ids = @(Get-Process -Name Codex,ChatGPT -ErrorAction SilentlyContinue | ForEach-Object {
-    $path = $_.Path
-    if (-not [string]::IsNullOrWhiteSpace($path)) {
-        $parent = Split-Path -LiteralPath $path
-        if ([string]::Equals($parent, $root, [StringComparison]::OrdinalIgnoreCase)) { $_.Id }
+    let running = codex_win_engine::codex_running_for_root(root)
+        .map_err(|error| format!("无法读取 Codex 进程状态：{error}"))?;
+    if !running {
+        return Ok(StartupProbe::NotRunning);
     }
-})
-ConvertTo-Json -InputObject $ids -Compress
-"#,
-    ]);
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    if remaining.is_zero() {
-        return Ok(false);
-    }
-    let output = crate::process_utils::output_with_timeout(
-        command,
-        remaining.min(Duration::from_secs(5)),
-        crate::security_limits::MAX_PROCESS_OUTPUT_BYTES,
-    )
-    .map_err(|error| {
-        if error.kind() == std::io::ErrorKind::TimedOut {
-            format!("Codex 主窗口进程探测超时（单次最多 5 秒，且受剩余启动预算限制）；机器响应较慢时也可能发生。无法确认启动成功，请检查 Codex 窗口后重试：{error}")
-        } else {
-            format!("Codex 主窗口进程探测失败，无法确认启动成功: {error}")
-        }
-    })?;
-    if !output.status.success() {
-        let detail = crate::process_utils::decode_console_output(&output.stderr);
-        log::warn!("Codex 主窗口进程探测脚本失败：{}", detail.trim());
-        return Err("Codex 主窗口进程探测失败，无法确认启动成功".to_string());
-    }
-    let pids: Vec<u32> = serde_json::from_slice(&output.stdout)
-        .map_err(|error| format!("Codex 主窗口进程结果无效: {error}"))?;
-    struct Probe {
-        pids: Vec<u32>,
+    struct Probe<'a> {
+        root: &'a Path,
+        inside: HashMap<u32, bool>,
         windows: CodexStartupWindows,
-        failed: bool,
+    }
+    fn image_within_root(pid: u32, root: &Path) -> bool {
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle.is_null() {
+            return false;
+        }
+        let mut buffer = vec![0_u16; 32_768];
+        let mut size = buffer.len() as u32;
+        let ok = unsafe {
+            QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, buffer.as_mut_ptr(), &mut size)
+        };
+        unsafe { CloseHandle(handle) };
+        ok != 0
+            && path_within_root(
+                Path::new(&std::ffi::OsString::from_wide(&buffer[..size as usize])),
+                root,
+            )
     }
     unsafe extern "system" fn inspect(hwnd: HWND, param: LPARAM) -> i32 {
         let probe = unsafe { &mut *(param as *mut Probe) };
-        let mut pid = 0;
-        unsafe {
-            GetWindowThreadProcessId(hwnd, &mut pid);
+        if unsafe { IsWindowVisible(hwnd) } == 0 {
+            return 1;
         }
-        if !probe.pids.contains(&pid) || unsafe { IsWindowVisible(hwnd) } == 0 {
+        let mut pid = 0;
+        unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+        let root = probe.root;
+        if !*probe
+            .inside
+            .entry(pid)
+            .or_insert_with(|| image_within_root(pid, root))
+        {
             return 1;
         }
         let mut class = [0_u16; 128];
         let length = unsafe { GetClassNameW(hwnd, class.as_mut_ptr(), class.len() as i32) };
-        if length == 0 {
-            probe.failed = true;
-        } else {
+        if length > 0 {
             probe
                 .windows
                 .observe(&String::from_utf16_lossy(&class[..length as usize]));
@@ -854,39 +1100,28 @@ ConvertTo-Json -InputObject $ids -Compress
         1
     }
     let mut probe = Probe {
-        pids,
+        root,
+        inside: HashMap::new(),
         windows: CodexStartupWindows::default(),
-        failed: false,
     };
-    let enumerated = unsafe { EnumWindows(Some(inspect), &mut probe as *mut _ as LPARAM) };
-    if enumerated == 0 || probe.failed {
+    if unsafe { EnumWindows(Some(inspect), &mut probe as *mut _ as LPARAM) } == 0 {
         return Err("Codex 主窗口枚举失败，无法确认启动成功".to_string());
     }
-    probe.windows.ready()
+    Ok(probe.windows.probe(true))
 }
 
 #[cfg(not(windows))]
-fn codex_main_window_ready(_root: &Path, _deadline: Instant) -> Result<bool, String> {
+fn codex_startup_probe(_root: &Path) -> Result<StartupProbe, String> {
     Err("Codex 主窗口检查仅支持 Windows".to_string())
-}
-
-fn portable_startup_ready(
-    main_ready: bool,
-    renderer_ready: bool,
-    stable: bool,
-    now: Instant,
-    deadline: Instant,
-) -> bool {
-    main_ready && renderer_ready && stable && now < deadline
 }
 
 fn launch_portable_with_codex_home(
     installed: &codex_win_engine::InstalledWindowsCodex,
     codex_home: &Path,
-    options: codex_win_engine::LaunchOptions,
-) -> Result<(), String> {
-    let mut command =
-        portable_command_with_codex_home(Path::new(&installed.path), codex_home, options)?;
+    options: codex_win_engine::LaunchOptions<'_>,
+) -> Result<StartupVerdict, String> {
+    let root = Path::new(&installed.path);
+    let mut command = portable_command_with_codex_home(root, codex_home, options)?;
     let mut launcher = command
         .spawn()
         .map_err(|error| format!("Codex 免安装版启动器失败: {error}"))?;
@@ -908,46 +1143,25 @@ fn launch_portable_with_codex_home(
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let mut running_since = None;
-    while Instant::now() < deadline {
-        let main_ready = codex_main_window_ready(Path::new(&installed.path), deadline)?;
-        if main_ready {
-            let since = running_since.get_or_insert_with(Instant::now);
-            if Instant::now() >= deadline {
-                break;
-            }
-            let renderer_ready = options
-                .remote_debugging_port
-                .is_none_or(|port| crate::codex_cdp::probe_codex_renderer_unlock(port).attachable);
-            if Instant::now() >= deadline {
-                break;
-            }
-            let main_ready = renderer_ready
-                && since.elapsed() >= Duration::from_secs(3)
-                && codex_main_window_ready(Path::new(&installed.path), deadline)?;
-            if portable_startup_ready(
-                main_ready,
-                renderer_ready,
-                since.elapsed() >= Duration::from_secs(3),
-                Instant::now(),
-                deadline,
-            ) {
-                return Ok(());
-            }
+    wait_for_startup(|| {
+        let probe = codex_startup_probe(root)?;
+        // With CDP the renderer must also be attachable, or skin and model
+        // injection would silently miss this instance.
+        let renderer_pending = probe == StartupProbe::MainWindow
+            && options.remote_debugging_port.is_some_and(|port| {
+                !crate::codex_cdp::probe_codex_renderer_unlock(port).attachable
+            });
+        Ok(if renderer_pending {
+            StartupProbe::Running
         } else {
-            running_since = None;
-        }
-        std::thread::sleep(
-            Duration::from_millis(250).min(deadline.saturating_duration_since(Instant::now())),
-        );
-    }
-    Err("Codex 启动后未通过主窗口/渲染器就绪检查，请在“Codex 管理”中运行诊断".to_string())
+            probe
+        })
+    })
 }
 
 fn launch_msix_with_codex_home(
     codex_home: &Path,
-    options: codex_win_engine::LaunchOptions,
+    options: codex_win_engine::LaunchOptions<'_>,
 ) -> Result<(), String> {
     if options.remote_debugging_port.is_some() {
         return Err("MSIX 启动暂不支持通过环境注入远程调试参数".to_string());
@@ -1009,30 +1223,83 @@ Start-Process ("shell:AppsFolder\" + $pkg.PackageFamilyName + "!" + $id)
     Ok(())
 }
 
+/// How a launch went: the startup verdict plus the portable layout migration
+/// that ran right before it, if any.
+pub(crate) struct LaunchReport {
+    verdict: StartupVerdict,
+    layout: Option<LayoutMigrationOutcome>,
+}
+
+/// Launch for callers that only need "did it start". A slow start counts as
+/// started; the caller's own follow-up (e.g. CDP injection) reports misses.
 pub(crate) fn launch_codex_with_config(
     installed: &codex_win_engine::InstalledWindowsCodex,
-    mut options: codex_win_engine::LaunchOptions,
+    options: codex_win_engine::LaunchOptions<'_>,
 ) -> Result<(), String> {
+    match launch_codex_checked(installed, options)?.verdict {
+        StartupVerdict::Ready => Ok(()),
+        StartupVerdict::Slow => {
+            log::warn!("Codex 已启动但 30 秒内未出现稳定主窗口，按已启动处理");
+            Ok(())
+        }
+        StartupVerdict::Failed { message, .. } => Err(message),
+    }
+}
+
+/// Bring a portable root to the nested layout before launching it. Only
+/// called with Codex already closed and the runtime operation lock held.
+fn prepare_portable_layout(root: &Path) -> Result<Option<LayoutMigrationOutcome>, String> {
+    let outcome = codex_portable_layout::migrate_flat_to_nested(
+        root,
+        &codex_portable_layout::EngineLayoutHost,
+    );
+    log::info!("[portable-layout] {}: {}", outcome.state, outcome.message);
+    if outcome.state == "failed-needs-attention" || !root.is_dir() {
+        return Err(outcome.message);
+    }
+    Ok((outcome.state != "not-needed").then_some(outcome))
+}
+
+fn launch_codex_checked(
+    installed: &codex_win_engine::InstalledWindowsCodex,
+    mut options: codex_win_engine::LaunchOptions<'_>,
+) -> Result<LaunchReport, String> {
     let codex_home = crate::codex_config::get_codex_config_dir();
 
     if installed.source == "portable" {
-        return launch_portable_with_codex_home(installed, &codex_home, options);
+        let layout = prepare_portable_layout(Path::new(&installed.path))?;
+        let verdict = launch_portable_with_codex_home(installed, &codex_home, options)?;
+        return Ok(LaunchReport { verdict, layout });
     }
+    let root = Path::new(&installed.path);
+    let report = |verdict| LaunchReport {
+        verdict,
+        layout: None,
+    };
 
-    // The audited engine uses IApplicationActivationManager when Electron
-    // arguments are present, which is the only reliable way to pass the local
-    // CDP flags to an MSIX desktop app. This path is used only with the default
-    // ~/.codex directory, so no CODEX_HOME environment override is required.
+    // The engine uses IApplicationActivationManager when Electron arguments
+    // are present, the only reliable way to pass the local CDP flags to an
+    // MSIX desktop app. This path is used only with the default ~/.codex
+    // directory, so no CODEX_HOME environment override is required. The
+    // engine itself waits for a stable main window and rejects startup
+    // dialogs.
     if options.remote_debugging_port.is_some() {
         if !renderer_unlock_available(installed) {
             return Err("标准 MSIX 使用自定义 CODEX_HOME 时无法同时传入 CDP 参数；请恢复默认目录或使用便携版".to_string());
         }
-        match codex_win_engine::launch_codex_with_options(installed, options) {
-            Ok(()) => return Ok(()),
+        match engine_msix_launch(installed, options) {
+            Ok(verdict) => return Ok(report(verdict)),
+            Err(error) if error.contains("(startup-dialog)") => {
+                return Ok(report(StartupVerdict::Failed {
+                    kind: "startup-dialog",
+                    message: msix_launch_error(&engine_failure_reason(&error)),
+                }));
+            }
             Err(error) => {
                 log::warn!("带 CDP 参数启动 MSIX Codex 失败，尝试普通启动：{error}");
                 if codex_is_running(installed)? {
-                    return Ok(());
+                    // A live process alone is not success: observe it.
+                    return wait_for_startup(|| codex_startup_probe(root)).map(report);
                 }
                 options.remote_debugging_port = None;
             }
@@ -1043,7 +1310,7 @@ pub(crate) fn launch_codex_with_config(
     // The engine fallback cannot propagate CODEX_HOME, so only use it for the
     // default config directory. Never silently launch against another profile.
     match launch_msix_with_codex_home(&codex_home, options) {
-        Ok(()) => Ok(()),
+        Ok(()) => wait_for_startup(|| codex_startup_probe(root)).map(report),
         Err(error) => {
             let default_home = crate::config::get_home_dir().join(".codex");
             if !codex_win_engine::same_windows_path(&codex_home, &default_home) {
@@ -1052,14 +1319,35 @@ pub(crate) fn launch_codex_with_config(
                 )));
             }
             log::warn!("环境注入的 MSIX Codex 启动失败，回退到系统激活：{error}");
-            codex_win_engine::launch_codex_with_options(installed, options).map_err(|fallback| {
-                let raw = fallback.to_string();
-                log::warn!("系统激活 MSIX Codex 失败：{raw}");
-                msix_launch_error(&format!(
-                    "{error}；系统激活也失败：{}",
-                    engine_failure_reason(&raw)
-                ))
-            })
+            engine_msix_launch(installed, options)
+                .map(report)
+                .map_err(|raw| {
+                    msix_launch_error(&format!(
+                        "{error}；系统激活也失败：{}",
+                        engine_failure_reason(&raw)
+                    ))
+                })
+        }
+    }
+}
+
+/// Engine MSIX activation. Since v0.5.16 it waits for a stable main window
+/// itself; its "no stable window in 30 seconds" with Codex still running is
+/// a slow start, not a failure.
+fn engine_msix_launch(
+    installed: &codex_win_engine::InstalledWindowsCodex,
+    options: codex_win_engine::LaunchOptions<'_>,
+) -> Result<StartupVerdict, String> {
+    match codex_win_engine::launch_codex_with_options(installed, options) {
+        Ok(()) => Ok(StartupVerdict::Ready),
+        Err(error) => {
+            let raw = error.to_string();
+            log::warn!("系统激活 MSIX Codex 失败：{raw}");
+            if raw.contains("(main-window-timeout)") && codex_is_running(installed)? {
+                Ok(StartupVerdict::Slow)
+            } else {
+                Err(raw)
+            }
         }
     }
 }
@@ -1098,9 +1386,25 @@ pub(crate) fn close_codex_for_restart(
 /// those callers still get the legacy default-model check. New renderers pass
 /// the complete mapping (including display names), which catches the exact
 /// failure mode where only Codex's single `custom` entry remains visible.
+///
+/// Async on purpose: Tauri runs a synchronous command on the main thread, and
+/// the runtime cross-check below spawns the Codex CLI with a 10-second
+/// timeout per candidate, which froze the window on every line save. The
+/// work runs on a blocking thread instead.
 #[tauri::command]
-pub fn verify_codex_model_catalog(
+pub async fn verify_codex_model_catalog(
     expected_model: String,
+    expected_models: Option<Vec<ExpectedCodexCatalogModel>>,
+) -> Result<CodexModelCatalogStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        verify_codex_model_catalog_blocking(&expected_model, expected_models)
+    })
+    .await
+    .map_err(|error| format!("校验 Codex 模型目录的任务被中断：{error}"))?
+}
+
+fn verify_codex_model_catalog_blocking(
+    expected_model: &str,
     expected_models: Option<Vec<ExpectedCodexCatalogModel>>,
 ) -> Result<CodexModelCatalogStatus, String> {
     let expected_model = expected_model.trim();
@@ -1204,17 +1508,18 @@ pub async fn restart_codex_for_model_catalog(confirm: bool) -> Result<CodexLaunc
     let portable_root = portable_root()?;
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = acquire_operation_lock("codex_runtime_restart_catalog")?;
-        let installed = codex_win_engine::detect_installed_codex(&portable_root)
+        recover_interrupted_layout(&portable_root)?;
+        let installed = detect_managed_codex(&portable_root)
             .ok_or_else(|| "未检测到 Codex 安装".to_string())?;
         let was_running = codex_is_running(&installed)?;
         close_codex_for_restart(&installed, &portable_root)?;
-        launch_codex_with_config(&installed, renderer_unlock_launch_options(&installed))?;
+        let launch = launch_for_command(&installed, "")?;
         let running = wait_for_codex_running(&installed)?;
         if !running {
             return Err("Codex 重启后未保持运行，请在“Codex 管理”中运行诊断".to_string());
         }
         let model_unlock = renderer_unlock_status(&installed);
-        Ok(launch_result(was_running, running, model_unlock))
+        Ok(launch_result(was_running, running, model_unlock, launch))
     })
     .await
     .map_err(|e| format!("Codex 重启任务中断: {e}"))?
@@ -1236,7 +1541,7 @@ pub async fn get_codex_process_status() -> Result<CodexProcessStatus, String> {
     }
     let portable_root = portable_root()?;
     tauri::async_runtime::spawn_blocking(move || {
-        let Some(installed) = codex_win_engine::detect_installed_codex(&portable_root) else {
+        let Some(installed) = detect_managed_codex(&portable_root) else {
             return Ok(CodexProcessStatus {
                 supported: true,
                 installed: false,
@@ -1325,7 +1630,8 @@ pub async fn open_codex_runtime(
     let confirm_restart = confirm_restart.unwrap_or(false);
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = acquire_operation_lock("codex_runtime_launch")?;
-        let installed = codex_win_engine::detect_installed_codex(&portable_root)
+        recover_interrupted_layout(&portable_root)?;
+        let installed = detect_managed_codex(&portable_root)
             .ok_or_else(|| "未检测到 Codex 安装".to_string())?;
         let was_running = codex_is_running(&installed)?;
         if was_running && !confirm_restart {
@@ -1338,21 +1644,17 @@ pub async fn open_codex_runtime(
         // is already stopped, and it removes the discovery/launch race where a
         // just-started Electron child could otherwise survive the restart.
         close_codex_for_restart(&installed, &portable_root)?;
-        if let Err(error) =
-            launch_codex_with_config(&installed, renderer_unlock_launch_options(&installed))
-        {
-            // A second portable Electron process may exit after handing focus
-            // to an already-running instance. We intentionally reject that
-            // path here: a previous target was either absent or confirmed
-            // closed, so accepting it could hide a failed replacement.
-            return Err(format!("无法启动 Codex: {error}"));
-        }
+        // A second portable Electron process may exit after handing focus to
+        // an already-running instance. We intentionally reject that path: a
+        // previous target was either absent or confirmed closed, so accepting
+        // it could hide a failed replacement.
+        let launch = launch_for_command(&installed, "无法启动 Codex：")?;
         let running = wait_for_codex_running(&installed)?;
         if !running {
             return Err("Codex 启动后未保持运行，请在“Codex 管理”中运行诊断".to_string());
         }
         let model_unlock = renderer_unlock_status(&installed);
-        Ok(launch_result(was_running, running, model_unlock))
+        Ok(launch_result(was_running, running, model_unlock, launch))
     })
     .await
     .map_err(|error| format!("Codex 启动任务中断: {error}"))?
@@ -1526,12 +1828,13 @@ fn install_runtime_release_with_observer(
     std::fs::create_dir_all(staging_root).map_err(|error| format!("创建暂存目录失败: {error}"))?;
     let package_path = staging_root.join(format!("{}.Msix", plan.package_moniker));
     let result = (|| {
-        // Same client, proxy and TLS stack as the update check: the app proxy
-        // when one is set, otherwise the system proxy. This runs on the
-        // blocking thread that holds the runtime operation lock, so the
-        // runtime lock also covers the download.
+        // Same proxy and TLS stack as the update check: the app proxy when
+        // one is set, otherwise the system proxy. The download client also
+        // refuses any non-HTTPS redirect hop. This runs on the blocking
+        // thread that holds the runtime operation lock, so the runtime lock
+        // also covers the download.
         crate::services::bounded_download::download_to_file_blocking(
-            crate::proxy::http_client::get(),
+            crate::proxy::http_client::get_for_download()?,
             plan.package_url.clone(),
             package_path.clone(),
             plan.size_bytes,
@@ -1570,14 +1873,27 @@ fn install_runtime_release_with_observer(
                         log::warn!("注册 Codex MSIX 安装包失败：{raw}");
                         msix_launch_error(&engine_failure_reason(&raw))
                     })?;
-            if report.success && verify_msix_health_with_main_window(portable_root).healthy {
+            let health = if report.success {
+                Some(verify_msix_health_with_main_window(portable_root))
+            } else {
+                None
+            };
+            if let Some(health) = health.filter(msix_health_accepts_install) {
+                let slow = health.failure_kind == MSIX_WINDOW_SLOW;
+                if slow {
+                    notes.push(STARTUP_SLOW_NOTICE.to_string());
+                }
                 return Ok(CodexRuntimeOperation {
                     version: plan.version.clone(),
                     requested_mode: "standard".to_string(),
                     actual_mode: "standard".to_string(),
                     affected_path: report.installed.map(|installed| installed.path),
                     backup_path: None,
-                    message: "Codex 标准安装完成并通过启动检查".to_string(),
+                    message: if slow {
+                        "Codex 标准安装完成；Codex 已启动，但主窗口出现较慢".to_string()
+                    } else {
+                        "Codex 标准安装完成并通过启动检查".to_string()
+                    },
                     notes,
                 });
             }
@@ -1675,10 +1991,23 @@ pub async fn get_codex_runtime_status() -> Result<CodexRuntimeStatus, String> {
             can_rollback: false,
             can_uninstall: false,
             history: Vec::new(),
+            portable_layout: None,
+            layout_notice: None,
+            unmanaged_standard_version: None,
         });
     }
     tauri::async_runtime::spawn_blocking(move || {
-        let installed = detect_windows_codex(&portable_root);
+        let recovery_error = heal_interrupted_layout(&portable_root);
+        let (msix, portable_candidate) = detect_candidates(&portable_root);
+        let prefer_portable =
+            msix.is_some() && portable_candidate.is_some() && portable_preferred();
+        let unmanaged_standard_version = if prefer_portable {
+            msix.as_ref().map(|value| value.version.clone())
+        } else {
+            None
+        };
+        let installed =
+            select_managed(msix, portable_candidate, prefer_portable).map(runtime_install);
         let rollback = latest_portable_rollback(&portable_root).ok().flatten();
         let mut history = Vec::new();
         if let Some(current) = installed.as_ref() {
@@ -1696,6 +2025,10 @@ pub async fn get_codex_runtime_status() -> Result<CodexRuntimeStatus, String> {
         let portable = installed
             .as_ref()
             .is_some_and(|value| value.install_mode == "portable");
+        let (portable_layout, mut layout_notice) = portable_layout_status(portable, &portable_root);
+        if portable_layout.as_deref() == Some("interrupted") && recovery_error.is_some() {
+            layout_notice = recovery_error;
+        }
         Ok(CodexRuntimeStatus {
             supported: true,
             installed: installed.is_some(),
@@ -1707,6 +2040,9 @@ pub async fn get_codex_runtime_status() -> Result<CodexRuntimeStatus, String> {
             can_rollback: portable && rollback.is_some(),
             can_uninstall: installed.is_some(),
             history,
+            portable_layout,
+            layout_notice,
+            unmanaged_standard_version,
         })
     })
     .await
@@ -1716,8 +2052,8 @@ pub async fn get_codex_runtime_status() -> Result<CodexRuntimeStatus, String> {
 #[tauri::command]
 pub async fn open_codex_runtime_directory(handle: AppHandle) -> Result<bool, String> {
     require_windows()?;
-    let installed =
-        detect_windows_codex(&portable_root()?).ok_or_else(|| "未检测到 Codex 安装".to_string())?;
+    let installed = detect_managed_install(&portable_root()?)
+        .ok_or_else(|| "未检测到 Codex 安装".to_string())?;
     let path = PathBuf::from(installed.path);
     let directory = if path.is_file() {
         path.parent().map(PathBuf::from).unwrap_or(path)
@@ -1743,7 +2079,7 @@ pub async fn check_codex_runtime_update(
     let portable_root = portable_root()?;
     let plan = fetch_latest_runtime_plan().await?;
     tauri::async_runtime::spawn_blocking(move || {
-        let installed = detect_windows_codex(&portable_root);
+        let installed = detect_managed_install(&portable_root);
         let current_version = installed.as_ref().map(|value| value.version.clone());
         Ok(CodexReleaseStatus {
             update_available: plan.is_update_available(current_version.as_deref()),
@@ -1766,54 +2102,53 @@ fn msix_app_exe(install_root: &Path) -> Option<PathBuf> {
         .or_else(|| codex_win_engine::installed_app_exe(install_root))
 }
 
-/// A live process alone is not proof that an MSIX activation succeeded.
-/// Keep the probe instance running so the existing window classifier can reject
-/// native error dialogs and require a stable main window, without killing a
-/// user's already-running session.
+/// Wrapper code for an MSIX that is running but showed no stable main window
+/// within the engine's 30-second budget: launched but slow, not broken.
+const MSIX_WINDOW_SLOW: &str = "window-slow";
+
+/// Engine v0.5.16 already waits for a stable main window and rejects startup
+/// dialogs (natively, without `Get-Process .Path`). Keep the probe instance
+/// running so a user's live session survives. A `main-window-timeout` while
+/// Codex is still running is downgraded to `window-slow` (warn, not fail).
 fn verify_msix_health_with_main_window(portable_root: &Path) -> codex_win_engine::MsixHealthReport {
-    let mut health = codex_win_engine::verify_msix_health_with_options(true);
-    if !health.healthy {
-        return health;
-    }
-    let ready = (|| -> Result<(), String> {
-        let installed = detect_windows_codex(portable_root)
-            .filter(|installed| installed.install_mode == "standard")
-            .ok_or_else(|| "找不到 Codex 标准安装的位置".to_string())?;
-        let executable = msix_app_exe(Path::new(&installed.path))
-            .ok_or_else(|| "找不到 Codex 标准安装的主程序".to_string())?;
-        let root = executable
-            .parent()
-            .ok_or_else(|| "Codex 标准安装的主程序路径无效".to_string())?;
-        let deadline = Instant::now() + Duration::from_secs(30);
-        let mut visible_since: Option<Instant> = None;
-        while Instant::now() < deadline {
-            if codex_main_window_ready(root, deadline)? {
-                let since = visible_since.get_or_insert_with(Instant::now);
-                if portable_startup_ready(
-                    true,
-                    true,
-                    since.elapsed() >= Duration::from_secs(3),
-                    Instant::now(),
-                    deadline,
-                ) {
-                    return Ok(());
-                }
-            } else {
-                visible_since = None;
-            }
-            std::thread::sleep(
-                Duration::from_millis(250).min(deadline.saturating_duration_since(Instant::now())),
-            );
-        }
-        Err("Codex 启动后 30 秒内没有出现稳定的主窗口".to_string())
-    })();
-    if let Err(reason) = ready {
-        health.healthy = false;
-        health.activation_ok = false;
-        health.failure_kind = "window-not-ready".to_string();
-        health.reason = reason;
+    let health = codex_win_engine::verify_msix_health_with_options(true);
+    let still_running = || {
+        codex_win_engine::detect_installed_codex(portable_root)
+            .filter(|installed| installed.source == "msix")
+            .is_some_and(|installed| codex_is_running(&installed).unwrap_or(false))
+    };
+    classify_msix_health(health, still_running)
+}
+
+fn classify_msix_health(
+    mut health: codex_win_engine::MsixHealthReport,
+    still_running: impl FnOnce() -> bool,
+) -> codex_win_engine::MsixHealthReport {
+    if !health.healthy && health.failure_kind == "main-window-timeout" && still_running() {
+        health.verified = false;
+        health.failure_kind = MSIX_WINDOW_SLOW.to_string();
     }
     health
+}
+
+/// Whether an MSIX install may be reported as done: healthy, or running but slow.
+fn msix_health_accepts_install(health: &codex_win_engine::MsixHealthReport) -> bool {
+    health.healthy || health.failure_kind == MSIX_WINDOW_SLOW
+}
+
+/// The portable checks the runtime crate reports after `executable`.
+fn portable_diagnostic_entries() -> Vec<chimera_runtime::manager::ManagerDiagnostic> {
+    use chimera_runtime::manager::ManagerDiagnostic;
+    vec![
+        ManagerDiagnostic {
+            name: "package signature".to_string(),
+            result: "warn".to_string(),
+        },
+        ManagerDiagnostic {
+            name: "ownership".to_string(),
+            result: "pass".to_string(),
+        },
+    ]
 }
 
 const REINSTALL_NEXT_STEP: &str = "请在“Codex 管理”中执行“修复”重新安装。";
@@ -1822,7 +2157,7 @@ const NOT_REGISTERED_DETAIL: &str =
 
 /// Reason code and plain-Chinese explanation for an unhealthy MSIX report.
 /// `failure_kind` carries the engine's `msix_failure` codes plus the
-/// wrapper's own `window-not-ready`.
+/// wrapper's own `window-slow`.
 fn msix_failure_reason(health: &codex_win_engine::MsixHealthReport) -> (&'static str, String) {
     match health.failure_kind.as_str() {
         "not-registered" => ("not-registered", NOT_REGISTERED_DETAIL.to_string()),
@@ -1850,18 +2185,17 @@ fn msix_failure_reason(health: &codex_win_engine::MsixHealthReport) -> (&'static
             "启动检查无法运行（PowerShell 不可用或受系统策略限制），无法确认 Codex 能否启动；这不一定代表安装损坏，可以直接打开 Codex 确认。"
                 .to_string(),
         ),
-        "window-not-ready" => {
-            let reason = health.reason.trim().trim_end_matches(['。', '.']);
-            let reason = if reason.is_empty() {
-                "Codex 启动后没有出现稳定的主窗口"
-            } else {
-                reason
-            };
-            (
-                "main-window",
-                format!("启动检查未通过：{reason}。问题持续时请在“Codex 管理”中执行“修复”，或改用免安装版重新安装。"),
-            )
-        }
+        "startup-dialog" => (
+            "main-window",
+            "Codex 启动时弹出了错误对话框，没有正常打开。问题持续时请在“Codex 管理”中执行“修复”，或改用免安装版重新安装。"
+                .to_string(),
+        ),
+        "main-window-timeout" => (
+            "main-window",
+            "Codex 启动后 30 秒内没有出现稳定的主窗口，随后退出了。问题持续时请在“Codex 管理”中执行“修复”，或改用免安装版重新安装。"
+                .to_string(),
+        ),
+        "window-slow" => ("slow-start", STARTUP_SLOW_NOTICE.to_string()),
         "immediate-exit" => (
             "launch",
             "Codex 启动后立即退出。请在“Codex 管理”中执行“修复”；问题持续时可改用免安装版重新安装。"
@@ -1950,7 +2284,7 @@ fn portable_runtime_diagnostic(
 /// the standard install mode we use the keep-running variant here so the user's
 /// live Codex session survives a diagnostic run.
 fn diagnose_windows_codex_non_destructive(portable_root: &Path) -> Vec<CodexRuntimeDiagnostic> {
-    let Some(installed) = detect_windows_codex(portable_root) else {
+    let Some(installed) = detect_managed_install(portable_root) else {
         return vec![CodexRuntimeDiagnostic::new("installation", "fail").because(
             "not-installed",
             "没有检测到 Codex 标准版或免安装版。请在“Codex 管理”中安装 Codex；如果使用免安装版，请在设置中确认免安装版目录。",
@@ -1958,25 +2292,23 @@ fn diagnose_windows_codex_non_destructive(portable_root: &Path) -> Vec<CodexRunt
     };
     let install_root = Path::new(&installed.path);
     if installed.install_mode != "standard" {
-        // A root launcher stub would otherwise pass as "the executable".
-        let executable = if portable_layout_is_nested(install_root) {
-            CodexRuntimeDiagnostic::check("executable", false)
-                .because("layout", NESTED_PORTABLE_LAYOUT_MESSAGE)
-        } else {
-            CodexRuntimeDiagnostic::check(
-                "executable",
-                codex_win_engine::installed_app_exe(install_root).is_some(),
-            )
-            .because(
-                "executable",
-                "免安装版目录中找不到 Codex 主程序。请在“Codex 管理”中执行“修复”重新安装，或在设置中确认免安装版目录。",
-            )
-        };
+        // The engine resolves both layouts and never treats a root launcher
+        // stub as the official executable.
+        let executable = CodexRuntimeDiagnostic::check(
+            "executable",
+            codex_win_engine::installed_app_exe(install_root).is_some(),
+        )
+        .because(
+            "executable",
+            "免安装版目录中找不到 Codex 主程序。请在“Codex 管理”中执行“修复”重新安装，或在设置中确认免安装版目录。",
+        );
+        // Built here rather than by the runtime crate, whose diagnostics
+        // re-detect MSIX first and would activate the Store package when it
+        // sits next to the managed portable install.
         let mut diagnostics = vec![executable];
         diagnostics.extend(
-            diagnose_windows_codex(portable_root)
+            portable_diagnostic_entries()
                 .into_iter()
-                .skip(1)
                 .map(portable_runtime_diagnostic),
         );
         return diagnostics;
@@ -2001,6 +2333,13 @@ pub async fn diagnose_codex_runtime() -> Result<Vec<CodexRuntimeDiagnostic>, Str
     let portable_root = portable_root()?;
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = acquire_operation_lock("codex_runtime_diagnose")?;
+        // An interrupted layout migration would otherwise read as "not
+        // installed": finish or undo it first, and report only what remains.
+        if let Err(reason) = recover_interrupted_layout(&portable_root) {
+            return Ok(vec![
+                CodexRuntimeDiagnostic::new("installation", "warn").because("layout", reason)
+            ]);
+        }
         Ok(diagnose_windows_codex_non_destructive(&portable_root))
     })
     .await
@@ -2021,6 +2360,7 @@ async fn install_release(
     let plan = fetch_latest_runtime_plan().await?;
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = acquire_operation_lock("codex_runtime_install")?;
+        recover_interrupted_layout(&portable_root)?;
         ensure_portable_root_safe_for_install(&portable_root)?;
         if expected_version
             .as_deref()
@@ -2085,7 +2425,7 @@ pub async fn repair_codex_runtime(
 ) -> Result<CodexRuntimeOperation, String> {
     require_confirmation(confirm, "修复 Codex")?;
     require_windows()?;
-    let installed = detect_windows_codex(&portable_root()?)
+    let installed = detect_managed_install(&portable_root()?)
         .ok_or_else(|| "未检测到 Codex，请先执行安装".to_string())?;
     install_release(
         app,
@@ -2124,7 +2464,8 @@ pub async fn rollback_codex_runtime(confirm: bool) -> Result<CodexRuntimeOperati
     let portable_root = portable_root()?;
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = acquire_operation_lock("codex_runtime_rollback")?;
-        match detect_windows_codex(&portable_root) {
+        recover_interrupted_layout(&portable_root)?;
+        match detect_managed_install(&portable_root) {
             Some(installed) => {
                 if maintenance_route(Some(&installed)) != MaintenanceRoute::Portable {
                     return Err("标准安装由 Windows 管理，没有本地回滚副本".to_string());
@@ -2173,6 +2514,32 @@ pub async fn rollback_codex_runtime(confirm: bool) -> Result<CodexRuntimeOperati
     .map_err(|_| "Codex 回滚任务中断，请运行诊断".to_string())?
 }
 
+fn uninstall_portable_target(
+    portable_root: &Path,
+    version: String,
+) -> Result<CodexRuntimeOperation, String> {
+    let report = codex_win_engine::uninstall_portable(portable_root, false).map_err(|error| {
+        log::warn!("卸载 Codex 免安装版失败：{error}");
+        format!(
+            "卸载 Codex 失败：{}",
+            engine_error_message(&error.to_string())
+        )
+    })?;
+    if !report.success {
+        log::warn!("卸载 Codex 免安装版未完成：{}", report.message);
+        return Err("卸载 Codex 失败：Codex 可能仍在运行，或安装目录被占用、没有写入权限。请关闭 Codex 后重试；问题持续时在“Codex 管理”中运行诊断。".to_string());
+    }
+    Ok(CodexRuntimeOperation {
+        version,
+        requested_mode: "portable".to_string(),
+        actual_mode: "uninstalled".to_string(),
+        affected_path: Some(report.install_root),
+        backup_path: None,
+        message: report.message,
+        notes: report.notes,
+    })
+}
+
 /// Uninstall Codex while preserving the user's `~/.codex` data.
 #[tauri::command]
 pub async fn uninstall_codex_runtime(confirm: bool) -> Result<CodexRuntimeOperation, String> {
@@ -2181,6 +2548,14 @@ pub async fn uninstall_codex_runtime(confirm: bool) -> Result<CodexRuntimeOperat
     let portable_root = portable_root()?;
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = acquire_operation_lock("codex_runtime_uninstall")?;
+        recover_interrupted_layout(&portable_root)?;
+        // The runtime crate always prefers a registered MSIX; when the managed
+        // target is the portable install, remove that one instead.
+        if let Some(installed) =
+            detect_managed_codex(&portable_root).filter(|installed| installed.source == "portable")
+        {
+            return uninstall_portable_target(&portable_root, installed.version);
+        }
         uninstall_windows_codex(&portable_root)
             .map(operation_dto)
             .map_err(|error| maintenance_error_message("卸载 Codex 失败", &error))
@@ -2255,11 +2630,23 @@ fn mirror_http_error(status: reqwest::StatusCode, headers: &reqwest::header::Hea
     format!("HTTP {status}；请检查网络与应用代理设置，稍后重试或使用离线安装")
 }
 
+/// The release lookups, manifests and checksums decide which package and
+/// SHA-256 the hardened download then trusts, so every redirect hop must stay
+/// on HTTPS, as for the package download itself.
 async fn send_mirror_request(
     method: reqwest::Method,
     url: &str,
 ) -> Result<reqwest::Response, String> {
-    let response = crate::proxy::http_client::get()
+    let client = crate::proxy::http_client::get_for_download()?;
+    send_mirror_request_with(&client, method, url).await
+}
+
+async fn send_mirror_request_with(
+    client: &reqwest::Client,
+    method: reqwest::Method,
+    url: &str,
+) -> Result<reqwest::Response, String> {
+    let response = client
         .request(method, url)
         .header(reqwest::header::USER_AGENT, MIRROR_USER_AGENT)
         .timeout(Duration::from_secs(MIRROR_FETCH_TIMEOUT_SECS))
@@ -2528,6 +2915,7 @@ pub async fn install_codex_runtime_release(
     let portable_root = portable_root()?;
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = acquire_operation_lock("codex_runtime_install")?;
+        recover_interrupted_layout(&portable_root)?;
         ensure_portable_root_safe_for_install(&portable_root)?;
         let journal = InstallJournal::at(&root);
         let journal_id = journal
@@ -2652,6 +3040,7 @@ pub async fn install_codex_runtime_offline(
     let portable_root = portable_root()?;
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = acquire_operation_lock("codex_runtime_install")?;
+        recover_interrupted_layout(&portable_root)?;
         ensure_portable_root_safe_for_install(&portable_root)?;
         let path = PathBuf::from(&file_path);
         if !path.is_file() {
@@ -2818,46 +3207,46 @@ mod tests {
     }
 
     #[test]
-    fn msix_health_wrapper_requires_stable_main_window_for_both_callers() {
-        // Check the signature without invoking the activation probe or any GUI.
+    fn msix_health_treats_a_running_slow_start_as_launched_not_broken() {
+        // Signature only: calling it would activate the real package.
         let _: fn(&std::path::Path) -> codex_win_engine::MsixHealthReport =
             super::verify_msix_health_with_main_window;
+
+        let slow = super::classify_msix_health(health_report("main-window-timeout"), || true);
+        assert_eq!(slow.failure_kind, super::MSIX_WINDOW_SLOW);
+        assert!(!slow.healthy && !slow.verified);
+        assert!(super::msix_health_accepts_install(&slow));
+        let launch = &super::msix_health_diagnostics(&slow)[3];
+        assert_eq!(launch.result, "warn");
+        assert_eq!(launch.kind.as_deref(), Some("slow-start"));
+        assert!(launch
+            .detail
+            .as_deref()
+            .is_some_and(|d| d.contains("可能仍在加载")));
+
+        // Gone by the time we look: a real failure.
+        let exited = super::classify_msix_health(health_report("main-window-timeout"), || false);
+        assert_eq!(exited.failure_kind, "main-window-timeout");
+        assert!(!super::msix_health_accepts_install(&exited));
+
+        // A dialog is never downgraded, whatever the process state.
+        let dialog = super::classify_msix_health(health_report("startup-dialog"), || true);
+        assert_eq!(dialog.failure_kind, "startup-dialog");
+        assert!(!super::msix_health_accepts_install(&dialog));
+
+        let healthy = super::classify_msix_health(health_report(""), || {
+            panic!("a healthy report must not probe processes")
+        });
+        assert!(super::msix_health_accepts_install(&healthy));
+    }
+
+    #[test]
+    fn standard_install_success_requires_an_accepted_health_report() {
         let source = include_str!("codex_runtime.rs")
             .split("mod tests {")
             .next()
             .unwrap();
-        let wrapper = source
-            .split("fn verify_msix_health_with_main_window(")
-            .nth(1)
-            .unwrap()
-            .split("fn ")
-            .next()
-            .unwrap();
-        for required in [
-            "verify_msix_health_with_options(true)",
-            "if !health.healthy {\n        return health;",
-            "installed.install_mode == \"standard\"",
-            "msix_app_exe(Path::new(&installed.path))",
-            "codex_main_window_ready(root, deadline)?",
-            "visible_since.get_or_insert_with(Instant::now)",
-            "since.elapsed() >= Duration::from_secs(3)",
-            "portable_startup_ready(",
-            "} else {\n                visible_since = None;",
-            "deadline.saturating_duration_since(Instant::now())",
-            "if let Err(reason) = ready",
-            "health.healthy = false;",
-            "health.activation_ok = false;",
-            "health.failure_kind = \"window-not-ready\".to_string();",
-            "health.reason = reason;",
-        ] {
-            assert!(
-                wrapper.contains(required),
-                "missing wrapper guard: {required}"
-            );
-        }
-        assert!(source.contains(
-            "report.success && verify_msix_health_with_main_window(portable_root).healthy"
-        ));
+        assert!(source.contains("health.filter(msix_health_accepts_install)"));
         assert!(source.contains("let health = verify_msix_health_with_main_window(portable_root);"));
         assert!(!source.contains("codex_win_engine::verify_msix_health().healthy"));
     }
@@ -3238,6 +3627,9 @@ mod tests {
             can_rollback: false,
             can_uninstall: false,
             history: Vec::new(),
+            portable_layout: None,
+            layout_notice: None,
+            unmanaged_standard_version: None,
         };
         let json = serde_json::to_value(status).expect("status serializes");
         assert_eq!(json["supported"], false);
@@ -3298,6 +3690,7 @@ mod tests {
             codex_win_engine::LaunchOptions {
                 disable_codex_self_updates: true,
                 remote_debugging_port: Some(9222),
+                ..Default::default()
             },
         )
         .unwrap();
@@ -3333,45 +3726,163 @@ mod tests {
     }
 
     #[test]
-    fn portable_startup_requires_main_window_and_rejects_dialogs() {
+    fn startup_window_classes_map_to_probe_states() {
+        use super::StartupProbe;
         let mut windows = super::CodexStartupWindows::default();
-        assert!(!windows.ready().unwrap());
+        assert_eq!(windows.probe(false), StartupProbe::NotRunning);
+        assert_eq!(windows.probe(true), StartupProbe::Running);
         windows.observe("ConsoleWindowClass");
-        assert!(!windows.ready().unwrap());
+        assert_eq!(windows.probe(true), StartupProbe::Running);
         windows.observe("Chrome_WidgetWin_1");
-        assert!(windows.ready().unwrap());
+        assert_eq!(windows.probe(true), StartupProbe::MainWindow);
         windows.observe("#32770");
-        assert!(windows.ready().is_err());
-        windows.observe("Chrome_WidgetWin_1");
-        assert!(windows.ready().is_err());
+        assert_eq!(windows.probe(true), StartupProbe::Dialog);
+    }
+
+    fn run_tracker(script: &[(u64, super::StartupProbe)]) -> Option<super::StartupVerdict> {
+        let mut tracker = super::StartupTracker::new(
+            std::time::Duration::from_secs(30),
+            std::time::Duration::from_secs(3),
+        );
+        script
+            .iter()
+            .find_map(|(ms, probe)| tracker.observe(std::time::Duration::from_millis(*ms), *probe))
     }
 
     #[test]
-    fn portable_startup_never_accepts_late_or_process_only_success() {
-        let now = std::time::Instant::now();
-        let deadline = now + std::time::Duration::from_secs(30);
-        assert!(super::portable_startup_ready(
-            true, true, true, now, deadline
+    fn startup_needs_a_main_window_that_stays_up() {
+        use super::{StartupProbe::*, StartupVerdict};
+        assert_eq!(
+            run_tracker(&[(0, Running), (1_000, MainWindow), (4_000, MainWindow)]),
+            Some(StartupVerdict::Ready)
+        );
+        // Not stable long enough yet.
+        assert_eq!(
+            run_tracker(&[(1_000, MainWindow), (3_999, MainWindow)]),
+            None
+        );
+        // A flicker resets the stability clock.
+        assert_eq!(
+            run_tracker(&[
+                (1_000, MainWindow),
+                (3_000, Running),
+                (5_000, MainWindow),
+                (7_000, MainWindow)
+            ]),
+            None
+        );
+    }
+
+    #[test]
+    fn startup_dialog_fails_immediately() {
+        use super::{StartupProbe::*, StartupVerdict};
+        let verdict = run_tracker(&[(0, MainWindow), (500, Dialog)]).unwrap();
+        assert!(matches!(
+            verdict,
+            StartupVerdict::Failed {
+                kind: "startup-dialog",
+                ..
+            }
         ));
-        for (main, renderer, stable) in [
-            (false, true, true),
-            (true, false, true),
-            (true, true, false),
-        ] {
-            assert!(!super::portable_startup_ready(
-                main, renderer, stable, now, deadline
-            ));
-        }
-        assert!(!super::portable_startup_ready(
-            true, true, true, deadline, deadline
+    }
+
+    #[test]
+    fn budget_distinguishes_slow_from_failed() {
+        use super::{StartupProbe::*, StartupVerdict};
+        // Still running without a stable window: slow, not failed.
+        assert_eq!(
+            run_tracker(&[(0, Running), (30_000, Running)]),
+            Some(StartupVerdict::Slow)
+        );
+        assert_eq!(
+            run_tracker(&[(29_000, MainWindow), (30_000, MainWindow)]),
+            Some(StartupVerdict::Slow)
+        );
+        // Started, then vanished.
+        assert!(matches!(
+            run_tracker(&[(0, Running), (30_000, NotRunning)]),
+            Some(StartupVerdict::Failed {
+                kind: "immediate-exit",
+                ..
+            })
         ));
-        assert!(!super::portable_startup_ready(
-            true,
-            true,
-            true,
-            deadline + std::time::Duration::from_millis(1),
-            deadline
+        // Never seen.
+        assert!(matches!(
+            run_tracker(&[(0, NotRunning), (30_000, NotRunning)]),
+            Some(StartupVerdict::Failed {
+                kind: "activation-failed",
+                ..
+            })
         ));
+    }
+
+    #[test]
+    fn startup_loop_propagates_probe_errors() {
+        let error = super::wait_for_startup(|| Err("probe broke".to_string())).unwrap_err();
+        assert_eq!(error, "probe broke");
+        let ready = super::wait_for_startup(|| Ok(super::StartupProbe::Dialog)).unwrap();
+        assert!(matches!(ready, super::StartupVerdict::Failed { .. }));
+    }
+
+    #[test]
+    fn process_paths_match_inside_the_root_on_component_boundaries() {
+        use std::path::Path;
+        let root = Path::new(r"D:\Apps\Codex");
+        assert!(super::path_within_root(
+            Path::new(r"D:\Apps\Codex\ChatGPT.exe"),
+            root
+        ));
+        assert!(super::path_within_root(
+            Path::new(r"d:\apps\codex\app\ChatGPT.exe"),
+            root
+        ));
+        assert!(super::path_within_root(
+            Path::new(r"\\?\D:\Apps\Codex\app\ChatGPT.exe"),
+            root
+        ));
+        assert!(super::path_within_root(
+            Path::new("D:/Apps/Codex/app/ChatGPT.exe"),
+            Path::new(r"D:\Apps\Codex\")
+        ));
+        assert!(!super::path_within_root(
+            Path::new(r"D:\Apps\Codex2\ChatGPT.exe"),
+            root
+        ));
+        assert!(!super::path_within_root(root, root));
+        assert!(!super::path_within_root(
+            Path::new(r"D:\Apps\ChatGPT.exe"),
+            root
+        ));
+    }
+
+    #[test]
+    fn launches_report_slow_starts_and_never_accept_failures() {
+        let source = include_str!("codex_runtime.rs")
+            .split("mod tests {")
+            .next()
+            .unwrap();
+        let checked = source
+            .split("fn launch_codex_checked(")
+            .nth(1)
+            .unwrap()
+            .split("\nfn ")
+            .next()
+            .unwrap();
+        // Portable launches migrate the layout first.
+        assert!(
+            checked.find("prepare_portable_layout(").unwrap()
+                < checked.find("launch_portable_with_codex_home(").unwrap()
+        );
+        // Every MSIX activation is followed by a window observation.
+        assert!(checked
+            .contains("Ok(()) => wait_for_startup(|| codex_startup_probe(root)).map(report),"));
+        assert!(
+            checked.contains("return wait_for_startup(|| codex_startup_probe(root)).map(report);")
+        );
+        let command = source.split("fn launch_for_command(").nth(1).unwrap();
+        assert!(
+            command.contains("if let StartupVerdict::Failed { kind, message } = &report.verdict")
+        );
     }
 
     #[test]
@@ -3554,50 +4065,133 @@ mod tests {
         }
     }
 
-    // ── Portable layout written by other tools ───────────────────────────
+    // ── Managed target and portable layout ───────────────────────────────
+
+    fn installed(source: &str, version: &str) -> codex_win_engine::InstalledWindowsCodex {
+        serde_json::from_value(serde_json::json!({
+            "path": format!("C:\\fixture\\{source}"),
+            "version": version,
+            "arch": null,
+            "source": source,
+            "packageFamilyName": null,
+        }))
+        .expect("fixture install")
+    }
 
     #[test]
-    fn nested_portable_layout_is_detected_and_refused_before_touching_launchers() {
+    fn managed_target_prefers_portable_only_when_the_user_chose_it() {
+        let msix = || Some(installed("msix", "1"));
+        let portable = || Some(installed("portable", "2"));
+        let pick = |m, p, prefer| super::select_managed(m, p, prefer).map(|i| i.source);
+        assert_eq!(pick(msix(), portable(), false).as_deref(), Some("msix"));
+        assert_eq!(pick(msix(), portable(), true).as_deref(), Some("portable"));
+        assert_eq!(pick(msix(), None, true).as_deref(), Some("msix"));
+        assert_eq!(pick(None, portable(), false).as_deref(), Some("portable"));
+        assert_eq!(pick(None, None, true), None);
+    }
+
+    #[test]
+    fn mutating_commands_route_through_the_managed_target() {
+        let source = include_str!("codex_runtime.rs")
+            .split("mod tests {")
+            .next()
+            .unwrap();
+        assert!(!source.contains("detect_windows_codex("));
+        assert!(!source.contains("diagnose_windows_codex("));
+        let uninstall = source
+            .split("pub async fn uninstall_codex_runtime(")
+            .nth(1)
+            .unwrap();
+        assert!(
+            uninstall.find("uninstall_portable_target(").unwrap()
+                < uninstall.find("uninstall_windows_codex(").unwrap()
+        );
+        for lock in [
+            "\"codex_runtime_launch\"",
+            "\"codex_runtime_restart_catalog\"",
+            "\"codex_runtime_rollback\"",
+            "\"codex_runtime_uninstall\"",
+            "\"codex_runtime_install\"",
+        ] {
+            for body in source
+                .split(&format!("acquire_operation_lock({lock})?;"))
+                .skip(1)
+            {
+                assert!(
+                    body.trim_start()
+                        .starts_with("recover_interrupted_layout(&portable_root)?;"),
+                    "{lock} must recover an interrupted layout migration first"
+                );
+            }
+        }
+        // Read paths heal or explain an interrupted migration before they
+        // would report the install as missing.
+        let status = source
+            .split("pub async fn get_codex_runtime_status(")
+            .nth(1)
+            .unwrap();
+        assert!(
+            status
+                .find("heal_interrupted_layout(&portable_root)")
+                .unwrap()
+                < status.find("detect_candidates(&portable_root)").unwrap()
+        );
+        let diagnose = source
+            .split("pub async fn diagnose_codex_runtime(")
+            .nth(1)
+            .unwrap();
+        assert!(
+            diagnose
+                .find("recover_interrupted_layout(&portable_root)")
+                .unwrap()
+                < diagnose
+                    .find("diagnose_windows_codex_non_destructive(&portable_root)")
+                    .unwrap()
+        );
+    }
+
+    #[test]
+    fn nested_portable_layout_now_launches_through_the_root_launcher() {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
-        let config_path = root.join(super::PORTABLE_LAUNCH_TARGET_FILE);
-
-        // The flat layout written by the pinned engine.
-        std::fs::write(&config_path, "ChatGPT.exe").expect("write launch target");
-        assert!(!super::portable_layout_is_nested(root));
-        // An `app` directory alone is not the nested layout.
-        std::fs::create_dir(root.join("app")).expect("create app dir");
-        assert!(!super::portable_layout_is_nested(root));
-        for config in [
-            "app\\ChatGPT.exe\r\nrequire-cli=1\r\n",
-            "app/ChatGPT.exe",
-            "\u{feff}APP\\Codex.exe\nrequire-cli=0",
-        ] {
-            std::fs::write(&config_path, config).expect("write launch target");
-            assert!(super::portable_layout_is_nested(root), "{config:?}");
-        }
-        std::fs::write(&config_path, "application.exe").expect("write launch target");
-        assert!(!super::portable_layout_is_nested(root));
-        std::fs::remove_file(&config_path).expect("remove launch target");
-        assert!(!super::portable_layout_is_nested(root));
-
-        // The launch path refuses it without rewriting the other tool's files.
-        let config = "app\\ChatGPT.exe\nrequire-cli=1\n";
-        std::fs::write(&config_path, config).expect("write launch target");
-        std::fs::write(root.join("ChatGPT.exe"), b"launcher stub").expect("write stub");
-        let error = super::portable_command_with_codex_home(
+        std::fs::create_dir_all(root.join("app")).unwrap();
+        std::fs::write(root.join("app/ChatGPT.exe"), b"fixture").unwrap();
+        let command = super::portable_command_with_codex_home(
             root,
             root,
             codex_win_engine::LaunchOptions::default(),
         )
-        .expect_err("the nested layout must be refused");
-        assert_eq!(error, super::NESTED_PORTABLE_LAYOUT_MESSAGE);
-        assert!(error.contains("修复"), "{error}");
-        assert_eq!(
-            std::fs::read_to_string(&config_path).expect("read launch target"),
-            config
-        );
-        assert!(!root.join("LaunchCodex.exe").exists());
+        .expect("nested layout is supported by the pinned engine");
+        #[cfg(windows)]
+        assert_eq!(command.get_program(), root.join("Codex.exe").as_os_str());
+        #[cfg(not(windows))]
+        let _ = command;
+    }
+
+    #[test]
+    fn layout_status_explains_flat_and_interrupted_roots() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("Codex");
+        assert_eq!(super::portable_layout_status(true, &root), (None, None));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("ChatGPT.exe"), b"fixture").unwrap();
+        let (code, notice) = super::portable_layout_status(true, &root);
+        assert_eq!(code.as_deref(), Some("flat"));
+        assert!(notice.unwrap().contains("自动升级"));
+        // Not the managed portable install: no layout claims.
+        assert_eq!(super::portable_layout_status(false, &root), (None, None));
+
+        let staging = dir.path().join("Codex.layout-1-2");
+        std::fs::create_dir(&staging).unwrap();
+        std::fs::write(
+            staging.join(".chimera-layout-migration"),
+            root.to_string_lossy().as_ref(),
+        )
+        .unwrap();
+        std::fs::rename(&root, staging.join("app")).unwrap();
+        let (code, notice) = super::portable_layout_status(false, &root);
+        assert_eq!(code.as_deref(), Some("interrupted"));
+        assert!(notice.unwrap().contains("不要手动删除"));
     }
 
     // ── Diagnostics with reasons ─────────────────────────────────────────
@@ -3622,11 +4216,7 @@ mod tests {
             },
             activation_ok: failure_kind.is_empty(),
             failure_kind: failure_kind.to_string(),
-            reason: if failure_kind == "window-not-ready" {
-                "Codex 启动时出现原生对话框，无法确认启动成功，请检查 Codex 窗口".to_string()
-            } else {
-                String::new()
-            },
+            reason: String::new(),
         }
     }
 
@@ -3701,11 +4291,18 @@ mod tests {
                 "不一定代表安装损坏",
             ),
             (
-                "window-not-ready",
+                "startup-dialog",
                 "launch",
                 "fail",
                 "main-window",
-                "原生对话框",
+                "错误对话框",
+            ),
+            (
+                "main-window-timeout",
+                "launch",
+                "fail",
+                "main-window",
+                "稳定的主窗口",
             ),
             ("immediate-exit", "launch", "fail", "launch", "立即退出"),
             ("activation-failed", "launch", "fail", "launch", "修复"),
@@ -3749,6 +4346,66 @@ mod tests {
 
     // ── One network path for checks and downloads ────────────────────────
 
+    /// Tauri runs a synchronous command on the main thread. The catalog check
+    /// spawns the Codex CLI with a 10-second timeout per candidate, so it is
+    /// async and does its work on a blocking thread; so is every other
+    /// command here.
+    #[test]
+    fn codex_cli_probes_never_run_on_the_main_thread() {
+        let source = include_str!("codex_runtime.rs")
+            .split("mod tests {")
+            .next()
+            .unwrap();
+        let check = source
+            .split("pub async fn verify_codex_model_catalog(")
+            .nth(1)
+            .expect("the catalog check is an async command")
+            .split("\n}\n")
+            .next()
+            .unwrap();
+        assert!(check.contains("tauri::async_runtime::spawn_blocking(move || {"));
+        assert!(check.contains("verify_codex_model_catalog_blocking(&expected_model"));
+        let blocking = source
+            .split("fn verify_codex_model_catalog_blocking(")
+            .nth(1)
+            .unwrap();
+        assert!(blocking.contains("crate::codex_config::probe_codex_runtime_models()"));
+        let commands = source
+            .split("#[tauri::command]")
+            .skip(1)
+            .collect::<Vec<_>>();
+        assert!(commands.len() > 10);
+        for command in commands {
+            assert!(
+                command.trim_start().starts_with("pub async fn "),
+                "{}",
+                command
+                    .lines()
+                    .find(|line| !line.trim().is_empty())
+                    .unwrap_or_default()
+            );
+        }
+    }
+
+    /// Release lookups (GET and the HEAD of the latest-release redirect) never
+    /// follow a hop to plain HTTP.
+    #[tokio::test]
+    async fn mirror_requests_refuse_a_plain_http_redirect_hop() {
+        use crate::proxy::http_client::download_redirect_fixture::{start, START_URL};
+
+        let fixture = start().await;
+        for method in [reqwest::Method::GET, reqwest::Method::HEAD] {
+            let error = super::send_mirror_request_with(&fixture.client, method.clone(), START_URL)
+                .await
+                .expect_err("a plain-HTTP hop must be refused");
+            assert!(
+                error.starts_with("请求失败") && error.contains("redirect"),
+                "{method}: {error}"
+            );
+        }
+        assert_eq!(fixture.target_hits(), 0);
+    }
+
     #[test]
     fn package_downloads_use_the_shared_client_instead_of_engine_curl() {
         let runtime = include_str!("codex_runtime.rs")
@@ -3763,14 +4420,36 @@ mod tests {
             .next()
             .unwrap();
         assert!(install.contains("bounded_download::download_to_file_blocking("));
-        assert!(install.contains("crate::proxy::http_client::get(),"));
+        assert!(install.contains("crate::proxy::http_client::get_for_download()?,"));
         assert!(install.contains("describe_network_mode()"));
         let skin = include_str!("skin_catalog.rs")
             .split("mod tests {")
             .next()
             .unwrap();
         assert!(skin.contains("bounded_download::download_to_file_blocking("));
-        assert!(skin.contains("crate::proxy::http_client::get(),"));
+        assert!(skin.contains("crate::proxy::http_client::get_for_download()?,"));
+        // What decides the package and its SHA-256 (release lookups,
+        // manifests, checksums, the skin catalog) goes through the same
+        // HTTPS-only client as the downloads.
+        let mirror = runtime
+            .split("async fn send_mirror_request(")
+            .nth(1)
+            .unwrap()
+            .split("\n}\n")
+            .next()
+            .unwrap();
+        assert!(mirror.contains("crate::proxy::http_client::get_for_download()?;"));
+        let catalog = skin
+            .split("async fn fetch_catalog_text()")
+            .nth(1)
+            .unwrap()
+            .split("\n}\n")
+            .next()
+            .unwrap();
+        assert!(catalog.contains("crate::proxy::http_client::get_for_download()"));
+        for source in [runtime, skin] {
+            assert!(!source.contains("http_client::get()"));
+        }
         // Neither the engine's curl downloads nor the runtime crate's
         // curl-based release helpers may come back.
         for source in [runtime, skin] {

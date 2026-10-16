@@ -139,13 +139,17 @@
   flex-shrink: 0;
   gap: 8px;
 }
+/* prompts (2.8.6): names get their own line, one ellipsized row (full list in
+   the title), instead of wrapping a lone character under the headline. */
 .prompts-active-names {
-  display: inline;
-  margin-left: 12px;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 2px;
   font-size: 13px;
   line-height: 1.7;
   color: var(--text-2);
-  overflow-wrap: anywhere;
 }
 .prompts-summary-copy p {
   margin: 4px 0 0;
@@ -344,6 +348,28 @@
   gap: 8px;
   color: var(--text-3);
   font-size: 11px;
+}
+/* prompts (2.8.6): badges and the "未生效" label kept wrapping the footer onto
+   two lines, so footers in one card row sat at different heights. One line;
+   the category gives way first. */
+.prompt-card-footer > .prompt-card-origin {
+  flex: 1 1 auto;
+  flex-wrap: nowrap;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.prompt-card-origin > * {
+  flex-shrink: 0;
+}
+.prompt-card-origin > .prompt-card-category {
+  flex-shrink: 1;
+  min-width: 2em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.prompt-card-footer > .prompt-card-actions {
+  flex-shrink: 0;
 }
 .prompt-enabled-label {
   color: var(--brand-text);

@@ -76,6 +76,10 @@ type ToolMeta = {
 const ToolProviderEditor = lazy(() => import("./ToolViewEditor"));
 const DesktopStatusPanel = lazy(() => import("./ToolViewDesktop"));
 
+// A product name inside running text never breaks across lines ("Claude /
+// Code"); the line can still break at the spaces around it.
+const keepTogether = (name: string) => name.replace(/ /g, "\u00a0");
+
 const TOOL_META: Record<string, ToolMeta> = {
   grokbuild: {
     appId: "grokbuild",
@@ -103,7 +107,7 @@ const TOOL_META: Record<string, ToolMeta> = {
     shortName: "CC",
     category: "switch",
     categoryLabel: "单线路",
-    description: "同一时间使用一条线路；切换后重新打开 Claude Code 生效。",
+    description: `同一时间使用一条线路；切换后重新打开 ${keepTogether("Claude Code")} 生效。`,
     color: "#D97706",
   },
   "gemini-cli": {
@@ -112,7 +116,7 @@ const TOOL_META: Record<string, ToolMeta> = {
     shortName: "Gm",
     category: "switch",
     categoryLabel: "单线路",
-    description: "同一时间使用一条线路；切换后重新打开 Gemini CLI 生效。",
+    description: `同一时间使用一条线路；切换后重新打开 ${keepTogether("Gemini CLI")} 生效。`,
     color: "#2563EB",
   },
   opencode: {
@@ -789,7 +793,8 @@ function KnownToolView({
         {!loading && !error && visibleProviders.length === 0 && (
           <div className="tool-empty">
             <p>
-              还没有 {tool.name} 线路。添加服务商的地址和密钥后即可在这里切换。
+              还没有 {keepTogether(tool.name)}{" "}
+              线路。添加服务商的地址和密钥后即可在这里切换。
             </p>
             <button
               type="button"
@@ -904,12 +909,22 @@ function KnownToolView({
                     </span>
                     <span
                       role="cell"
-                      className="tool-line-mono"
+                      className={
+                        !builtIn && summary.baseUrl
+                          ? "tool-line-mono"
+                          : "tool-line-muted"
+                      }
                       title={endpoint}
                     >
                       {endpoint}
                     </span>
-                    <span role="cell" className="tool-line-mono" title={model}>
+                    <span
+                      role="cell"
+                      className={
+                        summary.model ? "tool-line-mono" : "tool-line-muted"
+                      }
+                      title={model}
+                    >
                       {model}
                     </span>
                     <span role="cell" className="tool-line-actions">
@@ -987,12 +1002,15 @@ function KnownToolView({
             </p>
           </section>
         ) : tool.appId !== "claude-desktop" ? (
-          <details key={toolId} className="tool-installation">
+          <details
+            key={toolId}
+            className="tool-installation chimera-disclosure"
+          >
             <summary>
               安装与环境检查
               <span className="tool-installation-hint">版本与更新</span>
             </summary>
-            <div className="tool-installation-content">
+            <div className="chimera-disclosure-body">
               <InstallChecks toolId={toolId} name={tool.name} native={native} />
             </div>
           </details>

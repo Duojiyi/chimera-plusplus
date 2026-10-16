@@ -959,8 +959,10 @@ fn reapply_codex_official_live_resyncs_mcp_servers() {
 
     // 统一会话开关变更触发的 reapply 会整体重写 live config.toml（有意设计），
     // 写完必须重新投影 DB 里启用的 MCP，否则用户的 MCP 会静默失效。
-    let reapplied = chimera_plus_plus_lib::reapply_current_codex_official_live(&state)
-        .expect("reapply official live");
+    let reapplied = futures::executor::block_on(
+        chimera_plus_plus_lib::reapply_current_codex_official_live(&state),
+    )
+    .expect("reapply official live");
     assert!(
         reapplied,
         "current provider is official, reapply should run"
@@ -1057,8 +1059,10 @@ fn reapply_codex_official_live_projects_mcp_despite_broken_claude_json() {
     let claude_json = chimera_plus_plus_lib::get_claude_mcp_path();
     std::fs::write(&claude_json, "{ not valid json").expect("seed broken claude json");
 
-    let reapplied = chimera_plus_plus_lib::reapply_current_codex_official_live(&state)
-        .expect("MCP projection failure must degrade to a warning, not fail the toggle");
+    let reapplied = futures::executor::block_on(
+        chimera_plus_plus_lib::reapply_current_codex_official_live(&state),
+    )
+    .expect("MCP projection failure must degrade to a warning, not fail the toggle");
     assert!(
         reapplied,
         "current provider is official, reapply should run"

@@ -68,7 +68,7 @@ import GeminiConfigEditor from "./GeminiConfigEditor";
 import JsonEditor from "@/components/JsonEditor";
 import { Label } from "@/components/ui/label";
 import { ProviderPresetSelector } from "./ProviderPresetSelector";
-import { BasicFormFields } from "./BasicFormFields";
+import { BasicFormFields, MoreInfoFields } from "./BasicFormFields";
 import { ClaudeFormFields } from "./ClaudeFormFields";
 import { ClaudeDesktopProviderForm } from "./ClaudeDesktopProviderForm";
 import { GrokBuildProviderForm } from "./GrokBuildProviderForm";
@@ -266,6 +266,11 @@ export interface ProviderFormProps {
   onManageUniversalProviders?: () => void;
   onSubmittingChange?: (isSubmitting: boolean) => void;
   onDirtyChange?: () => void;
+  /** The line name as typed, for the editor header. */
+  onNameChange?: (name: string) => void;
+  /** The request address as typed (null when the line has none), for the
+   * editor footer's address test. */
+  onBaseUrlChange?: (url: string | null) => void;
   initialData?: {
     name?: string;
     websiteUrl?: string;
@@ -1944,6 +1949,7 @@ function ProviderFormFull({
               ) : undefined
             }
           />
+          <MoreInfoFields form={form} />
 
           {appId === "claude" && (
             <ClaudeFormFields

@@ -3,17 +3,31 @@ import {
   ChevronLeft,
   Eye,
   EyeOff,
+  Loader2,
+  Pencil,
   RefreshCw,
   Plus,
-  Edit2,
   Trash2,
 } from "lucide-react";
 import { OmpModelPicker } from "./OmpModelPicker";
 import { getChimeraHubTemplate } from "@/config/codexTemplates";
 import { useContext, useEffect, useRef, useState } from "react";
 import { FullScreenPanel } from "@/components/common/FullScreenPanel";
+import { LineBadge } from "@/components/LineBadge";
+import {
+  EditorAdvanced,
+  EditorChoice,
+  EditorField,
+  EditorSaveActions,
+  EditorSelect,
+  EditorTemplateCard,
+  EditorTestAction,
+  SaveLabel,
+  SectionStatus,
+  useAddressTest,
+  type EditorChoiceOption,
+} from "@/components/providers/ProviderEditorFields";
 import { ToolPageActiveContext } from "@/components/RetainedToolPage";
-import { Button } from "@/components/ui/button";
 import "@/components/ProviderEditorPage.css";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
@@ -26,6 +40,35 @@ const object = (value: unknown): ObjectValue =>
     ? (value as ObjectValue)
     : {};
 const text = (value: unknown) => (typeof value === "string" ? value : "");
+// Names for OMP's `api` values: full names in the editor, the short protocol
+// names of the Codex 线路 table in the route list (raw value in the tooltip).
+const apiLabels: Record<string, string> = {
+  "openai-completions": "Chat Completions",
+  "openai-responses": "Responses",
+  "anthropic-messages": "Anthropic Messages",
+  "google-generative-ai": "Gemini",
+};
+const apiShortLabels: Record<string, string> = {
+  "openai-completions": "Chat",
+  "openai-responses": "Responses",
+  "anthropic-messages": "Anthropic",
+  "google-generative-ai": "Gemini",
+};
+// The protocols every line editor offers, in their order; OMP's other
+// schema values sit behind 其他.
+const STANDARD_APIS: EditorChoiceOption<string>[] = [
+  ["openai-responses", "Responses"],
+  ["openai-completions", "Chat Completions"],
+  ["anthropic-messages", "Anthropic Messages"],
+  ["google-generative-ai", "Gemini"],
+];
+const OTHER_API = "__other__";
+const AUTH_OPTIONS = [
+  ["apiKey", "API Key / 环境变量"],
+  ["none", "免认证（本地服务）"],
+  ["oauth", "已有 OAuth 授权"],
+] as const;
+
 interface Draft {
   original: string | null;
   id: string;
@@ -51,10 +94,17 @@ export function OmpProviders({
   const [busy, setBusy] = useState(false);
   const running = useRef(false);
   const [error, setError] = useState("");
+  // Whether a page-level error came from reading the file or from a write
+  // (deleting a line); edit failures stay inside the open editor.
+  const [errorSource, setErrorSource] = useState<"read" | "write">("read");
   const [notice, setNotice] = useState("");
   const [pending, setPending] = useState<
-    "save" | "discard" | "reload" | { delete: string } | null
+    "save" | "discard" | "reload" | "restore" | { delete: string } | null
   >(null);
+  const { connection, test, reset } = useAddressTest();
+  useEffect(() => {
+    reset();
+  }, [draft?.baseUrl, reset]);
   useLightweightCloseBlocker(busy || draft !== null);
   const providers = object(document?.value.providers);
   const load = async () => {
@@ -77,6 +127,7 @@ export function OmpProviders({
       setDocument(loaded);
       setDraft(null);
     } catch (e) {
+      setErrorSource("read");
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       running.current = false;
@@ -194,6 +245,7 @@ export function OmpProviders({
           : "线路已保存。请在 OMP 中重新加载并选择模型。",
       );
     } catch (e) {
+      setErrorSource("write");
       setError(e instanceof Error ? e.message : String(e));
       setPending(null);
     } finally {
@@ -210,25 +262,50 @@ export function OmpProviders({
     if (dirty) setPending("discard");
     else setDraft(null);
   };
+  const needsEndpoint = Boolean(draft?.models.trim());
+  const basicMissing = draft
+    ? [
+        draft.original === null ? draft.id : "-",
+        needsEndpoint ? draft.baseUrl : "-",
+        needsEndpoint && !["none", "oauth"].includes(draft.auth)
+          ? draft.apiKey
+          : "-",
+      ].filter((value) => !value.trim()).length
+    : 0;
+  const protocolMissing = needsEndpoint && !draft?.api.trim() ? 1 : 0;
+  const standardApi = STANDARD_APIS.some(([value]) => value === draft?.api);
+  const otherApiOptions: [string, string][] = [
+    ["", "不指定，沿用模型自身的协议"],
+    ...(draft?.api && !ompApis.includes(draft.api)
+      ? [[draft.api, draft.api] as [string, string]]
+      : []),
+    ...ompApis
+      .filter((api) => !STANDARD_APIS.some(([value]) => value === api))
+      .map((api) => [api, apiLabels[api] ?? api] as [string, string]),
+  ];
   const actions = (
     <>
       <button
         type="button"
-        className="h-[32px] px-[10px] flex items-center gap-[6px] rounded-[4px] border border-[var(--border-control)] bg-transparent cursor-pointer disabled:opacity-50"
+        className="tool-btn"
         disabled={!native || busy}
         onClick={() => (draft ? setPending("reload") : void load())}
       >
-        <RefreshCw size={15} className={busy ? "animate-spin" : ""} />
+        <RefreshCw
+          size={14}
+          aria-hidden="true"
+          className={busy ? "animate-spin" : ""}
+        />
         刷新线路
       </button>
       {!draft && (
         <button
           type="button"
-          className="h-[32px] px-[12px] flex items-center gap-[6px] rounded-[4px] border-0 bg-[#006AA0] text-white cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          className="tool-btn is-primary"
           disabled={!native || busy || !document}
           onClick={() => edit(null)}
         >
-          <Plus size={16} />
+          <Plus size={15} aria-hidden="true" />
           添加线路
         </button>
       )}
@@ -242,21 +319,51 @@ export function OmpProviders({
         <div className="tool-actions">{actions}</div>
       )}
       {!native && (
-        <p className="text-sm text-[var(--text-3)]">
-          请在桌面应用中管理本地线路。
-        </p>
+        <p className="tool-install-note">请在桌面应用中管理本地线路。</p>
       )}
-      {busy && <p role="status">正在处理线路配置…</p>}
+      {/* The first read fills the page; later operations keep the list in
+          place and only announce themselves (the header button spins). */}
+      {busy &&
+        (document ? (
+          <p role="status" className="sr-only">
+            正在处理线路配置…
+          </p>
+        ) : (
+          <div role="status" className="tool-loading">
+            <Loader2 size={16} className="animate-spin" aria-hidden="true" />
+            正在读取线路配置…
+          </div>
+        ))}
       {error && !draft && (
-        <p
-          role="alert"
-          className="text-sm text-destructive whitespace-pre-wrap"
-        >
-          {error}
-        </p>
+        <div className="tool-load-error" role="alert">
+          <div className="tool-load-error-head">
+            <strong>
+              {errorSource === "read" ? "读取 oh-my-pi 配置失败" : "线路未删除"}
+            </strong>
+            <button
+              type="button"
+              className="tool-btn"
+              disabled={!native || busy}
+              onClick={() => void load()}
+            >
+              <RefreshCw
+                size={14}
+                aria-hidden="true"
+                className={busy ? "animate-spin" : ""}
+              />
+              {errorSource === "read" ? "重试" : "刷新线路"}
+            </button>
+          </div>
+          <p>
+            {errorSource === "read"
+              ? "请按下方提示修正配置文件或稍后重试；读取失败不会修改任何配置。"
+              : "配置可能已被其他程序修改。请刷新线路，确认最新内容后再操作。"}
+          </p>
+          <pre>{error}</pre>
+        </div>
       )}
       {notice && (
-        <p role="status" className="text-sm">
+        <p role="status" className="tool-notice">
           {notice}
         </p>
       )}
@@ -277,7 +384,7 @@ export function OmpProviders({
                 <ChevronLeft size={16} /> 线路
               </button>
               <div className="editor-heading">
-                <h2>{draft.id.trim() || "新线路"}</h2>
+                <h2>{draft.id.trim() || "未命名线路"}</h2>
                 <span>
                   Oh My Pi · {draft.original === null ? "新建线路" : "编辑线路"}
                 </span>
@@ -289,27 +396,25 @@ export function OmpProviders({
           }
           footer={
             <>
-              <span className="editor-test-scope">
-                保存后请在 OMP 中重新加载并选择模型。
-              </span>
-              <div className="editor-save-actions">
-                <button
-                  type="button"
-                  className="secondary"
-                  disabled={busy}
-                  onClick={requestClose}
-                >
-                  取消
-                </button>
+              <EditorTestAction
+                connection={connection}
+                onTest={() => void test(draft.baseUrl)}
+                disabled={busy}
+              />
+              <EditorSaveActions
+                note="保存后在 OMP 中重新加载并选择模型"
+                onCancel={requestClose}
+                disabled={busy}
+              >
                 <button
                   type="submit"
                   className="primary"
                   form="omp-provider-form"
                   disabled={busy}
                 >
-                  {busy ? "正在保存…" : "保存线路"}
+                  <SaveLabel busy={busy} label="保存线路" />
                 </button>
-              </div>
+              </EditorSaveActions>
             </>
           }
         >
@@ -335,44 +440,66 @@ export function OmpProviders({
             )}
             <fieldset className="editor-form" disabled={busy}>
               <legend className="sr-only">线路配置</legend>
+              {draft.original === null && (
+                <EditorTemplateCard
+                  name={getChimeraHubTemplate().name}
+                  onRestore={() => setPending("restore")}
+                />
+              )}
               <section
                 className="editor-basic"
                 aria-labelledby="omp-basic-title"
               >
-                <h3 id="omp-basic-title">基础</h3>
+                <div className="editor-section-head">
+                  <h3 id="omp-basic-title">基础</h3>
+                  <SectionStatus missing={basicMissing} />
+                </div>
                 <div className="editor-basic-grid">
-                  <label>
-                    线路 ID *
+                  <EditorField
+                    label="线路 ID *"
+                    htmlFor="omp-line-id"
+                    hint="OMP 配置中的唯一标识；保存后不可修改，不是显示名称。"
+                    hintId="omp-line-id-hint"
+                  >
                     <input
-                      aria-label="线路 ID"
+                      id="omp-line-id"
+                      aria-describedby="omp-line-id-hint"
+                      autoComplete="off"
+                      spellCheck={false}
                       value={draft.id}
                       disabled={draft.original !== null}
                       placeholder="例如 chimera"
                       onChange={(e) => field("id", e.target.value)}
                     />
-                    <small>
-                      OMP 配置中的唯一标识；保存后不可修改，不是显示名称。
-                    </small>
-                  </label>
-                  <label>
-                    API 请求地址{draft.models.trim() ? " *" : ""}
+                  </EditorField>
+                  <EditorField
+                    label={`API 请求地址${needsEndpoint ? " *" : ""}`}
+                    htmlFor="omp-base-url"
+                    help="oh-my-pi 在这个地址后拼接所选协议的请求路径，例如 Chat Completions 拼接 /chat/completions。"
+                    hint="填写服务商的完整基础地址；配置自定义模型时必填。"
+                    hintId="omp-base-url-hint"
+                  >
                     <input
-                      aria-label="API 地址"
+                      id="omp-base-url"
+                      aria-describedby="omp-base-url-hint"
+                      autoComplete="off"
+                      spellCheck={false}
                       value={draft.baseUrl}
                       placeholder="https://api.example.com/v1"
                       onChange={(e) => field("baseUrl", e.target.value)}
                     />
-                    <small>
-                      填写服务商的完整基础地址；配置自定义模型时必填。
-                    </small>
-                  </label>
-                  <label>
-                    API Key / 环境变量名
+                  </EditorField>
+                  <EditorField
+                    label="API Key / 环境变量名"
+                    htmlFor="omp-api-key"
+                    help="可填写密钥或已在 oh-my-pi 运行环境设置的变量名；本页不会创建环境变量。"
+                  >
                     <div className="password-field">
                       <input
-                        aria-label="API Key / 环境变量名"
+                        id="omp-api-key"
                         type={showKey ? "text" : "password"}
                         autoComplete="new-password"
+                        spellCheck={false}
                         value={draft.apiKey}
                         placeholder="推荐填写环境变量名"
                         onChange={(e) => field("apiKey", e.target.value)}
@@ -385,59 +512,43 @@ export function OmpProviders({
                         {showKey ? <EyeOff size={16} /> : <Eye size={16} />}
                       </button>
                     </div>
-                    <small>
-                      可填写密钥或已在 oh-my-pi
-                      运行环境设置的变量名；本页不会创建环境变量。
-                    </small>
-                  </label>
+                  </EditorField>
                 </div>
               </section>
               <section
                 className="editor-protocol"
                 aria-labelledby="omp-protocol-title"
               >
-                <h3 id="omp-protocol-title">协议与模型</h3>
-                <label>
-                  API 协议
-                  <select
-                    aria-label="API 协议"
-                    value={draft.api}
-                    onChange={(e) => field("api", e.target.value)}
-                  >
-                    {!ompApis.includes(draft.api) && (
-                      <option value={draft.api}>
-                        {draft.api || "请选择接口类型"}
-                      </option>
-                    )}
-                    {ompApis.map((api) => (
-                      <option key={api} value={api}>
-                        {(
-                          {
-                            "openai-completions": "Chat Completions",
-                            "openai-responses": "Responses",
-                            "anthropic-messages": "Anthropic Messages",
-                            "google-generative-ai": "Gemini",
-                          } as Record<string, string>
-                        )[api] ?? api}
-                      </option>
-                    ))}
-                  </select>
-                  <small>
-                    自定义模型需指定协议，或保留模型自身已有的协议配置。
-                  </small>
-                </label>
-                <label>
-                  认证方式
-                  <select
-                    aria-label="认证方式"
-                    value={draft.auth || "apiKey"}
-                    onChange={(e) => field("auth", e.target.value)}
-                  >
-                    <option value="apiKey">API Key / 环境变量</option>
-                    <option value="none">免认证（本地服务）</option>
-                    <option value="oauth">已有 OAuth 授权</option>
-                  </select>
-                </label>
+                <div className="editor-section-head">
+                  <h3 id="omp-protocol-title">协议与模型</h3>
+                  <SectionStatus missing={protocolMissing} />
+                </div>
+                <EditorChoice
+                  name="omp-api"
+                  label="协议"
+                  help="自定义模型按这个协议请求上游；不指定时沿用每个模型自己的协议。"
+                  value={standardApi ? draft.api : OTHER_API}
+                  options={[...STANDARD_APIS, [OTHER_API, "其他"]]}
+                  onChange={(value) =>
+                    field(
+                      "api",
+                      value !== OTHER_API
+                        ? value
+                        : standardApi
+                          ? ""
+                          : draft.api,
+                    )
+                  }
+                >
+                  {!standardApi && (
+                    <EditorSelect
+                      label="其他协议"
+                      value={draft.api}
+                      onChange={(value) => field("api", value)}
+                      options={otherApiOptions}
+                    />
+                  )}
+                </EditorChoice>
                 <OmpModelPicker
                   baseUrl={draft.baseUrl}
                   apiKey={draft.apiKey}
@@ -446,137 +557,202 @@ export function OmpProviders({
                   value={draft.models}
                   onChange={(value) => field("models", value)}
                 />
-                <label>
-                  已选模型（可手动补充，每行一个）
+                <EditorField
+                  label="已选模型（可手动补充，每行一个）"
+                  htmlFor="omp-models"
+                  hint="同 ID 模型的高级参数会保留；移除 ID 将移除该模型配置。覆盖内置服务商时可以留空。"
+                >
                   <textarea
+                    id="omp-models"
                     aria-label="模型 ID"
                     rows={3}
                     value={draft.models}
                     placeholder="model-id"
                     onChange={(e) => field("models", e.target.value)}
                   />
-                  <small>
-                    同 ID 模型的高级参数会保留；移除 ID
-                    将移除该模型配置。覆盖内置服务商时可以留空。
-                  </small>
-                </label>
+                </EditorField>
               </section>
-              <details className="editor-preview">
-                <summary>保存详情</summary>
-                <p className="editor-test-scope">
-                  配置模板：ChimeraHub。仅写入当前 OMP profile，不影响
-                  Pi，不自动切换默认模型。
+              <EditorAdvanced
+                summary={`认证方式：${
+                  AUTH_OPTIONS.find(
+                    ([value]) => value === (draft.auth || "apiKey"),
+                  )?.[1] ?? draft.auth
+                }`}
+              >
+                <EditorChoice
+                  name="omp-auth"
+                  label="认证方式"
+                  help="本地免认证服务选“免认证”；已在 oh-my-pi 里登录的服务选“已有 OAuth 授权”，这两种都不需要填写密钥。"
+                  value={draft.auth || "apiKey"}
+                  options={AUTH_OPTIONS}
+                  onChange={(value) => field("auth", value)}
+                />
+              </EditorAdvanced>
+              {connection.kind === "error" && (
+                <p className="editor-feedback" role="alert">
+                  {connection.message}
                 </p>
-                <p className="editor-test-scope break-all">
-                  配置位置：{document?.path}
-                </p>
-                <p className="editor-test-scope">
+              )}
+            </fieldset>
+            <details className="editor-preview chimera-disclosure is-inline">
+              <summary>保存详情</summary>
+              <div className="chimera-disclosure-body">
+                <p>仅写入当前 OMP profile，不影响 Pi，也不自动切换默认模型。</p>
+                <p className="break-all">配置位置：{document?.path}</p>
+                <p>
                   未编辑字段会保留；保存会规范化 YAML 排版并移除注释。不读取
                   auth 文件，不执行密钥命令。
                 </p>
-              </details>
-            </fieldset>
+              </div>
+            </details>
           </form>
         </FullScreenPanel>
       ) : (
         document &&
         (Object.keys(providers).length ? (
-          <div className="omp-provider-table">
-            <table aria-label="OMP 自定义线路">
-              <thead>
-                <tr>
-                  <th scope="col">名称</th>
-                  <th scope="col">端点地址</th>
-                  <th scope="col">协议 / 模型</th>
-                  <th scope="col">操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                {Object.entries(providers).map(([id, raw]) => {
-                  const provider = object(raw);
-                  const models = Array.isArray(provider.models)
-                    ? provider.models
-                    : [];
-                  return (
-                    <tr key={id}>
-                      <th scope="row">
-                        <span className="omp-provider-name">
-                          <span
-                            className="omp-provider-icon"
-                            aria-hidden="true"
-                          >
-                            {id.slice(0, 1)}
-                          </span>
-                          <span>{id}</span>
-                        </span>
-                      </th>
-                      <td className="omp-provider-endpoint">
-                        {text(provider.baseUrl) || "继承内置端点"}
-                      </td>
-                      <td>
-                        <span>{text(provider.api) || "继承模型协议"}</span>
-                        <small>
-                          {models.length
-                            ? `${models.length} 个自定义模型`
-                            : "内置模型覆盖"}
-                        </small>
-                      </td>
-                      <td>
-                        <div className="omp-provider-actions">
-                          <button
-                            type="button"
-                            title={`编辑 ${id}`}
-                            aria-label="编辑"
-                            className="omp-provider-edit"
-                            disabled={busy || !native}
-                            onClick={() => edit(id)}
-                          >
-                            <Edit2 size={14} />
-                          </button>
-                          <button
-                            type="button"
-                            title={`删除 ${id}`}
-                            className="tool-provider-delete"
-                            disabled={busy || !native}
-                            onClick={() => setPending({ delete: id })}
-                          >
-                            <Trash2 size={13} />
-                            删除
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          <>
+            <div className="tool-lines-caption">
+              <span>{Object.keys(providers).length} 条线路</span>
+              <span className="tool-lines-source">来自 OMP 配置文件</span>
+            </div>
+            {/* Same list as the other tool pages. OMP loads every line in
+                models.yml, so there is no per-line on/off state to show. */}
+            <div
+              className="tool-lines"
+              data-variant="omp"
+              role="table"
+              aria-label="OMP 自定义线路"
+            >
+              <div className="tool-line-row tool-line-head" role="row">
+                <span role="columnheader">线路</span>
+                <span role="columnheader">请求地址</span>
+                <span role="columnheader">协议</span>
+                <span role="columnheader">模型</span>
+                <span role="columnheader" className="tool-line-actions">
+                  操作
+                </span>
+              </div>
+              {Object.entries(providers).map(([id, raw]) => {
+                const provider = object(raw);
+                const baseUrl = text(provider.baseUrl);
+                const api = text(provider.api);
+                const models = (
+                  Array.isArray(provider.models) ? provider.models : []
+                )
+                  .map((model) => text(object(model).id))
+                  .filter(Boolean);
+                return (
+                  <div key={id} className="tool-line-row" role="row">
+                    <span role="rowheader" className="tool-line-name">
+                      <LineBadge line={{ id, name: id }} />
+                      <span title={id}>{id}</span>
+                    </span>
+                    {baseUrl ? (
+                      <span
+                        role="cell"
+                        className="tool-line-mono"
+                        title={baseUrl}
+                      >
+                        {baseUrl}
+                      </span>
+                    ) : (
+                      <span role="cell" className="tool-line-muted">
+                        继承内置端点
+                      </span>
+                    )}
+                    {api ? (
+                      <span role="cell" className="tool-line-text" title={api}>
+                        {apiShortLabels[api] ?? api}
+                      </span>
+                    ) : (
+                      <span role="cell" className="tool-line-muted">
+                        继承模型协议
+                      </span>
+                    )}
+                    {models.length ? (
+                      <span
+                        role="cell"
+                        className="tool-line-models"
+                        title={models.join("\n")}
+                      >
+                        <span className="tool-line-mono">{models[0]}</span>
+                        {models.length > 1 && (
+                          <>
+                            <span
+                              className="tool-line-count"
+                              aria-hidden="true"
+                            >
+                              +{models.length - 1}
+                            </span>
+                            <span className="sr-only">
+                              ，另有 {models.length - 1} 个模型
+                            </span>
+                          </>
+                        )}
+                      </span>
+                    ) : (
+                      <span role="cell" className="tool-line-muted">
+                        内置模型覆盖
+                      </span>
+                    )}
+                    <span role="cell" className="tool-line-actions">
+                      <button
+                        type="button"
+                        className="tool-line-icon"
+                        aria-label={`编辑${id}`}
+                        title="编辑线路"
+                        disabled={busy || !native}
+                        onClick={() => edit(id)}
+                      >
+                        <Pencil size={15} aria-hidden="true" />
+                      </button>
+                      <button
+                        type="button"
+                        className="tool-provider-delete"
+                        aria-label={`删除${id}`}
+                        title="删除线路"
+                        disabled={busy || !native}
+                        onClick={() => setPending({ delete: id })}
+                      >
+                        <Trash2 size={15} aria-hidden="true" />
+                      </button>
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </>
         ) : (
-          <div className="rounded-xl border border-dashed p-8 text-center">
-            <h3 className="font-medium">尚未配置自定义线路</h3>
-            <p className="mt-2 text-sm text-[var(--text-3)]">
+          <div className="tool-empty">
+            <h3>尚未配置自定义线路</h3>
+            <p>
               添加 API 地址和模型即可接入。OMP
               内置服务商及已有登录不会在这里列出。
             </p>
-            <Button
-              className="mt-4"
+            <button
+              type="button"
+              className="tool-btn is-primary"
               disabled={!native || busy}
               onClick={() => edit(null)}
             >
+              <Plus size={15} aria-hidden="true" />
               添加第一条线路
-            </Button>
+            </button>
           </div>
         ))
       )}
       {document && (
-        <details className="tool-installation text-[var(--text-3)]">
-          <summary className="cursor-pointer">配置位置与保存说明</summary>
-          <p className="mt-2 break-all">{document.path}</p>
-          <p className="mt-2">
-            跟随应用进程环境中的 OMP profile，仅管理该配置，不扫描其他
-            profile。保存保留未编辑字段，但会规范化 YAML 排版并移除注释。不读取
-            auth 文件、不执行密钥命令，也不会自动切换默认模型。
-          </p>
+        <details className="tool-installation chimera-disclosure">
+          <summary>配置位置与保存说明</summary>
+          <div className="chimera-disclosure-body">
+            <p className="tool-install-path">{document.path}</p>
+            <p className="tool-install-note">
+              跟随应用进程环境中的 OMP profile，仅管理该配置，不扫描其他
+              profile。保存保留未编辑字段，但会规范化 YAML
+              排版并移除注释。不读取 auth
+              文件、不执行密钥命令，也不会自动切换默认模型。
+            </p>
+          </div>
         </details>
       )}
       <ConfirmDialog
@@ -585,29 +761,49 @@ export function OmpProviders({
         title={
           pending === "save"
             ? "保存 OMP 线路？"
-            : typeof pending === "object" && pending
-              ? "删除 OMP 线路？"
-              : "放弃当前草稿？"
+            : pending === "restore"
+              ? "恢复默认模板？"
+              : typeof pending === "object" && pending
+                ? "删除 OMP 线路？"
+                : "放弃当前草稿？"
         }
         message={
           pending === "save"
             ? "将写入 OMP 原生模型配置。未编辑字段会保留；YAML 注释和排版不会保留。"
-            : typeof pending === "object" && pending
-              ? `将从 OMP 模型配置移除 ${pending.delete}，该线路的自定义模型将不可用。`
-              : "尚未保存的线路编辑将被丢弃。"
+            : pending === "restore"
+              ? "这会重新填写地址和协议，并清空密钥、认证方式和已选模型；线路 ID 保持不变。"
+              : typeof pending === "object" && pending
+                ? `将从 OMP 模型配置移除 ${pending.delete}，该线路的自定义模型将不可用。`
+                : "尚未保存的线路编辑将被丢弃。"
         }
         variant={pending === "save" ? "info" : "destructive"}
         confirmText={
           pending === "save"
             ? "确认保存"
-            : typeof pending === "object" && pending
-              ? "确认删除"
-              : "放弃草稿"
+            : pending === "restore"
+              ? "恢复模板"
+              : typeof pending === "object" && pending
+                ? "确认删除"
+                : "放弃草稿"
         }
         onCancel={() => setPending(null)}
         onConfirm={() => {
           if (pending === "save") void save();
-          else if (typeof pending === "object" && pending)
+          else if (pending === "restore") {
+            setPending(null);
+            setDirty(true);
+            setDraft(
+              (current) =>
+                current && {
+                  ...current,
+                  baseUrl: getChimeraHubTemplate().baseUrl,
+                  api: "openai-completions",
+                  apiKey: "",
+                  auth: "",
+                  models: "",
+                },
+            );
+          } else if (typeof pending === "object" && pending)
             void save(pending.delete);
           else {
             const reload = pending === "reload";

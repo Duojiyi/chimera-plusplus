@@ -1,10 +1,9 @@
 import { useState } from "react";
 import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
 import { toast } from "sonner";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { piApi, type PiDocument, type PiDocumentKind } from "@/lib/api/pi";
+import "./PiManagement.css";
 
 const kinds: PiDocumentKind[] = ["settings", "mcp"];
 const levels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -114,15 +113,16 @@ export function PiManagement({ native }: { native: boolean }) {
   };
   return (
     <section className="tool-support-panel" aria-label="Pi 模型与 MCP">
-      <div className="space-y-4 p-4 text-sm">
-        <p>
+      <div className="pi-panel-body">
+        <p className="pi-lede">
           管理全局配置，项目配置可能覆盖这里的设置。兼容 Pi 1.1；不会读取
           auth.json、启动 MCP 或执行扩展。保存会规范化为
           JSON，不保留原文件注释。
         </p>
-        <div className="flex flex-wrap gap-2">
-          <Button
-            variant="outline"
+        <div className="pi-actions">
+          <button
+            type="button"
+            className="tool-btn"
             disabled={!native || busy}
             onClick={() => requestLoad(kinds)}
           >
@@ -131,48 +131,50 @@ export function PiManagement({ native }: { native: boolean }) {
               : kinds.some((kind) => documents[kind] || errors[kind])
                 ? "重新读取"
                 : "读取全局配置"}
-          </Button>
+          </button>
         </div>
-        {!native && <p>配置读写仅在桌面应用中可用。</p>}
-        <p className="text-muted-foreground">
+        {!native && <p className="pi-notice">配置读写仅在桌面应用中可用。</p>}
+        <p className="pi-hint">
           切换页面会保留草稿；重新读取有未保存修改的配置前会询问是否放弃草稿。
         </p>
         {kinds.map((kind) => (
-          <div key={kind}>
+          <div key={kind} className="pi-kind-state">
             {loading[kind] && (
-              <p role="status">
+              <p role="status" className="pi-status">
                 正在处理 {kind === "settings" ? "默认设置" : "MCP"}…
               </p>
             )}
             {errors[kind] && (
               <>
-                <p role="alert" className="text-destructive break-all">
+                <p role="alert" className="pi-alert">
                   {kind === "settings" ? "默认设置" : "MCP"}：{errors[kind]}
                   。如有外部修改，请保留草稿后重新读取最新配置。
                 </p>
-                <Button
-                  variant="outline"
+                <button
+                  type="button"
+                  className="tool-btn"
                   disabled={!native || loading[kind]}
                   onClick={() => requestLoad([kind])}
                 >
                   {kind === "settings" ? "重试读取默认设置" : "重试读取 MCP"}
-                </Button>
+                </button>
               </>
             )}
           </div>
         ))}
         {documents.settings && (
-          <section className="space-y-3" aria-label="Pi 默认模型">
+          <section className="pi-card" aria-label="Pi 默认模型">
             <h3 className="font-semibold">启动默认值</h3>
-            <p className="text-muted-foreground break-all">
-              {documents.settings.path}
-            </p>
-            <div className="grid gap-3 sm:grid-cols-3">
+            <p className="pi-path">{documents.settings.path}</p>
+            <div className="pi-field-grid">
               <label>
                 供应商 ID
-                <Input
+                <input
+                  className="pi-input"
                   value={provider}
                   disabled={!native || loading.settings}
+                  autoComplete="off"
+                  spellCheck={false}
                   onChange={(e) => {
                     setProvider(e.target.value);
                   }}
@@ -181,9 +183,12 @@ export function PiManagement({ native }: { native: boolean }) {
               </label>
               <label>
                 模型 ID
-                <Input
+                <input
+                  className="pi-input"
                   value={model}
                   disabled={!native || loading.settings}
+                  autoComplete="off"
+                  spellCheck={false}
                   onChange={(e) => {
                     setModel(e.target.value);
                   }}
@@ -193,7 +198,7 @@ export function PiManagement({ native }: { native: boolean }) {
               <label>
                 思考级别
                 <select
-                  className="block h-10 w-full rounded border bg-background px-2"
+                  className="pi-select"
                   value={thinking}
                   disabled={!native || loading.settings}
                   onChange={(e) => {
@@ -207,27 +212,27 @@ export function PiManagement({ native }: { native: boolean }) {
                 </select>
               </label>
             </div>
-            <Button
+            <button
+              type="button"
+              className="tool-btn is-primary"
               disabled={!native || loading.settings}
               onClick={() => setPending("settings")}
             >
               保存默认设置
-            </Button>
+            </button>
           </section>
         )}
         {documents.mcp && (
-          <section className="space-y-3" aria-label="Pi MCP 配置">
+          <section className="pi-card" aria-label="Pi MCP 配置">
             <h3 className="font-semibold">原生 MCP</h3>
-            <p className="text-muted-foreground break-all">
-              {documents.mcp.path}
-            </p>
+            <p className="pi-path">{documents.mcp.path}</p>
             <p>
               支持 mcpServers 中的 stdio 和 HTTP 服务。保存后由 Pi
               加载；请先审查命令、环境变量和服务地址。
             </p>
             <textarea
               aria-label="Pi MCP JSON"
-              className="min-h-40 w-full rounded border bg-background p-3 font-mono text-xs"
+              className="pi-code"
               value={mcp}
               disabled={!native || loading.mcp}
               onChange={(e) => {
@@ -235,12 +240,14 @@ export function PiManagement({ native }: { native: boolean }) {
               }}
               spellCheck={false}
             />
-            <Button
+            <button
+              type="button"
+              className="tool-btn is-primary"
               disabled={!native || loading.mcp}
               onClick={() => setPending("mcp")}
             >
               保存 MCP
-            </Button>
+            </button>
           </section>
         )}
       </div>

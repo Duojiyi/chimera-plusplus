@@ -9,6 +9,11 @@
   color: var(--text-3);
   font-size: 13px;
   line-height: 1.5;
+  /* Two sentences: break between them ("…auth.json。/ 其他工具…"), not
+     inside a word, and never leave "备份。" alone. */
+  text-wrap-style: balance;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
 }
 .live-backups-toolbar {
   display: flex;
@@ -52,62 +57,29 @@
   font-size: 12px;
   line-height: 1.5;
 }
+/* The table itself is .settings-backup-table (NewSettingsView.css), shared
+   with 应用数据库; only what this table adds is styled here. */
 .live-backups-table-wrap {
   min-width: 0;
   overflow-x: auto;
 }
 .live-backups-table {
-  width: 100%;
-  min-width: 460px;
-  border-collapse: collapse;
-  text-align: left;
-  font-size: 12px;
+  min-width: 400px;
 }
-.live-backups-table th {
-  height: 28px;
-  padding: 0 8px;
-  border-bottom: 1px solid var(--border-subtle);
-  color: var(--text-3);
-  font-size: 12px;
-  font-weight: 400;
-}
-.live-backups-table td {
-  height: 44px;
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--border-subtle);
-  vertical-align: middle;
-}
-.live-backups-table td:first-child {
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
-.live-backups-table td:last-child {
-  width: 1%;
-  white-space: nowrap;
-}
-.live-backups-table button {
-  height: 28px;
-  padding: 0 8px;
-  font-size: 12px;
-}
-.live-backup-actions {
-  display: flex;
-  gap: 4px;
-}
-.live-backup-id {
+.live-backup-time {
   display: block;
-  max-width: 160px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--text-3);
-  font-size: 11px;
 }
-.live-backup-files {
+/* File names break between files, never inside one unless a single name is
+   wider than the whole column. */
+.live-backup-file {
+  display: inline-block;
+  max-width: 100%;
+  color: var(--text-2);
+  font:
+    12px/18px var(--font-mono),
+    var(--font-cjk),
+    monospace;
   overflow-wrap: anywhere;
-}
-.live-backup-size {
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
 }
 .live-backups-table .live-backups-empty {
   height: 112px;

@@ -3154,6 +3154,9 @@ fn is_codex_client_fingerprint_header(key_str: &str) -> bool {
             | "openai-beta"
             | "openai-organization"
             | "openai-project"
+            // Codex 内置 openai 的固定请求头（值是 Codex 版本号）；官方线路经代理时
+            // 走内置 openai，这个头会被带上。
+            | "version"
     ) || key_str.starts_with("x-stainless-")
         || key_str.starts_with("x-codex-")
 }
@@ -4471,6 +4474,7 @@ value"
             "openai-beta",
             "openai-organization",
             "openai-project",
+            "version",
             "x-stainless-lang",
             "x-stainless-runtime",
             "x-codex-turn-id",

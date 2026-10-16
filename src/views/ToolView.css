@@ -27,19 +27,6 @@
 .tool-official-guide > button {
   flex-shrink: 0;
 }
-.tool-provider-table {
-  flex-shrink: 0;
-}
-.tool-provider-table > div {
-  min-width: 690px;
-}
-.tool-provider-table > div > div {
-  flex-shrink: 0;
-}
-.tool-provider-table > div > div:nth-child(3) {
-  min-width: 100px;
-  flex-shrink: 1;
-}
 
 .tool-actions {
   display: flex;
@@ -47,36 +34,22 @@
   align-items: center;
   gap: 8px;
 }
+/* 安装与环境检查 / 配置位置与保存说明: the shared .chimera-disclosure card
+   (components/ui/disclosure.css); only the page's text size and the muted
+   hint after the title are set here. */
 .tool-installation {
   flex-shrink: 0;
-  border-top: 1px solid var(--border-subtle);
   font-size: 13px;
 }
-.tool-installation > summary {
-  padding: 12px 0;
-  color: var(--text-2);
-  cursor: pointer;
-}
-.tool-installation > summary:focus-visible {
-  outline: 2px solid var(--text-1);
-  outline-offset: 2px;
-  border-radius: 4px;
-}
 .tool-installation-hint {
-  margin-left: 12px;
+  margin-left: 4px;
   color: var(--text-3);
   font-size: 12px;
-}
-.tool-installation-content {
-  padding-bottom: 12px;
+  font-weight: 400;
 }
 @media (max-width: 760px) {
   .tool-actions {
     width: 100%;
-  }
-  .tool-installation-hint {
-    display: block;
-    margin: 4px 0 0 16px;
   }
 }
 
@@ -116,30 +89,28 @@
   color: var(--success-fg);
 }
 
+/* Row delete: a quiet trash icon that turns red-tinted on hover, as on the
+   Codex 线路 page. Deletion always goes through a confirmation dialog. */
 .tool-provider-delete {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  height: 27px;
-  padding: 0 8px;
-  border: 1px solid var(--danger-border);
-  border-radius: 4px;
-  background: var(--danger-bg);
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control, 4px);
+  background: transparent;
   color: var(--danger-fg);
-  font-size: 12px;
   cursor: pointer;
 }
 .tool-provider-delete:hover:not(:disabled) {
-  background: var(--danger-bg-hover, var(--danger-bg));
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
 }
 .tool-provider-delete:disabled {
   opacity: 0.45;
   cursor: not-allowed;
-}
-.tool-provider-delete:focus-visible {
-  outline: 2px solid var(--danger-fg);
-  outline-offset: 2px;
 }
 
 .tool-view [hidden] {
@@ -179,107 +150,573 @@
   font-weight: 600;
 }
 
-.omp-provider-table {
-  overflow-x: auto;
-  border: 1px solid var(--border-subtle);
-  border-radius: 6px;
-}
-.omp-provider-table table {
-  width: 100%;
-  min-width: 660px;
-  table-layout: fixed;
-  border-collapse: collapse;
-  font-size: 12px;
-  text-align: left;
-}
-.omp-provider-table th,
-.omp-provider-table td {
-  padding: 10px 12px;
-  overflow-wrap: anywhere;
-}
-.omp-provider-table thead {
-  height: 34px;
-  background: var(--bg-subtle);
-  color: var(--text-3);
-}
-.omp-provider-table thead th {
-  padding-block: 8px;
-}
-.omp-provider-table th:first-child {
-  width: 22%;
-}
-.omp-provider-table th:nth-child(3) {
-  width: 25%;
-}
-.omp-provider-table th:last-child {
-  width: 128px;
-  text-align: right;
-}
-.omp-provider-table tbody tr {
-  height: 52px;
-  border-top: 1px solid var(--border-subtle);
-}
-.omp-provider-table tbody tr:hover {
-  background: var(--bg-subtle);
-}
-.omp-provider-table td {
-  color: var(--text-2);
-}
-.omp-provider-table small {
-  display: block;
-  margin-top: 3px;
-  color: var(--text-3);
-  font-size: 12px;
-}
-.omp-provider-name {
+/* ===== Tool page header (2.8.6) =====
+   Mirrors the Codex 线路 heading: 28px title, muted lede, quiet controls. */
+.tool-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 13px;
+  gap: 14px;
+  width: 100%;
+  min-height: 64px;
+  padding: 4px 0 8px;
 }
-.omp-provider-icon {
+.tool-mark {
+  --tool-color: var(--brand);
+  position: relative;
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-panel, 8px);
+  background: var(--tool-color);
+  color: #fff;
+  font:
+    700 13px/1 var(--font-latin),
+    var(--font-cjk),
+    sans-serif;
+  letter-spacing: 0.02em;
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, #000 12%, transparent),
+    inset 0 1px 0 color-mix(in srgb, #fff 22%, transparent);
+}
+.tool-title {
+  flex: 1;
+  min-width: 0;
+}
+.tool-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.tool-title h1 {
+  margin: 0;
+  color: var(--text-1);
+  font-size: 28px;
+  line-height: 36px;
+  font-weight: 700;
+}
+.tool-title > p {
+  margin: 2px 0 0;
+  color: var(--text-3);
+  font-size: 13px;
+  line-height: 1.5;
+  /* A one-sentence subtitle: when it wraps, two even lines broken at the
+     sentence's own punctuation ("…线路，/ 停用后…"), not a full line and a
+     stranded "置。", and not inside a word ("停/用"). keep-all keeps CJK
+     phrases whole; overflow-wrap still breaks a phrase wider than the line. */
+  text-wrap-style: balance;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+.tool-kind {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill, 999px);
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+/* Shared control used by header, empty state and load-error retry. */
+.tool-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-control, 4px);
+  background: transparent;
+  color: var(--text-1);
+  font-size: 14px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color var(--dur-instant, 100ms) var(--ease-out, ease);
+}
+.tool-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+.tool-btn.is-primary {
+  border-color: var(--brand);
+  background: var(--brand);
+  color: var(--text-on-accent);
+}
+.tool-btn.is-primary:hover:not(:disabled) {
+  border-color: var(--brand-hover);
+  background: var(--brand-hover);
+}
+.tool-btn.is-primary:active:not(:disabled) {
+  background: var(--brand-pressed);
+}
+.tool-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.tool-btn.is-sm {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 13px;
+}
+/* Quiet destructive action (卸载, 移除市场源); the confirmation dialog that
+   follows carries the solid red button. */
+.tool-btn.is-danger {
+  border-color: var(--danger-border);
+  color: var(--danger-fg);
+}
+.tool-btn.is-danger:hover:not(:disabled) {
+  background: var(--danger-bg);
+}
+/* ===== Line list (2.8.6) =====
+   Same rhythm as the Codex 线路 table: quiet head row, 44px rows, a brand
+   indicator on the current/enabled line instead of a heavy fill. */
+.tool-lines-caption {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 18px;
+  padding: 2px 2px 0;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 18px;
+}
+.tool-lines-current {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-2);
+  font-weight: 700;
+}
+.tool-lines-current::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--border-control);
+}
+.tool-lines-current[data-active]::before {
+  background: var(--success-solid);
+  box-shadow: 0 0 0 3px
+    color-mix(in srgb, var(--success-solid) 18%, transparent);
+}
+.tool-lines-source {
+  margin-left: auto;
+  font-family: var(--font-latin), var(--font-cjk), sans-serif;
+}
+/* Columns: status, line, address, model, actions. The minimums add up to
+   about 650px, so the list fits the 694px content width of the 960px minimum
+   window without a hidden horizontal scroll. Multi-line tools have no 切换
+   button, so their action column only holds the busy spinner, edit and
+   delete. */
+.tool-lines {
+  --tool-line-cols: 44px minmax(140px, 1.1fr) minmax(160px, 1.7fr)
+    minmax(100px, 1fr) 136px;
+  display: flex;
+  flex-direction: column;
   flex-shrink: 0;
-  width: 22px;
-  height: 22px;
-  border-radius: 4px;
-  background: #1a1e24;
-  color: white;
-  font-size: 11px;
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel, 8px);
+  background: var(--bg-surface);
 }
-.omp-provider-endpoint {
-  font-family: monospace;
+.tool-view[data-kind="accumulate"] .tool-lines {
+  --tool-line-cols: 44px minmax(140px, 1.1fr) minmax(160px, 1.7fr)
+    minmax(100px, 1fr) 80px;
 }
-.omp-provider-actions {
+/* oh-my-pi: line, address, protocol, models, actions (no on/off state). */
+.tool-lines[data-variant="omp"] {
+  --tool-line-cols: minmax(130px, 1fr) minmax(160px, 1.6fr) minmax(84px, 0.6fr)
+    minmax(130px, 1.1fr) 72px;
+}
+.tool-line-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: var(--tool-line-cols);
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  padding: 0 12px 0 14px;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-1);
+  font-size: 13px;
+  line-height: 18px;
+}
+.tool-line-row > * {
+  min-width: 0;
+}
+.tool-line-row:not(.tool-line-head):hover {
+  background: var(--row-bg-hover, var(--bg-subtle));
+}
+.tool-line-row[data-current] {
+  background: var(--row-bg-current, var(--bg-subtle));
+}
+.tool-line-row[data-current]::before {
+  content: "";
+  position: absolute;
+  top: 12px;
+  bottom: 12px;
+  left: 0;
+  width: 3px;
+  border-radius: 0 2px 2px 0;
+  background: var(--brand-indicator, var(--brand));
+}
+.tool-line-head {
+  min-height: 34px;
+  border-top: 0;
+  background: var(--bg-subtle);
+  color: var(--text-3);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.tool-line-status {
+  display: flex;
+  align-items: center;
+}
+.tool-line-dot {
+  display: block;
+  width: 9px;
+  height: 9px;
+  margin-left: 4px;
+  border-radius: 50%;
+  background: transparent;
+  box-shadow: inset 0 0 0 2px var(--border-control);
+}
+[data-current] .tool-line-dot {
+  background: var(--success-solid);
+  box-shadow: 0 0 0 3px
+    color-mix(in srgb, var(--success-solid) 20%, transparent);
+}
+/* The app's one switch (管理工具, Skills, 设置, 1M 上下文): --switch-* tokens,
+   ink track when on, outlined track with a muted thumb when off. */
+.tool-line-toggle {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  width: 36px;
+  height: 20px;
+  padding: 3px;
+  border: 1px solid var(--switch-off-border);
+  border-radius: 999px;
+  background: var(--switch-off-bg);
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fast, 150ms) var(--ease-out, ease),
+    border-color var(--dur-fast, 150ms) var(--ease-out, ease);
+}
+.tool-line-toggle > span {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--switch-thumb-off);
+  transition:
+    transform var(--dur-fast, 150ms) var(--ease-out, ease),
+    background-color var(--dur-fast, 150ms) var(--ease-out, ease);
+}
+.tool-line-toggle[aria-pressed="true"] {
+  border-color: var(--switch-on-bg);
+  background: var(--switch-on-bg);
+}
+.tool-line-toggle[aria-pressed="true"] > span {
+  transform: translateX(16px);
+  background: var(--switch-thumb-on);
+}
+.tool-line-toggle:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.tool-line-name {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.tool-line-name > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+}
+[data-current] .tool-line-name > span:last-child {
+  font-weight: 700;
+}
+/* Cell text. Addresses and model ids are mono; labels and fallbacks such as
+   官方默认端点 stay in the UI face (mono has no CJK and would fall back to a
+   serif). */
+.tool-line-mono,
+.tool-line-text,
+.tool-line-muted {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool-line-mono {
+  color: var(--text-2);
+  font:
+    12px/18px var(--font-mono),
+    var(--font-cjk),
+    monospace;
+}
+.tool-line-text {
+  color: var(--text-2);
+}
+.tool-line-muted {
+  color: var(--text-3);
+  font-size: 12px;
+}
+.tool-line-models {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.tool-line-count {
+  flex-shrink: 0;
+  padding: 0 6px;
+  border-radius: var(--radius-pill, 999px);
+  background: var(--bg-subtle);
+  color: var(--text-3);
+  font:
+    600 11px/18px var(--font-latin),
+    sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+.tool-line-actions {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 5px;
+  gap: 4px;
+  text-align: right;
 }
-.omp-provider-edit {
+/* 切换 and the 当前 tag follow the Codex 线路 table (the reference): a bold
+   text button with a hover fill, and an ink pill for the current line. */
+.tool-line-switch,
+.tool-line-current {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 27px;
-  height: 27px;
   border: 0;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.tool-line-switch {
+  height: 28px;
+  padding: 0 8px;
+  border-radius: var(--radius-control, 4px);
+  background: transparent;
+  color: var(--text-1);
+  font-size: 13px;
+  cursor: pointer;
+}
+.tool-line-switch:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+.tool-line-switch:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.tool-line-current {
+  height: 20px;
+  padding: 0 8px;
+  border-radius: var(--radius-pill, 999px);
+  background: var(--tag-current-bg, var(--text-1));
+  color: var(--tag-current-fg, var(--text-inverse));
+  font-size: 12px;
+  cursor: default;
+}
+.tool-line-current:disabled {
+  opacity: 1;
+}
+.tool-line-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: var(--radius-control, 4px);
   background: transparent;
   color: var(--text-3);
   cursor: pointer;
 }
-.omp-provider-edit:disabled {
+.tool-line-icon:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
+.tool-line-icon:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
-.omp-provider-edit:focus-visible {
-  outline: 2px solid var(--text-1);
-  outline-offset: 2px;
-  border-radius: 4px;
+.tool-line-spinner {
+  color: var(--text-3);
+}
+/* ===== Page states (2.8.6) ===== */
+.tool-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 32px 0;
+  color: var(--text-3);
+  font-size: 13px;
+}
+.tool-empty {
+  display: grid;
+  justify-items: center;
+  gap: 14px;
+  padding: 36px 24px;
+  border: 1px dashed var(--border-control);
+  border-radius: var(--radius-panel, 8px);
+  background: var(--bg-subtle);
+  color: var(--text-3);
+  font-size: 13px;
+  line-height: 1.6;
+  text-align: center;
+}
+.tool-empty p {
+  max-width: 420px;
+  margin: 0;
+  /* Centred, so even lines broken between phrases ("…即可接入。/ OMP 内置…")
+     instead of a stranded "列出。". */
+  text-wrap-style: balance;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+.tool-load-error {
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px;
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-panel, 8px);
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.tool-load-error-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.tool-load-error p {
+  margin: 0;
+  color: var(--text-2);
+}
+.tool-load-error pre {
+  margin: 0;
+  max-height: 160px;
+  overflow: auto;
+  padding: 8px 10px;
+  border-radius: var(--radius-control, 4px);
+  background: var(--bg-surface);
+  color: var(--text-1);
+  font:
+    12px/1.6 var(--font-mono),
+    var(--font-cjk),
+    monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.tool-load-error .tool-btn {
+  height: 28px;
+  background: var(--bg-surface);
+  font-size: 13px;
+}
+.tool-discovery-text {
+  flex: 1;
+  min-width: 240px;
+}
+.tool-discovery-heading strong {
+  font-size: 14px;
+}
+.tool-discovery-button {
+  height: 30px;
+  white-space: nowrap;
+}
+.tool-official-guide p.tool-official-note {
+  color: var(--text-3);
+  font-size: 12px;
+}
+.tool-install-note {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.tool-install-panel {
+  display: grid;
+  gap: 12px;
+  padding: 16px 20px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel, 8px);
+  background: var(--bg-surface);
+}
+.tool-install-panel h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
 }
 
-.omp-provider-actions > button {
-  flex-shrink: 0;
-  white-space: nowrap;
+/* Shared focus ring for every tool-page control. */
+.tool-view
+  :is(
+    .tool-btn,
+    .tool-line-toggle,
+    .tool-line-switch,
+    .tool-line-icon,
+    .tool-provider-delete,
+    .tool-section-nav button
+  ):focus-visible {
+  outline: 2px solid var(--focus-ring, var(--focus));
+  outline-offset: 2px;
+}
+@media (max-width: 760px) {
+  .tool-header {
+    flex-wrap: wrap;
+  }
+}
+
+/* Multi-line tools show state with the toggle itself; the indicator bar and
+   row fill are reserved for the one current line of switch-type tools. */
+.tool-view:not([data-kind="switch"]) .tool-line-row[data-current] {
+  background: transparent;
+}
+.tool-view:not([data-kind="switch"]) .tool-line-row[data-current]:hover {
+  background: var(--row-bg-hover, var(--bg-subtle));
+}
+.tool-view:not([data-kind="switch"]) .tool-line-row[data-current]::before {
+  display: none;
+}
+
+/* oh-my-pi routes page (2.8.6): empty-state heading, notices, config path. */
+.tool-empty h3 {
+  margin: 0;
+  color: var(--text-1);
+  font-size: 15px;
+  font-weight: 700;
+}
+.tool-notice {
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--success-border);
+  border-radius: var(--radius-control, 4px);
+  background: var(--success-bg);
+  color: var(--success-fg);
+  font-size: 13px;
+}
+.tool-install-path {
+  margin: 0 0 8px;
+  color: var(--text-2);
+  font:
+    12px/1.6 var(--font-mono),
+    var(--font-cjk),
+    monospace;
+  overflow-wrap: anywhere;
 }

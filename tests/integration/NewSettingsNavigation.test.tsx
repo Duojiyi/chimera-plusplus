@@ -131,7 +131,9 @@ it("keeps the reset action in the scroll flow so it never covers a row", () => {
   open("应用更新");
   const reset = screen.getByRole("button", { name: "恢复默认设置" });
   expect(scroller).toContainElement(reset);
-  expect(reset.closest("footer")).toHaveTextContent("主题与开机自启动保持不变");
+  expect(reset.closest("footer")).toHaveTextContent(
+    "主题、开机自启动与静默启动保持不变",
+  );
 });
 
 it("puts the backup heading before its controls and the database row after them", async () => {

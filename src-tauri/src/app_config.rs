@@ -963,24 +963,22 @@ mod tests {
     #[test]
     fn new_tool_ids_are_available_when_multi_tool_is_enabled() {
         assert!(crate::product_policy::Capability::MultiTool.enabled());
-        for id in ["pi"] {
-            assert!(id.parse::<AppType>().is_ok(), "{id}");
-        }
+        let id = "pi";
+        assert!(id.parse::<AppType>().is_ok(), "{id}");
         assert_eq!("codex".parse::<AppType>().unwrap(), AppType::Codex);
     }
 
     #[test]
     fn new_tools_have_no_mcp_or_skill_projection() {
-        for app in [AppType::Pi] {
-            let mut mcp = McpApps::default();
-            mcp.set_enabled_for(&app, true);
-            assert!(!mcp.is_enabled_for(&app));
-            assert!(mcp.is_empty());
-            let mut skills = SkillApps::default();
-            skills.set_enabled_for(&app, true);
-            assert!(!skills.is_enabled_for(&app));
-            assert!(skills.is_empty());
-        }
+        let app = AppType::Pi;
+        let mut mcp = McpApps::default();
+        mcp.set_enabled_for(&app, true);
+        assert!(!mcp.is_enabled_for(&app));
+        assert!(mcp.is_empty());
+        let mut skills = SkillApps::default();
+        skills.set_enabled_for(&app, true);
+        assert!(!skills.is_enabled_for(&app));
+        assert!(skills.is_empty());
     }
 
     struct TempHome {

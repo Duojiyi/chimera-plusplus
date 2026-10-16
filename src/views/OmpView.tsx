@@ -1,4 +1,4 @@
-import { useContext, useState } from "react";
+import { useContext, useState, type CSSProperties } from "react";
 import { ToolPageActiveContext } from "@/components/RetainedToolPage";
 import { PiPluginMarket } from "./PiPluginMarket";
 import { OmpProviders } from "./OmpProviders";
@@ -18,25 +18,22 @@ export default function OmpView({ native }: { native: boolean }) {
   const active = useContext(ToolPageActiveContext);
   return (
     <div className="tool-view text-[var(--text-1)] box-border w-full h-full flex flex-col gap-[12px] p-[12px_24px] bg-[var(--bg-surface)] overflow-y-auto">
-      <header className="w-full flex items-center gap-[12px]">
+      {/* Same header as the other tool pages (ToolView); the mark matches the
+          sidebar and 管理工具 ("Om"). */}
+      <header className="tool-header">
         <div
-          className="w-[40px] h-[40px] shrink-0 flex items-center justify-center rounded-[8px] bg-[#8B5CF6] text-white text-[12px] font-bold"
+          className="tool-mark"
+          style={{ "--tool-color": "#8B5CF6" } as CSSProperties}
           aria-hidden="true"
         >
-          OMP
+          Om
         </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-[10px]">
-            <h1 className="m-0 text-[28px]/[36px] text-[var(--text-1)] font-bold">
-              oh-my-pi
-            </h1>
-            <span className="px-[8px] py-[2px] rounded-full border border-[var(--border-subtle)] text-[12px] text-[var(--text-2)]">
-              独立配置
-            </span>
+        <div className="tool-title">
+          <div className="tool-title-row">
+            <h1>oh-my-pi</h1>
+            <span className="tool-kind">独立配置</span>
           </div>
-          <p className="m-0 text-[13px] text-[var(--text-3)]">
-            管理 OMP 自定义线路与模型，不影响 Pi；默认模型仍在 OMP 中选择。
-          </p>
+          <p>管理 OMP 自定义线路与模型，不影响 Pi；默认模型仍在 OMP 中选择。</p>
         </div>
         <div
           ref={setActionsHost}

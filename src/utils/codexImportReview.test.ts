@@ -75,5 +75,7 @@ describe("codex import review", () => {
     const options = toastWarning.mock.calls[0][1];
     expect(options.description).toContain("Relay：已移除 notify");
     expect(options.action.label).toBe("确认并同步");
+    // Styled so the "\n"-joined list keeps its breaks (NewSettingsView.css).
+    expect(options.className).toBe("codex-import-review-toast");
   });
 });

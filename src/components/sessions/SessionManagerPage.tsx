@@ -593,6 +593,16 @@ export function SessionManagerPage({ appId }: { appId: string }) {
           }),
         );
       }
+      // Finished deletes that left some records on purpose: say what stayed
+      // and why, without offering a retry that cannot help.
+      const notes = results.filter(
+        (result) => result.success && result.cleanupNote,
+      );
+      if (notes.length > 0) {
+        toast.info(`${notes.length} 个会话已删除，部分记录未清理`, {
+          description: notes[0].cleanupNote,
+        });
+      }
       if (cleanupPending.length > 0) {
         toast.warning(
           `${cleanupPending.length} 个会话的内容已删除，索引清理未完成。请关闭 Codex 后点「重试未完成的删除」。`,
@@ -1181,7 +1191,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
           <h3>读取失败</h3>
           <p>{readFailure.hint || "无法读取这条会话的记录文件。"}</p>
           {detail ? (
-            <details className="session-state-detail">
+            <details className="session-state-detail chimera-disclosure is-inline">
               <summary>错误详情</summary>
               <code>{detail}</code>
             </details>
@@ -1325,7 +1335,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                 读取本机会话记录时出错。请确认相关工具的数据文件夹可以访问，然后重试。
               </p>
               {extractErrorMessage(listError) ? (
-                <details className="session-state-detail">
+                <details className="session-state-detail chimera-disclosure is-inline">
                   <summary>错误详情</summary>
                   <code>{extractErrorMessage(listError)}</code>
                 </details>

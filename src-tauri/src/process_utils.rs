@@ -441,10 +441,11 @@ mod tests {
 
     #[test]
     fn captures_inherited_pipe_output_after_direct_child_exit() {
-        // On Windows the descendant is a cold-started PowerShell, which is slow
-        // when tests run in parallel; the budget only has to outlast that.
+        // On Windows the descendant is a cold-started PowerShell, which has
+        // taken over 20 s on a loaded CI runner; the budget only has to outlast
+        // that, and the test returns as soon as the late output arrives.
         let output =
-            output_with_timeout(inherited_pipe_command(100), Duration::from_secs(20), 1024)
+            output_with_timeout(inherited_pipe_command(100), Duration::from_secs(60), 1024)
                 .expect("late descendant output arrives before the shared deadline");
         assert!(output.status.success());
         assert_eq!(output.stdout, b"123");

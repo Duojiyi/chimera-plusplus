@@ -186,21 +186,6 @@ export function pickDefaultFetchedModel(
   return undefined;
 }
 
-/** Detection results persisted on a provider, restored as the same shape the
- * probe returns so a re-opened editor can reuse them without re-probing. */
-export function persistedCodexModelApiFormats(
-  meta: Provider["meta"] | undefined | null,
-): Record<string, { apiFormat: CodexApiFormat }> {
-  const stored = meta?.codexModelApiFormats;
-  if (!stored || typeof stored !== "object") return {};
-  const result: Record<string, { apiFormat: CodexApiFormat }> = {};
-  for (const [rawModel, format] of Object.entries(stored)) {
-    const model = rawModel.trim();
-    if (model) result[model] = { apiFormat: format };
-  }
-  return result;
-}
-
 /** Split a backend failure reason into its status and upstream excerpt. */
 export function describeCodexDetectionFailure(
   reason: string | undefined | null,

@@ -109,3 +109,52 @@ pub fn exit_lightweight_mode(app: &tauri::AppHandle) -> Result<(), String> {
 pub fn is_lightweight_mode() -> bool {
     LIGHTWEIGHT_MODE.load(Ordering::Acquire)
 }
+
+/// Marker for "show the main window on the next start", left by a restart or
+/// update the user asked for: with silent startup on, the relaunch would
+/// otherwise go to the tray and the window they were using would vanish. A
+/// file, because the Windows installer relaunches the app without arguments.
+const WINDOW_ON_NEXT_START: &str = "show-window-on-next-start";
+
+pub fn request_window_on_next_start(app: &tauri::AppHandle) {
+    match app.path().app_local_data_dir() {
+        Ok(dir) => request_window_on_next_start_in(&dir),
+        Err(error) => log::warn!("无法记录下次启动显示主窗口: {error}"),
+    }
+}
+
+/// Whether the previous run asked for a visible start. Consumes the request,
+/// so it applies to one start only.
+pub fn take_window_on_next_start(app: &tauri::AppHandle) -> bool {
+    app.path()
+        .app_local_data_dir()
+        .map(|dir| take_window_on_next_start_in(&dir))
+        .unwrap_or(false)
+}
+
+fn request_window_on_next_start_in(dir: &std::path::Path) {
+    let written = std::fs::create_dir_all(dir)
+        .and_then(|()| std::fs::write(dir.join(WINDOW_ON_NEXT_START), b""));
+    if let Err(error) = written {
+        log::warn!("无法记录下次启动显示主窗口: {error}");
+    }
+}
+
+fn take_window_on_next_start_in(dir: &std::path::Path) -> bool {
+    std::fs::remove_file(dir.join(WINDOW_ON_NEXT_START)).is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_requested_visible_start_applies_once() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!take_window_on_next_start_in(dir.path()));
+        request_window_on_next_start_in(dir.path());
+        assert!(take_window_on_next_start_in(dir.path()));
+        // The following start is an ordinary one again.
+        assert!(!take_window_on_next_start_in(dir.path()));
+    }
+}

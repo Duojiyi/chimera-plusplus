@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { EditorLabel } from "@/components/providers/ProviderEditorFields";
 
 interface ApiKeyInputProps {
   value: string;
@@ -10,8 +11,13 @@ interface ApiKeyInputProps {
   required?: boolean;
   label?: string;
   id?: string;
+  /** Visible line under the field, such as where to get a key. */
+  hint?: React.ReactNode;
+  /** The "?" card: where the key goes. */
+  help?: React.ReactNode;
 }
 
+/** The line editor's key field: masked input with a show/hide side button. */
 const ApiKeyInput: React.FC<ApiKeyInputProps> = ({
   value,
   onChange,
@@ -20,26 +26,21 @@ const ApiKeyInput: React.FC<ApiKeyInputProps> = ({
   required = false,
   label = "API Key",
   id = "apiKey",
+  hint,
+  help,
 }) => {
   const { t } = useTranslation();
   const [showKey, setShowKey] = useState(false);
-
-  const toggleShowKey = () => {
-    setShowKey(!showKey);
-  };
-
-  const inputClass = `w-full px-3 py-2 pr-10 border rounded-lg text-sm transition-colors ${
-    disabled
-      ? "bg-muted border-border-default text-muted-foreground cursor-not-allowed"
-      : "border-border-default bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-blue-500/20 dark:focus:ring-blue-400/20"
-  }`;
+  const hintId = hint ? `${id}-hint` : undefined;
 
   return (
-    <div className="space-y-2">
-      <label htmlFor={id} className="block text-sm font-medium text-foreground">
-        {label} {required && "*"}
-      </label>
-      <div className="relative">
+    <div className="editor-field">
+      <EditorLabel
+        htmlFor={id}
+        label={required ? `${label} *` : label}
+        help={help}
+      />
+      <div className="password-field">
         <input
           type={showKey ? "text" : "password"}
           id={id}
@@ -49,19 +50,24 @@ const ApiKeyInput: React.FC<ApiKeyInputProps> = ({
           disabled={disabled}
           required={required}
           autoComplete="off"
-          className={inputClass}
+          spellCheck={false}
+          aria-describedby={hintId}
         />
-        {!disabled && value && (
-          <button
-            type="button"
-            onClick={toggleShowKey}
-            className="absolute inset-y-0 right-0 flex items-center pr-3 text-muted-foreground hover:text-foreground transition-colors"
-            aria-label={showKey ? t("apiKeyInput.hide") : t("apiKeyInput.show")}
-          >
-            {showKey ? <EyeOff size={16} /> : <Eye size={16} />}
-          </button>
-        )}
+        <button
+          type="button"
+          onClick={() => setShowKey(!showKey)}
+          disabled={disabled}
+          aria-label={showKey ? t("apiKeyInput.hide") : t("apiKeyInput.show")}
+          title={showKey ? t("apiKeyInput.hide") : t("apiKeyInput.show")}
+        >
+          {showKey ? (
+            <EyeOff size={16} aria-hidden="true" />
+          ) : (
+            <Eye size={16} aria-hidden="true" />
+          )}
+        </button>
       </div>
+      {hint && <small id={hintId}>{hint}</small>}
     </div>
   );
 };

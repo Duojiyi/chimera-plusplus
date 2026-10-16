@@ -2026,17 +2026,16 @@ mod tests {
             "failed enabled import must restore the missing Live config"
         );
     }
-}
 
-#[cfg(test)]
-fn pi_request() -> DeepLinkImportRequest {
-    DeepLinkImportRequest {
-        resource: "provider".to_string(),
-        app: Some("pi".to_string()),
-        name: Some("MyPi".to_string()),
-        endpoint: Some("https://api.example.com/v1".to_string()),
-        api_key: Some("sk-test".to_string()),
-        model: Some("anthropic/claude-opus-4-8".to_string()),
-        ..Default::default()
+    fn pi_request() -> DeepLinkImportRequest {
+        DeepLinkImportRequest {
+            resource: "provider".to_string(),
+            app: Some("pi".to_string()),
+            name: Some("MyPi".to_string()),
+            endpoint: Some("https://api.example.com/v1".to_string()),
+            api_key: Some("sk-test".to_string()),
+            model: Some("anthropic/claude-opus-4-8".to_string()),
+            ..Default::default()
+        }
     }
 }

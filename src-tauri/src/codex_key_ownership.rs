@@ -1509,11 +1509,16 @@ command = "from-line"
             let taken = crate::codex_config::apply_codex_official_proxy_route(
                 &project_codex_line_onto_live("", &taken, true, None).unwrap(),
                 PROXY,
+                unified,
             )
             .unwrap();
-            assert!(crate::codex_config::codex_config_has_official_proxy_route(
-                &taken
+            assert!(crate::codex_config::codex_config_routes_official_to_proxy(
+                &taken,
+                |url| url == PROXY
             ));
+            assert!(
+                !taken.contains(crate::codex_config::CC_SWITCH_CODEX_OFFICIAL_PROXY_PROVIDER_ID)
+            );
             assert!(!taken.contains("other.example"));
             assert_local_shared_kept(&taken);
 
@@ -1533,10 +1538,11 @@ command = "from-line"
 
             // Switching away from official after exit-restore drops the takeover route.
             let next = write_line(&taken, other, false, unified, None);
-            assert!(!crate::codex_config::codex_config_has_official_proxy_route(
-                &next
+            assert!(!crate::codex_config::codex_config_routes_official_to_proxy(
+                &next,
+                |_| true
             ));
-            assert!(!next.contains(PROXY));
+            assert!(!next.contains(PROXY), "{next}");
         }
     }
 

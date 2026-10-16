@@ -1,4 +1,8 @@
+import { useId, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { Check } from "lucide-react";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { EditorTemplateCard } from "@/components/providers/ProviderEditorFields";
 import type { ProviderPreset } from "@/config/claudeProviderPresets";
 import type { CodexProviderPreset } from "@/config/codexProviderPresets";
 import type { GeminiProviderPreset } from "@/config/geminiProviderPresets";
@@ -152,6 +156,8 @@ export function ProviderPresetSelector({
   onManageUniversalProviders,
 }: Readonly<ProviderPresetSelectorProps>) {
   const { t } = useTranslation();
+  const labelId = useId();
+  const [confirmRestore, setConfirmRestore] = useState(false);
   // Keep legacy helpers available, but never render the provider catalog.
   const visiblePresetEntries = presetEntries.filter(({ preset }) =>
     isBuiltinTemplate(preset),
@@ -163,39 +169,75 @@ export function ProviderPresetSelector({
     })),
   ];
 
+  // One template: the line editors' template card, and restoring it asks
+  // first like theirs, since it replaces what was typed.
+  if (choices.length === 1 && !onManageUniversalProviders) {
+    const [only] = choices;
+    return (
+      <>
+        <EditorTemplateCard
+          name={only.name}
+          onRestore={() => setConfirmRestore(true)}
+        />
+        <ConfirmDialog
+          isOpen={confirmRestore}
+          title="恢复默认模板？"
+          message="这会用模板重新填写线路名称、地址、密钥和模型，当前填写的内容不会保留。"
+          confirmText="恢复模板"
+          cancelText="取消"
+          onConfirm={() => {
+            setConfirmRestore(false);
+            onPresetChange(only.id);
+          }}
+          onCancel={() => setConfirmRestore(false)}
+        />
+      </>
+    );
+  }
+
   return (
-    <fieldset className="min-w-0 space-y-2">
-      <legend className="text-sm font-medium">
-        {t("providerPreset.label")}
-      </legend>
-      <div className="flex flex-wrap gap-2">
-        {choices.map(({ id, name }) => (
-          <button
-            key={id}
-            type="button"
-            aria-pressed={selectedPresetId === id}
-            onClick={() => onPresetChange(id)}
-            className={`max-w-full whitespace-normal break-words rounded-md border px-3 py-2 text-left text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
-              selectedPresetId === id
-                ? "border-primary bg-primary text-primary-foreground"
-                : "border-border bg-background text-foreground hover:bg-accent"
-            }`}
-          >
-            {name}
-          </button>
-        ))}
+    <div
+      className="editor-template-actions"
+      role="group"
+      aria-labelledby={labelId}
+    >
+      <div className="editor-template-text">
+        <b id={labelId}>
+          {t("providerPreset.label", { defaultValue: "配置模板" })}
+        </b>
+        <small>
+          选择模板会预填地址与模型，之后仍可修改；API Key 需自行填写。
+        </small>
       </div>
-      {onManageUniversalProviders && (
-        <button
-          type="button"
-          onClick={onManageUniversalProviders}
-          className="max-w-full whitespace-normal break-words rounded-md px-2 py-1 text-left text-sm text-foreground underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          {t("universalProvider.manage", {
-            defaultValue: "管理统一供应商",
-          })}
-        </button>
+      {(choices.length > 0 || onManageUniversalProviders) && (
+        <div className="editor-template-buttons">
+          {choices.map(({ id, name }) => (
+            <button
+              key={id}
+              type="button"
+              className="secondary editor-template-choice"
+              aria-pressed={selectedPresetId === id}
+              onClick={() => onPresetChange(id)}
+            >
+              {selectedPresetId === id && (
+                <Check size={14} aria-hidden="true" />
+              )}
+              {name}
+            </button>
+          ))}
+          {onManageUniversalProviders && (
+            <button
+              type="button"
+              className="link-button"
+              onClick={onManageUniversalProviders}
+            >
+              {t("universalProvider.manage", {
+                defaultValue: "管理统一供应商",
+              })}
+            </button>
+          )}
+        </div>
       )}
-    </fieldset>
+    </div>
   );
 }

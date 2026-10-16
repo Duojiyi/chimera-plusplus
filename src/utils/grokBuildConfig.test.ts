@@ -3,10 +3,30 @@ import { parse as parseToml } from "smol-toml";
 import {
   buildGrokBuildConfig,
   extractGrokBuildBaseUrl,
+  grokBuildConfigEditDropsComments,
   parseGrokBuildConfig,
+  planGrokBuildConfigUpdate,
   updateGrokBuildConfig,
   validateGrokBuildConfig,
 } from "./grokBuildConfig";
+
+const COMMENTED = `# Grok Build · written by hand
+[models]
+default = "grok-4.5" # the profile Grok opens with
+
+# Relay used at work
+[model."grok-4.5"]
+model = "grok-upstream"
+base_url = "https://relay.example.com/v1" # EU endpoint
+name = 'Relay'
+api_key = "secret"
+api_backend = "responses"
+context_window = 500000
+
+[mcp_servers.files]
+# keep the sandbox read-only
+command = "files-mcp"
+`;
 
 describe("Grok Build config", () => {
   it("refuses to replace malformed TOML with a new config", () => {
@@ -144,5 +164,107 @@ context_window = 500000
     expect(parsed.models.default).toBe("new-profile");
     expect(parsed.model["new-profile"].model).toBe("grok-upstream");
     expect(parsed.model).not.toHaveProperty("old-profile");
+  });
+});
+
+describe("Grok Build config: hand-written files", () => {
+  it("leaves the text untouched when the fields did not change", () => {
+    const plan = planGrokBuildConfigUpdate(
+      COMMENTED,
+      parseGrokBuildConfig(COMMENTED),
+    );
+    expect(plan).toEqual({ text: COMMENTED, droppedComments: false });
+  });
+
+  it("edits only the changed value and keeps every comment", () => {
+    const updated = updateGrokBuildConfig(COMMENTED, {
+      ...parseGrokBuildConfig(COMMENTED),
+      baseUrl: "https://relay.example.com/v2",
+    });
+    expect(updated).toBe(
+      COMMENTED.replace(
+        'base_url = "https://relay.example.com/v1" # EU endpoint',
+        'base_url = "https://relay.example.com/v2" # EU endpoint',
+      ),
+    );
+  });
+
+  it("adds and removes keys inside the selected table only", () => {
+    const withEnv = updateGrokBuildConfig(COMMENTED, {
+      ...parseGrokBuildConfig(COMMENTED),
+      apiKey: "",
+      envKey: "XAI_API_KEY",
+    });
+    expect(withEnv).not.toContain("api_key");
+    expect(withEnv).toContain(
+      'context_window = 500000\nenv_key = "XAI_API_KEY"\n\n[mcp_servers.files]',
+    );
+    expect(withEnv).toContain("# keep the sandbox read-only");
+    expect(withEnv).toContain("# Relay used at work");
+    const parsed = parseToml(withEnv) as any;
+    expect(parsed.model["grok-4.5"].env_key).toBe("XAI_API_KEY");
+    expect(parsed.mcp_servers.files.command).toBe("files-mcp");
+  });
+
+  it("renames the profile table in place", () => {
+    const renamed = updateGrokBuildConfig(COMMENTED, {
+      ...parseGrokBuildConfig(COMMENTED),
+      model: "work",
+    });
+    expect(renamed).toContain('default = "work" # the profile Grok opens with');
+    expect(renamed).toContain("# Relay used at work\n[model.work]\n");
+    const parsed = parseToml(renamed) as any;
+    expect(parsed.model).not.toHaveProperty("grok-4.5");
+    expect(parsed.model.work.base_url).toBe("https://relay.example.com/v1");
+  });
+
+  it("keeps CRLF line endings", () => {
+    const crlf = COMMENTED.replace(/\n/g, "\r\n");
+    const updated = updateGrokBuildConfig(crlf, {
+      ...parseGrokBuildConfig(crlf),
+      apiKey: "",
+      envKey: "XAI_API_KEY",
+    });
+    expect(updated).not.toMatch(/[^\r]\n/);
+    expect((parseToml(updated) as any).model["grok-4.5"].env_key).toBe(
+      "XAI_API_KEY",
+    );
+  });
+
+  it("regenerates unusual layouts and says that comments were lost", () => {
+    const dotted = `# dotted keys
+models.default = "grok-4.5"
+model."grok-4.5".model = "grok-4.5"
+model."grok-4.5".base_url = "https://a.example/v1" # note
+model."grok-4.5".name = "A"
+model."grok-4.5".api_key = "k"
+model."grok-4.5".api_backend = "responses"
+model."grok-4.5".context_window = 500000
+`;
+    // Unchanged fields never rewrite the text, whatever its layout.
+    expect(
+      planGrokBuildConfigUpdate(dotted, parseGrokBuildConfig(dotted)),
+    ).toEqual({ text: dotted, droppedComments: false });
+    const plan = planGrokBuildConfigUpdate(dotted, {
+      ...parseGrokBuildConfig(dotted),
+      baseUrl: "https://b.example/v1",
+    });
+    expect(plan.droppedComments).toBe(true);
+    expect(plan.text).not.toContain("#");
+    expect((parseToml(plan.text) as any).model["grok-4.5"].base_url).toBe(
+      "https://b.example/v1",
+    );
+    // The editor can warn before the first edit.
+    expect(grokBuildConfigEditDropsComments(dotted)).toBe(true);
+    expect(grokBuildConfigEditDropsComments(COMMENTED)).toBe(false);
+    expect(grokBuildConfigEditDropsComments(dotted.replace(/#.*$/gm, ""))).toBe(
+      false,
+    );
+    // A "#" inside a string is not a comment.
+    expect(
+      grokBuildConfigEditDropsComments(
+        dotted.replace(/#.*$/gm, "").replace('"A"', '"Relay #1"'),
+      ),
+    ).toBe(false);
   });
 });

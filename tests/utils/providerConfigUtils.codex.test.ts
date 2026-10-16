@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { parse as parseToml } from "smol-toml";
 import {
   extractCodexBaseUrl,
   extractCodexExperimentalBearerToken,
@@ -70,9 +71,9 @@ describe("Codex TOML utils", () => {
       "",
       "[model_providers.custom]",
       'name = "custom"',
-      "base_url = \"https://su'us.codes/v1\"",
+      'base_url = "https://su\'us.codes/v1"',
       'wire_api = "responses"',
-      'requires_openai_auth = true',
+      "requires_openai_auth = true",
       "",
     ].join("\n");
 
@@ -93,7 +94,7 @@ describe("Codex TOML utils", () => {
       'base_url = "https://old.example/v1"',
       'base_url = "https://older.example/v1"',
       'wire_api = "responses"',
-      'requires_openai_auth = true',
+      "requires_openai_auth = true",
       "",
     ].join("\n");
 
@@ -445,5 +446,125 @@ describe("Codex TOML utils", () => {
     ].join("\n");
 
     expect(extractCodexExperimentalBearerToken(input)).toBe("top-level-key");
+  });
+
+  // Adapted from farion1231/cc-switch c1051f8e
+  it("finds the active provider table when its header quotes the key", () => {
+    for (const header of [
+      '[model_providers."custom"]',
+      "[model_providers.'custom']",
+      "[ model_providers . custom ]",
+      '["model_providers".custom]',
+    ]) {
+      const input = [
+        'model_provider = "custom"',
+        "",
+        header,
+        'name = "custom"',
+        'wire_api = "responses"',
+        "",
+        "[features]",
+        "",
+      ].join("\n");
+
+      const output = setCodexBaseUrl(input, "https://relay.example/v1");
+
+      // A second `[model_providers.custom]` would be a duplicate table that
+      // Codex refuses to parse.
+      const parsed = parseToml(output) as Record<string, any>;
+      expect(parsed.model_providers.custom, header).toEqual({
+        name: "custom",
+        wire_api: "responses",
+        base_url: "https://relay.example/v1",
+      });
+      expect(output.split(/^\s*\[/m), header).toHaveLength(3);
+      expect(extractCodexBaseUrl(output), header).toBe(
+        "https://relay.example/v1",
+      );
+      expect(
+        extractCodexBaseUrl(setCodexBaseUrl(output, "")),
+        header,
+      ).toBeUndefined();
+    }
+  });
+
+  it("writes base_url into a quoted provider table whose id needs quoting", () => {
+    const input = [
+      'model_provider = "my.relay"',
+      "",
+      '[model_providers."my.relay"]',
+      'name = "my.relay"',
+      "",
+    ].join("\n");
+
+    const output = setCodexBaseUrl(input, "https://relay.example/v1");
+
+    const parsed = parseToml(output) as Record<string, any>;
+    expect(Object.keys(parsed.model_providers)).toEqual(["my.relay"]);
+    expect(parsed.model_providers["my.relay"].base_url).toBe(
+      "https://relay.example/v1",
+    );
+  });
+
+  it("updates the bearer token in a provider table whose header quotes the key", () => {
+    const input = [
+      'model_provider = "custom"',
+      "",
+      '[model_providers."custom"]',
+      'name = "custom"',
+      'experimental_bearer_token = "old"',
+      "",
+    ].join("\n");
+
+    const output = updateCodexExperimentalBearerToken(input, "new");
+
+    expect(extractCodexExperimentalBearerToken(output)).toBe("new");
+    expect(
+      (parseToml(output) as Record<string, any>).model_providers.custom
+        .experimental_bearer_token,
+    ).toBe("new");
+  });
+
+  it("skips provider tables quoted inside a multi-line string", () => {
+    for (const delimiter of ['"""', "'''"]) {
+      const instructions = [
+        "Example:",
+        '[model_providers."custom"]',
+        'base_url = "https://example.invalid/v1"',
+        'experimental_bearer_token = "example-token"',
+        "",
+      ].join("\n");
+      const input = [
+        'model_provider = "custom"',
+        `developer_instructions = ${delimiter}`,
+        `${instructions}${delimiter}`,
+        "",
+        "[model_providers.custom]",
+        'name = "custom"',
+        'base_url = "https://old.invalid/v1"',
+        'experimental_bearer_token = "old-token"',
+        "",
+      ].join("\n");
+
+      expect(extractCodexBaseUrl(input), delimiter).toBe(
+        "https://old.invalid/v1",
+      );
+      expect(extractCodexExperimentalBearerToken(input), delimiter).toBe(
+        "old-token",
+      );
+
+      const output = updateCodexExperimentalBearerToken(
+        setCodexBaseUrl(input, "https://new.invalid/v1"),
+        "new-token",
+      );
+
+      const parsed = parseToml(output) as Record<string, any>;
+      expect(parsed.developer_instructions, delimiter).toBe(instructions);
+      expect(parsed.model_providers.custom, delimiter).toEqual({
+        name: "custom",
+        base_url: "https://new.invalid/v1",
+        experimental_bearer_token: "new-token",
+      });
+    }
   });
 });

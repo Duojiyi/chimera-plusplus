@@ -156,30 +156,511 @@ export function classifyCommand(
   args?: unknown,
 ): RiskKind | null {
   if (typeof command !== "string" || !command) return null;
+  if (!Array.isArray(args)) return null;
 
   // 只取基名：`/bin/sh` 与 `sh` 是同一回事
   const base = command.split(/[/\\]/).pop()?.toLowerCase() ?? "";
-  if (!SHELL_INTERPRETERS.has(base)) return null;
-
-  if (!Array.isArray(args)) return null;
-  return args.some((arg) => typeof arg === "string" && isInlineCommandFlag(arg))
+  if (SHELL_INTERPRETERS.has(base)) {
+    return args.some(
+      (arg) => typeof arg === "string" && isInlineCommandFlag(arg),
+    )
+      ? "shellCommand"
+      : null;
+  }
+  const inlineCode = INLINE_CODE_FLAGS[commandName(command)];
+  return inlineCode &&
+    args.some((arg) => typeof arg === "string" && inlineCode.test(arg))
     ? "shellCommand"
     : null;
 }
 
+/** 去掉目录和 Windows 可执行后缀的命令名：`C:\\x\\node.exe` → `node`。 */
+function commandName(command: unknown): string {
+  if (typeof command !== "string") return "";
+  return (command.split(/[/\\]/).pop() ?? "")
+    .toLowerCase()
+    .replace(/\.(exe|cmd|bat|ps1)$/, "");
+}
+
 /**
- * 凭据类取值的展示脱敏。
+ * 解释器「运行参数里这段代码」的开关：`node -e`、`python -c`、`deno eval` 等，
+ * 以及把参数当 shell 命令运行的 `npx -c`、`pnpm dlx -c`。
+ * 这段代码能读取后面任何一个参数，所以这类命令的参数一个都不遮盖。
+ */
+const INLINE_CODE_FLAGS: Record<string, RegExp> = {
+  npx: /^(-c|--call)$/,
+  npm: /^(-c|--call)$/,
+  pnpm: /^(-c|--shell-mode)$/,
+  pnpx: /^(-c|--shell-mode)$/,
+  node: /^(-[ep]|-pe|--eval|--print)$/,
+  nodejs: /^(-[ep]|-pe|--eval|--print)$/,
+  bun: /^(-[ep]|--eval|--print)$/,
+  deno: /^eval$/,
+  python: /^-[a-zA-Z]*c$/,
+  python3: /^-[a-zA-Z]*c$/,
+  python2: /^-[a-zA-Z]*c$/,
+  py: /^-[a-zA-Z]*c$/,
+  pypy: /^-[a-zA-Z]*c$/,
+  pypy3: /^-[a-zA-Z]*c$/,
+  perl: /^-[a-zA-Z]*[eE]$/,
+  ruby: /^-[a-zA-Z]*e$/,
+  php: /^-r$/,
+  osascript: /^-e$/,
+  lua: /^-e$/,
+  luajit: /^-e$/,
+  rscript: /^-e$/,
+};
+
+/**
+ * 键名里出现这些词时，其取值按凭据处理。按词比较而不是按子串：
+ * `MAX_OUTPUT_TOKENS` 是计数，`MONKEY` 也不是 key。连写的小写形式
+ * （`accesstoken`）和国内云常见的 AK/SK 写法单独列出。
+ */
+const SENSITIVE_WORDS = new Set([
+  "TOKEN",
+  "KEY",
+  "KEYS",
+  "APIKEY",
+  "APIKEYS",
+  "SECRET",
+  "SECRETS",
+  "PASSWORD",
+  "PASSWORDS",
+  "PASSWD",
+  "AUTHORIZATION",
+  "CREDENTIAL",
+  "CREDENTIALS",
+  "COOKIE",
+  "PAT",
+  "AK",
+  "SK",
+  "ACCESSKEY",
+  "SECRETKEY",
+  "PRIVATEKEY",
+  "APPSECRET",
+  "CLIENTSECRET",
+  "ACCESSTOKEN",
+  "APITOKEN",
+  "AUTHTOKEN",
+]);
+
+/** 以这些词结尾的是数量或时限（`TOKEN_LIMIT`、`KEY_TTL`），不是凭据。 */
+const COUNT_WORDS = new Set([
+  "LIMIT",
+  "LIMITS",
+  "COUNT",
+  "SIZE",
+  "BUDGET",
+  "TIMEOUT",
+  "TTL",
+  "LENGTH",
+]);
+
+/**
+ * 以这些词结尾的取值是要运行的命令（git 的 `credential.helper`、AWS 的
+ * `credential_process`）：遮了就看不出会运行什么。
+ */
+const COMMAND_WORDS = new Set([
+  "HELPER",
+  "COMMAND",
+  "CMD",
+  "PROCESS",
+  "PROGRAM",
+  "SCRIPT",
+  "EXEC",
+]);
+
+export function isSensitiveKey(key: string): boolean {
+  const words = key
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .toUpperCase()
+    .split(/[^A-Z0-9]+/)
+    .filter(Boolean);
+  const last = words.at(-1) ?? "";
+  return (
+    !COUNT_WORDS.has(last) &&
+    !COMMAND_WORDS.has(last) &&
+    words.some((word) => SENSITIVE_WORDS.has(word))
+  );
+}
+
+/** 凭据只露末 4 位，与确认框里 API Key 的「末 4 位」同一口径。 */
+const MASK = "••••";
+
+/**
+ * 最短按凭据遮盖的长度。行内展示与「完整内容」都经 `shouldMask` 判断，
+ * 两处不会再各遮各的。
+ */
+const MIN_SECRET_LENGTH = 6;
+
+/**
+ * `OPENAI_API_KEY`、`AZURE_KEY_2` 这类取值是环境变量名（如 Codex 的
+ * `env_key`），不是凭据本身。至少一段是三个以上的字母，免得把
+ * `AB12_CD34_EF56` 这种形状的凭据当成变量名。
+ */
+const ENV_VAR_NAME = /^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/;
+const ENV_VAR_WORD = /(?:^|_)[A-Z]{3,}(?=_|$)/;
+const isEnvVarName = (text: string) =>
+  ENV_VAR_NAME.test(text) && ENV_VAR_WORD.test(text);
+
+/**
+ * 本机路径（私钥文件 `C:\Users\me\.ssh\id_ed25519`、`/home/me/.ssh/id`、
+ * `\\server\share\key`、`%USERPROFILE%\key`）要能看清，不是凭据。Unix 路径
+ * 至少两段、只含常见文件名字符，免得把以 `/` 开头的 base64 当成路径。
+ */
+const LOCAL_PATH =
+  /^(?:[A-Za-z]:[\\/]|~[\\/]|\.{1,2}[\\/]|\\\\[\w.-]+\\|%[A-Za-z_]\w*%[\\/]|\/(?:[\w.-]+\/)+[\w.-]+$)/;
+
+/** 认证方案名不是秘密，留着更看得懂：`Bearer ••••cdef`。 */
+const AUTH_SCHEME = /^(\s*(?:Bearer|Basic|Token)\s+)(\S[\s\S]*)$/i;
+
+export function maskSecret(value: string): string {
+  // One scheme word stays; the rest is masked as a whole. No recursion: a
+  // value of thousands of "Basic " words must not overflow the stack.
+  const scheme = AUTH_SCHEME.exec(value);
+  const prefix = scheme ? scheme[1] : "";
+  const text = (scheme ? scheme[2] : value).trim();
+  return `${prefix}${text.length > 8 ? `${MASK}${text.slice(-4)}` : MASK}`;
+}
+
+/**
+ * `${TOKEN}`、`$TOKEN`（可带认证方案）是对本机环境变量的引用，不是凭据本身。
+ * 只认全大写的名字：`$AbCdEf123456` 更像以 `$` 开头的凭据。
+ */
+const ENV_REFERENCE =
+  /^(?:(?:[Bb]earer|[Bb]asic|[Tt]oken)\s+)?\$\{?[A-Z_][A-Z0-9_]*\}?$/;
+
+/** 够长、不是环境变量名也不是本机路径的取值才可能是凭据；数字也算（密码、PIN）。 */
+function isMaskableValue(value: unknown): value is string | number {
+  if (typeof value !== "string" && typeof value !== "number") return false;
+  const text = String(value).trim();
+  return (
+    text.length >= MIN_SECRET_LENGTH &&
+    !isEnvVarName(text) &&
+    !ENV_REFERENCE.test(text) &&
+    !LOCAL_PATH.test(text)
+  );
+}
+
+/** `GIT_CONFIG_KEY_0` 存的是 git 设置名，不是密钥；遮了就看不出注入了哪项设置。 */
+const isExemptKey = (key: string) => /^GIT_CONFIG_KEY_\d+$/i.test(key);
+
+/** 键名是凭据、取值像凭据时才遮盖；短值不遮，否则连「是不是空的」都看不出来。 */
+export function shouldMask(key: string, value: unknown): boolean {
+  return isSensitiveKey(key) && !isExemptKey(key) && isMaskableValue(value);
+}
+
+/** 请求头集合（如 `ANTHROPIC_CUSTOM_HEADERS`）：每行一个 `名称: 值`。 */
+const isHeaderListKey = (key: string) =>
+  key
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .toUpperCase()
+    .split(/[^A-Z0-9]+/)
+    .some((word) => word === "HEADERS" || word === "HEADER");
+
+/**
+ * 凭据类取值的展示脱敏（供应商与 MCP 的环境变量行共用），与「完整内容」
+ * 同一套规则：凭据键名下的值、URL 里的凭据、请求头里的凭据。
  *
  * 原先是 `DeepLinkImportDialog` 内的组件闭包；MCP 确认页也要展示 env，抽出来是
  * 为了两处共用同一套规则——各写一份迟早会漂移成两种脱敏口径。
  */
-export function maskValue(key: string, value: string): string {
-  const sensitiveKeys = ["TOKEN", "KEY", "SECRET", "PASSWORD"];
-  const isSensitive = sensitiveKeys.some((k) => key.toUpperCase().includes(k));
-  if (isSensitive && value.length > 8) {
-    return `${value.substring(0, 8)}${"*".repeat(12)}`;
+export function maskValue(key: string, value: unknown): string {
+  if (shouldMask(key, value)) return maskSecret(String(value));
+  if (typeof value !== "string") return String(value);
+  return maskLooseValue(key, value);
+}
+
+/**
+ * `Bearer sk-…` 这种写法本身就是凭据，与键名无关（如 `AUTH_HEADER`）；
+ * `Bearer ${TOKEN}` 只是引用本机变量。
+ */
+const BEARER_VALUE = /^\s*(?:Bearer|Basic|Token)\s+\S{6,}/i;
+const isBearerSecret = (value: string) =>
+  BEARER_VALUE.test(value) && isMaskableValue(value);
+
+/** 键名不是凭据时，取值里仍可能带凭据：URL、认证头写法、请求头列表。 */
+function maskLooseValue(key: string, value: string): string {
+  if (isBearerSecret(value)) return maskSecret(value);
+  if (URL_SCHEME.test(value)) return maskUrl(value);
+  return isHeaderListKey(key) ? maskHeaderLines(value) : value;
+}
+
+/*
+ * 以下都按位置脱敏：只换凭据所在的那一段，其余字符原样保留。
+ * 不能按「已知凭据」在全文里做替换——取值来自链接本身，链接把某个
+ * 「凭据」设成和要执行的包名、主机名一样，就能把它们从确认框里藏起来。
+ * 同理，凡是位置上可能是「要运行什么」的参数都不遮盖（见 `maskArgs`）。
+ */
+
+const decodePart = (text: string) => {
+  try {
+    return decodeURIComponent(text.replace(/\+/g, " "));
+  } catch {
+    return text;
+  }
+};
+
+const URL_SCHEME = /^[a-z][a-z0-9+.-]*:\/\//i;
+
+function maskLongEnough(decoded: string, raw: string): string {
+  return decoded.trim().length >= MIN_SECRET_LENGTH ? maskSecret(decoded) : raw;
+}
+
+/** 这些用户名或密码只是占位，真正的令牌在另一半（GitHub 的两种写法）。 */
+const USERINFO_PLACEHOLDER =
+  /^(?:x-oauth-basic|x-oauth-token|x-access-token|oauth2|x-token-auth)$/i;
+
+/**
+ * URL 里的凭据：userinfo，以及查询串与片段里凭据类参数的值。
+ * userinfo 按 WHATWG 的解析确认：`https://evil.example\@good.example`
+ * 的主机是 evil.example，「@」前面不是用户名，不能当用户名遮掉。
+ */
+export function maskUrl(url: string): string {
+  const scheme = URL_SCHEME.exec(url);
+  if (!scheme) return url;
+  let head = scheme[0];
+  let rest = url.slice(head.length);
+  // WHATWG ends the host at "\" as well, but only for these schemes; in a
+  // `postgresql://` password a backslash is just a character.
+  const special = /^(?:https?|wss?|ftp|file):/i.test(head);
+  const authorityEnd = rest.search(special ? /[/?#\\]/ : /[/?#]/);
+  const authority = authorityEnd === -1 ? rest : rest.slice(0, authorityEnd);
+  const at = authority.lastIndexOf("@");
+  if (at !== -1 && hasUserinfo(url)) {
+    const userinfo = authority.slice(0, at);
+    const colon = userinfo.indexOf(":");
+    const user = colon === -1 ? userinfo : userinfo.slice(0, colon);
+    const pass = colon === -1 ? "" : userinfo.slice(colon + 1);
+    // 只有用户名、密码为空或只是占位（`x-oauth-basic`）时，令牌在用户名里；
+    // 否则用户名照常显示，遮盖密码。
+    const tokenInUser = !pass || USERINFO_PLACEHOLDER.test(decodePart(pass));
+    head +=
+      (tokenInUser ? maskLongEnough(decodePart(user), user) : user) +
+      (colon === -1
+        ? ""
+        : `:${tokenInUser ? pass : maskLongEnough(decodePart(pass), pass)}`) +
+      "@";
+    rest = rest.slice(at + 1);
+  }
+  // Only the query and the fragment carry parameters; a `;name=` in the path
+  // is left alone so it cannot swallow the rest of the address.
+  const query = rest.search(/[?#]/);
+  if (query === -1) return head + rest;
+  return (
+    head +
+    rest.slice(0, query) +
+    rest
+      .slice(query)
+      .replace(
+        /([?&#])([^=&#]*)=([^&#]*)/g,
+        (whole, separator: string, name: string, value: string) =>
+          isSecretParam(decodePart(name), decodePart(value))
+            ? `${separator}${name}=${maskSecret(decodePart(value))}`
+            : whole,
+      )
+  );
+}
+
+/**
+ * Query names that carry secrets in URLs (an Azure SAS `sig`, a Functions
+ * `code`, a session id) but are too common as env names to treat as
+ * credential words everywhere.
+ */
+const URL_SECRET_PARAMS = new Set([
+  "sig",
+  "signature",
+  "code",
+  "auth",
+  "pwd",
+  "pass",
+  "jwt",
+  "session",
+  "sessionid",
+  "sid",
+]);
+
+const isSecretParam = (name: string, value: string) =>
+  shouldMask(name, value) ||
+  (URL_SECRET_PARAMS.has(name.toLowerCase()) && isMaskableValue(value));
+
+function hasUserinfo(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.username !== "" || parsed.password !== "";
+  } catch {
+    return false;
+  }
+}
+
+const isHeaderFlag = (arg: string) => arg === "-H" || /^--?header$/i.test(arg);
+
+/** `Authorization: Bearer x` 这样的请求头：键名是凭据时遮盖取值。 */
+function maskHeader(header: string): string {
+  const parts = /^(\s*([A-Za-z0-9_-]+)\s*:\s*)([\s\S]*)$/.exec(header);
+  if (!parts || !shouldMask(parts[2], parts[3])) return header;
+  return `${parts[1]}${maskSecret(parts[3])}`;
+}
+
+const maskHeaderLines = (text: string) =>
+  text.split("\n").map(maskHeader).join("\n");
+
+/**
+ * 命令参数里的凭据，只在自带名字的写法里遮盖：`--api-key=x` 与 `API_KEY=x`
+ * 的取值、`-H` / `--header` 后面请求头的取值（请求头名照常显示）、URL 里的
+ * 凭据，以及 `Bearer x` 这种取值。
+ *
+ * 「凭据开关后面的那一项」（`--api-key x`）不遮盖。不知道开关带不带值时，
+ * 那一项可能正是要运行的东西：npx 把不认识的开关当布尔开关，
+ * `npx -y --auth-token @evil/pkg` 运行的就是 `@evil/pkg`；外面再包一层
+ * `conhost.exe`、`env`、`wsl` 也一样，这类命令列不完。用 `node -e`、`sh -c`
+ * 这类方式运行一段代码时，代码能读到任何参数，所以一个都不遮盖。
+ */
+export function maskArgs(
+  args: readonly unknown[],
+  command?: unknown,
+): string[] {
+  const list = args.map(String);
+  if (classifyCommand(command, list)) return list;
+  return list.map((arg, index) => {
+    const previous = index > 0 ? list[index - 1] : "";
+    if (isHeaderFlag(previous)) return maskHeader(arg);
+    if (/^-H\S/.test(arg)) return `-H${maskHeader(arg.slice(2))}`;
+    const pair = /^(-{0,2})([\w.-]+)=([\s\S]*)$/.exec(arg);
+    if (pair) {
+      const [, dashes, name, value] = pair;
+      if (isHeaderFlag(`${dashes}${name}`)) {
+        return `${dashes}${name}=${maskHeader(value)}`;
+      }
+      if (shouldMask(name, value)) {
+        return `${dashes}${name}=${maskSecret(value)}`;
+      }
+      // `--env=GITHUB_TOKEN=ghp_…`: the value is itself a variable.
+      const inner = /^([\w.-]+)=([\s\S]*)$/.exec(value);
+      if (inner && shouldMask(inner[1], inner[2])) {
+        return `${dashes}${name}=${inner[1]}=${maskSecret(inner[2])}`;
+      }
+      return `${dashes}${name}=${maskLooseValue(name, value)}`;
+    }
+    if (isBearerSecret(arg)) return maskSecret(arg);
+    return URL_SCHEME.test(arg) ? maskUrl(arg) : arg;
+  });
+}
+
+/** TOML 里的 `key = "value"`，也匹配内联表里的 `"Authorization" = "…"`。 */
+const TOML_PAIR =
+  /((?:^|[{,])[ \t]*)((?:"[^"\n]*"|'[^'\n]*'|[\w-]+)(?:[ \t]*\.[ \t]*(?:"[^"\n]*"|'[^'\n]*'|[\w-]+))*)([ \t]*=[ \t]*)("(?:[^"\\\n]|\\.)*"|'[^'\n]*')/gm;
+
+/** config.toml 文本（Codex、Grok Build）里凭据类键的取值，以及 URL 里的凭据。 */
+export function maskToml(text: string): string {
+  return text.replace(
+    TOML_PAIR,
+    (whole, lead: string, path: string, equals: string, literal: string) => {
+      const key = (path.split(".").pop() ?? "")
+        .trim()
+        .replace(/^["']|["']$/g, "");
+      const value = literal.slice(1, -1);
+      const masked = shouldMask(key, value)
+        ? maskSecret(value)
+        : URL_SCHEME.test(value)
+          ? maskUrl(value)
+          : value;
+      if (masked === value) return whole;
+      const quote = literal[0];
+      return `${lead}${path}${equals}${quote}${masked}${quote}`;
+    },
+  );
+}
+
+/**
+ * 「将保存的配置」（后端 JSON 预览解析后的值）里的凭据：凭据类键名下的
+ * 取值（含其下整个对象或数组）、URL 与请求头里的凭据、命令参数里的凭据
+ * （按同一对象里的 `command` 判断，见 `maskArgs`），以及 config.toml 文本。
+ * 返回新值，不改动传入的值。
+ */
+export function maskStoredValue(
+  value: unknown,
+  key = "",
+  depth = 0,
+  underSecret = false,
+): unknown {
+  if (depth > 32) return value;
+  if (typeof value === "string" || typeof value === "number") {
+    if (underSecret ? isMaskableValue(value) : shouldMask(key, value)) {
+      return maskSecret(String(value));
+    }
+    if (typeof value === "number") return value;
+    // A one-line config is TOML too; maskToml leaves anything else as is.
+    if (key === "config") return maskToml(value);
+    return maskLooseValue(key, value);
+  }
+  const secret = underSecret || (isSensitiveKey(key) && !isExemptKey(key));
+  if (Array.isArray(value)) {
+    return value.map((item) => maskStoredValue(item, key, depth + 1, secret));
+  }
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.entries(record).map(([child, item]) => [
+        child,
+        child === "args" && Array.isArray(item) && !secret
+          ? maskArgs(item, record.command)
+          : maskStoredValue(item, child, depth + 1, secret),
+      ]),
+    );
   }
   return value;
+}
+
+/**
+ * 像凭据的值：至少 16 位（真实的密钥都更长，短的多半是脚本里的词或路径段），
+ * 只含令牌常用字符，没有空白、引号、括号或冒号。
+ */
+const CREDENTIAL_SHAPE = /^[\w.~+/=-]{16,}$/;
+
+/** 以「.字母」结尾的是主机名（`api2.evil.example`），不是令牌。 */
+const HOSTNAME_TAIL = /\.[a-z]{2,24}$/;
+
+const isWordChar = (char: string | undefined) =>
+  char !== undefined && /[\w$]/.test(char);
+
+/**
+ * 用量脚本是不透明的代码，只能按链接给出的凭据替换文本。为免链接借「凭据」
+ * 藏起脚本里的其他内容，只替换像凭据（同时有字母和数字、不是主机名）的值，
+ * 而且只在完整的词上替换。
+ */
+export function maskScriptSecrets(
+  code: string,
+  secrets: Iterable<string | undefined>,
+): string {
+  const values = [
+    ...new Set([...secrets].map((secret) => (secret ?? "").trim())),
+  ]
+    .filter(
+      (value) =>
+        CREDENTIAL_SHAPE.test(value) &&
+        /[A-Za-z]/.test(value) &&
+        /\d/.test(value) &&
+        !HOSTNAME_TAIL.test(value),
+    )
+    // 长的先换：一个凭据可能包含另一个。
+    .sort((a, b) => b.length - a.length);
+  return values.reduce((text, value) => {
+    let result = "";
+    let from = 0;
+    for (
+      let at = text.indexOf(value);
+      at !== -1;
+      at = text.indexOf(value, at + value.length)
+    ) {
+      if (isWordChar(text[at - 1]) || isWordChar(text[at + value.length])) {
+        continue;
+      }
+      result += `${text.slice(from, at)}${maskSecret(value)}`;
+      from = at + value.length;
+    }
+    return result + text.slice(from);
+  }, code);
 }
 
 /** 风险种类 → i18n key。 */

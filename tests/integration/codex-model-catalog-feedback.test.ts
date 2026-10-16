@@ -4,6 +4,12 @@ import path from "node:path";
 
 const APP_PATH = path.resolve(__dirname, "../../src/ChimeraApp.tsx");
 const appSource = fs.readFileSync(APP_PATH, "utf8");
+// Every line editor's footer and its address test live here.
+const FIELDS_PATH = path.resolve(
+  __dirname,
+  "../../src/components/providers/ProviderEditorFields.tsx",
+);
+const fieldsSource = fs.readFileSync(FIELDS_PATH, "utf8");
 
 describe("Codex model catalog feedback", () => {
   it("validates common TOML before committing a provider and retains update identity after partial success", () => {
@@ -51,8 +57,9 @@ describe("Codex model catalog feedback", () => {
     expect(fetchHandler.length).toBeGreaterThan(0);
     expect(fetchHandler).toContain("fetchModelsForConfig(");
     expect(fetchHandler).not.toContain("detectCodexApiFormats(");
-    expect(appSource).toContain("测试地址连通性");
-    expect(appSource).toContain("仅测试地址连通性，不验证密钥或模型");
+    expect(appSource).toContain("<EditorTestAction");
+    expect(fieldsSource).toContain("测试地址连通性");
+    expect(fieldsSource).toContain("仅测试地址连通性，不验证密钥或模型");
   });
 
   it("address reachability feedback does not imply verified credentials, models, or inference", () => {
@@ -69,5 +76,18 @@ describe("Codex model catalog feedback", () => {
     expect(handler).not.toContain("detectCodexApiFormats(");
     expect(handler).not.toContain("fetchModelsForConfig(");
     expect(handler).not.toMatch(/\b(?:invoke|fetch)\s*\(/);
+  });
+
+  it("the other editors' address test is the same reachability-only request", () => {
+    const start = fieldsSource.indexOf("export function useAddressTest(");
+    expect(start).toBeGreaterThan(0);
+    const hook = fieldsSource.slice(
+      start,
+      fieldsSource.indexOf("\n}\n", start),
+    );
+    expect(hook).toContain("vscodeApi.testApiEndpoints([url.trim()]");
+    expect(hook).toContain('toast.success("地址可达"');
+    expect(hook).toContain("未验证密钥或模型");
+    expect(hook).not.toContain("fetchModelsForConfig(");
   });
 });

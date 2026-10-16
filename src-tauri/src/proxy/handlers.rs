@@ -1202,6 +1202,23 @@ fn persist_codex_auto_detected_api_format(
     });
 }
 
+/// Responses 的 WebSocket 握手（GET 升级请求）：本地代理只讲 HTTP/SSE，回 426。
+/// Codex 内置的 openai（官方线路经代理时的路由）默认先连 WebSocket，握手拿到 426
+/// 就在本会话里改走 HTTP；其它失败要把重试用完才回退。
+/// Adapted from farion1231/cc-switch 619c315b `handle_responses_websocket`.
+pub async fn handle_responses_websocket() -> (StatusCode, Json<Value>) {
+    (
+        StatusCode::UPGRADE_REQUIRED,
+        Json(json!({
+            "error": {
+                "type": "invalid_request_error",
+                "code": "websocket_not_supported",
+                "message": "Chimera++ local routing does not support Responses over WebSocket; use HTTP",
+            }
+        })),
+    )
+}
+
 /// 处理 /v1/responses 请求（OpenAI Responses API - Codex CLI 透传）
 pub async fn handle_responses(
     State(state): State<ProxyState>,

@@ -1,14 +1,12 @@
 import { useTranslation } from "react-i18next";
 import { ChevronDown } from "lucide-react";
-import { FormLabel } from "@/components/ui/form";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { EditorLabel } from "@/components/providers/ProviderEditorFields";
 import { isValidUserAgentHeader } from "@/lib/userAgent";
 import { USER_AGENT_PRESETS } from "@/config/userAgentPresets";
 
@@ -33,32 +31,36 @@ export function CustomUserAgentField({
 }: CustomUserAgentFieldProps) {
   const { t } = useTranslation();
   const valid = isValidUserAgentHeader(value);
+  const hintId = `${id}-hint`;
 
   return (
-    <div className="space-y-2">
-      <FormLabel htmlFor={id}>
-        {t("providerForm.customUserAgent", {
+    <div className="editor-field">
+      <EditorLabel
+        htmlFor={id}
+        label={t("providerForm.customUserAgent", {
           defaultValue: "自定义 User-Agent",
         })}
-      </FormLabel>
-      <div className="flex items-center gap-2">
-        <Input
+      />
+      <div className="model-input">
+        <input
           id={id}
           type="text"
           value={value}
           onChange={(e) => onChange(e.target.value)}
           placeholder="Mozilla/5.0 ..."
           autoComplete="off"
-          className="flex-1"
+          spellCheck={false}
+          aria-describedby={hintId}
+          aria-invalid={!valid || undefined}
         />
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button type="button" variant="outline" className="shrink-0 gap-1">
+            <button type="button">
               {t("providerForm.customUserAgentPresets", {
                 defaultValue: "预设",
               })}
-              <ChevronDown className="h-3.5 w-3.5 opacity-60" />
-            </Button>
+              <ChevronDown size={14} aria-hidden="true" />
+            </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent
             align="end"
@@ -77,19 +79,19 @@ export function CustomUserAgentField({
         </DropdownMenu>
       </div>
       {valid ? (
-        <p className="text-xs text-muted-foreground">
+        <small id={hintId}>
           {t("providerForm.customUserAgentHint", {
             defaultValue:
               "仅在开启本地路由/代理接管后生效，会替换转发到供应商 API 请求中的 User-Agent。",
           })}
-        </p>
+        </small>
       ) : (
-        <p className="text-xs text-destructive">
+        <small id={hintId} className="is-error">
           {t("providerForm.customUserAgentInvalid", {
             defaultValue:
               "User-Agent 不能包含控制字符（如换行符），否则将被忽略。",
           })}
-        </p>
+        </small>
       )}
     </div>
   );

@@ -6,6 +6,8 @@ import { UpdateProvider } from "./contexts/UpdateContext";
 import "./theme/fonts.css";
 import "./theme/tokens.css";
 import "./index.css";
+import "./components/ui/disclosure.css";
+import "./theme/typography.css";
 // 导入国际化配置
 import i18n, { i18nReady } from "./i18n";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -153,18 +155,9 @@ async function bootstrap() {
       </FrontendErrorBoundary>
     </React.StrictMode>,
   );
-
-  // 显式唤出并聚焦主窗口，杜绝隐藏启动或无句柄状态
-  if (isTauri()) {
-    try {
-      const { getCurrentWindow } = await import("@tauri-apps/api/window");
-      const appWin = getCurrentWindow();
-      await appWin.show();
-      await appWin.setFocus();
-    } catch {
-      // 忽略非桌面环境异常
-    }
-  }
+  // Window visibility is the backend's: the window is created visible and only
+  // silent startup hides it (lib.rs setup). The webview has no permission to
+  // show or focus windows (capabilities/default.json).
 }
 
 void bootstrap();

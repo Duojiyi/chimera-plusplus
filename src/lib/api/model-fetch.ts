@@ -47,55 +47,6 @@ export interface DetectedCodexApiFormat {
 }
 
 /**
- * Detect the upstream capability with a real model name and a deliberately
- * malformed, non-generating request. A result is returned only when the backend
- * can identify a real protocol endpoint; callers must keep the manual selector
- * available for inconclusive gateways.
- */
-export async function detectCodexApiFormat(
-  baseUrl: string,
-  apiKey: string,
-  isFullUrl?: boolean,
-  model?: string,
-  customUserAgent?: string,
-): Promise<DetectedCodexApiFormat> {
-  return invoke("detect_codex_api_format", {
-    baseUrl,
-    apiKey,
-    isFullUrl,
-    model,
-    customUserAgent,
-  });
-}
-
-/**
- * Per-model detection report. `detected` holds every model whose protocol was
- * identified; `failures` maps each undetected model to a human-readable reason
- * of the form `HTTP <status> (<classification>) <upstream excerpt>` so the UI
- * can show why a model stayed unresolved instead of a bare "failed".
- */
-export interface CodexApiFormatDetectionReport {
-  detected: Record<string, DetectedCodexApiFormat>;
-  failures: Record<string, string>;
-}
-
-export async function detectCodexApiFormats(
-  baseUrl: string,
-  apiKey: string,
-  models: string[],
-  isFullUrl?: boolean,
-  customUserAgent?: string,
-): Promise<CodexApiFormatDetectionReport> {
-  return invoke("detect_codex_api_formats", {
-    baseUrl,
-    apiKey,
-    isFullUrl,
-    models,
-    customUserAgent,
-  });
-}
-
-/**
  * 获取 Codex OAuth (ChatGPT Plus/Pro 反代) 可用模型列表
  *
  * Codex OAuth 使用 ChatGPT 的 backend-api/codex 端点，不兼容普通 /v1/models。

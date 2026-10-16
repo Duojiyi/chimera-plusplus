@@ -449,9 +449,9 @@ export default function ToolViewDesktop({
         <Info size={15} aria-hidden="true" />
         <span>切换后需手动重启 Claude Desktop；登录请在客户端完成。</span>
       </div>
-      <details className="tool-desktop-details">
+      <details className="chimera-disclosure tool-desktop-details">
         <summary>诊断与兼容性</summary>
-        <div>
+        <div className="chimera-disclosure-body">
           {status && (
             <dl>
               <dt>程序路径</dt>

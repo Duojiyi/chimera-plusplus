@@ -32,6 +32,16 @@ async function mount() {
     expect(screen.getByRole("button", { name: "保存 Codex" })).toBeEnabled(),
   );
 }
+it("shows the app data folder, not the config.json file inside it", async () => {
+  vi.mocked(settingsApi.getAppConfigPath).mockResolvedValue(
+    "C:\\Users\\lin\\.chimera-plus-plus\\config.json",
+  );
+  await mount();
+  expect(
+    await screen.findByText("C:\\Users\\lin\\.chimera-plus-plus"),
+  ).toBeVisible();
+  expect(screen.queryByText(/config\.json/)).not.toBeInTheDocument();
+});
 it("does not save on load or typing, patches only the chosen WSL directory without replaying preferences", async () => {
   await mount();
   const path = "\\\\wsl.localhost\\Ubuntu\\home\\user\\.codex";

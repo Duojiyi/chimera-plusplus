@@ -77,6 +77,9 @@
   --line: var(--border-subtle);
   --ch-muted: var(--text-3);
   --shell-edge: var(--p-white-a16);
+  /* The light --focus blue is about 2.5:1 on the dark surfaces; the theme's
+     ring keeps every focus outline in the shell above 3:1. */
+  --focus: var(--focus-ring);
   color: var(--text-1);
   background: var(--bg-base);
 }
@@ -482,20 +485,22 @@
   max-width: 620px;
   margin: 0 auto;
   padding: 28px;
-  border: 1px solid var(--line);
-  border-radius: var(--r-lg);
-  background: var(--panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel);
+  background: var(--bg-surface);
+  color: var(--text-1);
 }
 .onboarding h1,
 .onboarding h2 {
   margin: 22px 0 8px;
   font-size: 22px;
+  line-height: 1.3;
 }
 .onboarding > p {
   margin: 0;
-  color: var(--ch-muted);
-  font-size: 12px;
-  line-height: 1.65;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.7;
 }
 .onboarding-brand {
   display: inline-flex;
@@ -510,7 +515,7 @@
 }
 .onboarding ol {
   display: grid;
-  gap: 12px;
+  gap: 14px;
   width: 100%;
   margin: 22px 0;
   padding: 0;
@@ -519,7 +524,7 @@
 .onboarding ol li {
   display: grid;
   grid-template-columns: 26px minmax(0, 1fr);
-  gap: 11px;
+  gap: 12px;
   align-items: start;
 }
 .onboarding ol li > b {
@@ -528,89 +533,45 @@
   display: grid;
   place-items: center;
   border-radius: 50%;
-  background: var(--soft);
-  color: var(--ch-accent);
-  font-size: 11px;
+  background: var(--bg-subtle);
+  color: var(--brand-text);
+  font-size: 12px;
   font-weight: 700;
 }
 .onboarding ol li strong {
   display: block;
-  font-size: 12px;
+  font-size: 14px;
+  line-height: 20px;
 }
 .onboarding ol li span {
   display: block;
-  margin-top: 3px;
-  color: var(--ch-muted);
-  font-size: 11px;
+  margin-top: 2px;
+  color: var(--text-3);
+  font-size: 13px;
+  line-height: 1.5;
 }
-/* Advanced options base classes. The scoped rules further down set
-   grid-template-columns but never declared a display, so the tracks were
-   inert until these bases landed. */
-.advanced-options summary {
-  cursor: pointer;
-  padding: 10px 13px;
-  border-radius: 8px;
-  color: var(--ink);
-  font-size: 12px;
-  font-weight: 700;
-  list-style: none;
-}
-.advanced-options summary::-webkit-details-marker {
-  display: none;
-}
-.advanced-options-body {
-  display: grid;
-  gap: 13px;
-  padding: 4px 13px 13px;
-}
-.advanced-intro {
-  margin: 0;
-  color: var(--ch-muted);
-  font-size: 11px;
-  line-height: 1.6;
-}
+/* Line editor rows shared by the editors (ProviderEditorPage.css styles
+   the sheet around them). */
 .advanced-group {
   display: grid;
   gap: 11px;
 }
 .advanced-section-heading {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
-}
-.advanced-section-heading b {
-  font-size: 12px;
 }
 .advanced-section-heading small {
   display: block;
   margin-top: 3px;
-  color: var(--ch-muted);
-  font-size: 10px;
   font-weight: 400;
-  line-height: 1.45;
 }
 .toggle-field {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
   align-items: center;
-  font-size: 12px;
-}
-.toggle-field > span {
-  min-width: 0;
-}
-.toggle-field b {
-  display: block;
-  font-size: 12px;
-}
-.toggle-field small {
-  display: block;
-  margin-top: 3px;
-  color: var(--ch-muted);
-  font-size: 10px;
-  font-weight: 400;
-  line-height: 1.45;
 }
 .experimental-tag {
   margin-left: 6px;
@@ -623,52 +584,23 @@
   font-weight: 700;
   vertical-align: middle;
 }
+.mapping-head,
 .mapping-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 84px 110px 34px 34px;
-  gap: 8px;
-  align-items: center;
 }
 .mapping-head {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 84px 110px 34px 34px;
-  gap: 8px;
   align-items: center;
-  /* Match .mapping-row's card inset (10px padding + 1px border) so the
-     header columns line up with the row inputs. */
-  padding: 0 11px;
-  color: var(--ch-muted);
-  font-size: 10px;
   font-weight: 600;
-}
-.mapping-row input,
-.mapping-row select {
-  min-width: 0;
-  height: 34px;
-  padding: 0 9px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--input-bg);
-  color: var(--ink);
-  font-size: 11px;
-  font-weight: 400;
-}
-.mapping-row select {
-  padding-right: 5px;
 }
 .reasoning-trigger {
   min-width: 0;
-  height: 34px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 6px;
   padding: 0 9px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--input-bg);
+  border: 1px solid;
   color: var(--ink);
-  font-size: 11px;
   font-weight: 400;
   cursor: pointer;
 }
@@ -691,19 +623,16 @@
 .reasoning-panel-head {
   margin-bottom: 9px;
   color: var(--ch-muted);
-  font-size: 10px;
   font-weight: 600;
 }
 .reasoning-checkboxes {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px;
 }
 .reasoning-level-option {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 11px;
   color: var(--ink);
   cursor: pointer;
 }
@@ -725,16 +654,6 @@
   padding-top: 11px;
   border-top: 1px solid var(--border-subtle);
   color: var(--ch-muted);
-  font-size: 11px;
-}
-.reasoning-panel-default select {
-  height: 30px;
-  padding: 0 8px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--input-bg);
-  color: var(--ink);
-  font-size: 11px;
 }
 .instructions-trigger {
   width: 34px;
@@ -766,7 +685,6 @@
 .instructions-panel-head {
   margin-bottom: 9px;
   color: var(--ch-muted);
-  font-size: 10px;
   font-weight: 600;
 }
 .instructions-panel textarea {
@@ -806,48 +724,6 @@
   background: var(--bg-hover);
   color: var(--text-1);
 }
-/* Advanced-options label rows are direct children of .advanced-options-body,
-   not .editor-form, so they need their own stacking rule. */
-.advanced-options-body > label,
-.advanced-group > label {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  font-size: 12px;
-  font-weight: 400;
-  color: var(--ink);
-}
-.advanced-options-body > label.toggle-field,
-.advanced-group > label.toggle-field {
-  display: grid;
-  flex-direction: unset;
-}
-/* Exclude checkboxes: the toggle switches carry their own fixed 38x22 pill
-   sizing, and they set `height` but not `min-height`, so the 36px below does not
-   conflict — it just wins, inflating the pill to 38x36 which `border-radius:
-   999px` then renders as a circle. This rule is for text inputs and selects. */
-.advanced-options-body > label > input:not([type="checkbox"]),
-.advanced-options-body > label > select,
-.advanced-group > label > input:not([type="checkbox"]),
-.advanced-group > label > select {
-  width: 100%;
-  min-height: 36px;
-  padding: 0 10px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--input-bg);
-  color: var(--ink);
-  font-size: 12px;
-  font-weight: 400;
-}
-.advanced-options-body > label > small,
-.advanced-group > label > small {
-  color: var(--ch-muted);
-  font-size: 10px;
-  font-weight: 400;
-  line-height: 1.45;
-}
-
 /* Chimera 2.0 interaction states and real-data surfaces. */
 .setting-row {
   width: 100%;
@@ -1004,22 +880,41 @@
   background: #fff;
   vertical-align: middle;
 }
-.onboarding-screen {
+/* First run, before the shell: rendered as `.chimera-shell.onboarding-screen`
+   so the shell's tokens, fonts, buttons and dark theme apply. The card is
+   centred under a drag bar that keeps the window controls. */
+.chimera-shell.onboarding-screen {
+  position: relative;
   min-height: 100vh;
   display: grid;
   place-items: center;
-  padding: 40px;
-  background: var(--canvas);
-  color: var(--ink);
-  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  padding: 56px 40px 40px;
+  overflow: auto;
+  background: var(--bg-base);
+  color: var(--text-1);
+}
+.onboarding-titlebar {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+body.is-mac .onboarding-titlebar {
+  justify-content: flex-start;
+  padding-left: 12px;
 }
 .onboarding-card {
   width: min(620px, 100%);
-  min-height: 590px;
   margin: 0;
   padding: 32px;
   display: flex;
   flex-direction: column;
+  box-shadow: 0 1px 2px var(--shadow-soft);
 }
 .onboarding-card h1 {
   margin: 28px 0 8px;
@@ -1029,12 +924,12 @@
   display: flex;
   justify-content: flex-end;
   gap: 10px;
-  margin-top: auto;
+  margin-top: 4px;
 }
 .onboarding-card > small {
-  margin: 24px auto 0;
-  color: var(--ch-muted);
-  font-size: 10px;
+  margin: 20px auto 0;
+  color: var(--text-3);
+  font-size: 12px;
 }
 button:focus-visible,
 input:focus-visible,
@@ -1644,41 +1539,6 @@ body.is-mac
   inset: 0;
   z-index: 10;
   background: var(--scrim);
-}
-.provider-editor {
-  padding: 26px;
-  background: var(--bg-surface);
-  color: var(--text-1);
-}
-.provider-editor > header {
-  /* Badge sits beside the title, not above it. The outer .provider-editor
-     padding is the single source of inset, so the V1 `padding: 22px` on this
-     element is zeroed here rather than compounding to 48px. */
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 0;
-  margin-bottom: 18px;
-}
-.provider-editor > header > div {
-  min-width: 0;
-}
-.provider-editor > header h2 {
-  margin: 0;
-  font-size: 17px;
-  line-height: 1.25;
-}
-.provider-editor > header p {
-  margin: 4px 0 0;
-  color: var(--ch-muted);
-  font-size: 11px;
-  line-height: 1.45;
-}
-.provider-editor .editor-form {
-  display: flex;
-  flex-direction: column;
-  gap: 13px;
-  padding: 0;
 }
 /* password-field and model-input inside editor labels */
 .password-field,
@@ -2483,60 +2343,11 @@ body.is-mac
   width: 100%;
   justify-content: center;
 }
-.advanced-options {
-  overflow: hidden;
-  border: 1px solid var(--border-subtle);
-  background: var(--bg-surface);
-}
-.advanced-options summary {
-  padding: 2px 0;
-}
-.advanced-options-body {
-  grid-template-columns: minmax(0, 1fr);
-}
 /* Rows of a .toggle-list: the list draws the frame and the dividers. */
 .advanced-options .toggle-field {
   position: relative;
   width: 100%;
-  grid-template-columns: minmax(0, 1fr) auto;
   padding: 12px 14px;
-}
-/* Same switch as 设置 and 工具显示: ink track when on, outlined when off. */
-.advanced-options .toggle-field input[type="checkbox"] {
-  appearance: none;
-  width: 38px;
-  height: 22px;
-  margin: 0;
-  border: 1px solid var(--switch-off-border);
-  border-radius: 999px;
-  background:
-    radial-gradient(
-      circle at 10px 50%,
-      var(--switch-thumb-off) 0 6px,
-      transparent 6.5px
-    ),
-    var(--switch-off-bg);
-  transition:
-    background 180ms var(--ease),
-    border-color 180ms var(--ease);
-}
-.advanced-options .toggle-field input[type="checkbox"]:checked {
-  border-color: var(--switch-on-bg);
-  background:
-    radial-gradient(
-      circle at 26px 50%,
-      var(--switch-thumb-on) 0 6px,
-      transparent 6.5px
-    ),
-    var(--switch-on-bg);
-}
-.advanced-options .toggle-field input[type="checkbox"]:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
-}
-.advanced-options .toggle-field input[type="checkbox"]:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
 }
 .codex-feature-options .advanced-section-heading {
   margin-bottom: 4px;
@@ -2574,19 +2385,6 @@ body.is-mac
 .common-config-editor textarea:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
-}
-.advanced-group.model-mapping {
-  gap: 10px;
-}
-.mapping-row {
-  padding: 10px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 10px;
-  background: var(--bg-surface);
-}
-.mapping-row .icon-button,
-.mapping-row .instructions-trigger {
-  border-radius: 10px;
 }
 @media (max-width: 760px) {
   .route-radar {
@@ -2895,148 +2693,18 @@ body.is-mac
   }
 }
 
-/* Direct line switching keeps the Chimera relay path primary while allowing
-   additional endpoints to scale without changing the home composition. */
-.route-line-switcher {
-  position: absolute;
-  z-index: 3;
-  left: 50%;
-  bottom: 0;
-  width: min(760px, calc(100% - 48px));
-  transform: translateX(-50%);
-}
-.route-line-heading {
-  height: 20px;
-  margin-bottom: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-}
-.route-line-heading > div {
-  min-width: 0;
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-.route-line-heading b {
-  color: #252b31;
-  font-size: 13px;
-}
-.route-line-heading > div span {
-  color: #7b8790;
-  font-size: 11px;
-}
-.route-line-heading > button {
-  min-height: 32px;
-  padding: 0 4px;
-  border: 0;
-  background: transparent;
-  color: #6b7780;
-  font-size: 12px;
-  font-weight: 700;
-}
-.route-line-heading > button:hover {
-  color: var(--ch-accent);
-}
-.route-line-rail {
-  height: 88px;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 140px;
-  gap: 8px;
-  padding: 8px;
-  overflow: hidden;
-  border: 1px solid rgba(147, 161, 170, 0.58);
-  border-radius: 18px;
-  background: rgba(252, 253, 254, 0.92);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.92),
-    0 5px 8px rgba(39, 51, 59, 0.12);
-  -webkit-backdrop-filter: saturate(1.2) contrast(1.03);
-  backdrop-filter: saturate(1.2) contrast(1.03);
-}
+/* 管理线路 (NewProvidersView): a centred dialog on the app's shared dialog
+   surface and scrim, so it follows the theme. Rows use the line table's
+   identity badge; the current row gets the table's current treatment (a
+   selected surface, the indicator bar and the 当前 tag). Focus uses the
+   app's standard ring. */
 .route-line-mark {
-  flex: 0 0 36px;
-  width: 36px;
-  height: 36px;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
   display: grid;
   place-items: center;
-  border-radius: 10px;
-  background: #f0f3f5;
-  color: #6a7680;
-  font-size: 13px;
-  font-weight: 800;
-}
-.route-line-manager article.is-active .route-line-mark {
-  background: #ffe0d8;
-  color: var(--ch-accent);
-}
-.route-line-copy {
-  min-width: 0;
-  display: grid;
-  gap: 3px;
-}
-.route-line-copy b,
-.route-line-copy small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.route-line-copy b {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 13px;
-}
-.route-line-copy b i {
-  flex: 0 0 6px;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--success);
-}
-.route-line-copy small {
-  color: #7a8790;
-  font-size: 11px;
-}
-.route-line-add {
-  height: 64px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 9px;
-  border: 1px solid #dde1e6;
-  border-radius: 12px;
-  background: #fff;
-  color: #31383e;
-  font-size: 12px;
-  font-weight: 800;
-  transition:
-    background 160ms var(--ease),
-    transform 120ms var(--ease);
-}
-.route-line-add > span {
-  width: 26px;
-  height: 26px;
-  display: grid;
-  place-items: center;
-  border-radius: 50%;
-  background: #fff0ec;
-  color: var(--ch-accent);
-}
-.route-line-add:hover {
-  border-color: #ffc3b6;
-  background: #fff9f7;
-}
-.route-line-add:active {
-  transform: scale(0.975);
-}
-.route-line-heading button:focus-visible,
-.route-line-add:focus-visible,
-.route-line-manager button:focus-visible,
-.route-line-search:focus-within {
-  outline: 2px solid rgba(190, 55, 30, 0.9);
-  outline-offset: 2px;
+  color: var(--text-3);
 }
 .route-line-manager-backdrop {
   position: fixed;
@@ -3045,8 +2713,7 @@ body.is-mac
   display: grid;
   place-items: center;
   padding: 24px;
-  border-radius: 16px;
-  background: rgba(247, 249, 250, 0.84);
+  background: var(--scrim);
 }
 .route-line-manager {
   width: min(560px, 100%);
@@ -3056,10 +2723,13 @@ body.is-mac
   gap: 14px;
   padding: 20px;
   overflow: hidden;
-  border: 1px solid #cad4da;
-  border-radius: 14px;
-  background: #fff;
-  box-shadow: 0 8px 14px rgba(39, 51, 59, 0.14);
+  border: 1px solid var(--dialog-border);
+  border-radius: var(--radius-panel);
+  background: var(--dialog-bg);
+  color: var(--text-1);
+  box-shadow:
+    0 1px 2px var(--shadow-soft),
+    0 16px 40px var(--shadow-overlay);
 }
 .route-line-manager > header {
   display: flex;
@@ -3072,79 +2742,104 @@ body.is-mac
   margin: 0;
 }
 .route-line-manager h2 {
-  color: #252b31;
-  font-size: 18px;
+  color: var(--text-1);
+  font-size: 17px;
+  line-height: 1.3;
 }
 .route-line-manager header p {
   margin-top: 4px;
-  color: #7a8790;
-  font-size: 12px;
+  color: var(--text-2);
+  font-size: 13px;
 }
 .route-line-manager header > button,
 .route-line-edit {
-  flex: 0 0 36px;
-  width: 36px;
-  height: 36px;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
   display: grid;
   place-items: center;
   border: 0;
-  border-radius: 50%;
-  background: #f1f4f5;
-  color: #69757e;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-2);
 }
 .route-line-search {
-  height: 40px;
+  height: 36px;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 12px;
-  border-radius: 9px;
-  background: #f1f4f5;
-  color: #7a8790;
+  padding: 0 10px;
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius-control);
+  background: var(--input-bg);
+  color: var(--text-3);
+}
+.route-line-search:hover {
+  border-color: var(--input-border-hover);
 }
 .route-line-search input {
   width: 100%;
+  min-width: 0;
   border: 0;
   outline: 0;
   background: transparent;
-  color: #252b31;
+  color: var(--input-fg);
   font: inherit;
+  font-size: 13px;
+}
+.route-line-search input::placeholder {
+  color: var(--input-placeholder);
 }
 .route-line-manager-list {
   min-height: 76px;
+  /* Room for the 2px ring + 2px offset of the first and last rows. */
+  padding: 4px 0;
   overflow-y: auto;
 }
 .route-line-manager-list article {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
   gap: 8px;
-  padding: 6px;
-  border-radius: 11px;
+  padding: 2px 6px 2px 8px;
+  border-radius: var(--radius-control);
 }
 .route-line-manager-list article + article {
-  margin-top: 4px;
+  margin-top: 2px;
 }
 .route-line-manager-list article.is-active {
-  background: #fff3ef;
+  background: var(--row-bg-current);
+}
+.route-line-manager-list article.is-active::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 3px;
+  height: 20px;
+  margin-top: -10px;
+  border-radius: var(--radius-inner);
+  background: var(--brand-indicator);
 }
 .route-line-manager-main {
   min-width: 0;
-  min-height: 52px;
+  min-height: 48px;
   display: grid;
-  grid-template-columns: 36px minmax(0, 1fr) auto;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
   gap: 10px;
   align-items: center;
   padding: 4px 8px;
   border: 0;
-  border-radius: 9px;
+  border-radius: var(--radius-control);
   background: transparent;
-  color: #252b31;
+  color: var(--text-1);
   text-align: left;
 }
 .route-line-manager-main:hover,
-.route-line-edit:hover,
+.route-line-edit:hover:not(:disabled),
 .route-line-manager header > button:hover {
-  background: #e9eef0;
+  background: var(--bg-hover);
 }
 .route-line-manager-main > span:nth-child(2) {
   min-width: 0;
@@ -3157,27 +2852,39 @@ body.is-mac
   white-space: nowrap;
 }
 .route-line-manager-main b {
-  font-size: 13px;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+}
+.route-line-manager-list article.is-active .route-line-manager-main b {
+  font-weight: 700;
 }
 .route-line-manager-main small {
-  margin-top: 3px;
-  color: #7a8790;
-  font-size: 11px;
+  margin-top: 2px;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 16px;
 }
-.route-line-manager-main > svg {
-  color: var(--success);
+.route-line-current {
+  padding: 0 8px;
+  border-radius: var(--radius-pill);
+  background: var(--tag-current-bg);
+  color: var(--tag-current-fg);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 20px;
+  white-space: nowrap;
 }
 .route-line-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 .route-line-delete {
-  color: #b83224;
-  background: #fff0ed;
+  color: var(--danger-fg);
 }
 .route-line-delete:hover:not(:disabled) {
-  background: #ffe0d9;
+  background: var(--danger-bg);
 }
 .route-line-actions button:disabled {
   opacity: 0.45;
@@ -3186,22 +2893,34 @@ body.is-mac
 .route-line-official-note {
   align-self: center;
   justify-self: end;
-  padding: 5px 8px;
-  border: 1px solid #d8e2e7;
-  border-radius: 999px;
-  color: #71808a;
-  font-size: 10px;
+  padding: 2px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 18px;
   white-space: nowrap;
 }
 .route-line-empty {
   margin: 0;
   padding: 24px;
-  color: #7a8790;
+  color: var(--text-3);
   font-size: 13px;
   text-align: center;
 }
+/* `.provider-page button:focus-visible` (ProviderLineTable.css) has the same
+   specificity and uses the light-only --focus; the dialog's ring must win
+   in both themes, hence the extra class. */
+.route-line-manager.route-line-manager button:focus-visible,
+.route-line-search:focus-within {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.route-line-search input:focus-visible {
+  outline: none;
+}
 .route-line-manager-add {
-  min-height: 42px;
+  min-height: 40px;
   justify-self: stretch;
 }
 
@@ -3332,5 +3051,129 @@ body.is-mac
   .runtime-maintenance-workspace > header {
     flex-wrap: wrap;
     gap: 12px;
+  }
+}
+
+/* tool pages & shell (2.8.6)
+   Sidebar active and focus states. The Codex capability rows carry the
+   vertical tree (rail + station dot) in their first 28px; a full-width fill
+   or an outset focus outline would paint over that rail. The active surface
+   and the focus ring are drawn on a ::before that starts after the tree
+   column, so the rail stays continuous and the highlight sits beside it. */
+.chimera-sidebar .chimera-navigation button[data-pencil-name^="能力 · "] {
+  position: relative;
+  isolation: isolate;
+  background: transparent;
+}
+.chimera-sidebar
+  .chimera-navigation
+  button[data-pencil-name^="能力 · "]::before {
+  content: "";
+  position: absolute;
+  inset: 2px 0 2px 36px;
+  z-index: -1;
+  border-radius: var(--radius-control, 4px);
+  background: transparent;
+  transition: background-color var(--dur-instant, 100ms) var(--ease-out, ease);
+}
+.chimera-sidebar
+  .chimera-navigation
+  button[data-pencil-name^="能力 · "]:hover:not(:disabled)::before {
+  background: #1a1e24;
+}
+.chimera-sidebar
+  .chimera-navigation
+  button[data-pencil-name^="能力 · "][aria-current="page"]::before {
+  background: #23282d;
+}
+.chimera-sidebar
+  .chimera-navigation
+  button[data-pencil-name^="能力 · "]:focus-visible {
+  outline: none;
+}
+.chimera-sidebar
+  .chimera-navigation
+  button[data-pencil-name^="能力 · "]:focus-visible::before {
+  outline: 2px solid var(--focus-on-plate);
+  outline-offset: -2px;
+}
+/* Every other sidebar row: keep the focus ring inside the 216px rail so it
+   is not clipped by the nav scroller or drawn over neighbouring rows. */
+.chimera-sidebar button:not([data-pencil-name^="能力 · "]):focus-visible {
+  outline: 2px solid var(--focus-on-plate);
+  outline-offset: -2px;
+}
+/* Active accent: one straight 2px bar, 16px tall and centred on the row, at
+   the left edge of the highlight (after the tree column on capability rows).
+   An inset shadow on the rounded highlight bent round its corners into a
+   bracket. Every active sidebar row (capability, tool, 管理工具, 会话, 设置)
+   carries the same bar. */
+.chimera-sidebar button[aria-current="page"] {
+  position: relative;
+}
+.chimera-sidebar button[aria-current="page"]::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 2px;
+  height: 16px;
+  margin-top: -8px;
+  border-radius: 1px;
+  background: #7b9bc3;
+  pointer-events: none;
+}
+.chimera-sidebar
+  .chimera-navigation
+  button[data-pencil-name^="能力 · "][aria-current="page"]::after {
+  left: 36px;
+}
+
+/* The tool list scrolls when the window is short (960x640 shows about two
+   thirds of it). Scrollbars are hidden app-wide, so the list fades out at
+   the edge that has more content: the bottom until the end is reached, the
+   top once it has scrolled. Driven by the list's own scroll position; when
+   everything fits the timeline is inactive and nothing fades. Keyboard focus
+   scrolls a row clear of the fade (scroll-padding). */
+@property --chimera-nav-fade-top {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@property --chimera-nav-fade-bottom {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@keyframes chimera-nav-fade {
+  0% {
+    --chimera-nav-fade-top: 0px;
+    --chimera-nav-fade-bottom: 24px;
+  }
+  12% {
+    --chimera-nav-fade-top: 24px;
+  }
+  88% {
+    --chimera-nav-fade-bottom: 24px;
+  }
+  100% {
+    --chimera-nav-fade-top: 24px;
+    --chimera-nav-fade-bottom: 0px;
+  }
+}
+.chimera-sidebar .chimera-navigation {
+  scroll-padding-block: 28px;
+}
+@supports (animation-timeline: scroll()) {
+  .chimera-sidebar .chimera-navigation {
+    mask-image: linear-gradient(
+      to bottom,
+      transparent 0,
+      #000 var(--chimera-nav-fade-top),
+      #000 calc(100% - var(--chimera-nav-fade-bottom)),
+      transparent 100%
+    );
+    animation: chimera-nav-fade linear both;
+    animation-timeline: scroll(self block);
   }
 }

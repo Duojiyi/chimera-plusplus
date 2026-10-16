@@ -1,0 +1,402 @@
+/* Pi / oh-my-pi support panels (2.8.6): 默认模型与 MCP, 插件市场, 安装与更新.
+   Same language as the tool pages: token surfaces, 8px cards, quiet meta text,
+   mono for identifiers. Works in light and dark through the shared tokens. */
+.tool-support-panel {
+  min-width: 0;
+  color: var(--text-1);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.pi-panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+.tool-support-panel > .pi-panel-body {
+  padding-top: 4px;
+}
+.pi-panel-body[hidden] {
+  display: none;
+}
+.pi-lede {
+  margin: 0;
+  max-width: 760px;
+  color: var(--text-2);
+  /* Break between CJK phrases; with whole phrases, pretty can also keep the
+     last line from being a stranded fragment. */
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+.pi-hint,
+.pi-footnote {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.pi-footnote {
+  padding-top: 10px;
+  border-top: 1px solid var(--border-subtle);
+}
+.pi-notice {
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--info-border);
+  border-radius: var(--radius-control, 4px);
+  background: var(--info-bg);
+  color: var(--info-fg);
+  font-size: 12px;
+}
+.pi-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.pi-version {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: var(--radius-control, 4px);
+  background: var(--bg-subtle);
+  color: var(--text-2);
+  font:
+    12px/1.6 var(--font-mono),
+    var(--font-cjk),
+    monospace;
+  overflow-wrap: anywhere;
+}
+.pi-path,
+.pi-mono {
+  margin: 0;
+  color: var(--text-2);
+  font:
+    12px/1.6 var(--font-mono),
+    var(--font-cjk),
+    monospace;
+  overflow-wrap: anywhere;
+}
+.pi-path {
+  color: var(--text-3);
+}
+
+/* Cards */
+.pi-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  padding: 16px 20px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel, 8px);
+  background: var(--bg-surface);
+}
+.pi-card > h3 {
+  margin: 0;
+  color: var(--text-1);
+  font-size: 14px;
+  font-weight: 700;
+}
+.pi-card > p {
+  margin: 0;
+}
+.pi-card > .pi-actions:last-child,
+.pi-card > button:last-child {
+  align-self: flex-start;
+}
+
+/* Form fields */
+.pi-field-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.pi-field-grid > label,
+.pi-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 700;
+}
+/* One control system for the Pi and oh-my-pi panels: text fields and selects
+   share the tool pages' 32px height, input tokens and 4px radius, next to
+   .tool-btn buttons. */
+.pi-input,
+.pi-select {
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius-control, 4px);
+  background: var(--input-bg);
+  color: var(--input-fg);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 400;
+  transition: border-color var(--dur-instant, 100ms) var(--ease-out, ease);
+}
+.pi-input {
+  width: 100%;
+  min-width: 0;
+}
+.pi-select {
+  min-width: 132px;
+  cursor: pointer;
+}
+.pi-field-grid .pi-select {
+  width: 100%;
+}
+.pi-input::placeholder {
+  color: var(--input-placeholder);
+}
+.pi-input:hover:not(:disabled),
+.pi-select:hover:not(:disabled) {
+  border-color: var(--input-border-hover);
+}
+.pi-input:focus-visible,
+.pi-select:focus-visible {
+  border-color: var(--input-border-focus);
+  outline: 2px solid var(--focus-ring, var(--focus));
+  outline-offset: 1px;
+}
+.pi-input:disabled,
+.pi-select:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.pi-code {
+  width: 100%;
+  min-height: 180px;
+  padding: 12px;
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius-control, 4px);
+  background: var(--bg-sunken, var(--input-bg));
+  color: var(--input-fg);
+  font:
+    12px/1.6 var(--font-mono),
+    var(--font-cjk),
+    monospace;
+  resize: vertical;
+}
+.pi-code:hover:not(:disabled) {
+  border-color: var(--input-border-hover);
+}
+.pi-search-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.pi-search-row > .pi-search {
+  flex: 1;
+  min-width: 200px;
+}
+/* Market view toggle: the pressed button reads as a selected tab. */
+.pi-segment [aria-pressed="true"] {
+  box-shadow: inset 0 -2px 0 color-mix(in srgb, #000 18%, transparent);
+}
+
+/* Plugin catalog */
+.pi-plugin-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 12px;
+}
+.pi-plugin-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 16px 18px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel, 8px);
+  background: var(--bg-surface);
+  transition: border-color var(--dur-fast, 150ms) var(--ease-out, ease);
+}
+.pi-plugin-card:hover,
+.pi-plugin-card:focus-within {
+  border-color: var(--border-control);
+}
+.pi-plugin-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.pi-plugin-head h3 {
+  margin: 0;
+  min-width: 0;
+  color: var(--text-1);
+  font:
+    700 13px/1.5 var(--font-mono),
+    var(--font-cjk),
+    monospace;
+  overflow-wrap: anywhere;
+}
+.pi-chip {
+  flex-shrink: 0;
+  padding: 1px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill, 999px);
+  color: var(--text-3);
+  font-size: 11px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+.pi-plugin-desc {
+  margin: 0;
+  color: var(--text-1);
+  font-size: 14px;
+  font-weight: 700;
+}
+.pi-plugin-meta {
+  margin: 0;
+  color: var(--text-3);
+  font:
+    12px/1.6 var(--font-latin),
+    var(--font-cjk),
+    sans-serif;
+  overflow-wrap: anywhere;
+}
+.pi-plugin-risk {
+  margin: 0;
+  color: var(--warning-fg);
+  font-size: 12px;
+}
+.pi-plugin-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 8px;
+}
+
+/* Lists (declared / installed plugins) */
+.pi-list-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 48px;
+  padding: 8px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control, 4px);
+  background: var(--bg-surface);
+}
+.pi-list-row:hover {
+  background: var(--row-bg-hover, var(--bg-subtle));
+}
+.pi-list-main {
+  flex: 1;
+  min-width: 0;
+}
+.pi-list-main .pi-mono {
+  color: var(--text-1);
+  font-weight: 700;
+}
+
+/* Disclosures: the shared .chimera-disclosure (components/ui/disclosure.css);
+   is-inline in cards and forms, the card form for command output. Only the
+   body rhythm and the code block are set here. */
+.pi-disclosure.is-inline > summary {
+  font-size: 12px;
+}
+.pi-disclosure > .chimera-disclosure-body > * + * {
+  margin-top: 10px;
+}
+.pi-disclosure pre {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-control, 4px);
+  background: var(--bg-subtle);
+  color: var(--text-2);
+  font:
+    11px/1.6 var(--font-mono),
+    var(--font-cjk),
+    monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.pi-disclosure.is-output pre {
+  max-height: 256px;
+  overflow: auto;
+}
+
+/* States */
+.pi-empty {
+  margin: 0;
+  padding: 20px 16px;
+  border: 1px dashed var(--border-control);
+  border-radius: var(--radius-panel, 8px);
+  background: var(--bg-subtle);
+  color: var(--text-3);
+  text-align: center;
+}
+.pi-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--text-2);
+}
+.pi-status::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--brand);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 20%, transparent);
+}
+.pi-alert {
+  margin: 0;
+  padding: 10px 14px;
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-panel, 8px);
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.pi-kind-state:empty {
+  display: none;
+}
+.pi-kind-state {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+@media (max-width: 760px) {
+  .pi-field-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* oh-my-pi 安装与更新: hold actions, version and lede together in one card. */
+.pi-panel-body[data-panel="runtime"] > .pi-actions,
+.pi-panel-body[data-panel="runtime"] > .pi-version,
+.pi-panel-body[data-panel="runtime"] > .pi-lede {
+  margin: 0;
+}
+.pi-panel-body[data-panel="runtime"] {
+  padding: 16px 20px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel, 8px);
+  background: var(--bg-surface);
+}
+.pi-panel-body[data-panel="runtime"] > .pi-footnote {
+  margin: 0 -20px -16px;
+  padding: 10px 20px 12px;
+  border-top: 1px solid var(--border-subtle);
+  border-radius: 0 0 var(--radius-panel, 8px) var(--radius-panel, 8px);
+  background: var(--bg-subtle);
+}
+
+/* Inputs inside labels keep body weight; the label alone is bold. */
+.pi-field-grid > label > :is(input, select),
+.pi-field > :is(input, select) {
+  font-weight: 400;
+}

@@ -1,0 +1,32 @@
+/* Back control of the generic full-screen panels (MCP, pricing, speed test,
+   common config). Same pill as the line editor's "‹ 线路" so every panel
+   reads as one shell. The panel is portaled to <body>, outside the shell's
+   button rules, so the pill is styled here with the shared tokens. */
+.fullscreen-panel-back {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  min-height: 32px;
+  padding: 5px 12px 5px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 7px;
+  background: var(--bg-surface);
+  color: var(--text-1);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 20px;
+  cursor: pointer;
+  transition: background-color var(--dur-instant, 100ms) var(--ease-out, ease);
+}
+.dark .fullscreen-panel-back,
+[data-theme="dark"] .fullscreen-panel-back {
+  border-color: var(--border-control);
+}
+.fullscreen-panel-back:hover {
+  background: var(--bg-hover);
+}
+.fullscreen-panel-back:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}

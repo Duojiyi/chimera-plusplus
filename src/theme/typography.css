@@ -1,0 +1,15 @@
+/* Line breaking for running text (2.8.6).
+   - pretty: paragraphs, ledes, help and empty-state text, so a sentence no
+     longer leaves one character or one word alone on its last line.
+   - balance: short headings and empty-state titles, so a title that wraps
+     splits into lines of similar length.
+   Only the text-wrap-style longhand is set, never text-wrap or
+   text-wrap-mode, so an element's `white-space: nowrap` keeps working.
+   :where() keeps the specificity at zero, so any component rule can override
+   these defaults. Engines without text-wrap-style keep normal wrapping. */
+:where(p, li, dd, small, figcaption, blockquote, td) {
+  text-wrap-style: pretty;
+}
+:where(h1, h2, h3, h4, h5, h6, legend, caption) {
+  text-wrap-style: balance;
+}

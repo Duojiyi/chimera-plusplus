@@ -69,7 +69,7 @@ pub fn official_provider_supports_proxy_takeover(app_type: &AppType, provider: &
 /// live 配置，使开关即时生效（无需等下一次切换）。
 /// 当前供应商非官方（或不存在）时为 no-op：注入只作用于官方配置，
 /// 第三方 live 配置不受开关影响。
-pub fn reapply_current_codex_official_live(state: &AppState) -> Result<bool, AppError> {
+pub async fn reapply_current_codex_official_live(state: &AppState) -> Result<bool, AppError> {
     let current_id = ProviderService::current(state, AppType::Codex)?;
     if current_id.is_empty() {
         return Ok(false);
@@ -84,22 +84,47 @@ pub fn reapply_current_codex_official_live(state: &AppState) -> Result<bool, App
 
     // 代理接管期间 live 归代理所有（开启代理时官方供应商只警告不拦截，
     // 二者可以共存）。与切换/保存路径一致：以 backup/占位符为所有权信号，
-    // 只更新备份，注入后的配置由接管释放时的恢复路径落盘。
-    let has_live_backup =
-        futures::executor::block_on(state.db.get_live_backup(AppType::Codex.as_str()))
-            .ok()
-            .flatten()
-            .is_some();
+    // 先更新备份（注入后的配置由接管释放时的恢复路径落盘）。
+    let has_live_backup = state
+        .db
+        .get_live_backup(AppType::Codex.as_str())
+        .await
+        .ok()
+        .flatten()
+        .is_some();
     let live_taken_over = state
         .proxy_service
         .detect_takeover_in_live_config_for_app(&AppType::Codex);
     if has_live_backup || live_taken_over {
-        futures::executor::block_on(
-            state
+        let _switch_guard = state
+            .proxy_service
+            .lock_switch_for_app(AppType::Codex.as_str())
+            .await;
+        state
+            .proxy_service
+            .update_live_backup_from_provider_inner(AppType::Codex.as_str(), provider)
+            .await
+            .map_err(|e| AppError::Message(format!("更新 Live 备份失败: {e}")))?;
+        // 2.8.6 起接管路由沿用直连时的会话桶（开关开 = custom 镜像，关 =
+        // openai_base_url），所以接管中的 live 也要按新开关重写，否则到释放前
+        // 新会话仍落旧桶。与保存供应商路径相同，只在代理运行且锁内复核仍处于
+        // 接管时重写；失败只记警告：备份已是新形态，释放时照常落盘，回滚开关
+        // 反而会让备份与开关分裂。
+        if state
+            .proxy_service
+            .detect_takeover_in_live_config_for_app(&AppType::Codex)
+            && state.proxy_service.is_running().await
+        {
+            if let Err(err) = state
                 .proxy_service
-                .update_live_backup_from_provider(AppType::Codex.as_str(), provider),
-        )
-        .map_err(|e| AppError::Message(format!("更新 Live 备份失败: {e}")))?;
+                .sync_codex_live_from_provider_while_proxy_active(provider)
+                .await
+            {
+                log::warn!(
+                    "统一会话开关变更后重写接管中的 Codex live 失败（释放接管时按备份落盘）: {err}"
+                );
+            }
+        }
         return Ok(true);
     }
 
@@ -793,25 +818,24 @@ mod tests {
         let _guard = test_guard();
         let home = TempHome::new();
         let state = AppState::new(Arc::new(Database::memory().unwrap()));
-        for app_type in [AppType::OpenCode] {
-            let (mut provider, path, _) = additive_list_fixture(&app_type);
-            assert!(
-                path.starts_with(home.dir.path()),
-                "fixture must stay in temp home"
-            );
-            ProviderService::set_provider_live_config_managed(&mut provider, true);
-            state
-                .db
-                .save_provider(app_type.as_str(), &provider)
-                .unwrap();
-            assert!(!path.exists());
-            let listed = ProviderService::list(&state, app_type).unwrap();
-            assert_eq!(
-                ProviderService::provider_live_config_managed(&listed["saved"]),
-                Some(false)
-            );
-            assert!(!path.exists(), "listing must not create a missing config");
-        }
+        let app_type = AppType::OpenCode;
+        let (mut provider, path, _) = additive_list_fixture(&app_type);
+        assert!(
+            path.starts_with(home.dir.path()),
+            "fixture must stay in temp home"
+        );
+        ProviderService::set_provider_live_config_managed(&mut provider, true);
+        state
+            .db
+            .save_provider(app_type.as_str(), &provider)
+            .unwrap();
+        assert!(!path.exists());
+        let listed = ProviderService::list(&state, app_type).unwrap();
+        assert_eq!(
+            ProviderService::provider_live_config_managed(&listed["saved"]),
+            Some(false)
+        );
+        assert!(!path.exists(), "listing must not create a missing config");
     }
 
     #[test]
@@ -1718,6 +1742,126 @@ requires_openai_auth = true
             .stop()
             .await
             .expect("stop proxy service");
+    }
+
+    /// The official takeover keeps the session bucket of the direct form, so
+    /// toggling unified session history while taken over moves the live
+    /// takeover route into the new bucket at once (the backup follows too);
+    /// otherwise sessions created until the release land in the old bucket.
+    #[tokio::test]
+    #[serial]
+    async fn unify_toggle_during_official_takeover_rewrites_the_takeover_route() {
+        use crate::codex_config::{codex_official_proxy_route, CodexOfficialProxyRoute};
+
+        async fn backup_config(db: &Database) -> String {
+            let backup = db
+                .get_live_backup("codex")
+                .await
+                .expect("read backup")
+                .expect("backup exists");
+            let value: Value = serde_json::from_str(&backup.original_config).unwrap();
+            value["config"].as_str().unwrap_or_default().to_string()
+        }
+        fn set_unified(unified: bool) {
+            let mut settings = crate::settings::get_settings();
+            settings.unify_codex_session_history = unified;
+            crate::settings::update_settings(settings).expect("update settings");
+        }
+        let live = || fs::read_to_string(crate::codex_config::get_codex_config_path()).unwrap();
+
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        let db = Arc::new(Database::memory().expect("init db"));
+        let mut global = db
+            .get_global_proxy_config()
+            .await
+            .expect("get global proxy config");
+        global.listen_port = 0;
+        db.update_global_proxy_config(global)
+            .await
+            .expect("use ephemeral proxy port");
+        let state = AppState::new(db.clone());
+
+        let mut official = Provider::with_id(
+            "codex-official".into(),
+            "OpenAI Official".into(),
+            json!({ "auth": {}, "config": "model = \"gpt-5.5\"\n" }),
+            None,
+        );
+        official.category = Some("official".into());
+        db.save_provider("codex", &official).expect("save official");
+        db.set_current_provider("codex", "codex-official")
+            .expect("set current provider");
+        crate::settings::set_current_provider(&AppType::Codex, Some("codex-official"))
+            .expect("set local current provider");
+        let auth = json!({"auth_mode": "chatgpt", "tokens": {"access_token": "oauth"}});
+        crate::codex_config::write_codex_live_atomic(&auth, Some("model = \"gpt-5.5\"\n"))
+            .expect("seed direct live");
+
+        set_unified(false);
+        state
+            .proxy_service
+            .set_takeover_for_app("codex", true)
+            .await
+            .expect("take over");
+        assert!(
+            matches!(
+                codex_official_proxy_route(&live(), |_| true),
+                Some(CodexOfficialProxyRoute::OpenaiBaseUrl(_))
+            ),
+            "{}",
+            live()
+        );
+
+        set_unified(true);
+        assert!(
+            futures::executor::block_on(reapply_current_codex_official_live(&state))
+                .expect("reapply with unify on")
+        );
+        assert_eq!(
+            codex_official_proxy_route(&live(), |_| true),
+            Some(CodexOfficialProxyRoute::UnifiedMirror),
+            "{}",
+            live()
+        );
+        assert!(backup_config(&db)
+            .await
+            .contains("model_provider = \"custom\""));
+
+        set_unified(false);
+        assert!(
+            futures::executor::block_on(reapply_current_codex_official_live(&state))
+                .expect("reapply with unify off")
+        );
+        assert!(
+            matches!(
+                codex_official_proxy_route(&live(), |_| true),
+                Some(CodexOfficialProxyRoute::OpenaiBaseUrl(_))
+            ),
+            "{}",
+            live()
+        );
+        assert!(!backup_config(&db).await.contains("model_provider"));
+
+        state
+            .proxy_service
+            .set_takeover_for_app("codex", false)
+            .await
+            .expect("release takeover");
+        let restored = live();
+        assert!(
+            codex_official_proxy_route(&restored, |_| true).is_none(),
+            "{restored}"
+        );
+        assert!(!restored.contains("openai_base_url"), "{restored}");
+        // Releasing the last takeover stops the proxy; make sure of it anyway.
+        if state.proxy_service.is_running().await {
+            state
+                .proxy_service
+                .stop()
+                .await
+                .expect("stop proxy service");
+        }
     }
 
     #[cfg(any(target_os = "macos", windows))]

@@ -23,14 +23,19 @@ use super::gemini_auth::{
 };
 use super::normalize_claude_models_in_value;
 
-/// ChatGPT Codex catalogs gpt-5.6 at a 372K context window with a ~353K
-/// effective budget (openai/codex#31860), far below the 1.05M API spec.
-/// Declare the catalog window for both knobs: Claude Code's built-in output
-/// reserve and compact buffer already keep the actual compact trigger
-/// (~278K-339K) below the effective budget, so anything lower only wastes
-/// usable context.
-const CODEX_OAUTH_CLAUDE_MAX_CONTEXT_TOKENS: &str = "372000";
-const CODEX_OAUTH_CLAUDE_AUTO_COMPACT_WINDOW: &str = "372000";
+/// ChatGPT's Codex backend now catalogs gpt-5.6 at a 272K context window,
+/// far below the 1.05M API spec; the 372K it listed in mid-2026
+/// (openai/codex#31860) is above what it accepts today. Declare the catalog
+/// window for both knobs: an overstated window keeps Claude Code from
+/// compacting until the upstream rejects the prompt and the turn fails, while
+/// an understated one only compacts earlier.
+/// Adapted from farion1231/cc-switch be0a9cf0
+const CODEX_OAUTH_CLAUDE_MAX_CONTEXT_TOKENS: &str = "272000";
+const CODEX_OAUTH_CLAUDE_AUTO_COMPACT_WINDOW: &str = "272000";
+/// What earlier versions injected for both knobs. Still recognised as ours
+/// when live settings are read back, so an old value is not saved into the
+/// line as if the user had chosen it (it would then always win).
+const LEGACY_CODEX_OAUTH_CLAUDE_CONTEXT_DEFAULTS: [&str; 1] = ["372000"];
 const KIMI_FOR_CODING_CONTEXT_TOKENS: &str = "262144";
 
 /// Model env keys Claude Code may route requests through. The defaults above
@@ -845,7 +850,10 @@ fn strip_injected_codex_oauth_context_defaults(settings: &mut Value, provider: &
         if stored_explicit {
             continue;
         }
-        if env.get(key).and_then(Value::as_str) == Some(default_value) {
+        let live_value = env.get(key).and_then(Value::as_str);
+        if live_value.is_some_and(|value| {
+            value == default_value || LEGACY_CODEX_OAUTH_CLAUDE_CONTEXT_DEFAULTS.contains(&value)
+        }) {
             env.remove(key);
         }
     }
@@ -2261,11 +2269,11 @@ mod tests {
                 .expect("build effective settings");
         assert_eq!(
             effective["env"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"],
-            json!("372000")
+            json!("272000")
         );
         assert_eq!(
             effective["env"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"],
-            json!("372000")
+            json!("272000")
         );
     }
 
@@ -2334,11 +2342,11 @@ mod tests {
                 .expect("build effective settings");
         assert_eq!(
             effective["env"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"],
-            json!("372000")
+            json!("272000")
         );
         assert_eq!(
             effective["env"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"],
-            json!("372000")
+            json!("272000")
         );
     }
 
@@ -2378,7 +2386,7 @@ mod tests {
         let effective =
             build_effective_settings_with_common_config(&db, &AppType::Claude, &provider)
                 .expect("build effective settings");
-        // 旧模型不注入 372K 默认值，遗留共享片段带进来的值也要剥掉
+        // 旧模型不注入上下文默认值，遗留共享片段带进来的值也要剥掉
         assert!(effective["env"]
             .get("CLAUDE_CODE_MAX_CONTEXT_TOKENS")
             .is_none());
@@ -2410,7 +2418,7 @@ mod tests {
             .expect("build effective settings");
         assert_eq!(
             live["env"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"],
-            json!("372000")
+            json!("272000")
         );
 
         // 模拟切走回灌：注入产物被剥掉，其余字段原样保留
@@ -2423,6 +2431,49 @@ mod tests {
             .get("CLAUDE_CODE_AUTO_COMPACT_WINDOW")
             .is_none());
         assert_eq!(backfilled["env"]["ANTHROPIC_MODEL"], json!("gpt-5.6"));
+    }
+
+    /// 旧版本写进 live 的 372K 也是注入产物：升级后第一次切走回灌时若不认它，
+    /// 它会作为"用户显式值"存进线路，从此一直压过新的 272K 默认值。
+    #[test]
+    fn codex_oauth_backfill_strips_the_old_372k_default() {
+        let db = Database::memory().expect("create memory db");
+        let mut provider = Provider::with_id(
+            "codex-oauth".to_string(),
+            "Codex".to_string(),
+            json!({ "env": { "ANTHROPIC_MODEL": "gpt-5.6" } }),
+            None,
+        );
+        provider.meta = Some(crate::provider::ProviderMeta {
+            provider_type: Some("codex_oauth".to_string()),
+            ..Default::default()
+        });
+
+        let live = json!({
+            "env": {
+                "ANTHROPIC_MODEL": "gpt-5.6",
+                "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "372000",
+                "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "372000"
+            }
+        });
+        let backfilled =
+            strip_common_config_from_live_settings(&db, &AppType::Claude, &provider, live);
+        assert!(backfilled["env"]
+            .get("CLAUDE_CODE_MAX_CONTEXT_TOKENS")
+            .is_none());
+        assert!(backfilled["env"]
+            .get("CLAUDE_CODE_AUTO_COMPACT_WINDOW")
+            .is_none());
+
+        // 再写 live 时用的是新默认值
+        provider.settings_config = backfilled;
+        let effective =
+            build_effective_settings_with_common_config(&db, &AppType::Claude, &provider)
+                .expect("build effective settings");
+        assert_eq!(
+            effective["env"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"],
+            json!("272000")
+        );
     }
 
     #[test]

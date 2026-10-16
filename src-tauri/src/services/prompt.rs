@@ -1790,7 +1790,7 @@ mod audit_a03_tests {
                 .save_prompt(app.as_str(), &prompt("rules", "saved", true))
                 .unwrap();
             let original = "  external edits\r\n";
-            fs::write(&path, &original).unwrap();
+            fs::write(&path, original).unwrap();
             PromptService::upsert_prompt(
                 &state,
                 app.clone(),
@@ -1801,7 +1801,7 @@ mod audit_a03_tests {
             let rows = state.db.get_prompts(app.as_str()).unwrap();
             assert!(rows.values().any(|p| !p.enabled && p.content == original));
             assert_eq!(fs::read_to_string(&path).unwrap(), "replacement");
-            fs::write(&path, &original).unwrap();
+            fs::write(&path, original).unwrap();
             PromptService::set_prompt_enabled(&state, app.clone(), "rules", false).unwrap();
             let rows = state.db.get_prompts(app.as_str()).unwrap();
             assert_eq!(rows.values().filter(|p| p.content == original).count(), 1);

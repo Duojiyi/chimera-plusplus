@@ -202,7 +202,9 @@ describe("UsageView", () => {
     const metrics = within(screen.getByRole("region", { name: "用量总览" }));
     expect(metrics.getByTitle("2,000 词元")).toHaveTextContent("2,000");
     expect(metrics.getByText("缓存命中 50%")).toBeVisible();
-    expect(liveStatus()).toHaveTextContent("统计加载完成，近 30 天共 2,000 词元");
+    expect(liveStatus()).toHaveTextContent(
+      "统计加载完成，近 30 天共 2,000 词元",
+    );
     expect(screen.getByText("峰值 09/18 · 2,000")).toBeVisible();
     const ranking = within(
       screen.getByRole("complementary", { name: "按模型排行" }),
@@ -295,7 +297,8 @@ describe("UsageView", () => {
         });
 
       render(<UsageView />);
-      await loaded();
+      // A failed sync is announced as such, never as a completed load.
+      await loaded(/^本机会话同步失败，显示已导入的记录$/);
 
       expect(screen.getByTitle("2,000 词元")).toBeVisible();
       const alert = screen.getByRole("alert");

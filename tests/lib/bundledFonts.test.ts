@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -25,6 +26,18 @@ describe("offline design fonts", () => {
       ).toContain("SIL OPEN FONT LICENSE");
     });
   }
+  it("ships Overpass with the middle dot as a base glyph (see the fonts README)", () => {
+    // Upstream Overpass classes U+00B7 as a mark, which renders every " · "
+    // separator with zero width. A refreshed font file needs the same patch.
+    const digest = createHash("sha256")
+      .update(
+        readFileSync(path.join(root, "src/assets/fonts/Overpass-Variable.ttf")),
+      )
+      .digest("hex");
+    expect(digest).toBe(
+      "bd881e331aa3eb5eb5ddd04d2ae2737d3a0f50836e0b46ac5f2f14ac7e798f1d",
+    );
+  });
   it("uses WOFF2 for the complete CJK font without a system-font shortcut or CDN", () => {
     expect(
       readFileSync(

@@ -1,187 +1,289 @@
-import { useMemo } from "react";
+import { useId, useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { DeepLinkImportRequest } from "../../lib/api/deeplink";
-import { decodeBase64Utf8 } from "../../lib/utils/base64";
+import { AlertTriangle, Check } from "lucide-react";
+import type { DeepLinkImportRequest } from "@/lib/api/deeplink";
 import {
   classifyCommand,
   classifyEndpoint,
+  maskArgs,
+  maskUrl,
   maskValue,
   riskI18nKey,
   type RiskKind,
 } from "@/utils/deeplinkRisk";
+import { toolName } from "./tools";
+
+type ServerSpec = Record<string, unknown>;
+
+/** `mcpServers` of the backend preview, which is what will be stored. */
+function serversOf(content: string | null): Array<[string, ServerSpec]> {
+  if (!content) return [];
+  try {
+    const parsed = JSON.parse(content) as { mcpServers?: unknown };
+    const servers = parsed?.mcpServers;
+    if (!servers || typeof servers !== "object" || Array.isArray(servers)) {
+      return [];
+    }
+    return Object.entries(servers as Record<string, unknown>).map(
+      ([id, spec]) => [
+        id,
+        spec && typeof spec === "object" && !Array.isArray(spec)
+          ? (spec as ServerSpec)
+          : {},
+      ],
+    );
+  } catch {
+    // Quiet on purpose: the config may hold secrets.
+    return [];
+  }
+}
 
 export function McpConfirmation({
   request,
+  state,
+  content,
   deniedEnvKeys,
 }: {
   request: DeepLinkImportRequest;
+  /** Whether the backend preview has loaded, or refused the link. */
+  state: "loading" | "ready" | "failed";
+  /** The backend preview's content: the decoded config, as it will be stored. */
+  content: string;
   /** Env keys the backend deny list flags (from `preview_deeplink_import`). */
   deniedEnvKeys: ReadonlySet<string>;
 }) {
   const { t } = useTranslation();
-  const classifyEnvKey = (key: string): RiskKind | null =>
+  const ids = useId();
+  const servers = useMemo(() => serversOf(content), [content]);
+  const targetApps = (request.apps ?? "")
+    .split(",")
+    .map((app) => app.trim())
+    .filter(Boolean);
+
+  const envRisk = (key: string): RiskKind | null =>
     deniedEnvKeys.has(key) ? "envHijack" : null;
 
-  const mcpServers = useMemo(() => {
-    if (!request.config) return null;
-    try {
-      const decoded = decodeBase64Utf8(request.config);
-      const parsed = JSON.parse(decoded);
-      return parsed.mcpServers || {};
-    } catch (e) {
-      console.error("Failed to parse MCP config:", e);
-      return null;
-    }
-  }, [request.config]);
-
-  const targetApps = request.apps?.split(",") || [];
-  const serverCount = Object.keys(mcpServers || {}).length;
-
-  // 汇总所有条目命中的风险，在底部给一句总的提示——逐行的 ⚠ 容易被划过去。
+  // 汇总所有条目命中的风险，在底部给一句总的提示——逐行的标记容易被划过去。
+  // 每种风险都点名涉及的服务器，免得用户回头逐个去找。
   const risks = useMemo(() => {
-    const found = new Set<RiskKind>();
-    for (const spec of Object.values(mcpServers || {}) as any[]) {
-      const commandRisk = classifyCommand(spec?.command, spec?.args);
-      if (commandRisk) found.add(commandRisk);
-      if (typeof spec?.url === "string") {
+    const found = new Map<RiskKind, string[]>();
+    const add = (kind: RiskKind, id: string) => {
+      const ids = found.get(kind) ?? [];
+      if (!ids.includes(id)) found.set(kind, [...ids, id]);
+    };
+    for (const [id, spec] of servers) {
+      const commandRisk = classifyCommand(spec.command, spec.args);
+      if (commandRisk) add(commandRisk, id);
+      if (typeof spec.url === "string") {
         const urlRisk = classifyEndpoint(spec.url);
-        if (urlRisk) found.add(urlRisk);
+        if (urlRisk) add(urlRisk, id);
       }
-      for (const key of Object.keys(spec?.env || {})) {
-        const envRisk = classifyEnvKey(key);
-        if (envRisk) found.add(envRisk);
+      const env = spec.env;
+      if (env && typeof env === "object") {
+        for (const key of Object.keys(env)) {
+          if (deniedEnvKeys.has(key)) add("envHijack", id);
+        }
       }
     }
-    return [...found];
-    // classifyEnvKey only reads deniedEnvKeys.
-  }, [mcpServers, deniedEnvKeys]);
-
-  /** 一行 key/value。`break-all` 而非 `truncate`：payload 不得被 CSS 藏起来。 */
-  const Row = ({
-    label,
-    value,
-    risk,
-  }: {
-    label: string;
-    value: string;
-    risk?: RiskKind | null;
-  }) => (
-    <div className="grid grid-cols-[4rem_1fr] gap-2 text-xs">
-      <span className="text-muted-foreground shrink-0">{label}</span>
-      <span
-        className={`font-mono break-all ${
-          risk ? "text-yellow-700 dark:text-yellow-500 font-semibold" : ""
-        }`}
-      >
-        {risk && <span aria-hidden="true">⚠ </span>}
-        {value}
-      </span>
-    </div>
-  );
+    return [...found.entries()];
+  }, [servers, deniedEnvKeys]);
 
   return (
-    <div className="space-y-4">
-      <h3 className="text-lg font-semibold">{t("deeplink.mcp.title")}</h3>
+    <>
+      <dl className="dl-facts">
+        <dt>{t("deeplink.mcp.targetApps")}</dt>
+        <dd>
+          <ul className="dl-tags">
+            {targetApps.map((app) => (
+              <li key={app}>{toolName(app)}</li>
+            ))}
+          </ul>
+        </dd>
+      </dl>
 
-      <div>
-        <label className="block text-sm font-medium text-muted-foreground">
-          {t("deeplink.mcp.targetApps")}
-        </label>
-        <div className="mt-1 flex gap-2 flex-wrap">
-          {targetApps.map((app) => (
-            <span
-              key={app}
-              className="px-2 py-1 bg-primary/10 text-primary text-xs rounded capitalize"
-            >
-              {app.trim()}
-            </span>
-          ))}
-        </div>
-      </div>
-
-      <div>
-        <label className="block text-sm font-medium text-muted-foreground">
-          {t("deeplink.mcp.serverCount", { count: serverCount })}
-        </label>
-        <div className="mt-1 space-y-2 max-h-64 overflow-auto border rounded p-2 bg-muted/30">
-          {mcpServers &&
-            Object.entries(mcpServers).map(([id, spec]: [string, any]) => {
-              const commandRisk = classifyCommand(spec?.command, spec?.args);
-              const argv: string[] = Array.isArray(spec?.args)
-                ? spec.args.map(String)
+      {state === "loading" && <p className="dl-note">正在读取服务器配置…</p>}
+      {state === "ready" && (
+        <section className="dl-section" aria-labelledby={`${ids}-servers`}>
+          <h3 id={`${ids}-servers`} className="dl-section-title">
+            {t("deeplink.mcp.serverCount", { count: servers.length })}
+          </h3>
+          <ul className="dl-servers">
+            {servers.map(([id, spec]) => {
+              const commandRisk = classifyCommand(spec.command, spec.args);
+              // Credentials in `--token=x`, `KEY=x`, a header or a URL show
+              // their last 4 only, like every other credential in this
+              // dialog. Masked in place, and never where an argument could
+              // name what runs (a launcher's next argument, inline code).
+              const args = Array.isArray(spec.args)
+                ? maskArgs(spec.args, spec.command)
                 : [];
-              const env: Record<string, unknown> = spec?.env || {};
-
+              const url =
+                typeof spec.url === "string" ? maskUrl(spec.url) : null;
+              const urlRisk =
+                typeof spec.url === "string"
+                  ? classifyEndpoint(spec.url)
+                  : null;
+              const env =
+                spec.env && typeof spec.env === "object"
+                  ? Object.entries(spec.env as Record<string, unknown>)
+                  : [];
+              // Remote servers send these with every request; Codex calls
+              // them http_headers.
+              const headerSource = spec.headers ?? spec.http_headers;
+              const headers =
+                headerSource &&
+                typeof headerSource === "object" &&
+                !Array.isArray(headerSource)
+                  ? Object.entries(headerSource as Record<string, unknown>)
+                  : [];
+              const flagged =
+                Boolean(commandRisk || urlRisk) ||
+                env.some(([key]) => envRisk(key));
               return (
-                <div key={id} className="p-2 bg-background rounded border">
-                  <div className="font-semibold text-sm mb-1">{id}</div>
-                  <div className="space-y-1">
-                    {spec?.command && (
-                      <Row
-                        label={t("deeplink.mcp.command")}
-                        value={String(spec.command)}
-                        risk={commandRisk}
-                      />
-                    )}
-                    {/* 逐项展开而不是 join(" ")：payload 常常整条藏在某一个 arg 里，
-                        拼成一行再 truncate 正是它此前得以隐身的原因。 */}
-                    {argv.map((arg, index) => (
-                      <Row
-                        key={index}
-                        label={index === 0 ? t("deeplink.mcp.args") : ""}
-                        value={arg}
-                        risk={commandRisk}
-                      />
-                    ))}
-                    {spec?.url && (
-                      <Row
-                        label={t("deeplink.mcp.url")}
-                        value={String(spec.url)}
-                        risk={classifyEndpoint(String(spec.url))}
-                      />
-                    )}
-                    {Object.entries(env).map(([key, value], index) => (
-                      <Row
-                        key={key}
-                        label={index === 0 ? t("deeplink.mcp.env") : ""}
-                        value={`${key}=${maskValue(key, String(value))}`}
-                        risk={classifyEnvKey(key)}
-                      />
-                    ))}
+                <li
+                  key={id}
+                  className="dl-server"
+                  data-risk={flagged || undefined}
+                >
+                  <div className="dl-server-head">
+                    <span className="dl-server-name">{id}</span>
+                    <span className="dl-tag">
+                      {url ? "远程服务" : "本机命令"}
+                    </span>
                   </div>
-                </div>
+                  <dl className="dl-server-rows">
+                    {spec.command !== undefined && (
+                      <>
+                        <dt>{t("deeplink.mcp.command")}</dt>
+                        <dd
+                          className="dl-mono"
+                          data-risk={commandRisk ? true : undefined}
+                        >
+                          {String(spec.command)}
+                        </dd>
+                      </>
+                    )}
+                    {args.length > 0 && (
+                      <>
+                        <dt>{t("deeplink.mcp.args")}</dt>
+                        {/* 逐项展开而不是 join(" ")：payload 常常整条藏在某一个 arg 里，
+                            拼成一行再截断正是它此前得以隐身的原因。 */}
+                        <dd>
+                          <ol className="dl-args">
+                            {args.map((arg, index) => (
+                              <li
+                                key={index}
+                                className="dl-mono"
+                                data-risk={commandRisk ? true : undefined}
+                              >
+                                {arg}
+                              </li>
+                            ))}
+                          </ol>
+                        </dd>
+                      </>
+                    )}
+                    {url && (
+                      <>
+                        <dt>{t("deeplink.mcp.url")}</dt>
+                        <dd
+                          className="dl-mono"
+                          data-risk={urlRisk ? true : undefined}
+                        >
+                          {url}
+                        </dd>
+                      </>
+                    )}
+                    {env.length > 0 && (
+                      <>
+                        <dt>{t("deeplink.mcp.env")}</dt>
+                        <dd>
+                          <ol className="dl-args">
+                            {env.map(([key, value]) => (
+                              <li
+                                key={key}
+                                className="dl-mono"
+                                data-risk={envRisk(key) ? true : undefined}
+                              >
+                                {key}={maskValue(key, value)}
+                              </li>
+                            ))}
+                          </ol>
+                        </dd>
+                      </>
+                    )}
+                    {headers.length > 0 && (
+                      <>
+                        <dt>请求头</dt>
+                        <dd>
+                          <ol className="dl-args">
+                            {headers.map(([key, value]) => (
+                              <li key={key} className="dl-mono">
+                                {key}: {maskValue(key, value)}
+                              </li>
+                            ))}
+                          </ol>
+                        </dd>
+                      </>
+                    )}
+                    {typeof spec.cwd === "string" && spec.cwd && (
+                      <>
+                        <dt>工作目录</dt>
+                        <dd className="dl-mono">{spec.cwd}</dd>
+                      </>
+                    )}
+                  </dl>
+                </li>
               );
             })}
-        </div>
-      </div>
+          </ul>
+        </section>
+      )}
 
-      {risks.length > 0 && (
-        <div className="rounded border border-yellow-500/40 bg-yellow-500/10 p-2 space-y-1">
-          {risks.map((kind) => (
-            <div
-              key={kind}
-              className="text-yellow-700 dark:text-yellow-500 text-sm flex items-start gap-2"
-            >
-              <span aria-hidden="true">⚠️</span>
-              <span>{t(riskI18nKey(kind))}</span>
-            </div>
-          ))}
+      {state === "ready" && risks.length > 0 && (
+        <div className="dl-callout" data-tone="warning" role="note">
+          <AlertTriangle size={15} aria-hidden="true" />
+          <ul className="dl-callout-list">
+            {risks.map(([kind, serverIds]) => (
+              <li key={kind}>
+                <span className="dl-mono dl-strong">
+                  {serverIds.join("、")}
+                </span>
+                ：{t(riskI18nKey(kind))}
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 
       {/*
-        无条件显示，不看 `request.enabled`。
-        MCP 导入路径**根本不读这个字段**——`deeplink/mcp.rs` 里全文没有它，
-        而 `:196` 是无条件的 `merged.set_enabled_for(&app, true)`。
-        （prompt.rs / skill.rs / provider.rs 各自读了 `request.enabled`，唯独 MCP 没有，
-        所以很容易误以为这里也生效。）
-        挂条件的后果是：恶意链接省略 `enabled` 就能让这条警告消失，而写入行为
-        一模一样——把提示变成了可被攻击者关掉的开关。
+        不看 `request.enabled`：MCP 导入路径不读这个字段，新服务器一律以
+        停用状态保存（`deeplink/mcp.rs` 的 `McpApps::default()`），已存在的
+        同名服务器保持原样。挂条件的话，恶意链接省略 `enabled` 就能改变
+        这里的说法，而写入行为一模一样。
       */}
-      <div className="text-yellow-600 dark:text-yellow-500 text-sm flex items-center gap-2">
-        <span>⚠️</span>
-        <span>{t("deeplink.mcp.enabledWarning")}</span>
-      </div>
-    </div>
+      {state === "ready" && (
+        <section className="dl-section" aria-labelledby={`${ids}-outcome`}>
+          <h3 id={`${ids}-outcome`} className="dl-section-title">
+            确认后
+          </h3>
+          <div className="dl-card">
+            <ul className="dl-outcome">
+              <li>
+                <Check size={14} aria-hidden="true" />
+                <span>{t("deeplink.mcp.enabledWarning")}</span>
+              </li>
+              <li>
+                <Check size={14} aria-hidden="true" />
+                <span>已有同名的服务器保持原样，不会被链接覆盖。</span>
+              </li>
+            </ul>
+            <p className="dl-card-note">
+              需要时在「Skills 与 MCP」中为各个工具分别启用。
+            </p>
+          </div>
+        </section>
+      )}
+    </>
   );
 }

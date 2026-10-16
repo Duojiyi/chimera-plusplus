@@ -71,7 +71,11 @@
   outline: 2px solid var(--focus);
   outline-offset: -2px;
 }
+/* Positioned so absolutely placed descendants (sr-only labels in the backup
+   tables) resolve against the scroller, not main.chimera-main; otherwise main
+   gains overflow and a scrollIntoView leaves a blank band under the page. */
 .settings-page-content {
+  position: relative;
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
@@ -447,13 +451,16 @@ button.settings-reference-row:hover:not(:disabled) > svg {
   font-size: 13px;
   overflow-wrap: anywhere;
 }
-.db-backups-table {
+/* Backup tables: 配置备份 (LiveBackupsPanel) and 应用数据库 share one
+   treatment: quiet 28px header, 44px rows, tabular time and size, file names
+   in mono, and text actions where 删除 is red. */
+.settings-backup-table {
   width: 100%;
   border-collapse: collapse;
   table-layout: fixed;
   font-size: 13px;
 }
-.db-backups-table th {
+.settings-backup-table th {
   height: 28px;
   padding: 0 8px;
   border-bottom: 1px solid var(--border-subtle);
@@ -461,58 +468,89 @@ button.settings-reference-row:hover:not(:disabled) > svg {
   font-size: 12px;
   font-weight: 400;
   text-align: left;
+  white-space: nowrap;
 }
-.db-backups-table td {
+.settings-backup-table td {
   height: 44px;
-  padding: 4px 8px;
+  padding: 6px 8px;
   border-bottom: 1px solid var(--border-subtle);
   color: var(--text-1);
+  line-height: 18px;
   vertical-align: middle;
 }
-.db-backups-table th:first-child,
-.db-backups-table td:first-child {
+.settings-backup-table th:first-child,
+.settings-backup-table td:first-child {
   padding-left: 0;
 }
-.db-backups-table .is-time {
-  width: 132px;
+.settings-backup-table .is-time {
+  width: 148px;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
-.db-backups-table .is-size {
+.settings-backup-table .is-size {
   width: 76px;
   text-align: right;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
-.db-backups-table .is-actions {
+.settings-backup-table .is-actions {
   width: 104px;
   padding-right: 0;
   text-align: right;
+  white-space: nowrap;
 }
 .db-backups-name {
   display: block;
   overflow: hidden;
   color: var(--text-2);
-  font-family: var(--font-mono);
-  font-size: 12px;
+  font:
+    12px/18px var(--font-mono),
+    var(--font-cjk),
+    monospace;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.db-backups-table .is-actions button {
+.settings-backup-table .is-actions button {
   height: 28px;
   min-height: 28px;
   margin: 0;
   padding: 0 8px;
   border: 0;
+  border-radius: var(--radius-control);
   background: transparent;
   color: var(--text-1);
   font-size: 13px;
+  cursor: pointer;
 }
-.db-backups-table .is-actions button:hover:not(:disabled) {
+.settings-backup-table .is-actions button:hover:not(:disabled) {
   background: var(--bg-hover);
 }
-.db-backups-table .is-actions button.is-danger {
+.settings-backup-table .is-actions button.is-danger {
   color: var(--danger-fg);
+}
+.settings-backup-table .is-actions button.is-danger:hover:not(:disabled) {
+  background: var(--danger-bg);
+}
+.settings-backup-table .is-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+.settings-backup-table .is-actions button:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+/* Second line of the time cell: the trigger (配置备份) and, in a narrow
+   window, the size whose column is hidden. */
+.settings-backup-subline {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+.settings-backup-table .is-inline-size {
+  display: none;
 }
 .db-backups-empty {
   margin: 0;
@@ -709,6 +747,10 @@ button.settings-reference-row:hover:not(:disabled) > svg {
   color: var(--text-3);
   font-size: 13px;
   line-height: 1.5;
+  /* Break between phrases, never leaving "不变。" alone on a line. */
+  text-wrap-style: balance;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
 }
 .settings-page-footer button {
   flex-shrink: 0;
@@ -851,6 +893,9 @@ button.settings-reference-row:hover:not(:disabled) > svg {
 .settings-import-form button {
   justify-self: end;
 }
+.settings-tools-description.is-error {
+  color: var(--danger-fg);
+}
 .settings-import-file-note {
   margin-top: 24px;
   padding-top: 16px;
@@ -892,8 +937,14 @@ button.settings-reference-row:hover:not(:disabled) > svg {
 .settings-import-inventory-row strong {
   color: var(--text-1);
 }
-.settings-import-inventory-row small {
-  font-family: var(--font-mono);
+/* Only identifiers are mono; the sentences around them stay in the UI face
+   (mono has no CJK and fell back to an unreadable 9.6px face). */
+.settings-import-inventory-row code {
+  color: var(--text-2);
+  font:
+    12px/1.5 var(--font-mono),
+    var(--font-cjk),
+    monospace;
 }
 
 .cc-switch-confirm-dialog {
@@ -942,8 +993,13 @@ button.settings-reference-row:hover:not(:disabled) > svg {
   padding: 0;
   margin: 0;
 }
-.cc-switch-conflict-choice small {
+/* Why 覆盖 is unavailable: normal text under the choices, never smaller than
+   12px (the UA's `small` would make it 9.6px inside the 12px fieldset). */
+.cc-switch-conflict-choice .cc-switch-conflict-note {
   flex-basis: 100%;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.5;
 }
 .cc-switch-confirm-dialog input {
   accent-color: var(--brand);
@@ -998,9 +1054,14 @@ button.settings-reference-row:hover:not(:disabled) > svg {
   color: var(--text-3);
 }
 .cc-switch-confirm-dialog .cc-switch-row-conflict {
-  grid-template-columns: minmax(90px, 0.7fr) minmax(0, 1.4fr) auto;
+  grid-template-columns: minmax(140px, 0.8fr) minmax(0, 1.6fr);
+  align-items: start;
   min-height: 36px;
+  padding-block: 8px;
 }
+/* settings (2.8.6): the three choices take their own line under the reason,
+   instead of squeezing the reason into a one-word column. */
+.cc-switch-confirm-dialog .cc-switch-row-conflict > fieldset,
 .cc-switch-confirm-dialog .cc-switch-row-conflict > small {
   grid-column: 2 / -1;
 }
@@ -1042,5 +1103,109 @@ button.settings-reference-row:hover:not(:disabled) > svg {
   }
   .cc-switch-confirm-dialog .cc-switch-row-conflict > small {
     grid-column: auto;
+  }
+}
+
+/* settings (2.8.6): rows that open a folder or file in the OS. */
+.settings-link-row > svg {
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+button.settings-link-row:hover:not(:disabled) > svg {
+  transform: translateX(2px);
+}
+button.settings-link-row:hover:not(:disabled) b {
+  color: var(--brand-text);
+}
+/* settings (2.8.6): DatabaseRecoveryPanel now uses the .db-backups layout above. */
+.db-backups > h3,
+.db-backups > p {
+  margin: 0;
+}
+.db-backups > p:not([class]) {
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.7;
+  text-wrap-style: balance;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+p.db-backups-notice {
+  margin: 0;
+  color: var(--danger-fg);
+  font-size: 13px;
+}
+/* settings (2.8.6): ConfigDirectoriesPanel now uses the .config-dir layout above. */
+.config-dir-panel {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.config-dir-intro,
+.config-dir-message {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.config-dir-message {
+  color: var(--text-1);
+}
+fieldset.config-dir-list {
+  min-width: 0;
+  border: 0;
+}
+.config-dir-current code {
+  font-family: var(--font-mono);
+  color: var(--text-2);
+}
+/* settings (2.8.6): tool registry list and the per-status cc-switch rows. */
+.settings-tools-list {
+  display: grid;
+  border-top: 1px solid var(--border-subtle);
+}
+/* new: selectable; conflict: styled above; unsupported: informational only.
+   identical rows render as .cc-switch-identical-summary, but keep a rule. */
+.cc-switch-row-new {
+  border-left: 2px solid transparent;
+}
+.cc-switch-row-new:has(input:checked) {
+  border-left-color: var(--brand-text);
+  background: var(--bg-subtle);
+}
+.cc-switch-row-identical,
+.cc-switch-row-unsupported {
+  color: var(--text-3);
+}
+.cc-switch-row-unsupported strong {
+  color: var(--text-2);
+}
+/* settings (2.8.6): Codex import review toast. The description is a list
+   joined with "\n", and the confirm action wrapped one character per line. */
+[data-sonner-toast].codex-import-review-toast {
+  flex-wrap: wrap;
+}
+[data-sonner-toast].codex-import-review-toast [data-description] {
+  white-space: pre-line;
+}
+[data-sonner-toast].codex-import-review-toast [data-button] {
+  flex-shrink: 0;
+  margin-left: auto;
+  white-space: nowrap;
+}
+/* settings (2.8.6): at the minimum window the size column ate the file
+   names; both backup tables fold the size under the time instead. */
+@media (max-width: 1100px) {
+  .settings-backup-table .is-size {
+    display: none;
+  }
+  .settings-backup-table span.is-inline-size {
+    display: inline;
+  }
+  .settings-backup-table small.is-inline-size {
+    display: block;
+  }
+  .settings-backup-table .is-actions {
+    width: 96px;
   }
 }

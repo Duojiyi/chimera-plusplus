@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
+import { readCargoLockRevision } from "./lib/cargo-lock-revisions.mjs";
 
 const readWorkflow = (name) =>
   readFileSync(
@@ -75,6 +76,10 @@ test("portable packaging uses the locked engine, native launcher and real module
   assert.match(release, /install_portable_from_msix_with_observer\(\s+msix, root, false, false, &mut \|_\| Ok\(\(\)\)/);
   assert.match(release, /root.join\("LaunchCodex.exe"\).is_file\(\)/);
   assert.match(release, /root.join\("codex-portable-launcher.txt"\).is_file\(\)/);
+  // Engine v0.5.16 keeps the official payload in app\ (nested layout).
+  assert.match(release, /root.join\("Codex.exe"\).is_file\(\) && root.join\("app"\).is_dir\(\)/);
+  assert.match(release, /root.join\("app\/resources\/cua_node\/bin"\)/);
+  assert.doesNotMatch(release, /root.join\("resources\/cua_node\/bin"\)/);
   assert.match(release, /require.resolve\('@oai\/sky'/);
   assert.match(release, /require.resolve\('@statsig\/client-core'/);
   assert.match(release, /cargo run --locked --manifest-path \$engineManifest --example chimera_package/);
@@ -175,4 +180,31 @@ test("Rust vulnerability auditing is a required CI gate", () => {
   );
   assert.match(auditStep, /run: cargo audit --file src-tauri\/Cargo.lock/);
   assert.doesNotMatch(auditStep, /continue-on-error/);
+});
+
+test("the app, its runtime crate and the release share one Codex engine revision", () => {
+  const manifest = readFileSync(new URL("../src-tauri/Cargo.toml", import.meta.url), "utf8");
+  const lock = readFileSync(new URL("../src-tauri/Cargo.lock", import.meta.url), "utf8");
+  const tables = new Map();
+  let table = "";
+  for (const line of manifest.split(/\r?\n/)) {
+    const header = /^\[([^\]]+)\]\s*$/.exec(line);
+    if (header) table = header[1];
+    else tables.set(table, `${tables.get(table) ?? ""}${line}\n`);
+  }
+  const pinned = (name, tableName) =>
+    new RegExp(String.raw`^${name} = \{[^\n]*\brev = "([0-9a-f]{40})"`, "m").exec(tables.get(tableName) ?? "")?.[1];
+  const engine = pinned("codex-win-engine", "dependencies");
+  assert.ok(engine, "codex-win-engine must be pinned to a full revision");
+  // chimera-runtime brings its own engine pin; an interim [patch] may only
+  // route it to the app's revision, never to a third one.
+  const patched = pinned("codex-win-engine", 'patch."https://github.com/Wangnov/Codex-App-Manager.git"');
+  if (patched !== undefined) assert.equal(patched, engine);
+  const engines = lock
+    .split(/\r?\n(?=\[\[package\]\])/)
+    .filter((block) => /^\[\[package\]\]\r?\nname = "codex-win-engine"\r?\n/.test(block));
+  assert.equal(engines.length, 1, "Cargo.lock must hold exactly one Windows engine");
+  assert.equal(readCargoLockRevision(lock, "codex-win-engine"), engine);
+  const source = /\nsource = "([^"]+)"/.exec(engines[0])[1];
+  assert.equal(source.startsWith("git+https://www.github.com/"), patched !== undefined);
 });

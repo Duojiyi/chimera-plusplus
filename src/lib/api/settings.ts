@@ -61,6 +61,8 @@ export type PreferencesPatch = Partial<
     | "showProviderBalance"
     | "minimizeToTrayOnClose"
     | "lightweightOnClose"
+    | "silentStartup"
+    | "showInTray"
   >
 >;
 
@@ -180,6 +182,10 @@ export const settingsApi = {
 
   async openFileDialog(): Promise<string | null> {
     return await invoke("open_file_dialog");
+  },
+
+  async openSkinFileDialog(): Promise<string | null> {
+    return await invoke("open_skin_file_dialog");
   },
 
   async exportConfigToFile(filePath: string): Promise<ConfigTransferResult> {
