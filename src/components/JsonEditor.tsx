@@ -22,6 +22,11 @@ interface JsonEditorProps {
   language?: "json" | "javascript";
   height?: string | number;
   showMinimap?: boolean; // 添加此属性以防未来使用
+  /**
+   * 只读：用户不能编辑。外部改 value 时仍会调用 onChange（同一个监听），
+   * 所以只读时显示的若不是原文（如打码），调用方要传一个不写回的 onChange。
+   */
+  readOnly?: boolean;
 }
 
 const JsonEditor: React.FC<JsonEditorProps> = ({
@@ -33,6 +38,7 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
   showValidation = true,
   language = "json",
   height,
+  readOnly = false,
 }) => {
   const { t } = useTranslation();
   const editorRef = useRef<HTMLDivElement>(null);
@@ -150,6 +156,13 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
       }),
     ];
 
+    if (readOnly) {
+      extensions.push(
+        EditorState.readOnly.of(true),
+        EditorView.editable.of(false),
+      );
+    }
+
     // 如果启用深色模式，添加深色主题
     if (darkMode) {
       extensions.push(oneDark);
@@ -208,7 +221,7 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
       view.destroy();
       viewRef.current = null;
     };
-  }, [darkMode, rows, height, language, jsonLinter]); // 依赖项中不包含 onChange 和 placeholder，避免不必要的重建
+  }, [darkMode, rows, height, language, jsonLinter, readOnly]); // 依赖项中不包含 onChange 和 placeholder，避免不必要的重建；切换只读会重建，拿到新的 onChange
 
   // 当 value 从外部改变时更新编辑器内容
   useEffect(() => {

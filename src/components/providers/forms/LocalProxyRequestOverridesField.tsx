@@ -52,7 +52,7 @@ export function LocalProxyRequestOverridesField({
             className="editor-code"
             value={headersJson}
             onChange={(event) => onHeadersJsonChange(event.target.value)}
-            placeholder={'{\n  "X-Provider": "cc-switch"\n}'}
+            placeholder={'{\n  "X-Provider": "chimera"\n}'}
             spellCheck={false}
             aria-invalid={Boolean(headerError)}
             aria-describedby={headerError ? `${id}-headers-error` : undefined}

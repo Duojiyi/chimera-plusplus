@@ -161,14 +161,68 @@ describe("GrokBuildProviderForm", () => {
     expect(screen.queryByRole("alert")).toBeNull();
     expect(screen.getByRole("status")).toHaveTextContent("填写 API Key 后");
 
-    // The key still reaches the generated config after the user types it.
+    // The key still reaches the generated config after the user types it; the
+    // raw view shows it masked until the user chooses to edit the file.
     fireEvent.change(screen.getByLabelText(/^API Key( \*)?$/), {
       target: { value: "typed-key" },
     });
-    expect(
-      (screen.getByLabelText("raw-config") as HTMLTextAreaElement).value,
-    ).toContain('api_key = "typed-key"');
+    const raw = screen.getByLabelText("raw-config") as HTMLTextAreaElement;
+    expect(raw.value).toContain('api_key = "••••-key"');
+    expect(raw.value).not.toContain("typed-key");
+    fireEvent.click(screen.getByRole("button", { name: "编辑原始配置" }));
+    expect(raw.value).toContain('api_key = "typed-key"');
     expect(screen.queryByText(/填写 API Key 后/)).toBeNull();
+  });
+
+  it("keeps api_key masked in the raw file until the user edits it", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    const config = `[models]
+default = "relay"
+
+[model."relay"]
+model = "grok-upstream"
+base_url = "https://relay.example.com/v1"
+name = "Relay"
+api_key = "sk-relay-secret-9876"
+api_backend = "responses"
+context_window = 250000
+`;
+    render(
+      <GrokBuildProviderForm
+        providerId="relay-provider"
+        submitLabel="Save"
+        onSubmit={onSubmit}
+        onCancel={() => {}}
+        initialData={{ name: "Relay", settingsConfig: { config } }}
+      />,
+    );
+    const raw = screen.getByLabelText("raw-config") as HTMLTextAreaElement;
+    expect(raw.value).not.toContain("sk-relay-secret-9876");
+    expect(raw.value).toContain('api_key = "••••9876"');
+    // Typing into the masked view never becomes the file.
+    fireEvent.change(raw, {
+      target: { value: raw.value.replace("grok-upstream", "masked-edit") },
+    });
+    await user.click(screen.getByRole("button", { name: "编辑原始配置" }));
+    expect(raw.value).toContain('api_key = "sk-relay-secret-9876"');
+    expect(raw.value).toContain('model = "grok-upstream"');
+    fireEvent.change(raw, {
+      target: {
+        value: raw.value.replace(
+          "context_window = 250000",
+          "context_window = 260000",
+        ),
+      },
+    });
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const saved = parseToml(
+      JSON.parse(onSubmit.mock.calls[0][0].settingsConfig).config,
+    ) as any;
+    expect(saved.model.relay.api_key).toBe("sk-relay-secret-9876");
+    expect(saved.model.relay.model).toBe("grok-upstream");
+    expect(saved.model.relay.context_window).toBe(260000);
   });
 
   it("offers the fixed api_backend values as a choice", async () => {
@@ -213,6 +267,7 @@ describe("GrokBuildProviderForm", () => {
     fireEvent.change(screen.getByLabelText(/^API Key( \*)?$/), {
       target: { value: "test-key" },
     });
+    fireEvent.click(screen.getByRole("button", { name: "编辑原始配置" }));
     fireEvent.change(screen.getByLabelText("raw-config"), {
       target: { value: "[models" },
     });
@@ -239,6 +294,7 @@ describe("GrokBuildProviderForm", () => {
     fireEvent.change(screen.getByLabelText(/^API Key( \*)?$/), {
       target: { value: "test-key" },
     });
+    fireEvent.click(screen.getByRole("button", { name: "编辑原始配置" }));
     const raw = screen.getByLabelText("raw-config") as HTMLTextAreaElement;
     const edited = raw.value
       .replace(
@@ -402,6 +458,7 @@ model."grok-4.5".context_window = 500000
     const raw = screen.getByLabelText("raw-config") as HTMLTextAreaElement;
     const details = raw.closest("details")!;
     expect(details).not.toHaveAttribute("open");
+    fireEvent.click(screen.getByRole("button", { name: "编辑原始配置" }));
     const valid = raw.value;
     fireEvent.change(raw, { target: { value: "[models" } });
     expect(details).toHaveAttribute("open");

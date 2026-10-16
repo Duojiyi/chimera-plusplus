@@ -35,6 +35,7 @@ import type {
   ProviderCategory,
   ProviderMeta,
 } from "@/types";
+import { maskToml } from "@/utils/deeplinkRisk";
 import type { ProviderFormProps, ProviderFormValues } from "./ProviderForm";
 import { BasicFormFields, MoreInfoFields } from "./BasicFormFields";
 import { CodexFormFields } from "./CodexFormFields";
@@ -236,6 +237,9 @@ export function GrokBuildProviderForm({
   const [rawConfigOpen, setRawConfigOpen] = useState(() =>
     Boolean(initialConfigText && configFormatError(initialConfigText)),
   );
+  // The raw file carries api_key in clear text; like the API Key field it
+  // stays masked until the user asks to edit the file itself.
+  const [rawConfigEditing, setRawConfigEditing] = useState(false);
 
   useEffect(() => {
     onSubmittingChange?.(isSubmitting);
@@ -575,6 +579,8 @@ export function GrokBuildProviderForm({
   useEffect(() => {
     if (rawConfigError) setRawConfigOpen(true);
   }, [rawConfigError]);
+  // A broken file can only be fixed in the editor, so it opens editable.
+  const rawConfigPlain = rawConfigEditing || Boolean(rawConfigError);
   const keyMissing =
     !rawConfigError &&
     validateGrokBuildConfig(rawConfig) === GROK_BUILD_MISSING_KEY_ERROR;
@@ -797,8 +803,12 @@ export function GrokBuildProviderForm({
                   aria-labelledby="grokbuild-config-toml-label"
                 >
                   <JsonEditor
-                    value={rawConfig}
-                    onChange={handleRawConfigChange}
+                    value={rawConfigPlain ? rawConfig : maskToml(rawConfig)}
+                    // The masked view must never be written back as the file.
+                    onChange={
+                      rawConfigPlain ? handleRawConfigChange : () => undefined
+                    }
+                    readOnly={!rawConfigPlain}
                     placeholder=""
                     darkMode={isDarkMode}
                     rows={12}
@@ -806,6 +816,18 @@ export function GrokBuildProviderForm({
                     language="javascript"
                   />
                 </div>
+                {!rawConfigPlain && (
+                  <small>
+                    API Key 只显示末 4 位。
+                    <button
+                      type="button"
+                      className="link-button"
+                      onClick={() => setRawConfigEditing(true)}
+                    >
+                      编辑原始配置
+                    </button>
+                  </small>
+                )}
                 {keyMissing && (
                   <small role="status">
                     填写 API Key 后会写入 api_key；也可在这里改用 env_key
