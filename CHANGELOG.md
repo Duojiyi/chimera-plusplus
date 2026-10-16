@@ -10,6 +10,34 @@ numbers belong to a separate upstream line.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.8.6] - 2026-10-16
+
+### Changed
+
+- Give every tool's line editor (Codex, Claude Code, Gemini CLI, OpenCode, Pi, Grok Build, Claude Desktop, oh-my-pi) one layout: the same field order and labels, one protocol control in one order, styled dropdowns instead of native ones, one advanced card, one template card and one footer with 测试地址连通性 in every editor.
+- Show a banner when editing the line in use, saying a save writes the tool's live configuration.
+- Restore model fetching and model mapping in the Claude Code line editor; tiers left empty show as following the default model.
+- Declare gpt-5.6's 272K window (was 372K) for Claude Code routed through a ChatGPT account; the old injected value is recognised and not saved into the line.
+- Update the Codex desktop engine to App Manager v0.5.16 and migrate the Windows portable layout to it.
+- On Windows, drag the window through Tauri's handler instead of native drag CSS, which can pin the UI thread.
+
+### Added
+
+- Declare 1M context per Claude Code tier, default model and 子代理, and warn when the default model and tiers are empty.
+- Explain why an import link was refused, both for links opened from a website and for pasted links.
+
+### Fixed
+
+- Proxy: stop Chat stream conversion at `[DONE]`, so a turn no longer hangs while an upstream keeps the connection open; ignore transport errors after a finished response; say so when an upstream error has no body.
+- Write `base_url` into quoted or spaced Codex `[model_providers.x]` headers instead of appending a duplicate table.
+- Usage: read Codex threads that roll over into a new file as one thread; record OpenCode request durations.
+- Prefill ChimeraHub's origin for new Claude Code and Gemini CLI lines; the `/v1` address made requests go to `/v1/v1/...`.
+- Import links: mask credentials in place without hiding what an MCP server runs, show everything the import stores, and keep a malformed link from crashing the window.
+- Keep `api_key` masked in Grok Build's raw `config.toml` view until the user chooses to edit the file.
+- Honour silent startup again, and show the window after a restart or a failed update.
+- Fix the 2.8.5 page styling regressions on the tool pages, sidebar, dialogs and dark-mode focus rings; stop the bundled font attaching the middle dot to the previous letter.
+- Find the bundled Codex CLI in nested portable installs and keep reused tool-call results.
+
 ## [2.8.5] - 2026-10-14
 
 ### Changed
