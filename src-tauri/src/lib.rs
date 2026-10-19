@@ -7,6 +7,7 @@ mod claude_mcp;
 mod claude_plugin;
 mod codex_accounts;
 mod codex_cdp;
+mod codex_common_projection;
 mod codex_config;
 mod codex_history_migration;
 mod codex_key_ownership;
@@ -1954,6 +1955,7 @@ pub fn run() {
             // Session manager
             commands::list_sessions,
             commands::get_session_messages,
+            commands::export_session_file,
             commands::delete_session,
             commands::delete_sessions,
             commands::reclaim_codex_history_sessions,
@@ -2321,6 +2323,11 @@ async fn restore_proxy_state_on_startup(state: &store::AppState) {
 }
 
 fn initialize_common_config_snippets(state: &store::AppState) {
+    // This ownership upgrade is idempotent and independent of the historical
+    // one-time usage flag, which most upgraded installations already have.
+    if let Err(error) = state.db.migrate_legacy_codex_common_config() {
+        log::warn!("Failed to migrate legacy Codex common-config ownership: {error}");
+    }
     // Auto-extract common config snippets from clean live files when snippet is missing.
     // This must run before proxy takeover is restored on startup, otherwise we'd read
     // proxy-placeholder configs instead of the user's actual live settings.

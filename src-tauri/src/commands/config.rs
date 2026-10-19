@@ -29,18 +29,6 @@ fn invalid_json_format_error(error: serde_json::Error) -> String {
     }
 }
 
-fn invalid_toml_format_error(error: toml_edit::TomlError) -> String {
-    let lang = settings::get_settings()
-        .language
-        .unwrap_or_else(|| "zh".to_string());
-
-    match lang.as_str() {
-        "en" => format!("Invalid TOML format: {error}"),
-        "ja" => format!("TOML形式が無効です: {error}"),
-        _ => format!("无效的 TOML 格式: {error}"),
-    }
-}
-
 #[tauri::command]
 pub fn validate_common_config_snippet(app_type: &str, snippet: &str) -> Result<(), String> {
     if snippet.trim().is_empty() {
@@ -53,9 +41,8 @@ pub fn validate_common_config_snippet(app_type: &str, snippet: &str) -> Result<(
                 .map_err(invalid_json_format_error)?;
         }
         "codex" => {
-            snippet
-                .parse::<toml_edit::DocumentMut>()
-                .map_err(invalid_toml_format_error)?;
+            crate::codex_key_ownership::validate_codex_common_snippet(snippet)
+                .map_err(|e| e.to_string())?;
         }
         _ => {}
     }
@@ -333,6 +320,13 @@ pub async fn set_common_config_snippet(
     snippet: String,
     state: tauri::State<'_, crate::store::AppState>,
 ) -> Result<(), String> {
+    if app_type == "codex" {
+        return super::provider::set_codex_common_config_snippet_state(
+            state.inner().clone(),
+            snippet,
+        )
+        .await;
+    }
     let is_cleared = snippet.trim().is_empty();
     let old_snippet = state
         .db

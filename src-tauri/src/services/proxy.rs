@@ -3,8 +3,9 @@
 //! 提供代理服务器的启动、停止和配置管理
 
 use crate::app_config::AppType;
+use crate::config::cas::AppliedChangeset;
 use crate::config::{get_claude_settings_path, read_json_file, write_json_file};
-use crate::database::Database;
+use crate::database::{Database, ProviderUpdateSelection};
 use crate::provider::Provider;
 use crate::proxy::server::ProxyServer;
 use crate::proxy::switch_lock::SwitchLockManager;
@@ -364,20 +365,25 @@ impl ProxyService {
         &self,
         provider: &Provider,
     ) -> Result<(), String> {
-        let existing_live = self.read_codex_live().ok();
+        self.sync_codex_live_from_provider_while_proxy_active_receipted(provider)
+            .await
+            .map(|_| ())
+    }
+
+    async fn sync_codex_live_from_provider_while_proxy_active_receipted(
+        &self,
+        provider: &Provider,
+    ) -> Result<AppliedChangeset, String> {
+        let snapshots = crate::codex_live_write::CodexLiveSnapshots::read()
+            .map_err(|e| format!("读取 Codex Live 快照失败: {e}"))?;
+        let existing_live = Self::codex_settings_from_snapshots(&snapshots)?;
         let mut effective_settings = build_effective_settings_with_common_config(
             self.db.as_ref(),
             &AppType::Codex,
             provider,
         )
         .map_err(|e| format!("构建 codex 有效配置失败: {e}"))?;
-        if let Some(existing_live) = existing_live.as_ref() {
-            self.project_codex_line_onto_existing(
-                &mut effective_settings,
-                existing_live,
-                provider,
-            )?;
-        }
+        self.project_codex_line_onto_existing(&mut effective_settings, &existing_live, provider)?;
         let (_, proxy_codex_base_url) = self.build_proxy_urls().await?;
 
         Self::apply_codex_takeover_fields_for_provider(
@@ -386,8 +392,7 @@ impl ProxyService {
             provider,
         )?;
 
-        self.write_codex_takeover_live_for_provider(&effective_settings, Some(provider))?;
-        Ok(())
+        self.write_codex_takeover_live_for_provider(&effective_settings, Some(provider), snapshots)
     }
 
     pub async fn sync_grok_live_from_provider_while_proxy_active(
@@ -460,55 +465,58 @@ impl ProxyService {
             .map_err(|e| format!("读取 {app_type:?} 当前供应商失败: {e}"))
     }
 
-    async fn refresh_active_target_from_current_provider(&self, app_type: &AppType) {
-        let Ok(Some(provider)) = self.get_current_provider_for_app(app_type) else {
+    pub(crate) async fn refresh_active_target_from_current_provider(&self, app_type: &AppType) {
+        let Ok(provider) = self.get_current_provider_for_app(app_type) else {
             return;
         };
         if let Some(server) = self.server.read().await.as_ref() {
-            server
-                .set_active_target(app_type.as_str(), &provider.id, &provider.name)
-                .await;
+            match provider {
+                Some(provider) => {
+                    server
+                        .set_active_target(app_type.as_str(), &provider.id, &provider.name)
+                        .await
+                }
+                None => server.clear_active_target(app_type.as_str()).await,
+            }
         }
     }
 
     async fn rollback_hot_switch_preparation(
         &self,
         app_type: &AppType,
-        previous_backup: Option<&LiveBackup>,
+        previous_selection: Option<&ProviderUpdateSelection>,
         previous_provider_id: Option<&str>,
         should_sync_backup: bool,
         live_taken_over: bool,
-        previous_live_before_direct_write: Option<&LiveSnapshot>,
+        previous_codex_live: Option<&LiveSnapshot>,
+        codex_receipts: Vec<AppliedChangeset>,
     ) -> Result<(), String> {
         if !should_sync_backup {
-            return Ok(());
+            return Self::rollback_codex_live_writes(codex_receipts);
         }
 
         let mut errors = Vec::new();
-        let rollback_result = match previous_backup {
-            Some(backup) => {
-                self.db
-                    .save_live_backup(app_type.as_str(), &backup.original_config)
-                    .await
+        if let Err(error) = Self::rollback_codex_live_writes(codex_receipts) {
+            errors.push(error);
+        }
+        if let Some(selection) = previous_selection {
+            if let Err(error) = self
+                .db
+                .restore_provider_update_selection(app_type.as_str(), selection)
+            {
+                errors.push(format!("恢复原供应商选择和备份失败: {error}"));
             }
-            None => self.db.delete_live_backup(app_type.as_str()).await,
-        };
-        if let Err(error) = rollback_result {
-            errors.push(format!("恢复原备份失败: {error}"));
         }
 
-        if let Some(previous_live) = previous_live_before_direct_write {
-            if let Err(error) = previous_live.restore() {
-                errors.push(format!("恢复直接写入前的 Live 配置失败: {error}"));
+        if matches!(app_type, AppType::Codex) {
+            // Only receipts may undo Codex writes. This snapshot is a read-only
+            // consistency check; it must never overwrite a concurrent edit.
+            if let Some(previous_live) = previous_codex_live {
+                if let Err(error) = previous_live.restore_after_failed_write() {
+                    errors.push(format!("核对原 Codex Live 配置失败: {error}"));
+                }
             }
-            return if errors.is_empty() {
-                Ok(())
-            } else {
-                Err(errors.join("；"))
-            };
-        }
-
-        if let Some(previous_provider_id) = previous_provider_id {
+        } else if let Some(previous_provider_id) = previous_provider_id {
             match self
                 .db
                 .get_provider_by_id(previous_provider_id, app_type.as_str())
@@ -516,9 +524,6 @@ impl ProxyService {
                 Ok(Some(previous_provider)) => {
                     let live_result = if matches!(app_type, AppType::Claude) {
                         self.sync_claude_live_from_provider_while_proxy_active(&previous_provider)
-                            .await
-                    } else if live_taken_over && matches!(app_type, AppType::Codex) {
-                        self.sync_codex_live_from_provider_while_proxy_active(&previous_provider)
                             .await
                     } else if live_taken_over && matches!(app_type, AppType::GrokBuild) {
                         self.sync_grok_live_from_provider_while_proxy_active(&previous_provider)
@@ -808,6 +813,32 @@ impl ProxyService {
         app: &AppType,
         enabled: bool,
     ) -> Result<(), String> {
+        self.set_takeover_for_app_inner_receipted(app, enabled)
+            .await
+            .map(|_| ())
+    }
+
+    /// Successful Codex file writes in application order. The caller owns the
+    /// lifecycle/per-app locks and must roll these back in reverse order if a
+    /// later outer transaction fails, restoring its own DB/runtime metadata
+    /// without replaying takeover. An error compensates its own file writes.
+    pub(crate) async fn set_takeover_for_app_inner_receipted(
+        &self,
+        app: &AppType,
+        enabled: bool,
+    ) -> Result<Vec<AppliedChangeset>, String> {
+        self.set_takeover_for_app_inner_receipted_with_codex_target(app, enabled, None)
+            .await
+    }
+
+    /// A fresh provider is staged before selection commits. Use that explicit
+    /// target to prepare Codex Live without publishing a premature current ID.
+    pub(crate) async fn set_takeover_for_app_inner_receipted_with_codex_target(
+        &self,
+        app: &AppType,
+        enabled: bool,
+        codex_target: Option<&Provider>,
+    ) -> Result<Vec<AppliedChangeset>, String> {
         let app_type_str = app.as_str();
         let previous_config = self
             .db
@@ -828,13 +859,20 @@ impl ProxyService {
             .await
             .map_err(|e| format!("读取全局接管状态失败: {e}"))?;
 
-        match self.set_takeover_for_app_apply(app, enabled).await {
-            Ok(()) => Ok(()),
+        let mut codex_receipts = Vec::new();
+        match self
+            .set_takeover_for_app_apply(app, enabled, codex_target, &mut codex_receipts)
+            .await
+        {
+            Ok(()) => Ok(codex_receipts),
             Err(error) => {
                 let mut rollback_errors = Vec::new();
+                if let Err(rollback_error) = Self::rollback_codex_live_writes(codex_receipts) {
+                    rollback_errors.push(rollback_error);
+                }
 
                 if let Some(snapshot) = previous_live.as_ref() {
-                    if let Err(rollback_error) = snapshot.restore() {
+                    if let Err(rollback_error) = snapshot.restore_after_failed_write() {
                         rollback_errors.push(format!("恢复 Live 快照失败: {rollback_error}"));
                     }
                 }
@@ -884,7 +922,24 @@ impl ProxyService {
         }
     }
 
-    async fn set_takeover_for_app_apply(&self, app: &AppType, enabled: bool) -> Result<(), String> {
+    /// Undo only writes proven by receipts. Stop on a conflict: an older
+    /// receipt must not adopt a partially restored/new externally edited state.
+    fn rollback_codex_live_writes(receipts: Vec<AppliedChangeset>) -> Result<(), String> {
+        for receipt in receipts.into_iter().rev() {
+            receipt
+                .rollback()
+                .map_err(|error| format!("回滚 Codex Live 写入失败: {error}"))?;
+        }
+        Ok(())
+    }
+
+    async fn set_takeover_for_app_apply(
+        &self,
+        app: &AppType,
+        enabled: bool,
+        codex_target: Option<&Provider>,
+        codex_receipts: &mut Vec<AppliedChangeset>,
+    ) -> Result<(), String> {
         let app_type_str = app.as_str();
 
         if enabled {
@@ -934,7 +989,26 @@ impl ProxyService {
 
             // 3) 备份 Live 配置（严格：目标 app 不存在则报错）
             if restore_existing_backup_before_takeover {
-                self.restore_live_config_for_app_inner(app).await?;
+                if matches!(app, AppType::Codex) {
+                    let snapshots = crate::codex_live_write::CodexLiveSnapshots::read()
+                        .map_err(|e| format!("读取 Codex Live 快照失败: {e}"))?;
+                    if let Some(backup) = self
+                        .db
+                        .get_live_backup(app_type_str)
+                        .await
+                        .map_err(|e| format!("读取 Codex Live 备份失败: {e}"))?
+                    {
+                        let mut config: Value = serde_json::from_str(&backup.original_config)
+                            .map_err(|e| format!("解析 Codex 备份失败: {e}"))?;
+                        if let Some(root) = config.as_object_mut() {
+                            root.remove("auth");
+                        }
+                        codex_receipts
+                            .push(self.write_codex_live_verbatim_observed(&config, snapshots)?);
+                    }
+                } else {
+                    self.restore_live_config_for_app_inner(app).await?;
+                }
             } else {
                 self.backup_live_config_strict(app).await?;
 
@@ -946,7 +1020,24 @@ impl ProxyService {
             }
 
             // 5) 写入接管配置（仅当前 app）
-            if let Err(e) = self.takeover_live_config_strict(app).await {
+            let takeover_result = self
+                .takeover_live_config_strict_with_codex_target(app, codex_target)
+                .await;
+            let takeover_error = match takeover_result {
+                Ok(Some(receipt)) => {
+                    codex_receipts.push(receipt);
+                    None
+                }
+                Ok(None) => None,
+                Err(error) => Some(error),
+            };
+            if let Some(e) = takeover_error {
+                if matches!(app, AppType::Codex) {
+                    // A failed CAS already compensates its own writes. Replaying
+                    // the backup here would overwrite the external edit that
+                    // rejected the commit. The outer transaction owns receipts.
+                    return Err(e);
+                }
                 log::error!("{app_type_str} 接管 Live 配置失败，尝试恢复: {e}");
                 match self.restore_live_config_for_app_inner(app).await {
                     Ok(()) => {
@@ -1053,7 +1144,7 @@ impl ProxyService {
         // login or overwrite a valid direct third-party configuration.
         if live_taken_over {
             // 必须走 with_fallback 版本：备份 → SSOT → 清理占位符 的三层兜底。
-            self.restore_live_config_for_app_with_fallback_inner(app)
+            self.restore_live_config_for_app_with_fallback_receipted(app, codex_receipts)
                 .await?;
         } else if has_backup {
             log::warn!(
@@ -1987,15 +2078,39 @@ impl ProxyService {
         }
 
         // Codex: project the selected provider through the local Responses endpoint.
-        if let Ok(mut live_config) = self.read_codex_live() {
+        let snapshots = crate::codex_live_write::CodexLiveSnapshots::read()
+            .map_err(|e| format!("读取 Codex Live 快照失败: {e}"))?;
+        if snapshots.auth.contents().is_some()
+            || !snapshots
+                .config_text()
+                .map_err(|e| e.to_string())?
+                .trim()
+                .is_empty()
+        {
+            let existing_live = Self::codex_settings_from_snapshots(&snapshots)?;
             let codex_provider = self.require_current_provider_for_app(&AppType::Codex)?;
+            let mut live_config = build_effective_settings_with_common_config(
+                self.db.as_ref(),
+                &AppType::Codex,
+                &codex_provider,
+            )
+            .map_err(|e| format!("构建 codex 有效配置失败: {e}"))?;
+            self.project_codex_line_onto_existing(
+                &mut live_config,
+                &existing_live,
+                &codex_provider,
+            )?;
             Self::apply_codex_takeover_fields_for_provider(
                 &mut live_config,
                 &proxy_codex_base_url,
                 &codex_provider,
             )?;
 
-            self.write_codex_takeover_live_for_provider(&live_config, Some(&codex_provider))?;
+            self.write_codex_takeover_live_for_provider(
+                &live_config,
+                Some(&codex_provider),
+                snapshots,
+            )?;
             log::info!("Codex Live 配置已接管，代理地址: {proxy_codex_base_url}");
         }
 
@@ -2030,7 +2145,20 @@ impl ProxyService {
     }
 
     /// 接管指定应用的 Live 配置（严格模式：目标配置不存在则返回错误）
-    async fn takeover_live_config_strict(&self, app_type: &AppType) -> Result<(), String> {
+    async fn takeover_live_config_strict(
+        &self,
+        app_type: &AppType,
+    ) -> Result<Option<AppliedChangeset>, String> {
+        self.takeover_live_config_strict_with_codex_target(app_type, None)
+            .await
+    }
+
+    async fn takeover_live_config_strict_with_codex_target(
+        &self,
+        app_type: &AppType,
+        codex_target: Option<&Provider>,
+    ) -> Result<Option<AppliedChangeset>, String> {
+        let mut codex_receipt = None;
         let (proxy_url, proxy_codex_base_url) = self.build_proxy_urls().await?;
         let proxy_grok_base_url = format!("{}/grokbuild/v1", proxy_url.trim_end_matches('/'));
 
@@ -2049,15 +2177,35 @@ impl ProxyService {
                 log::info!("Claude Live 配置已接管，代理地址: {proxy_url}");
             }
             AppType::Codex => {
-                let mut live_config = self.read_codex_live()?;
-                let codex_provider = self.require_current_provider_for_app(&AppType::Codex)?;
+                let snapshots = crate::codex_live_write::CodexLiveSnapshots::read()
+                    .map_err(|e| format!("读取 Codex Live 快照失败: {e}"))?;
+                let existing_live = Self::codex_settings_from_snapshots(&snapshots)?;
+                let codex_provider = match codex_target {
+                    Some(provider) => provider.clone(),
+                    None => self.require_current_provider_for_app(&AppType::Codex)?,
+                };
+                let mut live_config = build_effective_settings_with_common_config(
+                    self.db.as_ref(),
+                    &AppType::Codex,
+                    &codex_provider,
+                )
+                .map_err(|e| format!("构建 codex 有效配置失败: {e}"))?;
+                self.project_codex_line_onto_existing(
+                    &mut live_config,
+                    &existing_live,
+                    &codex_provider,
+                )?;
                 Self::apply_codex_takeover_fields_for_provider(
                     &mut live_config,
                     &proxy_codex_base_url,
                     &codex_provider,
                 )?;
 
-                self.write_codex_takeover_live_for_provider(&live_config, Some(&codex_provider))?;
+                codex_receipt = Some(self.write_codex_takeover_live_for_provider(
+                    &live_config,
+                    Some(&codex_provider),
+                    snapshots,
+                )?);
                 log::info!("Codex Live 配置已接管，代理地址: {proxy_codex_base_url}");
             }
             AppType::Gemini => {
@@ -2093,7 +2241,7 @@ impl ProxyService {
             _ => return Err("该应用不支持代理功能".to_string()),
         }
 
-        Ok(())
+        Ok(codex_receipt)
     }
 
     async fn restore_live_config_for_app_inner(&self, app_type: &AppType) -> Result<(), String> {
@@ -2254,6 +2402,26 @@ impl ProxyService {
         &self,
         app_type: &AppType,
     ) -> Result<(), String> {
+        let mut receipts = Vec::new();
+        match self
+            .restore_live_config_for_app_with_fallback_receipted(app_type, &mut receipts)
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(error) => match Self::rollback_codex_live_writes(receipts) {
+                Ok(()) => Err(error),
+                Err(rollback_error) => {
+                    Err(format!("{error}；恢复 Live 写入回滚失败: {rollback_error}"))
+                }
+            },
+        }
+    }
+
+    async fn restore_live_config_for_app_with_fallback_receipted(
+        &self,
+        app_type: &AppType,
+        codex_receipts: &mut Vec<AppliedChangeset>,
+    ) -> Result<(), String> {
         let app_type_str = app_type.as_str();
         // A Codex backup holds config.toml only (MH-17 / L4): restoring it
         // never writes auth.json, so a login Codex refreshed while the local
@@ -2289,7 +2457,14 @@ impl ProxyService {
                             "{app_type_str} 备份本身已是代理占位符（异常历史状态），跳过备份，改走 SSOT 重建 Live"
                         );
                     } else {
-                        self.write_live_config_for_app(app_type, &config)?;
+                        if matches!(app_type, AppType::Codex) {
+                            let snapshots = crate::codex_live_write::CodexLiveSnapshots::read()
+                                .map_err(|e| format!("读取 Codex Live 快照失败: {e}"))?;
+                            codex_receipts
+                                .push(self.write_codex_live_verbatim_observed(&config, snapshots)?);
+                        } else {
+                            self.write_live_config_for_app(app_type, &config)?;
+                        }
                         log::info!("{app_type_str} Live 配置已从备份恢复");
                         Self::after_codex_takeover_released(app_type);
                         return Ok(());
@@ -2313,7 +2488,7 @@ impl ProxyService {
         }
 
         // 2.1) 优先从 SSOT（当前供应商）重建 Live（比"清理字段"更可用）
-        match self.restore_live_from_ssot_for_app(app_type) {
+        match self.restore_live_from_ssot_for_app(app_type, codex_receipts) {
             Ok(true) => {
                 log::info!("{app_type_str} Live 配置已从 SSOT 恢复（无备份兜底）");
                 Self::after_codex_takeover_released(app_type);
@@ -2324,6 +2499,11 @@ impl ProxyService {
                     "{app_type_str} Live 备份缺失，且无法从 SSOT 恢复，将尝试清理接管占位符"
                 );
             }
+            Err(e) if matches!(app_type, AppType::Codex) => {
+                // Never re-read and clean up after a rejected CAS: that would
+                // adopt and overwrite the external state that rejected it.
+                return Err(e);
+            }
             Err(e) => {
                 log::error!(
                     "{app_type_str} Live 备份缺失，SSOT 恢复失败，将尝试清理接管占位符: {e}"
@@ -2332,7 +2512,11 @@ impl ProxyService {
         }
 
         // 2.2) 最后兜底：尽力清理占位符与本地代理地址，避免长期卡在代理占位符状态
-        self.cleanup_takeover_placeholders_in_live_for_app(app_type)?;
+        if matches!(app_type, AppType::Codex) {
+            codex_receipts.push(self.cleanup_codex_takeover_placeholders_receipted()?);
+        } else {
+            self.cleanup_takeover_placeholders_in_live_for_app(app_type)?;
+        }
         log::info!("{app_type_str} Live 接管占位符已清理（无备份兜底）");
         Self::after_codex_takeover_released(app_type);
         Ok(())
@@ -2392,7 +2576,11 @@ impl ProxyService {
     /// 返回值：
     /// - Ok(true)：已成功写回
     /// - Ok(false)：缺少当前供应商/供应商不存在/供应商本身含占位符，无法写回
-    fn restore_live_from_ssot_for_app(&self, app_type: &AppType) -> Result<bool, String> {
+    fn restore_live_from_ssot_for_app(
+        &self,
+        app_type: &AppType,
+        codex_receipts: &mut Vec<AppliedChangeset>,
+    ) -> Result<bool, String> {
         let current_id = crate::settings::get_effective_current_provider(&self.db, app_type)
             .map_err(|e| format!("获取 {app_type:?} 当前供应商失败: {e}"))?;
 
@@ -2419,8 +2607,27 @@ impl ProxyService {
             return Ok(false);
         }
 
-        write_live_with_common_config(self.db.as_ref(), app_type, provider)
-            .map_err(|e| format!("写入 {app_type:?} Live 配置失败: {e}"))?;
+        if matches!(app_type, AppType::Codex) {
+            let snapshots = crate::codex_live_write::CodexLiveSnapshots::read()
+                .map_err(|e| format!("读取 Codex Live 快照失败: {e}"))?;
+            let existing = Self::codex_settings_from_snapshots(&snapshots)?;
+            let mut config =
+                build_effective_settings_with_common_config(self.db.as_ref(), app_type, provider)
+                    .map_err(|e| format!("构建 Codex 有效配置失败: {e}"))?;
+            self.project_codex_line_onto_existing(&mut config, &existing, provider)?;
+            Self::fold_codex_line_key_into_config(&mut config)?;
+            if let Some(root) = config.as_object_mut() {
+                root.remove("auth");
+            }
+            codex_receipts.push(self.write_codex_live_verbatim_observed_with_profile(
+                &config,
+                snapshots,
+                crate::proxy::providers::resolve_codex_catalog_tool_profile(provider),
+            )?);
+        } else {
+            write_live_with_common_config(self.db.as_ref(), app_type, provider)
+                .map_err(|e| format!("写入 {app_type:?} Live 配置失败: {e}"))?;
+        }
 
         Ok(true)
     }
@@ -2607,7 +2814,14 @@ impl ProxyService {
     }
 
     fn cleanup_codex_takeover_placeholders_in_live(&self) -> Result<(), String> {
-        let mut config = self.read_codex_live()?;
+        self.cleanup_codex_takeover_placeholders_receipted()
+            .map(|_| ())
+    }
+
+    fn cleanup_codex_takeover_placeholders_receipted(&self) -> Result<AppliedChangeset, String> {
+        let snapshots = crate::codex_live_write::CodexLiveSnapshots::read()
+            .map_err(|e| format!("读取 Codex Live 快照失败: {e}"))?;
+        let mut config = Self::codex_settings_from_snapshots(&snapshots)?;
 
         let mut auth_changed = false;
         if let Some(auth) = config.get_mut("auth").and_then(|v| v.as_object_mut()) {
@@ -2636,8 +2850,7 @@ impl ProxyService {
             config["config"] = json!(updated);
         }
 
-        self.write_codex_live(&config)?;
-        Ok(())
+        self.write_codex_live_verbatim_observed(&config, snapshots)
     }
 
     /// Remove local proxy base_url from TOML（委托给 codex_config 共享实现）
@@ -2895,7 +3108,9 @@ impl ProxyService {
             // original backup when available; without one, Live is the only
             // recovery source (legacy repair path).
             let current_live = if existing_backup_value.is_none() {
-                self.read_codex_live().ok()
+                let snapshots = crate::codex_live_write::CodexLiveSnapshots::read()
+                    .map_err(|e| format!("读取 Codex Live 快照失败: {e}"))?;
+                Some(Self::codex_settings_from_snapshots(&snapshots)?)
             } else {
                 None
             };
@@ -3030,22 +3245,23 @@ impl ProxyService {
         // current provider. Otherwise a failed hot switch leaves the UI pointing at
         // the new provider while the proxy still serves the old one (and the next
         // query may fall back to the first provider).
-        let previous_backup = if should_sync_backup {
-            self.db
-                .get_live_backup(app_type_enum.as_str())
-                .await
-                .map_err(|e| format!("读取 {app_type} 原备份失败: {e}"))?
+        let previous_selection = if should_sync_backup {
+            Some(
+                self.db
+                    .snapshot_provider_update_selection(app_type_enum.as_str())
+                    .map_err(|e| format!("读取 {app_type} 原供应商选择和备份失败: {e}"))?,
+            )
         } else {
             None
         };
-        let previous_live_before_direct_write =
-            if should_sync_backup && matches!(app_type_enum, AppType::Codex) {
-                LiveSnapshot::capture(&app_type_enum)
-                    .map_err(|error| format!("读取 Codex 原 Live 配置失败: {error}"))?
-            } else {
-                None
-            };
+        let previous_codex_live = if should_sync_backup && matches!(app_type_enum, AppType::Codex) {
+            LiveSnapshot::capture(&app_type_enum)
+                .map_err(|error| format!("读取 Codex 原 Live 配置失败: {error}"))?
+        } else {
+            None
+        };
 
+        let mut codex_receipts = Vec::new();
         let prepare_result: Result<(), String> = async {
             if should_sync_backup {
                 self.update_live_backup_from_provider_inner(app_type, &provider)
@@ -3055,8 +3271,10 @@ impl ProxyService {
                     self.sync_claude_live_from_provider_while_proxy_active(&provider)
                         .await?;
                 } else if live_taken_over && matches!(app_type_enum, AppType::Codex) {
-                    self.sync_codex_live_from_provider_while_proxy_active(&provider)
-                        .await?;
+                    codex_receipts.push(
+                        self.sync_codex_live_from_provider_while_proxy_active_receipted(&provider)
+                            .await?,
+                    );
                 } else if live_taken_over && matches!(app_type_enum, AppType::GrokBuild) {
                     self.sync_grok_live_from_provider_while_proxy_active(&provider)
                         .await?;
@@ -3080,15 +3298,17 @@ impl ProxyService {
                     crate::services::provider::codex_common_snippet(self.db.as_ref(), &provider)
                         .map_err(|e| format!("读取 Codex 通用配置失败: {e}"))?;
 
-                crate::codex_config::write_codex_provider_live_with_catalog(
-                    &effective_settings,
-                    provider.category.as_deref(),
-                    auth,
-                    config_str,
-                    snippet.as_ref(),
-                    profile,
-                )
-                .map_err(|e| format!("写入 Codex 配置失败: {e}"))?;
+                codex_receipts.push(
+                    crate::codex_config::write_codex_provider_live_with_catalog(
+                        &effective_settings,
+                        provider.category.as_deref(),
+                        auth,
+                        config_str,
+                        snippet.as_ref(),
+                        profile,
+                    )
+                    .map_err(|e| format!("写入 Codex 配置失败: {e}"))?,
+                );
             }
 
             Ok(())
@@ -3099,11 +3319,12 @@ impl ProxyService {
             let rollback = self
                 .rollback_hot_switch_preparation(
                     &app_type_enum,
-                    previous_backup.as_ref(),
+                    previous_selection.as_ref(),
                     previous_provider_id.as_deref(),
                     should_sync_backup,
                     live_taken_over,
-                    previous_live_before_direct_write.as_ref(),
+                    previous_codex_live.as_ref(),
+                    codex_receipts,
                 )
                 .await;
             return Err(match rollback {
@@ -3117,11 +3338,12 @@ impl ProxyService {
             let rollback = self
                 .rollback_hot_switch_preparation(
                     &app_type_enum,
-                    previous_backup.as_ref(),
+                    previous_selection.as_ref(),
                     previous_provider_id.as_deref(),
                     should_sync_backup,
                     live_taken_over,
-                    previous_live_before_direct_write.as_ref(),
+                    previous_codex_live.as_ref(),
+                    codex_receipts,
                 )
                 .await;
             return Err(match rollback {
@@ -3145,11 +3367,12 @@ impl ProxyService {
             if let Err(rollback_error) = self
                 .rollback_hot_switch_preparation(
                     &app_type_enum,
-                    previous_backup.as_ref(),
+                    previous_selection.as_ref(),
                     previous_provider_id.as_deref(),
                     should_sync_backup,
                     live_taken_over,
-                    previous_live_before_direct_write.as_ref(),
+                    previous_codex_live.as_ref(),
+                    codex_receipts,
                 )
                 .await
             {
@@ -3265,13 +3488,27 @@ impl ProxyService {
             line,
             base,
             provider.category.as_deref() == Some("official"),
-            snippet.as_ref(),
+            None,
         )
         .map_err(|e| format!("投影 Codex 配置失败: {e}"))?;
+        crate::codex_config::ensure_catalog_reference_preserved(base, &projected)
+            .map_err(|e| format!("投影 Codex 配置失败: {e}"))?;
+        // The restore backup and active live each own their original shared
+        // values. Never reuse metadata from the target or the other scope.
+        let (projected, ledger) = crate::codex_common_projection::project(
+            &projected,
+            snippet.as_ref(),
+            Self::codex_projection_metadata(existing)?,
+        )
+        .map_err(|e| format!("投影 Codex 通用配置失败: {e}"))?;
         let target_obj = target_settings
             .as_object_mut()
             .ok_or_else(|| "Codex 配置必须是 JSON 对象".to_string())?;
         target_obj.insert("config".to_string(), json!(projected));
+        target_obj.insert(
+            crate::codex_common_projection::BACKUP_KEY.to_string(),
+            json!(ledger),
+        );
         Ok(())
     }
 
@@ -3449,8 +3686,47 @@ impl ProxyService {
     }
 
     fn read_codex_live(&self) -> Result<Value, String> {
-        crate::codex_config::read_codex_live_settings()
-            .map_err(|e| format!("读取 Codex Live 配置失败: {e}"))
+        let snapshots = crate::codex_live_write::CodexLiveSnapshots::read()
+            .map_err(|e| format!("读取 Codex Live 快照失败: {e}"))?;
+        if snapshots.auth.contents().is_none()
+            && snapshots
+                .config_text()
+                .map_err(|e| e.to_string())?
+                .trim()
+                .is_empty()
+        {
+            return Err("Codex 配置文件不存在".to_string());
+        }
+        Self::codex_settings_from_snapshots(&snapshots)
+    }
+
+    /// Decode exactly the original CAS observation; never re-read live files
+    /// after projection and adopt another program's edits as our baseline.
+    fn codex_settings_from_snapshots(
+        snapshots: &crate::codex_live_write::CodexLiveSnapshots,
+    ) -> Result<Value, String> {
+        let config = snapshots.config_text().map_err(|e| e.to_string())?;
+        crate::codex_config::validate_config_toml(config).map_err(|e| e.to_string())?;
+        let auth = snapshots.auth_value().map_err(|e| e.to_string())?;
+        let mut settings = json!({ "auth": auth, "config": config });
+        if let Some(ledger) = snapshots
+            .common_projection_text()
+            .map_err(|e| e.to_string())?
+        {
+            settings[crate::codex_common_projection::BACKUP_KEY] = json!(ledger);
+        }
+        Ok(settings)
+    }
+
+    fn codex_projection_metadata(settings: &Value) -> Result<Option<&str>, String> {
+        settings
+            .get(crate::codex_common_projection::BACKUP_KEY)
+            .map(|value| {
+                value
+                    .as_str()
+                    .ok_or_else(|| "Codex 通用配置投影备份元数据必须是字符串".to_string())
+            })
+            .transpose()
     }
 
     fn write_codex_live(&self, config: &Value) -> Result<(), String> {
@@ -3501,6 +3777,7 @@ impl ProxyService {
             snippet.as_ref(),
             profile,
         )
+        .map(|_| ())
         .map_err(|e| format!("写入 Codex 配置失败: {e}"))
     }
 
@@ -3512,52 +3789,95 @@ impl ProxyService {
         &self,
         config: &Value,
         provider: Option<&Provider>,
-    ) -> Result<(), String> {
+        snapshots: crate::codex_live_write::CodexLiveSnapshots,
+    ) -> Result<AppliedChangeset, String> {
+        use crate::codex_live_write::{plan_with_snapshots, CodexLiveWrite, LiveFile};
+
         let official_passthrough =
             provider.is_some_and(crate::proxy::providers::is_codex_official_provider);
-        let placeholder_auth = config
-            .get("auth")
-            .is_some_and(Self::codex_auth_has_proxy_placeholder);
-
-        // Takeover must never overwrite Codex's long-lived ChatGPT login. For
-        // third-party providers the placeholder is moved into config.toml; for
-        // codex-official no placeholder is needed because requires_openai_auth
-        // makes Codex supply its native authorization.
-        if official_passthrough || placeholder_auth {
-            let config_str = config.get("config").and_then(|v| v.as_str()).unwrap_or("");
-            let profile = provider
-                .map(crate::proxy::providers::resolve_codex_catalog_tool_profile)
-                .unwrap_or(crate::codex_config::CodexCatalogToolProfile::ProxyChat);
-            let prepared_config =
-                crate::codex_config::prepare_codex_live_config_text_with_optional_catalog(
-                    config, config_str, profile,
-                )
-                .map_err(|e| format!("写入 Codex 配置失败: {e}"))?;
-            let live_config = if official_passthrough {
-                prepared_config
-            } else {
-                let prepared_config =
-                    crate::codex_config::normalize_codex_third_party_auth_config(&prepared_config)
-                        .map_err(|e| format!("写入 Codex 配置失败: {e}"))?;
-                crate::codex_config::prepare_codex_provider_live_config(
-                    config.get("auth").unwrap_or(&Value::Null),
-                    &prepared_config,
-                )
-                .map_err(|e| format!("写入 Codex 配置失败: {e}"))?
-            };
-            crate::codex_config::write_codex_live_config_atomic(Some(&live_config))
-                .map_err(|e| format!("写入 Codex 配置失败: {e}"))?;
-            return Ok(());
-        }
-
-        self.write_codex_live_for_provider(config, provider)
+        let ledger = Self::codex_projection_metadata(config)?
+            .ok_or_else(|| "Codex 接管配置缺少通用配置投影记录".to_string())?;
+        // Takeover never owns the long-lived ChatGPT login, independently of
+        // the direct-switch compatibility setting or the placeholder's shape.
+        let config_str = config.get("config").and_then(Value::as_str).unwrap_or("");
+        crate::codex_config::ensure_catalog_reference_preserved(
+            snapshots.config_text().map_err(|e| e.to_string())?,
+            config_str,
+        )
+        .map_err(|e| format!("写入 Codex 配置失败: {e}"))?;
+        let profile = provider
+            .map(crate::proxy::providers::resolve_codex_catalog_tool_profile)
+            .unwrap_or(crate::codex_config::CodexCatalogToolProfile::ProxyChat);
+        let prepared = crate::codex_config::prepare_codex_live_config_text_with_optional_catalog(
+            config, config_str, profile,
+        )
+        .map_err(|e| format!("写入 Codex 配置失败: {e}"))?;
+        let live_config = if official_passthrough {
+            prepared.config_text
+        } else {
+            let normalized =
+                crate::codex_config::normalize_codex_third_party_auth_config(&prepared.config_text)
+                    .map_err(|e| format!("写入 Codex 配置失败: {e}"))?;
+            crate::codex_config::prepare_codex_provider_live_config(
+                config.get("auth").unwrap_or(&Value::Null),
+                &normalized,
+            )
+            .map_err(|e| format!("写入 Codex 配置失败: {e}"))?
+        };
+        plan_with_snapshots(
+            CodexLiveWrite {
+                auth: LiveFile::Keep,
+                config: LiveFile::Write(&live_config),
+                model_catalog: prepared
+                    .model_catalog
+                    .as_deref()
+                    .map_or(LiveFile::Keep, LiveFile::Write),
+                common_projection: LiveFile::Write(ledger),
+            },
+            snapshots,
+        )
+        .and_then(|plan| plan.commit())
+        .map_err(|e| format!("写入 Codex 配置失败: {e}"))
     }
 
     fn write_codex_live_verbatim(&self, config: &Value) -> Result<(), String> {
-        use crate::codex_live_write::{CodexLiveWrite, LiveFile};
+        let snapshots = crate::codex_live_write::CodexLiveSnapshots::read()
+            .map_err(|e| format!("读取 Codex Live 快照失败: {e}"))?;
+        self.write_codex_live_verbatim_observed(config, snapshots)
+            .map(|_| ())
+    }
+
+    fn write_codex_live_verbatim_observed(
+        &self,
+        config: &Value,
+        snapshots: crate::codex_live_write::CodexLiveSnapshots,
+    ) -> Result<AppliedChangeset, String> {
+        self.write_codex_live_verbatim_observed_with_profile(
+            config,
+            snapshots,
+            crate::codex_config::CodexCatalogToolProfile::ProxyChat,
+        )
+    }
+
+    fn write_codex_live_verbatim_observed_with_profile(
+        &self,
+        config: &Value,
+        snapshots: crate::codex_live_write::CodexLiveSnapshots,
+        profile: crate::codex_config::CodexCatalogToolProfile,
+    ) -> Result<AppliedChangeset, String> {
+        use crate::codex_live_write::{plan_with_snapshots, CodexLiveWrite, LiveFile};
 
         let auth = config.get("auth");
         let config_str = config.get("config").and_then(|v| v.as_str());
+        let ledger = Self::codex_projection_metadata(config)?;
+        // A legacy config-only backup has no ledger. Remove the active scope's
+        // ledger with the restored config, rather than attributing its values
+        // to the restored file. Auth-only cleanup does not own the ledger.
+        let common_projection = if config_str.is_some() {
+            LiveFile::restore(ledger)
+        } else {
+            LiveFile::Keep
+        };
 
         // Decide the config.toml text ONCE, before splitting on auth. A stored
         // Codex backup comes in two shapes needing opposite handling:
@@ -3580,10 +3900,14 @@ impl ProxyService {
         // limitation (restore-of-deleted-provider-backup only).
         let prepared_cfg = config_str
             .map(|cfg| {
+                if config.get("modelCatalog").is_some() {
+                    crate::codex_config::ensure_catalog_reference_preserved(
+                        snapshots.config_text()?,
+                        cfg,
+                    )?;
+                }
                 crate::codex_config::prepare_codex_live_config_text_with_optional_catalog(
-                    config,
-                    cfg,
-                    crate::codex_config::CodexCatalogToolProfile::ProxyChat,
+                    config, cfg, profile,
                 )
             })
             .transpose()
@@ -3598,16 +3922,24 @@ impl ProxyService {
             .filter(|auth| !auth.as_object().is_some_and(|obj| obj.is_empty()))
             .map_or(LiveFile::Keep, LiveFile::Write);
         let config = prepared_cfg
-            .as_deref()
+            .as_ref()
+            .map(|prepared| prepared.config_text.as_str())
             .map_or(LiveFile::Keep, LiveFile::Write);
-        crate::codex_live_write::write_codex_live_files(CodexLiveWrite {
-            auth,
-            config,
-            model_catalog: LiveFile::Keep,
-        })
-        .map_err(|e| format!("写入 Codex 配置失败: {e}"))?;
-
-        Ok(())
+        let model_catalog = prepared_cfg
+            .as_ref()
+            .and_then(|prepared| prepared.model_catalog.as_deref())
+            .map_or(LiveFile::Keep, LiveFile::Write);
+        plan_with_snapshots(
+            CodexLiveWrite {
+                auth,
+                config,
+                model_catalog,
+                common_projection,
+            },
+            snapshots,
+        )
+        .and_then(|plan| plan.commit())
+        .map_err(|e| format!("写入 Codex 配置失败: {e}"))
     }
 
     fn read_gemini_live(&self) -> Result<Value, String> {
@@ -3722,6 +4054,7 @@ impl ProxyService {
         server_guard.take();
         drop(server_guard);
 
+        let mut codex_receipts = Vec::new();
         let attempt: Result<(), String> = async {
             let server = ProxyServer::new(
                 next.clone(),
@@ -3741,7 +4074,9 @@ impl ProxyService {
                 .await
                 .map_err(|e| format!("保存代理配置失败: {e}"))?;
             for (app, _) in &snapshots {
-                self.takeover_live_config_strict(app).await?;
+                if let Some(receipt) = self.takeover_live_config_strict(app).await? {
+                    codex_receipts.push(receipt);
+                }
             }
             Ok(())
         }
@@ -3774,8 +4109,11 @@ impl ProxyService {
                 }
             }
             drop(guard);
+            if let Err(error) = Self::rollback_codex_live_writes(codex_receipts) {
+                failures.push(error);
+            }
             for (_, snapshot) in &snapshots {
-                if let Err(e) = snapshot.restore() {
+                if let Err(e) = snapshot.restore_after_failed_write() {
                     failures.push(format!("恢复 Live 配置失败: {e}"));
                 }
             }
@@ -4065,6 +4403,109 @@ mod tests {
             .execute_batch("DROP TRIGGER reject_new_port")
             .unwrap();
         service.stop().await.unwrap();
+    }
+
+    fn assert_codex_live_bytes_restored(before: &crate::codex_live_write::CodexLiveSnapshots) {
+        let after =
+            crate::codex_live_write::CodexLiveSnapshots::read().expect("read restored Codex files");
+        assert_eq!(
+            after.config.contents(),
+            before.config.contents(),
+            "config.toml bytes"
+        );
+        assert_eq!(
+            after.auth.contents(),
+            before.auth.contents(),
+            "auth.json bytes"
+        );
+        assert_eq!(
+            after.model_catalog.contents(),
+            before.model_catalog.contents(),
+            "catalog bytes"
+        );
+        assert_eq!(
+            after.common_projection.contents(),
+            before.common_projection.contents(),
+            "projection ledger bytes"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn later_app_takeover_failure_restores_codex_files_and_old_listener() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        let db = Arc::new(Database::memory().expect("init db"));
+        use_ephemeral_proxy_port(&db).await;
+        let service = ProxyService::new(db.clone());
+        let old = service.start().await.expect("start old listener");
+        seed_codex_model_template();
+        db.set_config_snippet("codex", Some("disable_response_storage = true\n".into()))
+            .expect("set common snippet");
+        let mut provider = Provider::with_id(
+            "codex-port".into(),
+            "Codex Port".into(),
+            json!({
+                "auth": { "OPENAI_API_KEY": "test-key" },
+                "config": "model_provider = \"custom\"\nmodel = \"model-a\"\n[model_providers.custom]\nname = \"Custom\"\nbase_url = \"https://example.invalid/v1\"\nwire_api = \"responses\"\n",
+                "modelCatalog": { "models": [{ "model": "model-a" }] }
+            }),
+            None,
+        );
+        provider.meta = Some(ProviderMeta {
+            common_config_enabled: Some(true),
+            ..Default::default()
+        });
+        db.save_provider("codex", &provider).expect("save provider");
+        db.set_current_provider("codex", &provider.id)
+            .expect("select provider");
+        crate::settings::set_current_provider(&AppType::Codex, Some(&provider.id))
+            .expect("select local provider");
+        service
+            .write_codex_live_for_provider(&provider.settings_config, Some(&provider))
+            .expect("seed direct Live");
+        service
+            .set_takeover_for_app("codex", true)
+            .await
+            .expect("take over Codex");
+        let before =
+            crate::codex_live_write::CodexLiveSnapshots::read().expect("snapshot Codex files");
+        assert!(
+            before.common_projection.contents().is_some(),
+            "exercise the projection ledger"
+        );
+        let backup_before = db.get_live_backup("codex").await.unwrap().unwrap();
+
+        // Codex is rewritten first; official Grok then rejects takeover.
+        crate::grok_config::write_grok_live_settings(&json!({
+            "config": "[mcp_servers.echo]\ncommand = \"echo\"\n"
+        }))
+        .expect("seed official Grok Live");
+        let mut grok = db.get_proxy_config_for_app("grokbuild").await.unwrap();
+        grok.enabled = true;
+        db.update_proxy_config_for_app(grok).await.unwrap();
+        let previous = db.get_proxy_config().await.unwrap();
+        let reservation = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let mut next = previous.clone();
+        next.listen_port = reservation.local_addr().unwrap().port();
+        drop(reservation);
+        let error = service
+            .update_config(&next)
+            .await
+            .expect_err("late Grok takeover failure");
+        assert!(error.contains("Grok Build"), "{error}");
+        assert!(error.contains("已恢复"), "{error}");
+        assert_codex_live_bytes_restored(&before);
+        let backup_after = db.get_live_backup("codex").await.unwrap().unwrap();
+        assert_eq!(backup_after.original_config, backup_before.original_config);
+        assert_eq!(backup_after.backed_up_at, backup_before.backed_up_at);
+        let restored = db.get_proxy_config().await.unwrap();
+        assert_eq!(restored.listen_address, previous.listen_address);
+        assert_eq!(restored.listen_port, previous.listen_port);
+        assert!(tokio::net::TcpStream::connect(("127.0.0.1", old.port))
+            .await
+            .is_ok());
+        service.stop().await.expect("stop restored listener");
     }
 
     #[tokio::test]
@@ -8366,9 +8807,7 @@ requires_openai_auth = true
         );
     }
 
-    #[tokio::test]
-    #[serial]
-    async fn codex_direct_live_write_rolls_back_when_provider_commit_fails() {
+    async fn assert_codex_hot_switch_commit_failure_restores_all_files(taken_over: bool) {
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("reload settings");
 
@@ -8386,7 +8825,11 @@ requires_openai_auth = true
             .await
             .expect("start proxy server");
 
-        let provider_a = Provider::with_id(
+        seed_codex_model_template();
+        db.set_config_snippet("codex", Some("disable_response_storage = true\n".into()))
+            .expect("set common snippet");
+
+        let mut provider_a = Provider::with_id(
             "a".to_string(),
             "Provider A".to_string(),
             json!({
@@ -8396,7 +8839,7 @@ requires_openai_auth = true
             }),
             None,
         );
-        let provider_b = Provider::with_id(
+        let mut provider_b = Provider::with_id(
             "b".to_string(),
             "Provider B".to_string(),
             json!({
@@ -8406,6 +8849,12 @@ requires_openai_auth = true
             }),
             None,
         );
+        for provider in [&mut provider_a, &mut provider_b] {
+            provider.meta = Some(ProviderMeta {
+                common_config_enabled: Some(true),
+                ..Default::default()
+            });
+        }
         db.save_provider("codex", &provider_a)
             .expect("save provider a");
         db.save_provider("codex", &provider_b)
@@ -8418,19 +8867,27 @@ requires_openai_auth = true
             .proxy_service
             .write_codex_live_for_provider(&provider_a.settings_config, Some(&provider_a))
             .expect("seed direct live config");
-        db.save_live_backup(
-            "codex",
-            &serde_json::to_string(&provider_a.settings_config).expect("serialize backup"),
-        )
-        .await
-        .expect("seed restored backup");
-        let original_live = state
-            .proxy_service
-            .read_codex_live()
-            .expect("read original live config");
-        let catalog_path = crate::codex_config::get_codex_model_catalog_path();
-        let original_catalog =
-            std::fs::read_to_string(&catalog_path).expect("read original model catalog");
+        if taken_over {
+            state
+                .proxy_service
+                .set_takeover_for_app("codex", true)
+                .await
+                .expect("enable Codex takeover");
+        } else {
+            db.save_live_backup(
+                "codex",
+                &serde_json::to_string(&provider_a.settings_config).expect("serialize backup"),
+            )
+            .await
+            .expect("seed restored backup");
+        }
+        let original_live =
+            crate::codex_live_write::CodexLiveSnapshots::read().expect("snapshot all Codex files");
+        assert!(
+            original_live.common_projection.contents().is_some(),
+            "exercise the projection ledger"
+        );
+        let original_backup = db.get_live_backup("codex").await.unwrap().unwrap();
 
         {
             let conn = db.conn.lock().expect("lock database");
@@ -8445,21 +8902,23 @@ requires_openai_auth = true
             .expect("install failure trigger");
         }
 
-        let error = crate::services::provider::ProviderService::switch(&state, AppType::Codex, "b")
+        let error = state
+            .proxy_service
+            .hot_switch_provider("codex", "b")
+            .await
             .expect_err("database commit should fail");
-        state.proxy_service.stop().await.expect("stop proxy server");
-
-        assert!(error
-            .to_string()
-            .contains("forced current-provider commit failure"));
-        assert_eq!(
-            state
-                .proxy_service
-                .read_codex_live()
-                .expect("read rolled-back live config"),
-            original_live,
-            "commit failure must restore the exact direct Live snapshot"
+        // Assert before stopping: shutdown must not mask a failed compensation.
+        assert!(
+            error.contains("forced current-provider commit failure"),
+            "{error}"
         );
+        assert_codex_live_bytes_restored(&original_live);
+        let restored_backup = db.get_live_backup("codex").await.unwrap().unwrap();
+        assert_eq!(
+            restored_backup.original_config,
+            original_backup.original_config
+        );
+        assert_eq!(restored_backup.backed_up_at, original_backup.backed_up_at);
         assert_eq!(
             db.get_current_provider("codex")
                 .expect("read current provider")
@@ -8470,11 +8929,19 @@ requires_openai_auth = true
             crate::settings::get_current_provider(&AppType::Codex).as_deref(),
             Some("a")
         );
-        assert_eq!(
-            std::fs::read_to_string(&catalog_path).expect("read rolled-back model catalog"),
-            original_catalog,
-            "commit failure must restore the exact model catalog snapshot"
-        );
+        state.proxy_service.stop().await.expect("stop proxy server");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn codex_direct_live_write_rolls_back_when_provider_commit_fails() {
+        assert_codex_hot_switch_commit_failure_restores_all_files(false).await;
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn codex_taken_over_live_write_rolls_back_when_provider_commit_fails() {
+        assert_codex_hot_switch_commit_failure_restores_all_files(true).await;
     }
 
     /// Regression: turning proxy takeover off restores Live from the backup. The

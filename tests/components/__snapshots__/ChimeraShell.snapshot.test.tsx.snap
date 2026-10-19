@@ -53,7 +53,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
         />
       </div>
       <button
-        class="box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
+        class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
         data-pencil-name="能力 · 线路"
         type="button"
       >
@@ -82,7 +82,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
         </div>
       </button>
       <button
-        class="box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
+        class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
         data-pencil-name="能力 · 官方账号"
         type="button"
       >
@@ -111,7 +111,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
         </div>
       </button>
       <button
-        class="box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
+        class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
         data-pencil-name="能力 · 提示词"
         type="button"
       >
@@ -140,7 +140,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
         </div>
       </button>
       <button
-        class="box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
+        class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
         data-pencil-name="能力 · Skills 与 MCP"
         type="button"
       >
@@ -169,7 +169,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
         </div>
       </button>
       <button
-        class="box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
+        class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
         data-pencil-name="能力 · 用量"
         type="button"
       >
@@ -199,7 +199,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
       </button>
       <button
         aria-current="page"
-        class="box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-[#23282D]"
+        class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-[#23282D]"
         data-pencil-name="能力 · Codex 管理"
         type="button"
       >
@@ -228,7 +228,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
         </div>
       </button>
       <button
-        class="box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
+        class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
         data-pencil-name="能力 · 外观"
         type="button"
       >
@@ -257,7 +257,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
         </div>
       </button>
       <button
-        class="box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
+        class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
         data-pencil-name="能力 · 配置体检"
         type="button"
       >
@@ -293,7 +293,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
     </div>
     <button
       aria-label="Claude Code"
-      class="w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
+      class="chimera-nav-item w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
       data-pencil-name="工具 · Claude Code"
       type="button"
     >
@@ -310,7 +310,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
     </button>
     <button
       aria-label="Claude Desktop"
-      class="w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
+      class="chimera-nav-item w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
       data-pencil-name="工具 · Claude Desktop"
       type="button"
     >
@@ -327,7 +327,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
     </button>
     <button
       aria-label="Gemini CLI"
-      class="w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
+      class="chimera-nav-item w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
       data-pencil-name="工具 · Gemini CLI"
       type="button"
     >
@@ -344,7 +344,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
     </button>
     <button
       aria-label="OpenCode"
-      class="w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
+      class="chimera-nav-item w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
       data-pencil-name="工具 · OpenCode"
       type="button"
     >
@@ -361,7 +361,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
     </button>
     <button
       aria-label="Pi"
-      class="w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
+      class="chimera-nav-item w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
       data-pencil-name="工具 · Pi"
       type="button"
     >
@@ -378,7 +378,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
     </button>
     <button
       aria-label="oh-my-pi"
-      class="w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
+      class="chimera-nav-item w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
       data-pencil-name="工具 · oh-my-pi"
       type="button"
     >
@@ -395,7 +395,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
     </button>
     <button
       aria-label="Grok Build"
-      class="w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
+      class="chimera-nav-item w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
       data-pencil-name="工具 · Grok Build"
       type="button"
     >
@@ -411,7 +411,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
       </span>
     </button>
     <button
-      class="w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left cursor-pointer bg-transparent text-[#BABEC3] hover:bg-[#1A1E24]"
+      class="chimera-nav-item w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left cursor-pointer bg-transparent text-[#BABEC3] hover:bg-[#1A1E24]"
       data-pencil-name="添加工具"
       title="选择侧栏显示哪些工具"
       type="button"
@@ -452,7 +452,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
     data-pencil-name="分隔"
   />
   <button
-    class="box-border w-full h-[32px] shrink-0 flex flex-row gap-[12px] p-[0px_8px_0px_12px] justify-start items-center rounded-[4px] cursor-pointer border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
+    class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[12px] p-[0px_8px_0px_12px] justify-start items-center rounded-[4px] cursor-pointer border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
     data-pencil-name="会话"
     type="button"
   >
@@ -484,7 +484,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
     </div>
   </button>
   <button
-    class="box-border w-full h-[32px] shrink-0 flex flex-row gap-[12px] p-[0px_8px_0px_12px] justify-start items-center rounded-[4px] cursor-pointer border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
+    class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[12px] p-[0px_8px_0px_12px] justify-start items-center rounded-[4px] cursor-pointer border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
     data-pencil-name="设置"
     type="button"
   >
@@ -582,7 +582,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
       </div>
       <button
         aria-current="page"
-        class="box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-[#23282D]"
+        class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-[#23282D]"
         data-pencil-name="能力 · 线路"
         type="button"
       >
@@ -611,7 +611,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
         </div>
       </button>
       <button
-        class="box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
+        class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
         data-pencil-name="能力 · 官方账号"
         type="button"
       >
@@ -640,7 +640,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
         </div>
       </button>
       <button
-        class="box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
+        class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
         data-pencil-name="能力 · 提示词"
         type="button"
       >
@@ -669,7 +669,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
         </div>
       </button>
       <button
-        class="box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
+        class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
         data-pencil-name="能力 · Skills 与 MCP"
         type="button"
       >
@@ -698,7 +698,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
         </div>
       </button>
       <button
-        class="box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
+        class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
         data-pencil-name="能力 · 用量"
         type="button"
       >
@@ -727,7 +727,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
         </div>
       </button>
       <button
-        class="box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
+        class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
         data-pencil-name="能力 · Codex 管理"
         type="button"
       >
@@ -756,7 +756,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
         </div>
       </button>
       <button
-        class="box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
+        class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
         data-pencil-name="能力 · 外观"
         type="button"
       >
@@ -785,7 +785,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
         </div>
       </button>
       <button
-        class="box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
+        class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
         data-pencil-name="能力 · 配置体检"
         type="button"
       >
@@ -821,7 +821,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
     </div>
     <button
       aria-label="Claude Code"
-      class="w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
+      class="chimera-nav-item w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
       data-pencil-name="工具 · Claude Code"
       type="button"
     >
@@ -838,7 +838,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
     </button>
     <button
       aria-label="Claude Desktop"
-      class="w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
+      class="chimera-nav-item w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
       data-pencil-name="工具 · Claude Desktop"
       type="button"
     >
@@ -855,7 +855,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
     </button>
     <button
       aria-label="Gemini CLI"
-      class="w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
+      class="chimera-nav-item w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
       data-pencil-name="工具 · Gemini CLI"
       type="button"
     >
@@ -872,7 +872,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
     </button>
     <button
       aria-label="OpenCode"
-      class="w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
+      class="chimera-nav-item w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
       data-pencil-name="工具 · OpenCode"
       type="button"
     >
@@ -889,7 +889,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
     </button>
     <button
       aria-label="Pi"
-      class="w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
+      class="chimera-nav-item w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
       data-pencil-name="工具 · Pi"
       type="button"
     >
@@ -906,7 +906,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
     </button>
     <button
       aria-label="oh-my-pi"
-      class="w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
+      class="chimera-nav-item w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
       data-pencil-name="工具 · oh-my-pi"
       type="button"
     >
@@ -923,7 +923,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
     </button>
     <button
       aria-label="Grok Build"
-      class="w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
+      class="chimera-nav-item w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
       data-pencil-name="工具 · Grok Build"
       type="button"
     >
@@ -939,7 +939,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
       </span>
     </button>
     <button
-      class="w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left cursor-pointer bg-transparent text-[#BABEC3] hover:bg-[#1A1E24]"
+      class="chimera-nav-item w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left cursor-pointer bg-transparent text-[#BABEC3] hover:bg-[#1A1E24]"
       data-pencil-name="添加工具"
       title="选择侧栏显示哪些工具"
       type="button"
@@ -980,7 +980,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
     data-pencil-name="分隔"
   />
   <button
-    class="box-border w-full h-[32px] shrink-0 flex flex-row gap-[12px] p-[0px_8px_0px_12px] justify-start items-center rounded-[4px] cursor-pointer border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
+    class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[12px] p-[0px_8px_0px_12px] justify-start items-center rounded-[4px] cursor-pointer border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
     data-pencil-name="会话"
     type="button"
   >
@@ -1012,7 +1012,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
     </div>
   </button>
   <button
-    class="box-border w-full h-[32px] shrink-0 flex flex-row gap-[12px] p-[0px_8px_0px_12px] justify-start items-center rounded-[4px] cursor-pointer border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
+    class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[12px] p-[0px_8px_0px_12px] justify-start items-center rounded-[4px] cursor-pointer border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
     data-pencil-name="设置"
     type="button"
   >
@@ -1058,7 +1058,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
 
 exports[`keeps the shell markup stable across views and the line editor > titlebar on another page 1`] = `
 <header
-  class="box-border w-full h-[40px] shrink-0 flex flex-row gap-0 justify-start items-center bg-[#FDFDFE] dark:bg-[#1A1E24] border-b border-[#DDE0E3] dark:border-[#31363D] select-none z-10"
+  class="chimera-topbar box-border w-full h-[40px] shrink-0 flex flex-row gap-0 justify-start items-center bg-[#FDFDFE] dark:bg-[#1A1E24] border-b border-[#DDE0E3] dark:border-[#31363D] select-none z-10"
   data-pencil-name="标题栏"
 >
   <div
@@ -1075,7 +1075,7 @@ exports[`keeps the shell markup stable across views and the line editor > titleb
   </div>
   <button
     aria-label="搜索线路、页面或命令"
-    class="box-border w-[360px] max-w-[42%] min-w-0 shrink h-[28px] flex flex-row gap-[8px] px-2.5 justify-start items-center bg-[#F2F4F6] dark:bg-[#23282D] rounded-[4px] border-0 cursor-pointer hover:bg-[var(--bg-selected)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--focus)] transition"
+    class="chimera-global-search box-border w-[360px] max-w-[42%] min-w-0 shrink h-[28px] flex flex-row gap-[8px] px-2.5 justify-start items-center bg-[#F2F4F6] dark:bg-[#23282D] rounded-[4px] border-0 cursor-pointer hover:bg-[var(--bg-selected)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--focus)] transition"
     data-pencil-name="搜索"
     data-tauri-no-drag="true"
     type="button"
@@ -1229,7 +1229,7 @@ exports[`keeps the shell markup stable across views and the line editor > titleb
 
 exports[`keeps the shell markup stable across views and the line editor > titlebar on the line overview 1`] = `
 <header
-  class="box-border w-full h-[40px] shrink-0 flex flex-row gap-0 justify-start items-center bg-[#FDFDFE] dark:bg-[#1A1E24] border-b border-[#DDE0E3] dark:border-[#31363D] select-none z-10"
+  class="chimera-topbar box-border w-full h-[40px] shrink-0 flex flex-row gap-0 justify-start items-center bg-[#FDFDFE] dark:bg-[#1A1E24] border-b border-[#DDE0E3] dark:border-[#31363D] select-none z-10"
   data-pencil-name="标题栏"
 >
   <div
@@ -1246,7 +1246,7 @@ exports[`keeps the shell markup stable across views and the line editor > titleb
   </div>
   <button
     aria-label="搜索线路、页面或命令"
-    class="box-border w-[360px] max-w-[42%] min-w-0 shrink h-[28px] flex flex-row gap-[8px] px-2.5 justify-start items-center bg-[#F2F4F6] dark:bg-[#23282D] rounded-[4px] border-0 cursor-pointer hover:bg-[var(--bg-selected)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--focus)] transition"
+    class="chimera-global-search box-border w-[360px] max-w-[42%] min-w-0 shrink h-[28px] flex flex-row gap-[8px] px-2.5 justify-start items-center bg-[#F2F4F6] dark:bg-[#23282D] rounded-[4px] border-0 cursor-pointer hover:bg-[var(--bg-selected)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--focus)] transition"
     data-pencil-name="搜索"
     data-tauri-no-drag="true"
     type="button"
@@ -1400,7 +1400,7 @@ exports[`keeps the shell markup stable across views and the line editor > titleb
 
 exports[`keeps the shell markup stable across views and the line editor > titlebar while editing a line 1`] = `
 <header
-  class="box-border w-full h-[40px] shrink-0 flex flex-row gap-0 justify-start items-center bg-[#FDFDFE] dark:bg-[#1A1E24] border-b border-[#DDE0E3] dark:border-[#31363D] select-none z-10"
+  class="chimera-topbar box-border w-full h-[40px] shrink-0 flex flex-row gap-0 justify-start items-center bg-[#FDFDFE] dark:bg-[#1A1E24] border-b border-[#DDE0E3] dark:border-[#31363D] select-none z-10"
   data-pencil-name="标题栏"
 >
   <div
@@ -1417,7 +1417,7 @@ exports[`keeps the shell markup stable across views and the line editor > titleb
   </div>
   <button
     aria-label="搜索线路、页面或命令"
-    class="box-border w-[360px] max-w-[42%] min-w-0 shrink h-[28px] flex flex-row gap-[8px] px-2.5 justify-start items-center bg-[#F2F4F6] dark:bg-[#23282D] rounded-[4px] border-0 cursor-pointer hover:bg-[var(--bg-selected)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--focus)] transition"
+    class="chimera-global-search box-border w-[360px] max-w-[42%] min-w-0 shrink h-[28px] flex flex-row gap-[8px] px-2.5 justify-start items-center bg-[#F2F4F6] dark:bg-[#23282D] rounded-[4px] border-0 cursor-pointer hover:bg-[var(--bg-selected)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--focus)] transition"
     data-pencil-name="搜索"
     data-tauri-no-drag="true"
     type="button"

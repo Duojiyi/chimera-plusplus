@@ -1,0 +1,444 @@
+/* Functional-page glass materials. Keep page geometry, reading surfaces and
+   application shells owned by their existing stylesheets. */
+
+/* Let the main workspace optical wash show through these page canvases. */
+.chimera-shell
+  :is(
+    .prompts-page,
+    .official-accounts-page,
+    .config-health-page,
+    .usage-design-view,
+    .skin-market-reference,
+    .new-settings-view,
+    .skills-mcp-page,
+    .tool-view,
+    .tool-visibility-page,
+    .session-manager-page,
+    .runtime-reference-view
+  ) {
+  background: transparent;
+}
+
+.provider-editor-page .provider-editor {
+  background: transparent;
+}
+
+/* Feature cards and bounded control surfaces. Solid token fallback remains
+   legible when backdrop filtering is unavailable. */
+:is(
+  .provider-editor-page .advanced-options,
+  .provider-editor-page .editor-template-actions,
+  .provider-editor-page .editor-toggle-card,
+  .provider-editor-page .editor-format-options,
+  .official-accounts-page .accounts-list-tools,
+  .official-accounts-page .accounts-empty,
+  .prompts-page .prompts-summary:not(.is-warning),
+  .prompts-page .prompt-card,
+  .prompts-page .prompt-resolve-option,
+  .skills-mcp-page .skills-mcp-summary,
+  .skills-mcp-page .skills-lifecycle-panel,
+  .skills-mcp-page .skills-scan-panel,
+  .skills-mcp-page .resource-empty,
+  .skills-mcp-page .skills-panel-heading,
+  .usage-design-view .usage-design-toolbar,
+  .usage-design-view .usage-range-seg,
+  .usage-design-view .usage-conversation-tools,
+  .usage-design-view .usage-chart-card,
+  .usage-design-view .usage-model-card,
+  .usage-design-view .usage-summary-section,
+  .usage-design-view .usage-empty-state,
+  .runtime-reference-view .runtime-release-card,
+  .runtime-reference-view .runtime-mode-card,
+  .runtime-reference-view .runtime-source-segment,
+  .skin-market-reference .skin-filter-tabs,
+  .skin-market-reference .skin-list > button,
+  .skin-market-reference .skin-detail-footer,
+  .config-health-view .health-manual,
+  .tool-view .tool-discovery,
+  .tool-view .tool-official-guide,
+  .tool-view .tool-install-panel,
+  .tool-view .tool-empty,
+  .tool-view .tool-desktop-card,
+  .tool-view .tool-desktop-route-control,
+  .tool-view .tool-lines,
+  .pi-management-view .pi-card,
+  .pi-management-view .pi-plugin-card,
+  .session-manager-page .session-batch-panel,
+  .session-manager-page .session-detail-head,
+  .session-manager-page .session-conversation-head,
+  .new-settings-view .settings-app-update,
+  .new-settings-view .settings-tools-preview-note,
+  .new-settings-view .settings-reference-list,
+  .tool-visibility-page .tool-visibility-callout,
+  .tool-visibility-page .tool-visibility-list,
+  .new-settings-view .about-tool-card,
+  .new-settings-view .about-tool-versions,
+  .new-settings-view .cc-switch-import-scope,
+  .new-settings-view .cc-switch-import-outcome
+) {
+  background:
+    linear-gradient(155deg, var(--glass-highlight), transparent 74%),
+    var(--glass-surface-strong);
+  border-color: var(--glass-border);
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    var(--glass-shadow);
+}
+
+/* Compact segmented navigation and selected items. */
+:is(
+  .prompts-page .prompts-filters,
+  .skills-mcp-page .skills-mcp-tabs,
+  .usage-design-view .usage-range-seg,
+  .runtime-reference-view .runtime-source-segment,
+  .skin-market-reference .skin-filter-tabs,
+  .pi-management-view .pi-segment,
+  .new-settings-view .settings-segment
+) {
+  background-color: var(--glass-control-bg);
+  border-color: var(--glass-border);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
+}
+
+:is(
+  .prompts-page .prompts-filters button[aria-pressed="true"],
+  .prompts-page .prompts-category-filters button[aria-pressed="true"],
+  .skills-mcp-page .skills-mcp-tabs button[aria-pressed="true"],
+  .usage-design-view .usage-range-seg button[aria-pressed="true"],
+  .usage-design-view .usage-tool-button[aria-pressed="true"],
+  .runtime-reference-view .runtime-source-segment button.is-active,
+  .skin-market-reference .skin-filter-tabs button.is-active,
+  .skin-market-reference .skin-list > button.active,
+  .tool-view .tool-section-nav button[aria-current="page"],
+  .pi-management-view .pi-segment [aria-pressed="true"],
+  .new-settings-view .settings-segment button.is-active,
+  .new-settings-view .settings-page-nav a[aria-current="location"]
+) {
+  background-color: var(--glass-accent-soft);
+  color: var(--glass-accent-strong);
+  box-shadow:
+    inset 0 0 0 1px var(--glass-border),
+    inset 0 1px 0 var(--glass-highlight);
+}
+
+/* Provider editor: retain opaque code, preview and form-control surfaces. */
+.provider-editor-page .editor-format-options input:checked + span {
+  background-color: var(--glass-accent-soft);
+  color: var(--glass-accent-strong);
+  box-shadow: inset 0 0 0 1px var(--glass-border);
+}
+
+/* Official accounts: edge the selected row without touching quota/status plates. */
+.official-accounts-page .account-row[data-current="true"] {
+  background-image: linear-gradient(
+    150deg,
+    var(--glass-highlight),
+    transparent 78%
+  );
+  border-color: var(--glass-accent);
+  box-shadow:
+    inset 0 0 0 1px var(--glass-accent-soft),
+    inset 0 1px 0 var(--glass-highlight);
+}
+
+.official-accounts-page .account-current {
+  border-color: var(--glass-border);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 12%);
+}
+
+/* Prompt cards keep their enabled/warning semantics and readable content. */
+.prompts-page .prompts-summary.is-warning {
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
+}
+
+.prompts-page .prompt-card.is-enabled {
+  background-image: linear-gradient(
+    150deg,
+    var(--glass-highlight),
+    transparent 78%
+  );
+  box-shadow:
+    inset 0 0 0 1px var(--glass-accent-soft),
+    inset 0 1px 0 var(--glass-highlight);
+}
+
+/* Skills/MCP selected scan row and expanded resource path. */
+.skills-mcp-page .skills-scan-panel .skills-scan-row[data-selected="true"],
+.skills-mcp-page .resource-path[aria-expanded="true"] {
+  background-color: var(--glass-accent-soft);
+  box-shadow:
+    inset 0 0 0 1px var(--glass-border),
+    inset 0 1px 0 var(--glass-highlight);
+}
+
+.skills-mcp-page .skills-install-panel {
+  border-left-color: var(--glass-border);
+  box-shadow: inset 1px 0 0 var(--glass-highlight);
+}
+
+/* Usage chart cards receive a quiet upper edge; data tables stay opaque. */
+.usage-design-view .usage-chart-card,
+.usage-design-view .usage-model-card {
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    var(--glass-shadow);
+}
+
+.usage-design-view .usage-advanced-toggle {
+  background-color: var(--glass-control-bg);
+  border-color: var(--glass-border);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
+}
+
+.usage-design-view .usage-range-calendar {
+  background-image: linear-gradient(
+    155deg,
+    var(--glass-highlight),
+    transparent 76%
+  );
+  border-color: var(--glass-border);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
+}
+
+.usage-design-view .usage-status-board {
+  border-color: var(--glass-border);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 12%),
+    var(--glass-shadow);
+}
+
+.usage-advanced-body [role="tablist"] {
+  background-color: var(--glass-control-bg);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
+}
+
+.usage-advanced-body [role="tab"][data-state="active"] {
+  background-image: none;
+  background-color: var(--glass-accent-soft);
+  color: var(--glass-accent-strong);
+  box-shadow: inset 0 0 0 1px var(--glass-border);
+}
+
+.usage-advanced-body :is(table, [role="table"]) {
+  background-color: var(--glass-surface-strong);
+}
+
+/* Runtime selection remains distinct from release/status content. */
+.runtime-reference-view .runtime-mode-card.is-active {
+  background-image: linear-gradient(
+    150deg,
+    var(--glass-highlight),
+    transparent 76%
+  );
+  border-color: var(--glass-accent);
+  box-shadow:
+    inset 0 0 0 1px var(--glass-accent-soft),
+    inset 0 1px 0 var(--glass-highlight);
+}
+
+.runtime-reference-view .runtime-status-board {
+  border-color: var(--glass-border);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 12%),
+    var(--glass-shadow);
+}
+
+/* Preserve appearance artwork and its palette; only frame skin choices. */
+.skin-market-reference .skin-list > button.active {
+  border-color: var(--glass-accent);
+  box-shadow:
+    inset 0 0 0 1px var(--glass-accent-soft),
+    inset 0 1px 0 var(--glass-highlight),
+    var(--glass-shadow);
+}
+
+.skin-market-reference .skin-preview {
+  border-color: var(--glass-border);
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    var(--glass-shadow);
+}
+
+/* Health plates intentionally remain dark and semantic; only their edge shifts. */
+.config-health-view .health-plate {
+  border-color: var(--glass-border);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 12%),
+    var(--glass-shadow);
+}
+
+.config-health-view .health-list {
+  background-color: var(--glass-surface-strong);
+  border-color: var(--glass-border);
+}
+
+/* Tool-specific navigation, discovery and installation panels. */
+.tool-view .tool-section-nav {
+  background: transparent;
+  border-bottom-color: var(--glass-border);
+  box-shadow: none;
+}
+
+.tool-view .tool-line-head {
+  background-color: var(--glass-surface-strong);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
+}
+
+.tool-view .tool-installation.chimera-disclosure {
+  border-color: var(--glass-border);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
+}
+
+.pi-management-view .pi-panel-body[data-panel="runtime"] {
+  background-image: linear-gradient(
+    155deg,
+    var(--glass-highlight),
+    transparent 76%
+  );
+  border-color: var(--glass-border);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
+}
+
+.pi-management-view .pi-empty {
+  background-color: var(--glass-surface);
+  border-color: var(--glass-border);
+}
+
+/* Session detail and list panels stay solid reading surfaces, with selected
+   session rows retaining their existing accent marker. */
+.session-manager-page :is(.session-list-panel, .session-detail-panel) {
+  background-color: var(--glass-surface-strong);
+  border-color: var(--glass-border);
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    var(--glass-shadow);
+}
+
+.session-manager-page .session-list-row.is-selected {
+  background-color: var(--glass-accent-soft);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
+}
+
+.session-manager-page .session-group-row.is-app {
+  background-color: var(--glass-control-bg);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
+}
+
+/* Settings panels and import outcomes; leave switches and status meanings alone. */
+.new-settings-view :is(.settings-subpanel, .settings-tools-list) {
+  border-color: var(--glass-border);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
+}
+
+.new-settings-view .settings-reference-list {
+  background-color: var(--glass-surface-strong);
+}
+
+.new-settings-view .cc-switch-row-new:has(input:checked) {
+  background-color: var(--glass-accent-soft);
+  box-shadow:
+    inset 0 0 0 1px var(--glass-border),
+    inset 0 1px 0 var(--glass-highlight);
+}
+
+/* Restrained translucency only on bounded cards and compact bars. Long lists,
+   editors, tables, full panels and all shared overlay shells remain unblurred. */
+@supports (
+  (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))
+) {
+  :is(
+    .provider-editor-page .advanced-options,
+    .provider-editor-page .editor-template-actions,
+    .official-accounts-page .accounts-list-tools,
+    .prompts-page .prompts-summary:not(.is-warning),
+    .prompts-page .prompts-filters,
+    .skills-mcp-page .skills-mcp-summary,
+    .skills-mcp-page .skills-mcp-tabs,
+    .usage-design-view .usage-design-toolbar,
+    .usage-design-view .usage-range-seg,
+    .usage-design-view .usage-conversation-tools,
+    .runtime-reference-view .runtime-release-card,
+    .skin-market-reference .skin-filter-tabs,
+    .new-settings-view .settings-segment
+  ) {
+    background-image: linear-gradient(
+      155deg,
+      var(--glass-highlight),
+      transparent 78%
+    );
+    background-color: var(--glass-surface);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(125%);
+    backdrop-filter: blur(var(--glass-blur)) saturate(125%);
+  }
+}
+/* Match every blurred page surface; inherited fallback tokens are opaque in this mode. */
+@media (prefers-reduced-transparency: reduce) {
+  :is(
+    .provider-editor-page .advanced-options,
+    .provider-editor-page .editor-template-actions,
+    .official-accounts-page .accounts-list-tools,
+    .prompts-page .prompts-summary:not(.is-warning),
+    .prompts-page .prompts-filters,
+    .skills-mcp-page .skills-mcp-summary,
+    .skills-mcp-page .skills-mcp-tabs,
+    .usage-design-view .usage-design-toolbar,
+    .usage-design-view .usage-range-seg,
+    .usage-design-view .usage-conversation-tools,
+    .runtime-reference-view .runtime-release-card,
+    .skin-market-reference .skin-filter-tabs,
+    .new-settings-view .settings-segment
+  ) {
+    background: var(--glass-surface-strong);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :is(
+    .prompts-page .prompt-card,
+    .official-accounts-page .account-row,
+    .skills-mcp-page .skills-scan-row,
+    .usage-design-view .usage-tool-button,
+    .runtime-reference-view .runtime-mode-card,
+    .skin-market-reference .skin-list > button,
+    .session-manager-page .session-list-row,
+    .tool-view .tool-section-nav button,
+    .new-settings-view .settings-segment button
+  ) {
+    scroll-behavior: auto;
+  }
+}
+
+@media (forced-colors: active) {
+  :is(
+    .provider-editor-page .advanced-options,
+    .provider-editor-page .editor-template-actions,
+    .official-accounts-page .accounts-list-tools,
+    .prompts-page .prompts-summary:not(.is-warning),
+    .prompts-page .prompts-filters,
+    .prompts-page .prompt-card,
+    .skills-mcp-page .skills-mcp-summary,
+    .skills-mcp-page .skills-mcp-tabs,
+    .usage-design-view .usage-design-toolbar,
+    .usage-design-view .usage-range-seg,
+    .usage-design-view .usage-conversation-tools,
+    .usage-design-view .usage-summary-section,
+    .runtime-reference-view .runtime-release-card,
+    .skin-market-reference .skin-filter-tabs,
+    .tool-view .tool-discovery,
+    .tool-view .tool-section-nav,
+    .session-manager-page .session-list-panel,
+    .session-manager-page .session-detail-panel,
+    .new-settings-view .settings-app-update,
+    .new-settings-view .settings-segment,
+    .tool-visibility-page .tool-visibility-list
+  ) {
+    background: Canvas;
+    border-color: CanvasText;
+    box-shadow: none;
+    color: CanvasText;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}

@@ -1,0 +1,4797 @@
+{
+  "version": "2.21",
+  "children": [
+    {
+      "type": "frame",
+      "id": "v962i",
+      "x": 0,
+      "y": 0,
+      "name": "01 · Chimera++ 线路 / Liquid Glass",
+      "clip": true,
+      "width": 1440,
+      "height": 1000,
+      "fill": "$surface",
+      "cornerRadius": 16,
+      "children": [
+        {
+          "type": "frame",
+          "id": "jXgRa",
+          "name": "侧栏 · 深海石墨",
+          "width": 236,
+          "height": "fill_container",
+          "fill": {
+            "type": "gradient",
+            "gradientType": "linear",
+            "enabled": true,
+            "rotation": 150,
+            "size": {
+              "height": 1
+            },
+            "colors": [
+              {
+                "color": "#19232F",
+                "position": 0
+              },
+              {
+                "color": "#111820",
+                "position": 0.56
+              },
+              {
+                "color": "#192431",
+                "position": 1
+              }
+            ]
+          },
+          "layout": "none",
+          "children": [
+            {
+              "type": "ellipse",
+              "id": "KvEwK",
+              "x": 20,
+              "y": 98,
+              "name": "导航背后 · 冰蓝环境光",
+              "fill": {
+                "type": "gradient",
+                "gradientType": "radial",
+                "enabled": true,
+                "rotation": 0,
+                "size": {
+                  "width": 1,
+                  "height": 1
+                },
+                "colors": [
+                  {
+                    "color": "#35668B60",
+                    "position": 0
+                  },
+                  {
+                    "color": "#2D557800",
+                    "position": 1
+                  }
+                ]
+              },
+              "width": 210,
+              "height": 130
+            },
+            {
+              "type": "ellipse",
+              "id": "C55Hr",
+              "x": 22,
+              "y": 745,
+              "name": "侧栏底部 · 微弱环境光",
+              "fill": {
+                "type": "gradient",
+                "gradientType": "radial",
+                "enabled": true,
+                "rotation": 0,
+                "size": {
+                  "width": 1,
+                  "height": 1
+                },
+                "colors": [
+                  {
+                    "color": "#37658A25",
+                    "position": 0
+                  },
+                  {
+                    "color": "#17212D00",
+                    "position": 1
+                  }
+                ]
+              },
+              "width": 210,
+              "height": 220
+            },
+            {
+              "type": "frame",
+              "id": "IfZZY",
+              "x": 16,
+              "y": 0,
+              "name": "导航内容",
+              "width": 204,
+              "height": 1000,
+              "layout": "vertical",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "fAYLv",
+                  "name": "品牌",
+                  "width": "fill_container",
+                  "height": 80,
+                  "gap": 10,
+                  "padding": [
+                    0,
+                    8
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "xWoTm",
+                      "name": "Chimera 标志",
+                      "width": 30,
+                      "height": 32,
+                      "fill": {
+                        "type": "gradient",
+                        "gradientType": "linear",
+                        "enabled": true,
+                        "rotation": 140,
+                        "size": {
+                          "height": 1
+                        },
+                        "colors": [
+                          {
+                            "color": "#D1EDFF",
+                            "position": 0
+                          },
+                          {
+                            "color": "#579BCD",
+                            "position": 1
+                          }
+                        ]
+                      },
+                      "cornerRadius": 9,
+                      "justifyContent": "center",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "nfgp3",
+                          "name": "Chimera 标记",
+                          "width": 19,
+                          "height": 19,
+                          "icon": "command",
+                          "library": "lucide",
+                          "fill": "#13334F"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "id": "FPe21",
+                      "name": "Chimera++",
+                      "fill": "#F3F7FC",
+                      "content": "Chimera++",
+                      "fontFamily": "Inter",
+                      "fontSize": 19,
+                      "fontWeight": "600",
+                      "letterSpacing": -0.6
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "u4Nxd",
+                  "name": "Codex 工具分组",
+                  "width": "fill_container",
+                  "height": 46,
+                  "gap": 10,
+                  "padding": [
+                    0,
+                    12
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "mhOBi",
+                      "name": "Codex 图标",
+                      "width": 19,
+                      "height": 19,
+                      "icon": "terminal",
+                      "library": "lucide",
+                      "fill": "#D3DEEA"
+                    },
+                    {
+                      "type": "text",
+                      "id": "sQ7hE",
+                      "name": "Codex 名称",
+                      "fill": "#E5EDF6",
+                      "content": "Codex",
+                      "lineHeight": 1.35,
+                      "fontFamily": "Noto Sans SC",
+                      "fontSize": 14,
+                      "fontWeight": "600"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "AvOdG",
+                      "name": "弹性间距",
+                      "width": "fill_container",
+                      "height": 1
+                    },
+                    {
+                      "type": "icon",
+                      "id": "E3PIo9",
+                      "name": "展开状态",
+                      "width": 14,
+                      "height": 14,
+                      "icon": "chevron-down",
+                      "library": "lucide",
+                      "fill": "#6B8097"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "xBFrI",
+                  "name": "Codex 功能导航",
+                  "width": "fill_container",
+                  "layout": "vertical",
+                  "gap": 3,
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "jSsXe",
+                      "name": "线路 · 液态玻璃选中态",
+                      "width": "fill_container",
+                      "height": 39,
+                      "fill": {
+                        "type": "shader",
+                        "enabled": true,
+                        "url": "chimera-liquid-glass.glsl",
+                        "uniforms": {
+                          "u_background": "pencil:background",
+                          "u_radius": 13,
+                          "u_refraction": 6,
+                          "u_tint": "#91C9FF",
+                          "u_tintAmount": 0.17,
+                          "u_shine": 0.28
+                        }
+                      },
+                      "cornerRadius": 13,
+                      "stroke": {
+                        "type": "gradient",
+                        "gradientType": "linear",
+                        "enabled": true,
+                        "rotation": 150,
+                        "size": {
+                          "height": 1
+                        },
+                        "colors": [
+                          {
+                            "color": "#D5EDFF8A",
+                            "position": 0
+                          },
+                          {
+                            "color": "#A4CCFF14",
+                            "position": 0.5
+                          },
+                          {
+                            "color": "#9FCEFF55",
+                            "position": 1
+                          }
+                        ]
+                      },
+                      "strokeWidth": 0.8,
+                      "effect": {
+                        "type": "shadow",
+                        "shadowType": "outer",
+                        "color": "#0000001F",
+                        "offset": {
+                          "x": 0,
+                          "y": 5
+                        },
+                        "blur": 14
+                      },
+                      "gap": 12,
+                      "padding": [
+                        0,
+                        14
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "WysN9",
+                          "name": "线路 图标",
+                          "width": 17,
+                          "height": 17,
+                          "icon": "waypoints",
+                          "library": "lucide",
+                          "fill": "#EAF6FF"
+                        },
+                        {
+                          "type": "text",
+                          "id": "jKTaN",
+                          "name": "线路 文字",
+                          "fill": "#F2F8FF",
+                          "content": "线路",
+                          "lineHeight": 1.35,
+                          "fontFamily": "Noto Sans SC",
+                          "fontSize": 13,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "frame",
+                          "id": "P7AoT",
+                          "name": "弹性间距",
+                          "width": "fill_container",
+                          "height": 1
+                        },
+                        {
+                          "type": "ellipse",
+                          "id": "rsBUS",
+                          "name": "选中光点",
+                          "fill": "#B8E7FF",
+                          "width": 5,
+                          "height": 5,
+                          "effect": {
+                            "type": "shadow",
+                            "shadowType": "outer",
+                            "color": "#90D2FF80",
+                            "blur": 6
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "cmWwY",
+                      "name": "官方账号",
+                      "width": "fill_container",
+                      "height": 39,
+                      "cornerRadius": 13,
+                      "gap": 12,
+                      "padding": [
+                        0,
+                        14
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "e7Wtvq",
+                          "name": "官方账号 图标",
+                          "width": 17,
+                          "height": 17,
+                          "icon": "circle-user-round",
+                          "library": "lucide",
+                          "fill": "#8B9CB0"
+                        },
+                        {
+                          "type": "text",
+                          "id": "MVuN5",
+                          "name": "官方账号 文字",
+                          "fill": "#A8B7C8",
+                          "content": "官方账号",
+                          "lineHeight": 1.35,
+                          "fontFamily": "Noto Sans SC",
+                          "fontSize": 13
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "K8iHf3",
+                      "name": "提示词",
+                      "width": "fill_container",
+                      "height": 39,
+                      "cornerRadius": 13,
+                      "gap": 12,
+                      "padding": [
+                        0,
+                        14
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "j9KnS",
+                          "name": "提示词 图标",
+                          "width": 17,
+                          "height": 17,
+                          "icon": "square-pen",
+                          "library": "lucide",
+                          "fill": "#8B9CB0"
+                        },
+                        {
+                          "type": "text",
+                          "id": "uA5O6",
+                          "name": "提示词 文字",
+                          "fill": "#A8B7C8",
+                          "content": "提示词",
+                          "lineHeight": 1.35,
+                          "fontFamily": "Noto Sans SC",
+                          "fontSize": 13
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "euKge",
+                      "name": "Skills 与 MCP",
+                      "width": "fill_container",
+                      "height": 39,
+                      "cornerRadius": 13,
+                      "gap": 12,
+                      "padding": [
+                        0,
+                        14
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "e8mdU7",
+                          "name": "Skills 与 MCP 图标",
+                          "width": 17,
+                          "height": 17,
+                          "icon": "blocks",
+                          "library": "lucide",
+                          "fill": "#8B9CB0"
+                        },
+                        {
+                          "type": "text",
+                          "id": "OvzZ6",
+                          "name": "Skills 与 MCP 文字",
+                          "fill": "#A8B7C8",
+                          "content": "Skills 与 MCP",
+                          "lineHeight": 1.35,
+                          "fontFamily": "Noto Sans SC",
+                          "fontSize": 13
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "sAdLe",
+                      "name": "用量",
+                      "width": "fill_container",
+                      "height": 39,
+                      "cornerRadius": 13,
+                      "gap": 12,
+                      "padding": [
+                        0,
+                        14
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "g2nLG",
+                          "name": "用量 图标",
+                          "width": 17,
+                          "height": 17,
+                          "icon": "chart-no-axes-combined",
+                          "library": "lucide",
+                          "fill": "#8B9CB0"
+                        },
+                        {
+                          "type": "text",
+                          "id": "cCbfk",
+                          "name": "用量 文字",
+                          "fill": "#A8B7C8",
+                          "content": "用量",
+                          "lineHeight": 1.35,
+                          "fontFamily": "Noto Sans SC",
+                          "fontSize": 13
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "vf7ky",
+                      "name": "Codex 管理",
+                      "width": "fill_container",
+                      "height": 39,
+                      "cornerRadius": 13,
+                      "gap": 12,
+                      "padding": [
+                        0,
+                        14
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "iICdS",
+                          "name": "Codex 管理 图标",
+                          "width": 17,
+                          "height": 17,
+                          "icon": "sliders-horizontal",
+                          "library": "lucide",
+                          "fill": "#8B9CB0"
+                        },
+                        {
+                          "type": "text",
+                          "id": "RJrsl",
+                          "name": "Codex 管理 文字",
+                          "fill": "#A8B7C8",
+                          "content": "Codex 管理",
+                          "lineHeight": 1.35,
+                          "fontFamily": "Noto Sans SC",
+                          "fontSize": 13
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "b6uBc",
+                      "name": "外观",
+                      "width": "fill_container",
+                      "height": 39,
+                      "cornerRadius": 13,
+                      "gap": 12,
+                      "padding": [
+                        0,
+                        14
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "fKs6w",
+                          "name": "外观 图标",
+                          "width": 17,
+                          "height": 17,
+                          "icon": "palette",
+                          "library": "lucide",
+                          "fill": "#8B9CB0"
+                        },
+                        {
+                          "type": "text",
+                          "id": "y8p3Vl",
+                          "name": "外观 文字",
+                          "fill": "#A8B7C8",
+                          "content": "外观",
+                          "lineHeight": 1.35,
+                          "fontFamily": "Noto Sans SC",
+                          "fontSize": 13
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "k8BdtL",
+                      "name": "配置体检",
+                      "width": "fill_container",
+                      "height": 39,
+                      "cornerRadius": 13,
+                      "gap": 12,
+                      "padding": [
+                        0,
+                        14
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "vPeWI",
+                          "name": "配置体检 图标",
+                          "width": 17,
+                          "height": 17,
+                          "icon": "shield-check",
+                          "library": "lucide",
+                          "fill": "#8B9CB0"
+                        },
+                        {
+                          "type": "text",
+                          "id": "WkOfT",
+                          "name": "配置体检 文字",
+                          "fill": "#A8B7C8",
+                          "content": "配置体检",
+                          "lineHeight": 1.35,
+                          "fontFamily": "Noto Sans SC",
+                          "fontSize": 13
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "YU7B2",
+                  "name": "其他工具分组标题",
+                  "width": "fill_container",
+                  "height": 48,
+                  "padding": [
+                    12,
+                    14,
+                    0,
+                    14
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "EtTx9",
+                      "name": "其他工具",
+                      "fill": "#6E8299",
+                      "content": "其他工具",
+                      "lineHeight": 1.35,
+                      "fontFamily": "Noto Sans SC",
+                      "fontSize": 12,
+                      "fontWeight": "500"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "vC9er",
+                  "name": "其他工具列表",
+                  "width": "fill_container",
+                  "layout": "vertical",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "qfddL",
+                      "name": "Claude Code",
+                      "width": "fill_container",
+                      "height": 37,
+                      "gap": 12,
+                      "padding": [
+                        0,
+                        14
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "a3D9HD",
+                          "name": "Claude Code 图标",
+                          "width": 17,
+                          "height": 17,
+                          "icon": "code",
+                          "library": "lucide",
+                          "fill": "#7E91A6"
+                        },
+                        {
+                          "type": "text",
+                          "id": "SpGqK",
+                          "name": "Claude Code 名称",
+                          "fill": "#A7B5C6",
+                          "content": "Claude Code",
+                          "lineHeight": 1.35,
+                          "fontFamily": "Noto Sans SC",
+                          "fontSize": 12
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "qhrvl",
+                      "name": "Claude Desktop",
+                      "width": "fill_container",
+                      "height": 37,
+                      "gap": 12,
+                      "padding": [
+                        0,
+                        14
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "gsrx2",
+                          "name": "Claude Desktop 图标",
+                          "width": 17,
+                          "height": 17,
+                          "icon": "app-window",
+                          "library": "lucide",
+                          "fill": "#7E91A6"
+                        },
+                        {
+                          "type": "text",
+                          "id": "m2Y4Th",
+                          "name": "Claude Desktop 名称",
+                          "fill": "#A7B5C6",
+                          "content": "Claude Desktop",
+                          "lineHeight": 1.35,
+                          "fontFamily": "Noto Sans SC",
+                          "fontSize": 12
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "XvG7h",
+                      "name": "Gemini CLI",
+                      "width": "fill_container",
+                      "height": 37,
+                      "gap": 12,
+                      "padding": [
+                        0,
+                        14
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "toW4N",
+                          "name": "Gemini CLI 图标",
+                          "width": 17,
+                          "height": 17,
+                          "icon": "sparkles",
+                          "library": "lucide",
+                          "fill": "#7E91A6"
+                        },
+                        {
+                          "type": "text",
+                          "id": "aI3Of",
+                          "name": "Gemini CLI 名称",
+                          "fill": "#A7B5C6",
+                          "content": "Gemini CLI",
+                          "lineHeight": 1.35,
+                          "fontFamily": "Noto Sans SC",
+                          "fontSize": 12
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "Q2LAg8",
+                      "name": "OpenCode",
+                      "width": "fill_container",
+                      "height": 37,
+                      "gap": 12,
+                      "padding": [
+                        0,
+                        14
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "u7iNb",
+                          "name": "OpenCode 图标",
+                          "width": 17,
+                          "height": 17,
+                          "icon": "square-terminal",
+                          "library": "lucide",
+                          "fill": "#7E91A6"
+                        },
+                        {
+                          "type": "text",
+                          "id": "dlw14",
+                          "name": "OpenCode 名称",
+                          "fill": "#A7B5C6",
+                          "content": "OpenCode",
+                          "lineHeight": 1.35,
+                          "fontFamily": "Noto Sans SC",
+                          "fontSize": 12
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "z9ENjh",
+                      "name": "Pi",
+                      "width": "fill_container",
+                      "height": 37,
+                      "gap": 12,
+                      "padding": [
+                        0,
+                        14
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "T925wk",
+                          "name": "Pi 图标",
+                          "width": 17,
+                          "height": 17,
+                          "icon": "circle-dot",
+                          "library": "lucide",
+                          "fill": "#7E91A6"
+                        },
+                        {
+                          "type": "text",
+                          "id": "gUWuX",
+                          "name": "Pi 名称",
+                          "fill": "#A7B5C6",
+                          "content": "Pi",
+                          "lineHeight": 1.35,
+                          "fontFamily": "Noto Sans SC",
+                          "fontSize": 12
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "JrtlH",
+                      "name": "oh-my-pi",
+                      "width": "fill_container",
+                      "height": 37,
+                      "gap": 12,
+                      "padding": [
+                        0,
+                        14
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "VfrMd",
+                          "name": "oh-my-pi 图标",
+                          "width": 17,
+                          "height": 17,
+                          "icon": "layers-2",
+                          "library": "lucide",
+                          "fill": "#7E91A6"
+                        },
+                        {
+                          "type": "text",
+                          "id": "jIAY8",
+                          "name": "oh-my-pi 名称",
+                          "fill": "#A7B5C6",
+                          "content": "oh-my-pi",
+                          "lineHeight": 1.35,
+                          "fontFamily": "Noto Sans SC",
+                          "fontSize": 12
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "Z6Veh",
+                      "name": "Grok Build",
+                      "width": "fill_container",
+                      "height": 37,
+                      "gap": 12,
+                      "padding": [
+                        0,
+                        14
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "h6acD",
+                          "name": "Grok Build 图标",
+                          "width": 17,
+                          "height": 17,
+                          "icon": "box",
+                          "library": "lucide",
+                          "fill": "#7E91A6"
+                        },
+                        {
+                          "type": "text",
+                          "id": "U245M5",
+                          "name": "Grok Build 名称",
+                          "fill": "#A7B5C6",
+                          "content": "Grok Build",
+                          "lineHeight": 1.35,
+                          "fontFamily": "Noto Sans SC",
+                          "fontSize": 12
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "PbnPv",
+                      "name": "管理工具",
+                      "width": "fill_container",
+                      "height": 37,
+                      "gap": 12,
+                      "padding": [
+                        0,
+                        14
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "tnfzr",
+                          "name": "管理工具 图标",
+                          "width": 17,
+                          "height": 17,
+                          "icon": "plus",
+                          "library": "lucide",
+                          "fill": "#7E91A6"
+                        },
+                        {
+                          "type": "text",
+                          "id": "SGrvo",
+                          "name": "管理工具 名称",
+                          "fill": "#A7B5C6",
+                          "content": "管理工具",
+                          "lineHeight": 1.35,
+                          "fontFamily": "Noto Sans SC",
+                          "fontSize": 12
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "nUx2l",
+                  "name": "导航底部弹性留白",
+                  "width": "fill_container",
+                  "height": "fill_container"
+                },
+                {
+                  "type": "frame",
+                  "id": "rl3Li",
+                  "name": "侧栏底部",
+                  "width": "fill_container",
+                  "height": 111,
+                  "stroke": "#FFFFFF0C",
+                  "strokeWidth": {
+                    "top": 1
+                  },
+                  "layout": "vertical",
+                  "padding": [
+                    10,
+                    0,
+                    14,
+                    0
+                  ],
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "l7SeZV",
+                      "name": "会话",
+                      "width": "fill_container",
+                      "height": 38,
+                      "gap": 12,
+                      "padding": [
+                        0,
+                        14
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "W64pF",
+                          "name": "会话 图标",
+                          "width": 17,
+                          "height": 17,
+                          "icon": "messages-square",
+                          "library": "lucide",
+                          "fill": "#8A9CB0"
+                        },
+                        {
+                          "type": "text",
+                          "id": "E1s4S",
+                          "name": "会话 文字",
+                          "fill": "#B7C5D4",
+                          "content": "会话",
+                          "lineHeight": 1.35,
+                          "fontFamily": "Noto Sans SC",
+                          "fontSize": 13
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "nMfdQ",
+                      "name": "设置",
+                      "width": "fill_container",
+                      "height": 38,
+                      "gap": 12,
+                      "padding": [
+                        0,
+                        14
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "F8MJLl",
+                          "name": "设置 图标",
+                          "width": 17,
+                          "height": 17,
+                          "icon": "settings-2",
+                          "library": "lucide",
+                          "fill": "#8A9CB0"
+                        },
+                        {
+                          "type": "text",
+                          "id": "nx6WQ",
+                          "name": "设置 文字",
+                          "fill": "#B7C5D4",
+                          "content": "设置",
+                          "lineHeight": 1.35,
+                          "fontFamily": "Noto Sans SC",
+                          "fontSize": 13
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "yIiTi",
+          "name": "线路工作区",
+          "width": "fill_container",
+          "height": "fill_container",
+          "fill": "#F6F8FB",
+          "layout": "vertical",
+          "children": [
+            {
+              "type": "frame",
+              "id": "fCDoy",
+              "name": "全局顶栏",
+              "width": "fill_container",
+              "height": 64,
+              "fill": "#FFFFFFAB",
+              "stroke": "#DFE6EF",
+              "strokeWidth": {
+                "bottom": 1
+              },
+              "gap": 12,
+              "padding": [
+                0,
+                28
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "text",
+                  "id": "umTR2",
+                  "name": "工具上下文",
+                  "fill": "#53677F",
+                  "content": "Codex",
+                  "lineHeight": 1.35,
+                  "fontFamily": "Noto Sans SC",
+                  "fontSize": 12,
+                  "fontWeight": "500"
+                },
+                {
+                  "type": "icon",
+                  "id": "AsBsX",
+                  "name": "层级分隔",
+                  "width": 13,
+                  "height": 13,
+                  "icon": "chevron-right",
+                  "library": "lucide",
+                  "fill": "#B2BECC"
+                },
+                {
+                  "type": "text",
+                  "id": "UbeeY",
+                  "name": "页面上下文",
+                  "fill": "#8B98A9",
+                  "content": "线路",
+                  "lineHeight": 1.35,
+                  "fontFamily": "Noto Sans SC",
+                  "fontSize": 12
+                },
+                {
+                  "type": "frame",
+                  "id": "tJ0Xk",
+                  "name": "顶栏弹性间距",
+                  "width": "fill_container",
+                  "height": 1
+                },
+                {
+                  "type": "frame",
+                  "id": "H0AZq3",
+                  "name": "全局搜索 · 清透玻璃",
+                  "width": 326,
+                  "height": 34,
+                  "fill": {
+                    "type": "shader",
+                    "enabled": true,
+                    "url": "chimera-liquid-glass.glsl",
+                    "uniforms": {
+                      "u_background": "pencil:background",
+                      "u_radius": 10,
+                      "u_refraction": 6,
+                      "u_tint": "#E4ECF6",
+                      "u_tintAmount": 0.12,
+                      "u_shine": 0.14
+                    }
+                  },
+                  "cornerRadius": 10,
+                  "stroke": "#D4DEE9",
+                  "strokeWidth": 0.7,
+                  "gap": 8,
+                  "padding": [
+                    0,
+                    11
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "xzqmp",
+                      "name": "搜索图标",
+                      "width": 14,
+                      "height": 14,
+                      "icon": "search",
+                      "library": "lucide",
+                      "fill": "#8291A4"
+                    },
+                    {
+                      "type": "text",
+                      "id": "lE9QG",
+                      "name": "全局搜索占位",
+                      "fill": "#8A96A6",
+                      "content": "搜索线路、页面或命令",
+                      "lineHeight": 1.35,
+                      "fontFamily": "Noto Sans SC",
+                      "fontSize": 12
+                    },
+                    {
+                      "type": "frame",
+                      "id": "V5BHUJ",
+                      "name": "搜索弹性间距",
+                      "width": "fill_container",
+                      "height": 1
+                    },
+                    {
+                      "type": "frame",
+                      "id": "W6Lp7d",
+                      "name": "Ctrl K 快捷键",
+                      "fill": "#FFFFFFA8",
+                      "cornerRadius": 4,
+                      "stroke": "#DDE4EC",
+                      "strokeWidth": 0.6,
+                      "padding": [
+                        2,
+                        5
+                      ],
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "IBb3J",
+                          "name": "快捷键文字",
+                          "fill": "#8693A4",
+                          "content": "Ctrl K",
+                          "fontFamily": "Inter",
+                          "fontSize": 10,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "tjQ5Q",
+                  "name": "原生窗口控制",
+                  "gap": 20,
+                  "padding": [
+                    0,
+                    0,
+                    0,
+                    15
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "ne4HA",
+                      "name": "最小化",
+                      "width": 13,
+                      "height": 13,
+                      "icon": "minus",
+                      "library": "lucide",
+                      "fill": "#778599"
+                    },
+                    {
+                      "type": "icon",
+                      "id": "HPV3H",
+                      "name": "最大化",
+                      "width": 11,
+                      "height": 11,
+                      "icon": "square",
+                      "library": "lucide",
+                      "fill": "#778599"
+                    },
+                    {
+                      "type": "icon",
+                      "id": "Oze49",
+                      "name": "关闭",
+                      "width": 14,
+                      "height": 14,
+                      "icon": "x",
+                      "library": "lucide",
+                      "fill": "#778599"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "xvxSm",
+              "name": "页面内容",
+              "width": "fill_container",
+              "height": "fill_container",
+              "layout": "vertical",
+              "gap": 20,
+              "padding": [
+                28,
+                32,
+                24,
+                32
+              ],
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "lsUfJ",
+                  "name": "页面标题与操作",
+                  "width": "fill_container",
+                  "height": 66,
+                  "gap": 24,
+                  "justifyContent": "space_between",
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "r92VSp",
+                      "name": "页面标题",
+                      "layout": "vertical",
+                      "gap": 7,
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "vzyby",
+                          "name": "线路标题",
+                          "fill": "#152439",
+                          "content": "线路",
+                          "lineHeight": 1.35,
+                          "fontFamily": "Noto Sans SC",
+                          "fontSize": 29,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "text",
+                          "id": "LXaE5",
+                          "name": "线路说明",
+                          "fill": "#79879A",
+                          "content": "Codex 同一时间只走一条线路 · 共 5 条",
+                          "lineHeight": 1.35,
+                          "fontFamily": "Noto Sans SC",
+                          "fontSize": 12
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "zYOhz",
+                      "name": "线路全局操作",
+                      "gap": 10,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "RLon2",
+                          "name": "筛选线路输入",
+                          "width": 190,
+                          "height": 38,
+                          "fill": "#FFFFFF",
+                          "cornerRadius": 11,
+                          "stroke": "#DEE5EE",
+                          "strokeWidth": 1,
+                          "gap": 8,
+                          "padding": [
+                            0,
+                            12
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "jMl2s",
+                              "name": "筛选搜索图标",
+                              "width": 15,
+                              "height": 15,
+                              "icon": "search",
+                              "library": "lucide",
+                              "fill": "#8D9AAD"
+                            },
+                            {
+                              "type": "text",
+                              "id": "GaR3V",
+                              "name": "筛选线路",
+                              "fill": "#8B98A9",
+                              "content": "筛选线路",
+                              "lineHeight": 1.35,
+                              "fontFamily": "Noto Sans SC",
+                              "fontSize": 12
+                            },
+                            {
+                              "type": "frame",
+                              "id": "c1KpQ",
+                              "name": "筛选弹性间距",
+                              "width": "fill_container",
+                              "height": 1
+                            },
+                            {
+                              "type": "text",
+                              "id": "GOzXi",
+                              "name": "筛选快捷键",
+                              "fill": "#ABB5C2",
+                              "content": "Ctrl F",
+                              "lineHeight": 1.35,
+                              "fontFamily": "Noto Sans SC",
+                              "fontSize": 11
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "ThAW1",
+                          "name": "全部测速按钮",
+                          "height": 38,
+                          "fill": "#FFFFFF",
+                          "cornerRadius": 11,
+                          "stroke": "#DAE3ED",
+                          "strokeWidth": 1,
+                          "gap": 7,
+                          "padding": [
+                            0,
+                            14
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "I3EQfl",
+                              "name": "测速图标",
+                              "width": 16,
+                              "height": 16,
+                              "icon": "gauge",
+                              "library": "lucide",
+                              "fill": "#5D7188"
+                            },
+                            {
+                              "type": "text",
+                              "id": "j78jXB",
+                              "name": "全部测速",
+                              "fill": "#425A74",
+                              "content": "全部测速",
+                              "lineHeight": 1.35,
+                              "fontFamily": "Noto Sans SC",
+                              "fontSize": 12,
+                              "fontWeight": "500"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "FrCnu",
+                          "name": "添加线路 · 冰蓝液态玻璃",
+                          "height": 38,
+                          "fill": {
+                            "type": "shader",
+                            "enabled": true,
+                            "url": "chimera-liquid-glass.glsl",
+                            "uniforms": {
+                              "u_background": "pencil:background",
+                              "u_radius": 12,
+                              "u_refraction": 6,
+                              "u_tint": "#1482E0",
+                              "u_tintAmount": 0.9,
+                              "u_shine": 0.3
+                            }
+                          },
+                          "cornerRadius": 12,
+                          "stroke": {
+                            "type": "gradient",
+                            "gradientType": "linear",
+                            "enabled": true,
+                            "rotation": 165,
+                            "size": {
+                              "height": 1
+                            },
+                            "colors": [
+                              {
+                                "color": "#B4E4FF",
+                                "position": 0
+                              },
+                              {
+                                "color": "#257BC0",
+                                "position": 0.55
+                              },
+                              {
+                                "color": "#76B9ED",
+                                "position": 1
+                              }
+                            ]
+                          },
+                          "strokeWidth": 0.8,
+                          "effect": {
+                            "type": "shadow",
+                            "shadowType": "outer",
+                            "color": "#1B7BC42B",
+                            "offset": {
+                              "x": 0,
+                              "y": 4
+                            },
+                            "blur": 12
+                          },
+                          "gap": 7,
+                          "padding": [
+                            0,
+                            15
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "I4MmUs",
+                              "name": "添加图标",
+                              "width": 16,
+                              "height": 16,
+                              "icon": "plus",
+                              "library": "lucide",
+                              "fill": "#FFFFFF"
+                            },
+                            {
+                              "type": "text",
+                              "id": "TH2gA",
+                              "name": "添加线路",
+                              "fill": "#FFFFFF",
+                              "content": "添加线路",
+                              "lineHeight": 1.35,
+                              "fontFamily": "Noto Sans SC",
+                              "fontSize": 12,
+                              "fontWeight": "600"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "KL7B7",
+                  "name": "当前线路 · 光学环境",
+                  "clip": true,
+                  "width": "fill_container",
+                  "height": 236,
+                  "fill": {
+                    "type": "gradient",
+                    "gradientType": "linear",
+                    "enabled": true,
+                    "rotation": 112,
+                    "size": {
+                      "height": 1
+                    },
+                    "colors": [
+                      {
+                        "color": "#273C55",
+                        "position": 0
+                      },
+                      {
+                        "color": "#14283F",
+                        "position": 0.6
+                      },
+                      {
+                        "color": "#244965",
+                        "position": 1
+                      }
+                    ]
+                  },
+                  "cornerRadius": 23,
+                  "effect": {
+                    "type": "shadow",
+                    "shadowType": "outer",
+                    "color": "#183A5C1F",
+                    "offset": {
+                      "x": 0,
+                      "y": 10
+                    },
+                    "blur": 30
+                  },
+                  "layout": "none",
+                  "children": [
+                    {
+                      "type": "ellipse",
+                      "id": "MNaWT",
+                      "x": 1,
+                      "y": 1,
+                      "name": "左上方光源",
+                      "fill": {
+                        "type": "gradient",
+                        "gradientType": "radial",
+                        "enabled": true,
+                        "rotation": 0,
+                        "size": {
+                          "width": 1,
+                          "height": 1
+                        },
+                        "colors": [
+                          {
+                            "color": "#96C7EB30",
+                            "position": 0
+                          },
+                          {
+                            "color": "#83B3D800",
+                            "position": 1
+                          }
+                        ]
+                      },
+                      "width": 340,
+                      "height": 190
+                    },
+                    {
+                      "type": "ellipse",
+                      "id": "qO7i2",
+                      "x": 705,
+                      "y": 12,
+                      "name": "右侧冰蓝折射背景",
+                      "fill": {
+                        "type": "gradient",
+                        "gradientType": "radial",
+                        "enabled": true,
+                        "rotation": 0,
+                        "size": {
+                          "width": 1,
+                          "height": 1
+                        },
+                        "colors": [
+                          {
+                            "color": "#4F9ACA65",
+                            "position": 0
+                          },
+                          {
+                            "color": "#2D6C9A00",
+                            "position": 1
+                          }
+                        ]
+                      },
+                      "width": 390,
+                      "height": 218
+                    },
+                    {
+                      "type": "ellipse",
+                      "id": "PoJWf",
+                      "x": 728,
+                      "y": 4,
+                      "name": "玻璃后方 · 曲面光轨",
+                      "fill": "#00000000",
+                      "width": 360,
+                      "height": 212,
+                      "stroke": {
+                        "type": "gradient",
+                        "gradientType": "linear",
+                        "enabled": true,
+                        "rotation": 20,
+                        "size": {
+                          "height": 1
+                        },
+                        "colors": [
+                          {
+                            "color": "#B4DAFF05",
+                            "position": 0
+                          },
+                          {
+                            "color": "#BFE5FF36",
+                            "position": 0.52
+                          },
+                          {
+                            "color": "#B4DAFF03",
+                            "position": 1
+                          }
+                        ]
+                      },
+                      "strokeWidth": 1
+                    },
+                    {
+                      "type": "ellipse",
+                      "id": "k7KRZm",
+                      "x": 782,
+                      "y": 26,
+                      "name": "玻璃后方 · 内侧曲面光轨",
+                      "fill": "#00000000",
+                      "width": 250,
+                      "height": 175,
+                      "stroke": "#AAD8FA0D",
+                      "strokeWidth": 1
+                    },
+                    {
+                      "type": "frame",
+                      "id": "fWOYo",
+                      "x": 1,
+                      "y": 1,
+                      "name": "当前线路 · 液态玻璃面板",
+                      "width": 1138,
+                      "height": 234,
+                      "fill": {
+                        "type": "shader",
+                        "enabled": true,
+                        "url": "chimera-liquid-glass.glsl",
+                        "uniforms": {
+                          "u_background": "pencil:background",
+                          "u_radius": 22,
+                          "u_refraction": 10,
+                          "u_tint": "#B9D9FF",
+                          "u_tintAmount": 0.035,
+                          "u_shine": 0.28
+                        }
+                      },
+                      "cornerRadius": 22,
+                      "stroke": {
+                        "type": "gradient",
+                        "gradientType": "linear",
+                        "enabled": true,
+                        "rotation": 145,
+                        "size": {
+                          "height": 1
+                        },
+                        "colors": [
+                          {
+                            "color": "#E2F1FF96",
+                            "position": 0
+                          },
+                          {
+                            "color": "#8EB9E51A",
+                            "position": 0.35
+                          },
+                          {
+                            "color": "#AACFF542",
+                            "position": 0.8
+                          },
+                          {
+                            "color": "#C7E8FF80",
+                            "position": 1
+                          }
+                        ]
+                      },
+                      "strokeWidth": 0.9,
+                      "layout": "vertical",
+                      "gap": 20,
+                      "padding": [
+                        22,
+                        24
+                      ],
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "Yg2dm",
+                          "name": "当前线路主信息与操作",
+                          "width": "fill_container",
+                          "height": 65,
+                          "gap": 14,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "d6clBH",
+                              "name": "不降智线路标识",
+                              "width": 46,
+                              "height": 46,
+                              "fill": {
+                                "type": "shader",
+                                "enabled": true,
+                                "url": "chimera-liquid-glass.glsl",
+                                "uniforms": {
+                                  "u_background": "pencil:background",
+                                  "u_radius": 15,
+                                  "u_refraction": 7,
+                                  "u_tint": "#7FB6EB",
+                                  "u_tintAmount": 0.2,
+                                  "u_shine": 0.25
+                                }
+                              },
+                              "cornerRadius": 15,
+                              "stroke": "#C6E3FD66",
+                              "strokeWidth": 0.7,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "ShIpt",
+                                  "name": "线路标志",
+                                  "width": 23,
+                                  "height": 23,
+                                  "icon": "waypoints",
+                                  "library": "lucide",
+                                  "fill": "#E7F5FF"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "r7DMmb",
+                              "name": "当前线路名称",
+                              "layout": "vertical",
+                              "gap": 5,
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "N1ue8",
+                                  "name": "当前线路标签",
+                                  "fill": "#AAC1D9",
+                                  "content": "当前线路",
+                                  "lineHeight": 1.35,
+                                  "fontFamily": "Noto Sans SC",
+                                  "fontSize": 12
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "dBoc3",
+                                  "name": "线路名称与认证",
+                                  "gap": 12,
+                                  "alignItems": "center",
+                                  "children": [
+                                    {
+                                      "type": "text",
+                                      "id": "zPvnC",
+                                      "name": "当前线路名称",
+                                      "fill": "#F6FBFF",
+                                      "content": "不降智",
+                                      "lineHeight": 1.35,
+                                      "fontFamily": "Noto Sans SC",
+                                      "fontSize": 25,
+                                      "fontWeight": "600"
+                                    },
+                                    {
+                                      "type": "frame",
+                                      "id": "KNn53",
+                                      "name": "第三方认证标签",
+                                      "fill": "#C5DDFA0D",
+                                      "cornerRadius": 6,
+                                      "stroke": "#B4D2EF38",
+                                      "strokeWidth": 0.6,
+                                      "padding": [
+                                        4,
+                                        8
+                                      ],
+                                      "children": [
+                                        {
+                                          "type": "text",
+                                          "id": "NYPYD",
+                                          "name": "第三方认证文字",
+                                          "fill": "#B4CCE2",
+                                          "content": "第三方 · API 密钥",
+                                          "lineHeight": 1.35,
+                                          "fontFamily": "Noto Sans SC",
+                                          "fontSize": 11
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "uG7DL",
+                              "name": "卡片操作弹性留白",
+                              "width": "fill_container",
+                              "height": 1
+                            },
+                            {
+                              "type": "frame",
+                              "id": "CpTEU",
+                              "name": "延迟状态",
+                              "layout": "vertical",
+                              "gap": 5,
+                              "padding": [
+                                0,
+                                14,
+                                0,
+                                0
+                              ],
+                              "alignItems": "end",
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "q6By2",
+                                  "name": "当前延迟",
+                                  "fill": "#F4FAFF",
+                                  "content": "— ms",
+                                  "lineHeight": 1.35,
+                                  "fontFamily": "Inter",
+                                  "fontSize": 21,
+                                  "fontWeight": "600"
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "CoI3k",
+                                  "name": "测速状态",
+                                  "fill": "#99B4D1",
+                                  "content": "尚未测速",
+                                  "lineHeight": 1.35,
+                                  "fontFamily": "Noto Sans SC",
+                                  "fontSize": 11
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "SmVXn",
+                              "name": "当前线路操作",
+                              "gap": 8,
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "frame",
+                                  "id": "a43XUO",
+                                  "name": "打开 Codex · 玻璃按钮",
+                                  "height": 36,
+                                  "fill": {
+                                    "type": "shader",
+                                    "enabled": true,
+                                    "url": "chimera-liquid-glass.glsl",
+                                    "uniforms": {
+                                      "u_background": "pencil:background",
+                                      "u_radius": 11,
+                                      "u_refraction": 7,
+                                      "u_tint": "#D9EEFF",
+                                      "u_tintAmount": 0.13,
+                                      "u_shine": 0.2
+                                    }
+                                  },
+                                  "cornerRadius": 11,
+                                  "stroke": "#D8EBFF70",
+                                  "strokeWidth": 0.7,
+                                  "gap": 7,
+                                  "padding": [
+                                    0,
+                                    12
+                                  ],
+                                  "alignItems": "center",
+                                  "children": [
+                                    {
+                                      "type": "icon",
+                                      "id": "PyFLm",
+                                      "name": "打开 Codex 图标",
+                                      "width": 14,
+                                      "height": 14,
+                                      "icon": "external-link",
+                                      "library": "lucide",
+                                      "fill": "#F4FAFF"
+                                    },
+                                    {
+                                      "type": "text",
+                                      "id": "DKjIy",
+                                      "name": "打开 Codex 文字",
+                                      "fill": "#F4FAFF",
+                                      "content": "打开 Codex",
+                                      "lineHeight": 1.35,
+                                      "fontFamily": "Noto Sans SC",
+                                      "fontSize": 12,
+                                      "fontWeight": "500"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "tIZM9",
+                                  "name": "测速 · 玻璃按钮",
+                                  "height": 36,
+                                  "fill": {
+                                    "type": "shader",
+                                    "enabled": true,
+                                    "url": "chimera-liquid-glass.glsl",
+                                    "uniforms": {
+                                      "u_background": "pencil:background",
+                                      "u_radius": 11,
+                                      "u_refraction": 7,
+                                      "u_tint": "#A6C6E5",
+                                      "u_tintAmount": 0.04,
+                                      "u_shine": 0.2
+                                    }
+                                  },
+                                  "cornerRadius": 11,
+                                  "stroke": "#BFDCFA35",
+                                  "strokeWidth": 0.7,
+                                  "gap": 7,
+                                  "padding": [
+                                    0,
+                                    12
+                                  ],
+                                  "alignItems": "center",
+                                  "children": [
+                                    {
+                                      "type": "icon",
+                                      "id": "r8IKS",
+                                      "name": "测速 图标",
+                                      "width": 14,
+                                      "height": 14,
+                                      "icon": "gauge",
+                                      "library": "lucide",
+                                      "fill": "#C8DBEE"
+                                    },
+                                    {
+                                      "type": "text",
+                                      "id": "u9ZJpF",
+                                      "name": "测速 文字",
+                                      "fill": "#C8DBEE",
+                                      "content": "测速",
+                                      "lineHeight": 1.35,
+                                      "fontFamily": "Noto Sans SC",
+                                      "fontSize": 12
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "c6ggS",
+                                  "name": "编辑 · 玻璃按钮",
+                                  "height": 36,
+                                  "fill": {
+                                    "type": "shader",
+                                    "enabled": true,
+                                    "url": "chimera-liquid-glass.glsl",
+                                    "uniforms": {
+                                      "u_background": "pencil:background",
+                                      "u_radius": 11,
+                                      "u_refraction": 7,
+                                      "u_tint": "#A6C6E5",
+                                      "u_tintAmount": 0.04,
+                                      "u_shine": 0.2
+                                    }
+                                  },
+                                  "cornerRadius": 11,
+                                  "stroke": "#BFDCFA35",
+                                  "strokeWidth": 0.7,
+                                  "gap": 7,
+                                  "padding": [
+                                    0,
+                                    12
+                                  ],
+                                  "alignItems": "center",
+                                  "children": [
+                                    {
+                                      "type": "icon",
+                                      "id": "ehE3k",
+                                      "name": "编辑 图标",
+                                      "width": 14,
+                                      "height": 14,
+                                      "icon": "pencil",
+                                      "library": "lucide",
+                                      "fill": "#C8DBEE"
+                                    },
+                                    {
+                                      "type": "text",
+                                      "id": "x3L5k5",
+                                      "name": "编辑 文字",
+                                      "fill": "#C8DBEE",
+                                      "content": "编辑",
+                                      "lineHeight": 1.35,
+                                      "fontFamily": "Noto Sans SC",
+                                      "fontSize": 12
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "doTFT",
+                          "name": "实际生效链路",
+                          "width": "fill_container",
+                          "height": 100,
+                          "fill": "#0E21342E",
+                          "cornerRadius": 13,
+                          "stroke": "#BAD8F41A",
+                          "strokeWidth": 0.6,
+                          "layout": "vertical",
+                          "gap": 15,
+                          "padding": [
+                            16,
+                            16,
+                            13,
+                            16
+                          ],
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "QqqDu",
+                              "name": "Codex 到服务商到模型",
+                              "width": "fill_container",
+                              "gap": 22,
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "frame",
+                                  "id": "P1Xir",
+                                  "name": "客户端",
+                                  "width": 312,
+                                  "gap": 10,
+                                  "alignItems": "center",
+                                  "children": [
+                                    {
+                                      "type": "frame",
+                                      "id": "g8qzIj",
+                                      "name": "客户端图标底",
+                                      "width": 30,
+                                      "height": 30,
+                                      "fill": "#A3D2FF0A",
+                                      "cornerRadius": 9,
+                                      "stroke": "#B7DDFF1F",
+                                      "strokeWidth": 0.6,
+                                      "justifyContent": "center",
+                                      "alignItems": "center",
+                                      "children": [
+                                        {
+                                          "type": "icon",
+                                          "id": "VTGVn",
+                                          "name": "客户端图标",
+                                          "width": 14,
+                                          "height": 14,
+                                          "icon": "terminal",
+                                          "library": "lucide",
+                                          "fill": "#9AC4E7"
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "type": "frame",
+                                      "id": "Gy650",
+                                      "name": "客户端信息",
+                                      "layout": "vertical",
+                                      "gap": 4,
+                                      "children": [
+                                        {
+                                          "type": "text",
+                                          "id": "lrI7y",
+                                          "name": "客户端标签",
+                                          "fill": "#AFC6DD",
+                                          "content": "客户端",
+                                          "lineHeight": 1.35,
+                                          "fontFamily": "Noto Sans SC",
+                                          "fontSize": 10
+                                        },
+                                        {
+                                          "type": "text",
+                                          "id": "jv1zj",
+                                          "name": "客户端值",
+                                          "fill": "#E0EEFB",
+                                          "content": "Codex",
+                                          "lineHeight": 1.35,
+                                          "fontFamily": "Inter",
+                                          "fontSize": 12,
+                                          "fontWeight": "500"
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "icon",
+                                  "id": "R1bCst",
+                                  "name": "链路方向 0",
+                                  "width": 16,
+                                  "height": 16,
+                                  "icon": "arrow-right",
+                                  "library": "lucide",
+                                  "fill": "#6F97BB"
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "E8SCGA",
+                                  "name": "服务地址",
+                                  "width": 312,
+                                  "gap": 10,
+                                  "alignItems": "center",
+                                  "children": [
+                                    {
+                                      "type": "frame",
+                                      "id": "mTMIk",
+                                      "name": "服务地址图标底",
+                                      "width": 30,
+                                      "height": 30,
+                                      "fill": "#A3D2FF0A",
+                                      "cornerRadius": 9,
+                                      "stroke": "#B7DDFF1F",
+                                      "strokeWidth": 0.6,
+                                      "justifyContent": "center",
+                                      "alignItems": "center",
+                                      "children": [
+                                        {
+                                          "type": "icon",
+                                          "id": "U1RFh2",
+                                          "name": "服务地址图标",
+                                          "width": 14,
+                                          "height": 14,
+                                          "icon": "globe",
+                                          "library": "lucide",
+                                          "fill": "#9AC4E7"
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "type": "frame",
+                                      "id": "Z8VYwb",
+                                      "name": "服务地址信息",
+                                      "layout": "vertical",
+                                      "gap": 4,
+                                      "children": [
+                                        {
+                                          "type": "text",
+                                          "id": "swJPT",
+                                          "name": "服务地址标签",
+                                          "fill": "#AFC6DD",
+                                          "content": "服务地址",
+                                          "lineHeight": 1.35,
+                                          "fontFamily": "Noto Sans SC",
+                                          "fontSize": 10
+                                        },
+                                        {
+                                          "type": "text",
+                                          "id": "e5b3J",
+                                          "name": "服务地址值",
+                                          "fill": "#E0EEFB",
+                                          "content": "api-direct.kimera.cc",
+                                          "lineHeight": 1.35,
+                                          "fontFamily": "Inter",
+                                          "fontSize": 12
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "icon",
+                                  "id": "lJlPW",
+                                  "name": "链路方向 1",
+                                  "width": 16,
+                                  "height": 16,
+                                  "icon": "arrow-right",
+                                  "library": "lucide",
+                                  "fill": "#6F97BB"
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "SWnYg",
+                                  "name": "当前模型",
+                                  "width": 312,
+                                  "gap": 10,
+                                  "alignItems": "center",
+                                  "children": [
+                                    {
+                                      "type": "frame",
+                                      "id": "T4C0Z",
+                                      "name": "当前模型图标底",
+                                      "width": 30,
+                                      "height": 30,
+                                      "fill": "#A3D2FF0A",
+                                      "cornerRadius": 9,
+                                      "stroke": "#B7DDFF1F",
+                                      "strokeWidth": 0.6,
+                                      "justifyContent": "center",
+                                      "alignItems": "center",
+                                      "children": [
+                                        {
+                                          "type": "icon",
+                                          "id": "faeAv",
+                                          "name": "当前模型图标",
+                                          "width": 14,
+                                          "height": 14,
+                                          "icon": "cpu",
+                                          "library": "lucide",
+                                          "fill": "#9AC4E7"
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "type": "frame",
+                                      "id": "xQcwO",
+                                      "name": "当前模型信息",
+                                      "layout": "vertical",
+                                      "gap": 4,
+                                      "children": [
+                                        {
+                                          "type": "text",
+                                          "id": "L1thL",
+                                          "name": "当前模型标签",
+                                          "fill": "#AFC6DD",
+                                          "content": "当前模型",
+                                          "lineHeight": 1.35,
+                                          "fontFamily": "Noto Sans SC",
+                                          "fontSize": 10
+                                        },
+                                        {
+                                          "type": "text",
+                                          "id": "kjPJ4",
+                                          "name": "当前模型值",
+                                          "fill": "#E0EEFB",
+                                          "content": "gpt-6.1-sol",
+                                          "lineHeight": 1.35,
+                                          "fontFamily": "Inter",
+                                          "fontSize": 12
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "XZ2Ez",
+                              "name": "运行及线路状态",
+                              "width": "fill_container",
+                              "gap": 9,
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "ellipse",
+                                  "id": "h05b48",
+                                  "name": "运行状态点",
+                                  "fill": "#85D4BB",
+                                  "width": 5,
+                                  "height": 5
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "JQ5O9",
+                                  "name": "运行状态文字",
+                                  "fill": "#B6CCDF",
+                                  "content": "Codex 运行中",
+                                  "lineHeight": 1.35,
+                                  "fontFamily": "Noto Sans SC",
+                                  "fontSize": 11
+                                },
+                                {
+                                  "type": "rectangle",
+                                  "id": "kNVY3",
+                                  "name": "状态分隔 1",
+                                  "fill": "#86A7C646",
+                                  "width": 1,
+                                  "height": 10
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "DITBK",
+                                  "name": "解锁状态",
+                                  "fill": "#B6CCDF",
+                                  "content": "解锁状态未确认",
+                                  "lineHeight": 1.35,
+                                  "fontFamily": "Noto Sans SC",
+                                  "fontSize": 11
+                                },
+                                {
+                                  "type": "rectangle",
+                                  "id": "q9TwU",
+                                  "name": "状态分隔 2",
+                                  "fill": "#86A7C646",
+                                  "width": 1,
+                                  "height": 10
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "UHfHp",
+                                  "name": "连接状态",
+                                  "fill": "#B6CCDF",
+                                  "content": "直连 · 未测速",
+                                  "lineHeight": 1.35,
+                                  "fontFamily": "Noto Sans SC",
+                                  "fontSize": 11
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "pacY8",
+                  "name": "全部线路 · 清晰实底数据区",
+                  "clip": true,
+                  "width": "fill_container",
+                  "fill": "#FFFFFF",
+                  "cornerRadius": 18,
+                  "stroke": "#E0E7F0",
+                  "strokeWidth": 0.8,
+                  "effect": {
+                    "type": "shadow",
+                    "shadowType": "outer",
+                    "color": "#223A5010",
+                    "offset": {
+                      "x": 0,
+                      "y": 4
+                    },
+                    "blur": 18
+                  },
+                  "layout": "vertical",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "WUccb",
+                      "name": "线路列表标题",
+                      "width": "fill_container",
+                      "height": 58,
+                      "gap": 9,
+                      "padding": [
+                        0,
+                        20
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "obihw",
+                          "name": "全部线路标题",
+                          "fill": "#243A51",
+                          "content": "全部线路",
+                          "lineHeight": 1.35,
+                          "fontFamily": "Noto Sans SC",
+                          "fontSize": 14,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "frame",
+                          "id": "n6qsKq",
+                          "name": "线路总数标签",
+                          "fill": "#F0F4F8",
+                          "cornerRadius": 6,
+                          "padding": [
+                            3,
+                            6
+                          ],
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "u96CH8",
+                              "name": "线路总数",
+                              "fill": "#667D93",
+                              "content": "5",
+                              "lineHeight": 1.35,
+                              "fontFamily": "Inter",
+                              "fontSize": 11,
+                              "fontWeight": "500"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "GWjqL",
+                          "name": "列表标题弹性间距",
+                          "width": "fill_container",
+                          "height": 1
+                        },
+                        {
+                          "type": "text",
+                          "id": "VCId7",
+                          "name": "管理线路链接",
+                          "fill": "#6F8198",
+                          "content": "管理线路",
+                          "lineHeight": 1.35,
+                          "fontFamily": "Noto Sans SC",
+                          "fontSize": 12
+                        },
+                        {
+                          "type": "icon",
+                          "id": "tqcRj",
+                          "name": "管理线路箭头",
+                          "width": 14,
+                          "height": 14,
+                          "icon": "arrow-up-right",
+                          "library": "lucide",
+                          "fill": "#7D91AA"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "WmyCk",
+                      "name": "表头",
+                      "width": "fill_container",
+                      "height": 36,
+                      "fill": "#F7F9FC",
+                      "stroke": "#EBEFF5",
+                      "strokeWidth": {
+                        "top": 0.6,
+                        "bottom": 0.6
+                      },
+                      "padding": [
+                        0,
+                        20
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "eEWAi",
+                          "name": "线路表头",
+                          "width": 320,
+                          "height": "fill_container",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "rL50o",
+                              "name": "线路列标题",
+                              "fill": "#64778D",
+                              "content": "线路",
+                              "lineHeight": 1.35,
+                              "fontFamily": "Noto Sans SC",
+                              "fontSize": 11,
+                              "fontWeight": "500"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "e9m67A",
+                          "name": "认证表头",
+                          "width": 144,
+                          "height": "fill_container",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "X1zIk0",
+                              "name": "认证列标题",
+                              "fill": "#64778D",
+                              "content": "认证",
+                              "lineHeight": 1.35,
+                              "fontFamily": "Noto Sans SC",
+                              "fontSize": 11,
+                              "fontWeight": "500"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "W3JO4x",
+                          "name": "协议表头",
+                          "width": 160,
+                          "height": "fill_container",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "oWLhk",
+                              "name": "协议列标题",
+                              "fill": "#64778D",
+                              "content": "协议",
+                              "lineHeight": 1.35,
+                              "fontFamily": "Noto Sans SC",
+                              "fontSize": 11,
+                              "fontWeight": "500"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "zI1jE",
+                          "name": "模型表头",
+                          "width": 172,
+                          "height": "fill_container",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "zlhem",
+                              "name": "模型列标题",
+                              "fill": "#64778D",
+                              "content": "模型",
+                              "lineHeight": 1.35,
+                              "fontFamily": "Noto Sans SC",
+                              "fontSize": 11,
+                              "fontWeight": "500"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "a9xfg",
+                          "name": "延迟表头",
+                          "width": 100,
+                          "height": "fill_container",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "wrHl8",
+                              "name": "延迟列标题",
+                              "fill": "#64778D",
+                              "content": "延迟",
+                              "lineHeight": 1.35,
+                              "fontFamily": "Noto Sans SC",
+                              "fontSize": 11,
+                              "fontWeight": "500"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "AY2zp",
+                          "name": "操作表头",
+                          "width": 204,
+                          "height": "fill_container",
+                          "padding": [
+                            0,
+                            8
+                          ],
+                          "justifyContent": "end",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "gBo7I",
+                              "name": "操作列标题",
+                              "fill": "#64778D",
+                              "content": "操作",
+                              "lineHeight": 1.35,
+                              "fontFamily": "Noto Sans SC",
+                              "fontSize": 11,
+                              "fontWeight": "500"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "HaKD1",
+                      "name": "官方账号分组",
+                      "width": "fill_container",
+                      "height": 34,
+                      "gap": 7,
+                      "padding": [
+                        0,
+                        20
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "u67vs",
+                          "name": "官方账号分组名",
+                          "fill": "#61768D",
+                          "content": "官方账号",
+                          "lineHeight": 1.35,
+                          "fontFamily": "Noto Sans SC",
+                          "fontSize": 11,
+                          "fontWeight": "500"
+                        },
+                        {
+                          "type": "text",
+                          "id": "u3jTaU",
+                          "name": "官方账号数量",
+                          "fill": "#738599",
+                          "content": "2",
+                          "lineHeight": 1.35,
+                          "fontFamily": "Inter",
+                          "fontSize": 10
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "BEiMA",
+                      "name": "OpenAI Official",
+                      "width": "fill_container",
+                      "height": 60,
+                      "stroke": "#EBEFF4",
+                      "strokeWidth": {
+                        "bottom": 0.6
+                      },
+                      "padding": [
+                        0,
+                        20
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "ZjoyO",
+                          "name": "OpenAI Official · 线路",
+                          "width": 320,
+                          "height": "fill_container",
+                          "gap": 10,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "bxfSn",
+                              "name": "OpenAI Official 标识",
+                              "width": 32,
+                              "height": 32,
+                              "fill": "#EEF2F6",
+                              "cornerRadius": 10,
+                              "stroke": "#E2E8F0",
+                              "strokeWidth": 0.7,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "YLtFH",
+                                  "name": "OpenAI Official 图标",
+                                  "width": 16,
+                                  "height": 16,
+                                  "icon": "circle-user-round",
+                                  "library": "lucide",
+                                  "fill": "#596A7E"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "cjGCU",
+                              "name": "OpenAI Official 名称与地址",
+                              "layout": "vertical",
+                              "gap": 5,
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "DTycs",
+                                  "name": "OpenAI Official 名称",
+                                  "fill": "#344A62",
+                                  "content": "OpenAI Official",
+                                  "lineHeight": 1.35,
+                                  "fontFamily": "Inter",
+                                  "fontSize": 13,
+                                  "fontWeight": "500"
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "L1WzuQ",
+                                  "name": "OpenAI Official 副标题",
+                                  "fill": "#697E95",
+                                  "content": "ChatGPT 官方登录",
+                                  "lineHeight": 1.35,
+                                  "fontFamily": "Noto Sans SC",
+                                  "fontSize": 11
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "VxQ0A",
+                          "name": "OpenAI Official · 认证",
+                          "width": 144,
+                          "height": "fill_container",
+                          "gap": 10,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "rjBZG",
+                              "name": "OpenAI Official 认证图标",
+                              "width": 12,
+                              "height": 12,
+                              "icon": "user-round",
+                              "library": "lucide",
+                              "fill": "#A0ACBA"
+                            },
+                            {
+                              "type": "text",
+                              "id": "GIaC4",
+                              "name": "OpenAI Official 认证方式",
+                              "fill": "#506981",
+                              "content": "ChatGPT 登录",
+                              "lineHeight": 1.35,
+                              "fontFamily": "Noto Sans SC",
+                              "fontSize": 12
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "aUal2",
+                          "name": "OpenAI Official · 协议",
+                          "width": 160,
+                          "height": "fill_container",
+                          "gap": 10,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "Q0Qau",
+                              "name": "OpenAI Official 协议内容",
+                              "layout": "vertical",
+                              "gap": 4,
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "ps2f1",
+                                  "name": "OpenAI Official 协议名称",
+                                  "fill": "#506981",
+                                  "content": "Responses",
+                                  "lineHeight": 1.35,
+                                  "fontFamily": "Inter",
+                                  "fontSize": 12
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "JZLg0",
+                          "name": "OpenAI Official · 模型",
+                          "width": 172,
+                          "height": "fill_container",
+                          "gap": 10,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "i1vHt",
+                              "name": "OpenAI Official 模型",
+                              "fill": "#506981",
+                              "content": "Codex 默认",
+                              "lineHeight": 1.35,
+                              "fontFamily": "Noto Sans SC",
+                              "fontSize": 12
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "nBJRn",
+                          "name": "OpenAI Official · 延迟",
+                          "width": 100,
+                          "height": "fill_container",
+                          "gap": 10,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "lEMft",
+                              "name": "OpenAI Official 延迟",
+                              "fill": "#788A9D",
+                              "content": "—",
+                              "lineHeight": 1.35,
+                              "fontFamily": "Inter",
+                              "fontSize": 12
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "gPkl3",
+                          "name": "OpenAI Official · 操作",
+                          "width": 204,
+                          "height": "fill_container",
+                          "gap": 8,
+                          "padding": [
+                            0,
+                            4,
+                            0,
+                            0
+                          ],
+                          "justifyContent": "end",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "L3eHb",
+                              "name": "OpenAI Official 切换按钮",
+                              "height": 27,
+                              "fill": "#FAFCFE",
+                              "cornerRadius": 8,
+                              "stroke": "#E0E7F0",
+                              "strokeWidth": 0.7,
+                              "gap": 5,
+                              "padding": [
+                                0,
+                                10
+                              ],
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "F24ZX",
+                                  "name": "OpenAI Official 切换文字",
+                                  "fill": "#536F8C",
+                                  "content": "切换",
+                                  "lineHeight": 1.35,
+                                  "fontFamily": "Noto Sans SC",
+                                  "fontSize": 11
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "OFlkX",
+                      "name": "ChatGPT · 11***@qq.com",
+                      "width": "fill_container",
+                      "height": 60,
+                      "stroke": "#EBEFF4",
+                      "strokeWidth": {
+                        "bottom": 0.6
+                      },
+                      "padding": [
+                        0,
+                        20
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "p2Gckc",
+                          "name": "ChatGPT · 11***@qq.com · 线路",
+                          "width": 320,
+                          "height": "fill_container",
+                          "gap": 10,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "jSJBk",
+                              "name": "ChatGPT · 11***@qq.com 标识",
+                              "width": 32,
+                              "height": 32,
+                              "fill": "#EEF2F6",
+                              "cornerRadius": 10,
+                              "stroke": "#E2E8F0",
+                              "strokeWidth": 0.7,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "Na9rq",
+                                  "name": "ChatGPT · 11***@qq.com 图标",
+                                  "width": 16,
+                                  "height": 16,
+                                  "icon": "circle-user-round",
+                                  "library": "lucide",
+                                  "fill": "#596A7E"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "QwS1B",
+                              "name": "ChatGPT · 11***@qq.com 名称与地址",
+                              "layout": "vertical",
+                              "gap": 5,
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "v5clxL",
+                                  "name": "ChatGPT · 11***@qq.com 名称",
+                                  "fill": "#344A62",
+                                  "content": "ChatGPT · 11***@qq.com",
+                                  "lineHeight": 1.35,
+                                  "fontFamily": "Inter",
+                                  "fontSize": 13,
+                                  "fontWeight": "500"
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "r0gK6",
+                                  "name": "ChatGPT · 11***@qq.com 副标题",
+                                  "fill": "#697E95",
+                                  "content": "ChatGPT 官方登录",
+                                  "lineHeight": 1.35,
+                                  "fontFamily": "Noto Sans SC",
+                                  "fontSize": 11
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "wgpvW",
+                          "name": "ChatGPT · 11***@qq.com · 认证",
+                          "width": 144,
+                          "height": "fill_container",
+                          "gap": 10,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "O1dKU",
+                              "name": "ChatGPT · 11***@qq.com 认证图标",
+                              "width": 12,
+                              "height": 12,
+                              "icon": "user-round",
+                              "library": "lucide",
+                              "fill": "#A0ACBA"
+                            },
+                            {
+                              "type": "text",
+                              "id": "qtlW0",
+                              "name": "ChatGPT · 11***@qq.com 认证方式",
+                              "fill": "#506981",
+                              "content": "ChatGPT 登录",
+                              "lineHeight": 1.35,
+                              "fontFamily": "Noto Sans SC",
+                              "fontSize": 12
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "Wdp3z",
+                          "name": "ChatGPT · 11***@qq.com · 协议",
+                          "width": 160,
+                          "height": "fill_container",
+                          "gap": 10,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "Ydhvy",
+                              "name": "ChatGPT · 11***@qq.com 协议内容",
+                              "layout": "vertical",
+                              "gap": 4,
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "fPxf1",
+                                  "name": "ChatGPT · 11***@qq.com 协议名称",
+                                  "fill": "#506981",
+                                  "content": "Responses",
+                                  "lineHeight": 1.35,
+                                  "fontFamily": "Inter",
+                                  "fontSize": 12
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "nEzr3",
+                          "name": "ChatGPT · 11***@qq.com · 模型",
+                          "width": 172,
+                          "height": "fill_container",
+                          "gap": 10,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "HeVNl",
+                              "name": "ChatGPT · 11***@qq.com 模型",
+                              "fill": "#506981",
+                              "content": "Codex 默认",
+                              "lineHeight": 1.35,
+                              "fontFamily": "Noto Sans SC",
+                              "fontSize": 12
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "uFpqn",
+                          "name": "ChatGPT · 11***@qq.com · 延迟",
+                          "width": 100,
+                          "height": "fill_container",
+                          "gap": 10,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "H0zzk",
+                              "name": "ChatGPT · 11***@qq.com 延迟",
+                              "fill": "#788A9D",
+                              "content": "—",
+                              "lineHeight": 1.35,
+                              "fontFamily": "Inter",
+                              "fontSize": 12
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "Px9mC",
+                          "name": "ChatGPT · 11***@qq.com · 操作",
+                          "width": 204,
+                          "height": "fill_container",
+                          "gap": 8,
+                          "padding": [
+                            0,
+                            4,
+                            0,
+                            0
+                          ],
+                          "justifyContent": "end",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "i3S2rm",
+                              "name": "ChatGPT · 11***@qq.com 切换按钮",
+                              "height": 27,
+                              "fill": "#FAFCFE",
+                              "cornerRadius": 8,
+                              "stroke": "#E0E7F0",
+                              "strokeWidth": 0.7,
+                              "gap": 5,
+                              "padding": [
+                                0,
+                                10
+                              ],
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "q03wn",
+                                  "name": "ChatGPT · 11***@qq.com 切换文字",
+                                  "fill": "#536F8C",
+                                  "content": "切换",
+                                  "lineHeight": 1.35,
+                                  "fontFamily": "Noto Sans SC",
+                                  "fontSize": 11
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "x3eyb0",
+                      "name": "第三方线路分组",
+                      "width": "fill_container",
+                      "height": 34,
+                      "gap": 7,
+                      "padding": [
+                        0,
+                        20
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "e1Qf8",
+                          "name": "第三方线路分组名",
+                          "fill": "#61768D",
+                          "content": "第三方线路",
+                          "lineHeight": 1.35,
+                          "fontFamily": "Noto Sans SC",
+                          "fontSize": 11,
+                          "fontWeight": "500"
+                        },
+                        {
+                          "type": "text",
+                          "id": "w75rug",
+                          "name": "第三方线路数量",
+                          "fill": "#738599",
+                          "content": "3",
+                          "lineHeight": 1.35,
+                          "fontFamily": "Inter",
+                          "fontSize": 10
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "u6EDb4",
+                      "name": "破甲",
+                      "width": "fill_container",
+                      "height": 60,
+                      "stroke": "#EBEFF4",
+                      "strokeWidth": {
+                        "bottom": 0.6
+                      },
+                      "padding": [
+                        0,
+                        20
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "xIcjs",
+                          "name": "破甲 · 线路",
+                          "width": 320,
+                          "height": "fill_container",
+                          "gap": 10,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "qs2sz",
+                              "name": "破甲 标识",
+                              "width": 32,
+                              "height": 32,
+                              "fill": "#EAF1FB",
+                              "cornerRadius": 10,
+                              "stroke": "#E2E8F0",
+                              "strokeWidth": 0.7,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "UT5KK",
+                                  "name": "破甲 图标",
+                                  "width": 16,
+                                  "height": 16,
+                                  "icon": "waypoints",
+                                  "library": "lucide",
+                                  "fill": "#6488B1"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "QRV9L",
+                              "name": "破甲 名称与地址",
+                              "layout": "vertical",
+                              "gap": 5,
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "GoY3l",
+                                  "name": "破甲 名称",
+                                  "fill": "#344A62",
+                                  "content": "破甲",
+                                  "lineHeight": 1.35,
+                                  "fontFamily": "Noto Sans SC",
+                                  "fontSize": 13,
+                                  "fontWeight": "500"
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "j4t3hx",
+                                  "name": "破甲 副标题",
+                                  "fill": "#697E95",
+                                  "content": "api-direct.kimera.cc",
+                                  "lineHeight": 1.35,
+                                  "fontFamily": "Inter",
+                                  "fontSize": 11
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "K1EMJ",
+                          "name": "破甲 · 认证",
+                          "width": 144,
+                          "height": "fill_container",
+                          "gap": 10,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "U4Xjsz",
+                              "name": "破甲 认证图标",
+                              "width": 12,
+                              "height": 12,
+                              "icon": "key-round",
+                              "library": "lucide",
+                              "fill": "#A0ACBA"
+                            },
+                            {
+                              "type": "text",
+                              "id": "GdaBK",
+                              "name": "破甲 认证方式",
+                              "fill": "#506981",
+                              "content": "API 密钥",
+                              "lineHeight": 1.35,
+                              "fontFamily": "Noto Sans SC",
+                              "fontSize": 12
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "yHUf8",
+                          "name": "破甲 · 协议",
+                          "width": 160,
+                          "height": "fill_container",
+                          "gap": 10,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "plqVO",
+                              "name": "破甲 协议内容",
+                              "layout": "vertical",
+                              "gap": 4,
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "pdIj5",
+                                  "name": "破甲 协议名称",
+                                  "fill": "#506981",
+                                  "content": "自动 · Responses",
+                                  "lineHeight": 1.35,
+                                  "fontFamily": "Inter",
+                                  "fontSize": 12
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "ypDd8",
+                          "name": "破甲 · 模型",
+                          "width": 172,
+                          "height": "fill_container",
+                          "gap": 10,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "G6DYI",
+                              "name": "破甲 模型",
+                              "fill": "#506981",
+                              "content": "gpt-6-astra",
+                              "lineHeight": 1.35,
+                              "fontFamily": "Inter",
+                              "fontSize": 12
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "g97cO",
+                          "name": "破甲 · 延迟",
+                          "width": 100,
+                          "height": "fill_container",
+                          "gap": 10,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "Kf18e",
+                              "name": "破甲 延迟",
+                              "fill": "#788A9D",
+                              "content": "—",
+                              "lineHeight": 1.35,
+                              "fontFamily": "Inter",
+                              "fontSize": 12
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "ODGc0",
+                          "name": "破甲 · 操作",
+                          "width": 204,
+                          "height": "fill_container",
+                          "gap": 8,
+                          "padding": [
+                            0,
+                            4,
+                            0,
+                            0
+                          ],
+                          "justifyContent": "end",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "uEa74",
+                              "name": "破甲 切换按钮",
+                              "height": 27,
+                              "fill": "#FAFCFE",
+                              "cornerRadius": 8,
+                              "stroke": "#E0E7F0",
+                              "strokeWidth": 0.7,
+                              "gap": 5,
+                              "padding": [
+                                0,
+                                10
+                              ],
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "k4ULS",
+                                  "name": "破甲 切换文字",
+                                  "fill": "#536F8C",
+                                  "content": "切换",
+                                  "lineHeight": 1.35,
+                                  "fontFamily": "Noto Sans SC",
+                                  "fontSize": 11
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "e4j6l",
+                              "name": "破甲 编辑按钮",
+                              "width": 25,
+                              "height": 27,
+                              "cornerRadius": 7,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "ewG3V",
+                                  "name": "破甲 编辑图标",
+                                  "width": 13,
+                                  "height": 13,
+                                  "icon": "pencil",
+                                  "library": "lucide",
+                                  "fill": "#8D9EB1"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "Y03WHf",
+                              "name": "破甲 删除按钮",
+                              "width": 25,
+                              "height": 27,
+                              "cornerRadius": 7,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "yTTmH",
+                                  "name": "破甲 删除图标",
+                                  "width": 13,
+                                  "height": 13,
+                                  "icon": "trash-2",
+                                  "library": "lucide",
+                                  "fill": "#9DAAB9"
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "qm4hE",
+                      "name": "怀远",
+                      "width": "fill_container",
+                      "height": 60,
+                      "stroke": "#EBEFF4",
+                      "strokeWidth": {
+                        "bottom": 0.6
+                      },
+                      "padding": [
+                        0,
+                        20
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "Z7CizP",
+                          "name": "怀远 · 线路",
+                          "width": 320,
+                          "height": "fill_container",
+                          "gap": 10,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "WD1Yf",
+                              "name": "怀远 标识",
+                              "width": 32,
+                              "height": 32,
+                              "fill": "#F0EEFA",
+                              "cornerRadius": 10,
+                              "stroke": "#E2E8F0",
+                              "strokeWidth": 0.7,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "oUQNK",
+                                  "name": "怀远 图标",
+                                  "width": 16,
+                                  "height": 16,
+                                  "icon": "waypoints",
+                                  "library": "lucide",
+                                  "fill": "#8876B4"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "E4bHH",
+                              "name": "怀远 名称与地址",
+                              "layout": "vertical",
+                              "gap": 5,
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "QhfPd",
+                                  "name": "怀远 名称",
+                                  "fill": "#344A62",
+                                  "content": "怀远",
+                                  "lineHeight": 1.35,
+                                  "fontFamily": "Noto Sans SC",
+                                  "fontSize": 13,
+                                  "fontWeight": "500"
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "FWE6n",
+                                  "name": "怀远 副标题",
+                                  "fill": "#697E95",
+                                  "content": "www.hyai666.top/v1",
+                                  "lineHeight": 1.35,
+                                  "fontFamily": "Inter",
+                                  "fontSize": 11
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "SWA59",
+                          "name": "怀远 · 认证",
+                          "width": 144,
+                          "height": "fill_container",
+                          "gap": 10,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "ICkpz",
+                              "name": "怀远 认证图标",
+                              "width": 12,
+                              "height": 12,
+                              "icon": "key-round",
+                              "library": "lucide",
+                              "fill": "#A0ACBA"
+                            },
+                            {
+                              "type": "text",
+                              "id": "NEMf1",
+                              "name": "怀远 认证方式",
+                              "fill": "#506981",
+                              "content": "API 密钥",
+                              "lineHeight": 1.35,
+                              "fontFamily": "Noto Sans SC",
+                              "fontSize": 12
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "TCRjw",
+                          "name": "怀远 · 协议",
+                          "width": 160,
+                          "height": "fill_container",
+                          "gap": 10,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "G2ZnwR",
+                              "name": "怀远 协议内容",
+                              "layout": "vertical",
+                              "gap": 4,
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "U4WSm",
+                                  "name": "怀远 协议名称",
+                                  "fill": "#506981",
+                                  "content": "自动 · Chat",
+                                  "lineHeight": 1.35,
+                                  "fontFamily": "Inter",
+                                  "fontSize": 12
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "NBfui",
+                                  "name": "本地路由提示",
+                                  "gap": 4,
+                                  "alignItems": "center",
+                                  "children": [
+                                    {
+                                      "type": "icon",
+                                      "id": "Z8IGz6",
+                                      "name": "本地路由标志",
+                                      "width": 10,
+                                      "height": 10,
+                                      "icon": "network",
+                                      "library": "lucide",
+                                      "fill": "#8997AB"
+                                    },
+                                    {
+                                      "type": "text",
+                                      "id": "lbyxY",
+                                      "name": "本地路由文字",
+                                      "fill": "#64798F",
+                                      "content": "本地路由",
+                                      "lineHeight": 1.35,
+                                      "fontFamily": "Noto Sans SC",
+                                      "fontSize": 10
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "j5Jb6N",
+                          "name": "怀远 · 模型",
+                          "width": 172,
+                          "height": "fill_container",
+                          "gap": 10,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "ueIm8",
+                              "name": "怀远 模型",
+                              "fill": "#506981",
+                              "content": "glm5.3",
+                              "lineHeight": 1.35,
+                              "fontFamily": "Inter",
+                              "fontSize": 12
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "az6zO",
+                          "name": "怀远 · 延迟",
+                          "width": 100,
+                          "height": "fill_container",
+                          "gap": 10,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "H6tFL0",
+                              "name": "怀远 延迟",
+                              "fill": "#788A9D",
+                              "content": "—",
+                              "lineHeight": 1.35,
+                              "fontFamily": "Inter",
+                              "fontSize": 12
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "V9KtpM",
+                          "name": "怀远 · 操作",
+                          "width": 204,
+                          "height": "fill_container",
+                          "gap": 8,
+                          "padding": [
+                            0,
+                            4,
+                            0,
+                            0
+                          ],
+                          "justifyContent": "end",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "kpb5W",
+                              "name": "怀远 切换按钮",
+                              "height": 27,
+                              "fill": "#FAFCFE",
+                              "cornerRadius": 8,
+                              "stroke": "#E0E7F0",
+                              "strokeWidth": 0.7,
+                              "gap": 5,
+                              "padding": [
+                                0,
+                                10
+                              ],
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "pg4bi",
+                                  "name": "怀远 切换文字",
+                                  "fill": "#536F8C",
+                                  "content": "切换",
+                                  "lineHeight": 1.35,
+                                  "fontFamily": "Noto Sans SC",
+                                  "fontSize": 11
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "L5zax8",
+                              "name": "怀远 编辑按钮",
+                              "width": 25,
+                              "height": 27,
+                              "cornerRadius": 7,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "F2U67r",
+                                  "name": "怀远 编辑图标",
+                                  "width": 13,
+                                  "height": 13,
+                                  "icon": "pencil",
+                                  "library": "lucide",
+                                  "fill": "#8D9EB1"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "a0j2XB",
+                              "name": "怀远 删除按钮",
+                              "width": 25,
+                              "height": 27,
+                              "cornerRadius": 7,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "pA5PR",
+                                  "name": "怀远 删除图标",
+                                  "width": 13,
+                                  "height": 13,
+                                  "icon": "trash-2",
+                                  "library": "lucide",
+                                  "fill": "#9DAAB9"
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "Za2yu",
+                      "name": "当前线路行 · 环境底色",
+                      "width": "fill_container",
+                      "height": 60,
+                      "fill": {
+                        "type": "gradient",
+                        "gradientType": "linear",
+                        "enabled": true,
+                        "rotation": 90,
+                        "size": {
+                          "height": 1
+                        },
+                        "colors": [
+                          {
+                            "color": "#F8FBFF",
+                            "position": 0
+                          },
+                          {
+                            "color": "#EDF5FE",
+                            "position": 1
+                          }
+                        ]
+                      },
+                      "layout": "none",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "lCLOH",
+                          "x": 10,
+                          "y": 0,
+                          "name": "不降智 · 当前线路选中",
+                          "width": 1120,
+                          "height": 60,
+                          "fill": {
+                            "type": "shader",
+                            "enabled": true,
+                            "url": "chimera-liquid-glass.glsl",
+                            "uniforms": {
+                              "u_background": "pencil:background",
+                              "u_radius": 13,
+                              "u_refraction": 7,
+                              "u_tint": "#BFDEFC",
+                              "u_tintAmount": 0.14,
+                              "u_shine": 0.16
+                            }
+                          },
+                          "cornerRadius": 13,
+                          "stroke": "#AFD0EE66",
+                          "strokeWidth": 0.7,
+                          "padding": [
+                            0,
+                            10
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "dwcVn",
+                              "name": "不降智 · 线路",
+                              "width": 320,
+                              "height": "fill_container",
+                              "gap": 10,
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "frame",
+                                  "id": "d7clZf",
+                                  "name": "不降智 标识",
+                                  "width": 32,
+                                  "height": 32,
+                                  "fill": "#DCEFFF",
+                                  "cornerRadius": 10,
+                                  "stroke": "#B8D8F4",
+                                  "strokeWidth": 0.7,
+                                  "justifyContent": "center",
+                                  "alignItems": "center",
+                                  "children": [
+                                    {
+                                      "type": "icon",
+                                      "id": "q5gXH",
+                                      "name": "不降智 图标",
+                                      "width": 16,
+                                      "height": 16,
+                                      "icon": "waypoints",
+                                      "library": "lucide",
+                                      "fill": "#397EB5"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "O0O4X",
+                                  "name": "不降智 名称与地址",
+                                  "layout": "vertical",
+                                  "gap": 5,
+                                  "children": [
+                                    {
+                                      "type": "text",
+                                      "id": "yPoM0",
+                                      "name": "不降智 名称",
+                                      "fill": "#193B5A",
+                                      "content": "不降智",
+                                      "lineHeight": 1.35,
+                                      "fontFamily": "Noto Sans SC",
+                                      "fontSize": 13,
+                                      "fontWeight": "600"
+                                    },
+                                    {
+                                      "type": "text",
+                                      "id": "kvwW9",
+                                      "name": "不降智 副标题",
+                                      "fill": "#5A7893",
+                                      "content": "api-direct.kimera.cc",
+                                      "lineHeight": 1.35,
+                                      "fontFamily": "Inter",
+                                      "fontSize": 11
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "C4Ikd",
+                              "name": "不降智 · 认证",
+                              "width": 144,
+                              "height": "fill_container",
+                              "gap": 10,
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "l1ve2g",
+                                  "name": "不降智 认证图标",
+                                  "width": 12,
+                                  "height": 12,
+                                  "icon": "key-round",
+                                  "library": "lucide",
+                                  "fill": "#A0ACBA"
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "ydY3J",
+                                  "name": "不降智 认证方式",
+                                  "fill": "#506981",
+                                  "content": "API 密钥",
+                                  "lineHeight": 1.35,
+                                  "fontFamily": "Noto Sans SC",
+                                  "fontSize": 12
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "R0HTPu",
+                              "name": "不降智 · 协议",
+                              "width": 160,
+                              "height": "fill_container",
+                              "gap": 10,
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "frame",
+                                  "id": "o4AGj9",
+                                  "name": "不降智 协议内容",
+                                  "layout": "vertical",
+                                  "gap": 4,
+                                  "children": [
+                                    {
+                                      "type": "text",
+                                      "id": "zCjIL",
+                                      "name": "不降智 协议名称",
+                                      "fill": "#506981",
+                                      "content": "自动 · Responses",
+                                      "lineHeight": 1.35,
+                                      "fontFamily": "Inter",
+                                      "fontSize": 12
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "CcQVB",
+                              "name": "不降智 · 模型",
+                              "width": 172,
+                              "height": "fill_container",
+                              "gap": 10,
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "ibY28",
+                                  "name": "不降智 模型",
+                                  "fill": "#305B81",
+                                  "content": "gpt-6.1-sol",
+                                  "lineHeight": 1.35,
+                                  "fontFamily": "Inter",
+                                  "fontSize": 12
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "j5ZOI",
+                              "name": "不降智 · 延迟",
+                              "width": 100,
+                              "height": "fill_container",
+                              "gap": 10,
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "nNxiO",
+                                  "name": "不降智 延迟",
+                                  "fill": "#788A9D",
+                                  "content": "—",
+                                  "lineHeight": 1.35,
+                                  "fontFamily": "Inter",
+                                  "fontSize": 12
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "m0TF9",
+                              "name": "不降智 · 操作",
+                              "width": 204,
+                              "height": "fill_container",
+                              "gap": 8,
+                              "padding": [
+                                0,
+                                4,
+                                0,
+                                0
+                              ],
+                              "justifyContent": "end",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "frame",
+                                  "id": "xkRVP",
+                                  "name": "不降智 当前状态",
+                                  "height": 27,
+                                  "fill": "#EDF7FF",
+                                  "cornerRadius": 8,
+                                  "stroke": "#AFD0ED",
+                                  "strokeWidth": 0.7,
+                                  "gap": 5,
+                                  "padding": [
+                                    0,
+                                    10
+                                  ],
+                                  "alignItems": "center",
+                                  "children": [
+                                    {
+                                      "type": "icon",
+                                      "id": "P9PMS",
+                                      "name": "当前线路勾选",
+                                      "width": 11,
+                                      "height": 11,
+                                      "icon": "check",
+                                      "library": "lucide",
+                                      "fill": "#3C82B7"
+                                    },
+                                    {
+                                      "type": "text",
+                                      "id": "T7mmH",
+                                      "name": "不降智 切换文字",
+                                      "fill": "#397CAD",
+                                      "content": "当前",
+                                      "lineHeight": 1.35,
+                                      "fontFamily": "Noto Sans SC",
+                                      "fontSize": 11,
+                                      "fontWeight": "500"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "N9VT6Z",
+                                  "name": "不降智 编辑按钮",
+                                  "width": 25,
+                                  "height": 27,
+                                  "cornerRadius": 7,
+                                  "justifyContent": "center",
+                                  "alignItems": "center",
+                                  "children": [
+                                    {
+                                      "type": "icon",
+                                      "id": "LQj0y",
+                                      "name": "不降智 编辑图标",
+                                      "width": 13,
+                                      "height": 13,
+                                      "icon": "pencil",
+                                      "library": "lucide",
+                                      "fill": "#8D9EB1"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "qfa5I",
+                                  "name": "不降智 删除按钮",
+                                  "width": 25,
+                                  "height": 27,
+                                  "cornerRadius": 7,
+                                  "justifyContent": "center",
+                                  "alignItems": "center",
+                                  "children": [
+                                    {
+                                      "type": "icon",
+                                      "id": "wUum1",
+                                      "name": "不降智 删除图标",
+                                      "width": 13,
+                                      "height": 13,
+                                      "icon": "trash-2",
+                                      "library": "lucide",
+                                      "fill": "#C4CED9"
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "h8Lid",
+                      "name": "列表底部说明",
+                      "width": "fill_container",
+                      "height": 42,
+                      "gap": 6,
+                      "padding": [
+                        0,
+                        20
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "m563H",
+                          "name": "线路规则提示",
+                          "width": 12,
+                          "height": 12,
+                          "icon": "info",
+                          "library": "lucide",
+                          "fill": "#A5B2C1"
+                        },
+                        {
+                          "type": "text",
+                          "id": "rVtVA",
+                          "name": "单线路说明",
+                          "fill": "#6C8096",
+                          "content": "切换线路后，Codex 将使用该线路的模型与认证配置",
+                          "lineHeight": 1.35,
+                          "fontFamily": "Noto Sans SC",
+                          "fontSize": 11
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "Z4f13",
+                  "name": "页面底部快捷键提示",
+                  "width": "fill_container",
+                  "height": 18,
+                  "gap": 8,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "N8ZVyp",
+                      "name": "线路数量摘要",
+                      "fill": "#A0ACBC",
+                      "content": "2 个官方账号 · 3 条第三方线路",
+                      "lineHeight": 1.35,
+                      "fontFamily": "Noto Sans SC",
+                      "fontSize": 11
+                    },
+                    {
+                      "type": "frame",
+                      "id": "vKuUd",
+                      "name": "底部弹性间距",
+                      "width": "fill_container",
+                      "height": 1
+                    },
+                    {
+                      "type": "icon",
+                      "id": "QX8Tb",
+                      "name": "搜索快捷入口",
+                      "width": 11,
+                      "height": 11,
+                      "icon": "command",
+                      "library": "lucide",
+                      "fill": "#B0BBCA"
+                    },
+                    {
+                      "type": "text",
+                      "id": "RLsVF",
+                      "name": "搜索快捷键说明",
+                      "fill": "#A0ACBC",
+                      "content": "Ctrl K  全局搜索",
+                      "lineHeight": 1.35,
+                      "fontFamily": "Noto Sans SC",
+                      "fontSize": 11
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "frame",
+      "id": "D8J2d",
+      "x": 1520,
+      "y": 0,
+      "name": "02 · 液态玻璃材质与交互细节",
+      "clip": true,
+      "width": 940,
+      "height": 700,
+      "fill": "#F3F6FB",
+      "cornerRadius": 24,
+      "layout": "vertical",
+      "gap": 24,
+      "padding": 36,
+      "children": [
+        {
+          "type": "frame",
+          "id": "ggop1",
+          "name": "细节板标题区",
+          "width": "fill_container",
+          "layout": "vertical",
+          "gap": 6,
+          "children": [
+            {
+              "type": "text",
+              "id": "iNBzJ",
+              "name": "方案编号",
+              "fill": "#64809A",
+              "content": "CHIMERA++   /   LIQUID GLASS   01",
+              "lineHeight": 1.5,
+              "fontFamily": "Noto Sans SC",
+              "fontSize": 11,
+              "fontWeight": "600"
+            },
+            {
+              "type": "text",
+              "id": "HUUuK",
+              "name": "细节板标题",
+              "fill": "#172D45",
+              "content": "液态玻璃，用在值得被看见的地方",
+              "lineHeight": 1.5,
+              "fontFamily": "Noto Sans SC",
+              "fontSize": 27,
+              "fontWeight": "600"
+            },
+            {
+              "type": "text",
+              "id": "MLJ7G",
+              "name": "细节板说明",
+              "fill": "#64798E",
+              "content": "不改变熟悉的操作路径。让选中与关键操作浮起，让线路数据保持清晰。",
+              "lineHeight": 1.5,
+              "fontFamily": "Noto Sans SC",
+              "fontSize": 13
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "yilwn",
+          "name": "导航状态材质试片",
+          "clip": true,
+          "width": "fill_container",
+          "height": 218,
+          "fill": {
+            "type": "gradient",
+            "gradientType": "linear",
+            "enabled": true,
+            "rotation": 135,
+            "size": {
+              "height": 1
+            },
+            "colors": [
+              {
+                "color": "#1C2B3B",
+                "position": 0
+              },
+              {
+                "color": "#101A25",
+                "position": 1
+              }
+            ]
+          },
+          "cornerRadius": 20,
+          "layout": "none",
+          "children": [
+            {
+              "type": "ellipse",
+              "id": "GkatK",
+              "x": 405,
+              "y": 30,
+              "name": "状态板柔和环境光",
+              "fill": {
+                "type": "gradient",
+                "gradientType": "radial",
+                "enabled": true,
+                "rotation": 0,
+                "size": {
+                  "width": 1,
+                  "height": 1
+                },
+                "colors": [
+                  {
+                    "color": "#467DAB60",
+                    "position": 0
+                  },
+                  {
+                    "color": "#24465C00",
+                    "position": 1
+                  }
+                ]
+              },
+              "width": 400,
+              "height": 150
+            },
+            {
+              "type": "frame",
+              "id": "V1junf",
+              "x": 24,
+              "y": 24,
+              "name": "导航状态内容",
+              "width": 820,
+              "height": 170,
+              "layout": "vertical",
+              "gap": 25,
+              "children": [
+                {
+                  "type": "text",
+                  "id": "XJLNV",
+                  "name": "状态展示标题",
+                  "fill": "#ABC2D8",
+                  "content": "导航选中态  /  光学边缘 · 轻微折射 · 内容不变形",
+                  "lineHeight": 1.5,
+                  "fontFamily": "Noto Sans SC",
+                  "fontSize": 12,
+                  "fontWeight": "500"
+                },
+                {
+                  "type": "frame",
+                  "id": "aiK0L",
+                  "name": "默认悬停选中对照",
+                  "width": "fill_container",
+                  "gap": 26,
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "UkuDw",
+                      "name": "默认状态列",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 10,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "tX77z",
+                          "name": "线路 · 默认",
+                          "width": "fill_container",
+                          "height": 46,
+                          "fill": "#FFFFFF00",
+                          "cornerRadius": 13,
+                          "stroke": "#FFFFFF00",
+                          "strokeWidth": 0.8,
+                          "gap": 12,
+                          "padding": [
+                            0,
+                            14
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "l9HuV",
+                              "name": "线路 图标",
+                              "width": 17,
+                              "height": 17,
+                              "icon": "waypoints",
+                              "library": "lucide",
+                              "fill": "#8FA6BB"
+                            },
+                            {
+                              "type": "text",
+                              "id": "wEOxD",
+                              "name": "线路 文字",
+                              "fill": "#A4B8CA",
+                              "content": "线路",
+                              "lineHeight": 1.35,
+                              "fontFamily": "Noto Sans SC",
+                              "fontSize": 13
+                            },
+                            {
+                              "type": "frame",
+                              "id": "ybR4J",
+                              "name": "弹性间距",
+                              "width": "fill_container",
+                              "height": 1
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "U6Robf",
+                          "name": "默认状态说明",
+                          "fill": "#8EA7BC",
+                          "content": "默认 · 平静实底，保持低干扰",
+                          "lineHeight": 1.5,
+                          "fontFamily": "Noto Sans SC",
+                          "fontSize": 11
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "KjNno",
+                      "name": "悬停状态列",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 10,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "Rw3gx",
+                          "name": "线路 · 悬停",
+                          "width": "fill_container",
+                          "height": 46,
+                          "fill": "#C3E3FF0C",
+                          "cornerRadius": 13,
+                          "stroke": "#C7E3FC12",
+                          "strokeWidth": 0.8,
+                          "gap": 12,
+                          "padding": [
+                            0,
+                            14
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "U2PDa",
+                              "name": "线路 图标",
+                              "width": 17,
+                              "height": 17,
+                              "icon": "waypoints",
+                              "library": "lucide",
+                              "fill": "#D8E9F8"
+                            },
+                            {
+                              "type": "text",
+                              "id": "L0cet",
+                              "name": "线路 文字",
+                              "fill": "#D8E9F8",
+                              "content": "线路",
+                              "lineHeight": 1.35,
+                              "fontFamily": "Noto Sans SC",
+                              "fontSize": 13
+                            },
+                            {
+                              "type": "frame",
+                              "id": "PLrty",
+                              "name": "弹性间距",
+                              "width": "fill_container",
+                              "height": 1
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "UjKRd",
+                          "name": "悬停状态说明",
+                          "fill": "#8EA7BC",
+                          "content": "悬停 · 微亮表面，提示可点击",
+                          "lineHeight": 1.5,
+                          "fontFamily": "Noto Sans SC",
+                          "fontSize": 11
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "XA0gw",
+                      "name": "当前选中状态列",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 10,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "T6eamT",
+                          "name": "线路 · 当前选中",
+                          "width": "fill_container",
+                          "height": 46,
+                          "fill": {
+                            "type": "shader",
+                            "enabled": true,
+                            "url": "chimera-liquid-glass.glsl",
+                            "uniforms": {
+                              "u_background": "pencil:background",
+                              "u_radius": 13,
+                              "u_refraction": 6,
+                              "u_tint": "#91C9FF",
+                              "u_tintAmount": 0.17,
+                              "u_shine": 0.28
+                            }
+                          },
+                          "cornerRadius": 13,
+                          "stroke": {
+                            "type": "gradient",
+                            "gradientType": "linear",
+                            "enabled": true,
+                            "rotation": 150,
+                            "size": {
+                              "height": 1
+                            },
+                            "colors": [
+                              {
+                                "color": "#D5EDFF8A",
+                                "position": 0
+                              },
+                              {
+                                "color": "#A4CCFF14",
+                                "position": 0.5
+                              },
+                              {
+                                "color": "#9FCEFF55",
+                                "position": 1
+                              }
+                            ]
+                          },
+                          "strokeWidth": 0.8,
+                          "effect": {
+                            "type": "shadow",
+                            "shadowType": "outer",
+                            "color": "#0000001F",
+                            "offset": {
+                              "x": 0,
+                              "y": 5
+                            },
+                            "blur": 14
+                          },
+                          "gap": 12,
+                          "padding": [
+                            0,
+                            14
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "d5Uce",
+                              "name": "线路 图标",
+                              "width": 17,
+                              "height": 17,
+                              "icon": "waypoints",
+                              "library": "lucide",
+                              "fill": "#EAF6FF"
+                            },
+                            {
+                              "type": "text",
+                              "id": "e0GOb",
+                              "name": "线路 文字",
+                              "fill": "#F2F8FF",
+                              "content": "线路",
+                              "lineHeight": 1.35,
+                              "fontFamily": "Noto Sans SC",
+                              "fontSize": 13,
+                              "fontWeight": "600"
+                            },
+                            {
+                              "type": "frame",
+                              "id": "hoV5n",
+                              "name": "弹性间距",
+                              "width": "fill_container",
+                              "height": 1
+                            },
+                            {
+                              "type": "ellipse",
+                              "id": "zAtRe",
+                              "name": "选中光点",
+                              "fill": "#B8E7FF",
+                              "width": 5,
+                              "height": 5,
+                              "effect": {
+                                "type": "shadow",
+                                "shadowType": "outer",
+                                "color": "#90D2FF80",
+                                "blur": 6
+                              }
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "H5A5h",
+                          "name": "当前选中状态说明",
+                          "fill": "#C6E4FF",
+                          "content": "当前选中 · 冰蓝透底，边缘聚光",
+                          "lineHeight": 1.5,
+                          "fontFamily": "Noto Sans SC",
+                          "fontSize": 11
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "RRNZd",
+          "name": "材质应用边界",
+          "width": "fill_container",
+          "gap": 20,
+          "children": [
+            {
+              "type": "frame",
+              "id": "vdkhk",
+              "name": "建议使用液态玻璃",
+              "width": "fill_container",
+              "height": 220,
+              "fill": "#FFFFFF",
+              "cornerRadius": 16,
+              "stroke": "#DEE7EF",
+              "strokeWidth": 0.8,
+              "layout": "vertical",
+              "gap": 12,
+              "padding": 22,
+              "children": [
+                {
+                  "type": "text",
+                  "id": "vb1L8",
+                  "name": "建议使用液态玻璃标题",
+                  "fill": "#243C55",
+                  "content": "建议使用液态玻璃",
+                  "lineHeight": 1.5,
+                  "fontFamily": "Noto Sans SC",
+                  "fontSize": 17,
+                  "fontWeight": "600"
+                },
+                {
+                  "type": "text",
+                  "id": "MSIqb",
+                  "name": "建议使用液态玻璃副标题",
+                  "fill": "#668099",
+                  "content": "突出状态与操作层级",
+                  "lineHeight": 1.5,
+                  "fontFamily": "Noto Sans SC",
+                  "fontSize": 12
+                },
+                {
+                  "type": "frame",
+                  "id": "xPBNB",
+                  "name": "建议使用液态玻璃项目",
+                  "width": "fill_container",
+                  "layout": "vertical",
+                  "gap": 12,
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "d75B8",
+                      "name": "建议使用液态玻璃规则0",
+                      "width": "fill_container",
+                      "gap": 9,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "ellipse",
+                          "id": "Adpg0",
+                          "name": "规则标识",
+                          "fill": "#7EA5C5",
+                          "width": 4,
+                          "height": 4
+                        },
+                        {
+                          "type": "text",
+                          "id": "KD5fJ",
+                          "name": "规则文字",
+                          "fill": "#5B7187",
+                          "content": "左侧当前导航：冰蓝胶囊 + 定向边缘高光",
+                          "lineHeight": 1.5,
+                          "fontFamily": "Noto Sans SC",
+                          "fontSize": 11
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "I2eVI",
+                      "name": "建议使用液态玻璃规则1",
+                      "width": "fill_container",
+                      "gap": 9,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "ellipse",
+                          "id": "Qwen4",
+                          "name": "规则标识",
+                          "fill": "#7EA5C5",
+                          "width": 4,
+                          "height": 4
+                        },
+                        {
+                          "type": "text",
+                          "id": "gq7Pl",
+                          "name": "规则文字",
+                          "fill": "#5B7187",
+                          "content": "当前线路卡：深色透底 + 轻微背景折射",
+                          "lineHeight": 1.5,
+                          "fontFamily": "Noto Sans SC",
+                          "fontSize": 11
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "qc5H4",
+                      "name": "建议使用液态玻璃规则2",
+                      "width": "fill_container",
+                      "gap": 9,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "ellipse",
+                          "id": "RBi8O",
+                          "name": "规则标识",
+                          "fill": "#7EA5C5",
+                          "width": 4,
+                          "height": 4
+                        },
+                        {
+                          "type": "text",
+                          "id": "LAomE",
+                          "name": "规则文字",
+                          "fill": "#5B7187",
+                          "content": "添加线路、打开 Codex：薄玻璃表面",
+                          "lineHeight": 1.5,
+                          "fontFamily": "Noto Sans SC",
+                          "fontSize": 11
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "WNqBJ",
+              "name": "继续保留清晰实底",
+              "width": "fill_container",
+              "height": 220,
+              "fill": "#FFFFFF",
+              "cornerRadius": 16,
+              "stroke": "#DEE7EF",
+              "strokeWidth": 0.8,
+              "layout": "vertical",
+              "gap": 12,
+              "padding": 22,
+              "children": [
+                {
+                  "type": "text",
+                  "id": "pEuFO",
+                  "name": "继续保留清晰实底标题",
+                  "fill": "#243C55",
+                  "content": "继续保留清晰实底",
+                  "lineHeight": 1.5,
+                  "fontFamily": "Noto Sans SC",
+                  "fontSize": 17,
+                  "fontWeight": "600"
+                },
+                {
+                  "type": "text",
+                  "id": "TEq49",
+                  "name": "继续保留清晰实底副标题",
+                  "fill": "#668099",
+                  "content": "数据先读懂，装饰再退后",
+                  "lineHeight": 1.5,
+                  "fontFamily": "Noto Sans SC",
+                  "fontSize": 12
+                },
+                {
+                  "type": "frame",
+                  "id": "X3O09",
+                  "name": "继续保留清晰实底项目",
+                  "width": "fill_container",
+                  "layout": "vertical",
+                  "gap": 12,
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "N8OYAP",
+                      "name": "继续保留清晰实底规则0",
+                      "width": "fill_container",
+                      "gap": 9,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "ellipse",
+                          "id": "H1Sk7",
+                          "name": "规则标识",
+                          "fill": "#7EA5C5",
+                          "width": 4,
+                          "height": 4
+                        },
+                        {
+                          "type": "text",
+                          "id": "mcqoN",
+                          "name": "规则文字",
+                          "fill": "#5B7187",
+                          "content": "线路表格、模型名称：高对比文字",
+                          "lineHeight": 1.5,
+                          "fontFamily": "Noto Sans SC",
+                          "fontSize": 11
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "dz3ve",
+                      "name": "继续保留清晰实底规则1",
+                      "width": "fill_container",
+                      "gap": 9,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "ellipse",
+                          "id": "tLcpW",
+                          "name": "规则标识",
+                          "fill": "#7EA5C5",
+                          "width": 4,
+                          "height": 4
+                        },
+                        {
+                          "type": "text",
+                          "id": "S07pj",
+                          "name": "规则文字",
+                          "fill": "#5B7187",
+                          "content": "普通行不发光，当前行只加淡蓝底",
+                          "lineHeight": 1.5,
+                          "fontFamily": "Noto Sans SC",
+                          "fontSize": 11
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "wqLmh",
+                      "name": "继续保留清晰实底规则2",
+                      "width": "fill_container",
+                      "gap": 9,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "ellipse",
+                          "id": "BDpjs",
+                          "name": "规则标识",
+                          "fill": "#7EA5C5",
+                          "width": 4,
+                          "height": 4
+                        },
+                        {
+                          "type": "text",
+                          "id": "x7VXN",
+                          "name": "规则文字",
+                          "fill": "#5B7187",
+                          "content": "禁用与错误状态：保留明确图标和文案",
+                          "lineHeight": 1.5,
+                          "fontFamily": "Noto Sans SC",
+                          "fontSize": 11
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "id": "BH0wr",
+          "name": "动效与可访问性建议",
+          "fill": "#778A9D",
+          "content": "交互建议：悬停 120ms · 选中滑移 220ms；降低动态效果时，保留静态高光与清晰选中态。",
+          "lineHeight": 1.5,
+          "fontFamily": "Noto Sans SC",
+          "fontSize": 11
+        }
+      ]
+    }
+  ],
+  "variables": {
+    "ink": {
+      "type": "color",
+      "value": "#162438"
+    },
+    "muted": {
+      "type": "color",
+      "value": "#69788C"
+    },
+    "accent": {
+      "type": "color",
+      "value": "#1877D2"
+    },
+    "surface": {
+      "type": "color",
+      "value": "#F5F7FA"
+    },
+    "hairline": {
+      "type": "color",
+      "value": "#E5EAF0"
+    }
+  },
+  "fileToken": "d2549d6c-2771-4fb5-bf39-da610063379d"
+}

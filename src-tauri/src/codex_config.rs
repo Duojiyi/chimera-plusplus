@@ -1,9 +1,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use crate::config::{
-    delete_file, get_home_dir, read_json_file, sanitize_provider_name, write_json_file,
-};
+use crate::config::{delete_file, get_home_dir, read_json_file, sanitize_provider_name};
 use crate::error::AppError;
 use crate::model_capabilities::{image_input_capability_from_modalities, ImageInputCapability};
 use once_cell::sync::OnceCell;
@@ -36,11 +34,9 @@ pub struct CodexRuntimeModel {
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-// Generating a ProxyChat catalog only needs one stable Codex model template per
-// process. Without this cache every provider switch/takeover can start the
-// Codex CLI again, which is especially expensive for npm-installed `codex.cmd`
-// on Windows. Tests deliberately bypass the global cache because they isolate
-// CODEX_HOME and seed different model templates.
+// Generating a ProxyChat catalog only needs one stable model template per
+// process. Preparation reads an existing cache or the embedded template; it
+// never starts the CLI. Tests bypass this cache to isolate their CODEX_HOME.
 #[cfg(not(test))]
 static CODEX_MODEL_CATALOG_TEMPLATE_CACHE: OnceCell<Value> = OnceCell::new();
 #[cfg(not(test))]
@@ -436,6 +432,7 @@ pub fn write_codex_live_atomic(
             None => crate::codex_live_write::LiveFile::Write(""),
         },
         model_catalog: crate::codex_live_write::LiveFile::Keep,
+        common_projection: crate::codex_live_write::LiveFile::Keep,
     })?;
     Ok(())
 }
@@ -1976,6 +1973,7 @@ pub(crate) fn codex_command(candidate: &Path, args: &[&str], codex_home: Option<
     command
 }
 
+#[cfg(test)]
 fn codex_bundled_models_command(candidate: &Path) -> Command {
     codex_command(candidate, &["debug", "models", "--bundled"], None)
 }
@@ -1986,6 +1984,7 @@ fn codex_runtime_models_command(candidate: &Path, codex_home: &Path) -> Command 
 
 /// Why `codex debug models --bundled` produced no usable catalog.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(test)]
 enum CodexBundledCatalogMiss {
     /// No candidate could be started: there is no Codex CLI on this machine.
     NoCli,
@@ -2001,6 +2000,7 @@ enum CodexBundledCatalogMiss {
 /// Any other failure means a CLI exists but is unusable, which is worth telling
 /// apart from having no CLI at all. Failure details are limited to the path,
 /// the exit status and a recognized hint; raw stderr is never kept.
+#[cfg(test)]
 fn first_bundled_catalog(candidates: Vec<PathBuf>) -> Result<Value, CodexBundledCatalogMiss> {
     let mut failure: Option<String> = None;
     for candidate in candidates {
@@ -2071,28 +2071,6 @@ fn first_bundled_catalog(candidates: Vec<PathBuf>) -> Result<Value, CodexBundled
         CodexBundledCatalogMiss::NoCli,
         CodexBundledCatalogMiss::Failed,
     ))
-}
-
-/// ② `codex debug models --bundled`: the first CLI whose catalog carries the
-/// template entry. A miss is not an error (the static template follows), but
-/// a CLI that exists and fails is logged at warn level so it is visible
-/// without debug logging.
-fn load_codex_runtime_catalog_from_bundled() -> Result<Option<Value>, AppError> {
-    match first_bundled_catalog(codex_cli_candidates()) {
-        Ok(catalog) => Ok(Some(catalog)),
-        Err(CodexBundledCatalogMiss::NoCli) => {
-            log::info!(
-                "Codex bundled model catalog unavailable: no Codex CLI found on PATH, in common install locations or in the Codex desktop app"
-            );
-            Ok(None)
-        }
-        Err(CodexBundledCatalogMiss::Failed(detail)) => {
-            log::warn!(
-                "Codex bundled model catalog unavailable: a Codex CLI was found but failed: {detail}"
-            );
-            Ok(None)
-        }
-    }
 }
 
 /// Known, non-sensitive `codex debug models` failure signatures worth showing
@@ -2535,15 +2513,11 @@ fn fill_template_fields_from_static(template: &mut Value) {
     }
 }
 
-/// The model catalog the local Codex itself uses, read-only: ①
-/// `models_cache.json` (created by Codex when it connects to OpenAI), else ②
-/// the codex CLI's bundled catalog (PATH + platform-specific common paths).
-/// A source only counts when it carries the gpt-5.5 template entry.
+/// Read an existing runtime cache only. Catalog preparation must never start
+/// the CLI: even a bundled-model probe can initialize files in CODEX_HOME.
+/// A cache miss uses the template embedded at compile time instead.
 fn load_codex_runtime_catalog_uncached() -> Result<Option<Value>, AppError> {
-    if let Some(catalog) = load_codex_runtime_catalog_from_cache()? {
-        return Ok(Some(catalog));
-    }
-    load_codex_runtime_catalog_from_bundled()
+    load_codex_runtime_catalog_from_cache()
 }
 
 #[cfg(not(test))]
@@ -2576,7 +2550,7 @@ fn load_codex_runtime_catalog_models() -> Vec<Value> {
 }
 
 fn load_codex_model_catalog_template_uncached() -> Result<Value, AppError> {
-    // ①/② the local Codex catalog's own gpt-5.5 entry
+    // An existing local cache's own gpt-5.5 entry
     if let Some(mut template) = load_codex_runtime_catalog()?
         .as_ref()
         .and_then(find_codex_model_template)
@@ -2584,13 +2558,13 @@ fn load_codex_model_catalog_template_uncached() -> Result<Value, AppError> {
         fill_template_fields_from_static(&mut template);
         return Ok(template);
     }
-    // ③ Static fallback bundled at compile time
+    // Static fallback bundled at compile time (no subprocess or disk writes)
     if let Some(template) = load_codex_model_template_static() {
         return Ok(template);
     }
 
     Err(AppError::Message(format!(
-        "Codex model catalog template `{CODEX_MODEL_CATALOG_TEMPLATE_SLUG}` not found. Please start Codex once so models_cache.json is available, or ensure the `codex` CLI is on PATH."
+        "Codex model catalog template `{CODEX_MODEL_CATALOG_TEMPLATE_SLUG}` not found. Please start Codex once so models_cache.json is available, or reinstall Chimera++ to restore its embedded template."
     )))
 }
 
@@ -2714,6 +2688,40 @@ fn codex_model_catalog_from_settings(
     )))
 }
 
+/// Explain an absent or user-owned catalog reference without changing it.
+/// Shared by the write path and post-save verification so both report the
+/// config file to inspect and the steps needed to resolve the conflict.
+pub(crate) fn codex_model_catalog_reference_error(config: &DocumentMut) -> String {
+    let config_path = get_codex_config_path();
+    if config
+        .get("model_catalog_json")
+        .is_some_and(|item| item.as_str().is_none())
+    {
+        return format!(
+            "Codex 模型目录配置冲突：{} 中的 model_catalog_json 必须是字符串路径。\
+             请先备份此配置文件并修正该字段，再重新保存线路。Chimera++ 不会覆盖或删除自定义模型目录文件。",
+            config_path.display()
+        );
+    }
+    match config
+        .get("model_catalog_json")
+        .and_then(|item| item.as_str())
+        .filter(|path| !path.trim().is_empty())
+    {
+        Some(path) => format!(
+            "Codex 模型目录配置冲突：{} 中的 model_catalog_json = {path:?} 指向自定义模型目录。\
+             请先备份此配置文件并移除顶层 model_catalog_json；若线路高级配置或通用配置也设置了此项，请同步移除。\
+             再重新保存线路以使用 Chimera++ 生成的模型目录。Chimera++ 不会覆盖或删除自定义模型目录文件。",
+            config_path.display()
+        ),
+        None => format!(
+            "Codex 配置 {} 缺少有效的顶层 model_catalog_json，未引用 Chimera++ 模型目录。\
+             请在 Chimera++ 重新保存线路以生成并写入模型目录引用。",
+            config_path.display()
+        ),
+    }
+}
+
 fn set_codex_model_catalog_json_field(
     config_text: &str,
     catalog_path: Option<&Path>,
@@ -2740,23 +2748,17 @@ fn set_codex_model_catalog_json_field(
         ));
     }
 
-    // Ownership check, applied symmetrically to both directions: a value we
-    // did not write ourselves (the field is absent, or its filename is not
-    // ours) belongs to the user — never touch it either way. Before this,
-    // the `Some` branch below unconditionally overwrote `model_catalog_json`
-    // (upstream cc-switch #6087): a user who had hand-pointed it at their
-    // own catalog file would silently lose that customization the moment the
-    // active provider needed a Chimera-managed catalog. The `None` branch
-    // already had this check (only remove a value that is ours to remove);
-    // it just was not mirrored on the write side.
-    let owned_or_absent = doc
-        .get("model_catalog_json")
-        .and_then(|item| item.as_str())
-        .map(|path| {
-            Path::new(path).file_name().and_then(|name| name.to_str())
-                == Some(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)
-        })
-        .unwrap_or(true);
+    // Only replace/remove our own pointer, or create one when absent.
+    // If this line needs a managed catalog, a user-owned pointer is a conflict:
+    // fail before any catalog write so the save transaction can roll back.
+    // Silently keeping it would commit a line whose model settings cannot apply.
+    let generated_path = catalog_path
+        .map(Path::to_path_buf)
+        .unwrap_or_else(get_codex_model_catalog_path);
+    let owned_or_absent = doc.get("model_catalog_json").map_or(true, |item| {
+        item.as_str().is_some_and(|path| path.trim().is_empty())
+            || resolve_catalog_path_in_doc(&doc, &generated_path).is_some()
+    });
 
     match catalog_path {
         Some(path) => {
@@ -2772,10 +2774,7 @@ fn set_codex_model_catalog_json_field(
                 };
                 doc["model_catalog_json"] = toml_edit::value(pointer);
             } else {
-                log::warn!(
-                    "model_catalog_json 已被用户指向自定义文件，跳过写入 Chimera++ 生成的模型目录；\
-                     该线路的目录编辑器配置（如逐模型思考等级）不会通过 Codex 生效"
-                );
+                return Err(AppError::Message(codex_model_catalog_reference_error(&doc)));
             }
         }
         None => {
@@ -2819,13 +2818,21 @@ fn set_codex_native_web_search_field(config_text: &str, disable: bool) -> Result
     Ok(doc.to_string())
 }
 
-/// Generate Codex `model_catalog_json` from provider settings and inject/remove
-/// the top-level TOML field that points Codex to the generated file.
-pub fn prepare_codex_config_text_with_model_catalog(
+/// Pure preparation for a single Codex live-file changeset. `None` leaves the
+/// catalog bytes untouched (including snapshot restores and catalog removal).
+#[derive(Debug)]
+pub(crate) struct PreparedCodexConfig {
+    pub config_text: String,
+    pub model_catalog: Option<String>,
+}
+
+/// Generate catalog bytes and inject/remove the pointer without writing files.
+/// Callers must commit both fields together through `CodexLiveWrite`.
+pub(crate) fn prepare_codex_config_text_with_model_catalog(
     settings: &Value,
     config_text: &str,
     profile: CodexCatalogToolProfile,
-) -> Result<String, AppError> {
+) -> Result<PreparedCodexConfig, AppError> {
     let catalog_path = get_codex_model_catalog_path();
 
     if let Some(catalog) = codex_model_catalog_from_settings(settings, config_text, profile)? {
@@ -2854,15 +2861,20 @@ pub fn prepare_codex_config_text_with_model_catalog(
             CodexCatalogToolProfile::ProxyChat => false,
         };
         let config_text = set_codex_native_web_search_field(&config_text, disable_web_search)?;
-        write_json_file(&catalog_path, &catalog)?;
-        Ok(config_text)
+        Ok(PreparedCodexConfig {
+            config_text,
+            model_catalog: Some(crate::config::json_file_text(&catalog)?),
+        })
     } else {
         let config_text = set_codex_model_catalog_json_field(config_text, None)?;
         // Even without a generated catalog, the Responses→Anthropic transform drops the
         // Codex web_search hosted tool, so keep the invariant that an Anthropic provider
         // never presents it as a dead tool.
         let disable_web_search = profile == CodexCatalogToolProfile::Anthropic;
-        set_codex_native_web_search_field(&config_text, disable_web_search)
+        Ok(PreparedCodexConfig {
+            config_text: set_codex_native_web_search_field(&config_text, disable_web_search)?,
+            model_catalog: None,
+        })
     }
 }
 
@@ -2872,8 +2884,8 @@ pub fn prepare_codex_config_text_with_model_catalog(
 /// `{ "models": [{ "model", "displayName"?, "contextWindow"?, hidden overrides... }, ...] }`.
 ///
 /// We only reverse-parse catalogs whose `model_catalog_json` path is the
-/// cc-switch–generated file (identified by filename
-/// `cc-switch-model-catalog.json`). A user-managed external catalog file is
+/// cc-switch-generated file in the selected config root (including its bare
+/// filename for portable/WSL configs). A user-managed external catalog file is
 /// left alone — surfacing its richer structure as the simplified table would
 /// be a downgrade we can't safely round-trip.
 ///
@@ -2907,35 +2919,118 @@ pub fn read_codex_model_catalog_simplified_from_live() -> Result<Option<Value>, 
     ))
 }
 
-/// Given `config.toml` text, resolve the on-disk path of the cc-switch–owned
-/// catalog file (returns `None` if `model_catalog_json` is absent or points at
-/// a file we don't own). Relative paths fall back to `generated_path`.
+/// Resolve only the catalog in the selected config root. A root-relative bare
+/// filename (optionally prefixed by `./`) is supported for portable/WSL configs.
+/// External, nested, drive-relative and traversal paths are never adopted.
+/// No filesystem lookup, canonicalization or directory creation occurs here.
 pub(crate) fn resolve_cc_switch_catalog_path(
     config_text: &str,
     generated_path: &Path,
 ) -> Option<PathBuf> {
-    if config_text.trim().is_empty() {
-        return None;
-    }
     let doc = config_text.parse::<DocumentMut>().ok()?;
-    let catalog_path_str = doc
-        .get("model_catalog_json")
-        .and_then(|item| item.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())?;
+    resolve_catalog_path_in_doc(&doc, generated_path)
+}
 
-    let referenced_path = Path::new(catalog_path_str);
-    let is_cc_switch_owned = referenced_path.file_name().and_then(|name| name.to_str())
-        == Some(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME);
-    if !is_cc_switch_owned {
+fn resolve_catalog_path_in_doc(doc: &DocumentMut, generated_path: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+
+    let raw = doc.get("model_catalog_json")?.as_str()?;
+    // Whitespace is part of a nonempty filename, not something to normalize.
+    // Path::components drops trailing separators, but a directory reference
+    // must never acquire ownership of the catalog file.
+    let final_segment = raw
+        .rsplit(|ch| ch == '/' || (cfg!(windows) && ch == '\\'))
+        .next()
+        .unwrap_or("");
+    let managed_name = if cfg!(windows) {
+        final_segment.eq_ignore_ascii_case(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)
+    } else {
+        final_segment == CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME
+    };
+    if !managed_name {
         return None;
     }
+    let referenced = Path::new(raw);
+    let mut relative_parts = referenced
+        .components()
+        .filter(|part| *part != Component::CurDir);
+    let bare = matches!(relative_parts.next(), Some(Component::Normal(name)) if {
+        let name = name.to_str().unwrap_or("");
+        if cfg!(windows) {
+            name.eq_ignore_ascii_case(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)
+        } else {
+            name == CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME
+        }
+    }) && relative_parts.next().is_none();
+    let same_absolute_path = normalized_catalog_absolute_path(referenced)
+        .zip(normalized_catalog_absolute_path(generated_path))
+        .is_some_and(|(referenced, generated)| referenced == generated);
+    (bare || same_absolute_path).then(|| generated_path.to_path_buf())
+}
 
-    if referenced_path.is_absolute() {
-        Some(referenced_path.to_path_buf())
-    } else {
-        Some(generated_path.to_path_buf())
+fn normalized_catalog_absolute_path(path: &Path) -> Option<String> {
+    use std::path::Component;
+
+    if !path.is_absolute() {
+        return None;
     }
+    let mut normalized = PathBuf::new();
+    for part in path.components() {
+        match part {
+            // Do not resolve traversal lexically across potentially symlinked
+            // directories, or claim that an external path is ours.
+            Component::ParentDir => return None,
+            Component::CurDir => {}
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    let identity = normalized.to_str()?.to_string();
+    #[cfg(windows)]
+    let identity = {
+        let identity = identity.replace('\\', "/").to_ascii_lowercase();
+        if let Some(unc) = identity.strip_prefix("//?/unc/") {
+            format!("//{unc}")
+        } else {
+            identity
+                .strip_prefix("//?/")
+                .unwrap_or(&identity)
+                .to_string()
+        }
+    };
+    Some(identity)
+}
+
+/// Projection must not hide an external catalog before catalog preparation can
+/// detect it. Even an explicit managed pointer in a line cannot adopt it.
+pub(crate) fn ensure_catalog_reference_preserved(
+    live: &str,
+    projected: &str,
+) -> Result<(), AppError> {
+    let live_doc = live
+        .parse::<DocumentMut>()
+        .map_err(|e| AppError::Message(format!("Invalid Codex config.toml: {e}")))?;
+    let Some(reference) = live_doc.get("model_catalog_json") else {
+        return Ok(());
+    };
+    if reference
+        .as_str()
+        .is_some_and(|path| path.trim().is_empty())
+        || resolve_catalog_path_in_doc(&live_doc, &get_codex_model_catalog_path()).is_some()
+    {
+        return Ok(());
+    }
+    // Compare values, not TOML quote style, whitespace or comments. A preserved
+    // external/non-string value is not a transfer of ownership.
+    let parse = |text: &str| {
+        toml::from_str::<toml::Value>(text)
+            .map_err(|e| AppError::Message(format!("Invalid Codex config.toml: {e}")))
+    };
+    if parse(live)?.get("model_catalog_json") != parse(projected)?.get("model_catalog_json") {
+        return Err(AppError::Message(codex_model_catalog_reference_error(
+            &live_doc,
+        )));
+    }
+    Ok(())
 }
 
 /// Pure reverse-parsing core: convert Codex catalog JSON text back into the
@@ -3059,22 +3154,23 @@ fn build_simplified_catalog_from_texts(config_text: &str, catalog_text: &str) ->
 /// `modelCatalog` with empty `auth.json` (the API key living in the config's
 /// `experimental_bearer_token`), so the caller must decide config projection
 /// independently of whether it writes or deletes `auth.json`.
-pub fn prepare_codex_live_config_text_with_optional_catalog(
+pub(crate) fn prepare_codex_live_config_text_with_optional_catalog(
     settings: &Value,
     config_text: &str,
     profile: CodexCatalogToolProfile,
-) -> Result<String, AppError> {
+) -> Result<PreparedCodexConfig, AppError> {
     if settings.get("modelCatalog").is_some() {
         prepare_codex_config_text_with_model_catalog(settings, config_text, profile)
     } else {
-        Ok(config_text.to_string())
+        Ok(PreparedCodexConfig {
+            config_text: config_text.to_string(),
+            model_catalog: None,
+        })
     }
 }
 
-/// Write a line to live. `config_text` is the line's effective text (common
-/// snippet merged); it is projected onto live `config.toml` by the key
-/// ownership table (`codex_key_ownership::project_codex_line_onto_live`)
-/// instead of replacing the file.
+/// Project a line and its common snippet onto live, then commit auth, config,
+/// catalog and common-projection ledger as one observed CAS changeset.
 pub fn write_codex_provider_live_with_catalog(
     settings: &Value,
     category: Option<&str>,
@@ -3082,23 +3178,48 @@ pub fn write_codex_provider_live_with_catalog(
     config_text: Option<&str>,
     snippet: Option<&crate::codex_key_ownership::CodexCommonSnippet>,
     profile: CodexCatalogToolProfile,
-) -> Result<(), AppError> {
-    let config_text = config_text
-        .map(|text| {
-            crate::codex_key_ownership::project_codex_line_onto_live(
-                text,
-                &read_codex_config_text()?,
-                category == Some("official"),
-                snippet,
-            )
-        })
-        .transpose()?;
-    let prepared_config = config_text
-        .as_deref()
-        .map(|text| prepare_codex_config_text_with_model_catalog(settings, text, profile))
-        .transpose()?;
+) -> Result<crate::config::cas::AppliedChangeset, AppError> {
+    plan_codex_provider_live_with_catalog(settings, category, auth, config_text, snippet, profile)?
+        .commit()
+}
 
-    write_codex_live_for_provider(category, auth, prepared_config.as_deref())
+/// The direct writer's read/prepare half. Callers that need compensation can
+/// retain the `AppliedChangeset` returned by `commit()` instead of taking an
+/// unconditional restore snapshot. No live file is written during planning.
+pub(crate) fn plan_codex_provider_live_with_catalog(
+    settings: &Value,
+    category: Option<&str>,
+    auth: &Value,
+    config_text: Option<&str>,
+    snippet: Option<&crate::codex_key_ownership::CodexCommonSnippet>,
+    profile: CodexCatalogToolProfile,
+) -> Result<crate::codex_live_write::PlannedCodexLiveWrite, AppError> {
+    use crate::codex_live_write::{CodexLiveSnapshots, LiveFile};
+
+    let snapshots = CodexLiveSnapshots::read()?;
+    let live = snapshots.config_text()?;
+    let line_projected = crate::codex_key_ownership::project_codex_line_onto_live(
+        config_text.unwrap_or(""),
+        live,
+        category == Some("official"),
+        None,
+    )?;
+    ensure_catalog_reference_preserved(live, &line_projected)?;
+    let (projected, ledger) = crate::codex_common_projection::project(
+        &line_projected,
+        snippet,
+        snapshots.common_projection_text()?,
+    )?;
+    let prepared = prepare_codex_config_text_with_model_catalog(settings, &projected, profile)?;
+
+    plan_codex_live_for_provider(
+        category,
+        auth,
+        Some(&prepared.config_text),
+        prepared.model_catalog.as_deref(),
+        LiveFile::Write(&ledger),
+        snapshots,
+    )
 }
 
 /// Extract a provider-scoped `experimental_bearer_token` from Codex `config.toml`.
@@ -3891,20 +4012,46 @@ pub fn write_codex_live_for_provider(
     auth: &Value,
     config_text: Option<&str>,
 ) -> Result<(), AppError> {
-    // The official seed stores an empty config as a login placeholder. Falling
-    // back to the stripped live text preserves user-owned settings instead of
-    // erasing them on switch.
-    let official_baseline = if category == Some("official") {
-        match config_text {
-            Some(text) if !text.trim().is_empty() => Some(text.to_string()),
-            _ => Some(prepare_codex_official_live_config_baseline(
-                &read_codex_config_text()?,
-            )?),
-        }
-    } else {
-        None
-    };
-    let config_text = official_baseline.as_deref().or(config_text);
+    use crate::codex_live_write::{CodexLiveSnapshots, LiveFile};
+
+    let snapshots = CodexLiveSnapshots::read()?;
+    // Only the legacy non-common helper treats an empty official config as a
+    // login placeholder. A projected empty config is authoritative: falling
+    // back after common cleanup would resurrect values removed by its ledger.
+    let official_baseline =
+        if category == Some("official") && config_text.is_none_or(|text| text.trim().is_empty()) {
+            Some(prepare_codex_official_live_config_baseline(
+                snapshots.config_text()?,
+            )?)
+        } else {
+            None
+        };
+    plan_codex_live_for_provider(
+        category,
+        auth,
+        official_baseline.as_deref().or(config_text),
+        None,
+        LiveFile::Keep,
+        snapshots,
+    )?
+    .commit()?;
+    Ok(())
+}
+
+fn plan_codex_live_for_provider(
+    category: Option<&str>,
+    auth: &Value,
+    config_text: Option<&str>,
+    model_catalog: Option<&str>,
+    common_projection: crate::codex_live_write::LiveFile<&str>,
+    snapshots: crate::codex_live_write::CodexLiveSnapshots,
+) -> Result<crate::codex_live_write::PlannedCodexLiveWrite, AppError> {
+    use crate::codex_live_write::{plan_with_snapshots, CodexLiveWrite, LiveFile};
+
+    if !auth.is_object() {
+        return Err(AppError::Config("Codex auth 配置必须是 JSON 对象".into()));
+    }
+    let model_catalog = model_catalog.map_or(LiveFile::Keep, LiveFile::Write);
     let unified_official_config =
         if category == Some("official") && crate::settings::unify_codex_session_history() {
             Some(inject_codex_unified_session_bucket(
@@ -3923,25 +4070,26 @@ pub fn write_codex_live_for_provider(
     };
     let config_text = normalized_third_party_config.as_deref().or(config_text);
 
-    if category == Some("official") {
-        let auth_path = get_codex_auth_path();
-        let live_auth = if auth_path.exists() {
-            read_json_file(&auth_path)?
-        } else {
-            json!({})
-        };
-        let official_auth = prepare_codex_official_auth(auth, &live_auth);
-        return write_codex_live_atomic(&official_auth, config_text);
-    }
-
-    let should_write_auth = !crate::settings::preserve_codex_official_auth_on_switch();
-
-    if should_write_auth {
-        write_codex_live_atomic(auth, config_text)
+    let official_auth;
+    let provider_config;
+    let (auth, config) = if category == Some("official") {
+        official_auth = prepare_codex_official_auth(auth, &snapshots.auth_value()?);
+        (LiveFile::Write(&official_auth), config_text.unwrap_or(""))
+    } else if !crate::settings::preserve_codex_official_auth_on_switch() {
+        (LiveFile::Write(auth), config_text.unwrap_or(""))
     } else {
-        let live_config = prepare_codex_provider_live_config(auth, config_text.unwrap_or(""))?;
-        write_codex_live_config_atomic(Some(&live_config))
-    }
+        provider_config = prepare_codex_provider_live_config(auth, config_text.unwrap_or(""))?;
+        (LiveFile::Keep, provider_config.as_str())
+    };
+    plan_with_snapshots(
+        CodexLiveWrite {
+            auth,
+            config: LiveFile::Write(config),
+            model_catalog,
+            common_projection,
+        },
+        snapshots,
+    )
 }
 
 /// Build the live Codex config for provider switching.
@@ -5537,12 +5685,16 @@ model = "gpt-4"
             "C:/%NAME-NOT-A-VARIABLE%/catalog.json",
         ] {
             let config = format!("model_catalog_json = {pointer:?}\n");
-            for catalog in [None, Some(Path::new("generated.json"))] {
-                assert_eq!(
-                    set_codex_model_catalog_json_field(&config, catalog).unwrap(),
-                    config
-                );
-            }
+            assert_eq!(
+                set_codex_model_catalog_json_field(&config, None).unwrap(),
+                config
+            );
+            let error =
+                set_codex_model_catalog_json_field(&config, Some(Path::new("generated.json")))
+                    .unwrap_err()
+                    .to_string();
+            assert!(error.contains("模型目录配置冲突"), "{error}");
+            assert!(!error.contains("shell variables"), "{error}");
         }
     }
 
@@ -6956,7 +7108,7 @@ web_search = "disabled"
             CodexCatalogToolProfile::Anthropic,
         )
         .unwrap();
-        let parsed: toml::Value = toml::from_str(&anthropic).unwrap();
+        let parsed: toml::Value = toml::from_str(&anthropic.config_text).unwrap();
         assert_eq!(
             parsed.get("web_search").and_then(|v| v.as_str()),
             Some("disabled"),
@@ -6970,7 +7122,7 @@ web_search = "disabled"
             CodexCatalogToolProfile::ProxyChat,
         )
         .unwrap();
-        let parsed: toml::Value = toml::from_str(&proxy).unwrap();
+        let parsed: toml::Value = toml::from_str(&proxy.config_text).unwrap();
         assert!(
             parsed.get("web_search").is_none(),
             "ProxyChat profile must not disable web_search on the no-catalog path"
@@ -7082,7 +7234,7 @@ web_search = "disabled"
             CodexCatalogToolProfile::NativeResponses,
         )
         .expect("config preparation should not error");
-        let parsed: toml::Value = toml::from_str(&prepared).expect("TOML parses");
+        let parsed: toml::Value = toml::from_str(&prepared.config_text).expect("TOML parses");
         assert_eq!(
             parsed.get("web_search").and_then(|v| v.as_str()),
             Some("disabled"),
@@ -7260,24 +7412,149 @@ base_url = "https://relay.example/v1"
         );
     }
 
-    #[test]
-    fn resolve_catalog_path_accepts_cc_switch_owned_file() {
-        let generated = PathBuf::from("/tmp/.codex/cc-switch-model-catalog.json");
-        let config = r#"model_catalog_json = "/tmp/.codex/cc-switch-model-catalog.json"
-"#;
-        let resolved = resolve_cc_switch_catalog_path(config, &generated).expect("path resolves");
-        assert_eq!(resolved, generated);
+    fn catalog_reference(path: &str) -> String {
+        format!(
+            "model_catalog_json = {}\n",
+            serde_json::to_string(path).unwrap()
+        )
     }
 
     #[test]
-    fn resolve_catalog_path_rejects_user_owned_external_file() {
-        let generated = PathBuf::from("/tmp/.codex/cc-switch-model-catalog.json");
-        let config = r#"model_catalog_json = "/Users/me/.codex/my-handwritten-catalog.json"
-"#;
-        assert!(
-            resolve_cc_switch_catalog_path(config, &generated).is_none(),
-            "external catalog files should be left alone"
-        );
+    fn resolve_catalog_path_accepts_only_root_file_and_its_bare_alias() {
+        let generated = std::env::temp_dir()
+            .join("catalog-ownership")
+            .join(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME);
+        for reference in [
+            CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME.to_string(),
+            format!("./{CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME}"),
+            generated.to_str().unwrap().to_string(),
+        ] {
+            assert_eq!(
+                resolve_cc_switch_catalog_path(&catalog_reference(&reference), &generated),
+                Some(generated.clone()),
+                "{reference}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_catalog_path_rejects_external_nested_and_directory_aliases() {
+        let generated = std::env::temp_dir()
+            .join("catalog-ownership")
+            .join(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME);
+        for reference in [
+            std::env::temp_dir()
+                .join("external")
+                .join(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)
+                .to_str()
+                .unwrap()
+                .to_string(),
+            format!("nested/{CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME}"),
+            format!("../{CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME}"),
+            format!("nested/../{CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME}"),
+            format!("{CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME}/"),
+            format!("{CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME}/."),
+            format!("{}/.", generated.display()),
+            format!(" {CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME}"),
+            format!("{CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME} "),
+            format!("C:{CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME}"),
+            format!(r"D:\external\{CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME}"),
+            format!(r"\\other\share\{CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME}"),
+        ] {
+            assert!(
+                resolve_cc_switch_catalog_path(&catalog_reference(&reference), &generated)
+                    .is_none(),
+                "{reference}"
+            );
+        }
+        for value in [
+            "42",
+            "true",
+            "['catalog.json']",
+            "{ path = 'catalog.json' }",
+        ] {
+            let config = format!("model_catalog_json = {value}\n");
+            assert!(resolve_cc_switch_catalog_path(&config, &generated).is_none());
+            let error = set_codex_model_catalog_json_field(&config, Some(&generated))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("必须是字符串路径"));
+            assert_eq!(
+                set_codex_model_catalog_json_field(&config, None).unwrap(),
+                config
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_catalog_path_handles_drive_and_unc_identity_without_basename_adoption() {
+        for (generated, aliases) in [
+            (
+                r"C:\Users\Test\.codex\cc-switch-model-catalog.json",
+                vec![
+                    "c:/users/test/.codex/CC-SWITCH-MODEL-CATALOG.JSON",
+                    r"\\?\C:\Users\Test\.codex\cc-switch-model-catalog.json",
+                ],
+            ),
+            (
+                r"\\server\share\.codex\cc-switch-model-catalog.json",
+                vec![
+                    "//SERVER/share/.codex/CC-SWITCH-MODEL-CATALOG.JSON",
+                    r"\\?\UNC\server\share\.codex\cc-switch-model-catalog.json",
+                ],
+            ),
+        ] {
+            for reference in aliases {
+                assert_eq!(
+                    resolve_cc_switch_catalog_path(
+                        &catalog_reference(reference),
+                        Path::new(generated)
+                    ),
+                    Some(PathBuf::from(generated)),
+                    "{reference}"
+                );
+            }
+            for reference in [
+                r"C:\Other\.codex\cc-switch-model-catalog.json",
+                r"\\other\share\.codex\cc-switch-model-catalog.json",
+                r"\\server\other\.codex\cc-switch-model-catalog.json",
+                r"C:cc-switch-model-catalog.json",
+                r".\nested\cc-switch-model-catalog.json",
+                r"cc-switch-model-catalog.json\.",
+            ] {
+                assert!(
+                    resolve_cc_switch_catalog_path(
+                        &catalog_reference(reference),
+                        Path::new(generated)
+                    )
+                    .is_none(),
+                    "{reference}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn external_catalog_projection_requires_semantic_preservation() {
+        let external = "model_catalog_json = 'nested/cc-switch-model-catalog.json'\n";
+        assert!(ensure_catalog_reference_preserved(
+            external,
+            "model_catalog_json = \"nested/cc-switch-model-catalog.json\" # same value\n"
+        )
+        .is_ok());
+        assert!(ensure_catalog_reference_preserved(external, "").is_err());
+        assert!(ensure_catalog_reference_preserved(
+            external,
+            &catalog_reference(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)
+        )
+        .is_err());
+        assert!(ensure_catalog_reference_preserved(
+            "model_catalog_json = 42\n",
+            "model_catalog_json = 42\n"
+        )
+        .is_ok());
+        assert!(ensure_catalog_reference_preserved("model_catalog_json = 42\n", "").is_err());
     }
 
     #[test]
@@ -8009,17 +8286,89 @@ model = "glm-5"
     }
 
     #[test]
-    fn set_catalog_json_none_removes_cc_switch_owned_by_filename() {
-        // After the WSL fix, TOML may contain a Linux-style path.
-        // The None arm must still remove it (file_name match catches any format).
-        let input = r#"model_catalog_json = "/home/user/.codex/cc-switch-model-catalog.json"
-"#;
-        let result = set_codex_model_catalog_json_field(input, None).unwrap();
-        let parsed: toml::Value = toml::from_str(&result).unwrap();
-        assert!(
-            parsed.get("model_catalog_json").is_none(),
-            "None arm should remove cc-switch-owned field regardless of path format"
+    fn set_catalog_json_none_preserves_external_same_basename() {
+        let input = "model_catalog_json = '/home/user/.codex/cc-switch-model-catalog.json'\n";
+        assert_eq!(
+            set_codex_model_catalog_json_field(input, None).unwrap(),
+            input
         );
+        let bare = catalog_reference(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME);
+        let cleaned = set_codex_model_catalog_json_field(&bare, None).unwrap();
+        assert!(toml::from_str::<toml::Value>(&cleaned)
+            .unwrap()
+            .get("model_catalog_json")
+            .is_none());
+    }
+
+    #[test]
+    fn set_catalog_json_some_rejects_user_owned_catalog_with_recovery_steps() {
+        for pointer in [
+            "my-custom-catalog.json",
+            "/Users/me/.codex/my-custom-catalog.json",
+            r"C:\Users\me\.codex\my-custom-catalog.json",
+        ] {
+            let input = format!("# Keep my catalog\nmodel_catalog_json = {pointer:?}\n");
+            let error = set_codex_model_catalog_json_field(
+                &input,
+                Some(Path::new(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)),
+            )
+            .unwrap_err()
+            .to_string();
+
+            assert!(error.contains("模型目录配置冲突"), "{error}");
+            assert!(error.contains(&format!("{pointer:?}")), "{error}");
+            assert!(error.contains(&get_codex_config_path().display().to_string()));
+            assert!(error.contains("备份此配置文件并移除顶层 model_catalog_json"));
+            assert!(error.contains("不会覆盖或删除自定义模型目录文件"));
+            assert_eq!(
+                set_codex_model_catalog_json_field(&input, None).unwrap(),
+                input,
+                "leaving managed catalogs must preserve custom pointers and comments"
+            );
+        }
+    }
+
+    #[test]
+    fn set_catalog_json_some_fills_absent_or_empty_reference() {
+        let catalog_path = Path::new(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME);
+        for input in [
+            "",
+            "model_catalog_json = \"\"\n",
+            "model_catalog_json = \"  \"\n",
+        ] {
+            let result = set_codex_model_catalog_json_field(input, Some(catalog_path)).unwrap();
+            assert_eq!(
+                resolve_cc_switch_catalog_path(&result, catalog_path),
+                Some(catalog_path.to_path_buf())
+            );
+        }
+    }
+
+    #[test]
+    fn set_catalog_json_some_replaces_managed_catalog() {
+        let input = "model_catalog_json = \"cc-switch-model-catalog.json\"\n";
+        #[cfg(not(windows))]
+        let catalog_path = Path::new("/tmp/cc-switch-model-catalog.json");
+        #[cfg(windows)]
+        let catalog_path = Path::new(r"C:\Users\test\.codex\cc-switch-model-catalog.json");
+
+        let result = set_codex_model_catalog_json_field(input, Some(catalog_path)).unwrap();
+        assert_eq!(
+            resolve_cc_switch_catalog_path(&result, catalog_path),
+            Some(catalog_path.to_path_buf())
+        );
+    }
+
+    #[test]
+    fn catalog_reference_error_identifies_missing_field_and_config_path() {
+        for input in ["", "model = \"gpt-a\"\n", "model_catalog_json = \"\"\n"] {
+            let config = input.parse::<DocumentMut>().unwrap();
+            let error = codex_model_catalog_reference_error(&config);
+            assert!(error.contains("缺少有效的顶层 model_catalog_json"));
+            assert!(error.contains(&get_codex_config_path().display().to_string()));
+            assert!(error.contains("重新保存线路"));
+            assert!(!error.contains("自定义模型目录"));
+        }
     }
 
     #[test]

@@ -334,6 +334,11 @@ impl ProxyServer {
         );
     }
 
+    /// Remove a target when a compensated first activation restores no selection.
+    pub(crate) async fn clear_active_target(&self, app_type: &str) {
+        self.state.current_providers.write().await.remove(app_type);
+    }
+
     fn build_router(&self) -> Router {
         Router::new()
             // 健康检查

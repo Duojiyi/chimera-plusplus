@@ -1432,7 +1432,7 @@ fn verify_codex_model_catalog_blocking(
     let generated_path = crate::codex_config::get_codex_model_catalog_path();
     let catalog_path =
         crate::codex_config::resolve_cc_switch_catalog_path(&config_text, &generated_path)
-            .ok_or_else(|| "Codex 配置未引用 Chimera 模型目录".to_string())?;
+            .ok_or_else(|| crate::codex_config::codex_model_catalog_reference_error(&config))?;
     let catalog_text = std::fs::read_to_string(&catalog_path).map_err(|_| {
         format!(
             "Chimera 模型目录文件不存在或无法读取：{}",

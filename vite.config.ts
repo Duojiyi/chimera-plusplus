@@ -20,6 +20,15 @@ export default defineConfig(({ command }) => ({
     rollupOptions: {
       output: {
         manualChunks(id) {
+          // Preserve cascade order: base styles first, glass materials second.
+          // Both stylesheets are linked before the renderer entry executes.
+          if (
+            /\/src\/(?:theme\/liquid-glass(?:-pages)?|components\/ui\/liquid-glass-ui)\.css$/.test(
+              id.replaceAll("\\", "/"),
+            )
+          ) {
+            return "liquid-glass";
+          }
           if (!id.includes("node_modules")) return undefined;
           if (id.includes("/three/")) return "vendor-three";
           if (id.includes("/smol-toml/") || id.includes("/jsonc-parser/")) {

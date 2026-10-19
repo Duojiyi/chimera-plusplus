@@ -42,6 +42,15 @@ export interface CodexHistoryReclaimResult {
 }
 
 export const sessionsApi = {
+  /** The native save dialog owns the destination; null means the user cancelled. */
+  async exportFile(options: {
+    fileName: string;
+    format: "markdown" | "json";
+    content: string;
+  }): Promise<string | null> {
+    return await invoke("export_session_file", options);
+  },
+
   async list(): Promise<SessionListEntry[]> {
     return await invoke("list_sessions");
   },

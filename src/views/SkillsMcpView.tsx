@@ -67,6 +67,8 @@ const SOURCE_LABELS: Record<string, string> = {
   "cc-switch": "Chimera++ 共享目录",
 };
 const sourceLabel = (id: string) => SOURCE_LABELS[id] ?? id;
+const importKey = (skill: UnmanagedSkill) =>
+  JSON.stringify([skill.directory, skill.path, skill.contentHash ?? ""]);
 
 /** Names of the tools a resource is currently registered with. */
 const enabledToolNames = (
@@ -130,6 +132,7 @@ export const SkillsMcpView: React.FC<{
   const [scanError, setScanError] = useState<string | null>(null);
   const scanGeneration = useRef(0);
   const [selectedImports, setSelectedImports] = useState<string[]>([]);
+  const [scanAllSources, setScanAllSources] = useState(false);
   const [backups, setBackups] = useState<SkillBackupEntry[] | null>(null);
   const [updates, setUpdates] = useState<SkillUpdateInfo[] | null>(null);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
@@ -174,15 +177,16 @@ export const SkillsMcpView: React.FC<{
     setScanning(true);
     setScanError(null);
     try {
-      const found = await skillsApi.scanUnmanaged();
+      const found = await skillsApi.scanUnmanaged(
+        scanAllSources ? undefined : targetApp,
+      );
       if (request !== scanGeneration.current) return;
       if (!Array.isArray(found))
         throw new Error("Invalid Skills scan response");
       setUnmanaged(found);
       setSelectedImports((previous) =>
-        previous.filter(
-          (directory) =>
-            found.filter((skill) => skill.directory === directory).length === 1,
+        previous.filter((key) =>
+          found.some((skill) => importKey(skill) === key),
         ),
       );
     } catch {
@@ -191,7 +195,11 @@ export const SkillsMcpView: React.FC<{
     } finally {
       if (request === scanGeneration.current) setScanning(false);
     }
-  }, []);
+  }, [scanAllSources, targetApp]);
+  useEffect(() => {
+    setUnmanaged(null);
+    setSelectedImports([]);
+  }, [scanSkills]);
   useEffect(() => {
     void scanSkills();
     return () => {
@@ -674,8 +682,8 @@ export const SkillsMcpView: React.FC<{
               <span className="resource-empty-icon" aria-hidden="true">
                 <Puzzle size={22} strokeWidth={1.6} />
               </span>
-              <h2 id="skills-empty-title">还没有安装 Skills</h2>
-              <p>为 {targetName} 添加技能，新会话即可使用。</p>
+              <h2 id="skills-empty-title">尚未由 Chimera++ 管理 Skills</h2>
+              <p>磁盘上已有的技能仍可被工具读取，可在下方发现并纳入管理。</p>
               <div className="resource-empty-paths">
                 <button
                   type="button"
@@ -923,15 +931,13 @@ export const SkillsMcpView: React.FC<{
                     role="switch"
                     aria-label={`启用 Skill ${skill.name}`}
                     aria-checked={skill.enabled}
+                    disabled={busy || loading || !loaded}
                     onClick={() => handleToggleSkill(skill.id)}
-                    className={`box-border w-[36px] shrink-0 h-[20px] flex items-center p-[4px] rounded-full border-none cursor-pointer transition-colors ${
-                      skill.enabled
-                        ? "bg-[var(--switch-on-bg)] justify-end"
-                        : "bg-[var(--switch-off-bg)] ring-1 ring-inset ring-[var(--switch-off-border)] justify-start"
-                    }`}
+                    className="skills-resource-switch"
                   >
-                    <div
-                      className={`w-[12px] h-[12px] rounded-full ${skill.enabled ? "bg-[var(--switch-thumb-on)]" : "bg-[var(--switch-thumb-off)]"}`}
+                    <span
+                      className="skills-resource-switch-thumb"
+                      aria-hidden="true"
                     />
                   </button>
 
@@ -1053,18 +1059,16 @@ export const SkillsMcpView: React.FC<{
                       role="switch"
                       aria-label={`启用 MCP ${mcp.name}`}
                       aria-checked={mcp.enabled}
+                      disabled={busy || loading || !loaded}
                       onClick={(e) => {
                         e.stopPropagation();
                         handleToggleMcp(mcp.id);
                       }}
-                      className={`box-border w-[36px] shrink-0 h-[20px] flex items-center p-[4px] rounded-full border-none cursor-pointer transition-colors ${
-                        mcp.enabled
-                          ? "bg-[var(--switch-on-bg)] justify-end"
-                          : "bg-[var(--switch-off-bg)] ring-1 ring-inset ring-[var(--switch-off-border)] justify-start"
-                      }`}
+                      className="skills-resource-switch"
                     >
-                      <div
-                        className={`w-[12px] h-[12px] rounded-full ${mcp.enabled ? "bg-[var(--switch-thumb-on)]" : "bg-[var(--switch-thumb-off)]"}`}
+                      <span
+                        className="skills-resource-switch-thumb"
+                        aria-hidden="true"
                       />
                     </button>
 
@@ -1184,6 +1188,21 @@ export const SkillsMcpView: React.FC<{
                       扫描只读取文件，不会修改。确认后添加到共享资源库，并启用到{" "}
                       {targetName}。
                     </p>
+                    <label className="skills-scan-scope">
+                      <input
+                        type="checkbox"
+                        checked={scanAllSources}
+                        onChange={(event) =>
+                          setScanAllSources(event.target.checked)
+                        }
+                      />
+                      同时发现其他工具的 Skills
+                    </label>
+                    <p className="skills-scan-scope-hint">
+                      {scanAllSources
+                        ? "正在查看所有工具与共享目录；相同内容的副本会合并。"
+                        : `仅查看 ${targetName}${targetApp === "codex" ? " 与通用 .agents 目录" : " 的技能目录"}。`}
+                    </p>
                     {scanning && (
                       <p role="status">
                         {unmanaged === null
@@ -1201,7 +1220,8 @@ export const SkillsMcpView: React.FC<{
                     {!scanning && !scanError && unmanaged?.length === 0 && (
                       <p>未发现可添加的本地 Skills。</p>
                     )}
-                    {unmanaged?.map((skill, index) => {
+                    {unmanaged?.map((skill) => {
+                      const key = importKey(skill);
                       const ambiguous =
                         unmanaged.filter(
                           (item) => item.directory === skill.directory,
@@ -1209,23 +1229,30 @@ export const SkillsMcpView: React.FC<{
                       return (
                         <label
                           className="skills-lifecycle-row skills-scan-row"
-                          data-selected={selectedImports.includes(
-                            skill.directory,
-                          )}
-                          key={`${skill.directory}-${index}`}
+                          data-selected={selectedImports.includes(key)}
+                          key={key}
                         >
                           <input
                             type="checkbox"
                             aria-label={`添加 ${skill.name}`}
-                            checked={selectedImports.includes(skill.directory)}
-                            disabled={scanning || !!scanError || ambiguous}
+                            checked={selectedImports.includes(key)}
+                            disabled={scanning || !!scanError}
                             onChange={(event) =>
                               setSelectedImports((previous) =>
                                 event.target.checked
-                                  ? [...previous, skill.directory]
-                                  : previous.filter(
-                                      (item) => item !== skill.directory,
-                                    ),
+                                  ? [
+                                      ...previous.filter(
+                                        (item) =>
+                                          !unmanaged.some(
+                                            (candidate) =>
+                                              candidate.directory ===
+                                                skill.directory &&
+                                              importKey(candidate) === item,
+                                          ),
+                                      ),
+                                      key,
+                                    ]
+                                  : previous.filter((item) => item !== key),
                               )
                             }
                           />
@@ -1242,7 +1269,7 @@ export const SkillsMcpView: React.FC<{
                             </span>
                             {ambiguous && (
                               <span className="skills-scan-warning">
-                                目录名重复，请先整理来源。
+                                同名但内容不同，请选择一个来源；不会覆盖目标中的不同内容。
                               </span>
                             )}
                           </span>
@@ -1255,20 +1282,26 @@ export const SkillsMcpView: React.FC<{
                         scanning || !!scanError || selectedImports.length === 0
                       }
                       onClick={() => {
-                        const imports = selectedImports.map((directory) => ({
-                          directory,
-                          apps: {
-                            claude: false,
-                            codex: false,
-                            gemini: false,
-                            grokbuild: false,
-                            opencode: false,
-                            [targetApp]: true,
-                          },
-                        }));
+                        const imports = (unmanaged ?? [])
+                          .filter((skill) =>
+                            selectedImports.includes(importKey(skill)),
+                          )
+                          .map((skill) => ({
+                            directory: skill.directory,
+                            sourcePath: skill.path,
+                            contentHash: skill.contentHash,
+                            apps: {
+                              claude: false,
+                              codex: false,
+                              gemini: false,
+                              grokbuild: false,
+                              opencode: false,
+                              [targetApp]: true,
+                            },
+                          }));
                         setConfirmation({
                           title: "确认添加 Skills",
-                          message: `将添加所选 ${imports.length} 个 Skill 到共享资源库，并启用到 ${targetName}。请先备份同名目录；失败可能部分完成。`,
+                          message: `将添加所选 ${imports.length} 个 Skill 到共享资源库，并启用到 ${targetName}。已有目标必须与所选来源内容一致；如有冲突，本批次将回滚新建文件，不会覆盖已有目录。`,
                           confirmText: `添加 ${imports.length} 个`,
                           destructive: false,
                           action: async () => {

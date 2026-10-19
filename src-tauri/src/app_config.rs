@@ -216,8 +216,10 @@ pub struct UnmanagedSkill {
     pub description: Option<String>,
     /// 在哪些应用目录中发现（如 ["claude", "codex"]）
     pub found_in: Vec<String>,
-    /// 发现路径（首个匹配的完整路径）
+    /// 同内容来源之一的规范路径；导入时必须再次验证。
     pub path: String,
+    /// 包括隐藏文件的完整副本指纹，与更新检测哈希独立。
+    pub content_hash: String,
 }
 
 /// MCP 服务器定义（v3.7.0 统一结构）

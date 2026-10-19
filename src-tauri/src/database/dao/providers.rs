@@ -81,6 +81,40 @@ impl Database {
         Ok(())
     }
 
+    /// Raw configuration snapshots retain unknown JSON metadata during rollback.
+    pub(crate) fn snapshot_provider_config_rows(
+        &self,
+        app_type: &str,
+    ) -> Result<Vec<(String, String, String)>, AppError> {
+        let conn = lock_conn!(self.conn);
+        let mut stmt = conn.prepare(
+            "SELECT id, settings_config, meta FROM providers WHERE app_type = ?1 ORDER BY id",
+        )?;
+        let rows = stmt
+            .query_map([app_type], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub(crate) fn restore_provider_config_rows(
+        &self,
+        app_type: &str,
+        rows: &[(String, String, String)],
+    ) -> Result<(), AppError> {
+        let mut conn = lock_conn!(self.conn);
+        let tx = conn.transaction()?;
+        for (id, settings, meta) in rows {
+            tx.execute(
+                "UPDATE providers SET settings_config = ?1, meta = ?2 WHERE app_type = ?3 AND id = ?4",
+                params![settings, meta, app_type, id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn get_all_providers(
         &self,
         app_type: &str,
@@ -638,6 +672,16 @@ impl Database {
             sanitize_untrusted_codex_config, CodexImportReview, CodexImportReviewLine,
         };
 
+        // Preserve prior opt-in/model intent before the untrusted pass removes
+        // permissions or other fields used by legacy subset inference.
+        let mut common_report = match self.get_config_snippet("codex")? {
+            Some(text) => {
+                crate::codex_key_ownership::sanitize_codex_common_snippet_with_report(&text)?.1
+            }
+            None => Default::default(),
+        };
+        self.migrate_legacy_codex_common_config()?;
+
         let mut review = CodexImportReview::default();
         for (id, provider) in self.get_all_providers("codex")? {
             let official = provider.category.as_deref() == Some("official");
@@ -672,11 +716,19 @@ impl Database {
                     if !report.stripped.is_empty() {
                         self.set_config_snippet("codex", Some(clean))?;
                     }
-                    review.common_config = Some(report);
+                    common_report.stripped.extend(report.stripped);
+                    common_report
+                        .needs_confirmation
+                        .extend(report.needs_confirmation);
                 }
                 Ok(_) => {}
-                Err(e) => log::warn!("Skipped MH-13b sanitize for the Codex common config: {e}"),
+                Err(_) => log::warn!("Skipped MH-13b sanitize for unreadable Codex common config"),
             }
+        }
+        common_report.stripped.sort();
+        common_report.stripped.dedup();
+        if !common_report.is_empty() {
+            review.common_config = Some(common_report);
         }
         Ok(review)
     }

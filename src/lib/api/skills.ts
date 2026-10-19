@@ -64,11 +64,14 @@ export interface UnmanagedSkill {
   description?: string;
   foundIn: string[];
   path: string;
+  contentHash?: string;
 }
 
 /** 导入已有 Skill 时提交的应用启用状态 */
 export interface ImportSkillSelection {
   directory: string;
+  sourcePath?: string;
+  contentHash?: string;
   apps: SkillApps;
 }
 
@@ -155,8 +158,10 @@ export const skillsApi = {
   },
 
   /** 扫描未管理的 Skills */
-  async scanUnmanaged(): Promise<UnmanagedSkill[]> {
-    return await invoke("scan_unmanaged_skills");
+  async scanUnmanaged(currentApp?: AppId): Promise<UnmanagedSkill[]> {
+    return await invoke("scan_unmanaged_skills", {
+      currentApp: currentApp ?? null,
+    });
   },
 
   /** 从应用目录导入 Skills */

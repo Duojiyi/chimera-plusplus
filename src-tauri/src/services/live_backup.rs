@@ -114,6 +114,7 @@ pub fn live_files(app: &AppType) -> Result<Vec<PathBuf>, AppError> {
         AppType::Codex => vec![
             crate::codex_config::get_codex_config_path(),
             crate::codex_config::get_codex_model_catalog_path(),
+            crate::codex_common_projection::ledger_path(),
             crate::prompt_files::prompt_file_path(app)?,
         ],
         AppType::Gemini => vec![
@@ -497,6 +498,20 @@ pub fn restore_backup(
             .transpose()
             .map_err(|e| AppError::Config(format!("备份内容无法解码 ({}): {e}", file.path)))?;
         planned.push((target, bytes));
+    }
+
+    // Old config backups predate the common-projection ledger. Restoring
+    // their config while keeping a newer ledger would give stale ownership
+    // records authority over unrelated restored values. Clear it in the same
+    // changeset; prompt-only backups must leave the ledger untouched.
+    if *app == AppType::Codex {
+        let config_path = crate::codex_config::get_codex_config_path();
+        let ledger_path = crate::codex_common_projection::ledger_path();
+        if planned.iter().any(|(path, _)| path == &config_path)
+            && !planned.iter().any(|(path, _)| path == &ledger_path)
+        {
+            planned.push((ledger_path, None));
+        }
     }
 
     // Only AGENTS restores affect the prompt library; config-only backups leave it alone.

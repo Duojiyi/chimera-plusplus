@@ -1,0 +1,469 @@
+/* Liquid glass is a material layer, not a layout system. Optical gradients and
+   inset highlights stay static; text, routes, status colours and hit areas keep
+   their original semantics. Variables are also available to Radix portals. */
+:root {
+  --radius-control: 10px;
+  --radius-panel: 18px;
+  --radius-ring: 12px;
+  --glass-surface: rgb(255 255 255 / 82%);
+  --glass-surface-strong: rgb(252 254 255 / 97%);
+  --glass-border: rgb(87 121 154 / 23%);
+  --glass-control-border: #6c8194;
+  --glass-highlight: rgb(255 255 255 / 92%);
+  --glass-shadow:
+    0 8px 24px -16px rgb(26 56 85 / 30%), inset 0 1px 0 var(--glass-highlight);
+  --glass-blur: 16px;
+  --glass-control-bg: rgb(255 255 255 / 78%);
+  --glass-control-hover: rgb(230 244 255 / 95%);
+  --glass-accent: #087bb9;
+  --glass-accent-strong: #065f99;
+  --glass-accent-soft: rgb(16 131 203 / 11%);
+  --glass-focus: #0875b5;
+  --glass-ink: #23384b;
+  --glass-muted: #596d7e;
+  --glass-canvas: #f3f7fb;
+  --glass-canvas-glow: rgb(155 209 246 / 17%);
+  --glass-sheen: rgb(255 255 255 / 45%);
+  --glass-primary-top: #117cb9;
+  --glass-primary-bottom: #0866a3;
+  --glass-primary-edge: rgb(23 98 150 / 60%);
+  --glass-selection: #e2f1fe;
+  --glass-selection-ink: #104c77;
+}
+
+.dark,
+[data-theme="dark"] {
+  --glass-surface: rgb(34 45 57 / 88%);
+  --glass-surface-strong: rgb(31 42 54 / 98%);
+  --glass-border: rgb(162 196 226 / 24%);
+  --glass-control-border: #819bb1;
+  --glass-highlight: rgb(219 239 255 / 19%);
+  --glass-shadow:
+    0 10px 28px -14px rgb(0 7 16 / 65%), inset 0 1px 0 var(--glass-highlight);
+  --glass-control-bg: rgb(54 72 89 / 78%);
+  --glass-control-hover: rgb(66 91 114 / 92%);
+  --glass-accent: #86ccfc;
+  --glass-accent-strong: #b9e3ff;
+  --glass-accent-soft: rgb(98 183 244 / 16%);
+  --glass-focus: #94d6ff;
+  --glass-ink: #edf5fc;
+  --glass-muted: #b0c3d4;
+  --glass-canvas: #151e28;
+  --glass-canvas-glow: rgb(66 117 160 / 15%);
+  --glass-sheen: rgb(216 239 255 / 7%);
+  --glass-primary-top: #167caf;
+  --glass-primary-bottom: #096393;
+  --glass-primary-edge: rgb(132 207 255 / 56%);
+  --glass-selection: #203e57;
+  --glass-selection-ink: #daefff;
+}
+
+.chimera-shell.chimera-shell {
+  background: var(--glass-canvas);
+}
+.chimera-shell .chimera-main {
+  background:
+    radial-gradient(
+      ellipse at 8% 0%,
+      var(--glass-canvas-glow),
+      transparent 62%
+    ),
+    linear-gradient(145deg, var(--glass-sheen), transparent 58%),
+    var(--glass-canvas);
+}
+.chimera-shell .chimera-content {
+  background: transparent;
+}
+.chimera-shell .chimera-sidebar {
+  background:
+    radial-gradient(ellipse at 90% 4%, rgb(102 168 218 / 14%), transparent 58%),
+    linear-gradient(160deg, #1c2a37, #131c25 65%, #172632);
+  box-shadow: inset -1px 0 0 rgb(192 224 248 / 15%);
+}
+.chimera-shell .chimera-topbar {
+  background: var(--glass-surface);
+  border-bottom-color: var(--glass-border);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(125%);
+  backdrop-filter: blur(var(--glass-blur)) saturate(125%);
+}
+.chimera-shell .chimera-global-search {
+  border-radius: var(--radius-control);
+  background:
+    linear-gradient(175deg, var(--glass-sheen), transparent 75%),
+    var(--glass-control-bg);
+  box-shadow:
+    inset 0 0 0 1px var(--glass-border),
+    inset 0 1px 0 var(--glass-highlight),
+    0 2px 5px rgb(10 55 90 / 4%);
+}
+.chimera-shell .chimera-global-search:hover:not(:disabled) {
+  background: var(--glass-control-hover);
+}
+
+/* Inset rings do not change the size of these 32/36px navigation targets.
+   Capability surfaces stay on the existing inset pseudo-element, beside the
+   continuous tree rail. Other navigation rows use their own background. */
+.chimera-shell .chimera-nav-item {
+  border-radius: var(--radius-control);
+  background: transparent;
+  box-shadow: none;
+  transition:
+    background-color 150ms ease,
+    box-shadow 150ms ease;
+}
+.chimera-shell
+  .chimera-nav-item:not([data-pencil-name^="能力 · "]):hover:not(:disabled):not(
+    [aria-current="page"]
+  ),
+.chimera-shell
+  .chimera-sidebar
+  .chimera-nav-item[data-pencil-name^="能力 · "]:hover:not(:disabled):not(
+    [aria-current="page"]
+  )::before {
+  background: rgb(153 204 241 / 10%);
+  box-shadow: inset 0 0 0 1px rgb(193 225 250 / 13%);
+}
+.chimera-shell
+  .chimera-nav-item[aria-current="page"]:not([data-pencil-name^="能力 · "]),
+.chimera-shell
+  .chimera-sidebar
+  .chimera-navigation
+  .chimera-nav-item[data-pencil-name^="能力 · "][aria-current="page"]::before {
+  background:
+    radial-gradient(ellipse at 80% 0%, rgb(177 225 255 / 20%), transparent 70%),
+    linear-gradient(180deg, rgb(111 163 201 / 34%), rgb(61 103 139 / 36%));
+  box-shadow:
+    inset 0 0 0 1px rgb(184 223 252 / 38%),
+    inset 0 1px 1px rgb(224 245 255 / 39%),
+    inset 0 -1px 1px rgb(121 184 226 / 22%),
+    0 3px 9px rgb(0 9 19 / 20%);
+}
+.chimera-shell .chimera-nav-item:focus-visible {
+  outline: 2px solid var(--glass-focus);
+  outline-offset: -2px;
+}
+
+/* Custom controls share the same material as the Radix primitives. No
+   generic button rule: destructive actions and native window controls stay
+   recognisable, and transparent icon-only hit areas remain lightweight. */
+.chimera-shell button.primary,
+.chimera-shell .provider-page-heading button.provider-add {
+  border-radius: var(--radius-control);
+  background: linear-gradient(
+    175deg,
+    var(--glass-primary-top),
+    var(--glass-primary-bottom)
+  );
+  color: #fff;
+  box-shadow:
+    inset 0 0 0 1px var(--glass-primary-edge),
+    inset 0 1px 1px rgb(222 245 255 / 47%),
+    inset 0 -1px 0 rgb(0 51 101 / 28%),
+    0 4px 10px -5px rgb(0 101 171 / 50%);
+}
+.chimera-shell button.primary:hover:not(:disabled),
+.chimera-shell .provider-page-heading button.provider-add:hover:not(:disabled) {
+  background: linear-gradient(175deg, var(--glass-primary-bottom), #065987);
+}
+.chimera-shell button.secondary,
+.chimera-shell .provider-page-heading button:not(.provider-add),
+.chimera-shell .provider-table-tools button,
+.chimera-shell .provider-table-search,
+.chimera-shell .station-receipt {
+  border-color: var(--glass-border);
+  border-radius: var(--radius-control);
+  background:
+    linear-gradient(175deg, var(--glass-sheen), transparent 70%),
+    var(--glass-control-bg);
+  box-shadow: var(--glass-shadow);
+}
+.chimera-shell button.secondary:hover:not(:disabled),
+.chimera-shell
+  .provider-page-heading
+  button:not(.provider-add):hover:not(:disabled),
+.chimera-shell .provider-table-tools button:hover:not(:disabled) {
+  background: var(--glass-control-hover);
+}
+.chimera-shell button.danger {
+  border-radius: var(--radius-control);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 22%),
+    inset 0 0 0 1px rgb(120 17 25 / 18%);
+}
+.chimera-shell .provider-table-search:focus-within {
+  outline: 2px solid var(--glass-focus);
+  outline-offset: 2px;
+}
+
+/* One optical surface per region, never one backdrop filter per table row. */
+.chimera-shell .provider-page {
+  background: transparent;
+}
+.chimera-shell .provider-table {
+  border-radius: var(--radius-panel);
+  background: var(--glass-surface);
+  box-shadow:
+    inset 0 0 0 1px var(--glass-border),
+    var(--glass-shadow);
+}
+.chimera-shell .provider-table-head {
+  color: var(--glass-muted);
+}
+.chimera-shell .provider-table-row.is-current {
+  background:
+    linear-gradient(175deg, var(--glass-sheen), transparent 72%),
+    var(--glass-selection);
+  box-shadow:
+    inset 0 0 0 1px var(--glass-border),
+    inset 0 1px 0 var(--glass-highlight),
+    inset 0 -1px 0 var(--glass-highlight);
+}
+.chimera-shell .provider-table-row.is-current:hover {
+  background: var(--glass-selection);
+}
+.chimera-shell .provider-current-tag {
+  border-color: var(--glass-border);
+  border-radius: var(--radius-control);
+  background: var(--glass-selection);
+  color: var(--glass-selection-ink);
+}
+.chimera-shell .provider-row-actions button:hover:not(:disabled) {
+  box-shadow:
+    inset 0 0 0 1px var(--glass-border),
+    inset 0 1px 0 var(--glass-highlight);
+}
+
+/* Deep blue glass keeps the original line colour band and meaningful route
+   states. Local plate tokens protect contrast in both application themes. */
+.chimera-shell .station-plate {
+  --plate-bg: #1c354c;
+  --plate-fg-1: #f0f7ff;
+  --plate-fg-2: #d3e5f5;
+  --plate-fg-3: #b4cee3;
+  --plate-control-border: rgb(174 214 246 / 42%);
+  --plate-control-hover: rgb(129 188 230 / 24%);
+  --plate-control-pressed: rgb(129 188 230 / 34%);
+  border-radius: var(--radius-panel);
+  outline-color: rgb(165 211 245 / 44%);
+  background:
+    radial-gradient(
+      ellipse at 12% 100%,
+      rgb(90 170 219 / 25%),
+      transparent 58%
+    ),
+    radial-gradient(
+      ellipse at 91% 20%,
+      rgb(135 182 219 / 12%),
+      transparent 53%
+    ),
+    linear-gradient(120deg, #24445e, #1b3045 65%, #263e58);
+  box-shadow:
+    inset 0 1px 2px rgb(221 242 255 / 43%),
+    inset 0 -2px 3px rgb(134 197 240 / 23%),
+    inset 1px 0 1px rgb(204 234 255 / 18%),
+    0 9px 24px -16px rgb(15 55 86 / 60%);
+}
+.chimera-shell .station-action,
+.chimera-shell .station-kind {
+  background: linear-gradient(
+    180deg,
+    rgb(203 231 255 / 15%),
+    rgb(141 198 240 / 8%)
+  );
+  box-shadow:
+    inset 0 1px 0 rgb(220 242 255 / 16%),
+    0 2px 6px rgb(0 12 29 / 10%);
+}
+.chimera-shell .station-action {
+  border-radius: var(--radius-control);
+}
+.chimera-shell
+  .station-action:hover:not(:disabled):not([aria-disabled="true"]) {
+  background: var(--plate-control-hover);
+}
+.chimera-shell
+  .station-action:active:not(:disabled):not([aria-disabled="true"]) {
+  background: var(--plate-control-pressed);
+}
+.chimera-shell .station-plate.is-empty {
+  --line-color: var(--plate-fg-3);
+}
+
+/* Custom non-Radix dialogs are also used in the first-run flow. Keep their
+   layout, focus handling, z-order and scroll ownership unchanged. */
+.modal-backdrop.modal-backdrop,
+.command-palette-backdrop.command-palette-backdrop {
+  -webkit-backdrop-filter: blur(5px);
+  backdrop-filter: blur(5px);
+}
+.modal-backdrop
+  :is(.confirm-dialog, .model-picker, .diagnostics-dialog, .history-dialog),
+.command-palette-backdrop .command-palette,
+.chimera-shell .onboarding-card {
+  border-color: var(--glass-border);
+  border-radius: var(--radius-panel);
+  background:
+    linear-gradient(145deg, var(--glass-sheen), transparent 70%),
+    var(--glass-surface-strong);
+  color: var(--text-1);
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    0 20px 70px -20px rgb(5 25 47 / 42%);
+}
+.chimera-shell .segmented {
+  border-radius: var(--radius-control);
+  background: var(--glass-control-bg);
+  box-shadow: inset 0 0 0 1px var(--glass-border);
+}
+.chimera-shell .segmented button.active {
+  border-radius: calc(var(--radius-control) - 2px);
+  background: var(--glass-selection);
+  color: var(--glass-selection-ink);
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    0 1px 4px rgb(0 20 40 / 10%);
+}
+
+.command-palette-backdrop .command-palette-search {
+  background: var(--glass-control-bg);
+  border-bottom-color: var(--glass-border);
+}
+.command-palette-backdrop .command-palette-item[aria-selected="true"] {
+  border-radius: var(--radius-control);
+  background: var(--glass-selection);
+  color: var(--glass-selection-ink);
+  box-shadow:
+    inset 0 0 0 1px var(--glass-border),
+    inset 0 1px 0 var(--glass-highlight);
+}
+
+/* Opaque fallbacks retain depth and contrast without relying on blur support. */
+@supports not (
+  (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))
+) {
+  :root {
+    --glass-surface: #f7fbff;
+    --glass-surface-strong: #fcfeff;
+    --glass-control-bg: #fff;
+  }
+  .dark,
+  [data-theme="dark"] {
+    --glass-surface: #222d39;
+    --glass-surface-strong: #1f2a36;
+    --glass-control-bg: #364859;
+  }
+}
+@media (prefers-reduced-transparency: reduce) {
+  :root {
+    --glass-surface: #f7fbff;
+    --glass-surface-strong: #fcfeff;
+    --glass-control-bg: #fff;
+  }
+  .dark,
+  [data-theme="dark"] {
+    --glass-surface: #222d39;
+    --glass-surface-strong: #1f2a36;
+    --glass-control-bg: #364859;
+  }
+  .chimera-shell .chimera-topbar,
+  .modal-backdrop.modal-backdrop,
+  .command-palette-backdrop.command-palette-backdrop {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chimera-shell .chimera-nav-item {
+    transition: none;
+  }
+  .chimera-shell button.primary:active:not(:disabled) {
+    transform: none;
+  }
+}
+@media (prefers-contrast: more) {
+  :root {
+    --glass-border: #768a9b;
+  }
+  .dark,
+  [data-theme="dark"] {
+    --glass-border: #839aad;
+  }
+}
+@media (forced-colors: active) {
+  :root,
+  .dark,
+  [data-theme="dark"] {
+    --glass-surface: Canvas;
+    --glass-surface-strong: Canvas;
+    --glass-control-bg: ButtonFace;
+    --glass-control-hover: ButtonFace;
+    --glass-border: ButtonText;
+    --glass-highlight: transparent;
+    --glass-shadow: none;
+    --glass-ink: CanvasText;
+    --glass-muted: CanvasText;
+    --glass-focus: Highlight;
+    --glass-selection: Highlight;
+    --glass-selection-ink: HighlightText;
+    --glass-sheen: transparent;
+    --glass-canvas: Canvas;
+  }
+  .chimera-shell
+    :is(
+      .chimera-sidebar,
+      .chimera-topbar,
+      .chimera-global-search,
+      .station-plate
+    ),
+  .modal-backdrop.modal-backdrop,
+  .command-palette-backdrop.command-palette-backdrop {
+    background: Canvas;
+    color: CanvasText;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    box-shadow: none;
+  }
+  .chimera-shell
+    .chimera-nav-item[aria-current="page"]:not([data-pencil-name^="能力 · "]),
+  .chimera-shell
+    .chimera-sidebar
+    .chimera-navigation
+    .chimera-nav-item[data-pencil-name^="能力 · "][aria-current="page"]::before,
+  .chimera-shell .provider-table-row.is-current,
+  .chimera-shell button.primary,
+  .chimera-shell .provider-page-heading button.provider-add {
+    background: Highlight;
+    color: HighlightText;
+    outline: 1px solid Highlight;
+    outline-offset: -1px;
+    box-shadow: none;
+  }
+  /* Preserve explicit system selection colours without browser text backplates. */
+  .chimera-shell .chimera-nav-item[aria-current="page"] {
+    forced-color-adjust: none;
+    color: HighlightText;
+  }
+  .chimera-shell .chimera-nav-item[aria-current="page"] * {
+    color: inherit;
+  }
+  .chimera-shell
+    .chimera-nav-item[aria-current="page"]:not(
+      [data-pencil-name^="能力 · "]
+    ):focus-visible,
+  .chimera-shell
+    .chimera-sidebar
+    .chimera-navigation
+    .chimera-nav-item[data-pencil-name^="能力 · "][aria-current="page"]:focus-visible::before {
+    outline: 2px solid HighlightText;
+    outline-offset: -2px;
+  }
+  .chimera-shell .station-plate {
+    --plate-bg: Canvas;
+    --plate-fg-1: CanvasText;
+    --plate-fg-2: CanvasText;
+    --plate-fg-3: CanvasText;
+    --plate-control-border: ButtonText;
+    --plate-control-hover: ButtonFace;
+  }
+}

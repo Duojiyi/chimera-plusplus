@@ -16,7 +16,11 @@ import {
   vi,
 } from "vitest";
 import { SkillsMcpView } from "@/views/SkillsMcpView";
-import { skillsApi, type InstalledSkill } from "@/lib/api/skills";
+import {
+  skillsApi,
+  type InstalledSkill,
+  type UnmanagedSkill,
+} from "@/lib/api/skills";
 import { mcpApi } from "@/lib/api/mcp";
 import { officialAccountsApi } from "@/lib/api/officialAccounts";
 import { toast } from "sonner";
@@ -76,6 +80,16 @@ const skill: InstalledSkill = {
     opencode: false,
   },
 };
+const deferredScan = () => {
+  let resolve!: (items: UnmanagedSkill[]) => void;
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<UnmanagedSkill[]>((onResolve, onReject) => {
+    resolve = onResolve;
+    reject = onReject;
+  });
+  return { promise, resolve, reject };
+};
+
 beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(skillsApi.scanUnmanaged).mockResolvedValue([]);
@@ -518,7 +532,9 @@ describe("connected Skills/MCP page", () => {
     // A failed read claims nothing: no counts, summary card or empty state.
     expect(screen.getByRole("button", { name: "Skills" })).toBeInTheDocument();
     expect(screen.queryByText("已启用 Skills")).not.toBeInTheDocument();
-    expect(screen.queryByText("还没有安装 Skills")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("尚未由 Chimera++ 管理 Skills"),
+    ).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "导出" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "重试" }));
     expect(await screen.findByText("Real Skill")).toBeInTheDocument();
@@ -618,7 +634,9 @@ describe("connected Skills/MCP page", () => {
     fireEvent.click(screen.getByText("Real MCP"));
     fireEvent.click(screen.getByRole("button", { name: "移除…" }));
     expect(mcpApi.deleteUnifiedServer).not.toHaveBeenCalled();
-    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "移除" }));
+    fireEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "移除" }),
+    );
     await waitFor(() => expect(toast.error).toHaveBeenCalled());
     expect(mcpApi.deleteUnifiedServer).toHaveBeenCalledWith("real");
     expect(screen.getAllByText("Real MCP").length).toBeGreaterThan(0);
@@ -661,48 +679,73 @@ describe("A06 resource lifecycle and A07 refresh", () => {
     createdAt: 1,
     skill,
   };
-  it("automatically scans read-only and imports selected skills only to the chosen target after confirmation", async () => {
-    vi.mocked(skillsApi.scanUnmanaged).mockResolvedValue([
-      {
+  it.each(["codex", "claude", "gemini", "grokbuild", "opencode"] as const)(
+    "scans only %s by default and imports the confirmed source snapshot to that tool",
+    async (app) => {
+      const local: UnmanagedSkill = {
         directory: "local",
         name: "Local",
-        path: "mock/local",
-        foundIn: ["codex", "claude"],
-      },
-    ]);
-    vi.mocked(skillsApi.importFromApps).mockResolvedValue([skill]);
-    render(<SkillsMcpView initialApp="gemini" />);
-    await screen.findByRole("switch");
-    expect(skillsApi.scanUnmanaged).toHaveBeenCalledTimes(1);
-    expect(skillsApi.importFromApps).not.toHaveBeenCalled();
-    fireEvent.click(
-      await screen.findByRole("checkbox", { name: "添加 Local" }),
-    );
-    fireEvent.click(screen.getByRole("button", { name: "添加所选 Skills" }));
-    expect(skillsApi.importFromApps).not.toHaveBeenCalled();
-    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "添加 1 个" }));
-    await waitFor(() =>
-      expect(skillsApi.importFromApps).toHaveBeenCalledExactlyOnceWith([
-        {
-          directory: "local",
-          apps: {
-            claude: false,
-            codex: false,
-            gemini: true,
-            grokbuild: false,
-            opencode: false,
+        path: `D:/${app}/skills/local`,
+        foundIn: [app],
+        contentHash: "local-snapshot",
+      };
+      vi.mocked(skillsApi.scanUnmanaged).mockResolvedValue([local]);
+      vi.mocked(skillsApi.importFromApps).mockResolvedValue([skill]);
+      render(<SkillsMcpView initialApp={app} />);
+      const checkbox = await screen.findByRole("checkbox", {
+        name: "添加 Local",
+      });
+      const scopeCheckbox = screen.getByRole("checkbox", {
+        name: "同时发现其他工具的 Skills",
+      });
+      const targetSelect = screen.getByRole("combobox", { name: "目标工具" });
+      expect(skillsApi.scanUnmanaged).toHaveBeenCalledExactlyOnceWith(app);
+      expect(scopeCheckbox).not.toBeChecked();
+      expect(skillsApi.importFromApps).not.toHaveBeenCalled();
+      fireEvent.click(checkbox);
+      fireEvent.click(screen.getByRole("button", { name: "添加所选 Skills" }));
+      expect(skillsApi.importFromApps).not.toHaveBeenCalled();
+      expect(targetSelect).toBeDisabled();
+      expect(scopeCheckbox).toBeDisabled();
+      fireEvent.click(
+        within(screen.getByRole("dialog")).getByRole("button", {
+          name: "添加 1 个",
+        }),
+      );
+      await waitFor(() =>
+        expect(skillsApi.importFromApps).toHaveBeenCalledExactlyOnceWith([
+          {
+            directory: local.directory,
+            sourcePath: local.path,
+            contentHash: local.contentHash,
+            apps: {
+              claude: false,
+              codex: false,
+              gemini: false,
+              grokbuild: false,
+              opencode: false,
+              [app]: true,
+            },
           },
-        },
-      ]),
-    );
-  });
-  it("accepts one physical source merged across tool aliases", async () => {
+        ]),
+      );
+      await waitFor(() =>
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+      );
+      expect(
+        screen.getByRole("checkbox", { name: "添加 Local" }),
+      ).not.toBeChecked();
+    },
+  );
+
+  it("accepts one backend-merged row for identical copies across tool directories", async () => {
     vi.mocked(skillsApi.scanUnmanaged).mockResolvedValue([
       {
         directory: "same",
         name: "Shared",
         path: "D:/shared/same",
-        foundIn: ["claude", "agents"],
+        foundIn: ["codex", "gemini", "agents"],
+        contentHash: "identical-complete-content",
       },
     ]);
     render(<SkillsMcpView />);
@@ -710,58 +753,124 @@ describe("A06 resource lifecycle and A07 refresh", () => {
       name: "添加 Shared",
     });
     expect(checkbox).toBeEnabled();
-    expect(screen.getByText("来源：Claude Code、通用目录 .agents")).toBeVisible();
+    expect(screen.getAllByRole("checkbox", { name: /^添加 / })).toHaveLength(1);
+    expect(
+      screen.getByText("来源：Codex、Gemini CLI、通用目录 .agents"),
+    ).toBeVisible();
+    expect(screen.queryByText(/同名但内容不同/)).not.toBeInTheDocument();
     fireEvent.click(checkbox);
+    expect(screen.getByText("1 个发现 · 已选 1 个")).toBeVisible();
     expect(
       screen.getByRole("button", { name: "添加所选 Skills" }),
     ).toBeEnabled();
     expect(skillsApi.importFromApps).not.toHaveBeenCalled();
   });
 
-  it("blocks a merged alias row when another physical source has the same directory", async () => {
+  it("selects a single differing source per directory without clearing other directories", async () => {
+    const shared: UnmanagedSkill = {
+      directory: "same",
+      name: "Shared",
+      path: "D:/shared/same",
+      foundIn: ["claude", "agents"],
+      contentHash: "shared-content",
+    };
+    const other: UnmanagedSkill = {
+      directory: "same",
+      name: "Other",
+      path: "D:/codex/skills/same",
+      foundIn: ["codex"],
+      contentHash: "other-content",
+    };
+    const unrelated: UnmanagedSkill = {
+      directory: "unrelated",
+      name: "Unrelated",
+      path: "D:/codex/skills/unrelated",
+      foundIn: ["codex"],
+      contentHash: "unrelated-content",
+    };
     vi.mocked(skillsApi.scanUnmanaged).mockResolvedValue([
-      {
-        directory: "same",
-        name: "Shared",
-        path: "D:/shared/same",
-        foundIn: ["claude", "agents"],
-      },
-      {
-        directory: "same",
-        name: "Other",
-        path: "D:/codex/skills/same",
-        foundIn: ["codex"],
-      },
+      shared,
+      other,
+      unrelated,
     ]);
+    vi.mocked(skillsApi.importFromApps).mockResolvedValue([skill]);
     render(<SkillsMcpView />);
+    const first = await screen.findByRole("checkbox", { name: "添加 Shared" });
+    const second = screen.getByRole("checkbox", { name: "添加 Other" });
+    const third = screen.getByRole("checkbox", { name: "添加 Unrelated" });
+    expect(first).toBeEnabled();
+    expect(second).toBeEnabled();
     expect(
-      await screen.findByRole("checkbox", { name: "添加 Shared" }),
-    ).toBeDisabled();
-    expect(screen.getByRole("checkbox", { name: "添加 Other" })).toBeDisabled();
-    expect(screen.getAllByText("目录名重复，请先整理来源。")).toHaveLength(2);
-    expect(
-      screen.getByRole("button", { name: "添加所选 Skills" }),
-    ).toBeDisabled();
-    expect(skillsApi.importFromApps).not.toHaveBeenCalled();
+      screen.getAllByText(
+        "同名但内容不同，请选择一个来源；不会覆盖目标中的不同内容。",
+      ),
+    ).toHaveLength(2);
+    fireEvent.click(first);
+    fireEvent.click(third);
+    expect(screen.getByText("3 个发现 · 已选 2 个")).toBeVisible();
+    fireEvent.click(second);
+    expect(first).not.toBeChecked();
+    expect(second).toBeChecked();
+    expect(third).toBeChecked();
+    expect(screen.getByText("3 个发现 · 已选 2 个")).toBeVisible();
+    expect(first.closest("label")).toHaveAttribute("data-selected", "false");
+    expect(second.closest("label")).toHaveAttribute("data-selected", "true");
+    fireEvent.click(screen.getByRole("button", { name: "添加所选 Skills" }));
+    expect(screen.getByRole("dialog")).toHaveTextContent("不会覆盖已有目录");
+    fireEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: "添加 2 个",
+      }),
+    );
+    await waitFor(() =>
+      expect(skillsApi.importFromApps).toHaveBeenCalledExactlyOnceWith(
+        [other, unrelated].map((source) => ({
+          directory: source.directory,
+          sourcePath: source.path,
+          contentHash: source.contentHash,
+          apps: {
+            claude: false,
+            codex: true,
+            gemini: false,
+            grokbuild: false,
+            opencode: false,
+          },
+        })),
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
   });
 
-  it("blocks ambiguous unmanaged directories", async () => {
+  it("lets users replace and deselect same-name sources without importing on selection", async () => {
     vi.mocked(skillsApi.scanUnmanaged).mockResolvedValue(
-      ["one", "two"].map((path) => ({
+      ["one", "two"].map((name) => ({
         directory: "same",
-        name: path,
-        path,
+        name,
+        path: `D:/codex/skills/${name}`,
+        contentHash: `${name}-snapshot`,
         foundIn: ["codex"],
       })),
     );
     render(<SkillsMcpView />);
-    await screen.findByRole("switch");
-    expect(
-      await screen.findByRole("checkbox", { name: "添加 one" }),
-    ).toBeDisabled();
+    const first = await screen.findByRole("checkbox", { name: "添加 one" });
+    const second = screen.getByRole("checkbox", { name: "添加 two" });
+    fireEvent.click(first);
+    fireEvent.click(second);
+    expect(first).not.toBeChecked();
+    expect(second).toBeChecked();
+    fireEvent.click(first);
+    expect(first).toBeChecked();
+    expect(second).not.toBeChecked();
+    expect(screen.getByText("2 个发现 · 已选 1 个")).toBeVisible();
+    fireEvent.click(first);
+    expect(first).not.toBeChecked();
+    expect(screen.getByText("2 个发现 · 已选 0 个")).toBeVisible();
     expect(
       screen.getByRole("button", { name: "添加所选 Skills" }),
     ).toBeDisabled();
+    expect(skillsApi.importFromApps).not.toHaveBeenCalled();
   });
 
   it("requires confirmation for backup deletion and handles false results", async () => {
@@ -778,7 +887,11 @@ describe("A06 resource lifecycle and A07 refresh", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "删除备份 Real Skill" }),
     );
-    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "删除备份" }));
+    fireEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: "删除备份",
+      }),
+    );
     await waitFor(() => expect(toast.error).toHaveBeenCalled());
     expect(screen.getByRole("dialog")).toBeInTheDocument();
   });
@@ -816,13 +929,21 @@ describe("A06 resource lifecycle and A07 refresh", () => {
       .mockRejectedValueOnce(new Error("ambiguous source"))
       .mockResolvedValueOnce(skill);
     fireEvent.click(updateButton);
-    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "更新" }));
+    fireEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "更新" }),
+    );
     await waitFor(() => expect(toast.error).toHaveBeenCalled());
     expect(screen.getByRole("dialog")).toBeInTheDocument();
     await waitFor(() =>
-      expect(within(screen.getByRole("dialog")).getByRole("button", { name: "更新" })).toBeEnabled(),
+      expect(
+        within(screen.getByRole("dialog")).getByRole("button", {
+          name: "更新",
+        }),
+      ).toBeEnabled(),
     );
-    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "更新" }));
+    fireEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "更新" }),
+    );
     await waitFor(() =>
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
     );
@@ -839,6 +960,7 @@ describe("A06 resource lifecycle and A07 refresh", () => {
         name: "Local",
         path: "mock/local",
         foundIn: ["codex"],
+        contentHash: "unchanged-snapshot",
       },
     ]);
     const view = render(<SkillsMcpView refreshVersion={0} />);
@@ -855,6 +977,11 @@ describe("A06 resource lifecycle and A07 refresh", () => {
     view.rerender(<SkillsMcpView refreshVersion={1} />);
     await waitFor(() =>
       expect(skillsApi.getInstalled).toHaveBeenCalledTimes(calls + 1),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("region", { name: "本地 Skills 扫描" }),
+      ).toHaveAttribute("aria-busy", "false"),
     );
     expect(screen.getByRole("checkbox", { name: "添加 Local" })).toBeChecked();
     expect(skillsApi.scanUnmanaged).toHaveBeenCalledTimes(2);
@@ -901,7 +1028,11 @@ describe("A06 repository management", () => {
     await waitFor(() => expect(url).toHaveValue(""));
     fireEvent.click(screen.getByTitle("common.delete"));
     expect(skillsApi.removeRepo).not.toHaveBeenCalled();
-    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "移除仓库" }));
+    fireEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: "移除仓库",
+      }),
+    );
     await waitFor(() =>
       expect(skillsApi.removeRepo).toHaveBeenCalledExactlyOnceWith(
         "team",
@@ -934,7 +1065,9 @@ describe("empty and loading states", () => {
     vi.mocked(skillsApi.installFromZip).mockResolvedValue([skill]);
     render(<SkillsMcpView />);
     expect(
-      await screen.findByRole("heading", { name: "还没有安装 Skills" }),
+      await screen.findByRole("heading", {
+        name: "尚未由 Chimera++ 管理 Skills",
+      }),
     ).toBeVisible();
     expect(screen.queryByText("已启用 Skills")).not.toBeInTheDocument();
     expect(screen.queryByText(/0 个来源/)).not.toBeInTheDocument();
@@ -973,7 +1106,9 @@ describe("empty and loading states", () => {
   });
   it("gives the MCP tab its own empty state with one add action", async () => {
     render(<SkillsMcpView initialApp="claude" />);
-    await screen.findByRole("heading", { name: "还没有安装 Skills" });
+    await screen.findByRole("heading", {
+      name: "尚未由 Chimera++ 管理 Skills",
+    });
     fireEvent.click(screen.getByRole("button", { name: "MCP 0" }));
     expect(
       screen.getByRole("heading", { name: "还没有 MCP 服务" }),
@@ -998,7 +1133,9 @@ describe("empty and loading states", () => {
     );
     expect(screen.getByRole("button", { name: "Skills" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "导出" })).toBeDisabled();
-    expect(screen.queryByText("还没有安装 Skills")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("尚未由 Chimera++ 管理 Skills"),
+    ).not.toBeInTheDocument();
     await act(async () => finish([skill]));
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Skills 1" })).toBeVisible();
@@ -1012,7 +1149,463 @@ describe("automatic local Skills discovery", () => {
     name: "Local",
     path: "D:/a-long-directory/local",
     foundIn: ["codex"],
+    contentHash: "local-snapshot",
   };
+
+  it("widens discovery only by opt-in and clears selections on both scope transitions", async () => {
+    const allSources = deferredScan();
+    const scopedAgain = deferredScan();
+    const foreign: UnmanagedSkill = {
+      directory: "foreign",
+      name: "Foreign",
+      path: "D:/gemini/skills/foreign",
+      contentHash: "foreign-snapshot",
+      foundIn: ["gemini"],
+    };
+    vi.mocked(skillsApi.scanUnmanaged)
+      .mockResolvedValueOnce([local])
+      .mockReturnValueOnce(allSources.promise)
+      .mockReturnValueOnce(scopedAgain.promise);
+    render(<SkillsMcpView />);
+    fireEvent.click(
+      await screen.findByRole("checkbox", { name: "添加 Local" }),
+    );
+    const scope = screen.getByRole("checkbox", {
+      name: "同时发现其他工具的 Skills",
+    });
+    expect(skillsApi.scanUnmanaged).toHaveBeenCalledExactlyOnceWith("codex");
+    expect(
+      screen.getByText("仅查看 Codex 与通用 .agents 目录。"),
+    ).toBeVisible();
+    fireEvent.click(scope);
+    expect(scope).toBeChecked();
+    expect(skillsApi.scanUnmanaged).toHaveBeenNthCalledWith(2, undefined);
+    expect(
+      screen.queryByRole("checkbox", { name: "添加 Local" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "添加所选 Skills" }),
+    ).toBeDisabled();
+    await act(async () => allSources.resolve([local, foreign]));
+    expect(
+      screen.getByText("正在查看所有工具与共享目录；相同内容的副本会合并。"),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("checkbox", { name: "添加 Local" }),
+    ).not.toBeChecked();
+    expect(screen.getByText("2 个发现 · 已选 0 个")).toBeVisible();
+    fireEvent.click(screen.getByRole("checkbox", { name: "添加 Local" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "添加 Foreign" }));
+    expect(screen.getByText("2 个发现 · 已选 2 个")).toBeVisible();
+    fireEvent.click(scope);
+    expect(scope).not.toBeChecked();
+    expect(skillsApi.scanUnmanaged).toHaveBeenNthCalledWith(3, "codex");
+    expect(
+      screen.queryByRole("checkbox", { name: "添加 Foreign" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "添加所选 Skills" }),
+    ).toBeDisabled();
+    await act(async () => scopedAgain.resolve([local]));
+    expect(
+      screen.getByRole("checkbox", { name: "添加 Local" }),
+    ).not.toBeChecked();
+    expect(screen.getByText("1 个发现 · 已选 0 个")).toBeVisible();
+    expect(vi.mocked(skillsApi.scanUnmanaged).mock.calls).toEqual([
+      ["codex"],
+      [undefined],
+      ["codex"],
+    ]);
+    expect(skillsApi.importFromApps).not.toHaveBeenCalled();
+    expect(skillsApi.toggleApp).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])(
+    "clears the old target selection even when the source snapshot is unchanged (all sources: %s)",
+    async (allSources) => {
+      const nextScan = deferredScan();
+      const aliased = { ...local, foundIn: ["codex", "claude"] };
+      vi.mocked(skillsApi.scanUnmanaged).mockResolvedValue([aliased]);
+      vi.mocked(skillsApi.importFromApps).mockResolvedValue([skill]);
+      render(<SkillsMcpView />);
+      await screen.findByRole("checkbox", { name: "添加 Local" });
+      if (allSources) {
+        fireEvent.click(
+          screen.getByRole("checkbox", { name: "同时发现其他工具的 Skills" }),
+        );
+        await waitFor(() =>
+          expect(
+            screen.getByRole("region", { name: "本地 Skills 扫描" }),
+          ).toHaveAttribute("aria-busy", "false"),
+        );
+      }
+      fireEvent.click(screen.getByRole("checkbox", { name: "添加 Local" }));
+      expect(
+        screen.getByRole("button", { name: "添加所选 Skills" }),
+      ).toBeEnabled();
+      vi.mocked(skillsApi.scanUnmanaged).mockReturnValueOnce(nextScan.promise);
+      fireEvent.change(screen.getByRole("combobox", { name: "目标工具" }), {
+        target: { value: "claude" },
+      });
+      expect(skillsApi.scanUnmanaged).toHaveBeenLastCalledWith(
+        allSources ? undefined : "claude",
+      );
+      expect(
+        screen.queryByRole("checkbox", { name: "添加 Local" }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "添加所选 Skills" }),
+      ).toBeDisabled();
+      await act(async () => nextScan.resolve([aliased]));
+      const checkbox = screen.getByRole("checkbox", { name: "添加 Local" });
+      expect(checkbox).not.toBeChecked();
+      expect(screen.getByText("1 个发现 · 已选 0 个")).toBeVisible();
+      expect(skillsApi.importFromApps).not.toHaveBeenCalled();
+      fireEvent.click(checkbox);
+      fireEvent.click(screen.getByRole("button", { name: "添加所选 Skills" }));
+      expect(screen.getByRole("dialog")).toHaveTextContent(
+        "启用到 Claude Code",
+      );
+      fireEvent.click(
+        within(screen.getByRole("dialog")).getByRole("button", {
+          name: "添加 1 个",
+        }),
+      );
+      await waitFor(() =>
+        expect(skillsApi.importFromApps).toHaveBeenCalledExactlyOnceWith([
+          {
+            directory: aliased.directory,
+            sourcePath: aliased.path,
+            contentHash: aliased.contentHash,
+            apps: {
+              claude: true,
+              codex: false,
+              gemini: false,
+              grokbuild: false,
+              opencode: false,
+            },
+          },
+        ]),
+      );
+      await waitFor(() =>
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+      );
+    },
+  );
+
+  it.each([
+    { change: "content hash", patch: { contentHash: "changed-content" } },
+    { change: "canonical source path", patch: { path: "D:/another/local" } },
+    { change: "directory", patch: { directory: "renamed" } },
+    { change: "missing fingerprint", patch: { contentHash: undefined } },
+    { change: "removed source", patch: null },
+  ])(
+    "clears an outdated selection after a refreshed $change",
+    async ({ patch }) => {
+      const refresh = deferredScan();
+      vi.mocked(skillsApi.scanUnmanaged)
+        .mockResolvedValueOnce([local])
+        .mockReturnValueOnce(refresh.promise);
+      render(<SkillsMcpView />);
+      const checkbox = await screen.findByRole("checkbox", {
+        name: "添加 Local",
+      });
+      fireEvent.click(checkbox);
+      fireEvent.click(screen.getByRole("button", { name: "刷新扫描" }));
+      expect(checkbox).toBeChecked();
+      expect(checkbox).toBeDisabled();
+      expect(
+        screen.getByRole("button", { name: "添加所选 Skills" }),
+      ).toBeDisabled();
+      await act(async () =>
+        refresh.resolve(patch === null ? [] : [{ ...local, ...patch }]),
+      );
+      for (const row of screen.queryAllByRole("checkbox", { name: /^添加 / })) {
+        expect(row).not.toBeChecked();
+        expect(row).toBeEnabled();
+      }
+      expect(
+        screen.getByText(`${patch === null ? 0 : 1} 个发现 · 已选 0 个`),
+      ).toBeVisible();
+      expect(
+        screen.getByRole("button", { name: "添加所选 Skills" }),
+      ).toBeDisabled();
+      expect(skillsApi.importFromApps).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps the same snapshot selected after row reordering and display metadata changes", async () => {
+    const unrelated: UnmanagedSkill = {
+      ...local,
+      directory: "unrelated",
+      name: "Unrelated",
+      path: "D:/codex/skills/unrelated",
+      contentHash: "unrelated-content",
+    };
+    vi.mocked(skillsApi.scanUnmanaged)
+      .mockResolvedValueOnce([local, unrelated])
+      .mockResolvedValueOnce([
+        unrelated,
+        {
+          ...local,
+          name: "Renamed display label",
+          description: "Updated description",
+          foundIn: ["codex", "agents"],
+        },
+      ]);
+    render(<SkillsMcpView />);
+    fireEvent.click(
+      await screen.findByRole("checkbox", { name: "添加 Local" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "刷新扫描" }));
+    const retained = await screen.findByRole("checkbox", {
+      name: "添加 Renamed display label",
+    });
+    expect(retained).toBeChecked();
+    expect(retained).toBeEnabled();
+    expect(
+      screen.getByRole("checkbox", { name: "添加 Unrelated" }),
+    ).not.toBeChecked();
+    expect(screen.getByText("2 个发现 · 已选 1 个")).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "添加所选 Skills" }),
+    ).toBeEnabled();
+    expect(skillsApi.importFromApps).not.toHaveBeenCalled();
+  });
+
+  it("imports the new fingerprint only after the changed source is selected again", async () => {
+    const changed = { ...local, contentHash: "updated-snapshot" };
+    vi.mocked(skillsApi.scanUnmanaged)
+      .mockResolvedValueOnce([local])
+      .mockResolvedValue([changed]);
+    vi.mocked(skillsApi.importFromApps).mockResolvedValue([skill]);
+    render(<SkillsMcpView />);
+    fireEvent.click(
+      await screen.findByRole("checkbox", { name: "添加 Local" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "刷新扫描" }));
+    await waitFor(() =>
+      expect(
+        screen.getByRole("region", { name: "本地 Skills 扫描" }),
+      ).toHaveAttribute("aria-busy", "false"),
+    );
+    const checkbox = screen.getByRole("checkbox", { name: "添加 Local" });
+    expect(checkbox).not.toBeChecked();
+    expect(
+      screen.getByRole("button", { name: "添加所选 Skills" }),
+    ).toBeDisabled();
+    expect(skillsApi.importFromApps).not.toHaveBeenCalled();
+    fireEvent.click(checkbox);
+    fireEvent.click(screen.getByRole("button", { name: "添加所选 Skills" }));
+    fireEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: "添加 1 个",
+      }),
+    );
+    await waitFor(() =>
+      expect(skillsApi.importFromApps).toHaveBeenCalledExactlyOnceWith([
+        {
+          directory: changed.directory,
+          sourcePath: changed.path,
+          contentHash: changed.contentHash,
+          apps: {
+            claude: false,
+            codex: true,
+            gemini: false,
+            grokbuild: false,
+            opencode: false,
+          },
+        },
+      ]),
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+  });
+
+  it.each([
+    { change: "scope", result: "success" },
+    { change: "scope", result: "failure" },
+    { change: "target", result: "success" },
+    { change: "target", result: "failure" },
+  ] as const)(
+    "ignores an older $result after the new $change scan succeeds",
+    async ({ change, result }) => {
+      const older = deferredScan();
+      const latest = deferredScan();
+      const current = {
+        ...local,
+        name: "Current",
+        path: "D:/current/local",
+        contentHash: "current-content",
+      };
+      vi.mocked(skillsApi.scanUnmanaged)
+        .mockReturnValueOnce(older.promise)
+        .mockReturnValueOnce(latest.promise);
+      render(<SkillsMcpView />);
+      await screen.findByRole("switch");
+      if (change === "scope") {
+        fireEvent.click(
+          screen.getByRole("checkbox", { name: "同时发现其他工具的 Skills" }),
+        );
+      } else {
+        fireEvent.change(screen.getByRole("combobox", { name: "目标工具" }), {
+          target: { value: "claude" },
+        });
+      }
+      expect(skillsApi.scanUnmanaged).toHaveBeenNthCalledWith(
+        2,
+        change === "scope" ? undefined : "claude",
+      );
+      await act(async () => latest.resolve([current]));
+      fireEvent.click(screen.getByRole("checkbox", { name: "添加 Current" }));
+      await act(async () => {
+        if (result === "success") older.resolve([local]);
+        else older.reject(new Error("old scan failed"));
+      });
+      expect(
+        screen.queryByRole("checkbox", { name: "添加 Local" }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.getByRole("checkbox", { name: "添加 Current" }),
+      ).toBeChecked();
+      expect(screen.getByText("1 个发现 · 已选 1 个")).toBeVisible();
+      expect(
+        screen.getByRole("region", { name: "本地 Skills 扫描" }),
+      ).toHaveAttribute("aria-busy", "false");
+      expect(
+        screen.getByRole("button", { name: "添加所选 Skills" }),
+      ).toBeEnabled();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(skillsApi.importFromApps).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["success", "failure"] as const)(
+    "keeps the latest scan pending when an older request finishes with %s",
+    async (result) => {
+      const older = deferredScan();
+      const latest = deferredScan();
+      vi.mocked(skillsApi.scanUnmanaged)
+        .mockReturnValueOnce(older.promise)
+        .mockReturnValueOnce(latest.promise);
+      render(<SkillsMcpView />);
+      await screen.findByRole("switch");
+      fireEvent.click(
+        screen.getByRole("checkbox", { name: "同时发现其他工具的 Skills" }),
+      );
+      await act(async () => {
+        if (result === "success") older.resolve([local]);
+        else older.reject(new Error("old scan failed"));
+      });
+      expect(
+        screen.getByRole("region", { name: "本地 Skills 扫描" }),
+      ).toHaveAttribute("aria-busy", "true");
+      expect(screen.getByRole("button", { name: "正在扫描…" })).toBeDisabled();
+      expect(
+        screen.getByRole("button", { name: "添加所选 Skills" }),
+      ).toBeDisabled();
+      expect(
+        screen.queryByRole("checkbox", { name: "添加 Local" }),
+      ).not.toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      await act(async () => latest.resolve([local]));
+      expect(
+        screen.getByRole("checkbox", { name: "添加 Local" }),
+      ).toBeEnabled();
+      expect(
+        screen.getByRole("checkbox", { name: "添加 Local" }),
+      ).not.toBeChecked();
+    },
+  );
+
+  it("does not hide the latest scan failure when a superseded scan succeeds", async () => {
+    const older = deferredScan();
+    const latest = deferredScan();
+    vi.mocked(skillsApi.scanUnmanaged)
+      .mockReturnValueOnce(older.promise)
+      .mockReturnValueOnce(latest.promise)
+      .mockResolvedValue([local]);
+    render(<SkillsMcpView />);
+    await screen.findByRole("switch");
+    fireEvent.change(screen.getByRole("combobox", { name: "目标工具" }), {
+      target: { value: "gemini" },
+    });
+    await act(async () => latest.reject(new Error("current scan failed")));
+    expect(screen.getByRole("alert")).toHaveTextContent("扫描失败");
+    await act(async () => older.resolve([local]));
+    expect(screen.getByRole("alert")).toHaveTextContent("扫描失败");
+    expect(
+      screen.queryByRole("checkbox", { name: "添加 Local" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "添加所选 Skills" }),
+    ).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "重试扫描" }));
+    expect(skillsApi.scanUnmanaged).toHaveBeenNthCalledWith(3, "gemini");
+    expect(
+      await screen.findByRole("checkbox", { name: "添加 Local" }),
+    ).toBeEnabled();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(skillsApi.importFromApps).not.toHaveBeenCalled();
+  });
+
+  it("keeps only the latest request across rapid scope and target changes", async () => {
+    const codex = deferredScan();
+    const allBeforeTarget = deferredScan();
+    const allAfterTarget = deferredScan();
+    const claude = deferredScan();
+    const current = {
+      ...local,
+      name: "Current",
+      path: "D:/claude/skills/local",
+      foundIn: ["claude"],
+    };
+    vi.mocked(skillsApi.scanUnmanaged)
+      .mockReturnValueOnce(codex.promise)
+      .mockReturnValueOnce(allBeforeTarget.promise)
+      .mockReturnValueOnce(allAfterTarget.promise)
+      .mockReturnValueOnce(claude.promise);
+    render(<SkillsMcpView />);
+    await screen.findByRole("switch");
+    const scope = screen.getByRole("checkbox", {
+      name: "同时发现其他工具的 Skills",
+    });
+    fireEvent.click(scope);
+    fireEvent.change(screen.getByRole("combobox", { name: "目标工具" }), {
+      target: { value: "claude" },
+    });
+    fireEvent.click(scope);
+    expect(vi.mocked(skillsApi.scanUnmanaged).mock.calls).toEqual([
+      ["codex"],
+      [undefined],
+      [undefined],
+      ["claude"],
+    ]);
+    await act(async () => claude.resolve([current]));
+    fireEvent.click(screen.getByRole("checkbox", { name: "添加 Current" }));
+    await act(async () => {
+      allAfterTarget.resolve([local]);
+      codex.reject(new Error("superseded Codex scan"));
+      allBeforeTarget.resolve([]);
+    });
+    expect(screen.getByRole("combobox", { name: "目标工具" })).toHaveValue(
+      "claude",
+    );
+    expect(scope).not.toBeChecked();
+    expect(
+      screen.queryByRole("checkbox", { name: "添加 Local" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("checkbox", { name: "添加 Current" }),
+    ).toBeChecked();
+    expect(screen.getByText("1 个发现 · 已选 1 个")).toBeVisible();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("region", { name: "本地 Skills 扫描" }),
+    ).toHaveAttribute("aria-busy", "false");
+    expect(skillsApi.importFromApps).not.toHaveBeenCalled();
+  });
 
   it("reports a malformed scan response without crashing", async () => {
     vi.mocked(skillsApi.scanUnmanaged).mockResolvedValue(
@@ -1076,7 +1669,12 @@ describe("automatic local Skills discovery", () => {
     expect(
       await screen.findByText("未发现可添加的本地 Skills。"),
     ).toBeVisible();
-    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("checkbox", { name: /^添加 / }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("checkbox", { name: "同时发现其他工具的 Skills" }),
+    ).not.toBeChecked();
     expect(
       screen.getByRole("button", { name: "添加所选 Skills" }),
     ).toBeDisabled();

@@ -251,7 +251,13 @@ describe("UsageView", () => {
     ]);
     render(<UsageView />);
     await loaded();
-    const table = within(screen.getByRole("table", { name: "按日词元汇总" }));
+    const scrollRegion = screen.getByRole("region", {
+      name: "按日词元汇总表格",
+    });
+    expect(scrollRegion).toHaveAttribute("tabindex", "0");
+    const table = within(
+      within(scrollRegion).getByRole("table", { name: "按日词元汇总" }),
+    );
     expect(
       table.getAllByRole("columnheader").map((cell) => cell.textContent),
     ).toEqual(["日期", "请求数", "总词元", "输入", "输出", "缓存"]);

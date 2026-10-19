@@ -1,5 +1,5 @@
 //! The write primitive for Codex live files: `auth.json`, `config.toml` and
-//! the generated model catalog.
+//! the generated model catalog and common-projection ledger.
 //!
 //! Every change is one CAS changeset ([`crate::config::cas`]): each target is
 //! read first (its bytes kept in memory), the plan commits all-or-nothing, a
@@ -11,10 +11,11 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 
+use crate::codex_common_projection::ledger_path;
 use crate::codex_config::{
     get_codex_auth_path, get_codex_config_path, get_codex_model_catalog_path,
 };
-use crate::config::cas::{AppliedChangeset, Changeset, ChangesetError, FileSnapshot};
+use crate::config::cas::{AppliedChangeset, Changeset, FileSnapshot};
 use crate::error::AppError;
 
 /// What to do with one live file.
@@ -40,6 +41,7 @@ pub(crate) struct CodexLiveWrite<'a> {
     pub auth: LiveFile<&'a Value>,
     pub config: LiveFile<&'a str>,
     pub model_catalog: LiveFile<&'a str>,
+    pub common_projection: LiveFile<&'a str>,
 }
 
 impl<'a> CodexLiveWrite<'a> {
@@ -48,6 +50,7 @@ impl<'a> CodexLiveWrite<'a> {
             auth: LiveFile::Keep,
             config: LiveFile::Write(config),
             model_catalog: LiveFile::Keep,
+            common_projection: LiveFile::Keep,
         }
     }
 }
@@ -63,24 +66,101 @@ impl PlannedCodexLiveWrite {
     }
 }
 
+/// Original read context for projection and catalog preparation. Read this
+/// before deriving any replacement, then move it into `plan_with_snapshots`.
+/// Fields may also be supplied from an earlier caller-owned observation.
+#[derive(Debug)]
+pub(crate) struct CodexLiveSnapshots {
+    pub auth: FileSnapshot,
+    pub config: FileSnapshot,
+    pub model_catalog: FileSnapshot,
+    pub common_projection: FileSnapshot,
+}
+
+impl CodexLiveSnapshots {
+    pub(crate) fn read() -> Result<Self, AppError> {
+        Ok(Self {
+            auth: FileSnapshot::read(get_codex_auth_path())?,
+            config: FileSnapshot::read(get_codex_config_path())?,
+            model_catalog: FileSnapshot::read(get_codex_model_catalog_path())?,
+            common_projection: FileSnapshot::read(ledger_path())?,
+        })
+    }
+
+    pub(crate) fn config_text(&self) -> Result<&str, AppError> {
+        std::str::from_utf8(self.config.contents().unwrap_or_default())
+            .map_err(|_| AppError::InvalidInput("Codex config.toml 不是有效的 UTF-8 文本。".into()))
+    }
+
+    pub(crate) fn auth_value(&self) -> Result<Value, AppError> {
+        match self.auth.contents() {
+            Some(bytes) => serde_json::from_slice(bytes)
+                .map_err(|error| AppError::json(self.auth.path(), error)),
+            None => Ok(serde_json::json!({})),
+        }
+    }
+
+    /// The observed ledger is optional, but damaged text is never treated as
+    /// an absent ledger. Do not include parser diagnostics or recorded values.
+    pub(crate) fn common_projection_text(&self) -> Result<Option<&str>, AppError> {
+        self.common_projection
+            .contents()
+            .map(|bytes| {
+                std::str::from_utf8(bytes).map_err(|_| {
+                    AppError::Config("Codex 通用配置投影记录不是有效的 UTF-8 文本".into())
+                })
+            })
+            .transpose()
+    }
+}
+
 fn plan_file(
     changeset: &mut Changeset,
     path: PathBuf,
     change: LiveFile<Vec<u8>>,
     private: bool,
-) -> Result<(), ChangesetError> {
+    observed: Option<FileSnapshot>,
+) -> Result<(), AppError> {
+    let snapshot = match observed {
+        Some(snapshot) if snapshot.path() == path.as_path() => snapshot,
+        Some(_) => return Err(AppError::InvalidInput("Codex 文件快照路径不匹配。".into())),
+        None if matches!(change, LiveFile::Keep) => return Ok(()),
+        None => FileSnapshot::read(path)?,
+    };
     match change {
-        LiveFile::Keep => Ok(()),
-        LiveFile::Write(bytes) if private => {
-            changeset.write_private(FileSnapshot::read(path)?, bytes)
-        }
-        LiveFile::Write(bytes) => changeset.write(FileSnapshot::read(path)?, bytes),
-        LiveFile::Delete => changeset.delete(FileSnapshot::read(path)?),
+        // A Keep with an observed snapshot is a read-only CAS guard. Changeset
+        // skips identical bytes (including missing files), preserving auth
+        // bytes and permissions instead of serializing or rewriting them.
+        LiveFile::Keep => match snapshot.contents().map(<[u8]>::to_vec) {
+            Some(bytes) => changeset.write(snapshot, bytes)?,
+            None => changeset.delete(snapshot)?,
+        },
+        LiveFile::Write(bytes) if private => changeset.write_private(snapshot, bytes)?,
+        LiveFile::Write(bytes) => changeset.write(snapshot, bytes)?,
+        LiveFile::Delete => changeset.delete(snapshot)?,
     }
+    Ok(())
 }
 
-/// Reads every target of `write` and plans it.
+/// Reads every changed target of `write` and plans it. For read/project/write
+/// callers, use `plan_with_snapshots` with the original read context instead.
 pub(crate) fn plan(write: CodexLiveWrite<'_>) -> Result<PlannedCodexLiveWrite, AppError> {
+    plan_inner(write, None)
+}
+
+/// Bind all four files to their original observation, not a post-projection
+/// re-read. Even Keep fields guard read dependencies without changing bytes.
+pub(crate) fn plan_with_snapshots(
+    write: CodexLiveWrite<'_>,
+    snapshots: CodexLiveSnapshots,
+) -> Result<PlannedCodexLiveWrite, AppError> {
+    plan_inner(write, Some(snapshots))
+}
+
+fn plan_inner(
+    write: CodexLiveWrite<'_>,
+    snapshots: Option<CodexLiveSnapshots>,
+) -> Result<PlannedCodexLiveWrite, AppError> {
     let auth = match write.auth {
         LiveFile::Keep => LiveFile::Keep,
         LiveFile::Write(auth) => LiveFile::Write(crate::config::json_file_text(auth)?.into_bytes()),
@@ -95,18 +175,46 @@ pub(crate) fn plan(write: CodexLiveWrite<'_>) -> Result<PlannedCodexLiveWrite, A
         LiveFile::Write(config) => LiveFile::Write(prepare_config_text(config)?.into_bytes()),
         other => text(other),
     };
-
+    let (observed_auth, observed_config, observed_catalog, observed_projection) = match snapshots {
+        Some(snapshots) => (
+            Some(snapshots.auth),
+            Some(snapshots.config),
+            Some(snapshots.model_catalog),
+            Some(snapshots.common_projection),
+        ),
+        None => (None, None, None, None),
+    };
     let mut changeset = Changeset::new();
-    // The catalog first and config.toml last: config.toml points at the
-    // catalog, and a rollback runs in reverse.
+    // Catalog first and config.toml last: config points at the catalog, and
+    // the projection ledger belongs to the same commit. Rollback is reversed.
     plan_file(
         &mut changeset,
         get_codex_model_catalog_path(),
         text(write.model_catalog),
         false,
+        observed_catalog,
     )?;
-    plan_file(&mut changeset, get_codex_auth_path(), auth, true)?;
-    plan_file(&mut changeset, get_codex_config_path(), config, false)?;
+    plan_file(
+        &mut changeset,
+        get_codex_auth_path(),
+        auth,
+        true,
+        observed_auth,
+    )?;
+    plan_file(
+        &mut changeset,
+        ledger_path(),
+        text(write.common_projection),
+        false,
+        observed_projection,
+    )?;
+    plan_file(
+        &mut changeset,
+        get_codex_config_path(),
+        config,
+        false,
+        observed_config,
+    )?;
     Ok(PlannedCodexLiveWrite { changeset })
 }
 
@@ -304,6 +412,7 @@ mod tests {
             auth: LiveFile::Write(&next_auth),
             config: LiveFile::Write("model = \"b\"\n"),
             model_catalog: LiveFile::Keep,
+            common_projection: LiveFile::Keep,
         })
         .unwrap();
         fs::write(get_codex_config_path(), "model = \"external\"\n").unwrap();
@@ -335,6 +444,7 @@ mod tests {
             auth: LiveFile::restore(None),
             config: LiveFile::restore(Some("model = \"b\"\n")),
             model_catalog: LiveFile::restore(None),
+            common_projection: LiveFile::Keep,
         })
         .unwrap();
 

@@ -2031,6 +2031,10 @@ export default function ChimeraApp({
           },
         },
       };
+      const commonConfigDraft =
+        editorAppId === "codex" && commonConfigLoaded && commonConfigDirty
+          ? commonConfigSnippet
+          : undefined;
       let providerCommitted = false;
       try {
         if (draft.original) {
@@ -2041,10 +2045,18 @@ export default function ChimeraApp({
             provider,
             editorAppId,
             draft.original.id,
-            { clearApiKey: codexApiKeyCleared(draft.original, draft.apiKey) },
+            {
+              clearApiKey: codexApiKeyCleared(draft.original, draft.apiKey),
+              commonConfigSnippet: commonConfigDraft,
+            },
           );
         } else {
-          await providersApi.addAndActivate(provider, editorAppId, false);
+          await providersApi.addAndActivate(
+            provider,
+            editorAppId,
+            false,
+            commonConfigDraft,
+          );
         }
         providerCommitted = true;
         if (editorAppId === "codex") setCodexRestartRequired(true);
@@ -2052,12 +2064,8 @@ export default function ChimeraApp({
         const savedDraft = { ...draft, original: provider };
         editorRef.current = savedDraft;
         setEditor(savedDraft);
-        if (commonConfigLoaded && commonConfigDirty) {
-          await configApi.setCommonConfigSnippet(
-            editorAppId,
-            commonConfigSnippet,
-          );
-          commonConfigBaselineRef.current = commonConfigSnippet;
+        if (commonConfigDraft !== undefined) {
+          commonConfigBaselineRef.current = commonConfigDraft;
           setCommonConfigDirty(false);
         }
         // 文件级校验失败才算真错（目录没写对）；运行时交叉验证跑不起来只是
@@ -2079,7 +2087,7 @@ export default function ChimeraApp({
         } catch (error) {
           await loadProviders();
           setEditorSaveError(
-            `线路已保存并应用，但模型目录未正确应用。编辑内容已保留，可重试保存。${String(error)}`,
+            `线路已保存并应用，但模型目录未正确应用。编辑内容已保留，请根据错误说明处理后重新保存。${String(error)}`,
           );
           note("应用模型目录", "error", String(error), provider.name);
           toast.error("线路已保存，但模型目录未正确应用", {
@@ -2639,7 +2647,7 @@ export default function ChimeraApp({
                     aria-current={active ? "page" : undefined}
                     title={available ? undefined : `${label}：此版本未开放`}
                     data-pencil-name={`能力 · ${label}`}
-                    className={`box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left ${
+                    className={`chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left ${
                       active
                         ? "bg-[#23282D]"
                         : "bg-transparent hover:bg-[#1A1E24]"
@@ -2705,7 +2713,7 @@ export default function ChimeraApp({
                     onClick={() => setView(id)}
                     aria-label={label}
                     data-pencil-name={`工具 · ${label}`}
-                    className={`w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 ${view === id ? "bg-[#23282D] text-[#EEF0F3]" : "bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"}`}
+                    className={`chimera-nav-item w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 ${view === id ? "bg-[#23282D] text-[#EEF0F3]" : "bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"}`}
                   >
                     <span className="w-[24px] h-[24px] shrink-0 flex items-center justify-center border border-[#8D9398] rounded-[4px] text-[12px] font-bold">
                       {badge}
@@ -2728,7 +2736,7 @@ export default function ChimeraApp({
               disabled={!canNavigate("tool-settings")}
               aria-current={view === "tool-settings" ? "page" : undefined}
               data-pencil-name="添加工具"
-              className={`w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left cursor-pointer ${view === "tool-settings" ? "bg-[#23282D] text-[#EEF0F3]" : "bg-transparent text-[#BABEC3] hover:bg-[#1A1E24]"}`}
+              className={`chimera-nav-item w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left cursor-pointer ${view === "tool-settings" ? "bg-[#23282D] text-[#EEF0F3]" : "bg-transparent text-[#BABEC3] hover:bg-[#1A1E24]"}`}
             >
               <span className="w-[24px] h-[24px] flex items-center justify-center border border-[#8D9398] rounded-[4px]">
                 <Plus size={14} aria-hidden="true" />
@@ -2749,7 +2757,7 @@ export default function ChimeraApp({
             onClick={() => setView("sessions")}
             aria-current={view === "sessions" ? "page" : undefined}
             data-pencil-name="会话"
-            className={`box-border w-full h-[32px] shrink-0 flex flex-row gap-[12px] p-[0px_8px_0px_12px] justify-start items-center rounded-[4px] cursor-pointer border-0 transition-colors text-left ${
+            className={`chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[12px] p-[0px_8px_0px_12px] justify-start items-center rounded-[4px] cursor-pointer border-0 transition-colors text-left ${
               view === "sessions"
                 ? "bg-[#23282D]"
                 : "bg-transparent hover:bg-[#1A1E24]"
@@ -2780,7 +2788,7 @@ export default function ChimeraApp({
             onClick={() => setView("settings")}
             aria-current={view === "settings" ? "page" : undefined}
             data-pencil-name="设置"
-            className={`box-border w-full h-[32px] shrink-0 flex flex-row gap-[12px] p-[0px_8px_0px_12px] justify-start items-center rounded-[4px] cursor-pointer border-0 transition-colors text-left ${
+            className={`chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[12px] p-[0px_8px_0px_12px] justify-start items-center rounded-[4px] cursor-pointer border-0 transition-colors text-left ${
               view === "settings"
                 ? "bg-[#23282D]"
                 : "bg-transparent hover:bg-[#1A1E24]"
@@ -2813,7 +2821,7 @@ export default function ChimeraApp({
         {/* Pencil wnYKj: fixed search and window controls, flexible left drag area. */}
         <header
           data-pencil-name="标题栏"
-          className="box-border w-full h-[40px] shrink-0 flex flex-row gap-0 justify-start items-center bg-[#FDFDFE] dark:bg-[#1A1E24] border-b border-[#DDE0E3] dark:border-[#31363D] select-none z-10"
+          className="chimera-topbar box-border w-full h-[40px] shrink-0 flex flex-row gap-0 justify-start items-center bg-[#FDFDFE] dark:bg-[#1A1E24] border-b border-[#DDE0E3] dark:border-[#31363D] select-none z-10"
           onMouseDown={handleTitlebarMouseDown}
           onDoubleClick={preventTitlebarDoubleClick}
         >
@@ -2848,7 +2856,7 @@ export default function ChimeraApp({
             aria-label="搜索线路、页面或命令"
             data-pencil-name="搜索"
             onClick={() => setCmdPaletteOpen(true)}
-            className="box-border w-[360px] max-w-[42%] min-w-0 shrink h-[28px] flex flex-row gap-[8px] px-2.5 justify-start items-center bg-[#F2F4F6] dark:bg-[#23282D] rounded-[4px] border-0 cursor-pointer hover:bg-[var(--bg-selected)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--focus)] transition"
+            className="chimera-global-search box-border w-[360px] max-w-[42%] min-w-0 shrink h-[28px] flex flex-row gap-[8px] px-2.5 justify-start items-center bg-[#F2F4F6] dark:bg-[#23282D] rounded-[4px] border-0 cursor-pointer hover:bg-[var(--bg-selected)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--focus)] transition"
             data-tauri-no-drag
           >
             <Search size={14} className="text-[#646970] dark:text-[#8D9398]" />

@@ -161,17 +161,12 @@ const confirmDelete = async (confirmName: RegExp) => {
 const exportButton = () => screen.getByRole("button", { name: "导出" });
 
 const openExport = async () => {
-  await waitFor(() => expect(exportButton()).toBeEnabled());
+  await waitFor(() => expect(exportButton()).toBeEnabled(), {
+    timeout: 5000,
+  });
   fireEvent.click(exportButton());
   return await screen.findByRole("dialog");
 };
-
-const readBlob = (blob: Blob) =>
-  new Promise<string>((resolve) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.readAsText(blob);
-  });
 
 describe("SessionManagerPage", () => {
   beforeEach(() => {
@@ -372,34 +367,62 @@ describe("SessionManagerPage", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("exports the conversation without tool output or the record's location by default", async () => {
-    const createUrl = vi.fn((_blob: Blob) => "blob:session-export");
-    const revokeUrl = vi.fn();
-    vi.stubGlobal(
-      "URL",
-      Object.assign(URL, {
-        createObjectURL: createUrl,
-        revokeObjectURL: revokeUrl,
-      }),
-    );
-    const click = vi
-      .spyOn(HTMLAnchorElement.prototype, "click")
-      .mockImplementation(() => {});
+  it("saves Markdown through the native dialog with privacy defaults and the actual destination", async () => {
+    const exportFile = vi
+      .spyOn(sessionsApi, "exportFile")
+      .mockResolvedValueOnce("D:\\exports\\Alpha.md");
     renderPage();
     try {
       const popover = await openExport();
       expect(popover).toHaveTextContent("默认不含工具输出");
-      expect(
-        within(popover).queryByText(/分享文件前请逐条检查/),
-      ).not.toBeInTheDocument();
+      expect(popover).toHaveTextContent("由你选择文件夹和文件名");
+      expect(within(popover).queryByRole("note")).not.toBeInTheDocument();
       fireEvent.click(
-        within(popover).getByRole("button", { name: "导出 JSON" }),
+        within(popover).getByRole("button", { name: "保存 Markdown…" }),
       );
-      expect(click).toHaveBeenCalledTimes(1);
-      const anchor = click.mock.instances[0] as HTMLAnchorElement;
-      expect(anchor.download).toBe("session-codex-session-1.json");
-      expect(anchor.isConnected).toBe(false);
-      const exported = JSON.parse(await readBlob(createUrl.mock.calls[0][0]));
+      await waitFor(() => expect(exportFile).toHaveBeenCalledTimes(1));
+      const exported = exportFile.mock.calls[0][0];
+      expect(exported).toMatchObject({
+        fileName: "session-codex-session-1.md",
+        format: "markdown",
+      });
+      expect(exported.content).toContain("# Alpha Session");
+      expect(exported.content).toContain("alpha");
+      expect(exported.content).toContain("done");
+      expect(exported.content).not.toContain("sk-test-secret");
+      expect(exported.content).not.toContain("/mock/codex/session-1.jsonl");
+      expect(await screen.findByRole("status")).toHaveTextContent(
+        "D:\\exports\\Alpha.md",
+      );
+      expect(toastSuccessMock).toHaveBeenCalledWith(
+        "会话导出成功",
+        expect.objectContaining({
+          description: expect.stringContaining("D:\\exports\\Alpha.md"),
+        }),
+      );
+    } finally {
+      exportFile.mockRestore();
+    }
+  });
+
+  it("still saves JSON without tool output or the record's location by default", async () => {
+    const exportFile = vi
+      .spyOn(sessionsApi, "exportFile")
+      .mockResolvedValueOnce("D:\\exports\\Alpha.json");
+    renderPage();
+    try {
+      const popover = await openExport();
+      fireEvent.click(within(popover).getByRole("button", { name: "JSON" }));
+      fireEvent.click(
+        within(popover).getByRole("button", { name: "保存 JSON…" }),
+      );
+      await waitFor(() => expect(exportFile).toHaveBeenCalledTimes(1));
+      const request = exportFile.mock.calls[0][0];
+      expect(request).toMatchObject({
+        fileName: "session-codex-session-1.json",
+        format: "json",
+      });
+      const exported = JSON.parse(request.content);
       expect(exported).toMatchObject({
         version: 1,
         session: { sessionId: "codex-session-1", providerId: "codex" },
@@ -409,27 +432,20 @@ describe("SessionManagerPage", () => {
         { role: "user", content: "alpha", ts: 20 },
         { role: "assistant", content: "done", ts: 22 },
       ]);
+      await waitFor(() => expect(toastSuccessMock).toHaveBeenCalled());
     } finally {
-      click.mockRestore();
-      vi.unstubAllGlobals();
+      exportFile.mockRestore();
     }
   });
 
   it("includes tool output only when asked, with the risk stated as visible text", async () => {
-    const createUrl = vi.fn((_blob: Blob) => "blob:session-export");
-    vi.stubGlobal(
-      "URL",
-      Object.assign(URL, {
-        createObjectURL: createUrl,
-        revokeObjectURL: vi.fn(),
-      }),
-    );
-    const click = vi
-      .spyOn(HTMLAnchorElement.prototype, "click")
-      .mockImplementation(() => {});
+    const exportFile = vi
+      .spyOn(sessionsApi, "exportFile")
+      .mockResolvedValueOnce("D:\\exports\\Alpha.json");
     renderPage();
     try {
       const popover = await openExport();
+      fireEvent.click(within(popover).getByRole("button", { name: "JSON" }));
       fireEvent.click(
         within(popover).getByRole("checkbox", {
           name: "包含工具输出（可能含密钥或令牌）",
@@ -439,14 +455,16 @@ describe("SessionManagerPage", () => {
         "工具输出可能含有密钥、令牌或本机文件内容",
       );
       fireEvent.click(
-        within(popover).getByRole("button", { name: "导出 JSON" }),
+        within(popover).getByRole("button", { name: "保存 JSON…" }),
       );
-      const exported = JSON.parse(await readBlob(createUrl.mock.calls[0][0]));
+      await waitFor(() => expect(exportFile).toHaveBeenCalledTimes(1));
+      const exported = JSON.parse(exportFile.mock.calls[0][0].content);
       expect(exported.messages).toHaveLength(3);
       expect(exported.messages[1]).toMatchObject({ role: "tool" });
+      expect(exported.session).not.toHaveProperty("sourcePath");
+      await waitFor(() => expect(toastSuccessMock).toHaveBeenCalled());
     } finally {
-      click.mockRestore();
-      vi.unstubAllGlobals();
+      exportFile.mockRestore();
     }
   });
 

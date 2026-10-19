@@ -28,6 +28,9 @@ const mocks = vi.hoisted(() => {
     testEndpoints: vi.fn(),
     invoke: vi.fn(),
     listen: vi.fn(),
+    getCommonConfigSnippet: vi.fn(),
+    validateCommonConfigSnippet: vi.fn(),
+    setCommonConfigSnippet: vi.fn(),
     toast: {
       error: vi.fn(),
       success: vi.fn(),
@@ -60,7 +63,11 @@ vi.mock("@/lib/api/settings", () => ({
   },
 }));
 vi.mock("@/lib/api", () => ({
-  configApi: { getCommonConfigSnippet: async () => "" },
+  configApi: {
+    getCommonConfigSnippet: mocks.getCommonConfigSnippet,
+    validateCommonConfigSnippet: mocks.validateCommonConfigSnippet,
+    setCommonConfigSnippet: mocks.setCommonConfigSnippet,
+  },
 }));
 vi.mock("@/lib/api/vscode", () => ({
   vscodeApi: { testApiEndpoints: mocks.testEndpoints },
@@ -152,6 +159,9 @@ beforeEach(() => {
   mocks.fetchModels.mockReset().mockResolvedValue([]);
   mocks.testEndpoints.mockReset().mockResolvedValue([{ latency: null }]);
   mocks.listen.mockReset().mockResolvedValue(() => {});
+  mocks.getCommonConfigSnippet.mockReset().mockResolvedValue("");
+  mocks.validateCommonConfigSnippet.mockReset().mockResolvedValue(undefined);
+  mocks.setCommonConfigSnippet.mockReset().mockResolvedValue(undefined);
   routeInvoke();
 });
 afterEach(() => {
@@ -358,6 +368,203 @@ describe("Codex line save path", () => {
     expect(screen.getByRole("button", { name: "重启 Codex" })).toBeEnabled();
   });
 
+  it("keeps edits and shows recovery steps when a custom catalog blocks the save transaction", async () => {
+    const conflict =
+      'Codex 模型目录配置冲突：C:/Users/me/.codex/config.toml 中的 model_catalog_json = "my-custom-catalog.json" 指向自定义模型目录。请先备份此配置文件并移除顶层 model_catalog_json，再重新保存线路。';
+    routeInvoke({
+      get_codex_process_status: () => runningProcess,
+      update_and_activate_provider: () => {
+        throw new Error(conflict);
+      },
+    });
+    mount();
+    await editAlpha();
+    fillField("provider-name", "Alpha edited");
+    fireEvent.click(saveButton());
+
+    const feedback = await screen.findByText(/保存失败，编辑内容已保留/);
+    expect(feedback).toHaveTextContent(conflict);
+    expect(
+      screen.getByRole("heading", { name: "编辑线路", level: 2 }),
+    ).toBeVisible();
+    expect(document.querySelector('[name="provider-name"]')).toHaveValue(
+      "Alpha edited",
+    );
+    await waitFor(() => expect(saveButton()).toBeEnabled());
+    expect(calls("update_and_activate_provider")).toHaveLength(1);
+    expect(calls("verify_codex_model_catalog")).toHaveLength(0);
+    expect(calls("restart_codex_for_model_catalog")).toHaveLength(0);
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    expect(mocks.toast.success).not.toHaveBeenCalled();
+    expect(mocks.toast.error).toHaveBeenCalledWith("保存失败", {
+      description: `Error: ${conflict}`,
+    });
+  });
+
+  // These characterize the single-command save boundary. The backend is
+  // mocked: they do not execute or prove Rust merge/rollback semantics.
+  async function editCommonConfig(value: string) {
+    const button = await screen.findByRole("button", {
+      name: "编辑通用配置",
+      hidden: true,
+    });
+    const details = button.closest("details");
+    if (details) details.open = true;
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    fillField("provider-common-config-snippet", value);
+  }
+
+  it("rejects invalid common TOML before activating a line and keeps the draft", async () => {
+    mocks.validateCommonConfigSnippet.mockRejectedValue(
+      new Error("invalid TOML"),
+    );
+    mount();
+    await editAlpha();
+    await editCommonConfig("[broken");
+    fireEvent.click(saveButton());
+
+    expect(
+      await screen.findByText(/通用配置无效，线路尚未保存/),
+    ).toHaveTextContent("invalid TOML");
+    expect(mocks.validateCommonConfigSnippet).toHaveBeenCalledWith(
+      "codex",
+      "[broken",
+    );
+    expect(calls("update_and_activate_provider")).toHaveLength(0);
+    expect(mocks.setCommonConfigSnippet).not.toHaveBeenCalled();
+    expect(calls("verify_codex_model_catalog")).toHaveLength(0);
+    expect(calls("restart_codex_for_model_catalog")).toHaveLength(0);
+    expect(
+      document.querySelector('[name="provider-common-config-snippet"]'),
+    ).toHaveValue("[broken");
+    await waitFor(() => expect(saveButton()).toBeEnabled());
+  });
+
+  it("sends a corrected common draft with the line and keeps it when the transaction fails", async () => {
+    mocks.getCommonConfigSnippet.mockResolvedValue(
+      'model_catalog_json = "external-catalog.json"\n',
+    );
+    mocks.getAll.mockResolvedValue({
+      Alpha: provider("Alpha", { meta: { commonConfigEnabled: true } }),
+      Beta: provider("Beta"),
+    });
+    routeInvoke({
+      update_and_activate_provider: () => {
+        throw new Error("existing common catalog conflicts");
+      },
+    });
+    mount();
+    await editAlpha();
+    await editCommonConfig("");
+    fireEvent.click(saveButton());
+
+    expect(
+      await screen.findByText(/保存失败，编辑内容已保留/),
+    ).toHaveTextContent("existing common catalog conflicts");
+    expect(mocks.validateCommonConfigSnippet).toHaveBeenCalledWith("codex", "");
+    expect(calls("update_and_activate_provider")).toHaveLength(1);
+    expect(calls("update_and_activate_provider")[0]).toEqual(
+      expect.objectContaining({ commonConfigSnippet: "" }),
+    );
+    expect(mocks.setCommonConfigSnippet).not.toHaveBeenCalled();
+    expect(calls("verify_codex_model_catalog")).toHaveLength(0);
+    expect(calls("restart_codex_for_model_catalog")).toHaveLength(0);
+    expect(
+      document.querySelector('[name="provider-common-config-snippet"]'),
+    ).toHaveValue("");
+    expect(mocks.toast.success).not.toHaveBeenCalled();
+    await waitFor(() => expect(saveButton()).toBeEnabled());
+  });
+
+  it("keeps both drafts on a transaction failure and retries them in one command", async () => {
+    const commonDraft = 'personality = "friendly"\n';
+    const events: string[] = [];
+    let attempts = 0;
+    routeInvoke({
+      update_and_activate_provider: () => {
+        events.push("provider");
+        if (++attempts === 1) throw new Error("common live sync failed");
+        return true;
+      },
+      verify_codex_model_catalog: () => {
+        events.push("verify");
+        return {
+          valid: true,
+          defaultModel: "gpt-a",
+          modelCount: 1,
+          runtimeVerified: true,
+        };
+      },
+    });
+    mount();
+    await editAlpha();
+    await editCommonConfig(commonDraft);
+    fireEvent.click(saveButton());
+
+    expect(
+      await screen.findByText(/保存失败，编辑内容已保留/),
+    ).toHaveTextContent("common live sync failed");
+    expect(events).toEqual(["provider"]);
+    expect(mocks.setCommonConfigSnippet).not.toHaveBeenCalled();
+    expect(
+      document.querySelector('[name="provider-common-config-snippet"]'),
+    ).toHaveValue(commonDraft);
+    expect(calls("verify_codex_model_catalog")).toHaveLength(0);
+    expect(calls("restart_codex_for_model_catalog")).toHaveLength(0);
+    expect(mocks.toast.success).not.toHaveBeenCalled();
+    await waitFor(() => expect(saveButton()).toBeEnabled());
+
+    fireEvent.click(saveButton());
+    expect(
+      await screen.findByRole("alertdialog", { name: "重新加载模型列表？" }),
+    ).toBeVisible();
+    expect(events).toEqual(["provider", "provider", "verify"]);
+    expect(calls("update_and_activate_provider")).toHaveLength(2);
+    for (const call of calls("update_and_activate_provider")) {
+      expect(call).toEqual(
+        expect.objectContaining({ commonConfigSnippet: commonDraft }),
+      );
+    }
+    expect(calls("add_and_activate_provider")).toHaveLength(0);
+    expect(mocks.setCommonConfigSnippet).not.toHaveBeenCalled();
+    expect(calls("restart_codex_for_model_catalog")).toHaveLength(0);
+  });
+
+  it("removes a conflicting legacy snippet in the same successful apply", async () => {
+    mocks.getCommonConfigSnippet.mockResolvedValue(
+      'model_catalog_json = "external-catalog.json"\n',
+    );
+    const events: string[] = [];
+    routeInvoke({
+      update_and_activate_provider: () => {
+        events.push("apply");
+        return true;
+      },
+      verify_codex_model_catalog: () => {
+        events.push("verify");
+        return {
+          valid: true,
+          defaultModel: "gpt-a",
+          modelCount: 1,
+          runtimeVerified: true,
+        };
+      },
+    });
+    mount();
+    await editAlpha();
+    await editCommonConfig("");
+    fireEvent.click(saveButton());
+    expect(
+      await screen.findByRole("alertdialog", { name: "重新加载模型列表？" }),
+    ).toBeVisible();
+    expect(events).toEqual(["apply", "verify"]);
+    expect(calls("update_and_activate_provider")[0]).toEqual(
+      expect.objectContaining({ commonConfigSnippet: "" }),
+    );
+    expect(mocks.setCommonConfigSnippet).not.toHaveBeenCalled();
+  });
+
   it("keeps the editor open after a catalog failure and retries as an update", async () => {
     let verifyAttempts = 0;
     routeInvoke({
@@ -379,7 +586,7 @@ describe("Codex line save path", () => {
 
     expect(
       await screen.findByText(/线路已保存并应用，但模型目录未正确应用/),
-    ).toBeVisible();
+    ).toHaveTextContent("请根据错误说明处理后重新保存");
     expect(mocks.toast.error).toHaveBeenCalledWith(
       "线路已保存，但模型目录未正确应用",
       { description: "Error: catalog mismatch" },

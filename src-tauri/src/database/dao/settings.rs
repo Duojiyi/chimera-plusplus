@@ -4,7 +4,7 @@
 
 use crate::database::{lock_conn, Database};
 use crate::error::AppError;
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 
 impl Database {
     const LEGACY_COMMON_CONFIG_MIGRATED_KEY: &'static str = "common_config_legacy_migrated_v1";
@@ -133,13 +133,12 @@ impl Database {
     ) -> Result<(), AppError> {
         let key = format!("common_config_{app_type}");
         if let Some(value) = snippet {
-            // ⑤ / MH-13b: every writer (editor, live extraction, import)
-            // funnels through here, so the Codex snippet is sanitized once.
-            let value = if app_type == "codex" {
-                crate::codex_key_ownership::sanitize_codex_common_snippet(&value)?
-            } else {
-                value
-            };
+            // Validate before writing, preserving the user's exact text and
+            // the previous value on failure. Untrusted imports have their own
+            // explicit sanitizer; user edits must never be silently cleaned.
+            if app_type == "codex" {
+                crate::codex_key_ownership::validate_codex_common_snippet(&value)?;
+            }
             self.set_setting(&key, &value)
         } else {
             // 如果为 None 则删除
@@ -148,6 +147,144 @@ impl Database {
                 .map_err(|e| AppError::Database(e.to_string()))?;
             Ok(())
         }
+    }
+
+    /// Upgrade pre-ownership Codex snippets atomically, even when the older
+    /// common-config migration flag is already set. Getters remain read-only.
+    /// Keep the first original text for recovery; a valid snippet is a no-op.
+    pub(crate) fn migrate_legacy_codex_common_config(&self) -> Result<bool, AppError> {
+        use crate::codex_key_ownership::{
+            inherit_legacy_codex_line_preferences, sanitize_codex_common_snippet_with_report,
+            validate_codex_common_snippet,
+        };
+        use crate::services::provider::{
+            remove_common_config_from_settings, settings_contain_common_config,
+        };
+        use serde_json::Value;
+
+        let mut conn = lock_conn!(self.conn);
+        let tx = conn.transaction()?;
+        let old: Option<String> = tx
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'common_config_codex'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(old) = old else {
+            return Ok(false);
+        };
+        if validate_codex_common_snippet(&old).is_ok() {
+            return Ok(false);
+        }
+        let (clean, report) = sanitize_codex_common_snippet_with_report(&old)?;
+        validate_codex_common_snippet(&clean)?;
+        let rows = {
+            let mut stmt = tx.prepare(
+                "SELECT id, settings_config, meta FROM providers WHERE app_type = 'codex' ORDER BY id",
+            )?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows
+        };
+        for (id, raw_settings, raw_meta) in rows {
+            // Do not use the general row reader here: its fallback defaults
+            // would silently overwrite malformed JSON or unknown metadata.
+            let mut meta: Value = serde_json::from_str(&raw_meta).map_err(|_| {
+                AppError::Config("Codex 线路元数据格式无效，旧版通用配置迁移已取消".to_string())
+            })?;
+            if meta.is_null() {
+                meta = serde_json::json!({});
+            }
+            let meta = meta.as_object_mut().ok_or_else(|| {
+                AppError::Config("Codex 线路元数据必须为对象，旧版通用配置迁移已取消".to_string())
+            })?;
+            let explicit = match meta.get("commonConfigEnabled") {
+                None | Some(Value::Null) => None,
+                Some(Value::Bool(enabled)) => Some(*enabled),
+                Some(_) => {
+                    return Err(AppError::Config(
+                        "Codex 通用配置开关格式无效，迁移已取消".to_string(),
+                    ))
+                }
+            };
+            if explicit == Some(false) {
+                continue;
+            }
+            let settings: Value = serde_json::from_str(&raw_settings).map_err(|_| {
+                AppError::Config("Codex 线路设置格式无效，旧版通用配置迁移已取消".to_string())
+            })?;
+            // Infer from the complete ORIGINAL snippet, not a smaller cleaned
+            // subset that could unexpectedly enable additional providers.
+            let enabled = explicit.unwrap_or_else(|| {
+                settings_contain_common_config(&crate::app_config::AppType::Codex, &settings, &old)
+            });
+            let mut updated = settings.clone();
+            if enabled {
+                let object = updated.as_object_mut().ok_or_else(|| {
+                    AppError::Config("Codex 线路设置必须为对象，旧版通用配置迁移已取消".to_string())
+                })?;
+                let config = match object.get("config") {
+                    None => "",
+                    Some(Value::String(text)) => text.as_str(),
+                    Some(_) => {
+                        return Err(AppError::Config(
+                            "Codex 线路 TOML 必须为文本，迁移已取消".to_string(),
+                        ))
+                    }
+                };
+                let config = inherit_legacy_codex_line_preferences(config, &old)?;
+                object.insert("config".to_string(), Value::String(config));
+                updated = remove_common_config_from_settings(
+                    &crate::app_config::AppType::Codex,
+                    &updated,
+                    &clean,
+                )?;
+            }
+            let meta_changed = explicit.is_none();
+            if meta_changed {
+                meta.insert("commonConfigEnabled".to_string(), Value::Bool(enabled));
+            }
+            if updated != settings || meta_changed {
+                let settings = if updated == settings {
+                    raw_settings
+                } else {
+                    serde_json::to_string(&updated)
+                        .map_err(|source| AppError::JsonSerialize { source })?
+                };
+                let metadata = if meta_changed {
+                    serde_json::to_string(&meta)
+                        .map_err(|source| AppError::JsonSerialize { source })?
+                } else {
+                    raw_meta
+                };
+                tx.execute(
+                    "UPDATE providers SET settings_config = ?1, meta = ?2 WHERE app_type = 'codex' AND id = ?3",
+                    params![settings, metadata, id],
+                )?;
+            }
+        }
+        tx.execute(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES ('common_config_codex_legacy_backup_v1', ?1)",
+            params![old],
+        )?;
+        tx.execute(
+            "UPDATE settings SET value = ?1 WHERE key = 'common_config_codex'",
+            params![clean],
+        )?;
+        tx.commit()?;
+        log::warn!(
+            "Migrated legacy Codex common-config key ownership: {}",
+            report.stripped.join(", ")
+        );
+        Ok(true)
     }
 
     // --- 全局出站代理 ---
@@ -338,5 +475,320 @@ impl Database {
         let json = serde_json::to_string(config)
             .map_err(|e| AppError::Database(format!("序列化日志配置失败: {e}")))?;
         self.set_setting("log_config", &json)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn insert_legacy_codex_row(db: &Database, id: &str, config: &str, meta: &str) {
+        let conn = lock_conn!(db.conn);
+        conn.execute(
+            "INSERT INTO providers (id, app_type, name, settings_config, meta) VALUES (?1, 'codex', ?1, ?2, ?3)",
+            params![id, config, meta],
+        ).unwrap();
+    }
+
+    #[test]
+    fn legacy_codex_ownership_migration_preserves_explicit_and_inferred_intent() {
+        let db = Database::memory().unwrap();
+        let old = "model_reasoning_effort = 'high'\ndisable_response_storage = true\n[desktop]\nkeep = true\n";
+        db.set_setting("common_config_codex", old).unwrap();
+        db.set_config_snippet_cleared("codex", true).unwrap();
+        db.set_legacy_common_config_migrated(true).unwrap();
+        let disabled =
+            "{ \"config\" : \"model_reasoning_effort = 'medium'\\n\", \"futureSettings\": 7 }";
+        let disabled_meta = "{ \"commonConfigEnabled\" : false, \"futureMeta\" : [1, 2] }";
+        insert_legacy_codex_row(&db, "disabled", disabled, disabled_meta);
+        insert_legacy_codex_row(
+            &db,
+            "enabled",
+            r#"{"config":"model_reasoning_effort = 'medium'\n"}"#,
+            r#"{"commonConfigEnabled":true,"futureMeta":{"v":2}}"#,
+        );
+        insert_legacy_codex_row(
+            &db,
+            "inferred",
+            &serde_json::json!({"config": old}).to_string(),
+            r#"{"futureMeta":7}"#,
+        );
+        insert_legacy_codex_row(
+            &db,
+            "not-inferred",
+            r#"{"config":"[desktop]\nkeep = true\n"}"#,
+            "{}",
+        );
+        insert_legacy_codex_row(&db, "official-empty", r#"{"config":""}"#, "null");
+        assert!(db.migrate_legacy_codex_common_config().unwrap());
+        let clean = db.get_config_snippet("codex").unwrap().unwrap();
+        crate::codex_key_ownership::validate_codex_common_snippet(&clean).unwrap();
+        assert!(!clean.contains("model_reasoning_effort"));
+        assert!(!clean.contains("disable_response_storage"));
+        assert!(clean.contains("keep = true"));
+        let rows = db.snapshot_provider_config_rows("codex").unwrap();
+        let (_, settings, meta) = rows.iter().find(|(id, _, _)| id == "disabled").unwrap();
+        assert_eq!(settings, disabled);
+        assert_eq!(meta, disabled_meta);
+        for (id, settings, meta) in &rows {
+            let settings: serde_json::Value = serde_json::from_str(settings).unwrap();
+            let meta: serde_json::Value = serde_json::from_str(meta).unwrap();
+            let config: toml::Value = settings["config"].as_str().unwrap().parse().unwrap();
+            match id.as_str() {
+                "enabled" | "inferred" => {
+                    assert_eq!(
+                        config["model_reasoning_effort"].as_str(),
+                        Some(if id == "enabled" { "medium" } else { "high" })
+                    );
+                    assert_eq!(config["disable_response_storage"].as_bool(), Some(true));
+                    assert!(config.get("desktop").is_none());
+                    assert_eq!(meta["commonConfigEnabled"], true);
+                    assert!(meta.get("futureMeta").is_some());
+                }
+                "not-inferred" | "official-empty" => {
+                    assert_eq!(meta["commonConfigEnabled"], false);
+                    assert!(config.get("model_reasoning_effort").is_none());
+                    assert!(config.get("disable_response_storage").is_none());
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(
+            db.get_setting("common_config_codex_legacy_backup_v1")
+                .unwrap()
+                .as_deref(),
+            Some(old)
+        );
+        assert!(db.is_config_snippet_cleared("codex").unwrap());
+        assert!(db.is_legacy_common_config_migrated().unwrap());
+        assert!(!db.migrate_legacy_codex_common_config().unwrap());
+        assert_eq!(db.snapshot_provider_config_rows("codex").unwrap(), rows);
+        db.set_setting("common_config_codex", "model_reasoning_effort = 'low'\n")
+            .unwrap();
+        assert!(db.migrate_legacy_codex_common_config().unwrap());
+        assert_eq!(
+            db.get_setting("common_config_codex_legacy_backup_v1")
+                .unwrap()
+                .as_deref(),
+            Some(old)
+        );
+    }
+
+    #[test]
+    fn legacy_codex_ownership_migration_is_atomic_on_bad_rows_or_sql_failure() {
+        let valid = r#"{"config":""}"#;
+        for (settings, meta) in [
+            ("not-json", r#"{"commonConfigEnabled":true}"#),
+            (valid, "not-json"),
+            (valid, "[]"),
+            (valid, r#"{"commonConfigEnabled":"yes"}"#),
+            (r#"{"config":3}"#, r#"{"commonConfigEnabled":true}"#),
+            (
+                r#"{"config":"token = 'legacy-secret'\n[broken"}"#,
+                r#"{"commonConfigEnabled":true}"#,
+            ),
+        ] {
+            let db = Database::memory().unwrap();
+            let old = "model_reasoning_effort = 'high'\n";
+            db.set_setting("common_config_codex", old).unwrap();
+            insert_legacy_codex_row(&db, "a-valid", valid, r#"{"commonConfigEnabled":true}"#);
+            insert_legacy_codex_row(&db, "z-invalid", settings, meta);
+            let before = db.snapshot_provider_config_rows("codex").unwrap();
+            let error = db
+                .migrate_legacy_codex_common_config()
+                .unwrap_err()
+                .to_string();
+            assert!(!error.contains("legacy-secret"));
+            assert_eq!(db.snapshot_provider_config_rows("codex").unwrap(), before);
+            assert_eq!(
+                db.get_config_snippet("codex").unwrap().as_deref(),
+                Some(old)
+            );
+            assert_eq!(
+                db.get_setting("common_config_codex_legacy_backup_v1")
+                    .unwrap(),
+                None
+            );
+        }
+        let db = Database::memory().unwrap();
+        db.set_setting("common_config_codex", "disable_response_storage = true\n")
+            .unwrap();
+        insert_legacy_codex_row(&db, "enabled", valid, r#"{"commonConfigEnabled":true}"#);
+        let before = db.snapshot_provider_config_rows("codex").unwrap();
+        {
+            let conn = lock_conn!(db.conn);
+            conn.execute_batch("CREATE TRIGGER reject_legacy_backup BEFORE INSERT ON settings WHEN NEW.key = 'common_config_codex_legacy_backup_v1' BEGIN SELECT RAISE(ABORT, 'fixture failure'); END;").unwrap();
+        }
+        assert!(db.migrate_legacy_codex_common_config().is_err());
+        assert_eq!(db.snapshot_provider_config_rows("codex").unwrap(), before);
+        assert_eq!(
+            db.get_config_snippet("codex").unwrap().as_deref(),
+            Some("disable_response_storage = true\n")
+        );
+    }
+
+    #[test]
+    fn valid_or_missing_codex_common_text_is_a_noop() {
+        let db = Database::memory().unwrap();
+        insert_legacy_codex_row(&db, "unknown", "not-json", "not-json");
+        let before = db.snapshot_provider_config_rows("codex").unwrap();
+        assert!(!db.migrate_legacy_codex_common_config().unwrap());
+        let valid = "# Exact shared text\r\napproval_policy = 'on-request'\r\n";
+        db.set_setting("common_config_codex", valid).unwrap();
+        assert!(!db.migrate_legacy_codex_common_config().unwrap());
+        assert_eq!(
+            db.get_config_snippet("codex").unwrap().as_deref(),
+            Some(valid)
+        );
+        assert_eq!(db.snapshot_provider_config_rows("codex").unwrap(), before);
+    }
+
+    #[test]
+    fn untrusted_import_infers_opt_in_before_policy_sanitization() {
+        let db = Database::memory().unwrap();
+        let old = "model_reasoning_effort = 'high'\ndisable_response_storage = true\napproval_policy = 'never'\n";
+        db.set_setting("common_config_codex", old).unwrap();
+        insert_legacy_codex_row(
+            &db,
+            "inferred",
+            &serde_json::json!({"config": old}).to_string(),
+            "{}",
+        );
+        let review = db.sanitize_untrusted_codex_configs().unwrap();
+        let provider = db
+            .get_all_providers("codex")
+            .unwrap()
+            .remove("inferred")
+            .unwrap();
+        assert_eq!(provider.meta.unwrap().common_config_enabled, Some(true));
+        let config = provider.settings_config["config"].as_str().unwrap();
+        assert!(config.contains("model_reasoning_effort"));
+        assert!(config.contains("disable_response_storage"));
+        assert!(!config.contains("approval_policy"));
+        let report = review.common_config.unwrap();
+        for key in [
+            "model_reasoning_effort",
+            "disable_response_storage",
+            "approval_policy",
+        ] {
+            assert!(report.stripped.iter().any(|name| name == key), "{key}");
+        }
+    }
+
+    #[test]
+    fn raw_provider_config_restore_preserves_exact_json_and_unknown_metadata() {
+        let db = Database::memory().unwrap();
+        let settings = "{ \"config\" : \"\", \"future\" : 7 }";
+        let meta = "{ \"futureMetadata\": [1, 2], \"commonConfigEnabled\": false }";
+        insert_legacy_codex_row(&db, "raw", settings, meta);
+        let before = db.snapshot_provider_config_rows("codex").unwrap();
+        let provider = db
+            .get_all_providers("codex")
+            .unwrap()
+            .remove("raw")
+            .unwrap();
+        db.save_provider("codex", &provider).unwrap();
+        assert_ne!(db.snapshot_provider_config_rows("codex").unwrap(), before);
+        db.restore_provider_config_rows("codex", &before).unwrap();
+        assert_eq!(db.snapshot_provider_config_rows("codex").unwrap(), before);
+    }
+
+    #[test]
+    fn codex_common_snippet_is_stored_verbatim() {
+        let db = Database::memory().unwrap();
+        for text in [
+            "# Preserve comments, spacing and CRLF\r\napproval_policy  = 'never'\r\n\r\n[features]\r\nnetwork_proxy = true\r\n\r\n[agents]\r\nmax_threads = 8\r\n\r\n[profiles.work]\r\nsandbox_mode = 'workspace-write'\r\n",
+            "",
+            " \r\n\t\n",
+            "# Comments only; no final newline",
+        ] {
+            db.set_config_snippet("codex", Some(text.to_string())).unwrap();
+            assert_eq!(db.get_config_snippet("codex").unwrap().as_deref(), Some(text));
+        }
+        db.set_config_snippet("codex", None).unwrap();
+        assert_eq!(db.get_config_snippet("codex").unwrap(), None);
+    }
+
+    #[test]
+    fn codex_common_snippet_rejection_preserves_the_previous_value() {
+        let db = Database::memory().unwrap();
+        let original = "# Original text\r\napproval_policy = 'on-request'\r\n";
+        db.set_config_snippet("codex", Some(original.to_string()))
+            .unwrap();
+        for (text, key) in [
+            ("model = 'a2-secret-value'\n", "model"),
+            (
+                "disable_response_storage = true\n",
+                "disable_response_storage",
+            ),
+            (
+                "[model_providers.custom]\nbase_url = 'a2-secret-value'\n",
+                "model_providers",
+            ),
+            ("features = false\n", "features"),
+            ("agents = {}\n", "agents"),
+            (
+                "profiles.work.model_provider = 'a2-secret-value'\n",
+                "profiles.work.model_provider",
+            ),
+            ("notify = ['a2-secret-value']\n", "notify"),
+            ("approval_policy = 'a2-secret-value'\n[unfinished\n", "TOML"),
+        ] {
+            let error = db
+                .set_config_snippet("codex", Some(text.to_string()))
+                .unwrap_err();
+            let message = error.to_string();
+            assert!(message.contains(key), "{message}");
+            assert!(!message.contains("a2-secret-value"), "{message}");
+            assert_eq!(
+                db.get_config_snippet("codex").unwrap().as_deref(),
+                Some(original)
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_codex_common_snippet_does_not_create_a_setting() {
+        let db = Database::memory().unwrap();
+        assert!(db
+            .set_config_snippet("codex", Some("model = 'a2-secret-value'\n".to_string()))
+            .is_err());
+        assert_eq!(db.get_config_snippet("codex").unwrap(), None);
+    }
+
+    #[test]
+    fn legacy_codex_common_snippet_reads_preserve_raw_text() {
+        let db = Database::memory().unwrap();
+        let legacy =
+            "# Must remain available for explicit migration\r\nmodel = 'a2-secret-value'\r\n";
+        db.set_setting("common_config_codex", legacy).unwrap();
+        assert_eq!(
+            db.get_config_snippet("codex").unwrap().as_deref(),
+            Some(legacy)
+        );
+        assert!(crate::codex_key_ownership::validate_codex_common_snippet(legacy).is_err());
+        assert!(db
+            .set_config_snippet("codex", Some(legacy.to_string()))
+            .is_err());
+        assert_eq!(
+            db.get_config_snippet("codex").unwrap().as_deref(),
+            Some(legacy)
+        );
+    }
+
+    #[test]
+    fn non_codex_common_snippets_keep_existing_storage_semantics() {
+        let db = Database::memory().unwrap();
+        for app_type in ["claude", "gemini", "opencode"] {
+            let text = "{ not TOML; store this app's original text }\r\n";
+            db.set_config_snippet(app_type, Some(text.to_string()))
+                .unwrap();
+            assert_eq!(
+                db.get_config_snippet(app_type).unwrap().as_deref(),
+                Some(text)
+            );
+            db.set_config_snippet(app_type, None).unwrap();
+            assert_eq!(db.get_config_snippet(app_type).unwrap(), None);
+        }
     }
 }

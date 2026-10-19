@@ -37,6 +37,8 @@ export interface ProviderUpdateOptions {
   /** Remove the stored API key. An empty or masked key field alone means
    * "unchanged", because rows reach the renderer with secrets withheld. */
   clearApiKey?: boolean;
+  /** Codex only: stage this text before activating the line, in one transaction. */
+  commonConfigSnippet?: string;
 }
 
 export interface ClaudeDesktopStatus {
@@ -87,11 +89,13 @@ export const providersApi = {
     provider: Provider,
     appId: AppId,
     addToLive?: boolean,
+    commonConfigSnippet?: string,
   ): Promise<boolean> {
     return await invoke("add_and_activate_provider", {
       provider,
       app: appId,
       addToLive,
+      commonConfigSnippet,
     });
   },
 
@@ -120,6 +124,7 @@ export const providersApi = {
       app: appId,
       originalId,
       clearApiKey: options?.clearApiKey,
+      commonConfigSnippet: options?.commonConfigSnippet,
     });
   },
 

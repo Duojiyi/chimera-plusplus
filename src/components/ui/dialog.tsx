@@ -27,7 +27,7 @@ const DialogOverlay = React.forwardRef<
     <DialogPrimitive.Overlay
       ref={ref}
       className={cn(
-        "fixed inset-0 bg-black/50 backdrop-blur-sm data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
+        "glass-ui glass-dialog-overlay fixed inset-0 bg-black/50 backdrop-blur-sm data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
         zIndexMap[zIndex],
         className,
       )}
@@ -75,7 +75,13 @@ const DialogContent = React.forwardRef<
         <DialogOverlay zIndex={zIndex} className={overlayClassName} />
         <DialogPrimitive.Content
           ref={ref}
-          className={cn(variantClass, zIndexMap[zIndex], className)}
+          className={cn(
+            "glass-ui glass-dialog",
+            variant === "fullscreen" && "glass-dialog--fullscreen",
+            variantClass,
+            zIndexMap[zIndex],
+            className,
+          )}
           onInteractOutside={(e) => {
             // 防止点击遮罩层关闭对话框
             e.preventDefault();
@@ -96,7 +102,7 @@ const DialogHeader = ({
 }: React.HTMLAttributes<HTMLDivElement>) => (
   <div
     className={cn(
-      "flex flex-col space-y-1.5 text-center sm:text-left px-6 py-5 border-b border-border-default bg-muted/20 flex-shrink-0",
+      "glass-dialog-header flex flex-col space-y-1.5 text-center sm:text-left px-6 py-5 border-b border-border-default bg-muted/20 flex-shrink-0",
       className,
     )}
     {...props}
@@ -110,7 +116,7 @@ const DialogFooter = ({
 }: React.HTMLAttributes<HTMLDivElement>) => (
   <div
     className={cn(
-      "flex flex-col-reverse gap-2 sm:flex-row sm:justify-end sm:items-center px-6 py-5 border-t border-border-default bg-muted/20 flex-shrink-0",
+      "glass-dialog-footer flex flex-col-reverse gap-2 sm:flex-row sm:justify-end sm:items-center px-6 py-5 border-t border-border-default bg-muted/20 flex-shrink-0",
       className,
     )}
     {...props}
@@ -125,7 +131,7 @@ const DialogTitle = React.forwardRef<
   <DialogPrimitive.Title
     ref={ref}
     className={cn(
-      "text-lg font-semibold leading-tight tracking-tight",
+      "glass-dialog-title text-lg font-semibold leading-tight tracking-tight",
       className,
     )}
     {...props}
@@ -139,7 +145,10 @@ const DialogDescription = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <DialogPrimitive.Description
     ref={ref}
-    className={cn("text-sm text-muted-foreground", className)}
+    className={cn(
+      "glass-dialog-description text-sm text-muted-foreground",
+      className,
+    )}
     {...props}
   />
 ));

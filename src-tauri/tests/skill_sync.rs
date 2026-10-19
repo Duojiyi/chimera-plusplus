@@ -43,6 +43,8 @@ fn import_from_apps_respects_explicit_app_selection() {
     let imported = SkillService::import_from_apps(
         &state.db,
         vec![ImportSkillSelection {
+            source_path: None,
+            content_hash: None,
             directory: "shared-skill".to_string(),
             apps: SkillApps {
                 opencode: true,
@@ -76,6 +78,8 @@ fn import_from_apps_creates_missing_selected_projection_and_rolls_back_failed_ba
     fs::write(broken.join("SKILL.md"), "---\nname: [invalid]\n---\n").unwrap();
     let state = create_test_state().unwrap();
     let selection = |directory: &str| ImportSkillSelection {
+        source_path: None,
+        content_hash: None,
         directory: directory.to_string(),
         apps: SkillApps {
             codex: true,
@@ -119,6 +123,8 @@ fn import_from_apps_does_not_rewrite_selected_app_directory() {
     let imported = SkillService::import_from_apps(
         &state.db,
         vec![ImportSkillSelection {
+            source_path: None,
+            content_hash: None,
             directory: "codex-skill".to_string(),
             apps: SkillApps {
                 codex: true,
@@ -162,9 +168,20 @@ fn import_from_apps_rejects_stale_ssot_without_rewriting_either_source() {
     let original_live = fs::read(live.join("SKILL.md")).unwrap();
     let state = create_test_state().unwrap();
 
+    let snapshot = SkillService::scan_unmanaged_scoped(&state.db, Some(AppType::Codex))
+        .unwrap()
+        .into_iter()
+        .find(|row| row.directory == "codex-skill")
+        .expect("live Codex source");
+    assert_eq!(
+        snapshot.path,
+        live.canonicalize().unwrap().display().to_string()
+    );
     let error = SkillService::import_from_apps(
         &state.db,
         vec![ImportSkillSelection {
+            source_path: Some(snapshot.path),
+            content_hash: Some(snapshot.content_hash),
             directory: "codex-skill".to_string(),
             apps: SkillApps {
                 codex: true,
@@ -174,7 +191,10 @@ fn import_from_apps_rejects_stale_ssot_without_rewriting_either_source() {
     )
     .unwrap_err();
 
-    assert!(error.to_string().contains("多个不同物理来源"));
+    assert!(
+        error.to_string().contains("共享目录内容与所选来源不同"),
+        "{error:#}"
+    );
     assert!(state.db.get_all_installed_skills().unwrap().is_empty());
     assert_eq!(fs::read(ssot.join("SKILL.md")).unwrap(), original_ssot);
     assert_eq!(fs::read(live.join("SKILL.md")).unwrap(), original_live);
@@ -493,4 +513,122 @@ fn migration_snapshot_overrides_multi_source_directory_inference() {
         !migrated.apps.opencode,
         "migration should no longer infer OpenCode enablement from a duplicate directory alone"
     );
+}
+
+#[test]
+fn explicit_import_preserves_an_identical_existing_target_as_an_unmanaged_directory() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let home = ensure_test_home();
+    let source = home.join(".claude/skills/identical-existing");
+    let target = home.join(".codex/skills/identical-existing");
+    for path in [&source, &target] {
+        write_skill(path, "Identical existing target");
+        fs::create_dir(path.join(".config")).unwrap();
+        fs::write(path.join(".config/policy.md"), b"local hidden policy").unwrap();
+    }
+    let target_doc = fs::read(target.join("SKILL.md")).unwrap();
+    let state = create_test_state().unwrap();
+    let snapshot = SkillService::scan_unmanaged_scoped(&state.db, Some(AppType::Claude))
+        .unwrap()
+        .into_iter()
+        .find(|row| row.directory == "identical-existing")
+        .unwrap();
+    let imported = SkillService::import_from_apps(
+        &state.db,
+        vec![ImportSkillSelection {
+            directory: snapshot.directory,
+            source_path: Some(snapshot.path),
+            content_hash: Some(snapshot.content_hash),
+            apps: SkillApps::only(&AppType::Codex),
+        }],
+    )
+    .unwrap();
+    assert_eq!(imported.len(), 1);
+    assert_eq!(imported[0].apps.enabled_apps(), vec![AppType::Codex]);
+    assert!(!fs::symlink_metadata(&target)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert!(
+        !target.join(".chimera-managed-skill").exists(),
+        "import must not claim ownership of an existing directory"
+    );
+    assert_eq!(fs::read(target.join("SKILL.md")).unwrap(), target_doc);
+    assert_eq!(
+        fs::read(target.join(".config/policy.md")).unwrap(),
+        b"local hidden policy"
+    );
+    assert!(state
+        .db
+        .get_installed_skill("local:identical-existing")
+        .unwrap()
+        .is_some());
+}
+
+#[test]
+fn hidden_target_conflict_does_not_overwrite_and_rolls_back_preceding_import() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let home = ensure_test_home();
+    let first_source = home.join(".claude/skills/batch-first");
+    let conflict_source = home.join(".claude/skills/batch-conflict");
+    let existing_target = home.join(".codex/skills/batch-conflict");
+    write_skill(&first_source, "First staged skill");
+    for path in [&conflict_source, &existing_target] {
+        write_skill(path, "Same visible content");
+    }
+    fs::write(conflict_source.join(".policy"), b"incoming hidden policy").unwrap();
+    fs::write(
+        existing_target.join(".policy"),
+        b"keep existing hidden policy",
+    )
+    .unwrap();
+    assert_eq!(
+        SkillService::compute_dir_hash(&conflict_source).unwrap(),
+        SkillService::compute_dir_hash(&existing_target).unwrap()
+    );
+    let target_doc = fs::read(existing_target.join("SKILL.md")).unwrap();
+    let source_doc = fs::read(first_source.join("SKILL.md")).unwrap();
+    let state = create_test_state().unwrap();
+    let scanned = SkillService::scan_unmanaged_scoped(&state.db, Some(AppType::Claude)).unwrap();
+    let imports = ["batch-first", "batch-conflict"]
+        .into_iter()
+        .map(|directory| {
+            let row = scanned
+                .iter()
+                .find(|row| row.directory == directory)
+                .unwrap();
+            ImportSkillSelection {
+                directory: row.directory.clone(),
+                source_path: Some(row.path.clone()),
+                content_hash: Some(row.content_hash.clone()),
+                apps: SkillApps::only(&AppType::Codex),
+            }
+        })
+        .collect();
+    let error = SkillService::import_from_apps(&state.db, imports).unwrap_err();
+    assert!(
+        error.to_string().contains("内容不同，未覆盖已有文件"),
+        "{error:#}"
+    );
+    assert!(state.db.get_all_installed_skills().unwrap().is_empty());
+    let ssot = SkillService::get_ssot_dir().unwrap();
+    assert!(!ssot.join("batch-first").exists());
+    assert!(!ssot.join("batch-conflict").exists());
+    assert!(fs::symlink_metadata(home.join(".codex/skills/batch-first")).is_err());
+    assert_eq!(
+        fs::read(existing_target.join("SKILL.md")).unwrap(),
+        target_doc
+    );
+    assert_eq!(
+        fs::read(existing_target.join(".policy")).unwrap(),
+        b"keep existing hidden policy"
+    );
+    assert!(!existing_target.join(".chimera-managed-skill").exists());
+    assert_eq!(
+        fs::read(conflict_source.join(".policy")).unwrap(),
+        b"incoming hidden policy"
+    );
+    assert_eq!(fs::read(first_source.join("SKILL.md")).unwrap(), source_doc);
 }

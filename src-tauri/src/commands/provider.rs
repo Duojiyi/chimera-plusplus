@@ -97,6 +97,18 @@ pub async fn add_provider(
     #[allow(non_snake_case)] addToLive: Option<bool>,
 ) -> Result<bool, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    if matches!(app_type, AppType::Codex) {
+        return apply_codex_configuration(
+            state.inner().clone(),
+            CodexConfigurationChange::Add {
+                provider,
+                add_to_live: addToLive.unwrap_or(true),
+            },
+            None,
+            false,
+        )
+        .await;
+    }
     let mut provider = provider;
     let stored_id = provider.id.clone();
     merge_renderer_provider_write(state.inner(), &app_type, &stored_id, &mut provider, false)?;
@@ -121,8 +133,24 @@ pub async fn add_and_activate_provider(
     app: String,
     provider: Provider,
     #[allow(non_snake_case)] addToLive: Option<bool>,
+    #[allow(non_snake_case)] commonConfigSnippet: Option<String>,
 ) -> Result<bool, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    if matches!(app_type, AppType::Codex) {
+        return apply_codex_configuration(
+            state.inner().clone(),
+            CodexConfigurationChange::Add {
+                provider,
+                add_to_live: addToLive.unwrap_or(true),
+            },
+            commonConfigSnippet,
+            true,
+        )
+        .await;
+    }
+    if commonConfigSnippet.is_some() {
+        return Err("通用配置草稿只支持 Codex 保存并应用".into());
+    }
     let mut provider = provider;
     let stored_id = provider.id.clone();
     merge_renderer_provider_write(state.inner(), &app_type, &stored_id, &mut provider, false)?;
@@ -146,6 +174,19 @@ pub async fn update_provider(
     #[allow(non_snake_case)] clearApiKey: Option<bool>,
 ) -> Result<bool, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    if matches!(app_type, AppType::Codex) {
+        return apply_codex_configuration(
+            state.inner().clone(),
+            CodexConfigurationChange::Update {
+                provider,
+                original_id: originalId,
+                clear_api_key: clearApiKey.unwrap_or(false),
+            },
+            None,
+            false,
+        )
+        .await;
+    }
     let mut provider = provider;
     let stored_id = originalId.clone().unwrap_or_else(|| provider.id.clone());
     merge_renderer_provider_write(
@@ -175,8 +216,25 @@ pub async fn update_and_activate_provider(
     provider: Provider,
     #[allow(non_snake_case)] originalId: Option<String>,
     #[allow(non_snake_case)] clearApiKey: Option<bool>,
+    #[allow(non_snake_case)] commonConfigSnippet: Option<String>,
 ) -> Result<bool, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    if matches!(app_type, AppType::Codex) {
+        return apply_codex_configuration(
+            state.inner().clone(),
+            CodexConfigurationChange::Update {
+                provider,
+                original_id: originalId,
+                clear_api_key: clearApiKey.unwrap_or(false),
+            },
+            commonConfigSnippet,
+            true,
+        )
+        .await;
+    }
+    if commonConfigSnippet.is_some() {
+        return Err("通用配置草稿只支持 Codex 保存并应用".into());
+    }
     let mut provider = provider;
     let stored_id = originalId.clone().unwrap_or_else(|| provider.id.clone());
     merge_renderer_provider_write(
@@ -194,6 +252,346 @@ pub async fn update_and_activate_provider(
         true,
     )
     .await
+}
+
+/// Provider and shared text are one save/apply operation, never two IPC calls.
+enum CodexConfigurationChange {
+    Add {
+        provider: Provider,
+        add_to_live: bool,
+    },
+    Update {
+        provider: Provider,
+        original_id: Option<String>,
+        clear_api_key: bool,
+    },
+    Snippet,
+}
+
+struct CodexCommonConfigUndo {
+    providers: IndexMap<String, Provider>,
+    provider_configs: Vec<(String, String, String)>,
+    snippet: Option<String>,
+    cleared: Option<String>,
+    selection: crate::database::ProviderUpdateSelection,
+    local: Option<String>,
+}
+
+impl CodexCommonConfigUndo {
+    fn capture(state: &AppState) -> Result<Self, String> {
+        Ok(Self {
+            provider_configs: state
+                .db
+                .snapshot_provider_config_rows("codex")
+                .map_err(|e| e.to_string())?,
+            selection: state
+                .db
+                .snapshot_provider_update_selection("codex")
+                .map_err(|e| e.to_string())?,
+            local: crate::settings::get_current_provider(&AppType::Codex),
+            providers: state
+                .db
+                .get_all_providers("codex")
+                .map_err(|e| e.to_string())?,
+            snippet: state
+                .db
+                .get_setting("common_config_codex")
+                .map_err(|e| e.to_string())?,
+            cleared: state
+                .db
+                .get_setting("common_config_codex_cleared")
+                .map_err(|e| e.to_string())?,
+        })
+    }
+
+    fn restore(&self, state: &AppState) -> Vec<String> {
+        let mut errors = Vec::new();
+        // Raw restore also accepts a legacy conflict the user was correcting.
+        for (key, value) in [
+            ("common_config_codex", self.snippet.as_deref()),
+            ("common_config_codex_cleared", self.cleared.as_deref()),
+        ] {
+            let result = match value {
+                Some(value) => state.db.set_setting(key, value),
+                None => state.db.delete_setting(key),
+            };
+            if let Err(error) = result {
+                errors.push(format!("恢复通用配置失败: {error}"));
+            }
+        }
+        match state.db.get_all_providers("codex") {
+            Ok(current) => {
+                for id in current
+                    .keys()
+                    .filter(|id| !self.providers.contains_key(*id))
+                {
+                    if let Err(error) = state.db.delete_provider("codex", id) {
+                        errors.push(format!("移除未提交线路失败: {error}"));
+                    }
+                }
+            }
+            Err(error) => errors.push(error.to_string()),
+        }
+        for provider in self.providers.values() {
+            if let Err(error) = state.db.save_provider("codex", provider) {
+                errors.push(format!("恢复线路及通用配置迁移失败: {error}"));
+            }
+        }
+        // Typed ProviderMeta does not retain unknown JSON fields. Restore the
+        // exact raw configuration after recreating any deleted provider rows.
+        if let Err(error) = state
+            .db
+            .restore_provider_config_rows("codex", &self.provider_configs)
+        {
+            errors.push(format!("恢复原始线路配置失败: {error}"));
+        }
+        if let Err(error) = state
+            .db
+            .restore_provider_update_selection("codex", &self.selection)
+        {
+            errors.push(format!("恢复线路选择及备份失败: {error}"));
+        }
+        if let Err(error) =
+            crate::settings::set_current_provider(&AppType::Codex, self.local.as_deref())
+        {
+            errors.push(format!("恢复本地线路选择失败: {error}"));
+        }
+        errors
+    }
+}
+
+/// Upgrade only a missing ledger, while the old common intent is still known.
+/// The seed records matching leaves only; pre-upgrade overwritten values cannot
+/// be recovered. Its write receipt belongs to the enclosing apply operation.
+async fn seed_legacy_codex_common_projection(
+    state: &AppState,
+    undo: &CodexCommonConfigUndo,
+) -> Result<Option<crate::config::cas::AppliedChangeset>, String> {
+    use crate::codex_common_projection::{seed_legacy, BACKUP_KEY};
+    use crate::codex_key_ownership::{sanitize_codex_common_snippet, CodexCommonSnippet};
+    use crate::codex_live_write::{CodexLiveSnapshots, CodexLiveWrite, LiveFile};
+    let Some(old) = undo
+        .snippet
+        .as_deref()
+        .filter(|text| !text.trim().is_empty())
+    else {
+        return Ok(None);
+    };
+    // Invalid legacy text can be corrected without ever applying its unsafe keys.
+    let Ok(text) = sanitize_codex_common_snippet(old) else {
+        return Ok(None);
+    };
+    let current = crate::settings::get_effective_current_provider(&state.db, &AppType::Codex)
+        .map_err(|e| e.to_string())?;
+    let Some(provider) = current.as_ref().and_then(|id| undo.providers.get(id)) else {
+        return Ok(None);
+    };
+    let old = CodexCommonSnippet {
+        enabled: crate::services::provider::provider_uses_common_config(
+            &AppType::Codex,
+            provider,
+            Some(old),
+        ),
+        text,
+    };
+    if !old.enabled {
+        return Ok(None);
+    }
+    // Seed the takeover backup before touching Live, so a DB failure has no
+    // file side effects. The outer DB undo retains the original timestamp.
+    if let Some(backup) = state
+        .db
+        .get_live_backup("codex")
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        let mut config: serde_json::Value = serde_json::from_str(&backup.original_config)
+            .map_err(|_| "Codex 接管备份格式无效，未修改配置".to_string())?;
+        let object = config.as_object_mut().ok_or("Codex 接管备份必须是对象")?;
+        if !object.contains_key(BACKUP_KEY) {
+            if let Some(live) = object.get("config").and_then(|value| value.as_str()) {
+                let ledger = seed_legacy(live, &old).map_err(|e| e.to_string())?;
+                object.insert(BACKUP_KEY.into(), serde_json::Value::String(ledger));
+                state
+                    .db
+                    .save_live_backup("codex", &config.to_string())
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    let snapshots = CodexLiveSnapshots::read().map_err(|e| e.to_string())?;
+    if snapshots.common_projection.contents().is_some() {
+        return Ok(None);
+    }
+    let ledger = seed_legacy(snapshots.config_text().map_err(|e| e.to_string())?, &old)
+        .map_err(|e| e.to_string())?;
+    crate::codex_live_write::plan_with_snapshots(
+        CodexLiveWrite {
+            auth: LiveFile::Keep,
+            config: LiveFile::Keep,
+            model_catalog: LiveFile::Keep,
+            common_projection: LiveFile::Write(&ledger),
+        },
+        snapshots,
+    )
+    .and_then(|plan| plan.commit())
+    .map(Some)
+    .map_err(|e| e.to_string())
+}
+
+pub(crate) async fn set_codex_common_config_snippet_state(
+    state: AppState,
+    snippet: String,
+) -> Result<(), String> {
+    apply_codex_configuration(
+        state,
+        CodexConfigurationChange::Snippet,
+        Some(snippet),
+        false,
+    )
+    .await
+    .map(|_| ())
+}
+
+/// A renderer may have opened this provider before the fallback migration.
+/// Preserve the old opt-in and missing preferences in that in-flight edit,
+/// without leaking defaults into new lines or lines that never opted in.
+fn preserve_legacy_codex_edit_intent(
+    change: &mut CodexConfigurationChange,
+    undo: &CodexCommonConfigUndo,
+) -> Result<(), String> {
+    let CodexConfigurationChange::Update {
+        provider,
+        original_id,
+        ..
+    } = change
+    else {
+        return Ok(());
+    };
+    let Some(old) = undo.snippet.as_deref() else {
+        return Ok(());
+    };
+    let id = original_id.as_deref().unwrap_or(&provider.id);
+    let Some(previous) = undo.providers.get(id) else {
+        return Ok(());
+    };
+    let previously_enabled = crate::services::provider::provider_uses_common_config(
+        &AppType::Codex,
+        previous,
+        Some(old),
+    );
+    let enabled = provider
+        .meta
+        .get_or_insert_with(Default::default)
+        .common_config_enabled
+        .get_or_insert(previously_enabled);
+    if previously_enabled && *enabled {
+        let config = provider
+            .settings_config
+            .get("config")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let config = crate::codex_key_ownership::inherit_legacy_codex_line_preferences(config, old)
+            .map_err(|e| e.to_string())?;
+        let object = provider
+            .settings_config
+            .as_object_mut()
+            .ok_or_else(|| "Codex 线路设置必须为对象，未保存编辑".to_string())?;
+        object.insert("config".to_string(), serde_json::Value::String(config));
+    }
+    Ok(())
+}
+
+async fn apply_codex_configuration(
+    state: AppState,
+    mut change: CodexConfigurationChange,
+    snippet: Option<String>,
+    activate_when_inactive: bool,
+) -> Result<bool, String> {
+    if let Some(text) = snippet.as_deref() {
+        crate::codex_key_ownership::validate_codex_common_snippet(text)
+            .map_err(|e| e.to_string())?;
+    }
+    let _profile_guard = state.profile_apply_lock.lock().await;
+    let proxy_service = state.proxy_service.clone();
+    let _lifecycle_guard = proxy_service.lock_lifecycle().await;
+    let _switch_guard = proxy_service.lock_switch_for_app("codex").await;
+    let app_type = AppType::Codex;
+    // Secret restoration is inside the locks, so it cannot read a stale row.
+    match &mut change {
+        CodexConfigurationChange::Add { provider, .. } => {
+            let id = provider.id.clone();
+            merge_renderer_provider_write(&state, &app_type, &id, provider, false)?;
+        }
+        CodexConfigurationChange::Update {
+            provider,
+            original_id,
+            clear_api_key,
+        } => {
+            let id = original_id.clone().unwrap_or_else(|| provider.id.clone());
+            merge_renderer_provider_write(&state, &app_type, &id, provider, *clear_api_key)?;
+        }
+        CodexConfigurationChange::Snippet => {}
+    }
+    let undo = CodexCommonConfigUndo::capture(&state)?;
+    let mut seed_receipt = None;
+
+    let result = async {
+        seed_receipt = seed_legacy_codex_common_projection(&state, &undo).await?;
+        // Ordinary line edits must repair persisted pre-ownership snippets too,
+        // even when no common-config draft was submitted. A user can still
+        // explicitly replace syntactically unreadable legacy text.
+        let replacing_unparseable = snippet.is_some() && undo.snippet.as_deref().is_some_and(|old| {
+            crate::codex_key_ownership::sanitize_codex_common_snippet_with_report(old).is_err()
+        });
+        if !replacing_unparseable && state.db.migrate_legacy_codex_common_config().map_err(|e| e.to_string())? {
+            preserve_legacy_codex_edit_intent(&mut change, &undo)?;
+        }
+        if let Some(text) = snippet {
+            // A legacy snippet may contain line-owned keys. Only normalize its
+            // shareable subset; never strip route/model keys from providers.
+            if let Some(old) = undo.snippet.as_deref().filter(|text| !text.trim().is_empty()) {
+                match crate::codex_key_ownership::sanitize_codex_common_snippet(old) {
+                    Ok(old) => ProviderService::migrate_legacy_common_config_usage(&state, app_type.clone(), &old)
+                        .map_err(|e| e.to_string())?,
+                    Err(_) => log::warn!("Replacing invalid legacy Codex common text without normalizing provider rows"),
+                }
+            }
+            let cleared = text.trim().is_empty();
+            state.db.set_config_snippet("codex", (!cleared).then_some(text)).map_err(|e| e.to_string())?;
+            state.db.set_config_snippet_cleared("codex", cleared).map_err(|e| e.to_string())?;
+        }
+        match change {
+            CodexConfigurationChange::Add { provider, add_to_live } =>
+                add_provider_with_automatic_routing_locked(state.clone(), app_type.clone(), provider, add_to_live, activate_when_inactive).await,
+            CodexConfigurationChange::Update { provider, original_id, .. } =>
+                update_provider_with_automatic_routing_locked(state.clone(), app_type.clone(), original_id, provider, activate_when_inactive).await,
+            CodexConfigurationChange::Snippet => {
+                let sync_state = state.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    ProviderService::sync_current_provider_for_app_with_app_lock_held(&sync_state, AppType::Codex)
+                        .map(|_| true).map_err(|e| e.to_string())
+                }).await.map_err(|e| format!("通用配置同步任务执行失败: {e}"))?
+            }
+        }
+    }.await;
+    if let Err(error) = result {
+        let mut errors = undo.restore(&state);
+        // Only undo this layer's staging. Routing and provider layers own their
+        // compensation; replaying a snapshot here could overwrite a CAS conflict.
+        if let Some(receipt) = seed_receipt {
+            if let Err(rollback) = receipt.rollback() {
+                errors.push(format!("恢复旧版通用配置记录失败: {rollback}"));
+            }
+        }
+        return Err(if errors.is_empty() {
+            error
+        } else {
+            format!("{error}；配置事务回滚失败: {}", errors.join("；"))
+        });
+    }
+    result
 }
 
 /// Update a provider and atomically reconcile Codex-family routing when the
@@ -246,6 +644,24 @@ async fn update_provider_with_automatic_routing_mode(
     let proxy_service = state.proxy_service.clone();
     let _lifecycle_guard = proxy_service.lock_lifecycle().await;
     let _switch_guard = proxy_service.lock_switch_for_app(app_type.as_str()).await;
+    update_provider_with_automatic_routing_locked(
+        state.clone(),
+        app_type,
+        original_id,
+        provider,
+        activate_when_inactive,
+    )
+    .await
+}
+
+async fn update_provider_with_automatic_routing_locked(
+    state: AppState,
+    app_type: AppType,
+    original_id: Option<String>,
+    provider: Provider,
+    activate_when_inactive: bool,
+) -> Result<bool, String> {
+    let proxy_service = state.proxy_service.clone();
     let original_id = original_id.unwrap_or_else(|| provider.id.clone());
     let updated_id = provider.id.clone();
     let previous_provider = state
@@ -281,6 +697,10 @@ async fn update_provider_with_automatic_routing_mode(
         .and_then(|result| result);
     }
 
+    let previous_selection = matches!(app_type, AppType::Codex)
+        .then(|| state.db.snapshot_provider_update_selection("codex"))
+        .transpose()
+        .map_err(|e| format!("读取原 Codex 选择及备份失败: {e}"))?;
     let previous_local = crate::settings::get_current_provider(&app_type);
     let previous_db = state
         .db
@@ -313,13 +733,23 @@ async fn update_provider_with_automatic_routing_mode(
     let update_app_type = app_type.clone();
     let update_original_id = original_id.clone();
     let update_result = tauri::async_runtime::spawn_blocking(move || {
-        ProviderService::update_with_app_lock_held(
-            &update_state,
-            update_app_type,
-            Some(&update_original_id),
-            provider,
-        )
-        .map_err(|e| e.to_string())
+        if matches!(update_app_type, AppType::Codex) {
+            // Stage only. Activating below is the single Live commit, so a
+            // later routing failure never leaves an earlier successful write.
+            if provider.id != update_original_id {
+                return Err("Codex 线路不支持修改供应商标识".to_string());
+            }
+            ProviderService::add_inactive(&update_state, update_app_type, provider, false)
+                .map_err(|e| e.to_string())
+        } else {
+            ProviderService::update_with_app_lock_held(
+                &update_state,
+                update_app_type,
+                Some(&update_original_id),
+                provider,
+            )
+            .map_err(|e| e.to_string())
+        }
     })
     .await
     .map_err(|e| format!("供应商更新任务执行失败: {e}"))
@@ -331,6 +761,7 @@ async fn update_provider_with_automatic_routing_mode(
             &app_type,
             &updated_id,
             previous_provider.as_ref(),
+            previous_selection.as_ref(),
             previous_local.as_deref(),
             previous_db.as_deref(),
             previous_live.as_ref(),
@@ -363,6 +794,7 @@ async fn update_provider_with_automatic_routing_mode(
                 &app_type,
                 &updated_id,
                 previous_provider.as_ref(),
+                previous_selection.as_ref(),
                 previous_local.as_deref(),
                 previous_db.as_deref(),
                 previous_live.as_ref(),
@@ -388,6 +820,7 @@ async fn compensate_failed_current_provider_update(
     app_type: &AppType,
     updated_id: &str,
     previous_provider: Option<&Provider>,
+    previous_selection: Option<&crate::database::ProviderUpdateSelection>,
     previous_local: Option<&str>,
     previous_db: Option<&str>,
     previous_live: Option<&LiveSnapshot>,
@@ -412,7 +845,14 @@ async fn compensate_failed_current_provider_update(
             errors.push(format!("恢复原供应商记录失败: {error}"));
         }
     }
-    if let Some(previous_db) = previous_db {
+    if let Some(selection) = previous_selection {
+        if let Err(error) = state
+            .db
+            .restore_provider_update_selection(app_type.as_str(), selection)
+        {
+            errors.push(format!("恢复数据库选择及备份失败: {error}"));
+        }
+    } else if let Some(previous_db) = previous_db {
         if let Err(error) = state
             .db
             .set_current_provider(app_type.as_str(), previous_db)
@@ -424,34 +864,45 @@ async fn compensate_failed_current_provider_update(
         errors.push(format!("恢复本地当前供应商失败: {error}"));
     }
 
-    if let Some(error) = rollback_automatic_routing(
-        &state.proxy_service,
-        app_type,
-        previous_routing_enabled,
-        previous_proxy_running,
-        previous_global_proxy_config,
-    )
-    .await
-    {
-        errors.push(format!("恢复原路由状态失败: {error}"));
+    if !matches!(app_type, AppType::Codex) {
+        if let Some(error) = rollback_automatic_routing(
+            &state.proxy_service,
+            app_type,
+            previous_routing_enabled,
+            previous_proxy_running,
+            previous_global_proxy_config,
+        )
+        .await
+        {
+            errors.push(format!("恢复原路由状态失败: {error}"));
+        }
     }
 
-    let backup_result = match previous_backup {
-        Some(backup) => {
-            state
-                .db
-                .save_live_backup(app_type.as_str(), &backup.original_config)
-                .await
+    if previous_selection.is_none() {
+        let backup_result = match previous_backup {
+            Some(backup) => {
+                state
+                    .db
+                    .save_live_backup(app_type.as_str(), &backup.original_config)
+                    .await
+            }
+            None => state.db.delete_live_backup(app_type.as_str()).await,
+        };
+        if let Err(error) = backup_result {
+            errors.push(format!("恢复原 Live 备份失败: {error}"));
         }
-        None => state.db.delete_live_backup(app_type.as_str()).await,
-    };
-    if let Err(error) = backup_result {
-        errors.push(format!("恢复原 Live 备份失败: {error}"));
     }
     if let Some(previous_live) = previous_live {
-        if let Err(error) = previous_live.restore() {
+        if let Err(error) = previous_live.restore_after_failed_write() {
             errors.push(format!("恢复原 Live 配置失败: {error}"));
         }
+    }
+
+    if matches!(app_type, AppType::Codex) {
+        state
+            .proxy_service
+            .refresh_active_target_from_current_provider(app_type)
+            .await;
     }
 
     (!errors.is_empty()).then(|| errors.join("；"))
@@ -671,8 +1122,30 @@ async fn add_provider_with_automatic_routing_mode(
     let proxy_service = state.proxy_service.clone();
     let _lifecycle_guard = proxy_service.lock_lifecycle().await;
     let _switch_guard = proxy_service.lock_switch_for_app(app_type.as_str()).await;
+    add_provider_with_automatic_routing_locked(
+        state.clone(),
+        app_type,
+        provider,
+        add_to_live,
+        activate_when_current_exists,
+    )
+    .await
+}
+
+async fn add_provider_with_automatic_routing_locked(
+    state: AppState,
+    app_type: AppType,
+    provider: Provider,
+    add_to_live: bool,
+    activate_when_current_exists: bool,
+) -> Result<bool, String> {
+    let proxy_service = state.proxy_service.clone();
     let previous_current = crate::settings::get_effective_current_provider(&state.db, &app_type)
         .map_err(|e| format!("读取 {} 当前供应商失败: {e}", app_type.as_str()))?;
+    let previous_selection = matches!(app_type, AppType::Codex)
+        .then(|| state.db.snapshot_provider_update_selection("codex"))
+        .transpose()
+        .map_err(|e| format!("读取原 Codex 选择及备份失败: {e}"))?;
     let previous_local = crate::settings::get_current_provider(&app_type);
     let previous_db = state
         .db
@@ -703,74 +1176,80 @@ async fn add_provider_with_automatic_routing_mode(
         .map_err(|e| e.to_string())?;
     let provider_id = provider.id.clone();
 
-    ProviderService::add_inactive(&state, app_type.clone(), provider, add_to_live)
-        .map_err(|e| e.to_string())?;
-    if previous_current.is_some() && !activate_when_current_exists {
-        return Ok(true);
-    }
-
-    let target = state
-        .db
-        .get_provider_by_id(&provider_id, app_type.as_str())
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("暂存供应商 {provider_id} 后无法读取"))?;
-
-    // A fresh/unlogged-in Codex installation has no auth.json/config.toml to
-    // back up. Establish the first provider's normal direct Live projection and
-    // logical current pointer before takeover. The takeover can then preserve
-    // that direct projection as its restore baseline, so disabling routing later
-    // returns to a usable third-party configuration rather than an empty client.
-    if provider_requires_automatic_routing(&app_type, &target) {
-        let activate_state = state.clone();
-        let activate_app = app_type.clone();
-        let activate_id = provider_id.clone();
-        let activation = tauri::async_runtime::spawn_blocking(move || {
-            switch_provider_with_app_lock_held_internal(&activate_state, activate_app, &activate_id)
-                .map_err(|e| e.to_string())
-        })
-        .await
-        .map_err(|e| format!("首次供应商直连初始化任务执行失败: {e}"))
-        .and_then(|result| result.map(|_| ()));
-
-        if let Err(error) = activation {
-            let rollback = compensate_failed_provider_add(
-                &state,
-                &app_type,
-                &provider_id,
-                previous_provider.as_ref(),
-                previous_local.as_deref(),
-                previous_db.as_deref(),
-                previous_live.as_ref(),
-                previous_backup.as_ref(),
-                previous_routing_enabled,
-                previous_proxy_running,
-                &previous_global_proxy_config,
-            )
-            .await;
-            return Err(match rollback {
-                Some(rollback_error) => {
-                    format!("首次供应商直连初始化失败: {error}；回滚失败: {rollback_error}")
-                }
-                None => format!("首次供应商直连初始化失败: {error}"),
-            });
+    let mut initial_codex_receipt = None;
+    let result = async {
+        ProviderService::add_inactive(&state, app_type.clone(), provider, add_to_live)
+            .map_err(|e| e.to_string())?;
+        if previous_current.is_some() && !activate_when_current_exists {
+            return Ok(true);
         }
-    }
 
-    match switch_provider_with_automatic_routing_locked(
-        &state,
-        app_type.clone(),
-        provider_id.clone(),
-        true,
-    )
-    .await
-    {
-        Ok(_) => Ok(true),
+        let target = state
+            .db
+            .get_provider_by_id(&provider_id, app_type.as_str())
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("暂存供应商 {provider_id} 后无法读取"))?;
+
+        // Only a fresh Codex installation needs an initial direct restore baseline.
+        // Existing selections must not be activated twice. Keep the initial CAS
+        // receipt until the later route/provider transaction commits, without
+        // publishing current pointers or performing an extra MCP projection.
+        let needs_codex_baseline = matches!(app_type, AppType::Codex)
+            && previous_current.is_none()
+            && previous_backup.is_none()
+            && !previous_routing_enabled
+            && !proxy_service.detect_takeover_in_live_config_for_app(&app_type);
+        if provider_requires_automatic_routing(&app_type, &target)
+            && (!matches!(app_type, AppType::Codex) || needs_codex_baseline)
+        {
+            let activate_state = state.clone();
+            let activate_app = app_type.clone();
+            let activate_id = provider_id.clone();
+            let activation = tauri::async_runtime::spawn_blocking(move || {
+                if matches!(activate_app, AppType::Codex) {
+                    ProviderService::initialize_codex_live_for_takeover(&activate_state, &target)
+                        .map_err(|e| e.to_string())
+                } else {
+                    switch_provider_with_app_lock_held_internal(
+                        &activate_state,
+                        activate_app,
+                        &activate_id,
+                    )
+                    .map(|_| None)
+                    .map_err(|e| e.to_string())
+                }
+            })
+            .await
+            .map_err(|e| format!("首次供应商直连初始化任务执行失败: {e}"))
+            .and_then(|result| result);
+
+            initial_codex_receipt =
+                activation.map_err(|error| format!("首次供应商直连初始化失败: {error}"))?;
+        }
+
+        switch_provider_with_automatic_routing_locked(
+            &state,
+            app_type.clone(),
+            provider_id.clone(),
+            true,
+        )
+        .await
+        .map(|_| true)
+    }
+    .await;
+    match result {
+        Ok(result) => Ok(result),
         Err(error) => {
+            let initial_rollback = initial_codex_receipt
+                .take()
+                .and_then(|receipt| receipt.rollback().err())
+                .map(|e| format!("首次 Codex 配置回滚失败: {e}"));
             let rollback = compensate_failed_provider_add(
                 &state,
                 &app_type,
                 &provider_id,
                 previous_provider.as_ref(),
+                previous_selection.as_ref(),
                 previous_local.as_deref(),
                 previous_db.as_deref(),
                 previous_live.as_ref(),
@@ -780,11 +1259,11 @@ async fn add_provider_with_automatic_routing_mode(
                 &previous_global_proxy_config,
             )
             .await;
-            Err(match rollback {
-                Some(rollback_error) => {
-                    format!("{error}；添加供应商回滚失败: {rollback_error}")
-                }
-                None => error,
+            let errors: Vec<_> = [initial_rollback, rollback].into_iter().flatten().collect();
+            Err(if errors.is_empty() {
+                error
+            } else {
+                format!("{error}；添加供应商回滚失败: {}", errors.join("；"))
             })
         }
     }
@@ -823,7 +1302,7 @@ fn compensate_failed_direct_provider_add(
         errors.push(format!("恢复本地当前供应商失败: {error}"));
     }
     if let Some(previous_live) = previous_live {
-        if let Err(error) = previous_live.restore() {
+        if let Err(error) = previous_live.restore_after_failed_write() {
             errors.push(format!("恢复原 Live 配置失败: {error}"));
         }
     }
@@ -837,6 +1316,7 @@ async fn compensate_failed_provider_add(
     app_type: &AppType,
     provider_id: &str,
     previous_provider: Option<&Provider>,
+    previous_selection: Option<&crate::database::ProviderUpdateSelection>,
     previous_local: Option<&str>,
     previous_db: Option<&str>,
     previous_live: Option<&LiveSnapshot>,
@@ -857,7 +1337,14 @@ async fn compensate_failed_provider_add(
             errors.push(format!("恢复原供应商记录失败: {error}"));
         }
     }
-    if let Some(previous_db) = previous_db {
+    if let Some(selection) = previous_selection {
+        if let Err(error) = state
+            .db
+            .restore_provider_update_selection(app_type.as_str(), selection)
+        {
+            errors.push(format!("恢复数据库选择及备份失败: {error}"));
+        }
+    } else if let Some(previous_db) = previous_db {
         if let Err(error) = state
             .db
             .set_current_provider(app_type.as_str(), previous_db)
@@ -869,34 +1356,45 @@ async fn compensate_failed_provider_add(
         errors.push(format!("恢复本地当前供应商失败: {error}"));
     }
 
-    if let Some(error) = rollback_automatic_routing(
-        &state.proxy_service,
-        app_type,
-        previous_routing_enabled,
-        previous_proxy_running,
-        previous_global_proxy_config,
-    )
-    .await
-    {
-        errors.push(format!("恢复原路由状态失败: {error}"));
+    if !matches!(app_type, AppType::Codex) {
+        if let Some(error) = rollback_automatic_routing(
+            &state.proxy_service,
+            app_type,
+            previous_routing_enabled,
+            previous_proxy_running,
+            previous_global_proxy_config,
+        )
+        .await
+        {
+            errors.push(format!("恢复原路由状态失败: {error}"));
+        }
     }
 
-    let backup_result = match previous_backup {
-        Some(backup) => {
-            state
-                .db
-                .save_live_backup(app_type.as_str(), &backup.original_config)
-                .await
+    if previous_selection.is_none() {
+        let backup_result = match previous_backup {
+            Some(backup) => {
+                state
+                    .db
+                    .save_live_backup(app_type.as_str(), &backup.original_config)
+                    .await
+            }
+            None => state.db.delete_live_backup(app_type.as_str()).await,
+        };
+        if let Err(error) = backup_result {
+            errors.push(format!("恢复原 Live 备份失败: {error}"));
         }
-        None => state.db.delete_live_backup(app_type.as_str()).await,
-    };
-    if let Err(error) = backup_result {
-        errors.push(format!("恢复原 Live 备份失败: {error}"));
     }
     if let Some(previous_live) = previous_live {
-        if let Err(error) = previous_live.restore() {
+        if let Err(error) = previous_live.restore_after_failed_write() {
             errors.push(format!("恢复原 Live 配置失败: {error}"));
         }
+    }
+
+    if matches!(app_type, AppType::Codex) {
+        state
+            .proxy_service
+            .refresh_active_target_from_current_provider(app_type)
+            .await;
     }
 
     (!errors.is_empty()).then(|| errors.join("；"))
@@ -967,6 +1465,93 @@ pub(crate) async fn switch_provider_with_automatic_routing_profile_lock_held_sta
     };
 
     switch_provider_with_automatic_routing_locked(&state, app_type, id, auto_manage_routing).await
+}
+
+/// Metadata is restored directly after rolling back actual Codex writes. Never
+/// replay takeover during compensation: a failed CAS may be an external edit.
+struct CodexRoutingUndo {
+    config: crate::proxy::types::AppProxyConfig,
+    selection: crate::database::ProviderUpdateSelection,
+    local: Option<String>,
+    global_takeover: bool,
+    proxy_running: bool,
+    global_config: crate::proxy::types::GlobalProxyConfig,
+}
+
+impl CodexRoutingUndo {
+    async fn capture(
+        state: &AppState,
+        proxy_running: bool,
+        global_config: &crate::proxy::types::GlobalProxyConfig,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            config: state
+                .db
+                .get_proxy_config_for_app("codex")
+                .await
+                .map_err(|e| format!("读取原 Codex 路由配置失败: {e}"))?,
+            selection: state
+                .db
+                .snapshot_provider_update_selection("codex")
+                .map_err(|e| format!("读取原 Codex 选择和备份失败: {e}"))?,
+            local: crate::settings::get_current_provider(&AppType::Codex),
+            global_takeover: state
+                .db
+                .is_live_takeover_active()
+                .await
+                .map_err(|e| format!("读取原全局接管状态失败: {e}"))?,
+            proxy_running,
+            global_config: global_config.clone(),
+        })
+    }
+
+    async fn restore(
+        self,
+        state: &AppState,
+        receipts: Vec<crate::config::cas::AppliedChangeset>,
+    ) -> Option<String> {
+        let mut errors = Vec::new();
+        for receipt in receipts.into_iter().rev() {
+            if let Err(error) = receipt.rollback() {
+                errors.push(format!("撤销 Codex 路由写入失败: {error}"));
+                // Earlier receipts must not adopt a partially restored state.
+                break;
+            }
+        }
+        if let Err(error) = state
+            .db
+            .restore_provider_update_selection("codex", &self.selection)
+        {
+            errors.push(format!("恢复 Codex 选择和备份失败: {error}"));
+        }
+        if let Err(error) =
+            crate::settings::set_current_provider(&AppType::Codex, self.local.as_deref())
+        {
+            errors.push(format!("恢复 Codex 本地选择失败: {error}"));
+        }
+        if let Err(error) = state.db.update_proxy_config_for_app(self.config).await {
+            errors.push(format!("恢复 Codex 路由配置失败: {error}"));
+        }
+        if let Err(error) = state
+            .db
+            .set_live_takeover_active(self.global_takeover)
+            .await
+        {
+            errors.push(format!("恢复全局接管状态失败: {error}"));
+        }
+        if let Err(error) = state
+            .proxy_service
+            .restore_runtime_state_inner(self.proxy_running, &self.global_config)
+            .await
+        {
+            errors.push(format!("恢复代理运行状态失败: {error}"));
+        }
+        state
+            .proxy_service
+            .refresh_active_target_from_current_provider(&AppType::Codex)
+            .await;
+        (!errors.is_empty()).then(|| errors.join("；"))
+    }
 }
 
 /// Execute the routing/provider transaction while the caller owns the lifecycle
@@ -1070,24 +1655,61 @@ async fn switch_provider_with_automatic_routing_locked(
         false
     };
 
-    // Always reconcile Codex-family routing under the transaction lock. The
-    // inner operation is idempotent and repairs both split-brain directions:
-    // DB=false with stale Live, and DB=true with missing/stale takeover.
-    if auto_manage_routing {
-        if let Err(error) = proxy_service
-            .set_takeover_for_app_inner(&app_type, routing_required)
-            .await
-        {
-            let rollback = rollback_automatic_routing(
-                &proxy_service,
-                &app_type,
-                previous_routing_enabled,
+    let mut codex_routing_undo = if auto_manage_routing && matches!(app_type, AppType::Codex) {
+        Some(
+            CodexRoutingUndo::capture(
+                state,
                 previous_proxy_running,
                 previous_global_proxy_config
                     .as_ref()
-                    .expect("Codex-family transaction captured global proxy config"),
+                    .expect("Codex transaction captured global proxy config"),
             )
-            .await;
+            .await?,
+        )
+    } else {
+        None
+    };
+    let mut codex_routing_receipts = Vec::new();
+
+    // Keep successful route receipts until provider commit. Failed route writes
+    // compensate themselves; restoring metadata must never regenerate Live.
+    if auto_manage_routing {
+        let route_result = if matches!(app_type, AppType::Codex) {
+            proxy_service
+                .set_takeover_for_app_inner_receipted_with_codex_target(
+                    &app_type,
+                    routing_required,
+                    previous_provider_id.is_none().then_some(&target),
+                )
+                .await
+        } else {
+            proxy_service
+                .set_takeover_for_app_inner(&app_type, routing_required)
+                .await
+                .map(|_| Vec::new())
+        };
+        let error = match route_result {
+            Ok(receipts) => {
+                codex_routing_receipts = receipts;
+                None
+            }
+            Err(error) => Some(error),
+        };
+        if let Some(error) = error {
+            let rollback = if let Some(undo) = codex_routing_undo.take() {
+                undo.restore(state, Vec::new()).await
+            } else {
+                rollback_automatic_routing(
+                    &proxy_service,
+                    &app_type,
+                    previous_routing_enabled,
+                    previous_proxy_running,
+                    previous_global_proxy_config
+                        .as_ref()
+                        .expect("Codex-family transaction captured global proxy config"),
+                )
+                .await
+            };
             return Err(match rollback {
                 Some(rollback_error) => format!(
                     "自动{}本地路由失败: {error}；回滚失败: {rollback_error}",
@@ -1139,6 +1761,15 @@ async fn switch_provider_with_automatic_routing_locked(
             Ok(result)
         }
         Err(error) => {
+            if let Some(undo) = codex_routing_undo.take() {
+                let rollback = undo.restore(state, codex_routing_receipts).await;
+                return Err(match rollback {
+                    Some(rollback_error) => {
+                        format!("{error}；Codex 路由回滚失败: {rollback_error}")
+                    }
+                    None => error,
+                });
+            }
             if routing_changed {
                 let rollback = rollback_automatic_routing(
                     &proxy_service,
@@ -3698,6 +4329,135 @@ mod direct_update_tests {
             crate::settings::reload_settings().unwrap();
         }
     }
+
+    #[test]
+    #[serial]
+    fn legacy_common_inflight_updates_preserve_old_opt_in_without_affecting_adds() {
+        let _home = Home::new();
+        let state = AppState::new(Arc::new(Database::memory().unwrap()));
+        let old = "model_reasoning_effort = 'high'\ndisable_response_storage = true\n[desktop]\nkeep = true\n";
+        state.db.set_setting("common_config_codex", old).unwrap();
+        let previous = Provider::with_id(
+            "legacy".into(),
+            "Legacy".into(),
+            json!({"config": old}),
+            None,
+        );
+        state.db.save_provider("codex", &previous).unwrap();
+        let undo = super::CodexCommonConfigUndo::capture(&state).unwrap();
+        let edited = Provider::with_id(
+            "legacy".into(),
+            "Edited".into(),
+            json!({"config": "model_reasoning_effort = 'medium'\n"}),
+            None,
+        );
+        let mut change = super::CodexConfigurationChange::Update {
+            provider: edited.clone(),
+            original_id: None,
+            clear_api_key: false,
+        };
+        super::preserve_legacy_codex_edit_intent(&mut change, &undo).unwrap();
+        let super::CodexConfigurationChange::Update { provider, .. } = change else {
+            unreachable!()
+        };
+        assert_eq!(provider.meta.unwrap().common_config_enabled, Some(true));
+        let config: toml::Value = provider.settings_config["config"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(config["model_reasoning_effort"].as_str(), Some("medium"));
+        assert_eq!(config["disable_response_storage"].as_bool(), Some(true));
+        let mut disabled = edited.clone();
+        disabled
+            .meta
+            .get_or_insert_with(Default::default)
+            .common_config_enabled = Some(false);
+        let mut change = super::CodexConfigurationChange::Update {
+            provider: disabled,
+            original_id: None,
+            clear_api_key: false,
+        };
+        super::preserve_legacy_codex_edit_intent(&mut change, &undo).unwrap();
+        let super::CodexConfigurationChange::Update { provider, .. } = change else {
+            unreachable!()
+        };
+        assert!(!provider.settings_config["config"]
+            .as_str()
+            .unwrap()
+            .contains("disable_response_storage"));
+        let mut change = super::CodexConfigurationChange::Add {
+            provider: edited.clone(),
+            add_to_live: false,
+        };
+        super::preserve_legacy_codex_edit_intent(&mut change, &undo).unwrap();
+        let super::CodexConfigurationChange::Add { provider, .. } = change else {
+            unreachable!()
+        };
+        assert_eq!(provider.settings_config, edited.settings_config);
+        assert!(provider.meta.is_none());
+
+        let mut previous = previous;
+        previous
+            .meta
+            .get_or_insert_with(Default::default)
+            .common_config_enabled = Some(false);
+        state.db.save_provider("codex", &previous).unwrap();
+        let undo = super::CodexCommonConfigUndo::capture(&state).unwrap();
+        let mut change = super::CodexConfigurationChange::Update {
+            provider: edited,
+            original_id: None,
+            clear_api_key: false,
+        };
+        super::preserve_legacy_codex_edit_intent(&mut change, &undo).unwrap();
+        let super::CodexConfigurationChange::Update { provider, .. } = change else {
+            unreachable!()
+        };
+        assert_eq!(provider.meta.unwrap().common_config_enabled, Some(false));
+        assert!(!provider.settings_config["config"]
+            .as_str()
+            .unwrap()
+            .contains("disable_response_storage"));
+    }
+
+    #[test]
+    #[serial]
+    fn legacy_common_undo_restores_unknown_metadata_and_raw_json() {
+        let _home = Home::new();
+        let state = AppState::new(Arc::new(Database::memory().unwrap()));
+        let provider = Provider::with_id(
+            "legacy".into(),
+            "Legacy".into(),
+            json!({"config": ""}),
+            None,
+        );
+        state.db.save_provider("codex", &provider).unwrap();
+        let original = vec![(
+            "legacy".to_string(),
+            "{ \"config\": \"\", \"futureSettings\": 7 }".to_string(),
+            "{ \"futureMeta\": [1, 2] }".to_string(),
+        )];
+        state
+            .db
+            .restore_provider_config_rows("codex", &original)
+            .unwrap();
+        state
+            .db
+            .set_setting("common_config_codex", "disable_response_storage = true\n")
+            .unwrap();
+        let undo = super::CodexCommonConfigUndo::capture(&state).unwrap();
+        assert!(state.db.migrate_legacy_codex_common_config().unwrap());
+        assert!(undo.restore(&state).is_empty());
+        assert_eq!(
+            state.db.snapshot_provider_config_rows("codex").unwrap(),
+            original
+        );
+        assert_eq!(
+            state.db.get_config_snippet("codex").unwrap().as_deref(),
+            Some("disable_response_storage = true\n")
+        );
+    }
+
     fn input(app: &AppType, id: &str, model: &str) -> Provider {
         let config = match app {
             AppType::Claude => {

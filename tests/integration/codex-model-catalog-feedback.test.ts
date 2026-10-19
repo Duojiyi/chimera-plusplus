@@ -12,7 +12,57 @@ const FIELDS_PATH = path.resolve(
 const fieldsSource = fs.readFileSync(FIELDS_PATH, "utf8");
 
 describe("Codex model catalog feedback", () => {
-  it("validates common TOML before committing a provider and retains update identity after partial success", () => {
+  // Source-level guards only: these do not execute or type-check the Rust backend.
+  it("rejects a custom catalog before writing a managed catalog and shares the conflict diagnosis", () => {
+    const configSource = fs.readFileSync(
+      path.resolve(__dirname, "../../src-tauri/src/codex_config.rs"),
+      "utf8",
+    );
+    const runtimeSource = fs.readFileSync(
+      path.resolve(__dirname, "../../src-tauri/src/commands/codex_runtime.rs"),
+      "utf8",
+    );
+    const setter = configSource.slice(
+      configSource.indexOf("fn set_codex_model_catalog_json_field("),
+      configSource.indexOf("fn set_codex_native_web_search_field("),
+    );
+    expect(setter).toMatch(
+      /return Err\(AppError::Message\(codex_model_catalog_reference_error\(&doc\)\)\);/,
+    );
+    const prepare = configSource.slice(
+      configSource.indexOf(
+        "pub(crate) fn prepare_codex_config_text_with_model_catalog(",
+      ),
+      configSource.indexOf(
+        "/// Reverse of `prepare_codex_config_text_with_model_catalog`",
+      ),
+    );
+    const pointerCheck = prepare.indexOf(
+      "set_codex_model_catalog_json_field(config_text, Some(&catalog_path))?",
+    );
+    expect(pointerCheck).toBeGreaterThan(0);
+    expect(pointerCheck).toBeLessThan(
+      prepare.indexOf(
+        "model_catalog: Some(crate::config::json_file_text(&catalog)?)",
+      ),
+    );
+    expect(prepare).not.toMatch(
+      /(?:write_json_file|atomic_write|write_codex_live_files)\s*\(/,
+    );
+    const writerSource = fs.readFileSync(
+      path.resolve(__dirname, "../../src-tauri/src/codex_live_write.rs"),
+      "utf8",
+    );
+    expect(writerSource).toContain("pub(crate) fn plan_with_snapshots(");
+    expect(writerSource).toContain("observed_catalog");
+    expect(writerSource).toContain("observed_projection");
+    expect(runtimeSource).toContain(
+      ".ok_or_else(|| crate::codex_config::codex_model_catalog_reference_error(&config))?",
+    );
+    expect(runtimeSource).not.toContain("Codex 配置未引用 Chimera 模型目录");
+  });
+
+  it("validates the draft before one apply IPC and retains identity after post-apply verification failure", () => {
     const handler = appSource.slice(
       appSource.indexOf("  const saveProvider ="),
       appSource.indexOf(
@@ -28,11 +78,30 @@ describe("Codex model catalog feedback", () => {
     expect(save.indexOf("validateCommonConfigSnippet")).toBeLessThan(
       save.indexOf("providersApi.updateAndActivate"),
     );
-    expect(save.indexOf("original: provider")).toBeLessThan(
-      save.indexOf("setCommonConfigSnippet"),
+    expect(save).toContain("commonConfigSnippet: commonConfigDraft");
+    expect(save).toContain("commonConfigDraft !== undefined");
+    expect(save.indexOf("providerCommitted = true")).toBeLessThan(
+      save.indexOf("commonConfigBaselineRef.current = commonConfigDraft"),
     );
     expect(save).toContain("if (providerCommitted)");
     expect(save).toContain("线路已保存并应用，但后续配置未完成");
+  });
+
+  it("keeps native tool saves separate from Codex common drafts", () => {
+    const start = appSource.indexOf("  const saveProvider =");
+    const native = appSource.slice(
+      start,
+      appSource.indexOf('if (editorAppId !== "codex")', start),
+    );
+    expect(native).toContain(
+      "providersApi.addAndActivate(provider, editorAppId, false)",
+    );
+    expect(native).not.toContain("commonConfigDraft");
+    const codex = appSource.slice(
+      appSource.indexOf('if (editorAppId !== "codex")', start),
+      appSource.indexOf("  useEffect(() => {", start),
+    );
+    expect(codex).not.toContain("configApi.setCommonConfigSnippet(");
   });
 
   it("distinguishes a renderer enhancement failure from a model catalog write failure", () => {

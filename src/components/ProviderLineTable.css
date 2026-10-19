@@ -119,7 +119,8 @@
   padding: 0 4px;
 }
 .provider-table {
-  padding-top: 16px;
+  margin-top: 8px;
+  padding: 8px;
   flex: 1;
   min-width: 0;
 }
@@ -141,9 +142,14 @@
   white-space: nowrap;
 }
 .provider-table-head {
-  height: 28px;
-  color: var(--text-3);
+  height: 34px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--bg-subtle);
+  color: var(--text-2);
   font-size: 12px;
+  font-weight: 500;
 }
 .provider-table-head [role="columnheader"]:nth-last-child(-n + 2) {
   text-align: right;

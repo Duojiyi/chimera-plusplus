@@ -730,7 +730,12 @@ export function UsageView() {
         >
           <div className="usage-chart-card">
             {tableMode ? (
-              <div className="usage-summary-scroll" tabIndex={0}>
+              <div
+                className="usage-summary-scroll"
+                tabIndex={0}
+                role="region"
+                aria-label={loadedHourly ? "每小时词元表格" : "每日词元表格"}
+              >
                 <table className="usage-summary-table">
                   <caption className="sr-only">
                     {loadedHourly ? "每小时词元表格" : "每日词元表格"}
@@ -921,11 +926,23 @@ export function UsageView() {
               <h2 id="usage-daily-title">
                 {loadedHourly ? "按小时汇总" : "按日汇总"}
               </h2>
-              <span>只列出有请求的{loadedHourly ? "时段" : "日期"}</span>
+              <span>
+                最近{loadedHourly ? "时段" : "日期"}优先 · 只列出有请求的
+                {loadedHourly ? "时段" : "日期"}
+              </span>
             </div>
-            <span>共 {n(summary.totalRequests)} 次请求</span>
+            <span className="usage-summary-count">
+              共 {n(summary.totalRequests)} 次请求
+            </span>
           </header>
-          <div className="usage-summary-scroll" tabIndex={0}>
+          <div
+            className="usage-summary-scroll"
+            tabIndex={0}
+            role="region"
+            aria-label={
+              loadedHourly ? "按小时词元汇总表格" : "按日词元汇总表格"
+            }
+          >
             <table className="usage-summary-table">
               <caption className="sr-only">
                 {loadedHourly ? "按小时词元汇总" : "按日词元汇总"}

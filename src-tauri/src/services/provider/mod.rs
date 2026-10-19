@@ -35,8 +35,9 @@ pub use live::{
 pub(crate) use live::{
     build_effective_settings_with_common_config, codex_common_snippet,
     normalize_provider_common_config_for_storage, provider_exists_in_live_config,
-    strip_common_config_from_live_settings, sync_current_provider_for_app_to_live,
-    write_live_with_common_config, LiveSnapshot,
+    provider_uses_common_config, remove_common_config_from_settings,
+    settings_contain_common_config, strip_common_config_from_live_settings,
+    sync_current_provider_for_app_to_live, write_live_with_common_config, LiveSnapshot,
 };
 pub(crate) use live::{sanitize_claude_settings_for_live, write_claude_provider_settings};
 
@@ -1379,6 +1380,8 @@ mod tests {
 model = "gpt-4"
 wire_api = "chat"
 disable_response_storage = true
+model_reasoning_effort = "high"
+approval_policy = "on-request"
 experimental_bearer_token = "sk-live-secret"
 model_catalog_json = "cc-switch-model-catalog.json"
 web_search = "disabled"
@@ -1444,11 +1447,27 @@ command = "legacy-cmd"
             !extracted.contains("web_search"),
             "should strip the cc-switch web_search disabled sentinel, got: {extracted}"
         );
-        // 真正可共享的键保留
+        crate::codex_key_ownership::validate_codex_common_snippet(&extracted).unwrap();
+        // 线路参数剥离，真正可共享的键保留
         assert!(
-            extracted.contains("disable_response_storage = true"),
+            !extracted.contains("disable_response_storage")
+                && !extracted.contains("model_reasoning_effort")
+                && extracted.contains("approval_policy"),
             "shareable keys must survive extraction, got: {extracted}"
         );
+    }
+
+    #[test]
+    fn extract_codex_common_config_strips_nested_and_profile_line_keys() {
+        let input = "[features]\ngoals = true\nnetwork_proxy = true\n[agents]\ndefault_subagent_model = 'mini'\nmax_threads = 8\n[profiles.\"work.prod\"]\nmodel_reasoning_effort = 'high'\nsandbox_mode = 'workspace-write'\n";
+        let text = ProviderService::extract_codex_common_config(&json!({"config": input})).unwrap();
+        crate::codex_key_ownership::validate_codex_common_snippet(&text).unwrap();
+        assert!(!text.contains("goals"));
+        assert!(!text.contains("default_subagent_model"));
+        assert!(!text.contains("model_reasoning_effort"));
+        assert!(text.contains("network_proxy"));
+        assert!(text.contains("max_threads"));
+        assert!(text.contains("sandbox_mode"));
     }
 
     #[test]
@@ -3235,10 +3254,13 @@ impl ProviderService {
             } else {
                 None
             };
-            let restore_live = || -> Result<(), AppError> {
+            let restore_live = |receipt: &mut Option<crate::config::cas::AppliedChangeset>| -> Result<(), AppError> {
+                if let Some(receipt) = receipt.take() {
+                    return receipt.rollback().map_err(AppError::from);
+                }
                 update::verify_unreceipted_files(&unreceipted_files)?;
                 if let Some(snapshot) = live_snapshot.as_ref() {
-                    snapshot.restore()?;
+                    snapshot.restore_after_failed_write()?;
                 }
                 Ok(())
             };
@@ -3265,20 +3287,26 @@ impl ProviderService {
 
             let provider_to_write =
                 first_write::protect_first_live_write(state, &app_type, provider)?;
-            if let Err(error) =
-                write_live_with_common_config(state.db.as_ref(), &app_type, &provider_to_write)
-            {
-                let rollback = restore_live().err();
-                return match rollback {
-                    Some(rollback_error) => Err(AppError::Message(format!(
-                        "写入目标 Live 配置失败: {error}；恢复原 Live 配置失败: {rollback_error}"
-                    ))),
-                    None => Err(error),
-                };
-            }
+            let mut live_receipt = match live::write_live_with_common_config_receipted(
+                state.db.as_ref(),
+                &app_type,
+                &provider_to_write,
+            ) {
+                Ok(receipt) => receipt,
+                Err(error) => {
+                    // The failed CAS changeset already compensates its own writes.
+                    let rollback = restore_live(&mut None).err();
+                    return match rollback {
+                        Some(rollback_error) => Err(AppError::Message(format!(
+                            "写入目标 Live 配置失败: {error}；恢复原 Live 配置失败: {rollback_error}"
+                        ))),
+                        None => Err(error),
+                    };
+                }
+            };
 
             if let Err(error) = crate::settings::set_current_provider(&app_type, Some(id)) {
-                let rollback = restore_live().err();
+                let rollback = restore_live(&mut live_receipt).err();
                 return match rollback {
                     Some(rollback_error) => Err(AppError::Message(format!(
                         "更新本地当前供应商失败: {error}；恢复原 Live 配置失败: {rollback_error}"
@@ -3302,7 +3330,7 @@ impl ProviderService {
                         rollback_errors.push(format!("恢复数据库当前供应商失败: {rollback_error}"));
                     }
                 }
-                if let Err(rollback_error) = restore_live() {
+                if let Err(rollback_error) = restore_live(&mut live_receipt) {
                     rollback_errors.push(format!("恢复原 Live 配置失败: {rollback_error}"));
                 }
                 return if rollback_errors.is_empty() {
@@ -3383,6 +3411,16 @@ impl ProviderService {
         sync_current_to_live_except(state, skip)
     }
 
+    /// Establish a fresh Codex restore baseline without committing current
+    /// pointers or running a second MCP write. The caller holds the app lock
+    /// and retains the receipt until routing and provider activation succeed.
+    pub(crate) fn initialize_codex_live_for_takeover(
+        state: &AppState,
+        provider: &Provider,
+    ) -> Result<Option<crate::config::cas::AppliedChangeset>, AppError> {
+        live::write_live_with_common_config_receipted(state.db.as_ref(), &AppType::Codex, provider)
+    }
+
     pub fn sync_current_provider_for_app(
         state: &AppState,
         app_type: AppType,
@@ -3393,6 +3431,14 @@ impl ProviderService {
 
         let _switch_guard =
             futures::executor::block_on(state.proxy_service.lock_switch_for_app(app_type.as_str()));
+        Self::sync_current_provider_for_app_with_app_lock_held(state, app_type)
+    }
+
+    /// Caller owns profile -> lifecycle -> app locks. Do not reacquire the app lock.
+    pub(crate) fn sync_current_provider_for_app_with_app_lock_held(
+        state: &AppState,
+        app_type: AppType,
+    ) -> Result<(), AppError> {
         let current_id =
             match crate::settings::get_effective_current_provider(&state.db, &app_type)? {
                 Some(id) => id,
@@ -3462,7 +3508,13 @@ impl ProviderService {
             return Ok(());
         }
 
-        sync_current_provider_for_app_to_live(state, &app_type)
+        if matches!(app_type, AppType::Codex) {
+            // A common-only save must not include a second, fallible MCP write
+            // after committing the common/config/catalog CAS changeset.
+            write_live_with_common_config(state.db.as_ref(), &app_type, provider)
+        } else {
+            sync_current_provider_for_app_to_live(state, &app_type)
+        }
     }
 
     pub fn migrate_legacy_common_config_usage(
@@ -3496,20 +3548,11 @@ impl ProviderService {
                 .get_or_insert_with(Default::default)
                 .common_config_enabled = Some(true);
 
-            match live::remove_common_config_from_settings(
+            updated_provider.settings_config = live::remove_common_config_from_settings(
                 &app_type,
                 &updated_provider.settings_config,
                 legacy_snippet,
-            ) {
-                Ok(settings) => updated_provider.settings_config = settings,
-                Err(err) => {
-                    log::warn!(
-                        "Failed to normalize legacy common config for {} provider '{}': {err}",
-                        app_type.as_str(),
-                        updated_provider.id
-                    );
-                }
-            }
+            )?;
 
             state
                 .db
@@ -3525,6 +3568,10 @@ impl ProviderService {
     ) -> Result<(), AppError> {
         if app_type.is_additive_mode() {
             return Ok(());
+        }
+
+        if matches!(app_type, AppType::Codex) {
+            state.db.migrate_legacy_codex_common_config()?;
         }
 
         let Some(snippet) = state.db.get_config_snippet(app_type.as_str())? else {
@@ -3552,12 +3599,8 @@ impl ProviderService {
     /// 读到的 live 一定是"片段 + 本地改动"的超集，重提取只会丢掉用户真正删掉的键，
     /// 不会误删其它供应商共享的内容。
     ///
-    /// **作用域**：Claude + Codex。Codex 提取器（`extract_codex_common_config`）
-    /// 已剥离全部供应商专属与 cc-switch 注入内容：`model` / `model_provider` /
-    /// 顶层 `base_url` / 整张 `model_providers` 表（含端点与统一会话桶）、
-    /// `mcp_servers`（SSOT 在 DB 表）、顶层 `experimental_bearer_token`
-    /// fallback、`model_catalog_json`、`web_search = "disabled"` 哨兵——密钥与
-    /// 注入产物不会进共享片段。Gemini 暂未纳入，如需支持应单独验证后再加。
+    /// **作用域**：仅 Claude。Codex 通用配置是用户明确保存的文本，不从
+    /// 即将切出的 Live 自动回填；本地修改由所有权投影保留，避免覆盖新草稿。
     ///
     /// 仅对**显式勾选"写入通用配置"**（`meta.common_config_enabled == Some(true)`）的
     /// 供应商生效；用户**显式清空**过片段（`_cleared`）时跳过，避免把用户主动清掉的
@@ -3569,8 +3612,11 @@ impl ProviderService {
         live_config: &Value,
         result: &mut SwitchResult,
     ) {
-        // 作用域限定 Claude + Codex（见函数文档）。
-        if !matches!(app_type, AppType::Claude | AppType::Codex) {
+        // Codex common snippets are explicit user intent. Re-extracting the
+        // outgoing live file here would overwrite a newly staged draft, and
+        // turn user-local keys into managed ones. Ownership projection keeps
+        // those local edits without learning them back into the shared text.
+        if !matches!(app_type, AppType::Claude) {
             return;
         }
 
@@ -3822,48 +3868,12 @@ impl ProviderService {
             return Ok(String::new());
         }
 
-        let mut doc = config_toml
+        let (shareable, _) =
+            crate::codex_key_ownership::sanitize_codex_common_snippet_with_report(config_toml)?;
+        let mut doc = shareable
             .parse::<toml_edit::DocumentMut>()
-            .map_err(|e| AppError::Message(format!("TOML parse error: {e}")))?;
-
-        // Remove provider-specific fields.
+            .map_err(|_| AppError::Config("Codex 通用配置提取结果无效".to_string()))?;
         let root = doc.as_table_mut();
-        root.remove("model");
-        root.remove("model_provider");
-        // Legacy/alt formats might use a top-level base_url.
-        root.remove("base_url");
-        // wire_api 与 base_url 同属供应商路由语义：无 model_provider 时
-        // update_codex_toml_field / 前端 setCodexWireApi 都会把它落在顶层，
-        // 进了片段会改写其它供应商的协议选择（chat vs responses）。
-        root.remove("wire_api");
-
-        // Remove entire model_providers table (provider-specific configuration)
-        root.remove("model_providers");
-
-        // MCP 服务器归 DB mcp_servers 表所有：进了共享片段会绕过按应用的
-        // 启用状态被合并进所有勾选通用配置的供应商，且在通用配置编辑框里
-        // 显示为一份"重复"的 MCP 配置。
-        root.remove("mcp_servers");
-        // 历史错误格式 [mcp.servers] 一并剥离（与切换投影一致）：
-        // sync_all_enabled 只管理 [mcp_servers.*]，legacy 形态一旦进了
-        // 片段就会被合并进所有供应商，且没有任何同步路径能清掉这个孤儿。
-        if let Some(mcp_tbl) = root
-            .get_mut("mcp")
-            .and_then(|item| item.as_table_like_mut())
-        {
-            mcp_tbl.remove("servers");
-            if mcp_tbl.is_empty() {
-                root.remove("mcp");
-            }
-        }
-
-        // cc-switch 写 live 时注入的产物一律不进共享片段：
-        // - experimental_bearer_token 正常写在 [model_providers.<id>] 内（上面
-        //   整表已剥），但无活跃路由 / 内建保留 id / 路由表缺失三种 fallback
-        //   会落在顶层——不剥等于把 API 密钥写进共享片段。
-        root.remove("experimental_bearer_token");
-        // - model_catalog_json 指向按供应商生成的 catalog 投影文件（DB 为 SSOT）。
-        root.remove("model_catalog_json");
         // - web_search 只剥 cc-switch 注入的 "disabled" 哨兵；用户手设的其它值
         //   属于可共享偏好，保留。
         if root

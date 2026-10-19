@@ -414,6 +414,10 @@ pub struct SkillMetadata {
 pub struct ImportSkillSelection {
     pub directory: String,
     #[serde(default)]
+    pub source_path: Option<String>,
+    #[serde(default)]
+    pub content_hash: Option<String>,
+    #[serde(default)]
     pub apps: SkillApps,
 }
 
@@ -1151,11 +1155,20 @@ impl SkillService {
     /// 将 "相对路径\0内容\0" 逐文件 feed 给同一个 hasher。读取过程使用
     /// 流式缓冲和统一资源预算，避免通过超大文件或符号链接耗尽内存/绕过目录边界。
     pub fn compute_dir_hash(dir: &Path) -> Result<String> {
+        Self::hash_skill_tree(dir, false)
+    }
+
+    // Imports compare exactly what copy_dir_recursive copies, including hidden files.
+    fn compute_import_hash(dir: &Path) -> Result<String> {
+        Self::hash_skill_tree(dir, true)
+    }
+
+    fn hash_skill_tree(dir: &Path, include_hidden: bool) -> Result<String> {
         use sha2::{Digest, Sha256};
 
         let mut files: Vec<PathBuf> = Vec::new();
         let mut budget = HashBudget::default();
-        Self::collect_files_for_hash(dir, &mut files, &mut budget, 0)?;
+        Self::collect_files_for_hash(dir, &mut files, &mut budget, 0, include_hidden)?;
         files.sort();
 
         let mut hasher = Sha256::new();
@@ -1176,6 +1189,9 @@ impl SkillService {
                     "Skill 哈希源在读取时变为非普通文件: {}",
                     file_path.display()
                 ));
+            }
+            if include_hidden {
+                hasher.update(metadata.len().to_le_bytes());
             }
             let mut file = fs::File::open(file_path)
                 .with_context(|| format!("读取文件失败: {}", file_path.display()))?;
@@ -1202,6 +1218,7 @@ impl SkillService {
         files: &mut Vec<PathBuf>,
         budget: &mut HashBudget,
         depth: usize,
+        include_hidden: bool,
     ) -> Result<()> {
         let current_metadata = fs::symlink_metadata(current)
             .with_context(|| format!("读取目录失败: {}", current.display()))?;
@@ -1218,7 +1235,7 @@ impl SkillService {
         for entry in entries {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with('.') {
+            if !include_hidden && name.starts_with('.') {
                 continue;
             }
             let path = entry.path();
@@ -1231,7 +1248,7 @@ impl SkillService {
                 ));
             }
             if metadata.is_dir() {
-                Self::collect_files_for_hash(&path, files, budget, depth + 1)?;
+                Self::collect_files_for_hash(&path, files, budget, depth + 1, include_hidden)?;
             } else if metadata.is_file() {
                 budget.reserve_file(&path, metadata.len())?;
                 files.push(path);
@@ -1949,6 +1966,13 @@ impl SkillService {
     ///
     /// 扫描各应用目录，找出未被 CC Switch 管理的 Skills
     pub fn scan_unmanaged(db: &Arc<Database>) -> Result<Vec<UnmanagedSkill>> {
+        Self::scan_unmanaged_scoped(db, None)
+    }
+
+    pub fn scan_unmanaged_scoped(
+        db: &Arc<Database>,
+        current_app: Option<AppType>,
+    ) -> Result<Vec<UnmanagedSkill>> {
         let managed_skills = db.get_all_installed_skills()?;
         let managed_dirs: HashSet<String> = managed_skills
             .values()
@@ -1959,20 +1983,27 @@ impl SkillService {
         // 不能把不可读目录伪装成“没有未管理 Skill”。
         let mut scan_sources: Vec<(PathBuf, String)> = Vec::new();
         for app in AppType::all() {
+            if current_app.as_ref().is_some_and(|current| current != &app) {
+                continue;
+            }
             let dir = Self::get_app_skills_dir(&app)
                 .with_context(|| format!("解析 {:?} Skill 目录失败", app))?;
             if let Some(dir) = Self::resolve_scan_root(&dir)? {
                 scan_sources.push((dir, app.as_str().to_string()));
             }
         }
-        if let Some(agents_dir) = get_agents_skills_dir()? {
-            scan_sources.push((agents_dir, "agents".to_string()));
+        if current_app.is_none() || current_app == Some(AppType::Codex) {
+            if let Some(agents_dir) = get_agents_skills_dir()? {
+                scan_sources.push((agents_dir, "agents".to_string()));
+            }
         }
-        if let Some(dir) = Self::resolve_scan_root(&Self::ssot_path())? {
-            scan_sources.push((dir, "cc-switch".to_string()));
+        if current_app.is_none() {
+            if let Some(dir) = Self::resolve_scan_root(&Self::ssot_path())? {
+                scan_sources.push((dir, "cc-switch".to_string()));
+            }
         }
 
-        let mut unmanaged: HashMap<(String, PathBuf), UnmanagedSkill> = HashMap::new();
+        let mut unmanaged: HashMap<(String, String), UnmanagedSkill> = HashMap::new();
 
         for (scan_dir, label) in &scan_sources {
             if !Self::normal_directory_exists(scan_dir)? {
@@ -1998,23 +2029,38 @@ impl SkillService {
                 }
                 let (name, description) = Self::read_skill_name_desc(&skill_md, &dir_name);
 
-                // 同一物理目录的工具别名合并；不同物理来源保留独立行供界面阻止歧义选择。
+                // 相同目录名且完整内容一致才合并，不把副本误报成冲突。
                 let physical_path = fs::canonicalize(&path)
                     .with_context(|| format!("解析 Skill 来源失败: {}", path.display()))?;
+                let content_hash = Self::compute_import_hash(&physical_path)?;
                 unmanaged
-                    .entry((dir_name.clone(), physical_path))
-                    .and_modify(|s| s.found_in.push(label.clone()))
+                    .entry((dir_name.clone(), content_hash.clone()))
+                    .and_modify(|s| {
+                        if !s.found_in.contains(label) {
+                            s.found_in.push(label.clone());
+                        }
+                        let candidate = physical_path.display().to_string();
+                        if candidate < s.path {
+                            s.path = candidate;
+                        }
+                    })
                     .or_insert(UnmanagedSkill {
                         directory: dir_name,
                         name,
                         description,
                         found_in: vec![label.clone()],
-                        path: path.display().to_string(),
+                        path: physical_path.display().to_string(),
+                        content_hash,
                     });
             }
         }
 
-        Ok(unmanaged.into_values().collect())
+        let mut result: Vec<_> = unmanaged.into_values().collect();
+        for skill in &mut result {
+            skill.found_in.sort();
+        }
+        result.sort_by(|a, b| a.directory.cmp(&b.directory).then(a.path.cmp(&b.path)));
+        Ok(result)
     }
 
     /// 从应用目录导入 Skills
@@ -2038,26 +2084,23 @@ impl SkillService {
             let existing_ids: HashSet<String> = existing_skills.keys().cloned().collect();
             let mut staged_directories = HashSet::new();
             let mut imported = Vec::new();
+            let mut verified_paths: Vec<(PathBuf, String)> = Vec::new();
 
-            // 收集所有候选搜索目录
-            let mut search_sources: Vec<(PathBuf, String)> = Vec::new();
+            // 先保留受信根路径，在选择来源时解析，避免无关工具的损坏根目录阻断定向导入。
+            let mut search_sources = Vec::new();
             for app in AppType::all() {
-                let dir = Self::get_app_skills_dir(&app)
-                    .with_context(|| format!("解析 {:?} Skill 目录失败", app))?;
-                if let Some(dir) = Self::resolve_scan_root(&dir)? {
-                    search_sources.push((dir, app.as_str().to_string()));
-                }
+                search_sources.push(
+                    Self::get_app_skills_dir(&app)
+                        .with_context(|| format!("解析 {:?} Skill 目录失败", app))?,
+                );
             }
-            if let Some(agents_dir) = get_agents_skills_dir()? {
-                search_sources.push((agents_dir, "agents".to_string()));
-            }
-            search_sources.push((ssot_dir.clone(), "cc-switch".to_string()));
+            search_sources.push(crate::config::get_home_dir().join(".agents").join("skills"));
+            search_sources.push(ssot_dir.clone());
 
             for selection in imports {
                 let dir_name = selection.directory;
                 if Self::validate_managed_skill_directory(&dir_name).is_err() {
-                    log::warn!("跳过目录字段非法的 Skill 导入: {}", dir_name);
-                    continue;
+                    return Err(anyhow!("Skill 导入目录字段非法: {dir_name}"));
                 }
                 if !staged_directories.insert(dir_name.clone()) {
                     return Err(anyhow!("同一批次重复导入 Skill: {dir_name}"));
@@ -2066,40 +2109,68 @@ impl SkillService {
                     return Err(anyhow!("拒绝覆盖已有数据库记录的 Skill: {dir_name}"));
                 }
 
-                // 在所有候选目录中查找；路径检查失败必须终止，不能静默漏导入。
+                // Only accept a source re-discovered under a trusted root; never read an arbitrary IPC path.
                 let mut source_path: Option<PathBuf> = None;
-                for (base, label) in &search_sources {
+                let mut source_hash: Option<String> = None;
+                for raw_base in &search_sources {
+                    let base = match Self::resolve_scan_root(raw_base) {
+                        Ok(Some(base)) => base,
+                        Ok(None) => continue,
+                        // 定向导入只验证所选受信来源；若其根目录损坏，最终仍会拒绝导入。
+                        Err(_) if selection.source_path.is_some() => continue,
+                        Err(error) => return Err(error),
+                    };
                     let skill_path = base.join(&dir_name);
-                    if Self::normal_directory_exists(&skill_path)? {
-                        // 不按搜索顺序选源；根目录 symlink/junction 的别名允许指向同一物理目录。
-                        let physical_path = fs::canonicalize(&skill_path).with_context(|| {
-                            format!("解析 Skill 来源失败: {}", skill_path.display())
-                        })?;
-                        if let Some(previous) = &source_path {
-                            if previous != &physical_path {
-                                return Err(anyhow!(
-                                    "Skill '{dir_name}' 存在多个不同物理来源，请先整理同名目录后重试"
-                                ));
-                            }
-                        } else {
-                            source_path = Some(physical_path);
-                        }
-                        log::debug!("Skill '{dir_name}' found in source '{label}'");
+                    // 先匹配规范化的受信根下的直接子目录，再检查该子目录，
+                    // 不读取其他工具中同名 Skill 的链接、文件或内容。
+                    if selection
+                        .source_path
+                        .as_ref()
+                        .is_some_and(|selected| Path::new(selected) != skill_path.as_path())
+                    {
+                        continue;
                     }
+                    if !Self::normal_directory_exists(&skill_path)?
+                        || !Self::normal_file_exists(&skill_path.join("SKILL.md"))?
+                    {
+                        continue;
+                    }
+                    let physical_path = fs::canonicalize(&skill_path).with_context(|| {
+                        format!("解析 Skill 来源失败: {}", skill_path.display())
+                    })?;
+                    if selection
+                        .source_path
+                        .as_ref()
+                        .is_some_and(|selected| Path::new(selected) != physical_path.as_path())
+                    {
+                        continue;
+                    }
+                    let hash = Self::compute_import_hash(&physical_path)?;
+                    if source_hash
+                        .as_ref()
+                        .is_some_and(|previous| previous != &hash)
+                    {
+                        return Err(anyhow!(
+                            "Skill '{dir_name}' 存在不同内容的来源，请刷新列表并明确选择来源"
+                        ));
+                    }
+                    source_hash = Some(hash);
+                    source_path = Some(physical_path);
                 }
-
-                let source = match source_path {
-                    Some(p) => p,
-                    None => continue,
-                };
-                if !Self::normal_file_exists(&source.join("SKILL.md"))? {
-                    log::warn!(
-                        "Skip importing '{}' because source '{}' has no SKILL.md",
-                        dir_name,
-                        source.display()
-                    );
-                    continue;
+                let source = source_path.ok_or_else(|| {
+                    anyhow!("Skill '{dir_name}' 的所选来源已不存在或不属于受信目录，请重新扫描")
+                })?;
+                let expected_hash = source_hash.expect("a discovered source has a fingerprint");
+                if selection
+                    .content_hash
+                    .as_ref()
+                    .is_some_and(|hash| hash != &expected_hash)
+                {
+                    return Err(anyhow!(
+                        "Skill '{dir_name}' 在扫描后已变化，请重新扫描再导入"
+                    ));
                 }
+                verified_paths.push((source.clone(), expected_hash.clone()));
 
                 // 复制到 SSOT；本批次新建的目录统一由外层回滚。
                 let dest = ssot_dir.join(&dir_name);
@@ -2115,6 +2186,13 @@ impl SkillService {
                     Self::copy_dir_recursive(&source, &dest)
                         .with_context(|| format!("复制 Skill 到 SSOT 失败: {}", dest.display()))?;
                 }
+
+                if Self::compute_import_hash(&dest)? != expected_hash {
+                    return Err(anyhow!(
+                        "Skill '{dir_name}' 的共享目录内容与所选来源不同，未覆盖任何已有文件"
+                    ));
+                }
+                verified_paths.push((dest.clone(), expected_hash.clone()));
 
                 // 导入是持久化边界：损坏的 SKILL.md 元数据不能静默变成正常记录。
                 let skill_md = dest.join("SKILL.md");
@@ -2138,6 +2216,13 @@ impl SkillService {
                                 &existing.join("SKILL.md"),
                                 &dir_name,
                             )?;
+                            if Self::compute_import_hash(&existing)? != expected_hash {
+                                return Err(anyhow!(
+                                    "目标 {:?} 的 Skill '{dir_name}' 内容不同，未覆盖已有文件",
+                                    app
+                                ));
+                            }
+                            verified_paths.push((existing, expected_hash.clone()));
                             continue;
                         }
                     }
@@ -2175,6 +2260,14 @@ impl SkillService {
                 });
             }
 
+            for (path, expected) in verified_paths {
+                if Self::compute_import_hash(&path)? != expected {
+                    return Err(anyhow!(
+                        "Skill 内容在导入期间变化: {}；请重新扫描",
+                        path.display()
+                    ));
+                }
+            }
             let repos = repos_from_lock(
                 &agents_lock,
                 imported.iter().map(|skill| skill.directory.as_str()),
@@ -4940,7 +5033,7 @@ mod tests {
         .expect("write SKILL.md");
     }
 
-    fn link_skill_directory(target: &Path, link: &Path) {
+    pub(super) fn link_skill_directory(target: &Path, link: &Path) {
         fs::create_dir_all(link.parent().unwrap()).unwrap();
         #[cfg(unix)]
         std::os::unix::fs::symlink(target, link).unwrap();
@@ -4983,6 +5076,8 @@ mod tests {
         let imported = SkillService::import_from_apps(
             &database,
             vec![ImportSkillSelection {
+                source_path: None,
+                content_hash: None,
                 directory: "linked-skill".to_string(),
                 apps: SkillApps::default(),
             }],
@@ -5020,12 +5115,14 @@ mod tests {
         let error = SkillService::import_from_apps(
             &database,
             vec![ImportSkillSelection {
+                source_path: None,
+                content_hash: None,
                 directory: "same-name".to_string(),
                 apps: SkillApps::default(),
             }],
         )
         .unwrap_err();
-        assert!(error.to_string().contains("多个不同物理来源"));
+        assert!(error.to_string().contains("存在不同内容的来源"));
         assert!(database.get_all_installed_skills().unwrap().is_empty());
         assert!(!SkillService::ssot_path().join("same-name").exists());
         assert!(fs::read_to_string(other.join("SKILL.md"))
@@ -5677,5 +5774,621 @@ mod audit_b03_b04_tests {
         );
         assert!(!errors.is_empty());
         assert!(!projection.exists());
+    }
+}
+
+#[cfg(test)]
+mod scoped_import_regression_tests {
+    use super::*;
+    use crate::services::live_backup::tests::TempHome;
+    use serial_test::serial;
+
+    fn context() -> (TempHome, Arc<Database>) {
+        let home = TempHome::new();
+        crate::settings::reload_settings().unwrap();
+        crate::settings::update_settings(crate::settings::AppSettings {
+            skill_sync_method: SyncMethod::Copy,
+            ..Default::default()
+        })
+        .unwrap();
+        (home, Arc::new(Database::memory().unwrap()))
+    }
+
+    fn write_skill(path: &Path, name: &str) {
+        fs::create_dir_all(path).unwrap();
+        fs::write(
+            path.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: Regression fixture\n---\n"),
+        )
+        .unwrap();
+    }
+
+    fn app_skill(app: &AppType, directory: &str) -> PathBuf {
+        SkillService::get_app_skills_dir(app)
+            .unwrap()
+            .join(directory)
+    }
+
+    fn selection(
+        database: &Arc<Database>,
+        app: AppType,
+        directory: &str,
+        apps: SkillApps,
+    ) -> ImportSkillSelection {
+        let row = SkillService::scan_unmanaged_scoped(database, Some(app))
+            .unwrap()
+            .into_iter()
+            .find(|row| row.directory == directory)
+            .expect("scanned fixture");
+        ImportSkillSelection {
+            directory: row.directory,
+            source_path: Some(row.path),
+            content_hash: Some(row.content_hash),
+            apps,
+        }
+    }
+
+    fn installed(directory: &str) -> InstalledSkill {
+        InstalledSkill {
+            id: format!("local:{directory}"),
+            name: directory.to_string(),
+            directory: directory.to_string(),
+            description: Some("preexisting database record".to_string()),
+            repo_owner: None,
+            repo_name: None,
+            repo_branch: None,
+            readme_url: None,
+            apps: SkillApps::default(),
+            installed_at: 17,
+            content_hash: None,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn codex_scope_excludes_other_tools_and_ssot_but_includes_agents() {
+        let (home, database) = context();
+        for app in AppType::all() {
+            write_skill(
+                &app_skill(&app, &format!("{}-only", app.as_str())),
+                app.as_str(),
+            );
+        }
+        write_skill(&home.path().join(".agents/skills/agents-only"), "Agents");
+        write_skill(&SkillService::ssot_path().join("ssot-only"), "SSOT");
+
+        for app in AppType::all() {
+            let rows = SkillService::scan_unmanaged_scoped(&database, Some(app.clone())).unwrap();
+            let expected_directories = if app == AppType::Codex {
+                vec!["agents-only".to_string(), "codex-only".to_string()]
+            } else {
+                vec![format!("{}-only", app.as_str())]
+            };
+            assert_eq!(
+                rows.iter()
+                    .map(|row| row.directory.clone())
+                    .collect::<Vec<_>>(),
+                expected_directories,
+                "scope: {app:?}"
+            );
+            for row in rows {
+                let label = if row.directory == "agents-only" {
+                    "agents"
+                } else {
+                    app.as_str()
+                };
+                assert_eq!(row.found_in, vec![label.to_string()]);
+            }
+        }
+        let all = SkillService::scan_unmanaged(&database).unwrap();
+        assert_eq!(all.len(), AppType::all().count() + 2);
+        assert!(all.iter().any(|row| row.found_in == ["cc-switch"]));
+    }
+
+    #[test]
+    #[serial]
+    fn scoped_scan_still_excludes_managed_names_and_hidden_skill_directories() {
+        let (_home, database) = context();
+        for directory in ["managed", ".hidden-skill", "unmanaged"] {
+            write_skill(&app_skill(&AppType::Codex, directory), directory);
+        }
+        database.save_skill(&installed("managed")).unwrap();
+        let rows = SkillService::scan_unmanaged_scoped(&database, Some(AppType::Codex)).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].directory, "unmanaged");
+    }
+
+    #[test]
+    #[serial]
+    fn identical_physical_copies_merge_only_when_directory_names_also_match() {
+        let (home, database) = context();
+        let sources = [
+            app_skill(&AppType::Claude, "same-copy"),
+            app_skill(&AppType::Codex, "same-copy"),
+            home.path().join(".agents/skills/same-copy"),
+        ];
+        for path in &sources {
+            write_skill(path, "Identical");
+            fs::create_dir(path.join(".internal")).unwrap();
+            fs::write(path.join(".internal/policy.md"), b"same hidden policy").unwrap();
+            fs::write(path.join(".env"), b"same hidden config").unwrap();
+        }
+        let renamed = app_skill(&AppType::Gemini, "other-name");
+        SkillService::copy_dir_recursive(&sources[0], &renamed).unwrap();
+        let rows = SkillService::scan_unmanaged(&database).unwrap();
+        assert_eq!(
+            rows.len(),
+            2,
+            "different directory names are not duplicates"
+        );
+        let merged = rows
+            .iter()
+            .find(|row| row.directory == "same-copy")
+            .unwrap();
+        assert_eq!(merged.found_in, ["agents", "claude", "codex"]);
+        let canonical_paths: Vec<_> = sources
+            .iter()
+            .map(|path| path.canonicalize().unwrap().display().to_string())
+            .collect();
+        assert_eq!(&merged.path, canonical_paths.iter().min().unwrap());
+        assert_eq!(
+            merged.content_hash,
+            rows.iter()
+                .find(|row| row.directory == "other-name")
+                .unwrap()
+                .content_hash
+        );
+        assert_eq!(
+            serde_json::to_value(&rows).unwrap(),
+            serde_json::to_value(SkillService::scan_unmanaged(&database).unwrap()).unwrap()
+        );
+
+        let imported = SkillService::import_from_apps(
+            &database,
+            vec![ImportSkillSelection {
+                directory: "same-copy".to_string(),
+                source_path: None,
+                content_hash: Some(merged.content_hash.clone()),
+                apps: SkillApps::default(),
+            }],
+        )
+        .unwrap();
+        assert_eq!(imported.len(), 1);
+        assert!(
+            imported[0].apps.is_empty(),
+            "found_in is not an enablement request"
+        );
+        let ssot = SkillService::ssot_path().join("same-copy");
+        assert_eq!(
+            SkillService::compute_import_hash(&ssot).unwrap(),
+            merged.content_hash
+        );
+        assert_eq!(
+            fs::read(ssot.join(".internal/policy.md")).unwrap(),
+            b"same hidden policy"
+        );
+        for path in &sources {
+            assert_eq!(
+                SkillService::compute_import_hash(path).unwrap(),
+                merged.content_hash
+            );
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn hidden_file_and_hidden_directory_differences_remain_separate_variants() {
+        let (_home, database) = context();
+        for (directory, hidden) in [
+            ("hidden-file", ".local"),
+            ("hidden-directory", ".config/nested/policy.md"),
+        ] {
+            let left = app_skill(&AppType::Claude, directory);
+            let right = app_skill(&AppType::Codex, directory);
+            for (path, value) in [(&left, b"variant-a"), (&right, b"variant-b")] {
+                write_skill(path, "Same visible content");
+                fs::create_dir_all(path.join(hidden).parent().unwrap()).unwrap();
+                fs::write(path.join(hidden), value).unwrap();
+            }
+            assert_eq!(
+                SkillService::compute_dir_hash(&left).unwrap(),
+                SkillService::compute_dir_hash(&right).unwrap(),
+                "legacy update hash intentionally ignores hidden entries"
+            );
+            let variants: Vec<_> = SkillService::scan_unmanaged(&database)
+                .unwrap()
+                .into_iter()
+                .filter(|row| row.directory == directory)
+                .collect();
+            assert_eq!(
+                variants.len(),
+                2,
+                "{hidden} must participate in import identity"
+            );
+            assert_ne!(variants[0].content_hash, variants[1].content_hash);
+            assert!(variants.iter().any(|row| row.found_in == ["claude"]));
+            assert!(variants.iter().any(|row| row.found_in == ["codex"]));
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn explicit_source_selects_the_requested_variant_without_rewriting_other_copies() {
+        let (_home, database) = context();
+        let left = app_skill(&AppType::Claude, "choose-source");
+        let right = app_skill(&AppType::Codex, "choose-source");
+        write_skill(&left, "Claude variant");
+        write_skill(&right, "Codex variant");
+        fs::write(right.join(".selected"), b"selected hidden file").unwrap();
+        let original_left = SkillService::compute_import_hash(&left).unwrap();
+        let original_right = SkillService::compute_import_hash(&right).unwrap();
+        let request = selection(
+            &database,
+            AppType::Codex,
+            "choose-source",
+            SkillApps::only(&AppType::Gemini),
+        );
+        let imported = SkillService::import_from_apps(&database, vec![request]).unwrap();
+        assert_eq!(imported.len(), 1);
+        assert_eq!(imported[0].name, "Codex variant");
+        assert_eq!(imported[0].apps.enabled_apps(), vec![AppType::Gemini]);
+        assert_eq!(
+            SkillService::compute_import_hash(&left).unwrap(),
+            original_left
+        );
+        assert_eq!(
+            SkillService::compute_import_hash(&right).unwrap(),
+            original_right
+        );
+        let ssot = SkillService::ssot_path().join("choose-source");
+        assert_eq!(
+            SkillService::compute_import_hash(&ssot).unwrap(),
+            original_right
+        );
+        let projection = app_skill(&AppType::Gemini, "choose-source");
+        assert_eq!(
+            fs::read(projection.join(".selected")).unwrap(),
+            b"selected hidden file"
+        );
+        assert!(projection.join(SKILL_PROJECTION_MARKER).exists());
+        assert!(database
+            .get_installed_skill("local:choose-source")
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    #[serial]
+    fn codex_selected_import_ignores_other_tools_same_name_junction() {
+        let (home, database) = context();
+        let source = app_skill(&AppType::Codex, "chosen-skill");
+        let unrelated = home.path().join("unrelated-source");
+        write_skill(&source, "Selected Codex skill");
+        write_skill(&unrelated, "Unrelated skill");
+        let unrelated_hash = SkillService::compute_import_hash(&unrelated).unwrap();
+        super::tests::link_skill_directory(
+            &unrelated,
+            &app_skill(&AppType::Claude, "chosen-skill"),
+        );
+        let request = selection(
+            &database,
+            AppType::Codex,
+            "chosen-skill",
+            SkillApps::only(&AppType::Codex),
+        );
+        let imported = SkillService::import_from_apps(&database, vec![request]).unwrap();
+        assert_eq!(imported.len(), 1);
+        assert_eq!(imported[0].name, "Selected Codex skill");
+        assert_eq!(imported[0].apps.enabled_apps(), vec![AppType::Codex]);
+        assert_eq!(
+            SkillService::compute_import_hash(&unrelated).unwrap(),
+            unrelated_hash
+        );
+        assert_eq!(
+            SkillService::compute_import_hash(&SkillService::ssot_path().join("chosen-skill"))
+                .unwrap(),
+            SkillService::compute_import_hash(&source).unwrap()
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn codex_selected_import_ignores_unrelated_invalid_roots() {
+        let (home, database) = context();
+        let source = app_skill(&AppType::Codex, "valid-codex");
+        write_skill(&source, "Valid Codex skill");
+        let claude_root = SkillService::get_app_skills_dir(&AppType::Claude).unwrap();
+        fs::create_dir_all(claude_root.parent().unwrap()).unwrap();
+        fs::write(&claude_root, b"not a directory").unwrap();
+        let agents_root = home.path().join(".agents/skills");
+        fs::create_dir_all(agents_root.parent().unwrap()).unwrap();
+        fs::write(&agents_root, b"also not a directory").unwrap();
+        let request = ImportSkillSelection {
+            directory: "valid-codex".to_string(),
+            source_path: Some(source.canonicalize().unwrap().display().to_string()),
+            content_hash: Some(SkillService::compute_import_hash(&source).unwrap()),
+            apps: SkillApps::only(&AppType::Codex),
+        };
+        assert!(
+            SkillService::import_from_apps(
+                &database,
+                vec![ImportSkillSelection {
+                    source_path: None,
+                    ..request.clone()
+                }],
+            )
+            .is_err(),
+            "unscoped legacy discovery must still report invalid roots"
+        );
+        let imported = SkillService::import_from_apps(&database, vec![request]).unwrap();
+        assert_eq!(imported.len(), 1);
+        assert_eq!(imported[0].name, "Valid Codex skill");
+        assert_eq!(fs::read(claude_root).unwrap(), b"not a directory");
+        assert_eq!(fs::read(agents_root).unwrap(), b"also not a directory");
+    }
+
+    #[test]
+    #[serial]
+    fn selected_source_replaced_with_link_after_scan_is_rejected() {
+        let (home, database) = context();
+        let source = app_skill(&AppType::Codex, "replaced-source");
+        write_skill(&source, "Original");
+        let request = selection(
+            &database,
+            AppType::Codex,
+            "replaced-source",
+            SkillApps::default(),
+        );
+        let moved = home.path().join("moved-source");
+        fs::rename(&source, &moved).unwrap();
+        super::tests::link_skill_directory(&moved, &source);
+        assert!(SkillService::import_from_apps(&database, vec![request]).is_err());
+        assert!(database.get_all_installed_skills().unwrap().is_empty());
+        assert!(!SkillService::ssot_path().join("replaced-source").exists());
+        assert!(moved.join("SKILL.md").is_file());
+    }
+
+    #[test]
+    #[serial]
+    fn explicit_source_rejects_arbitrary_paths_and_other_trusted_skill_names() {
+        let (home, database) = context();
+        let source = app_skill(&AppType::Codex, "trusted-skill");
+        let other_trusted = app_skill(&AppType::Claude, "different-name");
+        let outside = home.path().join("not-a-tool/skills/trusted-skill");
+        for path in [&source, &other_trusted, &outside] {
+            write_skill(path, "Identical bytes are not authorization");
+        }
+        let snapshot = selection(
+            &database,
+            AppType::Codex,
+            "trusted-skill",
+            SkillApps::only(&AppType::Gemini),
+        );
+        for rejected in [&outside, &other_trusted, &source.join("SKILL.md")] {
+            let request = ImportSkillSelection {
+                source_path: Some(rejected.canonicalize().unwrap().display().to_string()),
+                ..snapshot.clone()
+            };
+            let error = SkillService::import_from_apps(&database, vec![request]).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("所选来源已不存在或不属于受信目录"),
+                "{error:#}"
+            );
+            assert!(database.get_all_installed_skills().unwrap().is_empty());
+            assert!(!SkillService::ssot_path().join("trusted-skill").exists());
+            assert!(!app_skill(&AppType::Gemini, "trusted-skill").exists());
+            assert_eq!(
+                SkillService::compute_import_hash(&outside).unwrap(),
+                snapshot.content_hash.clone().unwrap()
+            );
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn explicit_source_disappearing_after_scan_does_not_fall_back_to_a_copy() {
+        let (home, database) = context();
+        let source = app_skill(&AppType::Codex, "disappeared");
+        let fallback = app_skill(&AppType::Claude, "disappeared");
+        write_skill(&source, "Same content");
+        write_skill(&fallback, "Same content");
+        let request = selection(
+            &database,
+            AppType::Codex,
+            "disappeared",
+            SkillApps::default(),
+        );
+        let moved = home.path().join("removed-source");
+        fs::rename(&source, &moved).unwrap();
+        let error = SkillService::import_from_apps(&database, vec![request]).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("所选来源已不存在或不属于受信目录"),
+            "{error:#}"
+        );
+        assert!(database.get_all_installed_skills().unwrap().is_empty());
+        assert!(!SkillService::ssot_path().join("disappeared").exists());
+        assert_eq!(
+            SkillService::compute_import_hash(&fallback).unwrap(),
+            SkillService::compute_import_hash(&moved).unwrap()
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn scanned_fingerprint_rejects_visible_and_hidden_only_content_changes() {
+        let (_home, database) = context();
+        for (directory, file) in [
+            ("changed-visible", "prompt.md"),
+            ("changed-hidden", ".local"),
+        ] {
+            let source = app_skill(&AppType::Claude, directory);
+            write_skill(&source, "Mutable source");
+            fs::write(source.join(file), b"before").unwrap();
+            let legacy_before = SkillService::compute_dir_hash(&source).unwrap();
+            let request = selection(
+                &database,
+                AppType::Claude,
+                directory,
+                SkillApps::only(&AppType::Codex),
+            );
+            // Same-length changes must be rejected, even when the update hash is unchanged.
+            fs::write(source.join(file), b"after!").unwrap();
+            if file.starts_with('.') {
+                assert_eq!(
+                    SkillService::compute_dir_hash(&source).unwrap(),
+                    legacy_before
+                );
+            }
+            let error = SkillService::import_from_apps(&database, vec![request]).unwrap_err();
+            assert!(error.to_string().contains("在扫描后已变化"), "{error:#}");
+            assert!(database.get_all_installed_skills().unwrap().is_empty());
+            assert!(!SkillService::ssot_path().join(directory).exists());
+            assert!(!app_skill(&AppType::Codex, directory).exists());
+            assert_eq!(fs::read(source.join(file)).unwrap(), b"after!");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn import_rejects_directory_traversal_and_absolute_directory_fields() {
+        let (home, database) = context();
+        let outside = home.path().join("outside");
+        write_skill(&outside, "Outside");
+        for directory in [
+            "../outside".to_string(),
+            ".".to_string(),
+            outside.display().to_string(),
+        ] {
+            let error = SkillService::import_from_apps(
+                &database,
+                vec![ImportSkillSelection {
+                    directory,
+                    source_path: Some(outside.canonicalize().unwrap().display().to_string()),
+                    content_hash: Some(SkillService::compute_import_hash(&outside).unwrap()),
+                    apps: SkillApps::default(),
+                }],
+            )
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("Skill 导入目录字段非法"),
+                "{error:#}"
+            );
+            assert!(database.get_all_installed_skills().unwrap().is_empty());
+            assert_eq!(fs::read_dir(SkillService::ssot_path()).unwrap().count(), 0);
+        }
+        assert!(outside.join("SKILL.md").is_file());
+    }
+
+    #[test]
+    #[serial]
+    fn duplicate_batch_selection_rolls_back_new_ssot_and_app_projection() {
+        let (_home, database) = context();
+        let source = app_skill(&AppType::Claude, "duplicate-batch");
+        write_skill(&source, "Duplicate");
+        let request = selection(
+            &database,
+            AppType::Claude,
+            "duplicate-batch",
+            SkillApps::only(&AppType::Codex),
+        );
+        let before = SkillService::compute_import_hash(&source).unwrap();
+        let error =
+            SkillService::import_from_apps(&database, vec![request.clone(), request]).unwrap_err();
+        assert!(
+            error.to_string().contains("同一批次重复导入 Skill"),
+            "{error:#}"
+        );
+        assert!(database.get_all_installed_skills().unwrap().is_empty());
+        assert!(!SkillService::ssot_path().join("duplicate-batch").exists());
+        assert!(fs::symlink_metadata(app_skill(&AppType::Codex, "duplicate-batch")).is_err());
+        assert_eq!(SkillService::compute_import_hash(&source).unwrap(), before);
+    }
+
+    #[test]
+    #[serial]
+    fn existing_database_directory_is_preserved_even_under_a_different_id() {
+        let (_home, database) = context();
+        let source = app_skill(&AppType::Claude, "reserved");
+        write_skill(&source, "Candidate");
+        let request = selection(
+            &database,
+            AppType::Claude,
+            "reserved",
+            SkillApps::only(&AppType::Codex),
+        );
+        let mut existing = installed("reserved");
+        existing.id = "owner/repo:reserved".to_string();
+        database.save_skill(&existing).unwrap();
+        let error = SkillService::import_from_apps(&database, vec![request]).unwrap_err();
+        assert!(
+            error.to_string().contains("拒绝覆盖已有数据库记录的 Skill"),
+            "{error:#}"
+        );
+        let rows = database.get_all_installed_skills().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            serde_json::to_value(rows.get(&existing.id).unwrap()).unwrap(),
+            serde_json::to_value(&existing).unwrap()
+        );
+        assert!(!SkillService::ssot_path().join("reserved").exists());
+        assert!(!app_skill(&AppType::Codex, "reserved").exists());
+        assert!(source.join("SKILL.md").is_file());
+    }
+
+    #[test]
+    #[serial]
+    fn database_insert_failure_rolls_back_the_whole_batch_and_preserves_preexisting_data() {
+        let (_home, database) = context();
+        let mut requests = Vec::new();
+        for directory in ["staged-first", "reject-second"] {
+            let source = app_skill(&AppType::Claude, directory);
+            write_skill(&source, directory);
+            fs::write(source.join(".local"), directory).unwrap();
+            requests.push(selection(
+                &database,
+                AppType::Claude,
+                directory,
+                SkillApps::only(&AppType::Codex),
+            ));
+        }
+        database.save_skill(&installed("preexisting")).unwrap();
+        database.conn.lock().unwrap().execute_batch(
+            "INSERT INTO skill_repos (owner, name, branch, enabled) VALUES ('existing', 'repo', 'custom', 0);
+             CREATE TRIGGER reject_second_import BEFORE INSERT ON skills
+             WHEN NEW.directory = 'reject-second'
+             BEGIN SELECT RAISE(ABORT, 'injected second import failure'); END;"
+        ).unwrap();
+        let before_skills =
+            serde_json::to_value(database.get_all_installed_skills().unwrap()).unwrap();
+        let before_repos = serde_json::to_value(database.get_skill_repos().unwrap()).unwrap();
+        let error = SkillService::import_from_apps(&database, requests).unwrap_err();
+        assert!(
+            error.to_string().contains("批量导入 Skills 写入数据库失败"),
+            "{error:#}"
+        );
+        assert!(format!("{error:#}").contains("injected second import failure"));
+        assert_eq!(
+            serde_json::to_value(database.get_all_installed_skills().unwrap()).unwrap(),
+            before_skills
+        );
+        assert_eq!(
+            serde_json::to_value(database.get_skill_repos().unwrap()).unwrap(),
+            before_repos
+        );
+        for directory in ["staged-first", "reject-second"] {
+            assert!(!SkillService::ssot_path().join(directory).exists());
+            assert!(fs::symlink_metadata(app_skill(&AppType::Codex, directory)).is_err());
+            let source = app_skill(&AppType::Claude, directory);
+            assert_eq!(
+                fs::read(source.join(".local")).unwrap(),
+                directory.as_bytes()
+            );
+            assert!(source.join("SKILL.md").is_file());
+        }
     }
 }

@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.8.7] - 2026-10-20
+
+### Fixed
+
+- Hardened Skills/MCP switch interactions with stable accessibility state, disabled-state handling, and clearer focus feedback.
+- Refined the usage chart layout, spacing, contrast, current-day emphasis, and narrow-window behavior.
+
+### Improved
+
+- Consolidated the liquid-glass UI styling and related session/configuration coverage.
+
 All notable changes to Chimera++ will be documented in this file.
 
 Entries numbered `2.x` are Chimera++ releases. The `3.x` entries below them are

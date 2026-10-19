@@ -99,9 +99,14 @@ pub fn toggle_skill_app(
 /// 扫描未管理的 Skills
 #[tauri::command]
 pub fn scan_unmanaged_skills(
+    current_app: Option<String>,
     app_state: State<'_, AppState>,
 ) -> Result<Vec<UnmanagedSkill>, String> {
-    SkillService::scan_unmanaged(&app_state.db).map_err(|e| e.to_string())
+    let scope = current_app
+        .map(|app| app.parse::<AppType>())
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    SkillService::scan_unmanaged_scoped(&app_state.db, scope).map_err(|e| e.to_string())
 }
 
 /// 从应用目录导入 Skills

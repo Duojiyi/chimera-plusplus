@@ -2,6 +2,70 @@
 
 use crate::session_manager;
 
+/// Save only to a path chosen in the native dialog. No arbitrary-path write IPC or fs permission.
+#[tauri::command]
+pub async fn export_session_file<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    fileName: String,
+    format: String,
+    content: String,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let extension = validate_session_export(&fileName, &format, content.len())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let label = if extension == "md" {
+            "Markdown"
+        } else {
+            "JSON"
+        };
+        let selected = app
+            .dialog()
+            .file()
+            .set_title("导出会话：选择保存位置")
+            .add_filter(label, &[extension])
+            .set_file_name(&fileName)
+            .blocking_save_file();
+        let Some(selected) = selected else {
+            return Ok(None);
+        };
+        let path = selected
+            .into_path()
+            .map_err(|e| format!("无效的保存位置: {e}"))?;
+        // Keep the filename from the dialog unchanged so its overwrite confirmation remains valid.
+        crate::config::atomic_write(&path, content.as_bytes())
+            .map_err(|e| format!("保存会话失败（{}）: {e}", path.display()))?;
+        Ok(Some(path.display().to_string()))
+    })
+    .await
+    .map_err(|e| format!("会话导出失败: {e}"))?
+}
+
+/// Validate IPC payload before opening a native save dialog.
+fn validate_session_export(
+    file_name: &str,
+    format: &str,
+    content_len: usize,
+) -> Result<&'static str, String> {
+    let extension = match format {
+        "markdown" => "md",
+        "json" => "json",
+        _ => return Err("不支持的会话导出格式".to_string()),
+    };
+    if content_len > 32 * 1024 * 1024 {
+        return Err("导出内容超过 32 MiB，请减少已读取的消息或关闭工具输出".to_string());
+    }
+    if file_name.len() > 140
+        || !file_name.starts_with("session-")
+        || !file_name.ends_with(&format!(".{extension}"))
+        || !file_name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+    {
+        return Err("无效的导出文件名".to_string());
+    }
+    Ok(extension)
+}
+
 #[tauri::command]
 pub async fn list_sessions() -> Result<Vec<session_manager::SessionMeta>, String> {
     let sessions = tauri::async_runtime::spawn_blocking(|| {
@@ -161,6 +225,54 @@ pub async fn reclaim_codex_history_sessions() -> Result<CodexHistoryReclaimResul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_export_validates_supported_formats() {
+        assert_eq!(
+            validate_session_export("session-example.md", "markdown", 0).unwrap(),
+            "md"
+        );
+        assert_eq!(
+            validate_session_export("session-example.json", "json", 10).unwrap(),
+            "json"
+        );
+        assert!(validate_session_export("session-example.txt", "text", 0)
+            .unwrap_err()
+            .contains("不支持"));
+    }
+
+    #[test]
+    fn session_export_rejects_unsafe_or_mismatched_suggested_names() {
+        for name in [
+            "../session-example.md",
+            "session-../example.md",
+            "session-..\\example.md",
+            "C:\\session-example.md",
+            "session-<example>.md",
+            "session-example.json",
+            "example.md",
+        ] {
+            assert!(
+                validate_session_export(name, "markdown", 0)
+                    .unwrap_err()
+                    .contains("文件名"),
+                "{name}"
+            );
+        }
+        let long_name = format!("session-{}.md", "a".repeat(140));
+        assert!(validate_session_export(&long_name, "markdown", 0).is_err());
+    }
+
+    #[test]
+    fn session_export_enforces_content_size_before_dialog() {
+        let limit = 32 * 1024 * 1024;
+        assert!(validate_session_export("session-example.md", "markdown", limit).is_ok());
+        assert!(
+            validate_session_export("session-example.md", "markdown", limit + 1)
+                .unwrap_err()
+                .contains("32 MiB")
+        );
+    }
 
     #[test]
     fn codex_session_delete_is_refused_while_codex_runs() {

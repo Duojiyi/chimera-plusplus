@@ -524,7 +524,11 @@ pub fn update_toml_common_config_snippet(
     Ok(target_doc.to_string())
 }
 
-fn settings_contain_common_config(app_type: &AppType, settings: &Value, snippet: &str) -> bool {
+pub(crate) fn settings_contain_common_config(
+    app_type: &AppType,
+    settings: &Value,
+    snippet: &str,
+) -> bool {
     let trimmed = snippet.trim();
     if trimmed.is_empty() {
         return false;
@@ -660,6 +664,7 @@ fn apply_common_config_to_settings(
             Ok(result)
         }
         AppType::Codex => {
+            crate::codex_key_ownership::validate_codex_common_snippet(trimmed)?;
             let mut result = settings.clone();
             let config_toml = settings.get("config").and_then(Value::as_str).unwrap_or("");
             let mut target_doc = if config_toml.trim().is_empty() {
@@ -708,15 +713,14 @@ pub(crate) fn build_effective_settings_with_common_config(
 
     if provider_uses_common_config(app_type, provider, snippet.as_deref()) {
         if let Some(snippet_text) = snippet.as_deref() {
-            match apply_common_config_to_settings(app_type, &effective_settings, snippet_text) {
-                Ok(settings) => effective_settings = settings,
-                Err(err) => {
-                    log::warn!(
-                        "Failed to apply common config for {} provider '{}': {err}",
-                        app_type.as_str(),
-                        provider.id
-                    );
-                }
+            if matches!(app_type, AppType::Codex) {
+                // Codex common leaves are applied exactly once by the tracked
+                // live projection, after line-owned keys. Merging them into the
+                // line here would misidentify newly applied values as originals.
+                crate::codex_key_ownership::validate_codex_common_snippet(snippet_text)?;
+            } else {
+                effective_settings =
+                    apply_common_config_to_settings(app_type, &effective_settings, snippet_text)?;
             }
         }
     }
@@ -734,6 +738,15 @@ pub(crate) fn write_live_with_common_config(
     app_type: &AppType,
     provider: &Provider,
 ) -> Result<(), AppError> {
+    write_live_with_common_config_receipted(db, app_type, provider).map(|_| ())
+}
+
+/// Codex retains the successful CAS receipt through all later commit steps.
+pub(crate) fn write_live_with_common_config_receipted(
+    db: &Database,
+    app_type: &AppType,
+    provider: &Provider,
+) -> Result<Option<crate::config::cas::AppliedChangeset>, AppError> {
     let mut effective_provider = provider.clone();
     effective_provider.settings_config =
         build_effective_settings_with_common_config(db, app_type, provider)?;
@@ -745,7 +758,7 @@ pub(crate) fn write_live_with_common_config(
             crate::claude_desktop_config::PROFILE_ID,
             effective_provider.id
         );
-        return Ok(());
+        return Ok(None);
     }
 
     let codex_snippet = if matches!(app_type, AppType::Codex) {
@@ -753,7 +766,7 @@ pub(crate) fn write_live_with_common_config(
     } else {
         None
     };
-    write_live_snapshot(app_type, &effective_provider, codex_snippet.as_ref())
+    write_live_snapshot_receipted(app_type, &effective_provider, codex_snippet.as_ref())
 }
 
 /// ⑤ The stored Codex common config and whether `provider` uses it, for the
@@ -1051,6 +1064,7 @@ pub(crate) enum LiveSnapshot {
         auth: Option<Value>,
         config: Option<String>,
         model_catalog: Option<String>,
+        common_projection: Option<String>,
     },
     Gemini {
         env: Option<HashMap<String, String>>,
@@ -1074,7 +1088,13 @@ impl LiveSnapshot {
                 auth,
                 config,
                 model_catalog,
-            } => auth.is_some() || config.is_some() || model_catalog.is_some(),
+                common_projection,
+            } => {
+                auth.is_some()
+                    || config.is_some()
+                    || model_catalog.is_some()
+                    || common_projection.is_some()
+            }
             Self::Gemini { env, config } => env.is_some() || config.is_some(),
             Self::GrokBuild { config } => config.is_some(),
         }
@@ -1111,10 +1131,17 @@ impl LiveSnapshot {
                             .map_err(|e| AppError::io(&model_catalog_path, e))
                     })
                     .transpose()?;
+                let ledger_path = crate::codex_common_projection::ledger_path();
+                let common_projection = match std::fs::read_to_string(&ledger_path) {
+                    Ok(text) => Some(text),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(error) => return Err(AppError::io(&ledger_path, error)),
+                };
                 Ok(Some(Self::Codex {
                     auth,
                     config,
                     model_catalog,
+                    common_projection,
                 }))
             }
             AppType::Gemini => {
@@ -1151,6 +1178,7 @@ impl LiveSnapshot {
             auth,
             config,
             model_catalog,
+            common_projection,
         } = self
         else {
             return None;
@@ -1159,7 +1187,42 @@ impl LiveSnapshot {
             auth: LiveFile::restore(auth.as_ref()),
             config: LiveFile::restore(config.as_deref()),
             model_catalog: LiveFile::restore(model_catalog.as_deref()),
+            common_projection: LiveFile::restore(common_projection.as_deref()),
         })
+    }
+
+    /// No write receipt means a changed Codex file cannot be claimed as ours.
+    /// This check is read-only; an external edit must never authorize restore.
+    pub(crate) fn restore_after_failed_write(&self) -> Result<(), AppError> {
+        if let Self::Codex {
+            auth,
+            config,
+            model_catalog,
+            common_projection,
+        } = self
+        {
+            let Some(Self::Codex {
+                auth: now_auth,
+                config: now_config,
+                model_catalog: now_catalog,
+                common_projection: now_projection,
+            }) = Self::capture(&AppType::Codex)?
+            else {
+                return Err(AppError::Config("无法检查 Codex Live 回滚状态".into()));
+            };
+            return if *auth == now_auth
+                && *config == now_config
+                && *model_catalog == now_catalog
+                && *common_projection == now_projection
+            {
+                Ok(())
+            } else {
+                Err(AppError::Config(
+                    "Codex Live 回滚冲突：缺少本次写入凭据，已保留当前文件，请检查配置".into(),
+                ))
+            };
+        }
+        self.restore()
     }
 
     #[allow(dead_code)]
@@ -1229,6 +1292,14 @@ pub(crate) fn write_live_snapshot(
     provider: &Provider,
     codex_snippet: Option<&crate::codex_key_ownership::CodexCommonSnippet>,
 ) -> Result<(), AppError> {
+    write_live_snapshot_receipted(app_type, provider, codex_snippet).map(|_| ())
+}
+
+fn write_live_snapshot_receipted(
+    app_type: &AppType,
+    provider: &Provider,
+    codex_snippet: Option<&crate::codex_key_ownership::CodexCommonSnippet>,
+) -> Result<Option<crate::config::cas::AppliedChangeset>, AppError> {
     match app_type {
         AppType::Claude => {
             write_claude_provider_settings(&provider.settings_config)?;
@@ -1271,14 +1342,15 @@ pub(crate) fn write_live_snapshot(
             // the proxy router (apiFormat meta/settings + TOML wire_api).
             let profile = crate::proxy::providers::resolve_codex_catalog_tool_profile(provider);
 
-            crate::codex_config::write_codex_provider_live_with_catalog(
+            return crate::codex_config::write_codex_provider_live_with_catalog(
                 &provider.settings_config,
                 provider.category.as_deref(),
                 &auth,
                 config_str,
                 codex_snippet,
                 profile,
-            )?;
+            )
+            .map(Some);
         }
         AppType::Gemini => {
             // Delegate to write_gemini_live which handles env file writing correctly
@@ -1352,7 +1424,7 @@ pub(crate) fn write_live_snapshot(
             ));
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 /// Sync all providers to live configuration (for additive mode apps)

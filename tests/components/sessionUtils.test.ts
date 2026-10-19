@@ -278,7 +278,7 @@ describe("session utils", () => {
     });
     expect(plain.version).toBe(1);
     expect(plain.session).not.toHaveProperty("sourcePath");
-    expect(plain.session.projectDir).toBe("C:\\work\\app");
+    expect(plain.session).not.toHaveProperty("projectDir");
     expect(plain.messages.map((message) => message.content)).toEqual([
       "run it",
       "[Tool: shell]",

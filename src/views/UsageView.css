@@ -8,11 +8,11 @@
 }
 
 .usage-design-view {
-  /* Token categories stay monochrome: colour on this page belongs to the
-     model identity dots, so a bar segment is never read as a model. */
-  --usage-seg-input: var(--text-2);
-  --usage-seg-output: var(--text-1);
-  --usage-seg-cache: var(--border-control);
+  /* Category colours match the legend in both themes; model identity stays
+     in the separately labelled ranking card. */
+  --usage-seg-input: var(--id-cobalt);
+  --usage-seg-output: var(--id-violet);
+  --usage-seg-cache: var(--id-teal);
   min-height: 100%;
   color: var(--text-1);
   font-size: 13px;
@@ -373,8 +373,11 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px 16px;
-  min-height: 32px;
-  margin-bottom: 10px;
+  min-height: 44px;
+  margin-bottom: 14px;
+  padding: 6px 10px 6px 16px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel);
 }
 
 .usage-toolbar-title {
@@ -525,8 +528,8 @@
 
 .usage-analysis-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(260px, 0.5fr);
-  gap: 24px;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 0.48fr);
+  gap: 16px;
   min-width: 0;
   transition: opacity var(--dur-base) var(--ease-out);
 }
@@ -543,7 +546,9 @@
 .usage-chart-card,
 .usage-model-card {
   min-width: 0;
-  border-top: 1px solid var(--border-subtle);
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel);
 }
 
 .usage-bars {
@@ -551,8 +556,8 @@
   display: flex;
   align-items: flex-end;
   gap: 10px;
-  height: 268px;
-  padding: 20px 8px 0;
+  height: 284px;
+  padding: 12px 8px 0;
   border-bottom: 1px solid var(--border-subtle);
 }
 
@@ -561,17 +566,18 @@
 }
 
 .usage-bar-column {
-  display: flex;
+  position: relative;
+  display: grid;
   flex: 1 1 0;
-  flex-direction: column;
-  align-items: center;
-  justify-content: flex-end;
+  grid-template-rows: 16px minmax(0, 1fr) 22px;
+  justify-items: center;
   gap: 6px;
   min-width: 0;
   height: 100%;
 }
 
 .usage-bar-column > strong {
+  grid-row: 1;
   min-height: 16px;
   color: var(--text-2);
   font-size: 11px;
@@ -581,6 +587,7 @@
 }
 
 .usage-bar-column > small {
+  grid-row: 3;
   height: 22px;
   padding-top: 4px;
   color: var(--text-3);
@@ -595,6 +602,8 @@
 }
 
 .usage-bar {
+  grid-row: 2;
+  align-self: end;
   position: relative;
   display: flex;
   flex-direction: column;
@@ -602,7 +611,7 @@
   width: min(44px, 100%);
   min-height: 0;
   overflow: hidden;
-  border-radius: 3px 3px 0 0;
+  border-radius: 6px 6px 2px 2px;
 }
 
 .usage-bars.is-dense .usage-bar {
@@ -617,7 +626,7 @@
   min-height: 0;
 }
 
-/* A hairline of paper between segments keeps neighbouring greys apart. */
+/* A fine gap separates token categories without changing their proportions. */
 .usage-bar > span + span {
   border-top: 1px solid var(--bg-surface);
 }
@@ -634,7 +643,7 @@
   background: var(--usage-seg-cache);
 }
 
-/* The latest bucket (today, or this hour) carries the one brand mark. */
+/* A small top highlight identifies the latest bucket without recolouring it. */
 .usage-bar-column.is-current .usage-bar::before {
   position: absolute;
   inset: 0 0 auto;
@@ -658,7 +667,7 @@
   flex-wrap: wrap;
   justify-content: space-between;
   gap: 4px 12px;
-  padding: 10px 8px;
+  padding: 12px 4px 2px;
   color: var(--text-3);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
@@ -673,7 +682,7 @@
   align-items: baseline;
   gap: 10px;
   min-height: 40px;
-  padding: 10px 0 8px;
+  padding: 2px 4px 12px;
 }
 
 .usage-model-card > header strong {
@@ -691,7 +700,8 @@
   grid-template-columns: 10px minmax(0, 1fr) auto 40px;
   align-items: center;
   gap: 10px;
-  min-height: 46px;
+  min-height: 58px;
+  padding: 8px 4px;
   border-bottom: 1px solid var(--border-subtle);
 }
 
@@ -734,7 +744,7 @@
 .usage-model-dot {
   width: 10px;
   height: 10px;
-  border-radius: 2px;
+  border-radius: 50%;
   background: var(--id-cobalt);
 }
 
@@ -868,16 +878,15 @@
 }
 
 .usage-summary-section > header > div:first-child {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 4px 10px;
+  display: grid;
+  gap: 4px;
 }
 
 .usage-summary-section h2 {
   margin: 0;
   color: var(--text-1);
-  font-size: 14px;
+  font-size: 15px;
+  font-weight: 600;
 }
 
 .usage-summary-section > header span {
@@ -885,9 +894,46 @@
   font-size: 12px;
 }
 
+.usage-summary-section > header .usage-summary-count {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 4px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill, 999px);
+  background: var(--bg-subtle);
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
 .usage-summary-scroll {
   max-height: 420px;
   overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--text-3) transparent;
+}
+
+.usage-summary-scroll:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+/* Table overflow must remain discoverable despite the shell's hidden scrollbars. */
+.usage-summary-scroll::-webkit-scrollbar {
+  display: block;
+  width: 8px;
+  height: 8px;
+}
+
+.usage-summary-scroll::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 8px;
+  background: var(--text-3);
+  background-clip: padding-box;
+}
+
+.usage-summary-scroll::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .usage-summary-table {
@@ -903,13 +949,14 @@
 
 .usage-summary-table th,
 .usage-summary-table td {
-  height: 40px;
-  padding: 8px 16px;
+  height: 46px;
+  padding: 10px 18px;
   border-bottom: 1px solid var(--border-subtle);
   text-align: right;
 }
 
 .usage-summary-table th:first-child {
+  min-width: 126px;
   text-align: left;
 }
 
@@ -917,15 +964,24 @@
   position: sticky;
   top: 0;
   z-index: 1;
-  height: 34px;
+  height: 38px;
   background: var(--bg-subtle);
-  color: var(--text-3);
-  font-weight: 500;
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .usage-summary-table tbody th {
   color: var(--text-1);
   font-weight: 500;
+}
+
+.usage-summary-table tbody tr:nth-child(even) {
+  background: color-mix(in srgb, var(--bg-subtle) 55%, transparent);
+}
+
+.usage-summary-table tbody td:nth-child(3) {
+  background: color-mix(in srgb, var(--brand) 4%, transparent);
 }
 
 .usage-summary-table tbody tr:hover {
@@ -1373,4 +1429,227 @@
 /* The polite live region is visually hidden (sr-only); keep it out of flow. */
 .usage-live-status {
   position: absolute;
+}
+
+/* Plot rules stop above the labels, so the date axis stays clean. */
+.usage-bars::before {
+  position: absolute;
+  inset: 34px 8px 28px;
+  content: "";
+  background: linear-gradient(
+    to top,
+    var(--border-subtle) 1px,
+    transparent 1px
+  );
+  background-size: 100% 25%;
+  pointer-events: none;
+}
+.usage-bar-column:hover .usage-bar {
+  filter: brightness(1.12);
+}
+.usage-model-card .usage-view-all {
+  margin-top: 12px;
+  padding-inline: 4px;
+}
+@media (forced-colors: active) {
+  .usage-design-view {
+    --usage-seg-input: CanvasText;
+    --usage-seg-output: Highlight;
+    --usage-seg-cache: GrayText;
+  }
+  .usage-bar > span {
+    forced-color-adjust: none;
+  }
+}
+
+/* Chart refresh ------------------------------------------------------------
+   Keep the existing data and accessible markup, but give the plot a clearer
+   canvas, a quieter grid, and more deliberate bar proportions. */
+.usage-chart-card,
+.usage-model-card {
+  padding: 16px;
+  border-radius: 14px;
+  background: var(--bg-surface);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--text-1) 6%, transparent);
+}
+
+.usage-bars {
+  height: clamp(250px, 34vh, 300px);
+  gap: clamp(4px, 0.75vw, 12px);
+  padding: 16px 10px 0;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--bg-subtle) 58%, var(--bg-surface)),
+    var(--bg-surface)
+  );
+}
+
+.usage-bars::before {
+  inset: 28px 10px 32px;
+  z-index: 0;
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent calc(25% - 1px),
+    color-mix(in srgb, var(--border-control) 62%, transparent) calc(25% - 1px),
+    color-mix(in srgb, var(--border-control) 62%, transparent) 25%
+  );
+  opacity: 0.7;
+}
+
+.usage-bar-column {
+  z-index: 1;
+  grid-template-rows: 20px minmax(0, 1fr) 24px;
+  gap: 4px;
+}
+
+.usage-bar-column > strong {
+  min-height: 20px;
+  color: var(--text-3);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.usage-bar-column > small {
+  height: 24px;
+  padding-top: 7px;
+  font-size: 10px;
+  letter-spacing: 0.01em;
+}
+
+.usage-bar-column.is-current > small {
+  color: var(--brand-text);
+}
+
+.usage-bar {
+  width: min(36px, 72%);
+  border-radius: 8px 8px 3px 3px;
+  background: var(--bg-well);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text-1) 8%, transparent);
+  transition:
+    transform var(--dur-fast, 150ms) var(--ease-out, ease),
+    filter var(--dur-fast, 150ms) var(--ease-out, ease),
+    box-shadow var(--dur-fast, 150ms) var(--ease-out, ease);
+}
+
+.usage-bars.is-dense {
+  gap: clamp(2px, 0.35vw, 5px);
+}
+
+.usage-bars.is-dense::before {
+  inset: 16px 10px 32px;
+}
+
+.usage-bars.is-dense .usage-bar-column {
+  grid-template-rows: minmax(0, 1fr) 24px;
+  gap: 4px;
+}
+
+.usage-bars.is-dense .usage-bar {
+  grid-row: 1;
+  width: min(100%, 12px);
+  border-radius: 4px 4px 2px 2px;
+}
+
+.usage-bars.is-dense .usage-bar-column > small {
+  grid-row: 2;
+}
+
+.usage-bar > span + span {
+  border-top-width: 2px;
+  border-top-color: color-mix(in srgb, var(--bg-surface) 88%, transparent);
+}
+
+.usage-bar-column:hover .usage-bar {
+  transform: translateY(-2px);
+  filter: saturate(1.12) brightness(1.04);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--text-1) 12%, transparent),
+    0 6px 12px color-mix(in srgb, var(--text-1) 12%, transparent);
+}
+
+.usage-bar-column.is-current .usage-bar {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--brand-indicator) 44%, transparent),
+    0 4px 10px color-mix(in srgb, var(--brand-indicator) 12%, transparent);
+}
+
+.usage-bar-column.is-current .usage-bar::before {
+  height: 4px;
+  background: var(--brand-indicator);
+}
+
+.usage-chart-card > footer {
+  align-items: center;
+  padding: 14px 4px 0;
+  color: var(--text-2);
+}
+
+.usage-chart-card > footer > span:first-child {
+  font-weight: 550;
+}
+
+.usage-chart-card > footer > span:last-child {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-subtle) 78%, var(--bg-surface));
+  color: var(--text-2);
+}
+
+@media (max-width: 640px) {
+  .usage-chart-card,
+  .usage-model-card {
+    padding: 12px;
+  }
+
+  .usage-bars {
+    height: 250px;
+    padding-inline: 6px;
+  }
+
+  .usage-bars.is-dense {
+    gap: 2px;
+  }
+
+  .usage-bars.is-dense .usage-bar {
+    width: min(100%, 10px);
+  }
+
+  .usage-chart-card > footer {
+    gap: 6px 8px;
+  }
+}
+
+@media (max-width: 420px) {
+  .usage-design-toolbar {
+    align-items: flex-start;
+    padding: 10px 12px;
+  }
+
+  .usage-toolbar-title {
+    flex-wrap: wrap;
+    gap: 6px 10px;
+  }
+
+  .usage-legend {
+    gap: 8px;
+  }
+
+  .usage-bars {
+    height: 220px;
+  }
+
+  .usage-chart-card > footer {
+    font-size: 11px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .usage-bar {
+    transition: none;
+  }
 }

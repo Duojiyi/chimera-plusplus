@@ -13,8 +13,8 @@
 //!   ② or execution key.
 //!
 //! This module also holds the MH-13b sanitizer for untrusted TOML (SQL
-//! import, `.db` restore, stored common snippets, generic add/update), which
-//! is built on the same lists.
+//! import, `.db` restore, generic add/update) and the strict common-snippet
+//! validator. User-authored snippets are rejected, never silently sanitized.
 
 use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, Item, TableLike};
@@ -304,13 +304,13 @@ pub fn sanitize_untrusted_codex_config(
     sanitize_codex_config(config_text, official, false)
 }
 
-/// ⑤: a common-config snippet saved by the user never provides ② or
-/// execution keys (plan §2 key-ownership table). Unlike an imported snippet
-/// (`sanitize_untrusted_codex_config`), the user's own permission and
-/// network-proxy choices stay: applying those to every line is what a
-/// snippet is for. Stripped names are logged, never values.
+/// Legacy, lossy common-snippet sanitizer. Unlike an untrusted import
+/// (`sanitize_untrusted_codex_config`), it keeps permission and network-proxy
+/// choices. Retained for callers that explicitly need sanitization; saving
+/// or applying user-authored snippets must use `validate_codex_common_snippet`
+/// instead. Stripped names are logged, never values.
 pub fn sanitize_codex_common_snippet(snippet: &str) -> Result<String, AppError> {
-    let (clean, report) = sanitize_codex_config(snippet, false, true)?;
+    let (clean, report) = sanitize_codex_common_snippet_with_report(snippet)?;
     if !report.stripped.is_empty() {
         log::warn!(
             "Removed keys a Codex common config must not provide: {}",
@@ -318,6 +318,127 @@ pub fn sanitize_codex_common_snippet(snippet: &str) -> Result<String, AppError> 
         );
     }
     Ok(clean)
+}
+
+/// Share the strict validator's ownership rules with explicit legacy/import
+/// migration and automatic extraction. Typed paths preserve quoted TOML keys.
+/// Valid text is returned verbatim; only key names enter the report.
+pub(crate) fn sanitize_codex_common_snippet_with_report(
+    snippet: &str,
+) -> Result<(String, UntrustedConfigReport), AppError> {
+    let mut doc = snippet.parse::<DocumentMut>().map_err(|_| {
+        AppError::Config("Codex 通用配置 TOML 语法无效，请检查配置键与语法".to_string())
+    })?;
+    let mut report = UntrustedConfigReport::default();
+    loop {
+        let mut conflicts = Vec::new();
+        collect_common_snippet_conflicts(doc.as_table(), &[], &mut conflicts);
+        conflicts.sort();
+        conflicts.dedup();
+        if conflicts.is_empty() {
+            return Ok((
+                if report.is_empty() {
+                    snippet.to_string()
+                } else {
+                    doc.to_string()
+                },
+                report,
+            ));
+        }
+        // Removing the last owned leaf can expose an empty protected parent
+        // (for example [features] or [profiles.work]). Sanitize to a fixed
+        // point so extraction and migration always satisfy the validator.
+        for path in conflicts {
+            if remove_path(doc.as_table_mut(), &path) {
+                report.strip(path.join("."));
+            }
+        }
+    }
+}
+
+/// Preserve model/privacy preferences formerly supplied by a legacy common
+/// snippet. Never inherit routing, credentials, execution or generated files;
+/// an explicit line value (including a scalar parent) always wins.
+pub(crate) fn inherit_legacy_codex_line_preferences(
+    config: &str,
+    legacy: &str,
+) -> Result<String, AppError> {
+    let mut doc = config.parse::<DocumentMut>().map_err(|_| {
+        AppError::Config("Codex 线路 TOML 语法无效，未迁移旧版通用配置".to_string())
+    })?;
+    let old = legacy.parse::<DocumentMut>().map_err(|_| {
+        AppError::Config("Codex 通用配置 TOML 语法无效，未迁移线路参数".to_string())
+    })?;
+    fn insert_missing(table: &mut dyn TableLike, path: &[&str], value: &Item) -> bool {
+        let Some((key, rest)) = path.split_first() else {
+            return false;
+        };
+        if rest.is_empty() {
+            if table.contains_key(key) {
+                return false;
+            }
+            table.insert(key, value.clone());
+            return true;
+        }
+        if !table.contains_key(key) {
+            let mut child = toml_edit::Table::new();
+            child.set_implicit(true);
+            table.insert(key, Item::Table(child));
+        }
+        table
+            .get_mut(key)
+            .and_then(Item::as_table_like_mut)
+            .is_some_and(|child| insert_missing(child, rest, value))
+    }
+    fn inherit(target: &mut dyn TableLike, source: &dyn TableLike) -> bool {
+        let mut changed = false;
+        for &key in LINE_OWNED_ROOT_KEYS {
+            if matches!(
+                key,
+                "model_provider"
+                    | "experimental_bearer_token"
+                    | "base_url"
+                    | "wire_api"
+                    | "requires_openai_auth"
+                    | "model_catalog_json"
+            ) {
+                continue;
+            }
+            if let Some(value) = source.get(key) {
+                changed |= insert_missing(target, &[key], value);
+            }
+        }
+        for &path in LINE_OWNED_NESTED_PATHS {
+            if let Some(value) = get_path(source, path) {
+                changed |= insert_missing(target, path, value);
+            }
+        }
+        if let Some(profiles) = source.get("profiles").and_then(Item::as_table_like) {
+            for (name, item) in profiles.iter() {
+                let Some(profile) = item.as_table_like() else {
+                    continue;
+                };
+                let mut inherited = toml_edit::Table::new();
+                if !inherit(&mut inherited, profile) {
+                    continue;
+                }
+                // Merge each leaf, never replace an existing profile or parent.
+                let mut leaves = Vec::new();
+                leaf_paths(&inherited, &mut Vec::new(), &mut leaves);
+                for (path, value) in leaves {
+                    let mut full = vec!["profiles", name];
+                    full.extend(path.iter().map(String::as_str));
+                    changed |= insert_missing(target, &full, &value);
+                }
+            }
+        }
+        changed
+    }
+    if inherit(doc.as_table_mut(), old.as_table()) {
+        Ok(doc.to_string())
+    } else {
+        Ok(config.to_string())
+    }
 }
 
 fn sanitize_codex_config(
@@ -640,12 +761,98 @@ pub(crate) fn canonical_toml_item(item: &Item) -> Option<String> {
     Some(canonical_toml_value(&table.remove("v")?))
 }
 
-/// Root keys a ⑤ snippet may not write: ① (the line wins; the snippet is
-/// already merged into the line text), ② and ③.
-fn snippet_root_is_projected_elsewhere(root: &str) -> bool {
+/// Root keys a ⑤ snippet may not write: ①, ②, ③ or local execution.
+/// Permission and proxy-feature keys remain valid shared user choices.
+fn common_snippet_root_is_forbidden(root: &str) -> bool {
     LINE_OWNED_ROOT_KEYS.contains(&root)
         || ROUTE_CREDENTIAL_ROOT_KEYS.contains(&root)
-        || matches!(root, "model_providers" | "mcp_servers" | "mcp")
+        || EXECUTION_ROOT_KEYS.contains(&root)
+        || matches!(root, "model_providers" | "mcp")
+}
+
+/// Check the document root or one profile using the same ownership rules.
+/// Only known configuration scopes are inspected: similarly named keys in
+/// unrelated shared tables do not acquire line ownership.
+fn collect_common_snippet_conflicts(
+    table: &dyn TableLike,
+    prefix: &[String],
+    conflicts: &mut Vec<Vec<String>>,
+) {
+    let at = |keys: &[&str]| {
+        let mut path = prefix.to_vec();
+        path.extend(keys.iter().map(|key| key.to_string()));
+        path
+    };
+    for (key, _) in table.iter() {
+        if common_snippet_root_is_forbidden(key)
+            || (!prefix.is_empty() && PROFILE_ROUTE_KEYS.contains(&key))
+        {
+            conflicts.push(at(&[key]));
+        }
+    }
+
+    for &path in LINE_OWNED_NESTED_PATHS {
+        let mut parent = table;
+        for (index, key) in path.iter().enumerate() {
+            let Some(item) = parent.get(key) else {
+                break;
+            };
+            // A scalar/array parent replaces its whole subtree. Empty tables
+            // are leaves in projection too, so they can erase owned children.
+            let child = item.as_table_like();
+            if index + 1 == path.len() || child.is_none_or(|child| child.is_empty()) {
+                conflicts.push(at(&path[..=index]));
+                break;
+            }
+            parent = child.expect("non-empty table checked above");
+        }
+    }
+
+    let Some(item) = table.get("profiles") else {
+        return;
+    };
+    let Some(profiles) = item.as_table_like().filter(|profiles| !profiles.is_empty()) else {
+        conflicts.push(at(&["profiles"]));
+        return;
+    };
+    for (name, item) in profiles.iter() {
+        let path = at(&["profiles", name]);
+        if let Some(profile) = item.as_table_like().filter(|profile| !profile.is_empty()) {
+            collect_common_snippet_conflicts(profile, &path, conflicts);
+        } else {
+            // Replacing an entire profile can erase its routing or models.
+            conflicts.push(path);
+        }
+    }
+}
+
+fn parse_validated_codex_common_snippet(text: &str) -> Result<DocumentMut, AppError> {
+    // Parser diagnostics embed source lines, which may contain credentials.
+    let doc = text.parse::<DocumentMut>().map_err(|_| {
+        AppError::Config("Codex 通用配置 TOML 语法无效，请检查配置键与语法".to_string())
+    })?;
+    let mut conflicts = Vec::new();
+    collect_common_snippet_conflicts(doc.as_table(), &[], &mut conflicts);
+    conflicts.sort();
+    conflicts.dedup();
+    if !conflicts.is_empty() {
+        return Err(AppError::Config(format!(
+            "Codex 通用配置不能包含线路、路由、凭据、执行或投影专属键: {}",
+            conflicts
+                .iter()
+                .map(|path| path.join("."))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )));
+    }
+    Ok(doc)
+}
+
+/// Validate common TOML without rewriting it. Conflicts list only key paths,
+/// never values; malformed syntax also fails without exposing source text.
+/// Legacy database text must pass this check again before it is applied.
+pub(crate) fn validate_codex_common_snippet(text: &str) -> Result<(), AppError> {
+    parse_validated_codex_common_snippet(text).map(|_| ())
 }
 
 /// L3: build live `config.toml` for switching to a line.
@@ -786,26 +993,22 @@ pub fn project_codex_line_onto_live(
     remove_path(out.as_table_mut(), &["mcp", "servers"]);
 
     if let Some(snippet) = snippet {
-        project_common_snippet(&mut out, snippet);
+        project_common_snippet(&mut out, snippet)?;
     }
 
     Ok(out.to_string())
 }
 
-fn project_common_snippet(out: &mut DocumentMut, snippet: &CodexCommonSnippet) {
-    let snippet_doc = match parse_codex_doc(&snippet.text, "common snippet") {
-        Ok(doc) => doc,
-        Err(e) => {
-            log::warn!("Skipped the Codex common config while projecting: {e}");
-            return;
-        }
-    };
+fn project_common_snippet(
+    out: &mut DocumentMut,
+    snippet: &CodexCommonSnippet,
+) -> Result<(), AppError> {
+    // Validate disabled snippets as well: cleanup must not silently accept
+    // conflicting legacy text or delete keys owned by the selected line.
+    let snippet_doc = parse_validated_codex_common_snippet(&snippet.text)?;
     let mut leaves = Vec::new();
     leaf_paths(snippet_doc.as_table(), &mut Vec::new(), &mut leaves);
     for (path, item) in leaves {
-        if snippet_root_is_projected_elsewhere(&path[0]) || is_line_owned_nested_path(&path) {
-            continue;
-        }
         if snippet.enabled {
             set_path(out.as_table_mut(), &path, item);
         } else {
@@ -816,6 +1019,7 @@ fn project_common_snippet(out: &mut DocumentMut, snippet: &CodexCommonSnippet) {
             }
         }
     }
+    Ok(())
 }
 
 /// L3 backfill: what the outgoing line keeps when switching away. ① comes
@@ -924,6 +1128,152 @@ pub(crate) fn validate_line_numeric_keys(text: &str) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_common_sanitizer_matches_validator_ownership() {
+        for key in LINE_OWNED_ROOT_KEYS
+            .iter()
+            .chain(ROUTE_CREDENTIAL_ROOT_KEYS.iter())
+            .chain(EXECUTION_ROOT_KEYS.iter())
+            .copied()
+            .chain(["model_providers", "mcp"])
+        {
+            let input = format!("approval_policy = 'on-request'\n{key} = 'legacy-secret'\n");
+            let (clean, report) = sanitize_codex_common_snippet_with_report(&input).unwrap();
+            validate_codex_common_snippet(&clean).unwrap();
+            assert!(clean.contains("approval_policy"), "{key}: {clean}");
+            assert!(!clean.contains("legacy-secret"), "{key}: {clean}");
+            assert!(report.stripped.iter().any(|name| name == key));
+            assert!(!format!("{report:?}").contains("legacy-secret"));
+        }
+        for path in LINE_OWNED_NESTED_PATHS {
+            let input = format!("personality = 'friendly'\n{} = true\n", path.join("."));
+            let (clean, report) = sanitize_codex_common_snippet_with_report(&input).unwrap();
+            validate_codex_common_snippet(&clean).unwrap();
+            assert!(clean.contains("personality"));
+            assert!(!report.stripped.is_empty());
+        }
+        for parent in [
+            "features = false",
+            "agents = {}",
+            "profiles = []",
+            "profiles.work = {}",
+        ] {
+            let input = format!("personality = 'friendly'\n{parent}\n");
+            let (clean, _) = sanitize_codex_common_snippet_with_report(&input).unwrap();
+            validate_codex_common_snippet(&clean).unwrap();
+        }
+    }
+
+    #[test]
+    fn legacy_common_sanitizer_removes_newly_empty_protected_parents() {
+        for owned in [
+            "[features]\ngoals = true\n",
+            "[features.token_budget]\nuse_history_notes_extension = true\n",
+            "[agents]\ndefault_subagent_model = 'mini'\n",
+            "[profiles.\"work.prod\"]\nmodel_reasoning_effort = 'high'\n",
+            "[profiles.work.features]\ngoals = true\n",
+            "profiles = { work = { features = { goals = true } } }\n",
+        ] {
+            let input = format!("personality = 'friendly'\n{owned}");
+            let (clean, report) = sanitize_codex_common_snippet_with_report(&input).unwrap();
+            validate_codex_common_snippet(&clean).unwrap();
+            let parsed: toml::Value = clean.parse().unwrap();
+            assert_eq!(parsed["personality"].as_str(), Some("friendly"));
+            assert_eq!(parsed.as_table().unwrap().len(), 1, "{owned}: {clean}");
+            assert!(!report.is_empty());
+            let (again, report) = sanitize_codex_common_snippet_with_report(&clean).unwrap();
+            assert_eq!(again, clean);
+            assert!(report.is_empty());
+        }
+    }
+
+    #[test]
+    fn legacy_common_sanitizer_handles_quoted_profiles_and_preserves_valid_text() {
+        let input = "[profiles.\"work.prod\"]\nmodel_reasoning_effort = 'high'\nsandbox_mode = 'workspace-write'\n[profiles.work]\npersonality = 'friendly'\n";
+        let (clean, report) = sanitize_codex_common_snippet_with_report(input).unwrap();
+        let parsed: toml::Value = clean.parse().unwrap();
+        assert!(parsed["profiles"]["work.prod"]
+            .get("model_reasoning_effort")
+            .is_none());
+        assert_eq!(
+            parsed["profiles"]["work.prod"]["sandbox_mode"].as_str(),
+            Some("workspace-write")
+        );
+        assert_eq!(
+            parsed["profiles"]["work"]["personality"].as_str(),
+            Some("friendly")
+        );
+        assert_eq!(
+            report.stripped,
+            vec!["profiles.work.prod.model_reasoning_effort"]
+        );
+        validate_codex_common_snippet(&clean).unwrap();
+        let valid = "# Keep exact text\r\napproval_policy  = 'on-request'\r\n";
+        assert_eq!(
+            sanitize_codex_common_snippet_with_report(valid).unwrap().0,
+            valid
+        );
+        let error =
+            sanitize_codex_common_snippet_with_report("secret = 'legacy-secret'\n[broken\n")
+                .unwrap_err()
+                .to_string();
+        assert!(!error.contains("legacy-secret"));
+    }
+
+    #[test]
+    fn legacy_preferences_fill_missing_values_only_and_never_copy_routes() {
+        let legacy = r#"model_reasoning_effort = 'high'
+disable_response_storage = true
+model_provider = 'unsafe'
+base_url = 'https://unsafe.invalid'
+experimental_bearer_token = 'legacy-secret'
+model_catalog_json = 'unsafe.json'
+notify = ['unsafe']
+[features]
+goals = true
+[agents]
+default_subagent_model = 'mini'
+[profiles."work.prod"]
+model_reasoning_effort = 'high'
+base_url = 'https://unsafe.invalid'
+"#;
+        let input = "model_reasoning_effort = 'medium'\n[features]\ngoals = false\n[profiles.\"work.prod\"]\nmodel_reasoning_effort = 'low'\n";
+        let merged = inherit_legacy_codex_line_preferences(input, legacy).unwrap();
+        let parsed: toml::Value = merged.parse().unwrap();
+        assert_eq!(parsed["model_reasoning_effort"].as_str(), Some("medium"));
+        assert_eq!(parsed["disable_response_storage"].as_bool(), Some(true));
+        assert_eq!(parsed["features"]["goals"].as_bool(), Some(false));
+        assert_eq!(
+            parsed["agents"]["default_subagent_model"].as_str(),
+            Some("mini")
+        );
+        assert_eq!(
+            parsed["profiles"]["work.prod"]["model_reasoning_effort"].as_str(),
+            Some("low")
+        );
+        for key in [
+            "model_provider",
+            "base_url",
+            "experimental_bearer_token",
+            "model_catalog_json",
+            "notify",
+        ] {
+            assert!(parsed.get(key).is_none(), "{key}");
+        }
+        assert!(!merged.contains("legacy-secret"));
+        assert!(!merged.contains("unsafe"));
+        assert_eq!(
+            inherit_legacy_codex_line_preferences(&merged, legacy).unwrap(),
+            merged
+        );
+        let scalar =
+            inherit_legacy_codex_line_preferences("features = false\nprofiles = []\n", legacy)
+                .unwrap();
+        let parsed: toml::Value = scalar.parse().unwrap();
+        assert_eq!(parsed["features"].as_bool(), Some(false));
+        assert!(parsed["profiles"].as_array().unwrap().is_empty());
+    }
 
     #[test]
     fn token_count_root_keys_must_be_positive_integers() {
@@ -1190,6 +1540,302 @@ requires_openai_auth = true
         assert!(report.is_empty());
         let (again, _) = sanitize_untrusted_codex_config("", false).unwrap();
         assert_eq!(again, "");
+    }
+
+    #[test]
+    fn common_snippet_rejects_every_owned_route_execution_and_projection_root() {
+        let projected_roots = ["model_providers", "mcp"];
+        for key in LINE_OWNED_ROOT_KEYS
+            .iter()
+            .chain(ROUTE_CREDENTIAL_ROOT_KEYS)
+            .chain(EXECUTION_ROOT_KEYS)
+            .chain(&projected_roots)
+        {
+            for prefix in ["", "profiles.work."] {
+                let path = format!("{prefix}{key}");
+                for text in [
+                    format!("{path} = \"a2-secret-value\"\n"),
+                    format!("{path} = {{ placeholder = \"a2-secret-value\" }}\n"),
+                    format!("[{path}]\nplaceholder = \"a2-secret-value\"\n"),
+                    format!("[[{path}]]\nplaceholder = \"a2-secret-value\"\n"),
+                ] {
+                    let error = validate_codex_common_snippet(&text).expect_err(&path);
+                    let message = error.to_string();
+                    assert!(message.contains(&path), "{path}: {message}");
+                    assert!(!message.contains("a2-secret-value"), "{message}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn common_snippet_rejects_owned_nested_paths_and_replacing_their_parents() {
+        for owned in LINE_OWNED_NESTED_PATHS {
+            for prefix in ["", "profiles.work."] {
+                for length in 1..=owned.len() {
+                    let path = format!("{prefix}{}", owned[..length].join("."));
+                    for text in [
+                        format!("{path} = \"a2-secret-value\"\n"),
+                        format!("{path} = []\n"),
+                        format!("{path} = {{}}\n"),
+                        format!("[{path}]\n"),
+                        format!("[[{path}]]\nplaceholder = \"a2-secret-value\"\n"),
+                    ] {
+                        let error = validate_codex_common_snippet(&text).expect_err(&path);
+                        let message = error.to_string();
+                        assert!(message.contains(&path), "{path}: {message}");
+                        assert!(!message.contains("a2-secret-value"), "{message}");
+                    }
+                }
+                // Owning the key is forbidden even when it is a non-empty table.
+                let path = format!("{prefix}{}", owned.join("."));
+                let text = format!("[{path}]\nplaceholder = \"a2-secret-value\"\n");
+                let error = validate_codex_common_snippet(&text).expect_err(&path);
+                assert!(error.to_string().contains(&path), "{error}");
+            }
+        }
+    }
+
+    #[test]
+    fn common_snippet_rejects_inline_profile_routes_and_nested_models() {
+        for (text, key) in [
+            (
+                "profiles = { work = { model_provider = 'a2-secret-value' } }\n",
+                "profiles.work.model_provider",
+            ),
+            (
+                "profiles = { work = { model_providers = { custom = { base_url = 'a2-secret-value' } } } }\n",
+                "profiles.work.model_providers",
+            ),
+            (
+                "profiles = { work = { features = { token_budget = { use_history_notes_extension = true } } } }\n",
+                "profiles.work.features.token_budget.use_history_notes_extension",
+            ),
+            (
+                "profiles.work.agents = { default_subagent_model = 'a2-secret-value', max_threads = 8 }\n",
+                "profiles.work.agents.default_subagent_model",
+            ),
+            (
+                "profiles.work.memories = { extract_model = 'a2-secret-value' }\n",
+                "profiles.work.memories.extract_model",
+            ),
+            (
+                "[profiles.\"work.with.dots\"]\nmodel = 'a2-secret-value'\n",
+                "profiles.work.with.dots.model",
+            ),
+        ] {
+            let error = validate_codex_common_snippet(text).expect_err(key);
+            let message = error.to_string();
+            assert!(message.contains(key), "{message}");
+            assert!(!message.contains("a2-secret-value"), "{message}");
+        }
+    }
+
+    #[test]
+    fn common_snippet_rejects_whole_profile_replacements() {
+        for (text, key) in [
+            ("profiles = 'a2-secret-value'\n", "profiles"),
+            ("profiles = []\n", "profiles"),
+            ("profiles = {}\n", "profiles"),
+            ("[profiles]\n", "profiles"),
+            ("[[profiles]]\nname = 'a2-secret-value'\n", "profiles"),
+            ("profiles.work = 'a2-secret-value'\n", "profiles.work"),
+            ("profiles = { work = {} }\n", "profiles.work"),
+            ("[profiles.work]\n", "profiles.work"),
+            (
+                "[[profiles.work]]\nname = 'a2-secret-value'\n",
+                "profiles.work",
+            ),
+        ] {
+            let error = validate_codex_common_snippet(text).expect_err(key);
+            let message = error.to_string();
+            assert!(message.contains(key), "{message}");
+            assert!(!message.contains("a2-secret-value"), "{message}");
+        }
+    }
+
+    #[test]
+    fn common_snippet_reports_all_conflicts_by_name_not_value() {
+        let text = r#"model = "a2-model-secret"
+model_catalog_json = "a2-catalog-secret"
+experimental_bearer_token = "a2-token-secret"
+notify = ["a2-command-secret"]
+
+[features.token_budget]
+use_history_notes_extension = true
+
+[profiles.work]
+chatgpt_base_url = "a2-endpoint-secret"
+
+[profiles.work.memories]
+consolidation_model = "a2-memory-secret"
+"#;
+        let error = validate_codex_common_snippet(text).unwrap_err();
+        let message = error.to_string();
+        for key in [
+            "model",
+            "model_catalog_json",
+            "experimental_bearer_token",
+            "notify",
+            "features.token_budget.use_history_notes_extension",
+            "profiles.work.chatgpt_base_url",
+            "profiles.work.memories.consolidation_model",
+        ] {
+            assert!(message.contains(key), "{key}: {message}");
+        }
+        for secret in [
+            "a2-model-secret",
+            "a2-catalog-secret",
+            "a2-token-secret",
+            "a2-command-secret",
+            "a2-endpoint-secret",
+            "a2-memory-secret",
+        ] {
+            assert!(!message.contains(secret), "{message}");
+        }
+    }
+
+    #[test]
+    fn common_snippet_allows_shared_permissions_proxy_preferences_and_siblings() {
+        for text in [
+            "",
+            " \r\n\t\n",
+            "# model and model_providers in comments do not claim ownership\n",
+            r#"approval_policy = "never"
+sandbox_mode = "workspace-write"
+web_search = "enabled"
+personality = "friendly"
+
+[sandbox_workspace_write]
+network_access = true
+
+[features]
+network_proxy = true
+respect_system_proxy = true
+system_proxy_fallback = true
+memories = true
+
+[features.token_budget]
+shared_limit = 16
+
+[agents]
+max_threads = 8
+
+[memories]
+max_raw_memories_for_consolidation = 64
+
+[tui]
+notifications = true
+
+[windows]
+sandbox = "elevated"
+
+[projects."/workspace/shared"]
+trust_level = "trusted"
+
+[profiles.work]
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+
+[profiles.work.sandbox_workspace_write]
+network_access = true
+
+[profiles.work.agents]
+max_threads = 4
+
+[profiles.work.memories]
+max_raw_memories_for_consolidation = 32
+
+[profiles.work.features]
+network_proxy = true
+"#,
+            "agents = { max_threads = 8 }\nfeatures = { memories = true, token_budget = { shared_limit = 16 } }\n",
+            "profiles = { work = { approval_policy = 'never', agents = { max_threads = 8 } } }\n",
+        ] {
+            validate_codex_common_snippet(text).expect("shared preferences are allowed");
+        }
+    }
+
+    #[test]
+    fn common_snippet_syntax_errors_do_not_echo_source_values() {
+        for text in [
+            "approval_policy = 'a2-secret-value'\n[unfinished\n",
+            "model = 'a2-secret-value'\nmodel = 'duplicate'\n",
+            "invalid = ['a2-secret-value'\n",
+        ] {
+            let error = validate_codex_common_snippet(text).unwrap_err();
+            let message = error.to_string();
+            assert!(message.contains("TOML"), "{message}");
+            assert!(!message.contains("a2-secret-value"), "{message}");
+            assert!(!message.contains("duplicate"), "{message}");
+        }
+    }
+
+    #[test]
+    fn common_snippet_projection_returns_errors_before_changing_the_document() {
+        for text in [
+            "personality = 'friendly'\nmodel = 'a2-secret-value'\n",
+            "approval_policy = 'never'\n[unfinished\n",
+            "agents = {}\n",
+            "profiles.work.memories.extract_model = 'a2-secret-value'\n",
+            "notify = ['a2-secret-value']\n",
+        ] {
+            for enabled in [true, false] {
+                let snippet = CodexCommonSnippet {
+                    text: text.to_string(),
+                    enabled,
+                };
+                let mut live = parse_codex_doc(USER_LIVE, "test live").unwrap();
+                let before = live.to_string();
+                let error = project_common_snippet(&mut live, &snippet).unwrap_err();
+                assert_eq!(live.to_string(), before, "no partial projection");
+                let propagated =
+                    project_codex_line_onto_live(RELAY_LINE, USER_LIVE, false, Some(&snippet))
+                        .unwrap_err();
+                assert_eq!(propagated.to_string(), error.to_string());
+                assert!(!error.to_string().contains("a2-secret-value"));
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_common_sanitizer_keeps_shared_policy_and_import_sanitizer_stays_separate() {
+        let text = r#"approval_policy = "never"
+sandbox_mode = "workspace-write"
+notify = ["a2-command-secret"]
+chatgpt_base_url = "a2-endpoint-secret"
+
+[features]
+network_proxy = true
+memories = true
+
+[profiles.work]
+approval_policy = "on-request"
+model_instructions_file = "a2-file-secret"
+"#;
+        let common = sanitize_codex_common_snippet(text).unwrap();
+        let common_doc: toml::Value = toml::from_str(&common).unwrap();
+        assert_eq!(common_doc["approval_policy"].as_str(), Some("never"));
+        assert_eq!(
+            common_doc["features"]["network_proxy"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            common_doc["profiles"]["work"]["approval_policy"].as_str(),
+            Some("on-request")
+        );
+        validate_codex_common_snippet(&common).unwrap();
+
+        let (imported, report) = sanitize_untrusted_codex_config(text, false).unwrap();
+        let imported_doc: toml::Value = toml::from_str(&imported).unwrap();
+        assert!(imported_doc.get("approval_policy").is_none());
+        assert!(imported_doc["features"].get("network_proxy").is_none());
+        assert!(report.stripped.contains(&"approval_policy".to_string()));
+        for secret in ["a2-command-secret", "a2-endpoint-secret", "a2-file-secret"] {
+            assert!(!common.contains(secret));
+            assert!(!imported.contains(secret));
+            assert!(!format!("{report:?}").contains(secret));
+        }
     }
 
     // ----- L3 key ownership -----
@@ -1654,37 +2300,69 @@ command = "from-line"
     }
 
     #[test]
-    fn common_snippet_never_sets_or_removes_agent_and_memory_models() {
+    fn common_snippet_rejects_agent_and_memory_models_even_when_disabled() {
+        let live = live_with_relay_agent_models();
+        for enabled in [true, false] {
+            let snippet = CodexCommonSnippet {
+                text: "[agents]\ndefault_subagent_model = \"shared-mini\"\nmax_threads = 8\n\n[memories]\nextract_model = \"shared\"\n".to_string(),
+                enabled,
+            };
+            let error =
+                project_codex_line_onto_live(LINE_WITH_AGENT_MODELS, &live, false, Some(&snippet))
+                    .unwrap_err();
+            let message = error.to_string();
+            assert!(message.contains("agents.default_subagent_model"));
+            assert!(message.contains("memories.extract_model"));
+            assert!(!message.contains("shared-mini"));
+        }
+    }
+
+    #[test]
+    fn common_snippet_projects_shared_siblings_without_changing_line_models() {
         let live = live_with_relay_agent_models();
         let on = CodexCommonSnippet {
-            text: "[agents]\ndefault_subagent_model = \"shared-mini\"\nmax_threads = 8\n\n[memories]\nextract_model = \"shared\"\n".to_string(),
+            text:
+                "[agents]\nmax_threads = 8\n\n[memories]\nmax_raw_memories_for_consolidation = 64\n"
+                    .to_string(),
             enabled: true,
         };
-        let doc =
-            parse(&project_codex_line_onto_live(OTHER_LINE, &live, false, Some(&on)).unwrap());
-        assert!(
-            doc["agents"].get("default_subagent_model").is_none(),
-            "⑤ cannot pick a line's model"
-        );
-        assert_eq!(
-            doc["agents"]["max_threads"].as_integer(),
-            Some(8),
-            "other keys of the table stay ⑤"
-        );
-        assert!(doc.get("memories").is_none());
-
-        // A disabled snippet holding the line's own value does not remove it.
-        let off = CodexCommonSnippet {
-            text: "[agents]\ndefault_subagent_model = \"c-mini\"\n".to_string(),
-            enabled: false,
-        };
-        let doc = parse(
-            &project_codex_line_onto_live(LINE_WITH_AGENT_MODELS, &live, false, Some(&off))
-                .unwrap(),
-        );
+        let projected =
+            project_codex_line_onto_live(LINE_WITH_AGENT_MODELS, &live, false, Some(&on)).unwrap();
+        let doc = parse(&projected);
+        assert_eq!(doc["agents"]["max_threads"].as_integer(), Some(8));
         assert_eq!(
             doc["agents"]["default_subagent_model"].as_str(),
             Some("c-mini")
+        );
+        assert_eq!(
+            doc["memories"]["consolidation_model"].as_str(),
+            Some("c-large")
+        );
+        assert_eq!(
+            doc["memories"]["max_raw_memories_for_consolidation"].as_integer(),
+            Some(64)
+        );
+        assert!(doc["memories"].get("extract_model").is_none());
+
+        let off = CodexCommonSnippet {
+            enabled: false,
+            ..on
+        };
+        let doc = parse(
+            &project_codex_line_onto_live(LINE_WITH_AGENT_MODELS, &projected, false, Some(&off))
+                .unwrap(),
+        );
+        assert!(doc["agents"].get("max_threads").is_none());
+        assert!(doc["memories"]
+            .get("max_raw_memories_for_consolidation")
+            .is_none());
+        assert_eq!(
+            doc["agents"]["default_subagent_model"].as_str(),
+            Some("c-mini")
+        );
+        assert_eq!(
+            doc["memories"]["consolidation_model"].as_str(),
+            Some("c-large")
         );
     }
 

@@ -174,24 +174,92 @@ export const hasSubSessions = (session: SessionMeta) =>
 export const shortSessionId = (sessionId: string) => sessionId.slice(0, 8);
 
 /**
- * The JSON export. Tool outputs (command results, file contents) and the
- * record's location on this computer are left out unless asked for: both can
- * carry secrets or personal paths into a file that gets shared.
+ * Export a stable, explicit schema. Local paths, resume commands and unknown
+ * metadata are never included; tool output remains opt-in because it can contain
+ * secrets. User-authored message bodies are preserved verbatim.
  */
 export const buildSessionExport = (
   session: SessionMeta,
   messages: SessionMessage[],
   { includeToolOutput }: { includeToolOutput: boolean },
 ) => {
-  const exportedSession: SessionMeta = { ...session };
-  delete exportedSession.sourcePath;
+  const exportedSession = {
+    providerId: session.providerId,
+    sessionId: session.sessionId,
+    title: session.title,
+    summary: session.summary,
+    createdAt: session.createdAt,
+    lastActiveAt: session.lastActiveAt,
+  };
   return {
     version: 1,
     session: exportedSession,
-    messages: includeToolOutput
-      ? messages
-      : messages.filter((message) => message.role.toLowerCase() !== "tool"),
+    messages: messages
+      .filter(
+        (message) =>
+          includeToolOutput || message.role.trim().toLowerCase() !== "tool",
+      )
+      .map((message) => ({
+        role: message.role,
+        content: message.content,
+        ...(message.ts !== undefined ? { ts: message.ts } : {}),
+      })),
   };
+};
+
+/** Markdown with verbatim message bodies and the JSON export's privacy defaults. */
+export const buildSessionMarkdown = (
+  session: SessionMeta,
+  messages: SessionMessage[],
+  options: { includeToolOutput: boolean },
+): string => {
+  const payload = buildSessionExport(session, messages, options);
+  // A single escaped line cannot introduce headings, links, entities or raw HTML.
+  const inline = (value: string) =>
+    value
+      .replace(/[\r\n\u2028\u2029]+/g, " ")
+      .replace(/[!-/:-@[-`{-~]/g, "\\$&");
+  const roles: Record<string, string> = {
+    user: "用户",
+    assistant: "助手",
+    system: "系统",
+    tool: "工具输出",
+    notice: "读取提示",
+  };
+  const provider = Object.hasOwn(PROVIDER_NAMES, session.providerId)
+    ? PROVIDER_NAMES[session.providerId]
+    : session.providerId;
+  const lines = [
+    `# ${inline(session.title || "会话记录")}`,
+    "",
+    `- 工具：${inline(provider)}`,
+    `- 会话 ID：${inline(session.sessionId)}`,
+    "- 仅包含已读取的消息；不含记录文件路径。",
+    options.includeToolOutput
+      ? "- 已包含工具输出；分享前请检查密钥、令牌和本机文件内容。"
+      : "- 未包含工具输出。",
+    "- 消息内容按原文保留在文本代码块中。",
+    "",
+  ];
+  for (const message of payload.messages) {
+    const normalizedRole = message.role.trim().toLowerCase();
+    const role = Object.hasOwn(roles, normalizedRole)
+      ? roles[normalizedRole]
+      : message.role.trim() || "未知角色";
+    lines.push(`## ${inline(role)}`, "");
+    if (message.ts !== undefined) {
+      lines.push(`- 时间戳：${message.ts}`, "");
+    }
+    // One more backtick than any run in the body prevents fence escape. Scan
+    // incrementally so a large transcript cannot overflow Math.max's arguments.
+    let fenceLength = 3;
+    for (const match of message.content.matchAll(/`+/g)) {
+      fenceLength = Math.max(fenceLength, match[0].length + 1);
+    }
+    const fence = "`".repeat(fenceLength);
+    lines.push(`${fence}text`, message.content, fence, "");
+  }
+  return lines.join("\n");
 };
 
 export interface SessionReadFailure {
