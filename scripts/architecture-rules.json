@@ -27,6 +27,7 @@
     "codex_accounts": 2,
     "codex_cdp": 2,
     "codex_config": 2,
+    "codex_common_projection": 2,
     "codex_history_migration": 2,
     "codex_key_ownership": 2,
     "codex_live_write": 2,
