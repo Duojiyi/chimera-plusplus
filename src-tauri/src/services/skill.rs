@@ -41,6 +41,42 @@ const SKILL_PROJECTION_MARKER_CONTENT: &[u8] = b"chimera++ managed skill project
 // Split by skill only if concurrent downloads become necessary; migrations need exclusivity.
 static SKILL_MUTATION_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// GitHub 对不存在的分支归档返回 404。只有这种错误才值得换下一个候选分支；
+/// 超时、限流等错误要原样报告，不能被最后一个分支的 404 掩盖。
+#[derive(Debug)]
+struct BranchArchiveMissing(String);
+
+impl std::fmt::Display for BranchArchiveMissing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for BranchArchiveMissing {}
+
+fn archive_download_status_error(status: u16) -> anyhow::Error {
+    let status = status.to_string();
+    let message = format_skill_error(
+        "DOWNLOAD_FAILED",
+        &[("status", &status)],
+        match status.as_str() {
+            "403" => Some("http403"),
+            "404" => Some("http404"),
+            "429" => Some("http429"),
+            _ => Some("checkNetwork"),
+        },
+    );
+    if status == "404" {
+        anyhow::Error::new(BranchArchiveMissing(message))
+    } else {
+        anyhow!(message)
+    }
+}
+
+fn is_missing_branch_archive(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<BranchArchiveMissing>().is_some()
+}
+
 fn lock_skill_mutation() -> Result<tokio::sync::MutexGuard<'static, ()>> {
     // Sync command callers must never block an executor waiting for a download.
     SKILL_MUTATION_LOCK
@@ -3555,28 +3591,48 @@ impl SkillService {
             branches.push("master");
         }
 
-        let mut last_error = None;
-        for branch in branches {
+        let branch = Self::download_first_existing_branch(&branches, &temp_path, |branch| {
             let url = format!(
                 "https://github.com/{}/{}/archive/refs/heads/{}.zip",
                 repo.owner, repo.name, branch
             );
+            let client = &client;
+            let dest = temp_path.as_path();
+            async move { Self::download_and_extract(client, &url, dest).await }
+        })
+        .await?;
+        Ok((temp_path, branch))
+    }
 
-            match Self::download_and_extract(&client, &url, &temp_path).await {
-                Ok(_) => {
-                    return Ok((temp_path, branch.to_string()));
-                }
+    /// 依次尝试候选分支，只有分支归档不存在(404)时才换下一个。
+    /// 失败时清理 `temp_path`。
+    // Adapted from farion1231/cc-switch 83f0155f
+    async fn download_first_existing_branch<F, Fut>(
+        branches: &[&str],
+        temp_path: &Path,
+        mut fetch: F,
+    ) -> Result<String>
+    where
+        F: FnMut(String) -> Fut,
+        Fut: std::future::Future<Output = Result<()>>,
+    {
+        let mut last_error = None;
+        for branch in branches {
+            match fetch((*branch).to_string()).await {
+                Ok(()) => return Ok((*branch).to_string()),
                 Err(e) => {
-                    last_error = Some(e);
                     // 每个候选分支必须使用干净目录，避免失败分支的残留条目污染下一次解压。
-                    let _ = Self::remove_path(&temp_path);
-                    Self::ensure_normal_directory(&temp_path)?;
-                    continue;
+                    let _ = Self::remove_path(temp_path);
+                    if !is_missing_branch_archive(&e) {
+                        return Err(e);
+                    }
+                    last_error = Some(e);
+                    Self::ensure_normal_directory(temp_path)?;
                 }
             }
         }
 
-        let _ = Self::remove_path(&temp_path);
+        let _ = Self::remove_path(temp_path);
         Err(last_error.unwrap_or_else(|| anyhow::anyhow!("所有分支下载失败")))
     }
 
@@ -3584,17 +3640,7 @@ impl SkillService {
     async fn download_and_extract(client: &reqwest::Client, url: &str, dest: &Path) -> Result<()> {
         let response = client.get(url).send().await?;
         if !response.status().is_success() {
-            let status = response.status().as_u16().to_string();
-            return Err(anyhow::anyhow!(format_skill_error(
-                "DOWNLOAD_FAILED",
-                &[("status", &status)],
-                match status.as_str() {
-                    "403" => Some("http403"),
-                    "404" => Some("http404"),
-                    "429" => Some("http429"),
-                    _ => Some("checkNetwork"),
-                },
-            )));
+            return Err(archive_download_status_error(response.status().as_u16()));
         }
 
         if response
@@ -5306,6 +5352,85 @@ mod tests {
         );
         assert_eq!(fixture.target_hits(), 0);
         assert!(!dest.exists(), "nothing may be extracted");
+    }
+
+    #[test]
+    fn only_a_404_archive_status_counts_as_a_missing_branch() {
+        assert!(is_missing_branch_archive(&archive_download_status_error(
+            404
+        )));
+        for status in [403, 429, 500, 502] {
+            assert!(!is_missing_branch_archive(&archive_download_status_error(
+                status
+            )));
+        }
+        assert!(!is_missing_branch_archive(&anyhow!("operation timed out")));
+        // 包装成 BranchArchiveMissing 后,用户看到的文案不变。
+        assert_eq!(
+            archive_download_status_error(404).to_string(),
+            anyhow!(format_skill_error(
+                "DOWNLOAD_FAILED",
+                &[("status", "404")],
+                Some("http404")
+            ))
+            .to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn branch_fallback_stops_at_the_first_non_404_error() {
+        let temp = tempdir().expect("tempdir");
+        let dest = temp.path().join("extracted");
+        fs::create_dir_all(&dest).expect("create dest");
+        let mut tried = Vec::new();
+
+        let error = SkillService::download_first_existing_branch(
+            &["dev", "main", "master"],
+            &dest,
+            |branch| {
+                tried.push(branch);
+                async { Err::<(), _>(anyhow!("operation timed out")) }
+            },
+        )
+        .await
+        .expect_err("a timeout must be reported");
+
+        assert_eq!(error.to_string(), "operation timed out");
+        assert_eq!(tried, vec!["dev".to_string()]);
+        assert!(!dest.exists(), "temp dir is cleaned up on failure");
+    }
+
+    #[tokio::test]
+    async fn branch_fallback_tries_the_next_branch_after_a_404() {
+        let temp = tempdir().expect("tempdir");
+        let dest = temp.path().join("extracted");
+        fs::create_dir_all(&dest).expect("create dest");
+        let mut tried = Vec::new();
+
+        let branch = SkillService::download_first_existing_branch(
+            &["dev", "main", "master"],
+            &dest,
+            |branch| {
+                let missing = branch == "dev";
+                tried.push(branch);
+                async move {
+                    if missing {
+                        Err(archive_download_status_error(404))
+                    } else {
+                        Ok(())
+                    }
+                }
+            },
+        )
+        .await
+        .expect("main exists");
+
+        assert_eq!(branch, "main");
+        assert_eq!(tried, vec!["dev".to_string(), "main".to_string()]);
+        assert!(
+            dest.is_dir(),
+            "a clean directory is kept for the next branch"
+        );
     }
 
     #[test]

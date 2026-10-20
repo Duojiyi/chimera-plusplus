@@ -394,6 +394,10 @@ fn inference_model_json(spec: &InferenceModelSpec) -> Value {
         }
         if spec.supports_1m {
             item["supports1m"] = json!(true);
+            // Adapted from farion1231/cc-switch d4f2d4e4
+            // Desktop 1.21459.0+ 读到 prefer1m 时只列一行(选中即带 [1m]),
+            // 否则同一模型会出现原名和 "1M context window" 两行。
+            item["prefer1m"] = json!(true);
         }
         item
     } else {
@@ -1742,7 +1746,7 @@ mod tests {
         );
         assert_eq!(
             profile["inferenceModels"],
-            json!([{ "name": "claude-sonnet-4-6", "supports1m": true }])
+            json!([{ "name": "claude-sonnet-4-6", "supports1m": true, "prefer1m": true }])
         );
     }
 
@@ -1785,7 +1789,12 @@ mod tests {
             .starts_with("ccs-"));
         assert_eq!(
             profile["inferenceModels"],
-            json!([{ "name": "claude-sonnet-4-6", "labelOverride": "Kimi K2", "supports1m": true }])
+            json!([{
+                "name": "claude-sonnet-4-6",
+                "labelOverride": "Kimi K2",
+                "supports1m": true,
+                "prefer1m": true
+            }])
         );
         assert!(!profile.to_string().contains("kimi-k2"));
     }

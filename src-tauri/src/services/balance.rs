@@ -201,6 +201,13 @@ fn parse_deepseek_response(body: &serde_json::Value) -> Result<Vec<UsageData>, S
         });
     }
 
+    // Adapted from farion1231/cc-switch a94b592a
+    // 同一账号会列出 CNY / USD 两个钱包，扣费走有余额的那个。只要还有币种有余额，
+    // 就不再列出空钱包，否则界面取到空钱包会显示余额为 0。全部为空时保留全部。
+    if data.iter().any(|d| d.remaining.is_some_and(|v| v > 0.0)) {
+        data.retain(|d| d.remaining.is_none_or(|v| v > 0.0));
+    }
+
     Ok(data)
 }
 
@@ -946,6 +953,44 @@ mod tests {
         }))
         .expect("ds ok");
         assert_eq!(ds_ok[0].remaining, Some(0.0));
+    }
+
+    #[test]
+    fn deepseek_balance_hides_empty_wallets_when_another_has_funds() {
+        let data = parse_deepseek_response(&json!({
+            "is_available": true,
+            "balance_infos": [
+                { "currency": "CNY", "total_balance": "0.00" },
+                { "currency": "USD", "total_balance": "12.34" }
+            ]
+        }))
+        .expect("parsed");
+        assert_eq!(data.len(), 1);
+        assert_eq!(data[0].unit.as_deref(), Some("USD"));
+        assert_eq!(data[0].remaining, Some(12.34));
+    }
+
+    #[test]
+    fn deepseek_balance_keeps_every_wallet_when_none_or_all_have_funds() {
+        for (cny, usd) in [("0.00", "0.00"), ("5.00", "1.00")] {
+            let data = parse_deepseek_response(&json!({
+                "is_available": true,
+                "balance_infos": [
+                    { "currency": "CNY", "total_balance": cny },
+                    { "currency": "USD", "total_balance": usd }
+                ]
+            }))
+            .expect("parsed");
+            assert_eq!(data.len(), 2, "cny={cny} usd={usd}");
+        }
+
+        let single = parse_deepseek_response(&json!({
+            "is_available": false,
+            "balance_infos": [{ "currency": "CNY", "total_balance": "0.00" }]
+        }))
+        .expect("parsed");
+        assert_eq!(single.len(), 1);
+        assert_eq!(single[0].remaining, Some(0.0));
     }
 
     #[test]

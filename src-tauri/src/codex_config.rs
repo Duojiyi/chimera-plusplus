@@ -1206,6 +1206,7 @@ fn codex_catalog_model_entry(
     entry_obj.insert("description".to_string(), json!(display_name));
     entry_obj.insert("context_window".to_string(), json!(context_window));
     entry_obj.insert("max_context_window".to_string(), json!(context_window));
+    sync_codex_auto_compact_limit(entry_obj, context_window);
     entry_obj.insert("priority".to_string(), json!(1000 + priority));
     entry_obj.insert("additional_speed_tiers".to_string(), json!([]));
     entry_obj.insert("service_tiers".to_string(), json!([]));
@@ -1279,6 +1280,24 @@ fn codex_catalog_model_entry(
     apply_codex_reasoning_level_override(entry_obj, template_default, &effective_spec);
 
     entry
+}
+
+/// A cloned entry's `auto_compact_token_limit` belongs to the template's own
+/// window (gpt-5.5: 244800 for 272000). Codex compacts at
+/// `min(limit, window * 90%)`, so after the window is rewritten a stale limit
+/// would hold a 1M line at the template's threshold. Re-derive it as 90% of
+/// the written window; entries without the field are left alone (Codex then
+/// uses the same 90% itself). The result never exceeds the window.
+// Adapted from farion1231/cc-switch a94f997f
+fn sync_codex_auto_compact_limit(entry: &mut serde_json::Map<String, Value>, context_window: u64) {
+    if !entry
+        .get("auto_compact_token_limit")
+        .is_some_and(Value::is_number)
+    {
+        return;
+    }
+    let limit = u64::try_from(u128::from(context_window) * 9 / 10).unwrap_or(context_window);
+    entry.insert("auto_compact_token_limit".to_string(), json!(limit));
 }
 
 /// Keys a ProxyChat catalog entry keeps from the Codex entry it clones
@@ -2402,6 +2421,7 @@ fn codex_vendor_catalog_model_entry(
     if let Some(context_window) = spec.context_window {
         entry_obj.insert("context_window".to_string(), json!(context_window));
         entry_obj.insert("max_context_window".to_string(), json!(context_window));
+        sync_codex_auto_compact_limit(entry_obj, context_window);
     }
     if let Some(parallel) = spec.supports_parallel_tool_calls {
         entry_obj.insert("supports_parallel_tool_calls".to_string(), json!(parallel));
@@ -8726,6 +8746,62 @@ approval_policy = "never"
             128_000,
         );
         assert!(native["models"][0].get("model_messages").is_none());
+    }
+
+    #[test]
+    fn declared_window_resyncs_the_template_auto_compact_limit() {
+        let template = json!({
+            "slug": "gpt-5.5",
+            "context_window": 272_000,
+            "max_context_window": 272_000,
+            "auto_compact_token_limit": 244_800,
+            "effective_context_window_percent": 95
+        });
+        let mut declared = catalog_spec("gpt-5.5");
+        declared.context_window = Some(1_050_000);
+        let catalog = codex_model_catalog_from_specs_with_runtime(
+            &[declared, catalog_spec("other")],
+            &template,
+            std::slice::from_ref(&template),
+            CodexCatalogToolProfile::ProxyChat,
+            272_000,
+        );
+        let models = catalog["models"].as_array().unwrap();
+        assert_eq!(models[0]["context_window"], json!(1_050_000));
+        assert_eq!(models[0]["max_context_window"], json!(1_050_000));
+        assert_eq!(models[0]["auto_compact_token_limit"], json!(945_000));
+        assert_eq!(models[0]["effective_context_window_percent"], json!(95));
+        // The config-wide window that matches the template keeps its threshold.
+        assert_eq!(models[1]["auto_compact_token_limit"], json!(244_800));
+
+        // No overflow at the top of the range, and never above the window.
+        let mut huge = catalog_spec("gpt-5.5");
+        huge.context_window = Some(u64::MAX);
+        let catalog = codex_model_catalog_from_specs(
+            &[huge],
+            &template,
+            CodexCatalogToolProfile::ProxyChat,
+            272_000,
+        );
+        let limit = catalog["models"][0]["auto_compact_token_limit"]
+            .as_u64()
+            .unwrap();
+        assert_eq!(limit, u64::MAX / 10 * 9 + (u64::MAX % 10) * 9 / 10);
+        assert!(limit < u64::MAX);
+
+        // A template without the field stays without it.
+        let bare = json!({"slug": "gpt-5.5"});
+        let mut spec = catalog_spec("gpt-5.5");
+        spec.context_window = Some(1_000_000);
+        let catalog = codex_model_catalog_from_specs(
+            &[spec],
+            &bare,
+            CodexCatalogToolProfile::ProxyChat,
+            272_000,
+        );
+        assert!(catalog["models"][0]
+            .get("auto_compact_token_limit")
+            .is_none());
     }
 
     #[test]

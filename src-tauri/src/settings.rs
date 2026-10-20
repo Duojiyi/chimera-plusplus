@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{OnceLock, RwLock};
+use std::sync::{Mutex, OnceLock, RwLock};
 
 use crate::app_config::AppType;
 use crate::error::AppError;
@@ -968,49 +968,228 @@ impl AppSettings {
         let Some(path) = Self::settings_path() else {
             return Self::default();
         };
-        if let Ok(content) = crate::security_limits::read_to_string_limited(
-            &path,
+        Self::load_from_path(&path)
+    }
+
+    /// Read `settings.json` tolerantly. A file that is unreadable or only
+    /// partly understood is copied to `settings.json.broken-<time>.bak` first;
+    /// if that copy fails, saving is refused until it succeeds (see
+    /// [`ensure_settings_file_backed_up`]) so defaults never replace the
+    /// user's file.
+    // Adapted from farion1231/cc-switch 8a06838d
+    fn load_from_path(path: &Path) -> Self {
+        let content = match read_settings_text(path) {
+            Ok(Some(content)) => content,
+            Ok(None) => {
+                forget_unbacked_settings_file(path);
+                return Self::default();
+            }
+            Err(err) => {
+                log::warn!(
+                    "读取设置文件失败，将使用默认设置。路径: {}, 错误: {}",
+                    path.display(),
+                    err
+                );
+                protect_settings_file(path);
+                return Self::default();
+            }
+        };
+        let (mut settings, complete) = parse_settings_text(&content);
+        if complete {
+            forget_unbacked_settings_file(path);
+        } else {
+            log::warn!(
+                "设置文件未能完整解析，已保留可识别的字段。路径: {}",
+                path.display()
+            );
+            protect_settings_file(path);
+        }
+        settings.normalize_paths();
+        settings
+    }
+}
+
+const SETTINGS_READ_ATTEMPTS: usize = 3;
+const SETTINGS_READ_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Settings files whose original content was not fully loaded and could not
+/// be backed up yet. Keyed by path so independent files never block each other.
+static UNBACKED_SETTINGS_FILES: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+fn unbacked_settings_files() -> std::sync::MutexGuard<'static, Vec<PathBuf>> {
+    UNBACKED_SETTINGS_FILES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+fn forget_unbacked_settings_file(path: &Path) {
+    unbacked_settings_files().retain(|pending| pending != path);
+}
+
+/// `Ok(None)` when the file does not exist. Transient errors (a sharing
+/// violation while an editor or antivirus holds the file) are retried briefly.
+fn read_settings_text(path: &Path) -> std::io::Result<Option<String>> {
+    let mut attempt = 1;
+    loop {
+        match crate::security_limits::read_to_string_limited(
+            path,
             crate::security_limits::MAX_CONFIG_FILE_BYTES,
         ) {
-            match serde_json::from_str::<serde_json::Value>(&content).and_then(|raw| {
-                let has_unify_setting = raw.get("unifyCodexSessionHistory").is_some();
-                let mut settings = serde_json::from_value::<AppSettings>(raw)?;
-                if !has_unify_setting {
-                    settings.unify_codex_session_history = true;
-                }
-                settings.settings_migration_version =
-                    CURRENT_SETTINGS_MIGRATION_VERSION.max(settings.settings_migration_version);
-                Ok::<_, serde_json::Error>(settings)
-            }) {
-                Ok(mut settings) => {
-                    settings.normalize_paths();
-                    settings
-                }
-                Err(err) => {
-                    log::warn!(
-                        "解析设置文件失败，将使用默认设置。路径: {}, 错误: {}",
-                        path.display(),
-                        err
-                    );
-                    Self::default()
-                }
+            Ok(content) => return Ok(Some(content)),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err)
+                if err.kind() != std::io::ErrorKind::InvalidData
+                    && attempt < SETTINGS_READ_ATTEMPTS =>
+            {
+                log::debug!("读取设置文件失败，稍后重试: {err}");
+                attempt += 1;
+                std::thread::sleep(SETTINGS_READ_RETRY_DELAY);
             }
-        } else {
-            Self::default()
+            Err(err) => return Err(err),
         }
     }
 }
 
+/// Parse settings text: strip a UTF-8 BOM, take only the first JSON value,
+/// and when the whole object does not deserialize keep every top-level field
+/// that still does. The flag is false when anything was dropped or ignored.
+fn parse_settings_text(content: &str) -> (AppSettings, bool) {
+    let text = content.strip_prefix('\u{feff}').unwrap_or(content);
+    if text.trim().is_empty() {
+        // Nothing left to protect.
+        return (AppSettings::default(), true);
+    }
+    let mut stream = serde_json::Deserializer::from_str(text).into_iter::<serde_json::Value>();
+    let raw = match stream.next() {
+        Some(Ok(raw)) => raw,
+        Some(Err(err)) => {
+            log::warn!("解析设置文件失败，将使用默认设置: {err}");
+            return (AppSettings::default(), false);
+        }
+        None => return (AppSettings::default(), true),
+    };
+    let trailing = !text[stream.byte_offset()..].trim().is_empty();
+    let serde_json::Value::Object(fields) = raw else {
+        log::warn!("设置文件不是 JSON 对象，将使用默认设置");
+        return (AppSettings::default(), false);
+    };
+
+    let finish = |mut settings: AppSettings,
+                  fields: &serde_json::Map<String, serde_json::Value>| {
+        if !fields.contains_key("unifyCodexSessionHistory") {
+            settings.unify_codex_session_history = true;
+        }
+        settings.settings_migration_version =
+            CURRENT_SETTINGS_MIGRATION_VERSION.max(settings.settings_migration_version);
+        settings
+    };
+
+    match serde_json::from_value::<AppSettings>(serde_json::Value::Object(fields.clone())) {
+        Ok(settings) => (finish(settings, &fields), !trailing),
+        Err(err) => {
+            let mut kept = serde_json::Map::new();
+            let mut dropped = Vec::new();
+            for (key, value) in fields {
+                let mut candidate = kept.clone();
+                candidate.insert(key.clone(), value.clone());
+                if serde_json::from_value::<AppSettings>(serde_json::Value::Object(candidate))
+                    .is_ok()
+                {
+                    kept.insert(key, value);
+                } else {
+                    dropped.push(key);
+                }
+            }
+            log::warn!("设置文件部分字段无效，已忽略 {dropped:?}: {err}");
+            let settings =
+                serde_json::from_value::<AppSettings>(serde_json::Value::Object(kept.clone()))
+                    .unwrap_or_default();
+            (finish(settings, &kept), false)
+        }
+    }
+}
+
+/// Copy `path` to `<name>.broken-<time>.bak` next to it, never overwriting an
+/// earlier backup. `Ok(None)` when the file no longer exists.
+fn backup_settings_file(path: &Path) -> std::io::Result<Option<PathBuf>> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err),
+    }
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "settings.json".to_string());
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
+    let mut target = path.with_file_name(format!("{name}.broken-{stamp}.bak"));
+    let mut suffix = 1;
+    while fs::symlink_metadata(&target).is_ok() {
+        suffix += 1;
+        target = path.with_file_name(format!("{name}.broken-{stamp}-{suffix}.bak"));
+    }
+    fs::copy(path, &target)?;
+    Ok(Some(target))
+}
+
+fn protect_settings_file(path: &Path) {
+    match backup_settings_file(path) {
+        Ok(Some(backup)) => {
+            log::warn!("已备份原设置文件: {}", backup.display());
+            forget_unbacked_settings_file(path);
+        }
+        Ok(None) => forget_unbacked_settings_file(path),
+        Err(err) => {
+            log::error!(
+                "备份设置文件失败，保存设置将被拒绝以免覆盖原文件。路径: {}, 错误: {}",
+                path.display(),
+                err
+            );
+            let mut pending = unbacked_settings_files();
+            if !pending.iter().any(|existing| existing == path) {
+                pending.push(path.to_path_buf());
+            }
+        }
+    }
+}
+
+/// Refuse to overwrite a settings file whose content was not fully loaded
+/// until a backup of it exists. The backup is retried on every save.
+fn ensure_settings_file_backed_up(path: &Path) -> Result<(), AppError> {
+    let mut pending = unbacked_settings_files();
+    if !pending.iter().any(|existing| existing == path) {
+        return Ok(());
+    }
+    match backup_settings_file(path) {
+        Ok(backup) => {
+            if let Some(backup) = backup {
+                log::warn!("已备份原设置文件: {}", backup.display());
+            }
+            pending.retain(|existing| existing != path);
+            Ok(())
+        }
+        Err(err) => Err(AppError::Config(format!(
+            "设置文件未能完整读取且备份失败，为避免覆盖原文件已取消保存: {} ({err})",
+            path.display()
+        ))),
+    }
+}
+
 fn save_settings_file(settings: &AppSettings) -> Result<(), AppError> {
-    let mut normalized = settings.clone();
-    normalized.normalize_paths();
     let Some(path) = AppSettings::settings_path() else {
         return Err(AppError::Config("无法获取用户主目录".to_string()));
     };
+    save_settings_to_path(settings, &path)
+}
+
+fn save_settings_to_path(settings: &AppSettings, path: &Path) -> Result<(), AppError> {
+    ensure_settings_file_backed_up(path)?;
+    let mut normalized = settings.clone();
+    normalized.normalize_paths();
 
     let json = serde_json::to_string_pretty(&normalized)
         .map_err(|e| AppError::JsonSerialize { source: e })?;
-    crate::config::atomic_write(&path, json.as_bytes())?;
+    crate::config::atomic_write(path, json.as_bytes())?;
 
     Ok(())
 }
@@ -1579,6 +1758,121 @@ mod tests {
             !serde_json::from_value::<AppSettings>(value)
                 .unwrap()
                 .launch_on_startup
+        );
+    }
+
+    fn backups_in(dir: &Path) -> Vec<PathBuf> {
+        let mut found: Vec<PathBuf> = fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        name.starts_with("settings.json.broken-") && name.ends_with(".bak")
+                    })
+            })
+            .collect();
+        found.sort();
+        found
+    }
+
+    #[test]
+    fn settings_with_utf8_bom_load_completely_without_backup() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        fs::write(&path, "\u{feff}{\"language\":\"zh\",\"showInTray\":false}").unwrap();
+
+        let settings = AppSettings::load_from_path(&path);
+
+        assert_eq!(settings.language.as_deref(), Some("zh"));
+        assert!(!settings.show_in_tray);
+        assert!(backups_in(temp.path()).is_empty());
+    }
+
+    #[test]
+    fn settings_with_trailing_bytes_keep_the_first_object_and_back_up() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let original = "{\"language\":\"zh\",\"showInTray\":false}\n}\"stale\": true}";
+        fs::write(&path, original).unwrap();
+
+        let settings = AppSettings::load_from_path(&path);
+
+        assert_eq!(settings.language.as_deref(), Some("zh"));
+        assert!(!settings.show_in_tray);
+        let backups = backups_in(temp.path());
+        assert_eq!(backups.len(), 1);
+        assert_eq!(fs::read_to_string(&backups[0]).unwrap(), original);
+    }
+
+    #[test]
+    fn settings_with_one_invalid_field_keep_the_other_fields() {
+        let (settings, complete) = parse_settings_text(
+            r#"{"language":"zh","showInTray":"not-a-bool","currentProviderCodex":"line-a"}"#,
+        );
+        assert!(!complete);
+        assert_eq!(settings.language.as_deref(), Some("zh"));
+        assert_eq!(settings.current_provider_codex.as_deref(), Some("line-a"));
+        // The invalid field falls back to its serde default.
+        assert!(settings.show_in_tray);
+        // Missing keys keep their load-time defaults.
+        assert!(settings.unify_codex_session_history);
+    }
+
+    #[test]
+    fn valid_settings_parse_completely() {
+        let (settings, complete) =
+            parse_settings_text(r#"{"language":"zh","unifyCodexSessionHistory":false}"#);
+        assert!(complete);
+        assert!(!settings.unify_codex_session_history);
+        assert_eq!(
+            settings.settings_migration_version,
+            CURRENT_SETTINGS_MIGRATION_VERSION
+        );
+        let (_, empty_complete) = parse_settings_text("  \n");
+        assert!(empty_complete);
+        let (_, garbage_complete) = parse_settings_text("{\"language\":");
+        assert!(!garbage_complete);
+    }
+
+    #[test]
+    fn unreadable_settings_without_backup_refuse_to_be_overwritten() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        // A directory can be neither read as settings nor copied as a backup.
+        fs::create_dir(&path).unwrap();
+
+        let settings = AppSettings::load_from_path(&path);
+        assert!(settings.show_in_tray, "defaults are used in memory");
+        assert!(save_settings_to_path(&settings, &path).is_err());
+        assert!(path.is_dir(), "the unreadable entry is left alone");
+
+        // Once the entry is gone there is nothing left to protect.
+        fs::remove_dir(&path).unwrap();
+        save_settings_to_path(&settings, &path).expect("save after the entry is gone");
+        assert!(path.is_file());
+        assert!(backups_in(temp.path()).is_empty());
+    }
+
+    #[test]
+    fn failed_backup_is_retried_before_the_next_save() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        fs::create_dir(&path).unwrap();
+        let _ = AppSettings::load_from_path(&path);
+
+        // The entry becomes a readable file again: the next save backs it up
+        // before replacing it.
+        fs::remove_dir(&path).unwrap();
+        fs::write(&path, "{\"language\":\"zh\"").unwrap();
+        save_settings_to_path(&AppSettings::default(), &path).expect("backup then save");
+
+        let backups = backups_in(temp.path());
+        assert_eq!(backups.len(), 1);
+        assert_eq!(
+            fs::read_to_string(&backups[0]).unwrap(),
+            "{\"language\":\"zh\""
         );
     }
 

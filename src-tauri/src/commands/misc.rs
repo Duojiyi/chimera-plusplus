@@ -242,6 +242,78 @@ pub(crate) fn cli_execution_path() -> &'static std::ffi::OsStr {
     .as_os_str()
 }
 
+/// Windows 的 CLI 探测/执行 PATH：进程 PATH 在前，fnm 默认 Node 别名目录追加到末尾。
+///
+/// fnm 只通过 `fnm env` 在各终端里临时加 PATH，从图形界面启动的应用看不到
+/// node/npm 和 npm 全局命令；`<fnm 目录>\aliases\default` 是指向默认 Node 的稳定链接，
+/// Windows 上 node.exe、npm.cmd 和全局命令直接位于该目录（没有 `bin`）。
+/// 只追加实际存在的目录，PATH 里已有的条目始终优先。
+// Adapted from farion1231/cc-switch 3b1f11b6
+#[cfg(target_os = "windows")]
+pub(crate) fn windows_cli_execution_path() -> std::ffi::OsString {
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
+    let fnm_dirs = fnm_default_alias_dir_candidates(
+        std::env::var_os("FNM_DIR"),
+        &dirs::home_dir().unwrap_or_default(),
+        dirs::data_dir(),
+    )
+    .into_iter()
+    .filter(|dir| dir.is_dir())
+    .collect();
+    append_missing_path_dirs(inherited, fnm_dirs)
+}
+
+/// fnm 自己的基目录查找顺序：`FNM_DIR`、旧版 `~\.fnm`、`%APPDATA%\fnm`。
+/// 空的 `FNM_DIR` / home 被忽略，不会变成相对路径。调用方只保留存在的目录。
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn fnm_default_alias_dir_candidates(
+    fnm_dir: Option<std::ffi::OsString>,
+    home: &Path,
+    data_dir: Option<PathBuf>,
+) -> Vec<PathBuf> {
+    let mut bases = IndexSet::new();
+    if let Some(dir) = fnm_dir.filter(|value| !value.is_empty()) {
+        push_unique_path(&mut bases, PathBuf::from(dir));
+    }
+    if !home.as_os_str().is_empty() {
+        push_unique_path(&mut bases, home.join(".fnm"));
+    }
+    if let Some(data_dir) = data_dir {
+        push_unique_path(&mut bases, data_dir.join("fnm"));
+    }
+    bases
+        .into_iter()
+        .map(|base| base.join("aliases").join("default"))
+        .collect()
+}
+
+/// 把 `extra` 里 PATH 尚未包含的目录追加到末尾（比较时忽略大小写与尾部分隔符），
+/// 原有条目顺序不变。拼接失败时原样返回 `base`。
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn append_missing_path_dirs(base: std::ffi::OsString, extra: Vec<PathBuf>) -> std::ffi::OsString {
+    fn key(path: &Path) -> String {
+        path.to_string_lossy()
+            .replace('/', "\\")
+            .trim_end_matches('\\')
+            .to_ascii_lowercase()
+    }
+    let mut entries: Vec<PathBuf> = std::env::split_paths(&base).collect();
+    let mut seen: std::collections::HashSet<String> =
+        entries.iter().map(|p| key(p.as_path())).collect();
+    let mut changed = false;
+    for dir in extra {
+        if dir.as_os_str().is_empty() || !seen.insert(key(&dir)) {
+            continue;
+        }
+        entries.push(dir);
+        changed = true;
+    }
+    if !changed {
+        return base;
+    }
+    std::env::join_paths(entries).unwrap_or(base)
+}
+
 #[tauri::command]
 pub async fn run_tool_lifecycle_action(
     tools: Vec<String>,
@@ -312,6 +384,7 @@ fn run_tool_lifecycle_silently(command_line: &str, _label: &str) -> Result<(), S
     command
         .args(["/D", "/C"])
         .arg(&bat_file)
+        .env("PATH", windows_cli_execution_path())
         .creation_flags(CREATE_NO_WINDOW);
     let output = bounded_command_output(command, TOOL_LIFECYCLE_TIMEOUT);
     drop(script);
@@ -1703,7 +1776,7 @@ fn build_tool_search_paths(tool: &str) -> Vec<std::path::PathBuf> {
     }
 
     #[cfg(target_os = "windows")]
-    let path_env = std::env::var_os("PATH");
+    let path_env = Some(windows_cli_execution_path());
     #[cfg(not(target_os = "windows"))]
     let path_env = Some(cli_execution_path().to_os_string());
     extend_from_cli_path_env(&mut search_paths, path_env);
@@ -1815,9 +1888,7 @@ fn scan_cli_version(tool: &str) -> ShellProbe {
 
     let search_paths = build_tool_search_paths(tool);
     #[cfg(target_os = "windows")]
-    let current_path = std::env::var_os("PATH")
-        .map(|value| value.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let current_path = windows_cli_execution_path().to_string_lossy().into_owned();
 
     // 记录"可执行文件存在、但 `--version` 非零退出"时的首个诊断信息。
     // 这类信息比笼统的 "not installed" 有用得多，循环结束未探到版本时回传。
@@ -1891,6 +1962,11 @@ pub struct ToolInstallation {
     runnable: bool,
     /// 跑不起来时的诊断信息末尾若干行。
     error: Option<String>,
+    /// `--version` 真的跑完并以非 0 退出（命令自己报错）。超时被击杀、启动失败都不算：
+    /// 那只说明这次没探到，不能证明装坏了。Codex 的卸载重装自愈只认这个信号。
+    // Adapted from farion1231/cc-switch 2bcf953b
+    #[serde(skip)]
+    exited_with_error: bool,
     /// 由路径前缀推断的安装来源（nvm/homebrew/...），驱动 UI 徽章。
     source: String,
     /// 是否为 PATH 解析到的那处（= 命令行默认，也是升级会作用的目标）。
@@ -1976,6 +2052,7 @@ pub(crate) fn resolve_path_default(tool: &str) -> Option<std::path::PathBuf> {
     let mut command = Command::new("cmd");
     command
         .args(["/C", &format!("where {tool}")])
+        .env("PATH", windows_cli_execution_path())
         .creation_flags(CREATE_NO_WINDOW);
     let out = bounded_command_output(command, TOOL_PROBE_TIMEOUT).ok()?;
     if !out.status.success() {
@@ -2001,9 +2078,7 @@ fn enumerate_tool_installations(tool: &str) -> Vec<ToolInstallation> {
 
     let search_paths = build_tool_search_paths(tool);
     #[cfg(target_os = "windows")]
-    let current_path = std::env::var_os("PATH")
-        .map(|value| value.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let current_path = windows_cli_execution_path().to_string_lossy().into_owned();
     #[cfg(not(target_os = "windows"))]
     let current_path = cli_execution_path().to_string_lossy();
     let path_default = resolve_path_default(tool);
@@ -2037,12 +2112,12 @@ fn enumerate_tool_installations(tool: &str) -> Vec<ToolInstallation> {
                 bounded_command_output(command, TOOL_PROBE_TIMEOUT)
             };
 
-            let (version, runnable, error) = match output {
+            let (version, runnable, error, exited_with_error) = match output {
                 Ok(out) if out.status.success() => {
                     let stdout = decode_command_output(&out.stdout).trim().to_string();
                     let stderr = decode_command_output(&out.stderr).trim().to_string();
                     let raw = if stdout.is_empty() { stderr } else { stdout };
-                    (Some(extract_version(&raw)), true, None)
+                    (Some(extract_version(&raw)), true, None, false)
                 }
                 Ok(out) => {
                     let stderr = decode_command_output(&out.stderr).trim().to_string();
@@ -2054,9 +2129,9 @@ fn enumerate_tool_installations(tool: &str) -> Vec<ToolInstallation> {
                     } else {
                         Some(last_lines(detail, 4))
                     };
-                    (None, false, error)
+                    (None, false, error, true)
                 }
-                Err(e) => (None, false, Some(e.to_string())),
+                Err(e) => (None, false, Some(e.to_string()), false),
             };
 
             let is_path_default = path_default.as_ref() == Some(&real);
@@ -2068,6 +2143,7 @@ fn enumerate_tool_installations(tool: &str) -> Vec<ToolInstallation> {
                 version,
                 runnable,
                 error,
+                exited_with_error,
                 source: source.to_string(),
                 is_path_default,
                 // 复用上面 line ~1357 已 canonicalize 的真身,避免下游
@@ -2567,7 +2643,9 @@ fn installs_anchored_command(tool: &str, installs: &[ToolInstallation]) -> Optio
     // 来源**（codex_repair_command 内按 source/real 收窄，brew/volta/bun/system 交回下方
     // source-specific 锚定，避免误用 npm 重装）。runnable=true 的正常升级也走下方普通锚定
     // 路径（且因 codex 不在 prefers_official_update，不会再跑会假成功掩盖损坏的 `codex update`）。
-    if tool == "codex" && !inst.runnable {
+    // 只认 `--version` 真的退出报错：探测超时 / 启动失败的那处可能是好的，先卸载再装
+    // 一旦装失败就把旧版丢了；普通 `npm i -g` 失败时 npm 会回滚、旧版还在。
+    if tool == "codex" && !inst.runnable && inst.exited_with_error {
         if let Some(cmd) = codex_repair_command(&inst.path, &real) {
             return Some(cmd);
         }
@@ -4393,6 +4471,7 @@ mod tests {
                 version: None,
                 runnable: true,
                 error: None,
+                exited_with_error: false,
                 source: infer_install_source(Path::new(path)).to_string(),
                 is_path_default: is_default,
                 // 测试场景下不需要走 fs canonicalize——POSIX 锚定测试关心的是
@@ -4744,10 +4823,26 @@ mod tests {
             // set -e 下对半损坏包返回非 0 时仍继续 install）。
             let mut broken = inst("/Users/me/.nvm/versions/node/v22.14.0/bin/codex", true);
             broken.runnable = false;
+            broken.exited_with_error = true;
             assert_eq!(
                 installs_anchored_command("codex", &[broken]).as_deref(),
                 Some("PATH='/Users/me/.nvm/versions/node/v22.14.0/bin':\"$PATH\" /Users/me/.nvm/versions/node/v22.14.0/bin/npm uninstall -g @openai/codex || true; PATH='/Users/me/.nvm/versions/node/v22.14.0/bin':\"$PATH\" /Users/me/.nvm/versions/node/v22.14.0/bin/npm i -g @openai/codex@latest")
             );
+        }
+
+        #[test]
+        fn codex_probe_timeout_uses_plain_npm_not_uninstall() {
+            // `--version` 超时被击杀 / 启动失败：runnable=false 但不是命令自己报错，不能当成
+            // 装坏了，走普通锚定 npm 升级。
+            let mut probe_failed = inst("/Users/me/.nvm/versions/node/v22.14.0/bin/codex", true);
+            probe_failed.runnable = false;
+            probe_failed.error = Some("Command timed out after 10s".to_string());
+            let cmd = installs_anchored_command("codex", &[probe_failed]);
+            assert_eq!(
+                cmd.as_deref(),
+                Some("PATH='/Users/me/.nvm/versions/node/v22.14.0/bin':\"$PATH\" /Users/me/.nvm/versions/node/v22.14.0/bin/npm i -g @openai/codex@latest")
+            );
+            assert!(!cmd.unwrap().contains("uninstall"));
         }
 
         #[test]
@@ -4773,6 +4868,7 @@ mod tests {
                 version: None,
                 runnable: false,
                 error: None,
+                exited_with_error: true,
                 source: "homebrew".to_string(),
                 is_path_default: true,
                 real: std::path::PathBuf::from("/opt/homebrew/Cellar/codex/1.2.3/bin/codex"),
@@ -4788,6 +4884,7 @@ mod tests {
             // volta 装的坏 codex：回落到 `volta install`，不走 npm 重装。
             let mut broken = inst("/Users/me/.volta/bin/codex", true);
             broken.runnable = false;
+            broken.exited_with_error = true;
             assert_eq!(
                 installs_anchored_command("codex", &[broken]).as_deref(),
                 Some("/Users/me/.volta/bin/volta install @openai/codex")
@@ -4800,6 +4897,7 @@ mod tests {
             // （bun 目录下没有 npm，那条路径不存在、执行会直接失败）。
             let mut broken = inst("/Users/me/.bun/bin/codex", true);
             broken.runnable = false;
+            broken.exited_with_error = true;
             let cmd = installs_anchored_command("codex", &[broken]);
             assert_eq!(
                 cmd.as_deref(),
@@ -4832,6 +4930,7 @@ mod tests {
                 version: version.map(str::to_string),
                 runnable,
                 error: None,
+                exited_with_error: !runnable,
                 source: "nvm".to_string(),
                 is_path_default: false,
                 real: std::path::PathBuf::from("/x"),
@@ -4991,6 +5090,49 @@ mod tests {
             assert!(!is_valid_wsl_distro_name("distro with spaces"));
             assert!(!is_valid_wsl_distro_name(&"a".repeat(65)));
         }
+    }
+
+    #[test]
+    fn fnm_default_alias_dir_candidates_follow_fnm_base_dir_order() {
+        let home = Path::new("/home/tester");
+        let data_dir = PathBuf::from("/home/tester/AppData/Roaming");
+        let alias = |base: &str| PathBuf::from(base).join("aliases").join("default");
+
+        assert_eq!(
+            fnm_default_alias_dir_candidates(Some("/opt/fnm".into()), home, Some(data_dir.clone())),
+            vec![
+                alias("/opt/fnm"),
+                alias("/home/tester/.fnm"),
+                alias("/home/tester/AppData/Roaming/fnm"),
+            ]
+        );
+        // 空 FNM_DIR / home 被忽略，不会变成相对路径。
+        assert_eq!(
+            fnm_default_alias_dir_candidates(Some("".into()), Path::new(""), Some(data_dir)),
+            vec![alias("/home/tester/AppData/Roaming/fnm")]
+        );
+    }
+
+    #[test]
+    fn append_missing_path_dirs_keeps_existing_entries_first() {
+        let first = PathBuf::from("/usr/bin");
+        let fnm = PathBuf::from("/home/tester/.fnm/aliases/default");
+        let base = std::env::join_paths([first.clone()]).expect("join");
+
+        let merged = append_missing_path_dirs(base.clone(), vec![fnm.clone()]);
+        assert_eq!(
+            std::env::split_paths(&merged).collect::<Vec<_>>(),
+            vec![first.clone(), fnm.clone()]
+        );
+
+        // 已在 PATH 里（大小写或尾部分隔符不同）时不重复追加，原值不变。
+        let with_fnm = std::env::join_paths([fnm, first]).expect("join");
+        let upper = PathBuf::from("/HOME/tester/.fnm/aliases/default/");
+        assert_eq!(
+            append_missing_path_dirs(with_fnm.clone(), vec![upper]),
+            with_fnm
+        );
+        assert_eq!(append_missing_path_dirs(base.clone(), Vec::new()), base);
     }
 
     #[test]
