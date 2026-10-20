@@ -2,6 +2,7 @@
 //!
 //! Handles provider CRUD operations, switching, and configuration management.
 
+mod codex_ownership;
 mod endpoints;
 pub(crate) mod first_write;
 mod gemini_auth;

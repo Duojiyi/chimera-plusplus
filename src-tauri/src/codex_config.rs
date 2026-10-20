@@ -568,6 +568,7 @@ pub fn normalize_codex_third_party_auth_config(config_text: &str) -> Result<Stri
 /// Codex login state lives in `auth.json`; provider routing, endpoint, model,
 /// and provider-scoped bearer tokens live in `config.toml`. Provider switches
 /// should not overwrite the user's ChatGPT login cache.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn write_codex_live_config_atomic(config_text_opt: Option<&str>) -> Result<(), AppError> {
     let cfg = config_text_opt.unwrap_or("");
     crate::codex_live_write::write_codex_live_files(
@@ -2755,7 +2756,7 @@ fn set_codex_model_catalog_json_field(
     let generated_path = catalog_path
         .map(Path::to_path_buf)
         .unwrap_or_else(get_codex_model_catalog_path);
-    let owned_or_absent = doc.get("model_catalog_json").map_or(true, |item| {
+    let owned_or_absent = doc.get("model_catalog_json").is_none_or(|item| {
         item.as_str().is_some_and(|path| path.trim().is_empty())
             || resolve_catalog_path_in_doc(&doc, &generated_path).is_some()
     });
@@ -3734,6 +3735,7 @@ const CODEX_TOP_LEVEL_ROUTE_CREDENTIAL_KEYS: &[&str] =
 /// official bearer token would be sent there on the next request. This must
 /// strip every key a non-official line could route through, not just the
 /// ones that also happen to break the model catalog.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn prepare_codex_official_live_config_baseline(config_text: &str) -> Result<String, AppError> {
     if config_text.trim().is_empty() {
         return Ok(String::new());
@@ -4007,6 +4009,7 @@ pub fn keep_line_owned_codex_config_for_backfill(
 ///
 /// 统一会话开关开启时，官方配置在落盘前注入共享的 `custom` 路由
 /// （见 `inject_codex_unified_session_bucket`）。
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn write_codex_live_for_provider(
     category: Option<&str>,
     auth: &Value,

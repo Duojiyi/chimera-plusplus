@@ -821,7 +821,7 @@ describe("native tool editor ownership", () => {
         ),
       ).toHaveValue(appId);
       expect(
-        await screen.findByRole("heading", { name: "还没有安装 Skills" }),
+        await screen.findByRole("heading", { name: "尚未由 Chimera++ 管理 Skills" }),
       ).toBeVisible();
     },
   );

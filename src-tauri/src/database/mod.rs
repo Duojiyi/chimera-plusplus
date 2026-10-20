@@ -100,6 +100,14 @@ fn register_db_change_hook(conn: &Connection) {
 }
 
 impl Database {
+    pub(crate) fn with_connection<T>(
+        &self,
+        operation: impl FnOnce(&mut Connection) -> Result<T, AppError>,
+    ) -> Result<T, AppError> {
+        let mut conn = lock_conn!(self.conn);
+        operation(&mut conn)
+    }
+
     /// 初始化数据库连接并创建表
     ///
     /// 数据库文件位于 Chimera++ 自有配置目录。

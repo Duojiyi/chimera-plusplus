@@ -258,26 +258,19 @@ describe("Legacy Codex common-config ownership source guards", () => {
   });
 
   it("migrates atomically and infers opt-in against the original snippet", () => {
-    const settings = readRust("database/dao/settings.rs");
-    const migration = settings.slice(
-      settings.indexOf("pub(crate) fn migrate_legacy_codex_common_config("),
-      settings.indexOf("// --- 全局出站代理 ---"),
-    );
-    expect(migration).toContain("let tx = conn.transaction()?");
-    expect(migration).toContain("tx.commit()?");
-    expect(migration).toContain("explicit == Some(false)");
-    expect(migration).toMatch(
+    const ownership = readRust("services/provider/codex_ownership.rs");
+    expect(ownership).toContain("let tx = conn.transaction()?");
+    expect(ownership).toContain("tx.commit()?");
+    expect(ownership).toContain("explicit == Some(false)");
+    expect(ownership).toMatch(
       /settings_contain_common_config\([\s\S]*?&settings,\s*&old/,
     );
-    expect(migration).toContain("INSERT OR IGNORE INTO settings");
-    expect(migration).toContain("common_config_codex_legacy_backup_v1");
-    const imports = readRust("database/dao/providers.rs")
-      .split("pub fn sanitize_untrusted_codex_configs(")[1]
-      ?.split("pub fn normalize_codex_provider_wire_apis(")[0];
+    expect(ownership).toContain("INSERT OR IGNORE INTO settings");
+    expect(ownership).toContain("common_config_codex_legacy_backup_v1");
     expect(
-      imports.indexOf("migrate_legacy_codex_common_config()"),
+      ownership.indexOf("migrate_legacy_codex_common_config()?"),
     ).toBeLessThan(
-      imports.indexOf("sanitize_untrusted_codex_config(config, official)"),
+      ownership.indexOf("sanitize_untrusted_codex_config(config, official)"),
     );
   });
 });

@@ -481,6 +481,7 @@ impl ProxyService {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn rollback_hot_switch_preparation(
         &self,
         app_type: &AppType,
@@ -3733,6 +3734,7 @@ impl ProxyService {
         self.write_codex_live_verbatim(config)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn write_codex_live_for_provider(
         &self,
         config: &Value,
