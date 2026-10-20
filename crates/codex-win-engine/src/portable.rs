@@ -425,7 +425,10 @@ fn extract_msix(msix_path: &Path, dest: &Path) -> Result<String, EngineError> {
         let mut file = zip
             .by_index(idx)
             .map_err(|e| EngineError::Msix(format!("read zip entry {idx}: {e}")))?;
-        let zip_name = file.name().to_string();
+        let zip_name = file
+            .name()
+            .map_err(|e| EngineError::Msix(format!("read zip entry {idx} name: {e}")))?
+            .into_owned();
         let (decoded_components, was_percent_encoded) = decode_zip_entry_path(&zip_name)?;
         if file.is_dir() {
             continue;

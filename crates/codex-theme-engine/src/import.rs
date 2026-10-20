@@ -80,11 +80,15 @@ fn extract_and_place(
         let entry = archive
             .by_index(index)
             .map_err(|e| err(format!("读取压缩包条目失败: {e}")))?;
+        let entry_name = entry
+            .name()
+            .map_err(|e| err(format!("读取压缩包条目名称失败: {e}")))?
+            .into_owned();
         let Some(relative) = entry
             .enclosed_name()
             .and_then(|p| safe_entry_path(p.to_string_lossy().as_ref()))
         else {
-            return Err(err(format!("主题包含非法路径条目: {}", entry.name())));
+            return Err(err(format!("主题包含非法路径条目: {entry_name}")));
         };
         if entry.is_dir() {
             std::fs::create_dir_all(staging.join(&relative))
