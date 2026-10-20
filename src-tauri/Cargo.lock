@@ -902,7 +902,7 @@ dependencies = [
 [[package]]
 name = "codex-theme-engine"
 version = "0.1.0"
-source = "git+https://github.com/Duojiyi/chimera-plusplus.git?rev=bab496b9432d8d6c4570e944f0c79eae0c292bb8#bab496b9432d8d6c4570e944f0c79eae0c292bb8"
+source = "git+https://github.com/Duojiyi/chimera-plusplus.git?rev=ab9f5e3409e4d251280b44cedfab8dffd2f29160#ab9f5e3409e4d251280b44cedfab8dffd2f29160"
 dependencies = [
  "base64 0.23.1",
  "futures-util",
@@ -921,7 +921,7 @@ dependencies = [
 [[package]]
 name = "codex-win-engine"
 version = "0.1.0"
-source = "git+https://github.com/Duojiyi/chimera-plusplus.git?rev=bab496b9432d8d6c4570e944f0c79eae0c292bb8#bab496b9432d8d6c4570e944f0c79eae0c292bb8"
+source = "git+https://github.com/Duojiyi/chimera-plusplus.git?rev=ab9f5e3409e4d251280b44cedfab8dffd2f29160#ab9f5e3409e4d251280b44cedfab8dffd2f29160"
 dependencies = [
  "libc",
  "log",

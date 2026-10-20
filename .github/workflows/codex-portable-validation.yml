@@ -36,6 +36,12 @@ jobs:
           $engines = @($metadata.packages | Where-Object name -eq 'codex-win-engine')
           if ($engines.Count -ne 1) { throw 'Expected exactly one pinned Windows engine' }
           "ENGINE_MANIFEST=$($engines[0].manifest_path)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Verify the engine workspace lockfile
+        shell: pwsh
+        run: |
+          # Release packaging runs the engine examples with --locked.
+          cargo metadata --locked --format-version 1 --manifest-path "$env:ENGINE_MANIFEST" | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'The pinned engine Cargo.lock is out of date' }
       - name: Verify relocated native launcher and PE imports
         shell: pwsh
         run: cargo test --manifest-path "$env:ENGINE_MANIFEST" portable_launcher_survives_directory_move -- --nocapture
