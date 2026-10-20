@@ -478,7 +478,7 @@ mod tests {
         insert_legacy_codex_row(&db, "enabled", valid, r#"{"commonConfigEnabled":true}"#);
         let before = db.snapshot_provider_config_rows("codex").unwrap();
         {
-            let conn = lock_conn!(db.conn);
+            let conn = db.conn.lock().expect("database connection mutex poisoned");
             conn.execute_batch("CREATE TRIGGER reject_legacy_backup BEFORE INSERT ON settings WHEN NEW.key = 'common_config_codex_legacy_backup_v1' BEGIN SELECT RAISE(ABORT, 'fixture failure'); END;").unwrap();
         }
         assert!(db.migrate_legacy_codex_common_config().is_err());
