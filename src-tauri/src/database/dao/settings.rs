@@ -345,7 +345,7 @@ mod tests {
     use super::*;
 
     fn insert_legacy_codex_row(db: &Database, id: &str, config: &str, meta: &str) {
-        let conn = lock_conn!(db.conn);
+        let conn = db.conn.lock().expect("database connection mutex poisoned");
         conn.execute(
             "INSERT INTO providers (id, app_type, name, settings_config, meta) VALUES (?1, 'codex', ?1, ?2, ?3)",
             params![id, config, meta],
