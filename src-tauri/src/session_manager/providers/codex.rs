@@ -971,11 +971,25 @@ fn session_delete_backup_root(config_dir: &Path) -> PathBuf {
 /// Backups of earlier deletes kept besides the current one; older ones are
 /// removed so deleting sessions does not grow disk use without bound.
 const KEPT_SESSION_DELETE_BACKUPS: usize = 20;
+/// A backup younger than this is never pruned, so a large batch delete keeps
+/// every backup it made.
+const SESSION_DELETE_BACKUP_MIN_AGE: std::time::Duration =
+    std::time::Duration::from_secs(7 * 24 * 60 * 60);
 
-/// Remove the oldest delete backups beyond `keep`. Directory names start with
-/// a sortable timestamp; links and stray files are left alone, and the backup
-/// just made is never removed. Failures only log: the delete itself is safe.
+/// Remove the oldest delete backups beyond `keep` that are also older than
+/// [`SESSION_DELETE_BACKUP_MIN_AGE`]. Directory names start with a sortable
+/// timestamp; links and stray files are left alone, and the backup just made
+/// is never removed. Failures only log: the delete itself is safe.
 fn prune_session_delete_backups(root: &Path, current: &Path, keep: usize) {
+    prune_session_delete_backups_older_than(root, current, keep, SESSION_DELETE_BACKUP_MIN_AGE);
+}
+
+fn prune_session_delete_backups_older_than(
+    root: &Path,
+    current: &Path,
+    keep: usize,
+    min_age: std::time::Duration,
+) {
     let Ok(entries) = std::fs::read_dir(root) else {
         return;
     };
@@ -988,6 +1002,14 @@ fn prune_session_delete_backups(root: &Path, current: &Path, keep: usize) {
     generations.sort();
     let excess = generations.len().saturating_sub(keep);
     for old in generations.into_iter().take(excess) {
+        let old_enough = std::fs::metadata(&old)
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age >= min_age);
+        if !old_enough {
+            continue;
+        }
         if let Err(error) = std::fs::remove_dir_all(&old) {
             log::warn!(
                 "Failed to remove old session delete backup {}: {error}",
@@ -3321,7 +3343,11 @@ mod tests {
         let current = root.join("20261004_000000_d");
         std::fs::create_dir_all(&current).unwrap();
 
+        // Recent backups survive even beyond the count (a large batch delete).
         prune_session_delete_backups(root, &current, 1);
+        assert!(root.join("20261001_000000_a").exists());
+
+        prune_session_delete_backups_older_than(root, &current, 1, std::time::Duration::ZERO);
 
         assert!(!root.join("20261001_000000_a").exists());
         assert!(!root.join("20261002_000000_b").exists());

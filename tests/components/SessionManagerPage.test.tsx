@@ -532,7 +532,7 @@ describe("SessionManagerPage", () => {
       fireEvent.click(screen.getByRole("button", { name: /删除会话/i }));
       const dialog = await screen.findByRole("dialog");
       expect(dialog).toHaveTextContent("派生的子会话会一并删除");
-      expect(dialog).toHaveTextContent("只保留最近 20 次");
+      expect(dialog).toHaveTextContent("更早的只留最近 20 次");
       const confirm = within(dialog).getByRole("button", { name: "删除会话" });
       expect(confirm).toBeDisabled();
       fireEvent.click(

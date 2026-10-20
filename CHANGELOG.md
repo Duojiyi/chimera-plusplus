@@ -29,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Claude Code's new session id format keeps one session per conversation, restoring prompt caching on ChatGPT-account lines.
 - Reinstall the Codex CLI only when `codex --version` really fails, not when it is slow to start.
 - Windows: find Node and npm installed with fnm.
-- Back up a Codex session's conversation files before deleting it (backups/codex-session-delete in the data folder, newest 20 kept).
+- Back up a Codex session's conversation files before deleting it (backups/codex-session-delete in the data folder; the newest 20 and anything from the last 7 days are kept).
 - Balances: OpenRouter keys show their own spending limit, Moonshot balances are supported, an empty DeepSeek wallet is hidden when the other one has money, and amounts no longer show float noise.
 - An idle line could be offered for deletion and then refused; it now deletes.
 - Skills repositories fall back to another branch only when the branch does not exist, so network errors are reported as they are.
@@ -38,7 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Claude Desktop lists each 1M model once; the 1M header is also sent when a line declares a 1M window for a Claude model.
 - Codex session folders on Windows group regardless of case and slash direction; the usage chart axis uses 万 and 亿.
 - Skills/MCP switches keep a stable accessible state and clearer focus; the usage chart has better spacing, contrast and narrow-window layout.
-- Security: drop the zip 4 dependency (RUSTSEC-2026-0367/0368/0369), build the Codex engines with zip 9, and read ZIP archives with the deflate decoder only.
+- Security: drop the zip 4 dependency (RUSTSEC-2026-0367/0368/0369), build the Codex engines with zip 9, and read ZIP archives with the deflate and deflate64 decoders only.
 
 ## [2.8.6] - 2026-10-16
 

@@ -529,6 +529,7 @@ mod tests {
             Some(broken)
         );
         assert_eq!(db.snapshot_provider_config_rows("codex").unwrap(), before);
+        assert!(!db.should_auto_extract_config_snippet("codex").unwrap());
         // Imports carrying such text no longer fail their post-sync either.
         db.set_setting("common_config_codex", broken).unwrap();
         assert!(db.sanitize_untrusted_codex_configs().is_ok());

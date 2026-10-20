@@ -41,6 +41,12 @@ impl Database {
                 params![old],
             )?;
             tx.execute("DELETE FROM settings WHERE key = 'common_config_codex'", [])?;
+            // Cleared, not missing: startup must not extract a new snippet
+            // from the live config in its place.
+            tx.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('common_config_codex_cleared', 'true')",
+                [],
+            )?;
             tx.commit()?;
             log::warn!(
                 "Set aside unreadable Codex common config (settings key common_config_codex_unreadable_backup_v1)"

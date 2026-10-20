@@ -145,7 +145,8 @@ export function SessionDeleteDialog({
             {includesCodex ? (
               <li>
                 删除前会把会话文件和 Codex 索引数据库备份到 Chimera++ 数据目录的
-                backups\codex-session-delete，只保留最近 20 次。
+                backups/codex-session-delete；7
+                天内的备份都会保留，更早的只留最近 20 次。
               </li>
             ) : null}
           </ul>
