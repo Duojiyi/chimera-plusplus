@@ -36,8 +36,8 @@ pub use live::{
 pub(crate) use live::{
     build_effective_settings_with_common_config, codex_common_snippet,
     normalize_provider_common_config_for_storage, provider_exists_in_live_config,
-    strip_common_config_from_live_settings, sync_current_provider_for_app_to_live,
-    write_live_with_common_config, LiveSnapshot,
+    provider_uses_common_config, strip_common_config_from_live_settings,
+    sync_current_provider_for_app_to_live, write_live_with_common_config, LiveSnapshot,
 };
 pub(crate) use live::{sanitize_claude_settings_for_live, write_claude_provider_settings};
 
