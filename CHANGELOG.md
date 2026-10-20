@@ -1,16 +1,5 @@
 # Changelog
 
-## [2.8.7] - 2026-10-20
-
-### Fixed
-
-- Hardened Skills/MCP switch interactions with stable accessibility state, disabled-state handling, and clearer focus feedback.
-- Refined the usage chart layout, spacing, contrast, current-day emphasis, and narrow-window behavior.
-
-### Improved
-
-- Consolidated the liquid-glass UI styling and related session/configuration coverage.
-
 All notable changes to Chimera++ will be documented in this file.
 
 Entries numbered `2.x` are Chimera++ releases. The `3.x` entries below them are
@@ -20,6 +9,36 @@ numbers belong to a separate upstream line.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [2.8.7] - 2026-10-20
+
+### Changed
+
+- Restyle the whole interface with the liquid-glass look: one set of materials for the sidebar, toolbar, cards, forms, dialogs, menus and tooltips, with light and dark themes and fallbacks for reduced transparency, high contrast and systems without backdrop blur.
+- Save a Codex line and its shared config snippet in one step: the snippet may no longer override line-owned keys (model, catalog, routing, credentials), config.toml, the model catalog and auth.json are prepared in memory and written together with conflict checks, and a failed save is rolled back. Removing or disabling the snippet now removes only the values it wrote.
+- The shared Codex config snippet only holds shared settings now: keys that belong to a line (model, reasoning effort, response storage, catalog, routing, credentials) are moved out of an existing snippet into each line that used it, and are refused when typed into the snippet. A snippet that is not valid TOML is set aside (settings key `common_config_codex_unreadable_backup_v1`) instead of blocking Codex.
+- If config.toml points `model_catalog_json` at a catalog file of your own, a save or switch now stops with an explanation instead of replacing the pointer.
+- Codex → Chat: a notice Codex inserts between parallel tool results (for example when it resizes an image) no longer splits them, so strict upstreams such as DeepSeek stop rejecting the request with "No tool output found".
+- When Gemini reports that the input is too long, Codex now gets a context-overflow failure and compacts the conversation instead of stopping.
+- Read settings.json tolerantly (byte-order mark, a stray trailing value, one invalid field); a file that could not be fully read is backed up as settings.json.broken-<time>.bak before anything is saved over it.
+
+### Fixed
+
+- Gemini 3 thought signatures survive between turns, so the second tool call of a task is no longer refused.
+- Multi-agent messages keep their task text on Chat and Anthropic lines; an encrypted payload is reported instead of being dropped.
+- Claude Code's new session id format keeps one session per conversation, restoring prompt caching on ChatGPT-account lines.
+- Reinstall the Codex CLI only when `codex --version` really fails, not when it is slow to start.
+- Windows: find Node and npm installed with fnm.
+- Back up a Codex session's conversation files before deleting it (backups/codex-session-delete in the data folder, newest 20 kept).
+- Balances: OpenRouter keys show their own spending limit, Moonshot balances are supported, an empty DeepSeek wallet is hidden when the other one has money, and amounts no longer show float noise.
+- An idle line could be offered for deletion and then refused; it now deletes.
+- Skills repositories fall back to another branch only when the branch does not exist, so network errors are reported as they are.
+- One local Skill folder that cannot be read no longer hides every other unmanaged Skill.
+- Dark mode: the Codex version history list and the update banner are readable; Windows high contrast keeps the text of primary buttons and the current line visible; usage chart bars no longer overlap and today's bar is not cut off.
+- Claude Desktop lists each 1M model once; the 1M header is also sent when a line declares a 1M window for a Claude model.
+- Codex session folders on Windows group regardless of case and slash direction; the usage chart axis uses 万 and 亿.
+- Skills/MCP switches keep a stable accessible state and clearer focus; the usage chart has better spacing, contrast and narrow-window layout.
+- Security: drop the zip 4 dependency (RUSTSEC-2026-0367/0368/0369), build the Codex engines with zip 9, and read ZIP archives with the deflate decoder only.
 
 ## [2.8.6] - 2026-10-16
 
