@@ -68,7 +68,7 @@ http-body-util = "0.1"
 httparse = "1"
 tokio-rustls = "0.26"
 rustls = "0.23.45"
-webpki-roots = "0.26"
+webpki-roots = "1.0.10"
 rustls-native-certs = "0.8"
 regex = "1.10"
 rquickjs = { version = "0.8", features = ["array-buffer", "classes"] }
@@ -97,8 +97,8 @@ json-five = "0.3.1"
 sys-locale = "0.3"
 chimera-runtime = { git = "https://github.com/Duojiyi/chimera-plusplus.git", rev = "e6248cd934dca6aaf3d18b89ef93b1b3ac8aa5f3", package = "chimera-runtime" }
 chimera-platform = { git = "https://github.com/Duojiyi/chimera-plusplus.git", rev = "e6248cd934dca6aaf3d18b89ef93b1b3ac8aa5f3", package = "chimera-platform" }
-codex-win-engine = { git = "https://github.com/Duojiyi/chimera-plusplus.git", rev = "bab496b9432d8d6c4570e944f0c79eae0c292bb8", package = "codex-win-engine" }
-codex-theme-engine = { git = "https://github.com/Duojiyi/chimera-plusplus.git", rev = "bab496b9432d8d6c4570e944f0c79eae0c292bb8", package = "codex-theme-engine" }
+codex-win-engine = { git = "https://github.com/Duojiyi/chimera-plusplus.git", rev = "ab9f5e3409e4d251280b44cedfab8dffd2f29160", package = "codex-win-engine" }
+codex-theme-engine = { git = "https://github.com/Duojiyi/chimera-plusplus.git", rev = "ab9f5e3409e4d251280b44cedfab8dffd2f29160", package = "codex-theme-engine" }
 
 [target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = "2"
@@ -137,5 +137,5 @@ tempfile = "3"
 # Codex App Manager v0.5.16 (31bd3f23) with the zip 9 fix, kept on the
 # codex/zip-9-engine branch; chimera-runtime still names the upstream URL.
 [patch."https://github.com/Wangnov/Codex-App-Manager.git"]
-codex-theme-engine = { git = "https://github.com/Duojiyi/chimera-plusplus.git", rev = "bab496b9432d8d6c4570e944f0c79eae0c292bb8", package = "codex-theme-engine" }
-codex-win-engine = { git = "https://github.com/Duojiyi/chimera-plusplus.git", rev = "bab496b9432d8d6c4570e944f0c79eae0c292bb8", package = "codex-win-engine" }
+codex-theme-engine = { git = "https://github.com/Duojiyi/chimera-plusplus.git", rev = "ab9f5e3409e4d251280b44cedfab8dffd2f29160", package = "codex-theme-engine" }
+codex-win-engine = { git = "https://github.com/Duojiyi/chimera-plusplus.git", rev = "ab9f5e3409e4d251280b44cedfab8dffd2f29160", package = "codex-win-engine" }

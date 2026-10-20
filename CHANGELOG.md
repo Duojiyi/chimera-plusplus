@@ -38,7 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Claude Desktop lists each 1M model once; the 1M header is also sent when a line declares a 1M window for a Claude model.
 - Codex session folders on Windows group regardless of case and slash direction; the usage chart axis uses 万 and 亿.
 - Skills/MCP switches keep a stable accessible state and clearer focus; the usage chart has better spacing, contrast and narrow-window layout.
-- Security: drop the zip 4 dependency (RUSTSEC-2026-0367/0368/0369), build the Codex engines with zip 9, and read ZIP archives with the deflate and deflate64 decoders only.
+- Security: drop the zip 4 dependency (RUSTSEC-2026-0367/0368/0369), build the Codex engines with zip 9, read ZIP archives with the deflate and deflate64 decoders only, and update the bundled TLS root certificates and certificate verification (RUSTSEC-2026-0381/0382/0383).
 
 ## [2.8.6] - 2026-10-16
 
