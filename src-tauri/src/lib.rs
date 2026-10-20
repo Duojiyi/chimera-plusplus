@@ -1482,6 +1482,11 @@ pub fn run() {
 
                 recover_product_managed_live_configs(&state).await;
 
+                if let Err(error) =
+                    crate::commands::seed_legacy_codex_common_projection_on_startup(&state).await
+                {
+                    log::warn!("Failed to seed the legacy Codex common-config ledger: {error}");
+                }
                 initialize_common_config_snippets(&state);
 
                 // 检查 settings 表中的代理状态，自动恢复代理服务

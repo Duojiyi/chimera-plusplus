@@ -440,11 +440,17 @@
     box-shadow: none;
   }
   /* Preserve explicit system selection colours without browser text backplates. */
-  .chimera-shell .chimera-nav-item[aria-current="page"] {
+  .chimera-shell .chimera-nav-item[aria-current="page"],
+  .chimera-shell .provider-table-row.is-current,
+  .chimera-shell button.primary,
+  .chimera-shell .provider-page-heading button.provider-add {
     forced-color-adjust: none;
     color: HighlightText;
   }
-  .chimera-shell .chimera-nav-item[aria-current="page"] * {
+  .chimera-shell .chimera-nav-item[aria-current="page"] *,
+  .chimera-shell .provider-table-row.is-current *,
+  .chimera-shell button.primary *,
+  .chimera-shell .provider-page-heading button.provider-add * {
     color: inherit;
   }
   .chimera-shell

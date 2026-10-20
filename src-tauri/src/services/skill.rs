@@ -2068,7 +2068,18 @@ impl SkillService {
                 // 相同目录名且完整内容一致才合并，不把副本误报成冲突。
                 let physical_path = fs::canonicalize(&path)
                     .with_context(|| format!("解析 Skill 来源失败: {}", path.display()))?;
-                let content_hash = Self::compute_import_hash(&physical_path)?;
+                // One folder that cannot be hashed (a link inside, over the
+                // size budget, unreadable) must not hide every other skill.
+                let content_hash = match Self::compute_import_hash(&physical_path) {
+                    Ok(hash) => hash,
+                    Err(error) => {
+                        log::warn!(
+                            "跳过无法校验内容的 Skill 目录 {}: {error:#}",
+                            physical_path.display()
+                        );
+                        continue;
+                    }
+                };
                 unmanaged
                     .entry((dir_name.clone(), content_hash.clone()))
                     .and_modify(|s| {
@@ -6023,6 +6034,22 @@ mod scoped_import_regression_tests {
         let rows = SkillService::scan_unmanaged_scoped(&database, Some(AppType::Codex)).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].directory, "unmanaged");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial]
+    fn one_unhashable_skill_does_not_hide_the_others() {
+        let (_home, database) = context();
+        for directory in ["linked", "plain"] {
+            write_skill(&app_skill(&AppType::Codex, directory), directory);
+        }
+        let linked = app_skill(&AppType::Codex, "linked");
+        std::os::unix::fs::symlink(linked.join("SKILL.md"), linked.join("alias.md")).unwrap();
+
+        let rows = SkillService::scan_unmanaged_scoped(&database, Some(AppType::Codex)).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].directory, "plain");
     }
 
     #[test]

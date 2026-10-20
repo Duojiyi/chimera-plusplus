@@ -506,6 +506,36 @@ mod tests {
     }
 
     #[test]
+    fn unreadable_codex_common_text_is_set_aside_instead_of_blocking_codex() {
+        let db = Database::memory().unwrap();
+        let broken = "approval_policy = 'never'
+[broken";
+        db.set_setting("common_config_codex", broken).unwrap();
+        insert_legacy_codex_row(
+            &db,
+            "line",
+            r#"{"config":"model = 'gpt-test'
+"}"#,
+            r#"{"commonConfigEnabled":true}"#,
+        );
+        let before = db.snapshot_provider_config_rows("codex").unwrap();
+
+        assert!(!db.migrate_legacy_codex_common_config().unwrap());
+        assert_eq!(db.get_config_snippet("codex").unwrap(), None);
+        assert_eq!(
+            db.get_setting("common_config_codex_unreadable_backup_v1")
+                .unwrap()
+                .as_deref(),
+            Some(broken)
+        );
+        assert_eq!(db.snapshot_provider_config_rows("codex").unwrap(), before);
+        // Imports carrying such text no longer fail their post-sync either.
+        db.set_setting("common_config_codex", broken).unwrap();
+        assert!(db.sanitize_untrusted_codex_configs().is_ok());
+        assert_eq!(db.get_config_snippet("codex").unwrap(), None);
+    }
+
+    #[test]
     fn untrusted_import_infers_opt_in_before_policy_sanitization() {
         let db = Database::memory().unwrap();
         let old = "model_reasoning_effort = 'high'\ndisable_response_storage = true\napproval_policy = 'never'\n";

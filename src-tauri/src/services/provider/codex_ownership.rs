@@ -32,7 +32,21 @@ impl Database {
         if validate_codex_common_snippet(&old).is_ok() {
             return Ok((false, Vec::new()));
         }
-        let (clean, report) = sanitize_codex_common_snippet_with_report(&old)?;
+        let Ok((clean, report)) = sanitize_codex_common_snippet_with_report(&old) else {
+            // Text that is not even valid TOML was never applied (2.8.6
+            // skipped it). Keep it for recovery and stop using it, instead of
+            // failing every later Codex save, switch and import.
+            tx.execute(
+                "INSERT OR IGNORE INTO settings (key, value) VALUES ('common_config_codex_unreadable_backup_v1', ?1)",
+                params![old],
+            )?;
+            tx.execute("DELETE FROM settings WHERE key = 'common_config_codex'", [])?;
+            tx.commit()?;
+            log::warn!(
+                "Set aside unreadable Codex common config (settings key common_config_codex_unreadable_backup_v1)"
+            );
+            return Ok((false, Vec::new()));
+        };
         validate_codex_common_snippet(&clean)?;
         let rows = {
             let mut stmt = tx.prepare(
@@ -191,8 +205,11 @@ impl Database {
         // Preserve prior opt-in/model intent before the untrusted pass removes
         // permissions or other fields used by legacy subset inference.
         let mut common_report = match self.get_config_snippet("codex")? {
+            // Unreadable text is set aside by the migration below.
             Some(text) => {
-                crate::codex_key_ownership::sanitize_codex_common_snippet_with_report(&text)?.1
+                crate::codex_key_ownership::sanitize_codex_common_snippet_with_report(&text)
+                    .map(|(_, report)| report)
+                    .unwrap_or_default()
             }
             None => Default::default(),
         };

@@ -52,7 +52,10 @@ type DesiredItems = BTreeMap<Vec<String>, Item>;
 
 fn invalid_ledger() -> AppError {
     // Neither JSON/TOML parser diagnostics nor recorded values may escape.
-    AppError::Config("Codex 通用配置投影记录损坏或格式无效".to_string())
+    AppError::Config(format!(
+        "Codex 通用配置投影记录损坏或格式无效：{}（可删除该文件后重试，下次保存会重新生成）",
+        ledger_path().display()
+    ))
 }
 
 fn path_conflict(path: &[String]) -> AppError {

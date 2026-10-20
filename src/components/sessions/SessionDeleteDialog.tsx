@@ -143,7 +143,10 @@ export function SessionDeleteDialog({
               </li>
             ) : null}
             {includesCodex ? (
-              <li>删除前只备份 Codex 的索引数据库，会话内容本身无法恢复。</li>
+              <li>
+                删除前会把会话文件和 Codex 索引数据库备份到 Chimera++ 数据目录的
+                backups\codex-session-delete，只保留最近 20 次。
+              </li>
             ) : null}
           </ul>
 

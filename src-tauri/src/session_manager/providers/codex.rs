@@ -757,6 +757,9 @@ impl SessionCleanup {
         if !state_db_backups.is_empty() || !rollouts.is_empty() {
             self.write_backup_manifest(&state_db_backups, &rollouts)?;
         }
+        if let Some(root) = backup_dir.parent() {
+            prune_session_delete_backups(root, backup_dir, KEPT_SESSION_DELETE_BACKUPS);
+        }
         // history.jsonl is copied by its rewrite, under the same lock: Codex
         // holds that lock while it appends, and Windows refuses reads of a
         // locked range.
@@ -963,6 +966,35 @@ fn session_delete_backup_root(_config_dir: &Path) -> PathBuf {
 #[cfg(test)]
 fn session_delete_backup_root(config_dir: &Path) -> PathBuf {
     config_dir.join("session-delete-backups")
+}
+
+/// Backups of earlier deletes kept besides the current one; older ones are
+/// removed so deleting sessions does not grow disk use without bound.
+const KEPT_SESSION_DELETE_BACKUPS: usize = 20;
+
+/// Remove the oldest delete backups beyond `keep`. Directory names start with
+/// a sortable timestamp; links and stray files are left alone, and the backup
+/// just made is never removed. Failures only log: the delete itself is safe.
+fn prune_session_delete_backups(root: &Path, current: &Path, keep: usize) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    let mut generations: Vec<PathBuf> = entries
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .map(|entry| entry.path())
+        .filter(|path| path != current)
+        .collect();
+    generations.sort();
+    let excess = generations.len().saturating_sub(keep);
+    for old in generations.into_iter().take(excess) {
+        if let Err(error) = std::fs::remove_dir_all(&old) {
+            log::warn!(
+                "Failed to remove old session delete backup {}: {error}",
+                old.display()
+            );
+        }
+    }
 }
 
 const SESSION_BACKUP_ROLLOUTS_DIR: &str = "rollouts";
@@ -3272,6 +3304,30 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn session_delete_backups_keep_only_the_newest_generations() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path();
+        for name in [
+            "20261001_000000_a",
+            "20261002_000000_b",
+            "20261003_000000_c",
+        ] {
+            std::fs::create_dir_all(root.join(name).join("rollouts")).unwrap();
+        }
+        std::fs::write(root.join("notes.txt"), b"keep").unwrap();
+        let current = root.join("20261004_000000_d");
+        std::fs::create_dir_all(&current).unwrap();
+
+        prune_session_delete_backups(root, &current, 1);
+
+        assert!(!root.join("20261001_000000_a").exists());
+        assert!(!root.join("20261002_000000_b").exists());
+        assert!(root.join("20261003_000000_c").exists());
+        assert!(current.exists());
+        assert!(root.join("notes.txt").exists());
     }
 
     fn session_backup_generations(home: &Path) -> Vec<PathBuf> {

@@ -74,7 +74,9 @@ regex = "1.10"
 rquickjs = { version = "0.8", features = ["array-buffer", "classes"] }
 thiserror = "2.0"
 anyhow = "1.0"
-zip = "9.0"
+# Skills ZIPs and backups only need deflate; other decoders widen the parsing
+# surface for untrusted archives.
+zip = { version = "9.0", default-features = false, features = ["deflate"] }
 serde_yaml = "0.9"
 tempfile = "3"
 url = "2.5"

@@ -1502,8 +1502,23 @@
 
 .usage-bar-column {
   z-index: 1;
+  /* A date label wider than a dense column must not widen its track. */
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: 20px minmax(0, 1fr) 24px;
   gap: 4px;
+}
+
+.usage-bar-column > small {
+  justify-self: center;
+}
+
+/* Keep the edge labels inside the clipped chart. */
+.usage-bar-column:first-child > small {
+  justify-self: start;
+}
+
+.usage-bar-column.is-current > small {
+  justify-self: end;
 }
 
 .usage-bar-column > strong {
