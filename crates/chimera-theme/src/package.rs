@@ -158,7 +158,10 @@ pub fn import_codexskin(zip_bytes: &[u8]) -> Result<SkinPackage, ImportError> {
         let entry = archive
             .by_index(i)
             .map_err(|e| ImportError::CorruptArchive(e.to_string()))?;
-        let raw_name = entry.name().to_string();
+        let raw_name = entry
+            .name()
+            .map_err(|e| ImportError::CorruptArchive(e.to_string()))?
+            .into_owned();
         let is_dir = entry.is_dir();
         let is_symlink = entry.is_symlink();
         let declared_size = entry.size();
@@ -520,7 +523,10 @@ fn read_entry_capped<R: Read + std::io::Seek>(
     let entry = archive
         .by_index(index)
         .map_err(|e| ImportError::CorruptArchive(e.to_string()))?;
-    let name = entry.name().to_string();
+    let name = entry
+        .name()
+        .map_err(|e| ImportError::CorruptArchive(e.to_string()))?
+        .into_owned();
     let mut limited = entry.take(cap.saturating_add(1));
     let mut buf = Vec::new();
     limited.read_to_end(&mut buf)?;

@@ -217,7 +217,10 @@ fn plan_extraction(payload: &Path, limits: &InstallLimits) -> Result<ExtractionP
         let entry = archive
             .by_index(i)
             .map_err(|_| InstallError::MalformedArchive)?;
-        let raw = entry.name().to_string();
+        let raw = entry
+            .name()
+            .map_err(|_| InstallError::MalformedArchive)?
+            .into_owned();
 
         // A symlink would defer the containment decision to whatever opens it
         // later, which is exactly the decision this pass exists to make now.
@@ -360,7 +363,10 @@ fn extract_into(
         let mut entry = archive
             .by_index(i)
             .map_err(|_| InstallError::MalformedArchive)?;
-        let raw = entry.name().to_string();
+        let raw = entry
+            .name()
+            .map_err(|_| InstallError::MalformedArchive)?
+            .into_owned();
 
         // Pass one already refused everything unsafe; re-running the check here
         // keeps the guarantee local to the code that does the writing, so a

@@ -59,7 +59,7 @@ toml_edit = "0.22"
 url = "2"
 uuid = { version = "1", features = ["v4"] }
 winresource = "0.1"
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9.0", default-features = false, features = ["deflate"] }
 # Pinned MIT engine from Wangnov/Codex-App-Manager. Keeping this as an exact
 # git revision lets Chimera reuse the audited Windows installer without
 # copying a second implementation into this repository.
