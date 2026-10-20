@@ -483,7 +483,7 @@ fn encrypted_content_value_is_opaque(value: &str) -> bool {
             other => other,
         })
         .collect();
-    while canonical.len() % 4 != 0 {
+    while !canonical.len().is_multiple_of(4) {
         canonical.push('=');
     }
     let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(&canonical) else {
