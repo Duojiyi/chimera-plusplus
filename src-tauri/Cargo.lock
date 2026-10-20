@@ -88,15 +88,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
-name = "arbitrary"
-version = "1.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3d036a3c4ab069c7b410a2ce876bd74808d2d0888a82667669f8e783a898bf1"
-dependencies = [
- "derive_arbitrary",
-]
-
-[[package]]
 name = "arboard"
 version = "3.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -865,7 +856,7 @@ dependencies = [
  "webpki-roots 0.26.11",
  "windows-sys 0.61.2",
  "winreg 0.52.0",
- "zip 9.0.5",
+ "zip",
  "zstd 0.13.3",
 ]
 
@@ -883,7 +874,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.20",
- "zip 9.0.5",
+ "zip",
 ]
 
 [[package]]
@@ -948,6 +939,7 @@ checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 [[package]]
 name = "codex-theme-engine"
 version = "0.1.0"
+source = "git+https://github.com/Duojiyi/chimera-plusplus.git?rev=bab496b9432d8d6c4570e944f0c79eae0c292bb8#bab496b9432d8d6c4570e944f0c79eae0c292bb8"
 dependencies = [
  "base64 0.23.1",
  "futures-util",
@@ -960,12 +952,13 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "url",
- "zip 9.0.5",
+ "zip",
 ]
 
 [[package]]
 name = "codex-win-engine"
 version = "0.1.0"
+source = "git+https://github.com/Duojiyi/chimera-plusplus.git?rev=bab496b9432d8d6c4570e944f0c79eae0c292bb8#bab496b9432d8d6c4570e944f0c79eae0c292bb8"
 dependencies = [
  "libc",
  "log",
@@ -977,7 +970,7 @@ dependencies = [
  "uuid",
  "windows 0.62.2",
  "windows-sys 0.61.2",
- "zip 9.0.5",
+ "zip",
 ]
 
 [[package]]
@@ -1313,17 +1306,6 @@ checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
 dependencies = [
  "powerfmt",
  "serde_core",
-]
-
-[[package]]
-name = "derive_arbitrary"
-version = "1.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e567bd82dcff979e4b03460c307b3cdc9e96fde3d73bed1496d2bc75d9dd62a"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
 ]
 
 [[package]]
@@ -6049,7 +6031,6 @@ dependencies = [
  "tokio",
  "url",
  "windows-sys 0.60.2",
- "zip 4.6.1",
 ]
 
 [[package]]
@@ -8164,18 +8145,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
-]
-
-[[package]]
-name = "zip"
-version = "4.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "caa8cd6af31c3b31c6631b8f483848b91589021b28fffe50adada48d4f4d2ed1"
-dependencies = [
- "arbitrary",
- "crc32fast",
- "indexmap 2.14.1",
- "memchr",
 ]
 
 [[package]]

@@ -192,19 +192,23 @@ test("the app, its runtime crate and the release share one Codex engine revision
     if (header) table = header[1];
     else tables.set(table, `${tables.get(table) ?? ""}${line}\n`);
   }
-  const pinned = (name, tableName) =>
-    new RegExp(String.raw`^${name} = \{[^\n]*\brev = "([0-9a-f]{40})"`, "m").exec(tables.get(tableName) ?? "")?.[1];
+  const pinned = (name, tableName) => {
+    const match = new RegExp(String.raw`^${name} = \{[^\n]*\bgit = "([^"]+)"[^\n]*\brev = "([0-9a-f]{40})"`, "m").exec(
+      tables.get(tableName) ?? "",
+    );
+    return match ? { git: match[1], rev: match[2] } : undefined;
+  };
   const engine = pinned("codex-win-engine", "dependencies");
   assert.ok(engine, "codex-win-engine must be pinned to a full revision");
-  // chimera-runtime brings its own engine pin; an interim [patch] may only
-  // route it to the app's revision, never to a third one.
+  // chimera-runtime brings its own engine pin; the [patch] may only route it
+  // to the app's own engine source and revision, never to a third one.
   const patched = pinned("codex-win-engine", 'patch."https://github.com/Wangnov/Codex-App-Manager.git"');
-  if (patched !== undefined) assert.equal(patched, engine);
+  if (patched !== undefined) assert.deepEqual(patched, engine);
   const engines = lock
     .split(/\r?\n(?=\[\[package\]\])/)
     .filter((block) => /^\[\[package\]\]\r?\nname = "codex-win-engine"\r?\n/.test(block));
   assert.equal(engines.length, 1, "Cargo.lock must hold exactly one Windows engine");
-  assert.equal(readCargoLockRevision(lock, "codex-win-engine"), engine);
+  assert.equal(readCargoLockRevision(lock, "codex-win-engine"), engine.rev);
   const source = /\nsource = "([^"]+)"/.exec(engines[0])[1];
-  assert.equal(source.startsWith("git+https://www.github.com/"), patched !== undefined);
+  assert.equal(source, `git+${engine.git}?rev=${engine.rev}#${engine.rev}`);
 });
