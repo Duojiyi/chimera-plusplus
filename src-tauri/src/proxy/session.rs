@@ -239,7 +239,7 @@ pub fn extract_session_id(
     body: &serde_json::Value,
     client_format: &str,
 ) -> SessionIdResult {
-    if client_format == "claude" {
+    if client_format == "claude" || client_format == "claude-desktop" {
         if let Some(result) = extract_claude_session(headers, body) {
             return result;
         }
@@ -354,8 +354,26 @@ fn extract_from_metadata(body: &serde_json::Value) -> Option<SessionIdResult> {
 
 /// 从 user_id 解析 session_id
 ///
-/// 格式: `user_identifier_session_actual_session_id`
+/// 格式: `user_identifier_session_actual_session_id`，或 Claude Code 新版的
+/// JSON 字符串 `{"device_id":"..","account_uuid":"..","session_id":".."}`。
+/// JSON 形式只取 `session_id` 字段，不回退到 `_session_` 子串匹配，
+/// 避免其它字段里恰好出现的 `_session_` 文本被误当成会话。
+// Adapted from farion1231/cc-switch 797e0276
 pub(super) fn parse_session_from_user_id(user_id: &str) -> Option<String> {
+    let trimmed = user_id.trim();
+    if trimmed.starts_with('{') {
+        return serde_json::from_str::<serde_json::Value>(trimmed)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("session_id")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_string)
+            });
+    }
+
     // 查找 "_session_" 分隔符
     if let Some(pos) = user_id.find("_session_") {
         let session_id = &user_id[pos + 9..]; // "_session_" 长度为 9
@@ -622,5 +640,58 @@ mod tests {
         // 没有 "_session_" 分隔符的情况
         assert_eq!(parse_session_from_user_id("user_john_abc123"), None);
         assert_eq!(parse_session_from_user_id("_session_"), None);
+    }
+
+    #[test]
+    fn test_parse_session_from_json_user_id() {
+        let json_user_id = r#"{"device_id":"dev","account_uuid":"acc","session_id":"sess-123"}"#;
+        assert_eq!(
+            parse_session_from_user_id(json_user_id),
+            Some("sess-123".to_string())
+        );
+        assert_eq!(
+            parse_session_from_user_id(&format!(
+                "  {json_user_id}
+"
+            )),
+            Some("sess-123".to_string())
+        );
+        // JSON 里没有 session_id 时，不得回退到 `_session_` 子串匹配
+        assert_eq!(
+            parse_session_from_user_id(r#"{"device_id":"dev_session_leak"}"#),
+            None
+        );
+        assert_eq!(parse_session_from_user_id(r#"{"session_id":""}"#), None);
+        assert_eq!(parse_session_from_user_id("{not json_session_x"), None);
+    }
+
+    #[test]
+    fn test_json_user_id_keeps_session_stable_across_turns() {
+        let headers = HeaderMap::new();
+        let make = |text: &str| {
+            json!({
+                "metadata": {
+                    "user_id": r#"{"device_id":"d_session_x","session_id":"conv-1"}"#
+                },
+                "messages": [{"role": "user", "content": text}]
+            })
+        };
+        for client in ["claude", "claude-desktop"] {
+            let first = extract_session_id(&headers, &make("one"), client);
+            let second = extract_session_id(&headers, &make("two"), client);
+            assert_eq!(first.session_id, "conv-1");
+            assert_eq!(first.session_id, second.session_id);
+            assert_eq!(first.source, SessionIdSource::MetadataUserId);
+            assert!(first.client_provided);
+        }
+    }
+
+    #[test]
+    fn test_claude_desktop_uses_claude_session_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-claude-code-session-id", "hdr-1".parse().unwrap());
+        let result = extract_session_id(&headers, &json!({}), "claude-desktop");
+        assert_eq!(result.session_id, "hdr-1");
+        assert_eq!(result.source, SessionIdSource::Header);
     }
 }

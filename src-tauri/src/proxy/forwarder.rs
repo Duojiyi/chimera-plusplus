@@ -1412,7 +1412,7 @@ impl RequestForwarder {
 
             // 预计算确定性 Request ID（在 body 被 move 之前）
             // Session 提取优先级（与 session.rs extract_from_metadata 对齐）：
-            //   1. metadata.user_id 中的 _session_ 后缀
+            //   1. metadata.user_id 中的 session_id（JSON 字符串形式）或 _session_ 后缀
             //   2. metadata.session_id（直接字段）
             //   3. raw metadata.user_id（整串 fallback）
             //   4. x-session-id header
@@ -1664,6 +1664,13 @@ impl RequestForwarder {
                 if stripped != model {
                     codex_anthropic_one_m = true;
                     anthropic_body["model"] = Value::String(stripped.to_string());
+                }
+            }
+            // Without a [1m] suffix, an explicitly declared window >= 1M for the
+            // final upstream model in modelCatalog also needs the beta header.
+            if !codex_anthropic_one_m {
+                if let Some(model) = anthropic_body.get("model").and_then(|v| v.as_str()) {
+                    codex_anthropic_one_m = codex_model_declares_context_1m(provider, model);
                 }
             }
             if codex_impersonate_claude_code {
@@ -3541,13 +3548,52 @@ fn should_force_identity_encoding(
     is_streaming_request(endpoint, body, headers)
 }
 
+/// Whether the line explicitly declares a context window >= 1,000,000 for
+/// `model` in `modelCatalog.models[]`. Only explicit declarations count; the
+/// window is never inferred from the model name.
+// Adapted from BigPizzaV3/CodexPlusPlus (1.10 declared-window 1M beta header)
+fn codex_model_declares_context_1m(provider: &crate::provider::Provider, model: &str) -> bool {
+    const ONE_M_CONTEXT_WINDOW: u64 = 1_000_000;
+    let model = super::model_mapper::strip_one_m_suffix_for_upstream(model.trim());
+    let Some(models) = provider
+        .settings_config
+        .get("modelCatalog")
+        .and_then(|catalog| catalog.get("models"))
+        .and_then(|models| models.as_array())
+    else {
+        return false;
+    };
+    models.iter().any(|entry| {
+        let name_matches = entry
+            .get("model")
+            .and_then(|value| value.as_str())
+            .map(|name| super::model_mapper::strip_one_m_suffix_for_upstream(name.trim()))
+            .is_some_and(|name| name.eq_ignore_ascii_case(model));
+        if !name_matches {
+            return false;
+        }
+        let window = match entry
+            .get("contextWindow")
+            .or_else(|| entry.get("context_window"))
+        {
+            Some(Value::Number(n)) => n.as_u64(),
+            Some(Value::String(s)) => s.trim().parse::<u64>().ok(),
+            _ => None,
+        };
+        window.is_some_and(|w| w >= ONE_M_CONTEXT_WINDOW)
+    })
+}
+
 fn map_reqwest_send_error(error: reqwest::Error) -> ProxyError {
-    if error.is_timeout() {
-        ProxyError::Timeout(format!("上游请求超时: {}", error.without_url()))
-    } else if error.is_connect() {
-        ProxyError::ForwardFailed(format!("上游连接失败: {}", error.without_url()))
+    let is_timeout = error.is_timeout();
+    let is_connect = error.is_connect();
+    let detail = super::error::describe_reqwest_error(error);
+    if is_timeout {
+        ProxyError::Timeout(format!("上游请求超时: {detail}"))
+    } else if is_connect {
+        ProxyError::ForwardFailed(format!("上游连接失败: {detail}"))
     } else {
-        ProxyError::ForwardFailed(format!("上游请求发送失败: {}", error.without_url()))
+        ProxyError::ForwardFailed(format!("上游请求发送失败: {detail}"))
     }
 }
 
@@ -5004,6 +5050,44 @@ value"
         let mut p = test_provider_with_type(Some("anthropic"));
         p.settings_config = settings_config;
         p
+    }
+
+    #[test]
+    fn declared_1m_context_window_triggers_codex_anthropic_beta() {
+        let provider = provider_with_settings(json!({
+            "modelCatalog": { "models": [
+                { "model": "Claude-Sonnet-X", "contextWindow": 1_000_000 },
+                { "model": "claude-string-window", "contextWindow": "1048576" },
+                { "model": "claude-small", "contextWindow": 200_000 },
+                { "model": "claude-undeclared" },
+                { "model": "claude-suffixed[1m]", "context_window": 1_000_000 }
+            ]}
+        }));
+        assert!(codex_model_declares_context_1m(
+            &provider,
+            "claude-sonnet-x"
+        ));
+        assert!(codex_model_declares_context_1m(
+            &provider,
+            "claude-string-window"
+        ));
+        assert!(codex_model_declares_context_1m(
+            &provider,
+            "claude-suffixed"
+        ));
+        assert!(!codex_model_declares_context_1m(&provider, "claude-small"));
+        assert!(!codex_model_declares_context_1m(
+            &provider,
+            "claude-undeclared"
+        ));
+        assert!(!codex_model_declares_context_1m(
+            &provider,
+            "not-in-catalog"
+        ));
+        assert!(!codex_model_declares_context_1m(
+            &provider_with_settings(json!({})),
+            "claude-sonnet-x"
+        ));
     }
 
     fn body_with_image(model: &str) -> Value {

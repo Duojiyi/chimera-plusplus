@@ -206,6 +206,117 @@ pub(crate) fn is_empty_value(value: &Value) -> bool {
     }
 }
 
+/// The non-empty `extra_content` object of a Chat tool call or a Responses
+/// call item. Gemini's OpenAI-compatible endpoint puts the call's thought
+/// signature there (`extra_content.google.thought_signature`) and rejects the
+/// next turn with "Function call is missing a thought_signature" unless it is
+/// sent back unchanged.
+// Adapted from farion1231/cc-switch f2906db6
+pub(crate) fn tool_call_extra_content(source: &Value) -> Option<&Value> {
+    source
+        .get("extra_content")
+        .filter(|value| value.as_object().is_some_and(|object| !object.is_empty()))
+}
+
+/// Copy a non-empty `extra_content` from `source` to `target` (pass-through
+/// only; the content is never interpreted).
+pub(crate) fn copy_tool_call_extra_content(target: &mut Value, source: &Value) -> bool {
+    let Some(extra) = tool_call_extra_content(source) else {
+        return false;
+    };
+    let Some(object) = target.as_object_mut() else {
+        return false;
+    };
+    object.insert("extra_content".to_string(), extra.clone());
+    true
+}
+
+/// Placeholder Gemini documents for skipping thought-signature validation.
+/// It can degrade the model's reasoning, so it is only a last resort.
+const GEMINI_SKIP_THOUGHT_SIGNATURE: &str = "skip_thought_signature_validator";
+
+/// Fill the Gemini skip placeholder where a real thought signature is gone.
+///
+/// Signatures come back through `CodexChatHistoryStore`, which lives in
+/// memory: after a restart in the middle of a tool loop they are lost. Gemini
+/// 3+ validates only the current turn (after the last user message), and only
+/// the first tool call of each assistant step there, so only those calls get
+/// the placeholder; parallel calls after it and real signatures stay as they
+/// are. Other models are left byte-identical. Returns the number filled.
+// Adapted from farion1231/cc-switch 5089eb69
+pub(crate) fn fill_gemini_thought_signature_fallback(chat_body: &mut Value) -> usize {
+    if !chat_body
+        .get("model")
+        .and_then(Value::as_str)
+        .is_some_and(requires_gemini_thought_signature)
+    {
+        return 0;
+    }
+    let Some(messages) = chat_body.get_mut("messages").and_then(Value::as_array_mut) else {
+        return 0;
+    };
+    let turn_start = messages
+        .iter()
+        .rposition(|message| message.get("role").and_then(Value::as_str) == Some("user"))
+        .map_or(0, |index| index + 1);
+    let mut filled = 0;
+    for message in &mut messages[turn_start..] {
+        if message.get("role").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
+        let Some(first_call) = message
+            .get_mut("tool_calls")
+            .and_then(Value::as_array_mut)
+            .and_then(|calls| calls.first_mut())
+            .and_then(Value::as_object_mut)
+        else {
+            continue;
+        };
+        let has_signature = first_call
+            .get("extra_content")
+            .and_then(|extra| extra.pointer("/google/thought_signature"))
+            .and_then(Value::as_str)
+            .is_some_and(|signature| !signature.is_empty());
+        if has_signature {
+            continue;
+        }
+        let extra = first_call
+            .entry("extra_content")
+            .or_insert_with(|| json!({}));
+        if !extra.is_object() {
+            *extra = json!({});
+        }
+        let Some(extra) = extra.as_object_mut() else {
+            continue;
+        };
+        let google = extra.entry("google").or_insert_with(|| json!({}));
+        if !google.is_object() {
+            *google = json!({});
+        }
+        google["thought_signature"] = json!(GEMINI_SKIP_THOUGHT_SIGNATURE);
+        filled += 1;
+    }
+    filled
+}
+
+/// Gemini 3 and later (a relay prefix such as `google/` is allowed) enforce
+/// tool-call thought signatures.
+fn requires_gemini_thought_signature(model: &str) -> bool {
+    let name = model
+        .rsplit('/')
+        .next()
+        .unwrap_or(model)
+        .to_ascii_lowercase();
+    let Some(version) = name.strip_prefix("gemini-") else {
+        return false;
+    };
+    version
+        .split(|c: char| !c.is_ascii_digit())
+        .next()
+        .and_then(|major| major.parse::<u32>().ok())
+        .is_some_and(|major| major >= 3)
+}
+
 /// Leads the text of a tool result that has no matching tool call once it is
 /// sent as ordinary user content (Chat bridge, Anthropic bridge, xAI native
 /// Responses). Such results are typically the Codex desktop app's delegation
@@ -267,6 +378,125 @@ pub(crate) fn reject_codex_remote_compaction_items(body: &Value) -> Result<(), P
         ));
     }
     Ok(())
+}
+
+pub(crate) const CODEX_AGENT_MESSAGE_ENCRYPTED_UNSUPPORTED: &str = "此会话包含加密的多代理消息内容，当前线路经 Chat/Anthropic 协议转换后无法读取，继续会让对方代理收不到消息正文，因此本次请求未发送。请切回官方线路或原生 Responses 线路继续此会话，或新建会话。";
+
+/// The message item with its multi-agent payload turned into text, for the
+/// Chat and Anthropic bridges.
+///
+/// Codex multi-agent v2 sends an `agent_message` whose content is an
+/// `input_text` header ending in `Payload:` followed by an
+/// `encrypted_content` part. With a third-party model the payload is in fact
+/// the plain task text; the bridges dropped the unknown part, so the other
+/// agent got only the header and no task. Within that confirmed shape a
+/// plaintext payload becomes an `input_text` part in place. An
+/// `agent_message` that cannot be read that way (ciphertext, no header,
+/// object-shaped content) is refused before sending: `InvalidRequest`
+/// (HTTP 400, outside line health), as for remote compaction items, and the
+/// payload is never echoed. A `reasoning` item's `encrypted_content` field is
+/// not a content part and is not affected.
+///
+/// Adapted from BigPizzaV3/CodexPlusPlus dbd6b30
+pub(crate) fn codex_item_with_agent_payload_text(
+    item: &Value,
+) -> Result<std::borrow::Cow<'_, Value>, ProxyError> {
+    fn is_encrypted_part(part: &Value) -> bool {
+        part.get("type").and_then(Value::as_str) == Some("encrypted_content")
+    }
+    let unsupported =
+        || ProxyError::InvalidRequest(CODEX_AGENT_MESSAGE_ENCRYPTED_UNSUPPORTED.to_string());
+
+    // Only multi-agent messages carry a payload worth reading; other items
+    // keep their previous handling so replayed history is not newly refused.
+    if item.get("type").and_then(Value::as_str) != Some("agent_message") {
+        return Ok(std::borrow::Cow::Borrowed(item));
+    }
+    let parts = match item.get("content") {
+        Some(Value::Array(parts)) if parts.iter().any(is_encrypted_part) => parts,
+        Some(content @ Value::Object(_)) if is_encrypted_part(content) => {
+            return Err(unsupported());
+        }
+        _ => return Ok(std::borrow::Cow::Borrowed(item)),
+    };
+    let has_payload_header = parts.iter().any(|part| {
+        part.get("type").and_then(Value::as_str) == Some("input_text")
+            && part
+                .get("text")
+                .and_then(Value::as_str)
+                .is_some_and(|text| text.trim_end().ends_with("Payload:"))
+    });
+    if !has_payload_header {
+        return Err(unsupported());
+    }
+
+    let mut resolved = Vec::with_capacity(parts.len());
+    for part in parts {
+        if !is_encrypted_part(part) {
+            resolved.push(part.clone());
+            continue;
+        }
+        let payload = part
+            .get("encrypted_content")
+            .or_else(|| part.get("text"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if payload.trim().is_empty() || encrypted_content_value_is_opaque(payload) {
+            return Err(unsupported());
+        }
+        resolved.push(json!({"type": "input_text", "text": payload}));
+    }
+    let mut item = item.clone();
+    item["content"] = Value::Array(resolved);
+    Ok(std::borrow::Cow::Owned(item))
+}
+
+/// Whether an `encrypted_content` payload looks like real ciphertext rather
+/// than plain text: it carries control characters other than tab/newline, or
+/// it is one unbroken base64/base64url token of 32+ characters that decodes
+/// to bytes of which under 60% are printable ASCII (ciphertext decodes to
+/// near-uniform bytes, about 37% printable; base64 of text stays text).
+fn encrypted_content_value_is_opaque(value: &str) -> bool {
+    use base64::Engine as _;
+
+    if value
+        .chars()
+        .any(|c| c.is_control() && !matches!(c, '\t' | '\n' | '\r'))
+    {
+        return true;
+    }
+    let body = value.trim_end_matches('=');
+    if body.len() < 32
+        || !body
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'-' | b'_'))
+    {
+        return false;
+    }
+    // Map the base64url alphabet one character at a time; a `str::replace`
+    // with a two-character replacement would change the length.
+    let mut canonical: String = body
+        .chars()
+        .map(|c| match c {
+            '-' => '+',
+            '_' => '/',
+            other => other,
+        })
+        .collect();
+    while canonical.len() % 4 != 0 {
+        canonical.push('=');
+    }
+    let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(&canonical) else {
+        return false;
+    };
+    if decoded.is_empty() {
+        return false;
+    }
+    let printable = decoded
+        .iter()
+        .filter(|b| matches!(**b, 0x20..=0x7e | b'\t' | b'\n' | b'\r'))
+        .count();
+    printable * 5 < decoded.len() * 3
 }
 
 /// Exact, unescaped tags outside backtick code are protocol delimiters. Bare
@@ -554,5 +784,135 @@ mod inline_think_tests {
             result["tool_calls"][0]["function"]["arguments"],
             "<think>literal tool"
         );
+    }
+
+    #[test]
+    fn tool_call_extra_content_copies_only_non_empty_objects() {
+        let signature = json!({"google": {"thought_signature": "sig-abc"}});
+        let mut target = json!({"id": "call_1"});
+        assert!(copy_tool_call_extra_content(
+            &mut target,
+            &json!({"extra_content": signature})
+        ));
+        assert_eq!(target["extra_content"], signature);
+
+        for source in [
+            json!({}),
+            json!({"extra_content": {}}),
+            json!({"extra_content": null}),
+            json!({"extra_content": "sig"}),
+        ] {
+            let mut target = json!({"id": "call_1"});
+            assert!(!copy_tool_call_extra_content(&mut target, &source));
+            assert!(target.get("extra_content").is_none(), "{source}");
+        }
+    }
+
+    #[test]
+    fn encrypted_content_opacity_heuristic() {
+        // base64url ciphertext with `_`: must be decoded with a per-character
+        // alphabet map, or it would pass as plaintext.
+        assert!(encrypted_content_value_is_opaque(
+            "BU6X4ClyuwRNlt8ocboDTJXeJ3C5AkuU3SZvuAFKk9wlbrcASZLbJG22_0iR2iNs"
+        ));
+        assert!(encrypted_content_value_is_opaque("task\u{0}payload"));
+        for plaintext in [
+            "请审查 a.rs 并给出结论",
+            "Review a.rs and report back.\n\nThanks",
+            // base64 of ASCII text decodes back to printable text.
+            "cGxlYXNlX3Jldmlld19hLnJzX2FuZF9yZXBvcnRfYmFja19ub3c=",
+            "short_token",
+        ] {
+            assert!(!encrypted_content_value_is_opaque(plaintext), "{plaintext}");
+        }
+    }
+
+    fn assistant_call(id: &str, extra: Option<Value>) -> Value {
+        let mut call = json!({
+            "id": id,
+            "type": "function",
+            "function": {"name": "exec_command", "arguments": "{}"}
+        });
+        if let Some(extra) = extra {
+            call["extra_content"] = extra;
+        }
+        call
+    }
+
+    #[test]
+    fn gemini_fallback_fills_first_call_of_each_current_turn_step() {
+        let signed = json!({"google": {"thought_signature": "sig-real"}});
+        let mut body = json!({
+            "model": "gemini-3-pro-preview",
+            "messages": [
+                {"role": "user", "content": "old turn"},
+                {"role": "assistant", "tool_calls": [assistant_call("call_old", None)]},
+                {"role": "tool", "tool_call_id": "call_old", "content": "x"},
+                {"role": "user", "content": "current turn"},
+                {"role": "assistant", "tool_calls": [
+                    assistant_call("call_1", None),
+                    assistant_call("call_2", None)
+                ]},
+                {"role": "tool", "tool_call_id": "call_1", "content": "a"},
+                {"role": "tool", "tool_call_id": "call_2", "content": "b"},
+                {"role": "assistant", "tool_calls": [assistant_call("call_3", Some(signed.clone()))]},
+                {"role": "tool", "tool_call_id": "call_3", "content": "c"},
+                {"role": "assistant", "tool_calls": [
+                    assistant_call("call_4", Some(json!({"other": true})))
+                ]},
+                {"role": "tool", "tool_call_id": "call_4", "content": "d"}
+            ]
+        });
+
+        assert_eq!(fill_gemini_thought_signature_fallback(&mut body), 2);
+        let messages = body["messages"].as_array().unwrap();
+        // The previous turn is not validated and stays as it was.
+        assert!(messages[1]["tool_calls"][0].get("extra_content").is_none());
+        assert_eq!(
+            messages[4]["tool_calls"][0]["extra_content"]["google"]["thought_signature"],
+            GEMINI_SKIP_THOUGHT_SIGNATURE
+        );
+        // Parallel calls after the first one are left alone.
+        assert!(messages[4]["tool_calls"][1].get("extra_content").is_none());
+        // A real signature is never overwritten.
+        assert_eq!(messages[7]["tool_calls"][0]["extra_content"], signed);
+        // Other extra_content keys are kept next to the placeholder.
+        assert_eq!(messages[9]["tool_calls"][0]["extra_content"]["other"], true);
+        assert_eq!(
+            messages[9]["tool_calls"][0]["extra_content"]["google"]["thought_signature"],
+            GEMINI_SKIP_THOUGHT_SIGNATURE
+        );
+    }
+
+    #[test]
+    fn gemini_fallback_leaves_other_models_unchanged() {
+        for model in [
+            "gemini-2.5-pro",
+            "gpt-5.5",
+            "glm-5.3",
+            "gemma-4-27b",
+            "gemini-pro",
+        ] {
+            let mut body = json!({
+                "model": model,
+                "messages": [
+                    {"role": "user", "content": "hi"},
+                    {"role": "assistant", "tool_calls": [assistant_call("call_1", None)]}
+                ]
+            });
+            let before = body.clone();
+            assert_eq!(
+                fill_gemini_thought_signature_fallback(&mut body),
+                0,
+                "{model}"
+            );
+            assert_eq!(body, before, "{model}");
+        }
+        assert!(requires_gemini_thought_signature(
+            "google/gemini-3-pro-preview"
+        ));
+        assert!(requires_gemini_thought_signature("Gemini-4-Argon"));
+        assert!(requires_gemini_thought_signature("gemini-10-flash"));
+        assert!(!requires_gemini_thought_signature("gemini-2.5-flash"));
     }
 }

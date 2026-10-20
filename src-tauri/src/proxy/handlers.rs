@@ -795,7 +795,7 @@ async fn handle_codex_passthrough(
                 ctx.provider = provider;
             }
             log_forward_error(&state, &ctx, is_stream, &err.error).await;
-            return build_codex_proxy_error_response(&ctx, &endpoint, &err.error);
+            return build_codex_proxy_error_response(&ctx, &endpoint, &err.error, is_stream);
         }
     };
 
@@ -1395,6 +1395,7 @@ async fn handle_responses_for_app(
                                         &ctx,
                                         &state,
                                         is_stream,
+                                        is_stream,
                                         connection_guard2,
                                         bridge2,
                                         result2.xai_native_responses,
@@ -1432,7 +1433,7 @@ async fn handle_responses_for_app(
                 CodexModelRequestOutcome::Failed,
             );
             log_forward_error(&state, &ctx, is_stream, &err.error).await;
-            return build_codex_proxy_error_response(&ctx, &endpoint, &err.error);
+            return build_codex_proxy_error_response(&ctx, &endpoint, &err.error, is_stream);
         }
     };
 
@@ -1472,6 +1473,7 @@ async fn handle_responses_for_app(
         &ctx,
         &state,
         is_stream,
+        is_stream,
         connection_guard,
         codex_bridge,
         result.xai_native_responses,
@@ -1492,6 +1494,7 @@ async fn respond_on_codex_bridge(
     ctx: &RequestContext,
     state: &ProxyState,
     is_stream: bool,
+    overflow_as_failed_stream: bool,
     connection_guard: Option<ActiveConnectionGuard>,
     bridge: Option<CodexUpstreamProtocol>,
     xai_native_responses: bool,
@@ -1508,6 +1511,7 @@ async fn respond_on_codex_bridge(
                 ctx,
                 state,
                 is_stream,
+                overflow_as_failed_stream,
                 connection_guard,
                 tool_context,
             )
@@ -1519,6 +1523,7 @@ async fn respond_on_codex_bridge(
                 ctx,
                 state,
                 is_stream,
+                overflow_as_failed_stream,
                 connection_guard,
                 tool_context,
             )
@@ -1705,6 +1710,7 @@ async fn handle_responses_compact_for_app(
                                         &ctx,
                                         &state,
                                         is_stream,
+                                        false,
                                         connection_guard2,
                                         bridge2,
                                         result2.xai_native_responses,
@@ -1740,7 +1746,7 @@ async fn handle_responses_compact_for_app(
                 CodexModelRequestOutcome::Failed,
             );
             log_forward_error(&state, &ctx, is_stream, &err.error).await;
-            return build_codex_proxy_error_response(&ctx, &endpoint, &err.error);
+            return build_codex_proxy_error_response(&ctx, &endpoint, &err.error, is_stream);
         }
     };
 
@@ -1777,6 +1783,7 @@ async fn handle_responses_compact_for_app(
         &ctx,
         &state,
         is_stream,
+        false,
         connection_guard,
         codex_bridge,
         result.xai_native_responses,
@@ -1936,11 +1943,13 @@ async fn handle_codex_responses_namespace_restore(
         })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_codex_chat_to_responses_transform(
     response: super::hyper_client::ProxyResponse,
     ctx: &RequestContext,
     state: &ProxyState,
     is_stream: bool,
+    overflow_as_failed_stream: bool,
     connection_guard: Option<ActiveConnectionGuard>,
     tool_context: transform_codex_chat::CodexToolContext,
 ) -> Result<axum::response::Response, ProxyError> {
@@ -1949,8 +1958,10 @@ async fn handle_codex_chat_to_responses_transform(
     if !status.is_success() {
         // 上游 Chat 错误体形状与 Responses 不一致（如 MiniMax 的 base_resp、自定义 detail 字段）；
         // 直接透传会让 Codex 客户端无法识别错误码。这里统一转换为 Responses 风格
-        // `{"error": {message, type, code, param}}`，保留原始 HTTP 状态码。
-        return handle_codex_chat_error_response(response, ctx, status).await;
+        // `{"error": {message, type, code, param}}`，保留原始 HTTP 状态码
+        // （流式 /responses 的上下文超限除外，见 codex_context_overflow_failed_stream）。
+        return handle_codex_chat_error_response(response, ctx, status, overflow_as_failed_stream)
+            .await;
     }
 
     if is_stream || response.is_sse() {
@@ -2179,18 +2190,21 @@ async fn handle_codex_chat_to_responses_transform(
 /// `handle_codex_chat_error_response` (whose extraction logic also works for
 /// Anthropic's `{"error":{type,message}}`). It does not involve codex_chat_history
 /// (tool ids round-trip natively through Anthropic).
+#[allow(clippy::too_many_arguments)]
 async fn handle_codex_anthropic_to_responses_transform(
     response: super::hyper_client::ProxyResponse,
     ctx: &RequestContext,
     state: &ProxyState,
     is_stream: bool,
+    overflow_as_failed_stream: bool,
     connection_guard: Option<ActiveConnectionGuard>,
     codex_tool_context: transform_codex_chat::CodexToolContext,
 ) -> Result<axum::response::Response, ProxyError> {
     let status = response.status();
 
     if !status.is_success() {
-        return handle_codex_chat_error_response(response, ctx, status).await;
+        return handle_codex_chat_error_response(response, ctx, status, overflow_as_failed_stream)
+            .await;
     }
 
     // Preserve live streaming when the gateway marks SSE correctly or omits an
@@ -2434,10 +2448,13 @@ fn build_codex_anthropic_sse_response(
 /// Chat 错误体（如 MiniMax 的 `{"base_resp": {"status_code": 2013}}`），Codex
 /// 客户端的错误处理就无法对齐字段。这里读取上游 body、规整成
 /// `{"error": {message, type, code, param}}` 并保留原始 HTTP 状态码。
+/// `overflow_as_failed_stream` 为真（流式 `/responses`）时，上下文超限改为
+/// `response.failed` 事件流，见 `codex_context_overflow_failed_stream`。
 async fn handle_codex_chat_error_response(
     response: super::hyper_client::ProxyResponse,
     ctx: &RequestContext,
     status: axum::http::StatusCode,
+    overflow_as_failed_stream: bool,
 ) -> Result<axum::response::Response, ProxyError> {
     let body_timeout =
         if ctx.app_config.auto_failover_enabled && ctx.app_config.non_streaming_timeout > 0 {
@@ -2473,6 +2490,14 @@ async fn handle_codex_chat_error_response(
     };
 
     let responses_error = transform_codex_chat::chat_error_to_response_error(Some(&parsed_value));
+    if let Some(response) = codex_context_overflow_failed_stream(
+        &ctx.request_model,
+        &responses_error,
+        status,
+        overflow_as_failed_stream,
+    ) {
+        return Ok(response);
+    }
 
     strip_entity_headers_for_rebuilt_body(&mut response_headers);
     strip_hop_by_hop_response_headers(&mut response_headers);
@@ -2512,10 +2537,19 @@ fn build_codex_proxy_error_response(
     ctx: &RequestContext,
     endpoint: &str,
     error: &ProxyError,
+    is_stream: bool,
 ) -> Result<axum::response::Response, ProxyError> {
     let status = axum::http::StatusCode::from_u16(map_proxy_error_to_status(error))
         .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
     let body = codex_proxy_error_json(&ctx.provider.name, &ctx.request_model, endpoint, error);
+    if let Some(response) = codex_context_overflow_failed_stream(
+        &ctx.request_model,
+        &body,
+        status,
+        is_stream && is_codex_responses_stream_endpoint(endpoint),
+    ) {
+        return Ok(response);
+    }
     let body = serde_json::to_vec(&body).map_err(|e| {
         log::error!("[Codex] 序列化代理错误体失败: {e}");
         ProxyError::Internal(format!("Failed to serialize proxy error: {e}"))
@@ -2532,6 +2566,55 @@ fn build_codex_proxy_error_response(
             log::error!("[Codex] 构建代理错误响应失败: {e}");
             ProxyError::Internal(format!("Failed to build proxy error response: {e}"))
         })
+}
+
+/// Only `/responses` (with or without `/v1` and a query) may answer a
+/// context overflow as a failed stream; `/responses/compact` and
+/// `/chat/completions` keep their HTTP error.
+fn is_codex_responses_stream_endpoint(endpoint: &str) -> bool {
+    matches!(
+        endpoint.split('?').next(),
+        Some("/responses" | "/v1/responses")
+    )
+}
+
+/// Codex 只在 `response.failed` 事件里把 `context_length_exceeded` 当作上下文超限，
+/// 随后本地压缩历史并重试；同样的错误码放在裸 HTTP 400 里会被当成无效请求，
+/// 会话就此卡住。因此流式 `/responses` 请求遇到这种 400 时改为 HTTP 200 +
+/// `response.failed`；非流式调用方与其它错误保留原状态码。
+// Adapted from farion1231/cc-switch a94f997f
+fn codex_context_overflow_failed_stream(
+    model: &str,
+    body: &Value,
+    status: StatusCode,
+    overflow_as_failed_stream: bool,
+) -> Option<axum::response::Response> {
+    if !overflow_as_failed_stream
+        || status != StatusCode::BAD_REQUEST
+        || body.pointer("/error/code").and_then(Value::as_str) != Some("context_length_exceeded")
+    {
+        return None;
+    }
+    let response = json!({
+        "id": format!("resp_{}", uuid::Uuid::new_v4().simple()),
+        "object": "response",
+        "created_at": chrono::Utc::now().timestamp(),
+        "status": "failed",
+        "model": model,
+        "output": [],
+        "error": body["error"].clone(),
+    });
+    Some(
+        (
+            StatusCode::OK,
+            [
+                (axum::http::header::CONTENT_TYPE, "text/event-stream"),
+                (axum::http::header::CACHE_CONTROL, "no-cache"),
+            ],
+            super::providers::codex_responses_sse::response_failed(&response),
+        )
+            .into_response(),
+    )
 }
 
 fn codex_proxy_error_json(
@@ -3520,6 +3603,7 @@ mod tests {
                                 &ctx,
                                 &state,
                                 streaming,
+                                streaming,
                                 None,
                                 Default::default(),
                             )
@@ -3530,6 +3614,7 @@ mod tests {
                                 upstream,
                                 &ctx,
                                 &state,
+                                streaming,
                                 streaming,
                                 None,
                                 Default::default(),
@@ -4480,5 +4565,97 @@ data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\"}}\n
         assert_eq!(body["error"]["provider"], "HCAI");
         assert_eq!(body["error"]["model"], "gpt-5.5");
         assert_eq!(body["error"]["endpoint"], "/responses");
+    }
+
+    // Adapted from farion1231/cc-switch a94f997f
+    #[tokio::test]
+    async fn codex_context_overflow_reaches_streaming_responses_as_failed_event() {
+        use super::{codex_context_overflow_failed_stream, is_codex_responses_stream_endpoint};
+        use axum::http::StatusCode;
+
+        let overflow = ProxyError::UpstreamError {
+            status: 400,
+            body: Some(
+                json!({"error": {
+                    "code": 400,
+                    "status": "INVALID_ARGUMENT",
+                    "message": "The input token count exceeds the maximum number of tokens allowed 1048576."
+                }})
+                .to_string(),
+            ),
+        };
+        let body = codex_proxy_error_json("Gemini", "gemini-3-pro", "/responses", &overflow);
+        assert_eq!(body["error"]["code"], "context_length_exceeded");
+
+        let response = codex_context_overflow_failed_stream(
+            "gemini-3-pro",
+            &body,
+            StatusCode::BAD_REQUEST,
+            true,
+        )
+        .expect("a streaming overflow becomes response.failed");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["content-type"], "text/event-stream");
+        let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let sse = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(sse.starts_with("event: response.failed\n"));
+        assert!(!sse.contains("response.completed"));
+        let data = sse
+            .lines()
+            .find_map(|line| line.strip_prefix("data: "))
+            .unwrap();
+        let event: serde_json::Value = serde_json::from_str(data).unwrap();
+        assert_eq!(event["type"], "response.failed");
+        assert_eq!(event["response"]["status"], "failed");
+        assert_eq!(event["response"]["model"], "gemini-3-pro");
+        assert_eq!(event["response"]["output"], json!([]));
+        assert_eq!(
+            event["response"]["error"]["code"],
+            "context_length_exceeded"
+        );
+        assert_eq!(event["response"]["error"]["upstream_status"], 400);
+
+        // Non-streaming callers, other statuses and other errors keep HTTP.
+        assert!(codex_context_overflow_failed_stream(
+            "gemini-3-pro",
+            &body,
+            StatusCode::BAD_REQUEST,
+            false
+        )
+        .is_none());
+        assert!(codex_context_overflow_failed_stream(
+            "gemini-3-pro",
+            &body,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            true
+        )
+        .is_none());
+        let unrelated = ProxyError::UpstreamError {
+            status: 400,
+            body: Some(json!({"error": {"code": 400, "message": "Invalid API key"}}).to_string()),
+        };
+        let unrelated = codex_proxy_error_json("Gemini", "gemini-3-pro", "/responses", &unrelated);
+        assert_eq!(unrelated["error"]["code"], 400);
+        assert!(codex_context_overflow_failed_stream(
+            "gemini-3-pro",
+            &unrelated,
+            StatusCode::BAD_REQUEST,
+            true
+        )
+        .is_none());
+
+        for endpoint in ["/responses", "/v1/responses", "/v1/responses?beta=true"] {
+            assert!(is_codex_responses_stream_endpoint(endpoint), "{endpoint}");
+        }
+        for endpoint in [
+            "/responses/compact",
+            "/v1/responses/compact?beta=true",
+            "/chat/completions",
+            "/images/generations",
+        ] {
+            assert!(!is_codex_responses_stream_endpoint(endpoint), "{endpoint}");
+        }
     }
 }
