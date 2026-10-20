@@ -72,7 +72,7 @@ regex = "1.10"
 rquickjs = { version = "0.8", features = ["array-buffer", "classes"] }
 thiserror = "2.0"
 anyhow = "1.0"
-zip = "2.2"
+zip = "9.0"
 serde_yaml = "0.9"
 tempfile = "3"
 url = "2.5"
@@ -90,8 +90,8 @@ hmac = "0.12"
 json5 = "0.4"
 json-five = "0.3.1"
 sys-locale = "0.3"
-chimera-runtime = { git = "https://github.com/Duojiyi/chimera-plusplus.git", rev = "99dd217e96cdcc5c704dd07d61954865db284b8e", package = "chimera-runtime" }
-chimera-platform = { git = "https://github.com/Duojiyi/chimera-plusplus.git", rev = "99dd217e96cdcc5c704dd07d61954865db284b8e", package = "chimera-platform" }
+chimera-runtime = { git = "https://github.com/Duojiyi/chimera-plusplus.git", rev = "e6248cd934dca6aaf3d18b89ef93b1b3ac8aa5f3", package = "chimera-runtime" }
+chimera-platform = { git = "https://github.com/Duojiyi/chimera-plusplus.git", rev = "e6248cd934dca6aaf3d18b89ef93b1b3ac8aa5f3", package = "chimera-platform" }
 codex-win-engine = { git = "https://github.com/Wangnov/Codex-App-Manager.git", rev = "31bd3f23f74d6e263cbeb86cb210f8fe64e281d4", package = "codex-win-engine" }
 codex-theme-engine = { git = "https://github.com/Wangnov/Codex-App-Manager.git", rev = "31bd3f23f74d6e263cbeb86cb210f8fe64e281d4", package = "codex-theme-engine" }
 
@@ -128,3 +128,7 @@ strip = "symbols"
 [dev-dependencies]
 serial_test = "3"
 tempfile = "3"
+
+[patch."https://github.com/Wangnov/Codex-App-Manager.git"]
+codex-theme-engine = { path = "vendor/codex-app-manager/codex-theme-engine" }
+codex-win-engine = { path = "vendor/codex-app-manager/codex-win-engine" }

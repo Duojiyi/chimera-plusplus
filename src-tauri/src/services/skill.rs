@@ -3675,7 +3675,8 @@ impl SkillService {
 
         for index in 0..archive.len() {
             let mut file = archive.by_index(index)?;
-            if let Some(reason) = portable_archive_name_error(file.name()) {
+            let file_name = file.name()?.into_owned();
+            if let Some(reason) = portable_archive_name_error(&file_name) {
                 return Err(anyhow!(reason));
             }
             let enclosed = file

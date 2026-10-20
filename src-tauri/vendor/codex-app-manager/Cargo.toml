@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = [
+    "codex-theme-engine",
+    "codex-win-engine",
+]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+base64 = "0.23"
+libc = "0.2"
+log = "0.4"
+roxmltree = "0.21"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.11"
+thiserror = "2.0"
+tokio = "1"
+url = "2.5"
+uuid = { version = "1", features = ["v4"] }
+windows-sys = "0.61.2"
+zip = { version = "9.0", default-features = false, features = ["deflate"] }
