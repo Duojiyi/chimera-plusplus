@@ -5,6 +5,7 @@ import {
   extractCodexPromptPreview,
   formatSessionMessagePreview,
   getProviderLabel,
+  getSessionDirectoryGroupKey,
   groupSessionsByProviderAndDirectory,
   isArchivedSession,
   isTruncatedMessage,
@@ -17,6 +18,22 @@ import type {
 import type { SessionMeta } from "@/types";
 
 describe("session utils", () => {
+  it("groups Windows project directories regardless of case and separators", () => {
+    const key = getSessionDirectoryGroupKey("codex", "D:\\demo");
+    expect(getSessionDirectoryGroupKey("codex", "d:/demo/")).toBe(key);
+    expect(getSessionDirectoryGroupKey("codex", " D:\\Demo\\ ")).toBe(key);
+    expect(getSessionDirectoryGroupKey("codex", "\\\\host\\Share")).toBe(
+      getSessionDirectoryGroupKey("codex", "//HOST/share/"),
+    );
+    // POSIX stays case-sensitive; only the trailing slash is ignored.
+    expect(getSessionDirectoryGroupKey("codex", "/home/a/Proj/")).toBe(
+      getSessionDirectoryGroupKey("codex", "/home/a/Proj"),
+    );
+    expect(getSessionDirectoryGroupKey("codex", "/home/a/proj")).not.toBe(
+      getSessionDirectoryGroupKey("codex", "/home/a/Proj"),
+    );
+  });
+
   it("extracts Codex VS Code prompts after the request marker", () => {
     const content = [
       "# Context from my IDE setup:",

@@ -124,3 +124,34 @@ export function formatTokensShort(
   if (value >= 1e3) return `${(value / 1e3).toFixed(decimals)}K`;
   return value.toLocaleString();
 }
+
+const AXIS_TOKEN_UNITS: ReadonlyArray<readonly [number, string]> = [
+  [1e11, "千亿"],
+  [1e8, "亿"],
+  [1e7, "千万"],
+  [1e4, "万"],
+];
+
+/**
+ * Short token-axis tick: the shortest of 千亿 / 亿 / 千万 / 万 that shows the
+ * value with at most one decimal, so 50,000,000 reads "5千万" rather than
+ * "50000k" or "5000万". Adapted from farion1231/cc-switch b76e83c3
+ */
+export function formatAxisTokens(value: number): string {
+  if (!Number.isFinite(value) || value === 0) return "0";
+  const abs = Math.abs(value);
+  if (abs < 1e4) return String(Math.round(value));
+  let best: string | null = null;
+  for (const [size, unit] of AXIS_TOKEN_UNITS) {
+    if (abs < size) continue;
+    const scaled = value / size;
+    const tenths = Math.round(scaled * 10);
+    if (Math.abs(scaled * 10 - tenths) > 1e-6) continue;
+    const label = `${tenths / 10}${unit}`;
+    if (best === null || label.length < best.length) best = label;
+  }
+  if (best !== null) return best;
+  return abs >= 1e8
+    ? `${(value / 1e8).toFixed(1)}亿`
+    : `${(value / 1e4).toFixed(1)}万`;
+}
