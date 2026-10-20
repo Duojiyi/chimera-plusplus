@@ -2266,17 +2266,16 @@ fn switch_claude_syncs_deletions_from_live_into_common_config() {
     );
 }
 
-/// Codex 版切换自动回写：live 里新增的共享键被捕获进通用配置片段并传递给
-/// 下一个供应商；供应商专属字段、密钥与 cc-switch 注入产物绝不进片段；
-/// 回填后旧供应商的存储配置不残留片段内容（autosync 先于 strip，值必然匹配）。
+/// Codex switches do not sync live edits into the common snippet.
+/// The snippet remains explicit user intent rather than learning local changes.
 #[test]
-fn switch_codex_syncs_shared_keys_from_live_into_common_config() {
+fn switch_codex_keeps_live_changes_out_of_common_config() {
     let _guard = test_mutex().lock().expect("acquire test mutex");
     reset_test_fs();
     let _home = ensure_test_home();
 
-    // A 激活状态下的 live：A 专属路由 + 已共享的 [tui] + 用户刚加的
-    // disable_response_storage + cc-switch 注入产物 + MCP 同步投影
+    // Outgoing provider A has its own route, a current [tui] snippet,
+    // a cc-switch web_search sentinel, and injected/MCP projection artifacts.
     // + 顶层 wire_api（无 model_provider 时的 fallback 写法，属 A 的路由语义）
     // + 历史错误格式 [mcp.servers]（sync_all_enabled 清不掉的孤儿形态）
     let live_config = r#"model = "gpt-5.5"
@@ -2285,7 +2284,6 @@ wire_api = "chat"
 experimental_bearer_token = "sk-a-live-secret"
 model_catalog_json = "cc-switch-model-catalog.json"
 web_search = "disabled"
-disable_response_storage = true
 
 [tui]
 notifications = true
@@ -2359,8 +2357,8 @@ command = "ghost-cmd"
         .expect("read snippet")
         .expect("snippet present");
     assert!(
-        snippet.contains("disable_response_storage = true"),
-        "newly added shared key should be captured, got: {snippet}"
+        !snippet.contains("web_search"),
+        "Codex live edits must not be captured into the explicit common snippet, got: {snippet}"
     );
     assert!(
         snippet.contains("notifications = true"),
@@ -2387,8 +2385,8 @@ command = "ghost-cmd"
     let live_after = std::fs::read_to_string(chimera_plus_plus_lib::get_codex_config_path())
         .expect("read config.toml after switch");
     assert!(
-        live_after.contains("disable_response_storage = true"),
-        "shared key should propagate to the next provider's live, got: {live_after}"
+        live_after.contains("notifications = true"),
+        "explicit shared snippet should propagate to the next provider's live, got: {live_after}"
     );
     assert!(
         live_after.contains("model_provider = \"bprov\""),
@@ -2434,7 +2432,6 @@ command = "ghost-cmd"
         "provider-owned top-level wire_api must survive backfill, got: {stored_a_config}"
     );
     for forbidden in [
-        "disable_response_storage",
         "notifications",
         "mcp_servers",
         "experimental_bearer_token",
@@ -2447,15 +2444,15 @@ command = "ghost-cmd"
     }
 }
 
-/// Codex 版删除同步：用户在 live 里删掉一个已共享的键后，切换应把删除
-/// 同步进通用配置，且不会在切到下一个供应商时被重新注入（否则"删不掉"）。
+/// Codex common snippets remain explicit user intent when live differs.
+/// Switching applies the saved snippet without silently rewriting it.
 #[test]
-fn switch_codex_syncs_deletions_from_live_into_common_config() {
+fn switch_codex_keeps_explicit_common_config_when_live_differs() {
     let _guard = test_mutex().lock().expect("acquire test mutex");
     reset_test_fs();
     let _home = ensure_test_home();
 
-    // 片段里有两个共享键，但用户已在 live 里删掉 disable_response_storage
+    // Live omits web_search, while the explicit common snippet still contains it.
     let live_config = r#"model_provider = "aprov"
 
 [tui]
@@ -2498,7 +2495,7 @@ wire_api = "responses"
         .db
         .set_config_snippet(
             AppType::Codex.as_str(),
-            Some("disable_response_storage = true\n\n[tui]\nnotifications = true\n".to_string()),
+            Some("web_search = \"enabled\"\n\n[tui]\nnotifications = true\n".to_string()),
         )
         .expect("seed codex common config snippet");
 
@@ -2510,8 +2507,8 @@ wire_api = "responses"
         .expect("read snippet")
         .expect("snippet present");
     assert!(
-        !snippet.contains("disable_response_storage"),
-        "deleted shared key must be removed from the snippet, got: {snippet}"
+        snippet.contains("web_search = \"enabled\""),
+        "explicitly saved shared key must remain in the snippet, got: {snippet}"
     );
     assert!(
         snippet.contains("notifications = true"),
@@ -2521,8 +2518,8 @@ wire_api = "responses"
     let live_after = std::fs::read_to_string(chimera_plus_plus_lib::get_codex_config_path())
         .expect("read config.toml after switch");
     assert!(
-        !live_after.contains("disable_response_storage"),
-        "deleted shared key must not be re-injected into the next provider, got: {live_after}"
+        live_after.contains("web_search = \"enabled\""),
+        "explicitly saved shared key should be applied to the next provider, got: {live_after}"
     );
     assert!(
         live_after.contains("notifications = true"),

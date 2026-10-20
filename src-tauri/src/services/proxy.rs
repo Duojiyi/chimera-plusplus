@@ -4442,7 +4442,7 @@ mod tests {
         let service = ProxyService::new(db.clone());
         let old = service.start().await.expect("start old listener");
         seed_codex_model_template();
-        db.set_config_snippet("codex", Some("disable_response_storage = true\n".into()))
+        db.set_config_snippet("codex", Some("web_search = \"enabled\"\n".into()))
             .expect("set common snippet");
         let mut provider = Provider::with_id(
             "codex-port".into(),
@@ -8025,11 +8025,8 @@ model = "gpt-5.1-codex"
         crate::settings::reload_settings().expect("reload settings");
 
         let db = Arc::new(Database::memory().expect("init db"));
-        db.set_config_snippet(
-            "codex",
-            Some("disable_response_storage = true\n".to_string()),
-        )
-        .expect("set common config snippet");
+        db.set_config_snippet("codex", Some("web_search = \"enabled\"\n".to_string()))
+            .expect("set common config snippet");
 
         let service = ProxyService::new(db.clone());
 
@@ -8072,7 +8069,7 @@ base_url = "https://codex.example/v1"
             .expect("config string");
 
         assert!(
-            config.contains("disable_response_storage = true"),
+            config.contains("web_search = \"enabled\""),
             "common config should be applied into Codex restore backup"
         );
     }
@@ -8828,7 +8825,7 @@ requires_openai_auth = true
             .expect("start proxy server");
 
         seed_codex_model_template();
-        db.set_config_snippet("codex", Some("disable_response_storage = true\n".into()))
+        db.set_config_snippet("codex", Some("web_search = \"enabled\"\n".into()))
             .expect("set common snippet");
 
         let mut provider_a = Provider::with_id(

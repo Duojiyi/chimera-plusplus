@@ -204,3 +204,94 @@ pub fn categorize_error(error: &reqwest::Error) -> ErrorCategory {
         ErrorCategory::Retryable
     }
 }
+
+/// 沿 `source()` 链把错误原因用 `: ` 拼接，相邻重复的片段只保留一次。
+// Adapted from farion1231/cc-switch 0d326a4c
+pub fn describe_error_chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(err) = current {
+        let text = err.to_string();
+        if !text.is_empty() && parts.last() != Some(&text) {
+            parts.push(text);
+        }
+        current = err.source();
+    }
+    parts.join(": ")
+}
+
+/// 描述 reqwest 错误：先去掉 URL（可能带 `?key=` 等凭据），再展开原因链。
+pub fn describe_reqwest_error(error: reqwest::Error) -> String {
+    describe_error_chain(&error.without_url())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fmt;
+
+    #[derive(Debug)]
+    struct Layer {
+        message: &'static str,
+        inner: Option<Box<Layer>>,
+    }
+
+    impl fmt::Display for Layer {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str(self.message)
+        }
+    }
+
+    impl std::error::Error for Layer {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            self.inner
+                .as_deref()
+                .map(|inner| inner as &(dyn std::error::Error + 'static))
+        }
+    }
+
+    #[test]
+    fn error_chain_includes_innermost_cause() {
+        let err = Layer {
+            message: "client error (Connect)",
+            inner: Some(Box::new(Layer {
+                message: "tcp connect error",
+                inner: Some(Box::new(Layer {
+                    message: "Connection refused (os error 111)",
+                    inner: None,
+                })),
+            })),
+        };
+        assert_eq!(
+            describe_error_chain(&err),
+            "client error (Connect): tcp connect error: Connection refused (os error 111)"
+        );
+    }
+
+    #[test]
+    fn error_chain_dedups_adjacent_repeats() {
+        let err = Layer {
+            message: "same",
+            inner: Some(Box::new(Layer {
+                message: "same",
+                inner: Some(Box::new(Layer {
+                    message: "different",
+                    inner: None,
+                })),
+            })),
+        };
+        assert_eq!(describe_error_chain(&err), "same: different");
+    }
+
+    #[tokio::test]
+    async fn reqwest_error_description_drops_url_secrets() {
+        let err = reqwest::Client::new()
+            .get("http://127.0.0.1:1/v1/models?key=SECRET-TOKEN")
+            .send()
+            .await
+            .expect_err("port 1 should refuse the connection");
+        let text = describe_reqwest_error(err);
+        assert!(!text.contains("SECRET-TOKEN"), "{text}");
+        assert!(!text.contains("127.0.0.1:1/v1"), "{text}");
+    }
+}

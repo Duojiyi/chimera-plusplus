@@ -929,18 +929,31 @@ describe("liquid glass page cascade safeguards", () => {
   });
 
   it("preserves explicit system selection colours for every selected navigation item", () => {
+    const normalize = (selector: string) =>
+      selector.replace(/\s+/g, " ").trim();
     const selections: Rule[] = [];
     shell.walkAtRules("media", (media) => {
       if (media.params !== "(forced-colors: active)") return;
       media.walkRules((rule) => {
         if (
-          rule.selector ===
-          '.chimera-shell .chimera-nav-item[aria-current="page"]'
+          list
+            .comma(rule.selector)
+            .map(normalize)
+            .includes('.chimera-shell .chimera-nav-item[aria-current="page"]')
         )
           selections.push(rule);
       });
     });
     expect(selections).toHaveLength(1);
+    // Highlight-filled controls need the same treatment, or the forced-colour
+    // backplate hides their HighlightText label.
+    expect(list.comma(selections[0].selector).map(normalize)).toEqual(
+      expect.arrayContaining([
+        ".chimera-shell .provider-table-row.is-current",
+        ".chimera-shell button.primary",
+        ".chimera-shell .provider-page-heading button.provider-add",
+      ]),
+    );
     const declarations = new Map<string, string>();
     selections[0].walkDecls((declaration) => {
       declarations.set(declaration.prop, declaration.value);

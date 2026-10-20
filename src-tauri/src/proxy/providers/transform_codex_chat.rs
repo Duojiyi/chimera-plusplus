@@ -5,8 +5,10 @@
 //! OpenAI-compatible Chat Completions endpoint.
 
 use super::codex_chat_common::{
-    append_reasoning_content, extract_reasoning_field_text, extract_reasoning_summary_text,
-    normalize_inline_think, reject_codex_remote_compaction_items, response_function_call_item,
+    append_reasoning_content, codex_item_with_agent_payload_text, copy_tool_call_extra_content,
+    extract_reasoning_field_text, extract_reasoning_summary_text,
+    fill_gemini_thought_signature_fallback, normalize_inline_think,
+    reject_codex_remote_compaction_items, response_function_call_item,
     response_function_call_item_with_namespace, ORPHAN_TOOL_OUTPUT_MARKER,
 };
 use crate::provider::CodexChatReasoningConfig;
@@ -376,6 +378,13 @@ pub fn responses_to_chat_completions_with_reasoning_for_upstream(
     // 与 Claude→openai_chat 路径共用同一 helper，保证两个客户端方向一致。
     super::transform::inject_openai_stream_include_usage(&mut result);
 
+    let signature_fallbacks = fill_gemini_thought_signature_fallback(&mut result);
+    if signature_fallbacks > 0 {
+        log::debug!(
+            "[CodexChat] filled {signature_fallbacks} missing Gemini thought signature(s) with the skip placeholder"
+        );
+    }
+
     Ok(result)
 }
 
@@ -633,6 +642,10 @@ fn append_responses_input_as_chat_messages(
     // Unpaired results wait for the end of the current run of results: a user
     // message between two paired results (`tool, user, tool`) is rejected too.
     let mut pending_orphan_outputs: Vec<&Value> = Vec::new();
+    // System/developer notices that arrive inside a run of tool results (e.g.
+    // Codex's `image_resize_notice` between parallel image outputs) wait for
+    // the run to end, so the run stays `tool, tool, tool`.
+    let mut deferred_system_messages: Vec<Value> = Vec::new();
 
     let items: &[Value] = match input {
         Value::String(text) => {
@@ -646,7 +659,13 @@ fn append_responses_input_as_chat_messages(
         Value::Object(_) => std::slice::from_ref(input),
         _ => &[],
     };
-    for item in items {
+    // Multi-agent payloads become text here; undecodable ones refuse the request.
+    let items = items
+        .iter()
+        .map(codex_item_with_agent_payload_text)
+        .collect::<Result<Vec<_>, _>>()?;
+    for item in &items {
+        let item: &Value = item;
         if is_responses_tool_result_item(item) {
             let call_id = item.get("call_id").and_then(Value::as_str).unwrap_or("");
             if !call_id.is_empty() && answered_tool_call_ids.contains(call_id) {
@@ -660,6 +679,19 @@ fn append_responses_input_as_chat_messages(
                 continue;
             }
             answered_tool_call_ids.insert(call_id.to_string());
+        } else if let Some(system_message) = plain_system_message(item) {
+            // Calls before the notice still become their assistant message
+            // here, so a later result pairs with it across the notice.
+            flush_pending_tool_calls(
+                messages,
+                &mut pending_tool_calls,
+                &mut pending_reasoning,
+                &mut last_assistant_index,
+            );
+            if chat_tool_run_is_open(messages, &pending_media, &pending_orphan_outputs) {
+                deferred_system_messages.push(system_message);
+                continue;
+            }
         } else {
             if matches!(
                 item.get("type").and_then(Value::as_str),
@@ -672,6 +704,12 @@ fn append_responses_input_as_chat_messages(
             // user message" marker stays true, then the held orphans.
             flush_pending_chat_tool_media(messages, &mut pending_media);
             flush_pending_orphan_tool_outputs(messages, &mut pending_orphan_outputs);
+            flush_deferred_system_messages(
+                messages,
+                &mut deferred_system_messages,
+                &mut pending_reasoning,
+                &mut last_assistant_index,
+            );
         }
         append_responses_item_as_chat_message(
             item,
@@ -686,6 +724,12 @@ fn append_responses_input_as_chat_messages(
 
     flush_pending_chat_tool_media(messages, &mut pending_media);
     flush_pending_orphan_tool_outputs(messages, &mut pending_orphan_outputs);
+    flush_deferred_system_messages(
+        messages,
+        &mut deferred_system_messages,
+        &mut pending_reasoning,
+        &mut last_assistant_index,
+    );
     flush_pending_tool_calls(
         messages,
         &mut pending_tool_calls,
@@ -704,6 +748,74 @@ fn append_responses_input_as_chat_messages(
     answer_unanswered_tool_calls(messages);
     backfill_tool_call_reasoning_placeholders(messages);
     Ok(())
+}
+
+/// The Chat system message for a text-only `system`/`developer` message item,
+/// or `None` for anything else (calls, results, carriers, media content).
+///
+/// Adapted from farion1231/cc-switch 8d8dc456
+fn plain_system_message(item: &Value) -> Option<Value> {
+    let item_type = item.get("type").and_then(Value::as_str);
+    let role = item.get("role").and_then(Value::as_str)?;
+    if responses_role_to_chat_role(role) != "system" {
+        return None;
+    }
+    let content = match item_type {
+        None | Some("message") => responses_content_to_chat_content("system", item.get("content")?),
+        Some("input_text") => {
+            responses_content_to_chat_content("system", &Value::Array(vec![item.clone()]))
+        }
+        _ => return None,
+    };
+    content
+        .is_string()
+        .then(|| json!({"role": "system", "content": content}))
+}
+
+/// Whether a message pushed now would interrupt a run of tool results: the
+/// last message is an assistant tool-call message or a tool result, or moved
+/// media / unpaired results are still held for the end of the run.
+///
+/// A strict Chat upstream (DeepSeek) rejects `tool, system, tool`, and the
+/// second result would otherwise no longer pair with its call.
+fn chat_tool_run_is_open(
+    messages: &[Value],
+    pending_media: &[Value],
+    pending_orphan_outputs: &[&Value],
+) -> bool {
+    if !pending_media.is_empty() || !pending_orphan_outputs.is_empty() {
+        return true;
+    }
+    messages.last().is_some_and(
+        |message| match message.get("role").and_then(Value::as_str) {
+            Some("tool") => true,
+            Some("assistant") => message
+                .get("tool_calls")
+                .and_then(Value::as_array)
+                .is_some_and(|calls| !calls.is_empty()),
+            _ => false,
+        },
+    )
+}
+
+/// Emit the system notices held back during a run of tool results, with the
+/// same turn-boundary effects a system message has when placed directly.
+fn flush_deferred_system_messages(
+    messages: &mut Vec<Value>,
+    deferred: &mut Vec<Value>,
+    pending_reasoning: &mut Option<String>,
+    last_assistant_index: &mut Option<usize>,
+) {
+    if deferred.is_empty() {
+        return;
+    }
+    attach_pending_reasoning_to_previous_assistant(
+        messages,
+        *last_assistant_index,
+        pending_reasoning,
+    );
+    messages.append(deferred);
+    *last_assistant_index = None;
 }
 
 /// Content of the `tool` message added for a call whose result never came, or
@@ -781,18 +893,21 @@ fn append_responses_item_as_chat_message(
     match item_type {
         Some("function_call") => {
             append_unique_pending_reasoning(pending_reasoning, responses_item_reasoning_text(item));
-            pending_tool_calls.push(responses_function_call_to_chat_tool_call(
-                item,
-                tool_context,
-            ));
+            let mut tool_call = responses_function_call_to_chat_tool_call(item, tool_context);
+            copy_tool_call_extra_content(&mut tool_call, item);
+            pending_tool_calls.push(tool_call);
         }
         Some("custom_tool_call") => {
             append_unique_pending_reasoning(pending_reasoning, responses_item_reasoning_text(item));
-            pending_tool_calls.push(responses_custom_tool_call_to_chat_tool_call(item));
+            let mut tool_call = responses_custom_tool_call_to_chat_tool_call(item);
+            copy_tool_call_extra_content(&mut tool_call, item);
+            pending_tool_calls.push(tool_call);
         }
         Some("tool_search_call") => {
             append_unique_pending_reasoning(pending_reasoning, responses_item_reasoning_text(item));
-            pending_tool_calls.push(responses_tool_search_call_to_chat_tool_call(item));
+            let mut tool_call = responses_tool_search_call_to_chat_tool_call(item);
+            copy_tool_call_extra_content(&mut tool_call, item);
+            pending_tool_calls.push(tool_call);
         }
         // Only results paired with a converted call reach here; the caller
         // diverts the rest to `push_orphan_tool_output_message`.
@@ -2226,7 +2341,7 @@ fn chat_tool_call_to_response_item(
     let arguments = canonicalize_tool_arguments(function.get("arguments"));
 
     let item_id = response_tool_call_item_id_from_chat_name(&call_id, name, tool_context);
-    response_tool_call_item_from_chat_name(
+    let mut item = response_tool_call_item_from_chat_name(
         &item_id,
         response_tool_call_status(&arguments, truncated),
         &call_id,
@@ -2234,7 +2349,11 @@ fn chat_tool_call_to_response_item(
         &arguments,
         reasoning,
         tool_context,
-    )
+    );
+    // Gemini's thought signature rides on the call; the history store keeps
+    // it for the next request, which must send it back.
+    copy_tool_call_extra_content(&mut item, tool_call);
+    item
 }
 
 fn chat_legacy_function_call_to_response_item(
@@ -2487,6 +2606,27 @@ pub(crate) fn response_status_from_finish_reason(finish_reason: Option<&str>) ->
     }
 }
 
+/// Gemini's OpenAI-compatible endpoint reports an over-long input with this
+/// text and a numeric (or no) `code`. Codex only treats the string code
+/// `context_length_exceeded` as a context-budget failure it can recover from
+/// by compacting. Only this documented wording is matched: a broader pattern
+/// such as "maximum context length" also covers an oversized `max_tokens`,
+/// which compaction cannot fix.
+const GEMINI_INPUT_OVERFLOW_MESSAGE: &str =
+    "input token count exceeds the maximum number of tokens allowed";
+const CONTEXT_LENGTH_EXCEEDED_CODE: &str = "context_length_exceeded";
+
+// Adapted from farion1231/cc-switch a94f997f
+fn normalized_context_overflow_code(message: &str, code: Value) -> Value {
+    if message
+        .to_ascii_lowercase()
+        .contains(GEMINI_INPUT_OVERFLOW_MESSAGE)
+    {
+        return json!(CONTEXT_LENGTH_EXCEEDED_CODE);
+    }
+    code
+}
+
 /// 把 Chat Completions 上游的错误体规整成 OpenAI Responses API 风格的错误对象。
 ///
 /// 兼容三类输入：
@@ -2495,7 +2635,8 @@ pub(crate) fn response_status_from_finish_reason(finish_reason: Option<&str>) ->
 /// 3. 顶层只有 `message` / `detail` / 裸字符串的最小错误
 ///
 /// 输出统一为 `{"error": {"message", "type", "code", "param"}}`，与 OpenAI Responses
-/// API 错误响应一致；Codex 客户端的错误处理只识别这个形状。
+/// API 错误响应一致；Codex 客户端的错误处理只识别这个形状。Gemini 的输入超长
+/// 错误码规整为 `context_length_exceeded`（见 `normalized_context_overflow_code`）。
 pub fn chat_error_to_response_error(body: Option<&Value>) -> Value {
     let Some(value) = body else {
         return json!({
@@ -2513,7 +2654,7 @@ pub fn chat_error_to_response_error(body: Option<&Value>) -> Value {
             "error": {
                 "message": text,
                 "type": "upstream_error",
-                "code": serde_json::Value::Null,
+                "code": normalized_context_overflow_code(text, Value::Null),
                 "param": serde_json::Value::Null,
             }
         });
@@ -2545,6 +2686,7 @@ pub fn chat_error_to_response_error(body: Option<&Value>) -> Value {
         .cloned()
         .or_else(|| source.pointer("/base_resp/status_code").cloned())
         .unwrap_or(serde_json::Value::Null);
+    let code = normalized_context_overflow_code(&message, code);
 
     let param = source
         .get("param")
@@ -2746,7 +2888,8 @@ mod tests {
     }
 
     use super::super::codex_chat_common::{
-        CODEX_REMOTE_COMPACTION_CHECKPOINT_UNSUPPORTED, CODEX_REMOTE_COMPACTION_TRIGGER_UNSUPPORTED,
+        CODEX_AGENT_MESSAGE_ENCRYPTED_UNSUPPORTED, CODEX_REMOTE_COMPACTION_CHECKPOINT_UNSUPPORTED,
+        CODEX_REMOTE_COMPACTION_TRIGGER_UNSUPPORTED,
     };
     use super::*;
 
@@ -3715,6 +3858,287 @@ mod tests {
                 assert_eq!(result["messages"], expected, "{model} at {endpoint}");
             }
         }
+    }
+
+    fn chat_message_roles(result: &Value) -> Vec<&str> {
+        result["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|message| message["role"].as_str())
+            .collect()
+    }
+
+    // Adapted from farion1231/cc-switch 8d8dc456
+    #[test]
+    fn developer_notice_between_parallel_image_outputs_keeps_tool_messages_contiguous() {
+        let png = "data:image/png;base64,iVBORw0KGgo=";
+        let input = json!({
+            "model": "deepseek-flash",
+            "input": [
+                {"type": "message", "role": "user", "content": "inspect screenshots"},
+                {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Checking images."}]},
+                {"type": "function_call", "call_id": "call_0", "name": "view_image", "arguments": "{\"path\":\"a.png\"}"},
+                {"type": "function_call", "call_id": "call_1", "name": "view_image", "arguments": "{\"path\":\"b.png\"}"},
+                {"type": "function_call", "call_id": "call_2", "name": "view_image", "arguments": "{\"path\":\"c.png\"}"},
+                {"type": "function_call_output", "call_id": "call_0", "output": [{"type": "input_image", "image_url": png}]},
+                {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "<image_resize_notice>\nImage 1 was resized.\n</image_resize_notice>"}]},
+                {"type": "function_call_output", "call_id": "call_1", "output": [{"type": "input_image", "image_url": png}]},
+                {"type": "function_call_output", "call_id": "call_2", "output": [{"type": "input_image", "image_url": png}]}
+            ]
+        });
+
+        let result = responses_to_chat_completions(input.clone()).unwrap();
+        let messages = result["messages"].as_array().unwrap();
+        assert_eq!(
+            chat_message_roles(&result),
+            vec![
+                "user",
+                "assistant",
+                "tool",
+                "tool",
+                "tool",
+                "user",
+                "system"
+            ]
+        );
+        assert_eq!(messages[1]["content"], "Checking images.");
+        assert_eq!(messages[1]["tool_calls"].as_array().unwrap().len(), 3);
+        assert_eq!(messages[2]["tool_call_id"], "call_0");
+        assert_eq!(messages[3]["tool_call_id"], "call_1");
+        assert_eq!(messages[4]["tool_call_id"], "call_2");
+        // All three images follow the run in one user message.
+        let media = messages[5]["content"].as_array().unwrap();
+        assert_eq!(
+            media
+                .iter()
+                .filter(|part| part["type"] == "image_url")
+                .count(),
+            3
+        );
+        assert!(messages[6]["content"]
+            .as_str()
+            .unwrap()
+            .contains("image_resize_notice"));
+        assert!(!messages.iter().any(|message| message["content"]
+            .as_str()
+            .is_some_and(|text| text.contains(ORPHAN_TOOL_OUTPUT_MARKER)
+                || text == MISSING_TOOL_RESULT_PLACEHOLDER)));
+
+        // MiniMax still gets every system message collapsed to the head.
+        let minimax = responses_to_chat_completions_with_reasoning_for_upstream(
+            input,
+            None,
+            "https://api.minimax.io/v1/chat/completions",
+        )
+        .unwrap();
+        assert_eq!(
+            chat_message_roles(&minimax),
+            vec![
+                "system",
+                "user",
+                "assistant",
+                "tool",
+                "tool",
+                "tool",
+                "user"
+            ]
+        );
+    }
+
+    #[test]
+    fn developer_notice_between_call_and_output_keeps_commentary_merge() {
+        let result = responses_to_chat_completions(json!({
+            "model": "deepseek-flash",
+            "input": [
+                {"type": "message", "role": "user", "content": "look"},
+                {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Checking the image."}]},
+                {"type": "function_call", "call_id": "call_0", "name": "view_image", "arguments": "{}"},
+                {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "<image_resize_notice>resized</image_resize_notice>"}]},
+                {"type": "function_call_output", "call_id": "call_0", "output": "ok"},
+                {"type": "message", "role": "user", "content": "next"}
+            ]
+        }))
+        .unwrap();
+        let messages = result["messages"].as_array().unwrap();
+        assert_eq!(
+            chat_message_roles(&result),
+            vec!["user", "assistant", "tool", "system", "user"]
+        );
+        assert_eq!(messages[1]["content"], "Checking the image.");
+        assert_eq!(messages[1]["tool_calls"][0]["id"], "call_0");
+        assert_eq!(messages[2]["tool_call_id"], "call_0");
+        assert_eq!(messages[2]["content"], "ok");
+        assert_eq!(
+            messages[3]["content"],
+            "<image_resize_notice>resized</image_resize_notice>"
+        );
+    }
+
+    #[test]
+    fn gemini_request_keeps_signatures_and_fills_only_missing_current_turn_ones() {
+        let signature = json!({"google": {"thought_signature": "sig-real"}});
+        let input = |model: &str| {
+            json!({
+                "model": model,
+                "input": [
+                    {"type": "message", "role": "user", "content": "old"},
+                    {"type": "function_call", "call_id": "call_old", "name": "f", "arguments": "{}"},
+                    {"type": "function_call_output", "call_id": "call_old", "output": "x"},
+                    {"type": "message", "role": "user", "content": "now"},
+                    {"type": "custom_tool_call", "call_id": "call_1", "name": "apply_patch", "input": "p", "extra_content": signature},
+                    {"type": "custom_tool_call_output", "call_id": "call_1", "output": "ok"},
+                    {"type": "function_call", "call_id": "call_2", "name": "f", "arguments": "{}"},
+                    {"type": "function_call", "call_id": "call_3", "name": "f", "arguments": "{}"},
+                    {"type": "function_call_output", "call_id": "call_2", "output": "a"},
+                    {"type": "function_call_output", "call_id": "call_3", "output": "b"}
+                ]
+            })
+        };
+
+        let result = responses_to_chat_completions(input("google/gemini-3-flash")).unwrap();
+        let assistants: Vec<&Value> = result["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|message| message["role"] == "assistant")
+            .collect();
+        assert_eq!(assistants.len(), 3);
+        assert!(assistants[0]["tool_calls"][0]
+            .get("extra_content")
+            .is_none());
+        assert_eq!(assistants[1]["tool_calls"][0]["extra_content"], signature);
+        assert_eq!(
+            assistants[2]["tool_calls"][0]["extra_content"]["google"]["thought_signature"],
+            "skip_thought_signature_validator"
+        );
+        assert!(assistants[2]["tool_calls"][1]
+            .get("extra_content")
+            .is_none());
+
+        // Other models only get the pass-through, never the placeholder.
+        let result = responses_to_chat_completions(input("gemini-2.5-pro")).unwrap();
+        let calls: Vec<&Value> = result["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|message| message["tool_calls"].as_array())
+            .flatten()
+            .collect();
+        assert_eq!(calls.len(), 4);
+        assert_eq!(calls[1]["extra_content"], signature);
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call.get("extra_content").is_some())
+                .count(),
+            1
+        );
+    }
+
+    // Adapted from BigPizzaV3/CodexPlusPlus dbd6b30
+    #[test]
+    fn agent_message_plaintext_payload_is_forwarded_after_its_header() {
+        let result = responses_to_chat_completions(json!({
+            "model": "deepseek-v4-flash",
+            "input": [{
+                "type": "agent_message",
+                "author": "/root/orchestrator",
+                "recipient": "/root/worker",
+                "content": [
+                    {"type": "input_text", "text": "Message Type: NEW_TASK\nTask name: /root/worker\nPayload:\n"},
+                    {"type": "encrypted_content", "encrypted_content": "请审查 a.rs 并给出结论"}
+                ]
+            }]
+        }))
+        .unwrap();
+        let messages = result["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["role"], "user");
+        let content = messages[0]["content"].as_str().unwrap();
+        let header = content.find("Payload:").unwrap();
+        let payload = content.find("请审查 a.rs 并给出结论").unwrap();
+        assert!(payload > header, "{content}");
+    }
+
+    #[test]
+    fn encrypted_content_parts_that_cannot_be_read_refuse_the_request() {
+        let opaque = "BU6X4ClyuwRNlt8ocboDTJXeJ3C5AkuU3SZvuAFKk9wlbrcASZLbJG22_0iR2iNs";
+        for item in [
+            // Ciphertext (base64url) inside the confirmed shape.
+            json!({"type": "agent_message", "content": [
+                {"type": "input_text", "text": "Message Type: NEW_TASK Payload:"},
+                {"type": "encrypted_content", "encrypted_content": opaque}
+            ]}),
+            // No `Payload:` header.
+            json!({"type": "agent_message", "content": [
+                {"type": "encrypted_content", "encrypted_content": opaque}
+            ]}),
+            // Object-shaped content.
+            json!({"type": "agent_message", "content": {
+                "type": "encrypted_content", "encrypted_content": opaque
+            }}),
+            // Empty payload.
+            json!({"type": "agent_message", "content": [
+                {"type": "input_text", "text": "Payload:"},
+                {"type": "encrypted_content", "encrypted_content": "  "}
+            ]}),
+        ] {
+            let error = responses_to_chat_completions(json!({
+                "model": "deepseek-v4-flash",
+                "input": [{"role": "user", "content": "hi"}, item]
+            }))
+            .expect_err("unreadable encrypted_content must not be dropped silently");
+            match error {
+                ProxyError::InvalidRequest(message) => {
+                    assert_eq!(message, CODEX_AGENT_MESSAGE_ENCRYPTED_UNSUPPORTED);
+                    assert!(!message.contains(opaque));
+                }
+                other => panic!("expected InvalidRequest, got {other:?}"),
+            }
+        }
+
+        // Other items keep their previous handling: the unknown part is
+        // dropped, the request is not refused.
+        assert!(responses_to_chat_completions(json!({
+            "model": "deepseek-v4-flash",
+            "input": [{"type": "message", "role": "user", "content": [
+                {"type": "input_text", "text": "Payload:"},
+                {"type": "encrypted_content", "text": opaque}
+            ]}]
+        }))
+        .is_ok());
+
+        // A reasoning item's encrypted_content field is not a content part.
+        assert!(responses_to_chat_completions(json!({
+            "model": "deepseek-v4-flash",
+            "input": [
+                {"role": "user", "content": "hi"},
+                {"type": "reasoning", "summary": [], "encrypted_content": opaque},
+                {"type": "message", "role": "assistant", "content": "done"}
+            ]
+        }))
+        .is_ok());
+    }
+
+    #[test]
+    fn system_message_outside_a_tool_run_keeps_its_position() {
+        let result = responses_to_chat_completions(json!({
+            "model": "deepseek-flash",
+            "input": [
+                {"type": "function_call", "call_id": "call_0", "name": "f", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call_0", "output": "ok"},
+                {"type": "message", "role": "assistant", "content": "done"},
+                {"type": "message", "role": "developer", "content": "D1"},
+                {"type": "message", "role": "user", "content": "U1"}
+            ]
+        }))
+        .unwrap();
+        assert_eq!(
+            chat_message_roles(&result),
+            vec!["assistant", "tool", "assistant", "system", "user"]
+        );
+        assert_eq!(result["messages"][3]["content"], "D1");
     }
 
     #[test]
@@ -5039,6 +5463,43 @@ late-b"
             "Upstream returned an empty error response"
         );
         assert_eq!(result["error"]["type"], "upstream_error");
+    }
+
+    #[test]
+    fn chat_error_to_response_error_marks_gemini_input_overflow() {
+        let message = "The input token count exceeds the maximum number of tokens allowed 1048576.";
+        for input in [
+            json!({"error": {"code": 400, "status": "INVALID_ARGUMENT", "message": message}}),
+            json!({"error": {"type": "invalid_request_error", "message": message}}),
+            json!({"detail": message}),
+            json!(message),
+        ] {
+            let result = chat_error_to_response_error(Some(&input));
+            assert_eq!(
+                result["error"]["code"], "context_length_exceeded",
+                "{input}"
+            );
+            assert_eq!(result["error"]["message"], message);
+        }
+
+        // Other limits keep the upstream code: compaction cannot fix them.
+        let output_limit = json!({"error": {
+            "code": 400,
+            "status": "INVALID_ARGUMENT",
+            "message": "max_output_tokens exceeds the maximum number of tokens allowed 65536."
+        }});
+        assert_eq!(
+            chat_error_to_response_error(Some(&output_limit))["error"]["code"],
+            400
+        );
+        let openai_style = json!({"error": {
+            "code": "context_length_exceeded",
+            "message": "This model's maximum context length is 128000 tokens."
+        }});
+        assert_eq!(
+            chat_error_to_response_error(Some(&openai_style))["error"]["code"],
+            "context_length_exceeded"
+        );
     }
 
     #[test]

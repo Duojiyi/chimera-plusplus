@@ -382,7 +382,8 @@
   padding: 10px 14px;
   border: 1px solid var(--line);
   border-radius: 9px;
-  background: #fff;
+  background: var(--glass-control-bg, #fff);
+  color: inherit;
   text-align: left;
 }
 .history-version-list button:hover:not(:disabled) {
@@ -1275,7 +1276,7 @@ body.is-mac
 .route-update-banner-copy b {
   font-size: 13px;
   font-weight: 700;
-  color: #1a1f24;
+  color: inherit;
 }
 .route-update-banner-copy small {
   font-size: 11px;
@@ -1292,16 +1293,16 @@ body.is-mac
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
-  border: 1px solid #dee5e9;
-  background: #fff;
-  color: #252b31;
+  border: 1px solid var(--glass-border, #dee5e9);
+  background: var(--glass-control-bg, #fff);
+  color: inherit;
   transition:
     background 120ms,
     border-color 120ms;
 }
 .route-update-banner-actions button:hover {
-  background: #f4f6f8;
-  border-color: #c8d2d8;
+  background: var(--glass-control-hover, #f4f6f8);
+  border-color: var(--glass-control-border, #c8d2d8);
 }
 .route-update-banner-actions button.primary {
   background: var(--ch-accent);

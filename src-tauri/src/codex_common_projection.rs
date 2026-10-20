@@ -52,7 +52,10 @@ type DesiredItems = BTreeMap<Vec<String>, Item>;
 
 fn invalid_ledger() -> AppError {
     // Neither JSON/TOML parser diagnostics nor recorded values may escape.
-    AppError::Config("Codex 通用配置投影记录损坏或格式无效".to_string())
+    AppError::Config(format!(
+        "Codex 通用配置投影记录损坏或格式无效：{}（可删除该文件后重试，下次保存会重新生成）",
+        ledger_path().display()
+    ))
 }
 
 fn path_conflict(path: &[String]) -> AppError {
@@ -856,7 +859,19 @@ mod tests {
             .iter()
             .any(|entry| entry.path == ["profiles", "work.with.dots", "approval_policy"]));
         let (cleared, next) = project(live, None, Some(&saved)).unwrap();
-        assert!(values(&cleared).is_empty());
+        let cleared = values(&cleared);
+        assert!(cleared.get("shared").is_none());
+        assert!(cleared["tui"].get("color.style").is_none());
+        assert!(cleared["profiles"]["work.with.dots"]
+            .get("approval_policy")
+            .is_none());
+        // Legacy seeding cannot prove these empty parents were projection-created.
+        assert!(cleared["tui"]
+            .as_table()
+            .is_some_and(|table| table.is_empty()));
+        assert!(cleared["profiles"]["work.with.dots"]
+            .as_table()
+            .is_some_and(|table| table.is_empty()));
         assert_empty_ledger(&next);
     }
 

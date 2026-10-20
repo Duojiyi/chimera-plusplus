@@ -14,6 +14,7 @@ import { Loader2 } from "lucide-react";
 import {
   fmtInt,
   fmtUsd,
+  formatAxisTokens,
   getLocaleFromLanguage,
   parseFiniteNumber,
 } from "./format";
@@ -173,7 +174,7 @@ export function UsageTrendChart({
               axisLine={false}
               tickLine={false}
               tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }}
-              tickFormatter={(value) => `${(value / 1000).toFixed(0)}k`}
+              tickFormatter={(value: number) => formatAxisTokens(value)}
             />
             <YAxis
               yAxisId="cost"

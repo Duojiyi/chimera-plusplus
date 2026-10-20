@@ -31,7 +31,9 @@ tauri = { version = "2.8.2", features = ["tray-icon", "protocol-asset", "image-p
 tauri-plugin-log = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-process = "2"
-tauri-plugin-updater = "2"
+# The default "zip" feature only unpacks legacy .zip/.tar.gz bundles; ours are
+# raw .msi/.AppImage, and it pulls zip 4 (RUSTSEC-2026-0367/0368/0369).
+tauri-plugin-updater = { version = "2", default-features = false, features = ["rustls-tls", "system-proxy"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-store = "2"
 tauri-plugin-deep-link = "2"
@@ -72,7 +74,10 @@ regex = "1.10"
 rquickjs = { version = "0.8", features = ["array-buffer", "classes"] }
 thiserror = "2.0"
 anyhow = "1.0"
-zip = "2.2"
+# Skills ZIPs and backups only need deflate (deflate64 for archives some
+# Windows tools write); other decoders widen the parsing
+# surface for untrusted archives.
+zip = { version = "9.0", default-features = false, features = ["deflate", "deflate64"] }
 serde_yaml = "0.9"
 tempfile = "3"
 url = "2.5"
@@ -90,10 +95,10 @@ hmac = "0.12"
 json5 = "0.4"
 json-five = "0.3.1"
 sys-locale = "0.3"
-chimera-runtime = { git = "https://github.com/Duojiyi/chimera-plusplus.git", rev = "99dd217e96cdcc5c704dd07d61954865db284b8e", package = "chimera-runtime" }
-chimera-platform = { git = "https://github.com/Duojiyi/chimera-plusplus.git", rev = "99dd217e96cdcc5c704dd07d61954865db284b8e", package = "chimera-platform" }
-codex-win-engine = { git = "https://github.com/Wangnov/Codex-App-Manager.git", rev = "31bd3f23f74d6e263cbeb86cb210f8fe64e281d4", package = "codex-win-engine" }
-codex-theme-engine = { git = "https://github.com/Wangnov/Codex-App-Manager.git", rev = "31bd3f23f74d6e263cbeb86cb210f8fe64e281d4", package = "codex-theme-engine" }
+chimera-runtime = { git = "https://github.com/Duojiyi/chimera-plusplus.git", rev = "e6248cd934dca6aaf3d18b89ef93b1b3ac8aa5f3", package = "chimera-runtime" }
+chimera-platform = { git = "https://github.com/Duojiyi/chimera-plusplus.git", rev = "e6248cd934dca6aaf3d18b89ef93b1b3ac8aa5f3", package = "chimera-platform" }
+codex-win-engine = { git = "https://github.com/Duojiyi/chimera-plusplus.git", rev = "bab496b9432d8d6c4570e944f0c79eae0c292bb8", package = "codex-win-engine" }
+codex-theme-engine = { git = "https://github.com/Duojiyi/chimera-plusplus.git", rev = "bab496b9432d8d6c4570e944f0c79eae0c292bb8", package = "codex-theme-engine" }
 
 [target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = "2"
@@ -128,3 +133,9 @@ strip = "symbols"
 [dev-dependencies]
 serial_test = "3"
 tempfile = "3"
+
+# Codex App Manager v0.5.16 (31bd3f23) with the zip 9 fix, kept on the
+# codex/zip-9-engine branch; chimera-runtime still names the upstream URL.
+[patch."https://github.com/Wangnov/Codex-App-Manager.git"]
+codex-theme-engine = { git = "https://github.com/Duojiyi/chimera-plusplus.git", rev = "bab496b9432d8d6c4570e944f0c79eae0c292bb8", package = "codex-theme-engine" }
+codex-win-engine = { git = "https://github.com/Duojiyi/chimera-plusplus.git", rev = "bab496b9432d8d6c4570e944f0c79eae0c292bb8", package = "codex-win-engine" }

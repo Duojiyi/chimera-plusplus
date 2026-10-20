@@ -440,6 +440,22 @@ async fn seed_legacy_codex_common_projection(
     .map_err(|e| e.to_string())
 }
 
+/// Startup half of the ledger upgrade. Without it, an upgraded user whose
+/// first Codex write is a switch gets a ledger written without the legacy
+/// seed, and the old common keys could then never be removed from Live.
+pub async fn seed_legacy_codex_common_projection_on_startup(
+    state: &AppState,
+) -> Result<(), String> {
+    let _profile_guard = state.profile_apply_lock.lock().await;
+    let proxy_service = state.proxy_service.clone();
+    let _lifecycle_guard = proxy_service.lock_lifecycle().await;
+    let _switch_guard = proxy_service.lock_switch_for_app("codex").await;
+    let undo = CodexCommonConfigUndo::capture(state)?;
+    seed_legacy_codex_common_projection(state, &undo)
+        .await
+        .map(|_| ())
+}
+
 pub(crate) async fn set_codex_common_config_snippet_state(
     state: AppState,
     snippet: String,
@@ -3097,6 +3113,66 @@ mod automatic_routing_tests {
 
     #[tokio::test]
     #[serial]
+    async fn startup_seeds_the_legacy_common_ledger_before_any_switch() {
+        let original = std::env::var_os("CC_SWITCH_TEST_HOME");
+        let home = tempfile::tempdir().expect("create test home");
+        std::env::set_var("CC_SWITCH_TEST_HOME", home.path());
+        crate::settings::reload_settings().expect("reload settings");
+        let db = Arc::new(Database::memory().expect("init db"));
+        let state = AppState::new(db.clone());
+        let common = "approval_policy = \"never\"
+";
+        db.set_setting("common_config_codex", common)
+            .expect("snippet");
+        let mut line = provider(
+            json!({"config": "model = \"gpt-test\"
+"}),
+            Some("openai_responses"),
+        );
+        line.id = "legacy".to_string();
+        line.meta
+            .get_or_insert_with(Default::default)
+            .common_config_enabled = Some(true);
+        db.save_provider("codex", &line).expect("save line");
+        db.set_current_provider("codex", "legacy")
+            .expect("db current");
+        crate::settings::set_current_provider(&AppType::Codex, Some("legacy")).expect("current");
+        let config_path = get_codex_config_path();
+        std::fs::create_dir_all(config_path.parent().unwrap()).expect("codex dir");
+        std::fs::write(
+            &config_path,
+            format!(
+                "model = \"gpt-test\"
+{common}"
+            ),
+        )
+        .expect("live");
+
+        super::seed_legacy_codex_common_projection_on_startup(&state)
+            .await
+            .expect("seed");
+
+        let ledger = std::fs::read_to_string(crate::codex_common_projection::ledger_path())
+            .expect("ledger written at startup");
+        assert!(ledger.contains("approval_policy"), "{ledger}");
+        // A second start leaves an existing ledger alone.
+        super::seed_legacy_codex_common_projection_on_startup(&state)
+            .await
+            .expect("seed again");
+        assert_eq!(
+            std::fs::read_to_string(crate::codex_common_projection::ledger_path()).unwrap(),
+            ledger
+        );
+
+        match original {
+            Some(v) => std::env::set_var("CC_SWITCH_TEST_HOME", v),
+            None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+        }
+        crate::settings::reload_settings().expect("restore settings");
+    }
+
+    #[tokio::test]
+    #[serial]
     async fn failed_enabled_codex_import_restores_existing_current_and_live_atomically() {
         let original = std::env::var_os("CC_SWITCH_TEST_HOME");
         let home = tempfile::tempdir().expect("create test home");
@@ -3679,7 +3755,7 @@ mod automatic_routing_tests {
             conn.execute_batch(
                 "CREATE TRIGGER reject_second_enabled_import_commit
                  BEFORE UPDATE OF is_current ON providers
-                 WHEN OLD.id = 'enabled-chat' AND OLD.is_current = 1 AND NEW.is_current = 0
+                 WHEN OLD.id = 'existing-chat' AND OLD.is_current = 1 AND NEW.is_current = 0
                  BEGIN
                    SELECT RAISE(ABORT, 'forced second enabled import commit failure');
                  END;",

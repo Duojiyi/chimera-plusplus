@@ -92,6 +92,16 @@ fn push_model_entry(models: &mut Vec<FetchedModel>, entry: &Value, fallback_id: 
         return;
     };
 
+    // Reserved slots the official picker hides are not models to offer.
+    let hidden = obj
+        .get("visibility")
+        .and_then(Value::as_str)
+        .is_some_and(|v| v.trim().eq_ignore_ascii_case("hide"))
+        || obj.get("visible_in_picker").and_then(Value::as_bool) == Some(false);
+    if hidden {
+        return;
+    }
+
     let Some(id) = string_field(obj, &["slug", "id", "model", "name"]).or_else(|| {
         fallback_id
             .map(str::trim)
@@ -164,6 +174,23 @@ mod tests {
             models.into_iter().map(|model| model.id).collect::<Vec<_>>(),
             vec!["gpt-5.3-codex".to_string(), "gpt-5.5".to_string()]
         );
+    }
+
+    #[test]
+    fn parse_codex_oauth_models_skips_hidden_entries() {
+        let models = parse_models(json!({
+            "data": [
+                { "slug": "a" },
+                { "slug": "b", "visibility": "hide" },
+                { "slug": "c", "visible_in_picker": false },
+                { "slug": "d", "visibility": "list", "visible_in_picker": true }
+            ]
+        }));
+        assert_eq!(
+            models.into_iter().map(|model| model.id).collect::<Vec<_>>(),
+            vec!["a".to_string(), "d".to_string()]
+        );
+        assert!(parse_models(json!({ "models": { "x": { "visibility": "HIDE" } } })).is_empty());
     }
 
     #[test]

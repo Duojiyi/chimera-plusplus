@@ -520,6 +520,46 @@ mod tests {
 
     #[test]
     #[serial]
+    fn stale_db_current_flag_does_not_block_deleting_an_idle_line() {
+        with_test_home(|state, _| {
+            crate::settings::reload_settings().unwrap();
+            for id in ["a", "b", "c"] {
+                let provider = Provider::with_id(id.into(), id.into(), json!({}), None);
+                state.db.save_provider("claude", &provider).unwrap();
+            }
+            // The local pointer (what the line table shows) is `a`; the DB
+            // fallback flag was left on `b`.
+            state.db.set_current_provider("claude", "b").unwrap();
+            crate::settings::set_current_provider(&AppType::Claude, Some("a")).unwrap();
+
+            ProviderService::delete(state, AppType::Claude, "b").expect("idle line deletes");
+            assert!(state
+                .db
+                .get_provider_by_id("b", "claude")
+                .unwrap()
+                .is_none());
+            assert_eq!(
+                state.db.get_current_provider("claude").unwrap().as_deref(),
+                Some("a")
+            );
+            assert!(ProviderService::delete(state, AppType::Claude, "a").is_err());
+
+            // Without a valid local pointer the DB flag still protects its line.
+            state.db.set_current_provider("claude", "c").unwrap();
+            crate::settings::set_current_provider(&AppType::Claude, Some("ghost")).unwrap();
+            assert!(ProviderService::delete(state, AppType::Claude, "c").is_err());
+            crate::settings::set_current_provider(&AppType::Claude, None).unwrap();
+            assert!(ProviderService::delete(state, AppType::Claude, "c").is_err());
+            assert!(state
+                .db
+                .get_provider_by_id("c", "claude")
+                .unwrap()
+                .is_some());
+        });
+    }
+
+    #[test]
+    #[serial]
     fn universal_sync_and_deletion_allow_missing_disabled_children() {
         with_test_home(|state, _| {
             crate::settings::reload_settings().unwrap();
@@ -2004,7 +2044,7 @@ requires_openai_auth = true
         assert_eq!(profile["inferenceGatewayAuthScheme"], json!("bearer"));
         assert_eq!(
             profile["inferenceModels"],
-            json!([{ "name": "claude-sonnet-4-6", "labelOverride": "DeepSeek V4 Flash Updated", "supports1m": true }]),
+            json!([{ "name": "claude-sonnet-4-6", "labelOverride": "DeepSeek V4 Flash Updated", "supports1m": true, "prefer1m": true }]),
             "provider edits should propagate into the Claude Desktop 3P profile during takeover"
         );
     }
@@ -2873,15 +2913,37 @@ impl ProviderService {
         guards
     }
 
+    /// Refuse to delete the effective current line: the device-local pointer
+    /// when it names an existing row, otherwise the DB `is_current` flag (the
+    /// same choice as `settings::get_effective_current_provider`, which the
+    /// line table uses to disable its delete button).
+    ///
+    /// With a valid local pointer the DB flag is only a fallback and can be
+    /// stale. When it still names `id`, it is moved to the local pointer first
+    /// so the DAO's atomic `is_current` guard does not refuse a line the table
+    /// offers for deletion.
+    // Adapted from farion1231/cc-switch 56ac4f9a
     fn ensure_not_current(state: &AppState, app_type: &AppType, id: &str) -> Result<(), AppError> {
+        let in_use = || AppError::Message("无法删除当前正在使用的供应商".to_string());
         let local_current = crate::settings::get_current_provider(app_type);
-        let db_current = state.db.get_current_provider(app_type.as_str())?;
-        if local_current.as_deref() == Some(id) || db_current.as_deref() == Some(id) {
-            return Err(AppError::Message(
-                "无法删除当前正在使用的供应商".to_string(),
-            ));
+        if local_current.as_deref() == Some(id) {
+            return Err(in_use());
         }
-        Ok(())
+        let db_current = state.db.get_current_provider(app_type.as_str())?;
+        if db_current.as_deref() != Some(id) {
+            return Ok(());
+        }
+        let valid_local = match local_current.as_deref() {
+            Some(local) => state
+                .db
+                .get_provider_by_id(local, app_type.as_str())?
+                .map(|_| local),
+            None => None,
+        };
+        match valid_local {
+            Some(local) => state.db.set_current_provider(app_type.as_str(), local),
+            None => Err(in_use()),
+        }
     }
 
     fn delete_with_locks_held(

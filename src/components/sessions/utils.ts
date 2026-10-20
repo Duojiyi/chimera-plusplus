@@ -105,12 +105,25 @@ const extractCodexPromptFromIdeContext = (content: string) => {
 export const getSessionKey = (session: SessionMeta) =>
   `${session.providerId}:${session.sessionId}:${session.sourcePath ?? ""}`;
 
+/**
+ * Windows paths compare case-insensitively and with either separator, so
+ * `D:\demo` and `d:/demo/` are one directory. POSIX paths stay case-sensitive.
+ * Adapted from farion1231/cc-switch 2e03d8ce
+ */
+const getProjectDirKey = (projectDir: string) => {
+  const isWindowsPath =
+    /^[a-zA-Z]:[\\/]/.test(projectDir) || /^[\\/]{2}[^\\/]/.test(projectDir);
+  if (!isWindowsPath) return projectDir.replace(/\/+$/, "") || projectDir;
+  const normalized = projectDir.replace(/\//g, "\\").toLowerCase();
+  return normalized.replace(/\\+$/, "") || normalized;
+};
+
 export const getSessionDirectoryGroupKey = (
   providerId: string,
   projectDir?: string | null,
 ) => {
   const trimmed = projectDir?.trim();
-  return `${providerId}:${trimmed || UNKNOWN_PROJECT_DIR_KEY}`;
+  return `${providerId}:${trimmed ? getProjectDirKey(trimmed) : UNKNOWN_PROJECT_DIR_KEY}`;
 };
 
 export const getBaseName = (value?: string | null) => {

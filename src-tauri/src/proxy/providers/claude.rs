@@ -386,7 +386,7 @@ pub fn transform_claude_request_for_api_format(
     let session_cache_key: Option<String> = if is_copilot {
         let metadata = body.get("metadata");
         // Session 提取优先级（与 forwarder 和 session.rs 统一）：
-        //   1. metadata.user_id 中的 _session_ 后缀
+        //   1. metadata.user_id 中的 session_id（JSON 字符串形式）或 _session_ 后缀
         //   2. metadata.session_id（直接字段）
         metadata
             .and_then(|m| m.get("user_id"))
@@ -1908,6 +1908,48 @@ mod tests {
         .unwrap();
 
         assert_eq!(transformed["prompt_cache_key"], "session-123");
+    }
+
+    #[test]
+    fn test_codex_oauth_cache_key_follows_claude_json_conversation() {
+        // Adapted from farion1231/cc-switch 797e0276
+        let provider = create_provider_with_meta(
+            json!({
+                "env": {
+                    "ANTHROPIC_BASE_URL": "https://chatgpt.com/backend-api/codex"
+                }
+            }),
+            ProviderMeta {
+                api_format: Some("openai_responses".to_string()),
+                provider_type: Some("codex_oauth".to_string()),
+                ..ProviderMeta::default()
+            },
+        );
+        let headers = axum::http::HeaderMap::new();
+        let mut keys = Vec::new();
+        for turn in ["one", "two", "three"] {
+            let body = json!({
+                "model": "gpt-5.4",
+                "metadata": {
+                    "user_id": r#"{"device_id":"d","account_uuid":"a","session_id":"conv-42"}"#
+                },
+                "messages": [{ "role": "user", "content": turn }],
+                "max_tokens": 128
+            });
+            let session = crate::proxy::session::extract_session_id(&headers, &body, "claude");
+            assert!(session.client_provided);
+            let transformed = transform_claude_request_for_api_format(
+                body,
+                &provider,
+                "openai_responses",
+                Some(session.session_id.as_str()),
+                None,
+            )
+            .unwrap();
+            assert_eq!(transformed["store"], json!(false));
+            keys.push(transformed["prompt_cache_key"].clone());
+        }
+        assert!(keys.iter().all(|key| key == "conv-42"));
     }
 
     #[test]

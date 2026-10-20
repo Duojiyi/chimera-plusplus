@@ -10,7 +10,10 @@
 //! - `transform_responses.rs`: Anthropic request → Responses request, Responses response → Anthropic response
 //! - this module:               Responses request → Anthropic request, Anthropic response → Responses response
 
-use super::codex_chat_common::{reject_codex_remote_compaction_items, ORPHAN_TOOL_OUTPUT_MARKER};
+use super::codex_chat_common::{
+    codex_item_with_agent_payload_text, reject_codex_remote_compaction_items,
+    ORPHAN_TOOL_OUTPUT_MARKER,
+};
 use super::transform_codex_chat::{
     build_codex_tool_context_from_request, response_tool_call_item_from_chat_name,
     response_tool_call_item_id_from_chat_name, CodexToolContext, RAW_TOOL_ARGUMENTS_FIELD,
@@ -367,7 +370,7 @@ pub fn responses_request_to_anthropic(
 
     if !thinking_enabled {
         if let Some(v) = body.get("temperature") {
-            result["temperature"] = v.clone();
+            result["temperature"] = anthropic_temperature(v);
         }
         if let Some(v) = body.get("top_p") {
             result["top_p"] = v.clone();
@@ -414,7 +417,7 @@ pub fn responses_request_to_anthropic(
                 result["thinking"] = json!({ "type": "disabled" });
                 result.as_object_mut().unwrap().remove("output_config");
                 if let Some(value) = body.get("temperature") {
-                    result["temperature"] = value.clone();
+                    result["temperature"] = anthropic_temperature(value);
                 }
                 if let Some(value) = body.get("top_p") {
                     result["top_p"] = value.clone();
@@ -435,6 +438,19 @@ pub fn responses_request_to_anthropic(
     }
 
     Ok(result)
+}
+
+/// Anthropic accepts `temperature` in [0, 1]; OpenAI-style callers may send up
+/// to 2, which Anthropic rejects with 400. Out-of-range numbers are clamped;
+/// anything else passes through unchanged.
+///
+/// Adapted from BigPizzaV3/CodexPlusPlus 4b25ee4
+fn anthropic_temperature(value: &Value) -> Value {
+    match value.as_f64() {
+        Some(temperature) if temperature > 1.0 => json!(1.0),
+        Some(temperature) if temperature < 0.0 => json!(0.0),
+        _ => value.clone(),
+    }
 }
 
 fn chat_tool_to_anthropic_tool(chat_tool: &Value) -> Option<Value> {
@@ -658,6 +674,8 @@ fn convert_input_to_messages(
             }
             // message item or an item carrying a role
             _ => {
+                // Multi-agent payloads become text; undecodable ones refuse the request.
+                let item = codex_item_with_agent_payload_text(item)?;
                 let role = item.get("role").and_then(|r| r.as_str()).unwrap_or("user");
                 if matches!(role, "system" | "developer") {
                     continue;
@@ -1516,7 +1534,8 @@ fn append_str_field(block: &mut Value, field: &str, text: &str) {
 #[cfg(test)]
 mod tests {
     use super::super::codex_chat_common::{
-        CODEX_REMOTE_COMPACTION_CHECKPOINT_UNSUPPORTED, CODEX_REMOTE_COMPACTION_TRIGGER_UNSUPPORTED,
+        CODEX_AGENT_MESSAGE_ENCRYPTED_UNSUPPORTED, CODEX_REMOTE_COMPACTION_CHECKPOINT_UNSUPPORTED,
+        CODEX_REMOTE_COMPACTION_TRIGGER_UNSUPPORTED,
     };
     use super::*;
 
@@ -2192,6 +2211,88 @@ mod tests {
         let result = responses_request_to_anthropic(input, 4096).unwrap();
         assert!(result.get("thinking").is_none());
         assert_eq!(result["temperature"], 0.5);
+    }
+
+    #[test]
+    fn test_request_clamps_temperature_to_anthropic_range() {
+        for (temperature, expected) in [
+            (json!(1.7), json!(1.0)),
+            (json!(2), json!(1.0)),
+            (json!(-0.5), json!(0.0)),
+            (json!(0.3), json!(0.3)),
+            (json!(1), json!(1)),
+        ] {
+            let input = json!({
+                "model": "c",
+                "temperature": temperature,
+                "input": [{ "role": "user", "content": "hi" }]
+            });
+            let result = responses_request_to_anthropic(input, 4096).unwrap();
+            assert_eq!(result["temperature"], expected, "{temperature}");
+        }
+    }
+
+    // Adapted from BigPizzaV3/CodexPlusPlus dbd6b30
+    #[test]
+    fn test_request_agent_message_plaintext_payload_becomes_text() {
+        let input = json!({
+            "model": "c",
+            "input": [{
+                "type": "agent_message",
+                "author": "/root/orchestrator",
+                "recipient": "/root/worker",
+                "content": [
+                    { "type": "input_text", "text": "Message Type: NEW_TASK\nTask name: /root/worker\nPayload:\n" },
+                    { "type": "encrypted_content", "encrypted_content": "请审查 a.rs 并给出结论" }
+                ]
+            }]
+        });
+        let result = responses_request_to_anthropic(input, 4096).unwrap();
+        let messages = result["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["role"], "user");
+        let blocks = messages[0]["content"].as_array().unwrap();
+        assert!(blocks[0]["text"].as_str().unwrap().contains("Payload:"));
+        assert_eq!(blocks[1]["text"], "请审查 a.rs 并给出结论");
+    }
+
+    #[test]
+    fn test_request_agent_message_ciphertext_is_refused_without_echo() {
+        let opaque = "BU6X4ClyuwRNlt8ocboDTJXeJ3C5AkuU3SZvuAFKk9wlbrcASZLbJG22_0iR2iNs";
+        let input = json!({
+            "model": "c",
+            "input": [
+                { "role": "user", "content": "hi" },
+                {
+                    "type": "agent_message",
+                    "content": [
+                        { "type": "input_text", "text": "Message Type: NEW_TASK Payload:" },
+                        { "type": "encrypted_content", "encrypted_content": opaque }
+                    ]
+                }
+            ]
+        });
+        match responses_request_to_anthropic(input, 4096) {
+            Err(ProxyError::InvalidRequest(message)) => {
+                assert_eq!(message, CODEX_AGENT_MESSAGE_ENCRYPTED_UNSUPPORTED);
+                assert!(!message.contains(opaque));
+            }
+            other => panic!("expected InvalidRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_request_reasoning_encrypted_content_is_not_an_agent_payload() {
+        let input = json!({
+            "model": "c",
+            "input": [
+                { "role": "user", "content": "hi" },
+                { "type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": "gAAAAABopaque" },
+                { "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": "done" }] },
+                { "role": "user", "content": "next" }
+            ]
+        });
+        assert!(responses_request_to_anthropic(input, 4096).is_ok());
     }
 
     #[test]
