@@ -3679,7 +3679,7 @@ mod automatic_routing_tests {
             conn.execute_batch(
                 "CREATE TRIGGER reject_second_enabled_import_commit
                  BEFORE UPDATE OF is_current ON providers
-                 WHEN OLD.id = 'enabled-chat' AND OLD.is_current = 1 AND NEW.is_current = 0
+                 WHEN OLD.id = 'existing-chat' AND OLD.is_current = 1 AND NEW.is_current = 0
                  BEGIN
                    SELECT RAISE(ABORT, 'forced second enabled import commit failure');
                  END;",

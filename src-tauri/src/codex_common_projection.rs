@@ -856,7 +856,19 @@ mod tests {
             .iter()
             .any(|entry| entry.path == ["profiles", "work.with.dots", "approval_policy"]));
         let (cleared, next) = project(live, None, Some(&saved)).unwrap();
-        assert!(values(&cleared).is_empty());
+        let cleared = values(&cleared);
+        assert!(cleared.get("shared").is_none());
+        assert!(cleared["tui"].get("color.style").is_none());
+        assert!(cleared["profiles"]["work.with.dots"]
+            .get("approval_policy")
+            .is_none());
+        // Legacy seeding cannot prove these empty parents were projection-created.
+        assert!(cleared["tui"]
+            .as_table()
+            .is_some_and(|table| table.is_empty()));
+        assert!(cleared["profiles"]["work.with.dots"]
+            .as_table()
+            .is_some_and(|table| table.is_empty()));
         assert_empty_ledger(&next);
     }
 
