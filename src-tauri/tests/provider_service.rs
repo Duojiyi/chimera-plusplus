@@ -2385,8 +2385,8 @@ command = "ghost-cmd"
     let live_after = std::fs::read_to_string(chimera_plus_plus_lib::get_codex_config_path())
         .expect("read config.toml after switch");
     assert!(
-        live_after.contains("disable_response_storage = true"),
-        "shared key should propagate to the next provider's live, got: {live_after}"
+        live_after.contains("notifications = true"),
+        "explicit shared snippet should propagate to the next provider's live, got: {live_after}"
     );
     assert!(
         live_after.contains("model_provider = \"bprov\""),
