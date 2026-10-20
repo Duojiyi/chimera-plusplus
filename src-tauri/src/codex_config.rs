@@ -2501,12 +2501,14 @@ fn codex_catalog_required_field_fallback(key: &str) -> Option<Value> {
 /// ONLY parser-required fields, using each field's own safe fallback value
 /// (see `codex_catalog_required_field_fallback`): optional capability fields
 /// keep their missing-means-default semantics, and existing values always win.
+/// A required field written as `null` is as unusable to the parser as a
+/// missing one, so it is backfilled too.
 fn fill_template_fields_from_static(template: &mut Value) {
     let Some(template_obj) = template.as_object_mut() else {
         return;
     };
     for key in CODEX_CATALOG_PARSER_REQUIRED_FIELDS {
-        if !template_obj.contains_key(*key) {
+        if template_obj.get(*key).is_none_or(Value::is_null) {
             if let Some(value) = codex_catalog_required_field_fallback(key) {
                 template_obj.insert((*key).to_string(), value);
             }
@@ -6163,6 +6165,22 @@ approval_policy = "on-request"
         assert!(template.get("supports_search_tool").is_none());
         assert!(template.get("supports_image_detail_original").is_none());
         assert!(template.get("web_search_tool_type").is_none());
+    }
+
+    #[test]
+    fn null_required_catalog_fields_are_backfilled() {
+        let mut template = json!({
+            "slug": "gpt-5.5",
+            "base_instructions": null,
+            "supports_reasoning_summaries": null
+        });
+        fill_template_fields_from_static(&mut template);
+        for key in CODEX_CATALOG_PARSER_REQUIRED_FIELDS {
+            assert!(
+                template.get(*key).is_some_and(|value| !value.is_null()),
+                "{key} must not stay null"
+            );
+        }
     }
 
     #[test]

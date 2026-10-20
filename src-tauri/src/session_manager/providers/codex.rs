@@ -196,10 +196,21 @@ fn outranks(
 }
 
 fn same_file(left: &Path, right: &Path) -> bool {
-    matches!(
-        (left.canonicalize(), right.canonicalize()),
-        (Ok(left_real), Ok(right_real)) if left_real == right_real
-    )
+    if let (Ok(left_real), Ok(right_real)) = (left.canonicalize(), right.canonicalize()) {
+        return left_real == right_real;
+    }
+    // Codex keeps the logical `.jsonl` path in its state DB after compressing
+    // a rollout to `.jsonl.zst`, so that path may not exist on disk.
+    match (logical_rollout(left), logical_rollout(right)) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
+}
+
+fn logical_rollout(path: &Path) -> Option<(PathBuf, String)> {
+    let name = path.file_name()?.to_str()?;
+    let name = name.strip_suffix(".zst").unwrap_or(name).to_string();
+    Some((path.parent()?.canonicalize().ok()?, name))
 }
 
 fn unix_millis(time: SystemTime) -> Option<i64> {
@@ -1750,6 +1761,20 @@ mod tests {
             ),
         )
         .expect("write session");
+    }
+
+    #[test]
+    fn a_compressed_rollout_matches_its_logical_state_db_path() {
+        let temp = tempdir().expect("tempdir");
+        let compressed = temp.path().join("rollout-a.jsonl.zst");
+        let other = temp.path().join("rollout-b.jsonl");
+        std::fs::write(&compressed, b"").expect("write");
+        std::fs::write(&other, b"").expect("write");
+        let logical = temp.path().join("rollout-a.jsonl");
+
+        assert!(same_file(&compressed, &logical));
+        assert!(!same_file(&other, &logical));
+        assert!(same_file(&other, &other));
     }
 
     #[test]

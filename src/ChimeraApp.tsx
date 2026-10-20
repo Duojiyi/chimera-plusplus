@@ -3307,8 +3307,10 @@ export default function ChimeraApp({
                 });
               }
             } catch (error) {
+              // Stays until dismissed: the reason is needed to fix it.
               toast.error("无法自动重启 Codex", {
                 description: `${String(error)}。请彻底退出并重新打开 Codex。`,
+                duration: Infinity,
               });
             }
           }}

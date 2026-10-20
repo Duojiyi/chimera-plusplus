@@ -1,6 +1,6 @@
 //! 供应商余额查询服务
 //!
-//! 支持 DeepSeek、StepFun、SiliconFlow、OpenRouter、Novita AI 与 ChimeraHub 的账户余额查询。
+//! 支持 DeepSeek、StepFun、SiliconFlow、OpenRouter、Novita AI、Moonshot 与 ChimeraHub 的账户余额查询。
 //! 返回 UsageResult 格式（外加可选 `status`），与现有用量系统无缝对接。
 //!
 //! 错误通道语义（与 coding_plan / subscription 两个服务保持一致）：
@@ -89,6 +89,8 @@ enum BalanceProvider {
     SiliconFlowEn,
     OpenRouter,
     NovitaAI,
+    /// 月之暗面国内站；国际站 api.moonshot.ai 没有这个余额接口。
+    Moonshot,
     /// 自家中转站：整个 chimerahub.org 域（地址可编辑，含专属中转地址），
     /// 余额请求发回用户配置的同一 origin，key 不会离开该主机。
     ChimeraHub {
@@ -124,6 +126,7 @@ fn detect_provider(base_url: &str) -> Option<BalanceProvider> {
         "api.siliconflow.com" => Some(BalanceProvider::SiliconFlowEn),
         "openrouter.ai" => Some(BalanceProvider::OpenRouter),
         "api.novita.ai" => Some(BalanceProvider::NovitaAI),
+        "api.moonshot.cn" => Some(BalanceProvider::Moonshot),
         host if crate::builtin_templates::is_chimerahub_host(host) => {
             Some(BalanceProvider::ChimeraHub {
                 origin: format!("https://{host}"),
@@ -277,6 +280,7 @@ fn parse_openrouter_response(body: &serde_json::Value) -> Result<Vec<UsageData>,
     if !remaining.is_finite() {
         return Err("Invalid OpenRouter credit balance".to_string());
     }
+    let remaining = round_money(remaining);
 
     Ok(vec![UsageData {
         plan_name: Some("OpenRouter".to_string()),
@@ -287,6 +291,49 @@ fn parse_openrouter_response(body: &serde_json::Value) -> Result<Vec<UsageData>,
         // `/credits` reports purchased credits, not whether the key works: a
         // free account with no credits can still use free models, and an
         // exhausted or overdrawn balance is an answer, not an expired plan.
+        is_valid: Some(true),
+        invalid_message: None,
+        extra: None,
+    }])
+}
+
+/// `GET /api/v1/key` describes the key itself. Ordinary model keys can read
+/// it, while `/credits` needs management permission. `limit_remaining` is
+/// `null` when the key has no spending limit.
+fn parse_openrouter_key_response(body: &serde_json::Value) -> Option<UsageData> {
+    let data = body.get("data").filter(|d| d.is_object()).unwrap_or(body);
+    let remaining = parse_f64_field(data, "limit_remaining")?;
+    Some(UsageData {
+        plan_name: Some("OpenRouter Key".to_string()),
+        remaining: Some(round_money(remaining)),
+        total: parse_f64_field(data, "limit"),
+        used: parse_f64_field(data, "usage"),
+        unit: Some("USD".to_string()),
+        is_valid: Some(true),
+        invalid_message: None,
+        extra: None,
+    })
+}
+
+fn parse_moonshot_response(body: &serde_json::Value) -> Result<Vec<UsageData>, String> {
+    let accepted = body.get("status").and_then(|v| v.as_bool()) == Some(true)
+        && body.get("code").and_then(|v| v.as_i64()) == Some(0);
+    if !accepted {
+        return Err("Moonshot balance query was rejected".to_string());
+    }
+    let data = match body.get("data") {
+        Some(d) if d.is_object() => d,
+        _ => return Err("Missing or invalid 'data' field in response".to_string()),
+    };
+    let available = parse_f64_field(data, "available_balance")
+        .ok_or_else(|| "Missing or invalid 'available_balance' field in response".to_string())?;
+    Ok(vec![UsageData {
+        plan_name: Some("Moonshot".to_string()),
+        remaining: Some(round_money(available)),
+        total: None,
+        used: None,
+        unit: Some("CNY".to_string()),
+        // A negative balance (arrears) is still an answer about the account.
         is_valid: Some(true),
         invalid_message: None,
         extra: None,
@@ -585,49 +632,99 @@ async fn query_siliconflow(api_key: &str, is_cn: bool) -> Result<UsageResult, St
 }
 
 // ── OpenRouter ──────────────────────────────────────────────
-// GET https://openrouter.ai/api/v1/credits
-// Response: { data: { total_credits, total_usage } }
+// GET https://openrouter.ai/api/v1/key      → { data: { limit, usage, limit_remaining } }
+// GET https://openrouter.ai/api/v1/credits  → { data: { total_credits, total_usage } }
+// A key with a spending limit reports what is left of that limit; otherwise
+// the account credits are shown, which needs management permission.
 
-async fn query_openrouter(api_key: &str) -> Result<UsageResult, String> {
-    let client = crate::proxy::http_client::get();
+enum JsonReply {
+    Body(serde_json::Value),
+    Status(reqwest::StatusCode),
+    Unparsable(String),
+}
 
-    let resp = client
-        .get("https://openrouter.ai/api/v1/credits")
+async fn get_json(url: &str, api_key: &str) -> Result<JsonReply, String> {
+    let resp = crate::proxy::http_client::get()
+        .get(url)
         .header("Authorization", format!("Bearer {api_key}"))
         .header("Accept", "application/json")
         .timeout(Duration::from_secs(15))
         .send()
-        .await;
-
-    let resp = match resp {
-        Ok(r) => r,
-        Err(e) => return Err(format!("Network error: {e}")),
-    };
-
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
     let status = resp.status();
-    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-        return Ok(make_auth_error(status));
-    }
     if !status.is_success() {
-        return Ok(make_error(format!("API error (HTTP {status})")));
+        return Ok(JsonReply::Status(status));
     }
+    let raw = resp
+        .bytes()
+        .await
+        .map_err(|e| format!("Failed to read response: {e}"))?;
+    Ok(match serde_json::from_slice(&raw) {
+        Ok(v) => JsonReply::Body(v),
+        Err(e) => JsonReply::Unparsable(format!("Failed to parse response: {e}")),
+    })
+}
 
-    let raw = match resp.bytes().await {
-        Ok(b) => b,
-        Err(e) => return Err(format!("Failed to read response: {e}")),
-    };
-    let body: serde_json::Value = match serde_json::from_slice(&raw) {
-        Ok(v) => v,
-        Err(e) => return Ok(make_error(format!("Failed to parse response: {e}"))),
+fn is_auth_status(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN
+}
+
+async fn query_openrouter(api_key: &str) -> Result<UsageResult, String> {
+    let key_accepted = match get_json("https://openrouter.ai/api/v1/key", api_key).await? {
+        JsonReply::Body(body) => {
+            if let Some(data) = parse_openrouter_key_response(&body) {
+                return Ok(UsageResult {
+                    success: true,
+                    data: Some(vec![data]),
+                    error: None,
+                });
+            }
+            true
+        }
+        JsonReply::Status(status) if status == reqwest::StatusCode::UNAUTHORIZED => {
+            return Ok(make_auth_error(status));
+        }
+        JsonReply::Status(_) | JsonReply::Unparsable(_) => false,
     };
 
-    match parse_openrouter_response(&body) {
-        Ok(data) => Ok(UsageResult {
-            success: true,
-            data: Some(data),
-            error: None,
-        }),
-        Err(err) => Ok(make_error(err)),
+    match get_json("https://openrouter.ai/api/v1/credits", api_key).await? {
+        JsonReply::Body(body) => match parse_openrouter_response(&body) {
+            Ok(data) => Ok(UsageResult {
+                success: true,
+                data: Some(data),
+                error: None,
+            }),
+            Err(err) => Ok(make_error(err)),
+        },
+        // `/key` already accepted this key: a refusal here is about the
+        // permission to read account credits, not about the key working.
+        JsonReply::Status(status) if is_auth_status(status) && key_accepted => Ok(make_error(
+            "此 Key 未设消费上限，也没有读取账户余额的权限".to_string(),
+        )),
+        JsonReply::Status(status) if is_auth_status(status) => Ok(make_auth_error(status)),
+        JsonReply::Status(status) => Ok(make_error(format!("API error (HTTP {status})"))),
+        JsonReply::Unparsable(err) => Ok(make_error(err)),
+    }
+}
+
+// ── Moonshot ────────────────────────────────────────────────
+// GET https://api.moonshot.cn/v1/users/me/balance
+// Response: { code: 0, status: true, data: { available_balance, voucher_balance, cash_balance } }
+
+async fn query_moonshot(api_key: &str) -> Result<UsageResult, String> {
+    match get_json("https://api.moonshot.cn/v1/users/me/balance", api_key).await? {
+        JsonReply::Body(body) => match parse_moonshot_response(&body) {
+            Ok(data) => Ok(UsageResult {
+                success: true,
+                data: Some(data),
+                error: None,
+            }),
+            Err(err) => Ok(make_error(err)),
+        },
+        JsonReply::Status(status) if is_auth_status(status) => Ok(make_auth_error(status)),
+        JsonReply::Status(status) => Ok(make_error(format!("API error (HTTP {status})"))),
+        JsonReply::Unparsable(err) => Ok(make_error(err)),
     }
 }
 
@@ -683,6 +780,17 @@ async fn query_novita(api_key: &str) -> Result<UsageResult, String> {
 
 /// 解析 JSON 字段为有限 f64，兼容数字和合法浮点数字符串。
 /// 拒绝缺失、null、布尔、非法字符串、NaN 和 Infinity。
+/// Balances are shown with a few decimals; drop float noise such as
+/// `0.30000000000000004` left by a subtraction.
+fn round_money(value: f64) -> f64 {
+    let rounded = (value * 1_000_000.0).round() / 1_000_000.0;
+    if rounded.is_finite() {
+        rounded
+    } else {
+        value
+    }
+}
+
 fn parse_f64_field(obj: &serde_json::Value, field: &str) -> Option<f64> {
     let val = obj.get(field)?;
     let num = if let Some(n) = val.as_f64() {
@@ -733,6 +841,7 @@ pub async fn get_balance(base_url: &str, api_key: &str) -> Result<BalanceResult,
         BalanceProvider::SiliconFlowEn => query_siliconflow(api_key, false).await,
         BalanceProvider::OpenRouter => query_openrouter(api_key).await,
         BalanceProvider::NovitaAI => query_novita(api_key).await,
+        BalanceProvider::Moonshot => query_moonshot(api_key).await,
         BalanceProvider::ChimeraHub { origin } => query_chimerahub(&origin, api_key).await,
     }?;
     Ok(usage.into())
@@ -879,6 +988,54 @@ mod tests {
     }
 
     #[test]
+    fn openrouter_key_limit_is_preferred_and_unlimited_keys_fall_back() {
+        let data = parse_openrouter_key_response(&json!({
+            "data": { "label": "k", "limit": 20, "usage": 7.3, "limit_remaining": 12.7 }
+        }))
+        .expect("a key with a limit");
+        assert_eq!(data.plan_name.as_deref(), Some("OpenRouter Key"));
+        assert_eq!(data.remaining, Some(12.7));
+        assert_eq!(data.total, Some(20.0));
+        assert_eq!(data.used, Some(7.3));
+        assert_eq!(data.is_valid, Some(true));
+
+        // No spending limit: `/credits` decides.
+        assert!(parse_openrouter_key_response(&json!({
+            "data": { "limit": null, "usage": 3, "limit_remaining": null }
+        }))
+        .is_none());
+    }
+
+    #[test]
+    fn openrouter_credit_subtraction_has_no_float_noise() {
+        let data = parse_openrouter_response(&json!({
+            "data": { "total_credits": 1.1, "total_usage": 0.8 }
+        }))
+        .expect("parsed");
+        assert_eq!(data[0].remaining, Some(0.3));
+    }
+
+    #[test]
+    fn moonshot_balance_requires_an_accepted_reply() {
+        let data = parse_moonshot_response(&json!({
+            "code": 0, "status": true,
+            "data": { "available_balance": 49.58894, "voucher_balance": 46.58893, "cash_balance": 3.00001 }
+        }))
+        .expect("accepted");
+        assert_eq!(data[0].plan_name.as_deref(), Some("Moonshot"));
+        assert_eq!(data[0].unit.as_deref(), Some("CNY"));
+        assert_eq!(data[0].remaining, Some(49.58894));
+
+        assert!(parse_moonshot_response(&json!({
+            "code": 1, "status": false, "data": { "available_balance": 1 }
+        }))
+        .is_err());
+        assert!(
+            parse_moonshot_response(&json!({ "code": 0, "status": true, "data": {} })).is_err()
+        );
+    }
+
+    #[test]
     fn novita_balance_does_not_decide_key_validity() {
         for (raw, available) in [(0.0, 0.0), (-50000.0, -5.0), (255000.0, 25.5)] {
             let data = parse_novita_response(&json!({ "availableBalance": raw }))
@@ -947,6 +1104,11 @@ mod tests {
             detect_provider("https://api.novita.ai/v3"),
             Some(BalanceProvider::NovitaAI)
         ));
+        assert!(matches!(
+            detect_provider("https://api.moonshot.cn/v1"),
+            Some(BalanceProvider::Moonshot)
+        ));
+        assert_eq!(detect_provider("https://api.moonshot.ai/v1"), None);
 
         // 拒绝非 https、路径/查询伪装、子域伪装、userinfo、异常端口
         assert!(detect_provider("http://api.deepseek.com/v1").is_none());
