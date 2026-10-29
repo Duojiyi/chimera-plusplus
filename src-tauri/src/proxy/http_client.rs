@@ -387,8 +387,14 @@ fn build_client_with_redirect_policy(
             ));
         }
 
+        // 显式代理会关掉 reqwest 对 NO_PROXY 的处理，本机推理服务（Ollama、
+        // LM Studio、vLLM）的请求会被送进代理而失败：本机地址始终直连，
+        // 用户设置的 NO_PROXY 继续生效。
+        // Adapted from BigPizzaV3/CodexPlusPlus 78162cbc
+        let no_proxy = explicit_proxy_no_proxy_rules(user_no_proxy_from_env().as_deref());
         let proxy = reqwest::Proxy::all(url)
-            .map_err(|e| format!("Invalid proxy URL '{}': {}", mask_url(url), e))?;
+            .map_err(|e| format!("Invalid proxy URL '{}': {}", mask_url(url), e))?
+            .no_proxy(reqwest::NoProxy::from_string(&no_proxy));
         builder = builder.proxy(proxy);
         log::debug!("[GlobalProxy] Proxy configured: {}", mask_url(url));
     } else {
@@ -407,6 +413,26 @@ fn build_client_with_redirect_policy(
     builder
         .build()
         .map_err(|e| format!("Failed to build HTTP client: {e}"))
+}
+
+/// 显式应用代理下始终直连的本机地址。
+const LOOPBACK_NO_PROXY: &str = "localhost,127.0.0.0/8,::1";
+
+/// 显式应用代理的直连规则：本机地址加上用户自己的 NO_PROXY（如有）。
+fn explicit_proxy_no_proxy_rules(user_no_proxy: Option<&str>) -> String {
+    match user_no_proxy
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(user) => format!("{LOOPBACK_NO_PROXY},{user}"),
+        None => LOOPBACK_NO_PROXY.to_string(),
+    }
+}
+
+fn user_no_proxy_from_env() -> Option<String> {
+    ["NO_PROXY", "no_proxy"]
+        .iter()
+        .find_map(|key| env::var(key).ok().filter(|value| !value.trim().is_empty()))
 }
 
 fn system_proxy_points_to_loopback() -> bool {
@@ -641,6 +667,45 @@ mod tests {
         assert_eq!(hits_after_probe, 0);
         assert_eq!(ordinary.unwrap().status(), reqwest::StatusCode::OK);
         assert_eq!(destination_hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn explicit_proxy_always_bypasses_loopback_and_keeps_user_no_proxy() {
+        assert_eq!(
+            explicit_proxy_no_proxy_rules(None),
+            "localhost,127.0.0.0/8,::1"
+        );
+        assert_eq!(
+            explicit_proxy_no_proxy_rules(Some("  ")),
+            "localhost,127.0.0.0/8,::1"
+        );
+        assert_eq!(
+            explicit_proxy_no_proxy_rules(Some(" example.com,10.0.0.0/8 ")),
+            "localhost,127.0.0.0/8,::1,example.com,10.0.0.0/8"
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_proxy_is_not_used_for_loopback_targets() {
+        let router = axum::Router::new().fallback(|| async { "local model" });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+        // Nothing listens on the discard port: a request sent to this proxy fails.
+        let client = build_client(Some("http://127.0.0.1:9")).unwrap();
+        let response = client
+            .get(format!("http://{address}/v1/models"))
+            .timeout(Duration::from_secs(3))
+            .send()
+            .await
+            .expect("a loopback target is reached directly");
+        let status = response.status();
+        let body = response.text().await.unwrap();
+        server.abort();
+
+        assert_eq!(status, reqwest::StatusCode::OK);
+        assert_eq!(body, "local model");
     }
 
     #[tokio::test]

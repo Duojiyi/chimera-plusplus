@@ -33,6 +33,14 @@
         <!-- reinstall all files; rewrite all registry entries; reinstall all shortcuts -->
         <Property Id="REINSTALLMODE" Value="amus" />
 
+        <!-- Never let this installer restart the machine. The in-app updater runs msiexec in passive
+             mode; without a restart option, passive mode reboots without any prompt when a file in the
+             install directory is still in use. Updaters shipped in older releases do not pass
+             REBOOT=ReallySuppress themselves, so the package carries it. Files still in use are then
+             replaced on the next restart instead.
+             Adapted from farion1231/cc-switch 1ef08d5e -->
+        <Property Id="REBOOT" Value="ReallySuppress" />
+
         <!-- Auto launch app after installation, useful for passive mode which usually used in updates -->
         <Property Id="AUTOLAUNCHAPP" Secure="yes" />
         <!-- Property to forward cli args to the launched app to not lose those of the pre-update instance -->

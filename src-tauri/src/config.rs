@@ -247,7 +247,11 @@ pub fn read_json_file<T: for<'a> Deserialize<'a>>(path: &Path) -> Result<T, AppE
         }
     })?;
 
-    serde_json::from_str(&content).map_err(|e| AppError::json(path, e))
+    // 记事本等编辑器保存的 JSON 常带 UTF-8 BOM，serde_json 不认；解析前去掉。
+    // 写回时不再带 BOM。
+    // Adapted from BigPizzaV3/CodexPlusPlus d0fcf52c
+    let content = content.strip_prefix('\u{feff}').unwrap_or(&content);
+    serde_json::from_str(content).map_err(|e| AppError::json(path, e))
 }
 
 /// 递归排序 JSON 对象的键（按字母顺序），确保序列化输出是确定性的
@@ -399,14 +403,22 @@ where
                 .chain(std::iter::once(0))
                 .collect();
             let flags = MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH;
-            let moved = unsafe { MoveFileExW(source.as_ptr(), destination.as_ptr(), flags) };
-            if moved == 0 {
-                return Err(AppError::IoContext {
-                    context: format!("原子替换失败: {} -> {}", tmp.display(), path.display()),
-                    source: std::io::Error::last_os_error(),
-                }
-                .into());
-            }
+            retry_transient_replace(
+                || {
+                    let moved =
+                        unsafe { MoveFileExW(source.as_ptr(), destination.as_ptr(), flags) };
+                    if moved == 0 {
+                        Err(std::io::Error::last_os_error())
+                    } else {
+                        Ok(())
+                    }
+                },
+                std::thread::sleep,
+            )
+            .map_err(|source| AppError::IoContext {
+                context: format!("原子替换失败: {} -> {}", tmp.display(), path.display()),
+                source,
+            })?;
         }
 
         #[cfg(not(windows))]
@@ -434,9 +446,118 @@ where
     result
 }
 
+/// Windows 替换目标被短暂占用时的最多尝试次数。
+#[cfg(any(windows, test))]
+const REPLACE_MAX_ATTEMPTS: u32 = 6;
+
+/// 替换失败是否属于"目标文件被短暂占用"：拒绝访问（5）、共享冲突（32）、
+/// 锁冲突（33）。杀毒软件、索引器或 Codex 自身持有目标的读句柄时，
+/// `MoveFileExW` 会以这几类错误失败，稍等即可成功；其它错误立即上抛。
+#[cfg(any(windows, test))]
+fn is_transient_replace_error(error: &std::io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(5 | 32 | 33))
+}
+
+/// 对一次文件替换做有限次短退避重试（50ms、100ms … 逐次递增），只重试
+/// [`is_transient_replace_error`] 认定的占用类错误；最后一次失败原样返回。
+// Adapted from BigPizzaV3/CodexPlusPlus 7fe01311
+#[cfg(any(windows, test))]
+fn retry_transient_replace<R, S>(mut replace: R, mut sleep: S) -> std::io::Result<()>
+where
+    R: FnMut() -> std::io::Result<()>,
+    S: FnMut(std::time::Duration),
+{
+    let mut attempt = 1;
+    loop {
+        match replace() {
+            Ok(()) => return Ok(()),
+            Err(error) if attempt < REPLACE_MAX_ATTEMPTS && is_transient_replace_error(&error) => {
+                sleep(std::time::Duration::from_millis(50 * u64::from(attempt)));
+                attempt += 1;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn read_json_file_accepts_a_utf8_bom() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        fs::write(&path, "\u{feff}{\"a\":1}").unwrap();
+        let value: Value = read_json_file(&path).expect("BOM-prefixed JSON parses");
+        assert_eq!(value, serde_json::json!({ "a": 1 }));
+
+        // Only a leading BOM is stripped; other invalid input still fails.
+        fs::write(&path, "{\"a\":1}\u{feff}").unwrap();
+        assert!(read_json_file::<Value>(&path).is_err());
+    }
+
+    #[test]
+    fn transient_replace_errors_are_retried_with_short_backoff() {
+        let mut calls = 0;
+        let mut sleeps = Vec::new();
+        let result = retry_transient_replace(
+            || {
+                calls += 1;
+                if calls < 3 {
+                    Err(std::io::Error::from_raw_os_error(32))
+                } else {
+                    Ok(())
+                }
+            },
+            |delay| sleeps.push(delay.as_millis()),
+        );
+        assert!(result.is_ok());
+        assert_eq!(calls, 3);
+        assert_eq!(sleeps, vec![50, 100]);
+    }
+
+    #[test]
+    fn transient_replace_retry_is_bounded_and_returns_the_last_error() {
+        let mut calls = 0;
+        let mut sleeps = Vec::new();
+        let error = retry_transient_replace(
+            || {
+                calls += 1;
+                Err(std::io::Error::from_raw_os_error(5))
+            },
+            |delay| sleeps.push(delay.as_millis()),
+        )
+        .expect_err("a file that stays locked still fails");
+        assert_eq!(error.raw_os_error(), Some(5));
+        assert_eq!(calls, REPLACE_MAX_ATTEMPTS);
+        assert_eq!(sleeps, vec![50, 100, 150, 200, 250]);
+    }
+
+    #[test]
+    fn non_transient_replace_errors_fail_immediately() {
+        for error in [
+            std::io::Error::from_raw_os_error(2),
+            std::io::Error::from_raw_os_error(112),
+            std::io::Error::other("not an OS error"),
+        ] {
+            let kind = error.kind();
+            let mut error = Some(error);
+            let mut calls = 0;
+            let result = retry_transient_replace(
+                || {
+                    calls += 1;
+                    Err(error.take().expect("called once"))
+                },
+                |_| panic!("must not wait before a non-transient error"),
+            );
+            assert_eq!(result.expect_err("error is returned").kind(), kind);
+            assert_eq!(calls, 1);
+        }
+        assert!(is_transient_replace_error(
+            &std::io::Error::from_raw_os_error(33)
+        ));
+    }
 
     #[test]
     fn derive_mcp_path_from_override_uses_config_dir_for_custom_path() {

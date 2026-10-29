@@ -136,9 +136,9 @@ impl ProxyServer {
         let app = self.build_router();
 
         // 绑定监听器
-        let listener = tokio::net::TcpListener::bind(&addr)
-            .await
-            .map_err(|e| ProxyError::BindFailed(e.to_string()))?;
+        let listener = tokio::net::TcpListener::bind(&addr).await.map_err(|e| {
+            ProxyError::BindFailed(describe_bind_error(addr.port(), &e, cfg!(windows)))
+        })?;
         let local_addr = listener
             .local_addr()
             .map_err(|e| ProxyError::BindFailed(e.to_string()))?;
@@ -524,9 +524,42 @@ async fn reject_browser_origin_requests(request: Request, next: Next) -> Respons
     next.run(request).await
 }
 
+/// Windows 把一些端口段保留给 Hyper-V / WSL / Docker（`netsh` 可查），绑定这些
+/// 端口时返回 WSAEACCES（10013）而不是"端口被占用"，系统英文错误看不出原因。
+/// 端口已写进各工具的 live 配置，所以只提示用户换端口，不静默迁移。
+fn describe_bind_error(port: u16, error: &std::io::Error, windows: bool) -> String {
+    const WSAEACCES: i32 = 10013;
+    if windows && error.raw_os_error() == Some(WSAEACCES) {
+        return format!(
+            "端口 {port} 位于 Windows 保留端口段（常见于 Hyper-V、WSL 或 Docker），或已被其他程序独占，无法监听。请在代理设置中换一个端口；可在命令行运行 netsh interface ipv4 show excludedportrange protocol=tcp 查看被保留的端口段（系统错误 10013）"
+        );
+    }
+    error.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_reserved_port_bind_error_is_explained_in_chinese() {
+        let reserved = std::io::Error::from_raw_os_error(10013);
+        let message = describe_bind_error(15721, &reserved, true);
+        assert!(message.starts_with("端口 15721 位于 Windows 保留端口段"));
+        assert!(message.contains("excludedportrange"));
+        assert!(message.contains("10013"));
+
+        // Other platforms and other errors keep the system text.
+        assert_eq!(
+            describe_bind_error(15721, &reserved, false),
+            reserved.to_string()
+        );
+        let in_use = std::io::Error::from(std::io::ErrorKind::AddrInUse);
+        assert_eq!(
+            describe_bind_error(15721, &in_use, true),
+            in_use.to_string()
+        );
+    }
 
     #[tokio::test]
     async fn stop_timeout_retains_handle_and_later_stop_can_finish() {

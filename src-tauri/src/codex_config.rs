@@ -954,9 +954,35 @@ pub fn should_restore_codex_provider_token_for_backfill(
 fn parse_codex_positive_u64(value: Option<&Value>) -> Option<u64> {
     match value {
         Some(Value::Number(n)) => n.as_u64().filter(|v| *v > 0),
-        Some(Value::String(s)) => s.trim().parse::<u64>().ok().filter(|v| *v > 0),
+        Some(Value::String(s)) => parse_grouped_u64(s.trim()).filter(|v| *v > 0),
         _ => None,
     }
+}
+
+/// 解析可能带千分位的数字字符串（"1,050,000"、"1_050_000"、"1，050，000"）。
+/// 分隔符只能出现在数字之间；其它字符仍判为无效，不静默回落成别的值。
+// Adapted from BigPizzaV3/CodexPlusPlus 0295c9f3
+fn parse_grouped_u64(text: &str) -> Option<u64> {
+    let is_separator = |c: char| matches!(c, ',' | '_' | '，');
+    let mut previous_was_separator = true;
+    let mut digits = String::with_capacity(text.len());
+    for c in text.chars() {
+        if is_separator(c) {
+            if previous_was_separator {
+                return None;
+            }
+            previous_was_separator = true;
+        } else if c.is_ascii_digit() {
+            digits.push(c);
+            previous_was_separator = false;
+        } else {
+            return None;
+        }
+    }
+    if previous_was_separator {
+        return None;
+    }
+    digits.parse::<u64>().ok()
 }
 
 fn extract_codex_top_level_u64(config_text: &str, field: &str) -> Option<u64> {
@@ -2955,6 +2981,43 @@ pub(crate) fn resolve_cc_switch_catalog_path(
 }
 
 fn resolve_catalog_path_in_doc(doc: &DocumentMut, generated_path: &Path) -> Option<PathBuf> {
+    resolve_catalog_path_in_doc_with_known_dirs(doc, generated_path, &known_codex_config_dirs())
+}
+
+/// Codex config directories a generated catalog may have been written to before
+/// the user moved the Codex config directory: the selected one, the default
+/// `~/.codex` and `CODEX_HOME`. Environment and settings only, no filesystem.
+fn known_codex_config_dirs() -> Vec<PathBuf> {
+    let mut dirs = vec![get_codex_config_dir(), get_home_dir().join(".codex")];
+    if let Some(codex_home) = std::env::var_os("CODEX_HOME").filter(|value| !value.is_empty()) {
+        dirs.push(PathBuf::from(codex_home));
+    }
+    dirs
+}
+
+/// An absolute pointer to the generated catalog file name directly inside a
+/// known Codex config directory is our own stale pointer from before the
+/// config directory moved: it is adopted (and rewritten to the current file)
+/// instead of being reported as a user catalog on every switch. Nested files,
+/// other directories and traversal stay foreign.
+fn catalog_pointer_in_known_codex_dir(referenced: &Path, known_dirs: &[PathBuf]) -> bool {
+    let Some(parent) = referenced
+        .parent()
+        .and_then(normalized_catalog_absolute_path)
+    else {
+        return false;
+    };
+    known_dirs
+        .iter()
+        .filter_map(|dir| normalized_catalog_absolute_path(dir))
+        .any(|dir| dir == parent)
+}
+
+fn resolve_catalog_path_in_doc_with_known_dirs(
+    doc: &DocumentMut,
+    generated_path: &Path,
+    known_dirs: &[PathBuf],
+) -> Option<PathBuf> {
     use std::path::Component;
 
     let raw = doc.get("model_catalog_json")?.as_str()?;
@@ -2988,7 +3051,10 @@ fn resolve_catalog_path_in_doc(doc: &DocumentMut, generated_path: &Path) -> Opti
     let same_absolute_path = normalized_catalog_absolute_path(referenced)
         .zip(normalized_catalog_absolute_path(generated_path))
         .is_some_and(|(referenced, generated)| referenced == generated);
-    (bare || same_absolute_path).then(|| generated_path.to_path_buf())
+    let stale_known_dir = !same_absolute_path
+        && normalized_catalog_absolute_path(referenced).is_some()
+        && catalog_pointer_in_known_codex_dir(referenced, known_dirs);
+    (bare || same_absolute_path || stale_known_dir).then(|| generated_path.to_path_buf())
 }
 
 fn normalized_catalog_absolute_path(path: &Path) -> Option<String> {
@@ -4527,6 +4593,34 @@ pub fn remove_codex_toml_base_url_if(toml_str: &str, predicate: impl Fn(&str) ->
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn positive_u64_accepts_thousands_separators_only_between_digits() {
+        let parse = |value: Value| parse_codex_positive_u64(Some(&value));
+        assert_eq!(parse(json!(1_050_000)), Some(1_050_000));
+        assert_eq!(parse(json!("1050000")), Some(1_050_000));
+        assert_eq!(parse(json!(" 1,050,000 ")), Some(1_050_000));
+        assert_eq!(parse(json!("1_050_000")), Some(1_050_000));
+        assert_eq!(parse(json!("1，050，000")), Some(1_050_000));
+        for invalid in [
+            "",
+            "abc",
+            "0",
+            "0,000",
+            ",100",
+            "100,",
+            "1,,000",
+            "1.5",
+            "+100",
+            "-100",
+            "1 000",
+            "１,０５０,０００",
+        ] {
+            assert_eq!(parse(json!(invalid)), None, "{invalid:?}");
+        }
+        assert_eq!(parse(json!(0)), None);
+        assert_eq!(parse_codex_positive_u64(None), None);
+    }
 
     #[test]
     fn official_auth_keeps_oauth_and_removes_api_login_mode() {
@@ -7476,6 +7570,52 @@ base_url = "https://relay.example/v1"
                 "{reference}"
             );
         }
+    }
+
+    #[test]
+    fn stale_catalog_pointer_in_a_known_codex_dir_is_adopted_but_nothing_else() {
+        let root = std::env::temp_dir().join("catalog-known-dirs");
+        let current = root.join("new-codex");
+        let previous = root.join("old-codex");
+        let generated = current.join(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME);
+        let known = vec![current.clone(), previous.clone()];
+        let resolve = |reference: &Path| {
+            let doc = catalog_reference(reference.to_str().unwrap())
+                .parse::<DocumentMut>()
+                .unwrap();
+            resolve_catalog_path_in_doc_with_known_dirs(&doc, &generated, &known)
+        };
+
+        // Our file in the previous config directory: adopted, so a switch
+        // rewrites the pointer to the current file instead of a conflict.
+        assert_eq!(
+            resolve(&previous.join(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)),
+            Some(generated.clone())
+        );
+        for foreign in [
+            previous
+                .join("nested")
+                .join(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME),
+            previous.join("my-catalog.json"),
+            root.join("unknown")
+                .join(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME),
+            previous
+                .join("..")
+                .join("old-codex")
+                .join(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME),
+        ] {
+            assert!(resolve(&foreign).is_none(), "{}", foreign.display());
+        }
+
+        let doc = catalog_reference(
+            previous
+                .join(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)
+                .to_str()
+                .unwrap(),
+        )
+        .parse::<DocumentMut>()
+        .unwrap();
+        assert!(resolve_catalog_path_in_doc_with_known_dirs(&doc, &generated, &[]).is_none());
     }
 
     #[test]

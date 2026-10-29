@@ -436,10 +436,22 @@ const UPDATE_DOWNLOAD_TIMEOUT_MESSAGE: &str = "更新下载超时，请检查网
 const UPDATE_BLOCKED_BY_RUNTIME_MESSAGE: &str =
     "Codex 安装或皮肤操作正在进行，完成后再更新 Chimera++";
 
+/// 传给 msiexec 的安装参数：禁止安装过程重启整机。
+#[cfg(any(target_os = "windows", test))]
+const WINDOWS_UPDATE_INSTALLER_ARG: &str = "REBOOT=ReallySuppress";
+
 /// 所有应用更新请求共用的更新器：检查请求有总时长上限；检查和下载都有连接
 /// 超时与空闲（读取）超时，卡住的连接会及时报错，而不是让界面一直等待。
 fn bounded_updater(app: &AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
-    app.updater_builder()
+    let builder = app.updater_builder();
+    // Windows 上更新器以 passive 模式运行 msiexec。没有重启选项时，安装目录里有文件
+    // 被占用，Windows Installer 会不经确认直接重启整机；显式传 REBOOT=ReallySuppress，
+    // 被占用的文件改为下次开机时替换。旧版本更新器不带此参数，由 MSI 模板自身的
+    // REBOOT 属性兜底（wix/per-user-main.wxs）。
+    // Adapted from farion1231/cc-switch 1ef08d5e
+    #[cfg(target_os = "windows")]
+    let builder = builder.installer_arg(WINDOWS_UPDATE_INSTALLER_ARG);
+    builder
         .timeout(UPDATE_CHECK_TIMEOUT)
         .configure_client(|client| {
             client
@@ -840,6 +852,22 @@ mod update_tests {
         assert!(refusal.contains("return Err(message);"));
         assert!(body.contains("UPDATE_DOWNLOAD_TIMEOUT"));
         assert!(body.contains("bounded_updater(&app)?"));
+    }
+
+    #[test]
+    fn windows_updates_never_restart_the_machine() {
+        assert_eq!(super::WINDOWS_UPDATE_INSTALLER_ARG, "REBOOT=ReallySuppress");
+        let updater = include_str!("settings.rs")
+            .split("fn bounded_updater(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("bounded_updater body");
+        assert!(updater.contains("#[cfg(target_os = \"windows\")]"));
+        assert!(updater.contains(".installer_arg(WINDOWS_UPDATE_INSTALLER_ARG)"));
+        // Updaters from older releases do not pass the argument, so the MSI
+        // itself must carry the property as well.
+        let wix = include_str!("../../wix/per-user-main.wxs");
+        assert!(wix.contains(r#"<Property Id="REBOOT" Value="ReallySuppress" />"#));
     }
 
     #[test]

@@ -12,8 +12,8 @@ use crate::config::{atomic_write, copy_file, get_app_config_dir};
 use crate::database::{is_official_seed_id, Database};
 use crate::error::AppError;
 use crate::security_limits::{
-    open_regular_file_no_symlink, read_to_string_limited, MAX_CONFIG_FILE_BYTES,
-    MAX_SESSION_FILE_BYTES,
+    open_regular_file_no_symlink, read_to_string_limited, ResourceLimitError,
+    MAX_CONFIG_FILE_BYTES, MAX_SESSION_FILE_BYTES,
 };
 use crate::settings::{
     CodexOfficialHistoryUnifyMigration, CodexProviderTemplateMigration,
@@ -1579,7 +1579,73 @@ fn read_session_line(reader: &mut impl BufRead, bytes: &mut Vec<u8>) -> std::io:
     Ok(bytes.len() as u64 <= MAX_SESSION_FILE_BYTES)
 }
 
+/// Windows: another process (antivirus, indexer, backup tool, Codex itself)
+/// holds the rollout or its replacement target with a sharing mode that
+/// blocks us: access denied (5), sharing violation (32), lock violation (33).
+/// Our own symlink/reparse-point refusal is also `PermissionDenied` but carries
+/// a [`ResourceLimitError`] payload and no OS code; it must never be deferred.
+/// Other platforms do not lock files this way, so nothing is treated as locked.
+// Adapted from BigPizzaV3/CodexPlusPlus a6c8a7d6
+fn is_locked_session_file_error(error: &std::io::Error) -> bool {
+    if error
+        .get_ref()
+        .is_some_and(|inner| inner.is::<ResourceLimitError>())
+    {
+        return false;
+    }
+    cfg!(windows) && matches!(error.raw_os_error(), Some(5 | 32 | 33))
+}
+
+/// Session id from a Codex rollout file name (`rollout-<timestamp>-<uuid>.jsonl`),
+/// used only when a locked file cannot be read to find its `session_meta` id.
+fn session_id_from_rollout_file_name(path: &Path) -> Option<String> {
+    if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+        return None;
+    }
+    let stem = path.file_stem()?.to_str()?;
+    let (prefix, id) = stem.split_at_checked(stem.len().checked_sub(36)?)?;
+    if !prefix.starts_with("rollout-") || !prefix.ends_with('-') {
+        return None;
+    }
+    uuid::Uuid::parse_str(id).ok()?;
+    Some(id.to_string())
+}
+
+/// A rollout that another process keeps locked is deferred to the next
+/// migration round instead of failing the whole round; its state rows stay in
+/// their current bucket. Without a session id the error is kept, so the DB
+/// and the files never disagree.
 fn rewrite_codex_session_file_lines(
+    path: &Path,
+    codex_dir: &Path,
+    backup_root: &Path,
+    rewrite_line: impl Fn(&str) -> Option<String>,
+) -> Result<SessionRewriteOutcome, AppError> {
+    let result =
+        rewrite_unlocked_codex_session_file_lines(path, codex_dir, backup_root, rewrite_line);
+    let locked = matches!(
+        &result,
+        Err(AppError::Io { source, .. } | AppError::IoContext { source, .. })
+            if is_locked_session_file_error(source)
+    );
+    if !locked {
+        return result;
+    }
+    let Some(id) = session_id_from_rollout_file_name(path) else {
+        return result;
+    };
+    if let Err(error) = &result {
+        log::info!(
+            "Codex 会话文件正被其他程序占用，留给下一轮迁移重试: {} ({error})",
+            path.display()
+        );
+    }
+    Ok(SessionRewriteOutcome::Deferred {
+        session_ids: BTreeSet::from([id]),
+    })
+}
+
+fn rewrite_unlocked_codex_session_file_lines(
     path: &Path,
     codex_dir: &Path,
     backup_root: &Path,
@@ -1730,9 +1796,26 @@ fn rewrite_codex_session_file_lines(
     // Check after the potentially slow temp-file flush, immediately before
     // replace. The active-session guard remains necessary for external writers.
     ensure_codex_session_file_unchanged(path, modified_before, len_before)?;
-    temporary
-        .persist(path)
-        .map_err(|e| AppError::io(path, e.error))?;
+    if let Err(error) = temporary.persist(path) {
+        // The rollout was read and its ids are known: defer with all of them
+        // (the caller's file-name fallback only knows one).
+        if is_locked_session_file_error(&error.error) {
+            if unidentified_change {
+                return Err(AppError::Config(format!(
+                    "Cannot safely defer locked session without an ID: {} ({})",
+                    path.display(),
+                    error.error
+                )));
+            }
+            log::info!(
+                "Codex 会话文件正被其他程序占用，留给下一轮迁移重试: {} ({})",
+                path.display(),
+                error.error
+            );
+            return Ok(SessionRewriteOutcome::Deferred { session_ids });
+        }
+        return Err(AppError::io(path, error.error));
+    }
     #[cfg(unix)]
     if let Some(parent) = path.parent() {
         if let Err(error) = fs::File::open(parent).and_then(|directory| directory.sync_all()) {
@@ -4660,5 +4743,133 @@ command = "docs-mcp"
         fx.seed("s2", "my-relay", true);
         let ids = scan_existing_codex_history_provider_ids(&fx.codex_dir(), &fx.config());
         assert_eq!(ids, source_ids(&["my-relay"]));
+    }
+
+    const LOCKED_ROLLOUT_ID: &str = "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b";
+
+    fn rightcode_session_meta(id: &str) -> String {
+        format!(
+            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"model_provider\":\"rightcode\"}}}}\n"
+        )
+    }
+
+    #[test]
+    fn locked_session_file_errors_never_include_the_symlink_refusal() {
+        let symlink = std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            ResourceLimitError::Symlink,
+        );
+        assert!(!is_locked_session_file_error(&symlink));
+        assert!(!is_locked_session_file_error(&std::io::Error::from(
+            std::io::ErrorKind::NotFound
+        )));
+        for code in [5, 32, 33] {
+            assert_eq!(
+                is_locked_session_file_error(&std::io::Error::from_raw_os_error(code)),
+                cfg!(windows),
+                "os error {code}"
+            );
+        }
+        assert!(!is_locked_session_file_error(
+            &std::io::Error::from_raw_os_error(2)
+        ));
+    }
+
+    #[test]
+    fn session_id_is_read_from_codex_rollout_file_names_only() {
+        let name = |file: &str| session_id_from_rollout_file_name(Path::new(file));
+        assert_eq!(
+            name(&format!(
+                "rollout-2026-10-29T10-00-00-{LOCKED_ROLLOUT_ID}.jsonl"
+            ))
+            .as_deref(),
+            Some(LOCKED_ROLLOUT_ID)
+        );
+        assert_eq!(name("rollout-test.jsonl"), None);
+        assert_eq!(name(&format!("{LOCKED_ROLLOUT_ID}.jsonl")), None);
+        assert_eq!(
+            name(&format!(
+                "rollout-2026-10-29T10-00-00-{LOCKED_ROLLOUT_ID}.txt"
+            )),
+            None
+        );
+        assert_eq!(
+            name("rollout-2026-10-29T10-00-00-0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5z.jsonl"),
+            None
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn locked_rollout_is_deferred_while_other_rollouts_migrate() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let dir = tempdir().expect("tempdir");
+        let codex_dir = dir.path().join(".codex");
+        let backup_root = dir.path().join("backup");
+        let session_dir = codex_dir.join("sessions/2026/10/29");
+        fs::create_dir_all(&session_dir).expect("create session dir");
+        let locked = session_dir.join(format!(
+            "rollout-2026-10-29T10-00-00-{LOCKED_ROLLOUT_ID}.jsonl"
+        ));
+        let locked_content = rightcode_session_meta(LOCKED_ROLLOUT_ID);
+        write_session_fixture(&locked, &locked_content);
+        let free = session_dir.join("rollout-free.jsonl");
+        write_session_fixture(&free, &rightcode_session_meta("free"));
+
+        // An exclusive handle, as an antivirus or backup tool may hold.
+        let handle = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&locked)
+            .expect("hold an exclusive handle");
+        let outcome =
+            migrate_codex_jsonl_files(&codex_dir, &source_ids(&["rightcode"]), &backup_root)
+                .expect("a locked rollout does not fail the round");
+        drop(handle);
+
+        assert_eq!(outcome.migrated_files, 1);
+        assert_eq!(outcome.deferred_files, 1);
+        assert_eq!(
+            outcome.deferred_session_ids,
+            source_ids(&[LOCKED_ROLLOUT_ID])
+        );
+        assert_eq!(
+            outcome.deferred_reason().as_deref(),
+            Some("deferred_active_session_files")
+        );
+        assert_eq!(
+            fs::read_to_string(&locked).expect("read locked rollout"),
+            locked_content
+        );
+        assert!(fs::read_to_string(&free)
+            .expect("read free rollout")
+            .contains("\"model_provider\":\"custom\""));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_rollout_is_still_refused_not_deferred() {
+        let dir = tempdir().expect("tempdir");
+        let codex_dir = dir.path().join(".codex");
+        let session_dir = codex_dir.join("sessions/2026/10/29");
+        fs::create_dir_all(&session_dir).expect("create session dir");
+        let target = dir.path().join("outside.jsonl");
+        write_session_fixture(&target, &rightcode_session_meta("s1"));
+        let link = session_dir.join(format!(
+            "rollout-2026-10-29T10-00-00-{LOCKED_ROLLOUT_ID}.jsonl"
+        ));
+        std::os::unix::fs::symlink(&target, &link).expect("create symlink");
+
+        let result = rewrite_codex_session_file_for_provider_bucket(
+            &link,
+            &codex_dir,
+            &HashSet::from(["rightcode".to_string()]),
+            &dir.path().join("backup"),
+        );
+        assert!(
+            result.is_err(),
+            "a symlink must not be deferred: {result:?}"
+        );
     }
 }

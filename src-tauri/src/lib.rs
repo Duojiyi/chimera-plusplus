@@ -1345,6 +1345,22 @@ pub fn run() {
                     TrayIconEvent::DoubleClick { button: tauri::tray::MouseButton::Left, .. } => {
                         tray::handle_tray_menu_event(tray.app_handle(), "show_main");
                     }
+                    // Windows：左键单击直接打开主窗口，右键仍弹出菜单。
+                    TrayIconEvent::Click { button, button_state, .. }
+                        if tray_click_opens_main_window(
+                            &button,
+                            &button_state,
+                            cfg!(target_os = "windows"),
+                        ) =>
+                    {
+                        tray::handle_tray_menu_event(tray.app_handle(), "show_main");
+                        if crate::product_policy::refresh_usage_from_tray() {
+                            let app = tray.app_handle().clone();
+                            tauri::async_runtime::spawn(async move {
+                                crate::tray::refresh_all_usage_in_tray(&app).await;
+                            });
+                        }
+                    }
                     // 鼠标悬停/点击到托盘图标时，后台异步刷新用量缓存，
                     // 让用户下一次（或快速打开菜单的那一刻）看到较新的数字。
                     // refresh_all_usage_in_tray 内部有 10 秒防抖。
@@ -2611,15 +2627,64 @@ pub fn restart_process(app_handle: &tauri::AppHandle) -> ! {
     tauri::process::restart(&app_handle.env());
 }
 
+/// Whether a tray click opens the main window. Windows users expect a single
+/// left click (on release) to do this; other platforms keep the double click,
+/// since a left click there may be what opens the menu.
+// Adapted from farion1231/cc-switch 91ab270e
+fn tray_click_opens_main_window(
+    button: &tauri::tray::MouseButton,
+    state: &tauri::tray::MouseButtonState,
+    windows: bool,
+) -> bool {
+    windows
+        && matches!(
+            (button, state),
+            (
+                tauri::tray::MouseButton::Left,
+                tauri::tray::MouseButtonState::Up
+            )
+        )
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         classify_exit_request, enabled_proxy_apps_on_startup, redact_url_for_log,
         redact_url_for_log_with_secrets, redact_url_origin_for_log, runtime_log_level_allows,
-        strip_bare_userinfo, ExitRequestAction,
+        strip_bare_userinfo, tray_click_opens_main_window, ExitRequestAction,
     };
     use crate::database::Database;
     use crate::settings::VisibleApps;
+
+    #[test]
+    fn windows_tray_left_click_release_opens_the_main_window() {
+        use tauri::tray::{MouseButton, MouseButtonState};
+
+        assert!(tray_click_opens_main_window(
+            &MouseButton::Left,
+            &MouseButtonState::Up,
+            true
+        ));
+        // Press only: the release opens it, so one click does not fire twice.
+        assert!(!tray_click_opens_main_window(
+            &MouseButton::Left,
+            &MouseButtonState::Down,
+            true
+        ));
+        for button in [MouseButton::Right, MouseButton::Middle] {
+            assert!(!tray_click_opens_main_window(
+                &button,
+                &MouseButtonState::Up,
+                true
+            ));
+        }
+        // macOS/Linux keep their behaviour.
+        assert!(!tray_click_opens_main_window(
+            &MouseButton::Left,
+            &MouseButtonState::Up,
+            false
+        ));
+    }
 
     #[test]
     fn log_url_redaction_strips_credentials_and_query_keeps_path() {

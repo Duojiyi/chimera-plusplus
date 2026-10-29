@@ -622,15 +622,25 @@ enum LifecycleCommandShell {
     WindowsBatch,
 }
 
+/// npm 12 默认不再运行依赖的安装脚本（postinstall）且仍以 0 退出：OpenCode 会装成
+/// 文本占位的可执行文件，Grok Build 升级后仍跑旧二进制。显式放行本包的安装脚本并
+/// 装上 optional 依赖（平台二进制）；npm 10/11 忽略 `--allow-scripts`。
+/// 所有 `npm i -g` 安装/升级命令（静态与锚定）都必须带上这组参数。
+// Adapted from farion1231/cc-switch 618af9d9
+fn npm_global_install_args(pkg: &str) -> String {
+    format!("i -g {pkg}@latest --ignore-scripts=false --include=optional --allow-scripts={pkg}")
+}
+
+/// 静态 npm 安装命令，与 [`npm_global_install_args`] 保持一致（有测试守卫）。
 fn npm_install_command_for(tool: &str) -> Option<&'static str> {
     match tool {
-        "claude" => Some("npm i -g @anthropic-ai/claude-code@latest"),
-        "codex" => Some("npm i -g @openai/codex@latest"),
-        "gemini" => Some("npm i -g @google/gemini-cli@latest"),
-        "grok" => Some("npm i -g @xai-official/grok@latest"),
-        "opencode" => Some("npm i -g opencode-ai@latest"),
+        "claude" => Some("npm i -g @anthropic-ai/claude-code@latest --ignore-scripts=false --include=optional --allow-scripts=@anthropic-ai/claude-code"),
+        "codex" => Some("npm i -g @openai/codex@latest --ignore-scripts=false --include=optional --allow-scripts=@openai/codex"),
+        "gemini" => Some("npm i -g @google/gemini-cli@latest --ignore-scripts=false --include=optional --allow-scripts=@google/gemini-cli"),
+        "grok" => Some("npm i -g @xai-official/grok@latest --ignore-scripts=false --include=optional --allow-scripts=@xai-official/grok"),
+        "opencode" => Some("npm i -g opencode-ai@latest --ignore-scripts=false --include=optional --allow-scripts=opencode-ai"),
 
-        "pi" => Some("npm i -g @earendil-works/pi-coding-agent@latest"),
+        "pi" => Some("npm i -g @earendil-works/pi-coding-agent@latest --ignore-scripts=false --include=optional --allow-scripts=@earendil-works/pi-coding-agent"),
         _ => None,
     }
 }
@@ -2441,7 +2451,7 @@ fn codex_repair_command(bin_path: &str, real: &str) -> Option<String> {
     }
     let pkg = "@openai/codex";
     let uninstall = anchored_npm_command(bin_path, &format!("uninstall -g {pkg}"))?;
-    let install = anchored_npm_command(bin_path, &format!("i -g {pkg}@latest"))?;
+    let install = anchored_npm_command(bin_path, &npm_global_install_args(pkg))?;
     Some(format!("{uninstall} || true; {install}"))
 }
 
@@ -2482,7 +2492,7 @@ fn package_manager_anchored_command_from_paths(
         // self-update，上层会直接锚到 CLI 自身；否则返回 None 走静态兜底。
         _ => return None,
     }
-    anchored_npm_command(bin_path, &format!("i -g {pkg}@latest"))
+    anchored_npm_command(bin_path, &npm_global_install_args(pkg))
 }
 
 /// 给定工具、原始 bin 路径（命令行命中的入口）、canonicalize 后的真身路径，
@@ -2562,8 +2572,9 @@ fn package_manager_anchored_command_from_paths(tool: &str, bin_path: &str) -> Op
         _ => {
             let npm = sibling_bin_with_ext(bin_path, "npm", &["cmd", "exe"])?;
             Some(format!(
-                "{} i -g {pkg}@latest",
-                win_quote_path_for_batch(&npm)
+                "{} {}",
+                win_quote_path_for_batch(&npm),
+                npm_global_install_args(pkg)
             ))
         }
     }
@@ -3552,26 +3563,32 @@ fn escape_windows_batch_value(value: &str) -> String {
         .replace(')', "^)")
 }
 /// Windows: Run a start command with common error handling
+///
+/// stdio 指向 NUL、只等 `cmd` 的退出码，不能用 `output()` 捕获：`start` 打开的终端
+/// 会继承这里的 stdout/stderr 管道，管道要等那个窗口关闭才到 EOF，调用就一直挂到
+/// 用户关掉终端，界面也一直转圈。启动失败仍能从退出码看出来。
+// Adapted from farion1231/cc-switch 6226f5c4
 #[cfg(target_os = "windows")]
 fn run_windows_start_command(args: &[&str], terminal_name: &str) -> Result<(), String> {
-    use std::process::Command;
+    use std::process::{Command, Stdio};
 
     let mut full_args = vec!["/C", "start"];
     full_args.extend(args);
 
-    let output = Command::new("cmd")
+    let status = Command::new("cmd")
         .args(&full_args)
         .creation_flags(CREATE_NO_WINDOW)
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
         .map_err(|e| format!("启动 {} 失败: {e}", terminal_name))?;
 
-    if !output.status.success() {
-        let stderr = decode_command_output(&output.stderr);
+    if !status.success() {
         return Err(format!(
-            "{} 启动失败 (exit code: {:?}): {}",
+            "{} 启动失败 (exit code: {:?})",
             terminal_name,
-            output.status.code(),
-            stderr
+            status.code()
         ));
     }
 
@@ -3595,6 +3612,43 @@ pub async fn set_window_theme(window: tauri::Window, theme: String) -> Result<()
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn windows_open_terminal_does_not_wait_for_the_console_to_close() {
+        let body = include_str!("misc.rs")
+            .split("fn run_windows_start_command(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("run_windows_start_command body");
+        // A captured pipe would stay open until the user closes the terminal.
+        assert!(!body.contains(".output()"));
+        assert!(body.contains(".status()"));
+        for stream in ["stdin", "stdout", "stderr"] {
+            assert!(
+                body.contains(&format!(".{stream}(Stdio::null())")),
+                "{stream} must not be inherited by the console"
+            );
+        }
+    }
+
+    #[test]
+    fn every_npm_install_command_runs_install_scripts_under_npm_12() {
+        for tool in ["claude", "codex", "gemini", "grok", "opencode", "pi"] {
+            let pkg = super::npm_package_for(tool).expect("npm package");
+            let args = super::npm_global_install_args(pkg);
+            assert_eq!(
+                args,
+                format!(
+                    "i -g {pkg}@latest --ignore-scripts=false --include=optional --allow-scripts={pkg}"
+                )
+            );
+            assert_eq!(
+                super::npm_install_command_for(tool).map(str::to_string),
+                Some(format!("npm {args}")),
+                "{tool}"
+            );
+        }
+    }
+
     #[cfg(target_os = "windows")]
     #[test]
     fn path_default_version_and_failure_are_not_masked_by_alternative() {
@@ -3798,7 +3852,7 @@ mod tests {
             npm_package_for("pi"),
             Some("@earendil-works/pi-coding-agent")
         );
-        let command = "npm i -g @earendil-works/pi-coding-agent@latest";
+        let command = "npm i -g @earendil-works/pi-coding-agent@latest --ignore-scripts=false --include=optional --allow-scripts=@earendil-works/pi-coding-agent";
         assert_eq!(npm_install_command_for("pi"), Some(command));
         assert_eq!(official_update_args("pi"), None);
         assert_eq!(posix_install_command_for("pi"), command);
@@ -3829,7 +3883,7 @@ mod tests {
             "/Users/me/.nvm/versions/node/v22.14.0/bin/pi",
             "/Users/me/.nvm/versions/node/v22.14.0/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js",
         ).expect("Pi npm anchor");
-        assert!(command.contains("/Users/me/.nvm/versions/node/v22.14.0/bin/npm i -g @earendil-works/pi-coding-agent@latest"));
+        assert!(command.contains("/Users/me/.nvm/versions/node/v22.14.0/bin/npm i -g @earendil-works/pi-coding-agent@latest --ignore-scripts=false --include=optional --allow-scripts=@earendil-works/pi-coding-agent"));
         assert!(!command.contains("pi update"));
     }
 
@@ -3842,12 +3896,12 @@ mod tests {
         let path = pi.to_string_lossy();
         let command = anchored_command_from_paths("pi", &path, &path).expect("Pi npm anchor");
         assert!(command.contains("npm.cmd"));
-        assert!(command.ends_with(" i -g @earendil-works/pi-coding-agent@latest"));
+        assert!(command.ends_with(" i -g @earendil-works/pi-coding-agent@latest --ignore-scripts=false --include=optional --allow-scripts=@earendil-works/pi-coding-agent"));
         assert!(!command.contains("pi update"));
         for action in [ToolLifecycleAction::Install, ToolLifecycleAction::Update] {
             assert_eq!(
                 wsl_tool_action_shell_command("pi", action).as_deref(),
-                Some("npm i -g @earendil-works/pi-coding-agent@latest")
+                Some("npm i -g @earendil-works/pi-coding-agent@latest --ignore-scripts=false --include=optional --allow-scripts=@earendil-works/pi-coding-agent")
             );
         }
     }
@@ -3860,7 +3914,7 @@ mod tests {
         assert_eq!(npm_package_for("grok"), Some("@xai-official/grok"));
         assert_eq!(
             npm_install_command_for("grok"),
-            Some("npm i -g @xai-official/grok@latest")
+            Some("npm i -g @xai-official/grok@latest --ignore-scripts=false --include=optional --allow-scripts=@xai-official/grok")
         );
         assert_eq!(official_update_args("grok"), Some("update"));
 
@@ -3868,7 +3922,7 @@ mod tests {
             assert_eq!(
                 tool_action_shell_command_for_shell("grok", action, LifecycleCommandShell::Posix)
                     .as_deref(),
-                Some("npm i -g @xai-official/grok@latest")
+                Some("npm i -g @xai-official/grok@latest --ignore-scripts=false --include=optional --allow-scripts=@xai-official/grok")
             );
         }
 
@@ -3881,7 +3935,7 @@ mod tests {
                 LifecycleCommandShell::WindowsBatch,
             )
             .as_deref(),
-            Some("npm i -g @xai-official/grok@latest")
+            Some("npm i -g @xai-official/grok@latest --ignore-scripts=false --include=optional --allow-scripts=@xai-official/grok")
         );
     }
 
@@ -4099,7 +4153,7 @@ mod tests {
         #[test]
         fn opencode_windows_static_fallback_skips_official_upgrade() {
             let cmd = static_fallback_command("opencode");
-            assert_eq!(cmd, "npm i -g opencode-ai@latest");
+            assert_eq!(cmd, "npm i -g opencode-ai@latest --ignore-scripts=false --include=optional --allow-scripts=opencode-ai");
             assert!(!cmd.contains("opencode upgrade"));
         }
 
@@ -4112,7 +4166,7 @@ mod tests {
             let npm_full = format!("{}\\npm.cmd", sub.to_string_lossy());
             // codex 自 5092fe51 起不在 prefers_official_update：直接锚定包管理器，无 `codex update ||` 前缀。
             let expected = format!(
-                "{} i -g @openai/codex@latest",
+                "{} i -g @openai/codex@latest --ignore-scripts=false --include=optional --allow-scripts=@openai/codex",
                 expect_quoted_path(&npm_full)
             );
             assert_eq!(cmd.as_deref(), Some(expected.as_str()));
@@ -4124,7 +4178,7 @@ mod tests {
             let cmd = anchored_command_from_paths("grok", &bin_path, &bin_path);
             let npm_full = format!("{}\\npm.cmd", sub.to_string_lossy());
             let expected = format!(
-                "{} i -g @xai-official/grok@latest",
+                "{} i -g @xai-official/grok@latest --ignore-scripts=false --include=optional --allow-scripts=@xai-official/grok",
                 expect_quoted_path(&npm_full)
             );
             assert_eq!(cmd.as_deref(), Some(expected.as_str()));
@@ -4147,7 +4201,7 @@ mod tests {
                 "native installer first: {install}"
             );
             assert!(
-                install.ends_with("|| call npm i -g @xai-official/grok@latest"),
+                install.ends_with("|| call npm i -g @xai-official/grok@latest --ignore-scripts=false --include=optional --allow-scripts=@xai-official/grok"),
                 "npm fallback should remain available: {install}"
             );
             let expected_encoded = powershell_encoded_command(GROK_INSTALL_WINDOWS_SCRIPT);
@@ -4180,7 +4234,7 @@ mod tests {
             let npm_full = format!("{}\\npm.cmd", sub.to_string_lossy());
             // codex 走 npm 锚定(5092fe51),含空格的 npm 全路径仍必须被双引号包裹。
             let expected = format!(
-                "{} i -g @openai/codex@latest",
+                "{} i -g @openai/codex@latest --ignore-scripts=false --include=optional --allow-scripts=@openai/codex",
                 expect_quoted_path(&npm_full)
             );
             assert_eq!(cmd.as_deref(), Some(expected.as_str()));
@@ -4205,7 +4259,7 @@ mod tests {
             // codex 走 npm 锚定(5092fe51)：batch 行 = `call <npm 全路径> i -g ...`，
             // 含字面 `%` 的 npm 路径仍须 4 倍转义。
             let expected = format!(
-                "call {} i -g @openai/codex@latest",
+                "call {} i -g @openai/codex@latest --ignore-scripts=false --include=optional --allow-scripts=@openai/codex",
                 expect_quoted_path(&npm_full)
             );
             assert_eq!(batch_line, expected);
@@ -4353,7 +4407,7 @@ mod tests {
                 wsl_tool_action_shell_command("claude", ToolLifecycleAction::Install).unwrap();
             assert!(
                 claude.starts_with("bash -c 'tmp=$(mktemp) && curl -fsSL https://claude.ai/install.sh ")
-                    && claude.contains(" || npm i -g @anthropic-ai/claude-code@latest"),
+                    && claude.contains(" || npm i -g @anthropic-ai/claude-code@latest --ignore-scripts=false --include=optional --allow-scripts=@anthropic-ai/claude-code"),
                 "WSL claude install should prefer native POSIX installer with npm fallback: {claude}"
             );
             assert!(!claude.contains("| bash"));
@@ -4363,20 +4417,20 @@ mod tests {
             assert!(
                 opencode.starts_with(
                     "bash -c 'tmp=$(mktemp) && curl -fsSL https://opencode.ai/install "
-                ) && opencode.contains(" || npm i -g opencode-ai@latest"),
+                ) && opencode.contains(" || npm i -g opencode-ai@latest --ignore-scripts=false --include=optional --allow-scripts=opencode-ai"),
                 "WSL opencode install should prefer native POSIX installer with npm fallback: {opencode}"
             );
             assert!(!opencode.contains("| bash"));
 
             let codex =
                 wsl_tool_action_shell_command("codex", ToolLifecycleAction::Install).unwrap();
-            assert_eq!(codex, "npm i -g @openai/codex@latest");
+            assert_eq!(codex, "npm i -g @openai/codex@latest --ignore-scripts=false --include=optional --allow-scripts=@openai/codex");
 
             let grok = wsl_tool_action_shell_command("grok", ToolLifecycleAction::Install).unwrap();
             assert!(
                 grok.starts_with(
                     "bash -c 'tmp=$(mktemp) && curl -fsSL https://x.ai/cli/install.sh "
-                ) && grok.contains(" || npm i -g @xai-official/grok@latest"),
+                ) && grok.contains(" || npm i -g @xai-official/grok@latest --ignore-scripts=false --include=optional --allow-scripts=@xai-official/grok"),
                 "WSL grok install should prefer native POSIX installer with npm fallback: {grok}"
             );
             assert!(!grok.contains("| bash"));
@@ -4389,7 +4443,7 @@ mod tests {
             let cmd = wsl_tool_action_shell_command("claude", ToolLifecycleAction::Update).unwrap();
             assert_eq!(
                 cmd,
-                "claude update || npm i -g @anthropic-ai/claude-code@latest"
+                "claude update || npm i -g @anthropic-ai/claude-code@latest --ignore-scripts=false --include=optional --allow-scripts=@anthropic-ai/claude-code"
             );
         }
     }
@@ -4558,7 +4612,7 @@ mod tests {
             assert_eq!(
                 cmd.as_deref(),
                 Some(
-                    "PATH='/Users/me/.nvm/versions/node/v22.14.0/bin':\"$PATH\" /Users/me/.nvm/versions/node/v22.14.0/bin/npm i -g @google/gemini-cli@latest"
+                    "PATH='/Users/me/.nvm/versions/node/v22.14.0/bin':\"$PATH\" /Users/me/.nvm/versions/node/v22.14.0/bin/npm i -g @google/gemini-cli@latest --ignore-scripts=false --include=optional --allow-scripts=@google/gemini-cli"
                 )
             );
         }
@@ -4573,7 +4627,7 @@ mod tests {
             assert_eq!(
                 cmd.as_deref(),
                 Some(
-                    "PATH='/Users/me/.nvm/versions/node/v22.14.0/bin':\"$PATH\" /Users/me/.nvm/versions/node/v22.14.0/bin/npm i -g @xai-official/grok@latest"
+                    "PATH='/Users/me/.nvm/versions/node/v22.14.0/bin':\"$PATH\" /Users/me/.nvm/versions/node/v22.14.0/bin/npm i -g @xai-official/grok@latest --ignore-scripts=false --include=optional --allow-scripts=@xai-official/grok"
                 )
             );
         }
@@ -4590,7 +4644,7 @@ mod tests {
             );
             assert_eq!(
                 cmd.as_deref(),
-                Some("PATH='/Users/me/.nvm/versions/node/v22.14.0/bin':\"$PATH\" /Users/me/.nvm/versions/node/v22.14.0/bin/npm i -g @openai/codex@latest")
+                Some("PATH='/Users/me/.nvm/versions/node/v22.14.0/bin':\"$PATH\" /Users/me/.nvm/versions/node/v22.14.0/bin/npm i -g @openai/codex@latest --ignore-scripts=false --include=optional --allow-scripts=@openai/codex")
             );
         }
 
@@ -4688,7 +4742,7 @@ mod tests {
             assert_eq!(
                 cmd.as_deref(),
                 Some(
-                    "PATH='/Users/me/.local/share/fnm_multishells/12345_abc/bin':\"$PATH\" /Users/me/.local/share/fnm_multishells/12345_abc/bin/npm i -g @openai/codex@latest"
+                    "PATH='/Users/me/.local/share/fnm_multishells/12345_abc/bin':\"$PATH\" /Users/me/.local/share/fnm_multishells/12345_abc/bin/npm i -g @openai/codex@latest --ignore-scripts=false --include=optional --allow-scripts=@openai/codex"
                 )
             );
         }
@@ -4702,7 +4756,7 @@ mod tests {
             );
             assert_eq!(
                 cmd.as_deref(),
-                Some("PATH='/Users/my name/.nvm/versions/node/v22/bin':\"$PATH\" '/Users/my name/.nvm/versions/node/v22/bin/npm' i -g @openai/codex@latest")
+                Some("PATH='/Users/my name/.nvm/versions/node/v22/bin':\"$PATH\" '/Users/my name/.nvm/versions/node/v22/bin/npm' i -g @openai/codex@latest --ignore-scripts=false --include=optional --allow-scripts=@openai/codex")
             );
         }
 
@@ -4826,7 +4880,7 @@ mod tests {
             broken.exited_with_error = true;
             assert_eq!(
                 installs_anchored_command("codex", &[broken]).as_deref(),
-                Some("PATH='/Users/me/.nvm/versions/node/v22.14.0/bin':\"$PATH\" /Users/me/.nvm/versions/node/v22.14.0/bin/npm uninstall -g @openai/codex || true; PATH='/Users/me/.nvm/versions/node/v22.14.0/bin':\"$PATH\" /Users/me/.nvm/versions/node/v22.14.0/bin/npm i -g @openai/codex@latest")
+                Some("PATH='/Users/me/.nvm/versions/node/v22.14.0/bin':\"$PATH\" /Users/me/.nvm/versions/node/v22.14.0/bin/npm uninstall -g @openai/codex || true; PATH='/Users/me/.nvm/versions/node/v22.14.0/bin':\"$PATH\" /Users/me/.nvm/versions/node/v22.14.0/bin/npm i -g @openai/codex@latest --ignore-scripts=false --include=optional --allow-scripts=@openai/codex")
             );
         }
 
@@ -4840,7 +4894,7 @@ mod tests {
             let cmd = installs_anchored_command("codex", &[probe_failed]);
             assert_eq!(
                 cmd.as_deref(),
-                Some("PATH='/Users/me/.nvm/versions/node/v22.14.0/bin':\"$PATH\" /Users/me/.nvm/versions/node/v22.14.0/bin/npm i -g @openai/codex@latest")
+                Some("PATH='/Users/me/.nvm/versions/node/v22.14.0/bin':\"$PATH\" /Users/me/.nvm/versions/node/v22.14.0/bin/npm i -g @openai/codex@latest --ignore-scripts=false --include=optional --allow-scripts=@openai/codex")
             );
             assert!(!cmd.unwrap().contains("uninstall"));
         }
@@ -4853,7 +4907,7 @@ mod tests {
             let cmd = installs_anchored_command("codex", &[healthy]);
             assert_eq!(
                 cmd.as_deref(),
-                Some("PATH='/Users/me/.nvm/versions/node/v22.14.0/bin':\"$PATH\" /Users/me/.nvm/versions/node/v22.14.0/bin/npm i -g @openai/codex@latest")
+                Some("PATH='/Users/me/.nvm/versions/node/v22.14.0/bin':\"$PATH\" /Users/me/.nvm/versions/node/v22.14.0/bin/npm i -g @openai/codex@latest --ignore-scripts=false --include=optional --allow-scripts=@openai/codex")
             );
             assert!(!cmd.unwrap().contains("uninstall"));
         }
@@ -5007,7 +5061,7 @@ mod tests {
         fn codex_install_keeps_static_npm() {
             // OpenAI 暂无独立 native installer,保持原裸 npm,不引入兜底链(无东西可兜底)。
             let cmd = install_command_for("codex");
-            assert_eq!(cmd, "npm i -g @openai/codex@latest");
+            assert_eq!(cmd, "npm i -g @openai/codex@latest --ignore-scripts=false --include=optional --allow-scripts=@openai/codex");
             assert!(!cmd.contains("||"));
         }
 
@@ -5017,7 +5071,7 @@ mod tests {
             // 用户若已装 brew gemini-cli,update 路径的锚定会识别 formula → brew upgrade,
             // 所以 install 端不强行替用户决策"用 brew 还是 npm"。
             let cmd = install_command_for("gemini");
-            assert_eq!(cmd, "npm i -g @google/gemini-cli@latest");
+            assert_eq!(cmd, "npm i -g @google/gemini-cli@latest --ignore-scripts=false --include=optional --allow-scripts=@google/gemini-cli");
         }
 
         #[test]

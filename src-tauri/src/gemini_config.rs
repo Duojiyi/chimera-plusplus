@@ -19,6 +19,16 @@ pub fn get_gemini_env_path() -> PathBuf {
     get_gemini_dir().join(".env")
 }
 
+/// Gemini CLI 用 dotenv 读取 .env，`export KEY=VALUE` 等同于 `KEY=VALUE`。
+/// 不认这种写法会丢键，切换线路重写文件时该键随之被删掉。
+// Adapted from farion1231/cc-switch 74a98fdd
+fn strip_export_prefix(line: &str) -> &str {
+    line.strip_prefix("export")
+        .filter(|rest| rest.starts_with([' ', '\t']))
+        .map(str::trim_start)
+        .unwrap_or(line)
+}
+
 /// 解析 .env 文件内容为键值对
 ///
 /// 此函数宽松地解析 .env 文件，跳过无效行。
@@ -33,6 +43,8 @@ pub fn parse_env_file(content: &str) -> HashMap<String, String> {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
+
+        let line = strip_export_prefix(line);
 
         // 解析 KEY=VALUE
         if let Some((key, value)) = line.split_once('=') {
@@ -91,6 +103,8 @@ pub fn parse_env_file_strict(content: &str) -> Result<HashMap<String, String>, A
                 format!("Invalid Gemini .env format (line {line_number}): missing '=' separator\nLine: {line}"),
             ));
         }
+
+        let line = strip_export_prefix(line);
 
         // 解析 KEY=VALUE
         if let Some((key, value)) = line.split_once('=') {
@@ -397,6 +411,30 @@ GEMINI_MODEL=gemini-3.5-flash
             map.get("GEMINI_MODEL"),
             Some(&"gemini-3.5-flash".to_string())
         );
+    }
+
+    #[test]
+    fn test_parse_env_file_reads_export_lines() {
+        let content = "# Gemini CLI\nexport GEMINI_API_KEY=AIza-user-key\nexport\tGEMINI_MODEL=gemini-2.5-pro\nexported_KEY=kept\nexport=not-a-key-line\n";
+
+        let map = parse_env_file(content);
+
+        assert_eq!(
+            map.get("GEMINI_API_KEY"),
+            Some(&"AIza-user-key".to_string())
+        );
+        assert_eq!(map.get("GEMINI_MODEL"), Some(&"gemini-2.5-pro".to_string()));
+        // Only `export` followed by whitespace is the shell keyword.
+        assert_eq!(map.get("exported_KEY"), Some(&"kept".to_string()));
+        assert_eq!(map.get("export"), Some(&"not-a-key-line".to_string()));
+        assert_eq!(map.len(), 4);
+
+        let strict = parse_env_file_strict(content).expect("strict parse accepts export");
+        assert_eq!(strict, map);
+
+        // Rewriting the file keeps the keys (written in plain KEY=VALUE form).
+        let rewritten = parse_env_file(&serialize_env_file(&map));
+        assert_eq!(rewritten, map);
     }
 
     #[test]

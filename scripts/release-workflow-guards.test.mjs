@@ -182,6 +182,13 @@ test("Rust vulnerability auditing is a required CI gate", () => {
   assert.doesNotMatch(auditStep, /continue-on-error/);
 });
 
+test("an in-app update can never restart the machine", () => {
+  const release = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+  const wix = readFileSync(new URL("../src-tauri/wix/per-user-main.wxs", import.meta.url), "utf8");
+  assert.match(wix, /<Property Id="REBOOT" Value="ReallySuppress"\s*\/>/);
+  assert.match(release, /if \(\$reboot -ne 'ReallySuppress'\) \{ throw/);
+});
+
 test("the app, its runtime crate and the release share one Codex engine revision", () => {
   const manifest = readFileSync(new URL("../src-tauri/Cargo.toml", import.meta.url), "utf8");
   const lock = readFileSync(new URL("../src-tauri/Cargo.lock", import.meta.url), "utf8");
