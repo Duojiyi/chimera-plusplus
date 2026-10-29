@@ -38,9 +38,8 @@ Source: https://github.com/Wangnov/Codex-App-Manager
 Copyright (c) 2026 Wangnov
 
 Licensed under the MIT License. The Windows runtime detection and installation engine is
-used through pinned source dependencies: v0.5.16 with a zip 9 compatibility patch, kept
-on the `codex/zip-9-engine` branch of the Chimera++ repository. The full license text is
-available from the upstream repository.
+used through pinned source dependencies (v0.5.17). The full license text is available
+from the upstream repository.
 
 ## Codex App Mirror
 

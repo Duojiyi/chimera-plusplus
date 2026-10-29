@@ -211,4 +211,13 @@ test("the app, its runtime crate and the release share one Codex engine revision
   assert.equal(readCargoLockRevision(lock, "codex-win-engine"), engine.rev);
   const source = /\nsource = "([^"]+)"/.exec(engines[0])[1];
   assert.equal(source, `git+${engine.git}?rev=${engine.rev}#${engine.rev}`);
+  // Both engines come from one upstream revision, and the release provenance
+  // names the repository they are actually built from.
+  assert.deepEqual(pinned("codex-theme-engine", "dependencies"), engine);
+  const release = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+  const declared = [...release.matchAll(/codex-(?:win|theme)-engine['"]?[;,]\s*['"]?repository['"]?\s*[=:]\s*['"]([^'"]+)['"]/g)].map(
+    (match) => match[1],
+  );
+  assert.equal(declared.length, 6, "release.yml declares engine provenance in six places");
+  for (const repository of declared) assert.equal(repository, engine.git);
 });

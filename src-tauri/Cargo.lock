@@ -738,7 +738,7 @@ dependencies = [
 [[package]]
 name = "chimera-domain"
 version = "1.2.42-chimera.1"
-source = "git+https://github.com/Duojiyi/chimera-plusplus.git?rev=e6248cd934dca6aaf3d18b89ef93b1b3ac8aa5f3#e6248cd934dca6aaf3d18b89ef93b1b3ac8aa5f3"
+source = "git+https://github.com/Duojiyi/chimera-plusplus.git?rev=a3dac60c48bd6ff466e93a8a072450a153915b15#a3dac60c48bd6ff466e93a8a072450a153915b15"
 dependencies = [
  "serde",
  "thiserror 2.0.20",
@@ -749,7 +749,7 @@ dependencies = [
 [[package]]
 name = "chimera-platform"
 version = "1.2.42-chimera.1"
-source = "git+https://github.com/Duojiyi/chimera-plusplus.git?rev=e6248cd934dca6aaf3d18b89ef93b1b3ac8aa5f3#e6248cd934dca6aaf3d18b89ef93b1b3ac8aa5f3"
+source = "git+https://github.com/Duojiyi/chimera-plusplus.git?rev=a3dac60c48bd6ff466e93a8a072450a153915b15#a3dac60c48bd6ff466e93a8a072450a153915b15"
 dependencies = [
  "anyhow",
  "chimera-domain",
@@ -842,7 +842,7 @@ dependencies = [
 [[package]]
 name = "chimera-runtime"
 version = "1.2.42-chimera.1"
-source = "git+https://github.com/Duojiyi/chimera-plusplus.git?rev=e6248cd934dca6aaf3d18b89ef93b1b3ac8aa5f3#e6248cd934dca6aaf3d18b89ef93b1b3ac8aa5f3"
+source = "git+https://github.com/Duojiyi/chimera-plusplus.git?rev=a3dac60c48bd6ff466e93a8a072450a153915b15#a3dac60c48bd6ff466e93a8a072450a153915b15"
 dependencies = [
  "anyhow",
  "chimera-domain",
@@ -900,11 +900,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-archive"
+version = "0.1.0"
+source = "git+https://github.com/Wangnov/Codex-App-Manager.git?rev=474658de8b3013d6f2ee68ce0cc0402219de11cc#474658de8b3013d6f2ee68ce0cc0402219de11cc"
+dependencies = [
+ "zip",
+]
+
+[[package]]
 name = "codex-theme-engine"
 version = "0.1.0"
-source = "git+https://github.com/Duojiyi/chimera-plusplus.git?rev=ab9f5e3409e4d251280b44cedfab8dffd2f29160#ab9f5e3409e4d251280b44cedfab8dffd2f29160"
+source = "git+https://github.com/Wangnov/Codex-App-Manager.git?rev=474658de8b3013d6f2ee68ce0cc0402219de11cc#474658de8b3013d6f2ee68ce0cc0402219de11cc"
 dependencies = [
  "base64 0.23.1",
+ "codex-archive",
  "futures-util",
  "log",
  "serde",
@@ -921,8 +930,9 @@ dependencies = [
 [[package]]
 name = "codex-win-engine"
 version = "0.1.0"
-source = "git+https://github.com/Duojiyi/chimera-plusplus.git?rev=ab9f5e3409e4d251280b44cedfab8dffd2f29160#ab9f5e3409e4d251280b44cedfab8dffd2f29160"
+source = "git+https://github.com/Wangnov/Codex-App-Manager.git?rev=474658de8b3013d6f2ee68ce0cc0402219de11cc#474658de8b3013d6f2ee68ce0cc0402219de11cc"
 dependencies = [
+ "codex-archive",
  "libc",
  "log",
  "roxmltree",

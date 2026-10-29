@@ -632,8 +632,8 @@ jobs:
           $externalGitDependencies = @(
             [ordered]@{ package = 'chimera-runtime'; repository = 'https://github.com/Duojiyi/chimera-plusplus.git'; revision = $chimeraRuntimeRev },
             [ordered]@{ package = 'chimera-platform'; repository = 'https://github.com/Duojiyi/chimera-plusplus.git'; revision = $chimeraPlatformRev },
-            [ordered]@{ package = 'codex-win-engine'; repository = 'https://github.com/Duojiyi/chimera-plusplus.git'; revision = $codexWinEngineRev },
-            [ordered]@{ package = 'codex-theme-engine'; repository = 'https://github.com/Duojiyi/chimera-plusplus.git'; revision = $codexThemeEngineRev }
+            [ordered]@{ package = 'codex-win-engine'; repository = 'https://github.com/Wangnov/Codex-App-Manager.git'; revision = $codexWinEngineRev },
+            [ordered]@{ package = 'codex-theme-engine'; repository = 'https://github.com/Wangnov/Codex-App-Manager.git'; revision = $codexThemeEngineRev }
           )
           $target = if ($env:WINDOWS_RELEASE_ARCH -eq 'arm64') { 'aarch64-pc-windows-msvc' } else { 'x86_64-pc-windows-msvc' }
           [ordered]@{
@@ -696,8 +696,8 @@ jobs:
             '[
               {"package":"chimera-runtime","repository":"https://github.com/Duojiyi/chimera-plusplus.git","revision":$chimera_runtime_rev},
               {"package":"chimera-platform","repository":"https://github.com/Duojiyi/chimera-plusplus.git","revision":$chimera_platform_rev},
-              {"package":"codex-win-engine","repository":"https://github.com/Duojiyi/chimera-plusplus.git","revision":$codex_win_engine_rev},
-              {"package":"codex-theme-engine","repository":"https://github.com/Duojiyi/chimera-plusplus.git","revision":$codex_theme_engine_rev}
+              {"package":"codex-win-engine","repository":"https://github.com/Wangnov/Codex-App-Manager.git","revision":$codex_win_engine_rev},
+              {"package":"codex-theme-engine","repository":"https://github.com/Wangnov/Codex-App-Manager.git","revision":$codex_theme_engine_rev}
             ]')
           jq -n \
             --arg release_tag "$RELEASE_TAG" \
@@ -755,8 +755,8 @@ jobs:
             '[
               {"package":"chimera-runtime","repository":"https://github.com/Duojiyi/chimera-plusplus.git","revision":$chimera_runtime_rev},
               {"package":"chimera-platform","repository":"https://github.com/Duojiyi/chimera-plusplus.git","revision":$chimera_platform_rev},
-              {"package":"codex-win-engine","repository":"https://github.com/Duojiyi/chimera-plusplus.git","revision":$codex_win_engine_rev},
-              {"package":"codex-theme-engine","repository":"https://github.com/Duojiyi/chimera-plusplus.git","revision":$codex_theme_engine_rev}
+              {"package":"codex-win-engine","repository":"https://github.com/Wangnov/Codex-App-Manager.git","revision":$codex_win_engine_rev},
+              {"package":"codex-theme-engine","repository":"https://github.com/Wangnov/Codex-App-Manager.git","revision":$codex_theme_engine_rev}
             ]')
           jq -n \
             --arg release_tag "$RELEASE_TAG" \
