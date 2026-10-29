@@ -285,10 +285,15 @@ fn extract_claude_session(
 
 /// 提取 Codex Session ID
 fn extract_codex_session(headers: &HeaderMap, body: &serde_json::Value) -> Option<SessionIdResult> {
-    // 1. 从 headers 提取
-    for header_name in &["session_id", "x-session-id"] {
+    // 1. 从 headers 提取。当前 Codex 用连字符形式发送 `session-id` 与 `thread-id`
+    //    （openai/codex `codex-rs/codex-api/src/requests/headers.rs:8,11`，经
+    //    `endpoint/responses.rs:90` 附加到每个 Responses 请求）；旧版用 `session_id`。
+    //    旧名保持优先，`thread-id` 只作最后的回退。
+    // Adapted from farion1231/cc-switch 2e1e2979
+    for header_name in &["session_id", "x-session-id", "session-id", "thread-id"] {
         if let Some(value) = headers.get(*header_name) {
             if let Ok(session_id) = value.to_str() {
+                let session_id = session_id.trim();
                 // Codex Session ID 通常较长（UUID 格式）
                 if session_id.len() > 20 {
                     return Some(SessionIdResult {
@@ -605,6 +610,37 @@ mod tests {
         assert!(!result.session_id.is_empty());
         assert_eq!(result.source, SessionIdSource::Generated);
         assert!(!result.client_provided);
+    }
+
+    #[test]
+    fn test_extract_codex_session_from_hyphenated_headers() {
+        const ID: &str = "019a0000-1111-7222-8333-444455556666";
+        for header_name in ["session-id", "thread-id"] {
+            let mut headers = HeaderMap::new();
+            headers.insert(header_name, format!("  {ID} ").parse().unwrap());
+            let result = extract_session_id(&headers, &json!({}), "codex");
+            assert_eq!(result.session_id, format!("codex_{ID}"), "{header_name}");
+            assert_eq!(result.source, SessionIdSource::Header);
+            assert!(result.client_provided);
+        }
+    }
+
+    #[test]
+    fn test_extract_codex_session_prefers_session_id_over_thread_id() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "thread-id",
+            "thread-0000-1111-2222-3333-444455556666".parse().unwrap(),
+        );
+        headers.insert(
+            "session-id",
+            "session-000-1111-2222-3333-444455556666".parse().unwrap(),
+        );
+        let result = extract_session_id(&headers, &json!({}), "codex");
+        assert_eq!(
+            result.session_id,
+            "codex_session-000-1111-2222-3333-444455556666"
+        );
     }
 
     #[test]

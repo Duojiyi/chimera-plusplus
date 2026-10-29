@@ -378,6 +378,15 @@ pub fn responses_to_chat_completions_with_reasoning_for_upstream(
     // 与 Claude→openai_chat 路径共用同一 helper，保证两个客户端方向一致。
     super::transform::inject_openai_stream_include_usage(&mut result);
 
+    if super::transform_codex_chat_gemini_schema::upstream_requires_string_enums(model) {
+        let coerced = super::transform_codex_chat_gemini_schema::coerce_chat_tool_enums_for_gemini(
+            &mut result,
+        );
+        if coerced > 0 {
+            log::debug!("[CodexChat] coerced tool enums of {coerced} tool(s) for Gemini upstream");
+        }
+    }
+
     let signature_fallbacks = fill_gemini_thought_signature_fallback(&mut result);
     if signature_fallbacks > 0 {
         log::debug!(
@@ -2145,6 +2154,7 @@ pub(crate) fn chat_completion_to_response_with_context(
     body: Value,
     tool_context: &CodexToolContext,
 ) -> Result<Value, ProxyError> {
+    let body = super::transform::unwrap_chat_completion_envelope(body);
     let choices = body
         .get("choices")
         .and_then(|v| v.as_array())
@@ -2660,6 +2670,7 @@ pub fn chat_error_to_response_error(body: Option<&Value>) -> Value {
         });
     }
 
+    let value = crate::proxy::error::unwrap_error_array_body(value);
     let source = value.get("error").unwrap_or(value);
 
     let message = source
@@ -3973,6 +3984,38 @@ mod tests {
             messages[3]["content"],
             "<image_resize_notice>resized</image_resize_notice>"
         );
+    }
+
+    #[test]
+    fn gemini_request_coerces_non_string_tool_enums_and_other_models_keep_them() {
+        let input = |model: &str| {
+            json!({
+                "model": model,
+                "input": "hi",
+                "tools": [{
+                    "type": "function",
+                    "name": "set",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "enabled": {"type": "boolean", "enum": [true, false]},
+                            "mode": {"type": "string", "enum": ["a", 1]}
+                        }
+                    }
+                }]
+            })
+        };
+
+        let result = responses_to_chat_completions(input("google/gemini-2.5-pro")).unwrap();
+        let properties = &result["tools"][0]["function"]["parameters"]["properties"];
+        assert!(properties["enabled"].get("enum").is_none(), "{properties}");
+        assert_eq!(properties["enabled"]["type"], "boolean");
+        assert_eq!(properties["mode"]["enum"], json!(["a", "1"]));
+
+        let result = responses_to_chat_completions(input("gpt-4.1")).unwrap();
+        let properties = &result["tools"][0]["function"]["parameters"]["properties"];
+        assert_eq!(properties["enabled"]["enum"], json!([true, false]));
+        assert_eq!(properties["mode"]["enum"], json!(["a", 1]));
     }
 
     #[test]
@@ -5463,6 +5506,58 @@ late-b"
             "Upstream returned an empty error response"
         );
         assert_eq!(result["error"]["type"], "upstream_error");
+    }
+
+    #[test]
+    fn chat_completion_to_response_unwraps_data_envelope() {
+        let result = chat_completion_to_response(json!({
+            "success": true,
+            "data": {
+                "id": "chatcmpl-wrapped",
+                "model": "relay/deepseek",
+                "choices": [{
+                    "message": {"role": "assistant", "content": "OK"},
+                    "finish_reason": "stop"
+                }],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4}
+            }
+        }))
+        .unwrap();
+        assert_eq!(result["model"], "relay/deepseek");
+        let text = result["output"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["type"] == "message")
+            .unwrap()["content"][0]["text"]
+            .clone();
+        assert_eq!(text, "OK");
+        assert!(chat_completion_to_response(json!({"data": {"text": "x"}})).is_err());
+    }
+
+    #[test]
+    fn chat_error_to_response_error_unwraps_gemini_array_body() {
+        let input = json!([{"error": {
+            "code": 400,
+            "status": "INVALID_ARGUMENT",
+            "message": "Invalid JSON payload received."
+        }}]);
+        let result = chat_error_to_response_error(Some(&input));
+        assert_eq!(result["error"]["message"], "Invalid JSON payload received.");
+        assert_eq!(result["error"]["code"], 400);
+
+        // 多元素数组或元素不带 error 对象：不猜，整段序列化回消息里。
+        for input in [
+            json!([{"error": {"message": "a"}}, {"error": {"message": "b"}}]),
+            json!([{"message": "plain"}]),
+        ] {
+            let result = chat_error_to_response_error(Some(&input));
+            assert_eq!(
+                result["error"]["message"],
+                serde_json::to_string(&input).unwrap(),
+                "{input}"
+            );
+        }
     }
 
     #[test]

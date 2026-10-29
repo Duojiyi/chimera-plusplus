@@ -19,6 +19,7 @@ mod handlers;
 mod health;
 pub mod http_client;
 pub mod hyper_client;
+mod image_generation_rectifier;
 pub(crate) mod json_canonical;
 pub mod log_codes;
 pub mod media_sanitizer;
@@ -35,6 +36,7 @@ pub mod thinking_budget_rectifier;
 pub mod thinking_optimizer;
 pub mod thinking_rectifier;
 pub(crate) mod types;
+mod upstream_guard;
 pub mod usage;
 
 // 公开导出给外部使用（commands, services等模块需要）

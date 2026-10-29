@@ -438,6 +438,9 @@ impl TokenUsage {
 
     /// 从 OpenAI Chat Completions API 响应解析 (prompt_tokens, completion_tokens)
     pub fn from_openai_response(body: &Value) -> Option<Self> {
+        // 包在 `data` 里的 Chat 响应（见 transform::unwrap_chat_completion_envelope）。
+        let body = crate::proxy::providers::transform::chat_completion_body(body);
+        let body: &Value = &body;
         let usage = body.get("usage")?;
 
         // OpenAI 使用 prompt_tokens 和 completion_tokens
@@ -578,6 +581,22 @@ impl TokenUsage {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn openai_usage_is_read_from_data_envelope() {
+        let body = json!({
+            "success": true,
+            "data": {
+                "model": "relay/deepseek",
+                "choices": [{"message": {"content": "OK"}}],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 3}
+            }
+        });
+        let parsed = TokenUsage::from_openai_response(&body).unwrap();
+        assert_eq!(parsed.input_tokens, 12);
+        assert_eq!(parsed.output_tokens, 3);
+        assert_eq!(parsed.model.as_deref(), Some("relay/deepseek"));
+    }
+
     #[test]
     fn claude_cache_ttl_parsing_preserves_total_and_defaults_legacy_usage() {
         for (details, expected) in [

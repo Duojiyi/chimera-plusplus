@@ -76,6 +76,17 @@ pub enum ProxyError {
     Internal(String),
 }
 
+/// Gemini（含其 OpenAI 兼容端点）把错误体包成单元素数组
+/// `[{"error": {...}}]`，客户端按对象解析会拿不到 `error`。只解开
+/// "恰好一个元素且该元素带 `error` 对象" 的形态，其它 JSON 原样返回。
+// Adapted from BigPizzaV3/CodexPlusPlus a318d2fb
+pub(crate) fn unwrap_error_array_body(value: &serde_json::Value) -> &serde_json::Value {
+    match value.as_array().map(Vec::as_slice) {
+        Some([first]) if first.get("error").is_some_and(serde_json::Value::is_object) => first,
+        _ => value,
+    }
+}
+
 impl IntoResponse for ProxyError {
     fn into_response(self) -> Response {
         let (status, body) = match &self {
@@ -89,8 +100,8 @@ impl IntoResponse for ProxyError {
                 // 尝试解析上游响应体为 JSON，如果失败则包装为字符串
                 let error_body = if let Some(body_str) = upstream_body {
                     if let Ok(json_body) = serde_json::from_str::<serde_json::Value>(body_str) {
-                        // 上游返回的是 JSON，直接透传
-                        json_body
+                        // 上游返回的是 JSON，直接透传（Gemini 的单元素数组错误体先解包）
+                        unwrap_error_array_body(&json_body).clone()
                     } else {
                         // 上游返回的不是 JSON，包装为错误消息
                         json!({
@@ -229,6 +240,21 @@ pub fn describe_reqwest_error(error: reqwest::Error) -> String {
 mod tests {
     use super::*;
     use std::fmt;
+
+    #[test]
+    fn single_element_error_array_is_unwrapped_only_in_exact_shape() {
+        let gemini =
+            json!([{"error": {"code": 400, "message": "bad", "status": "INVALID_ARGUMENT"}}]);
+        assert_eq!(unwrap_error_array_body(&gemini), &gemini[0]);
+        for other in [
+            json!([{"error": {"message": "a"}}, {"error": {"message": "b"}}]),
+            json!([{"error": "text"}]),
+            json!([]),
+            json!({"error": {"message": "object"}}),
+        ] {
+            assert_eq!(unwrap_error_array_body(&other), &other);
+        }
+    }
 
     #[derive(Debug)]
     struct Layer {

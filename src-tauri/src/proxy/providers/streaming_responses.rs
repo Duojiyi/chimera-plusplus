@@ -1400,6 +1400,24 @@ pub fn create_anthropic_sse_stream_from_responses<E: std::error::Error + Send + 
                                             let delta_sse = format!("event: content_block_delta\ndata: {}\n\n",
                                                 serde_json::to_string(&delta_event).unwrap_or_default());
                                             yield Ok(Bytes::from(delta_sse));
+                                        } else if open_indices.contains(&index) {
+                                            // 增量可能只覆盖了摘要开头（后一段摘要没有
+                                            // delta）。只补发缺失的尾部；不是在已发文本
+                                            // 之后延展的快照一律忽略，不重放。
+                                            // Adapted from farion1231/cc-switch 7ecce7c7
+                                            if let Some(suffix) = full_text
+                                                .strip_prefix(emitted_text.as_str())
+                                                .filter(|suffix| !suffix.is_empty())
+                                            {
+                                                let delta_event = json!({
+                                                    "type": "content_block_delta",
+                                                    "index": index,
+                                                    "delta": {"type": "thinking_delta", "thinking": suffix}
+                                                });
+                                                let delta_sse = format!("event: content_block_delta\ndata: {}\n\n",
+                                                    serde_json::to_string(&delta_event).unwrap_or_default());
+                                                yield Ok(Bytes::from(delta_sse));
+                                            }
                                         }
 
                                         let encrypted = final_item
@@ -1421,18 +1439,28 @@ pub fn create_anthropic_sse_stream_from_responses<E: std::error::Error + Send + 
                                                         serde_json::to_string(&signature_event).unwrap_or_default());
                                                     yield Ok(Bytes::from(signature_sse));
                                                 } else {
+                                                    // 只有加密内容的推理项：用空 thinking 块承载
+                                                    // 信封（VS Code 扩展不认 redacted_thinking）。
                                                     let start_event = json!({
                                                         "type": "content_block_start",
                                                         "index": index,
-                                                        "content_block": {
-                                                            "type": "redacted_thinking",
-                                                            "data": envelope
-                                                        }
+                                                        "content_block": {"type": "thinking", "thinking": ""}
                                                     });
                                                     let start_sse = format!("event: content_block_start\ndata: {}\n\n",
                                                         serde_json::to_string(&start_event).unwrap_or_default());
                                                     yield Ok(Bytes::from(start_sse));
                                                     open_indices.insert(index);
+                                                    let signature_event = json!({
+                                                        "type": "content_block_delta",
+                                                        "index": index,
+                                                        "delta": {
+                                                            "type": "signature_delta",
+                                                            "signature": envelope
+                                                        }
+                                                    });
+                                                    let signature_sse = format!("event: content_block_delta\ndata: {}\n\n",
+                                                        serde_json::to_string(&signature_event).unwrap_or_default());
+                                                    yield Ok(Bytes::from(signature_sse));
                                                 }
                                             }
                                         }
@@ -1973,6 +2001,118 @@ mod tests {
         let stop_position = merged.find("event: content_block_stop").unwrap();
         assert!(signature_position < stop_position);
         assert!(!merged[stop_position..].contains("content_block_delta"));
+    }
+
+    fn sse_data_values(merged: &str) -> Vec<Value> {
+        merged
+            .split("\n\n")
+            .filter_map(|block| {
+                let data = block
+                    .lines()
+                    .find_map(|line| strip_sse_field(line, "data"))?;
+                serde_json::from_str::<Value>(data).ok()
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn test_encrypted_only_reasoning_streams_as_empty_thinking_with_signature() {
+        let input = concat!(
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_enc\",\"model\":\"gpt-5.6\"}}\n\n",
+            "event: response.output_item.added\n",
+            "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\",\"summary\":[]}}\n\n",
+            "event: response.output_item.done\n",
+            "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\",\"summary\":[],\"encrypted_content\":\"opaque\"}}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"
+        );
+        let merged = convert_stream_text(input).await;
+        let events = sse_data_values(&merged);
+
+        assert!(!merged.contains("redacted_thinking"), "{merged}");
+        let start = events
+            .iter()
+            .find(|event| event["type"] == "content_block_start")
+            .unwrap();
+        assert_eq!(
+            start["content_block"],
+            json!({"type": "thinking", "thinking": ""})
+        );
+        let signature = events
+            .iter()
+            .find(|event| event["delta"]["type"] == "signature_delta")
+            .unwrap();
+        let block = json!({
+            "type": "thinking",
+            "thinking": "",
+            "signature": signature["delta"]["signature"]
+        });
+        assert_eq!(
+            super::super::reasoning_bridge::openai_reasoning_item_from_anthropic_block(&block),
+            Some(json!({
+                "id": "rs_1",
+                "type": "reasoning",
+                "summary": [],
+                "encrypted_content": "opaque"
+            }))
+        );
+        let signature_position = merged.find("signature_delta").unwrap();
+        let stop_position = merged.find("event: content_block_stop").unwrap();
+        assert!(signature_position < stop_position);
+    }
+
+    #[tokio::test]
+    async fn test_reasoning_summary_tail_missing_from_deltas_is_recovered_on_item_done() {
+        let input = concat!(
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_tail\",\"model\":\"gpt-5.6\"}}\n\n",
+            "event: response.output_item.added\n",
+            "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\",\"summary\":[]}}\n\n",
+            "event: response.reasoning_summary_text.delta\n",
+            "data: {\"type\":\"response.reasoning_summary_text.delta\",\"item_id\":\"rs_1\",\"output_index\":0,\"summary_index\":0,\"delta\":\"First. \"}\n\n",
+            "event: response.reasoning_summary_text.done\n",
+            "data: {\"type\":\"response.reasoning_summary_text.done\",\"item_id\":\"rs_1\",\"output_index\":0,\"summary_index\":1,\"text\":\"Second.\"}\n\n",
+            "event: response.output_item.done\n",
+            "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"First. \"},{\"type\":\"summary_text\",\"text\":\"Second.\"}],\"encrypted_content\":\"opaque\"}}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"
+        );
+        let events = sse_data_values(&convert_stream_text(input).await);
+        let thinking = events
+            .iter()
+            .filter(|event| event["delta"]["type"] == "thinking_delta")
+            .filter_map(|event| event["delta"]["thinking"].as_str())
+            .collect::<String>();
+        assert_eq!(thinking, "First. Second.");
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["delta"]["type"] == "signature_delta")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reasoning_item_done_does_not_replay_drifted_summary() {
+        let input = concat!(
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_drift\",\"model\":\"gpt-5.6\"}}\n\n",
+            "event: response.reasoning_summary_text.delta\n",
+            "data: {\"type\":\"response.reasoning_summary_text.delta\",\"item_id\":\"rs_1\",\"output_index\":0,\"summary_index\":0,\"delta\":\"Hello world\"}\n\n",
+            "event: response.output_item.done\n",
+            "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"Hello  world\"}],\"encrypted_content\":\"opaque\"}}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"
+        );
+        let events = sse_data_values(&convert_stream_text(input).await);
+        let thinking = events
+            .iter()
+            .filter(|event| event["delta"]["type"] == "thinking_delta")
+            .filter_map(|event| event["delta"]["thinking"].as_str())
+            .collect::<String>();
+        assert_eq!(thinking, "Hello world");
     }
 
     #[tokio::test]

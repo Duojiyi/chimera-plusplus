@@ -322,6 +322,61 @@ impl RequestForwarder {
         });
     }
 
+    /// 整流重试成功后的统一记账（熔断器、当前供应商、成功统计、故障转移切换）。
+    async fn finish_rectified_success(
+        &self,
+        provider: &Provider,
+        app_type_str: &str,
+        used_half_open_permit: bool,
+        forwarded: Forwarded,
+    ) -> ForwardResult {
+        self.record_success_result(&provider.id, app_type_str, used_half_open_permit)
+            .await;
+        {
+            let mut current_providers = self.current_providers.write().await;
+            current_providers.insert(
+                app_type_str.to_string(),
+                (provider.id.clone(), provider.name.clone()),
+            );
+        }
+        {
+            let mut status = self.status.write().await;
+            status.success_requests += 1;
+            status.last_error = None;
+            if self.current_provider_id_at_start.as_str() != provider.id.as_str() {
+                status.failover_count += 1;
+                let fm = self.failover_manager.clone();
+                let ah = self.app_handle.clone();
+                let pid = provider.id.clone();
+                let pname = provider.name.clone();
+                let at = app_type_str.to_string();
+                tokio::spawn(async move {
+                    let _ = fm.try_switch(ah.as_ref(), &at, &pid, &pname).await;
+                });
+            }
+            if status.total_requests > 0 {
+                status.success_rate =
+                    (status.success_requests as f32 / status.total_requests as f32) * 100.0;
+            }
+        }
+        let Forwarded {
+            response,
+            claude_api_format,
+            outbound_model,
+            codex_bridge,
+            xai_native_responses,
+        } = forwarded;
+        ForwardResult {
+            response,
+            provider: provider.clone(),
+            claude_api_format,
+            outbound_model,
+            codex_bridge,
+            xai_native_responses,
+            connection_guard: None,
+        }
+    }
+
     /// 整流（thinking signature 或 budget）重试失败后的统一收尾。
     ///
     /// `None` 表示已记录熔断器、累积 `last_error`/`last_provider`，
@@ -512,6 +567,19 @@ impl RequestForwarder {
                     body.clone()
                 };
 
+            // 已知不收托管生图工具的线路：直接剥离，不再每轮先被拒一次。
+            if adapter.name() == "Codex"
+                && super::image_generation_rectifier::line_rejects_image_generation(provider)
+                && super::image_generation_rectifier::strip_image_generation_tool(
+                    &mut provider_body,
+                )
+            {
+                log::debug!(
+                    "[{app_type_str}] [ImageTool] Stripped image_generation tool for remembered provider={}",
+                    provider.id
+                );
+            }
+
             attempted_providers += 1;
 
             // 更新状态中的当前 Provider 信息（per-attempt 维度的标识）
@@ -621,6 +689,71 @@ impl RequestForwarder {
                         ProviderType::Claude | ProviderType::ClaudeAuth
                     );
                     let mut signature_rectifier_non_retryable_client_error = false;
+
+                    // 原生 Responses 中转明确拒收托管生图工具：剥掉后对同一线路重试一次
+                    // （重试成功或失败都会离开本轮，不会重复触发）。放在 media 降级之前：
+                    // 这类报错同样含 "image" 字样。
+                    if adapter.name() == "Codex"
+                        && super::image_generation_rectifier::is_image_generation_tool_rejection(&e)
+                    {
+                        let mut stripped_body = provider_body.clone();
+                        if super::image_generation_rectifier::strip_image_generation_tool(
+                            &mut stripped_body,
+                        ) {
+                            log::info!(
+                                "[{app_type_str}] [ImageTool] Upstream rejected the image_generation tool; retrying provider={} without it",
+                                provider.id
+                            );
+                            match self
+                                .forward(
+                                    app_type,
+                                    &method,
+                                    provider,
+                                    endpoint,
+                                    &stripped_body,
+                                    &headers,
+                                    &extensions,
+                                    adapter.as_ref(),
+                                )
+                                .await
+                            {
+                                Ok(forwarded) => {
+                                    log::info!(
+                                        "[{app_type_str}] [ImageTool] Retry without image_generation succeeded"
+                                    );
+                                    super::image_generation_rectifier::remember_line_rejects_image_generation(provider);
+                                    return Ok(self
+                                        .finish_rectified_success(
+                                            provider,
+                                            app_type_str,
+                                            used_half_open_permit,
+                                            forwarded,
+                                        )
+                                        .await);
+                                }
+                                Err(retry_err) => {
+                                    log::warn!(
+                                        "[{app_type_str}] [ImageTool] Retry without image_generation still failed: {retry_err}"
+                                    );
+                                    if let Some(err) = self
+                                        .handle_rectifier_retry_failure(
+                                            retry_err,
+                                            provider,
+                                            app_type_str,
+                                            used_half_open_permit,
+                                            "剥离生图工具",
+                                            &mut last_error,
+                                            &mut last_provider,
+                                        )
+                                        .await
+                                    {
+                                        return Err(err);
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
+                    }
 
                     if self.media_retry_should_trigger(
                         adapter.name(),
@@ -1573,6 +1706,13 @@ impl RequestForwarder {
         } else {
             adapter.build_url(&base_url, &effective_endpoint)
         };
+
+        // 最终 URL 若指回本代理自己的监听地址，转发会形成请求环。
+        let (listen_address, listen_port) = {
+            let status = self.status.read().await;
+            (status.address.clone(), status.port)
+        };
+        super::upstream_guard::reject_self_forwarding(&url, &listen_address, listen_port).await?;
 
         // 记录映射后的出站模型名（此时 mapped_body 已完成接管映射 / [1m] 剥离 /
         // Copilot 归一化）。格式转换后若 body 仍带 model 字段会在下方刷新覆盖；

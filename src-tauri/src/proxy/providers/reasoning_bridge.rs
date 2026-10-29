@@ -58,12 +58,10 @@ pub(crate) fn anthropic_block_from_openai_reasoning_item(item: &Value) -> Option
 
     if has_encrypted_content {
         let envelope = encode_openai_reasoning_item(item)?;
-        if text.is_empty() {
-            return Some(json!({
-                "type": "redacted_thinking",
-                "data": envelope
-            }));
-        }
+        // 只有 encrypted_content、没有摘要时也发（空的）thinking 块，信封放进
+        // signature：Claude Code 的 VS Code 扩展不认 redacted_thinking。回放侧
+        // 两种载体等价解码，老历史里的 redacted_thinking 仍可用。
+        // Adapted from farion1231/cc-switch 7ecce7c7
         return Some(json!({
             "type": "thinking",
             "thinking": text,
@@ -114,7 +112,7 @@ mod tests {
     }
 
     #[test]
-    fn encrypted_item_without_summary_uses_redacted_thinking() {
+    fn encrypted_item_without_summary_uses_empty_thinking_with_signature() {
         let item = json!({
             "id": "rs_2",
             "type": "reasoning",
@@ -122,9 +120,21 @@ mod tests {
             "encrypted_content": "opaque"
         });
         let block = anthropic_block_from_openai_reasoning_item(&item).unwrap();
-        assert_eq!(block["type"], "redacted_thinking");
+        assert_eq!(block["type"], "thinking");
+        assert_eq!(block["thinking"], "");
+        assert!(block.get("data").is_none());
         assert_eq!(
             openai_reasoning_item_from_anthropic_block(&block),
+            Some(item.clone())
+        );
+
+        // 旧版本写进历史的 redacted_thinking 仍能解回同一个推理项。
+        let legacy = json!({
+            "type": "redacted_thinking",
+            "data": block["signature"].clone()
+        });
+        assert_eq!(
+            openai_reasoning_item_from_anthropic_block(&legacy),
             Some(item)
         );
     }

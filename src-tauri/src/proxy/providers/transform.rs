@@ -487,8 +487,51 @@ fn clean_schema_inner(mut schema: Value, is_root: bool) -> Value {
     schema
 }
 
+/// 部分 OpenAI 兼容网关（如 ClinePass）把非流式 Chat Completions 响应包成
+/// `{"data": {...}, "success": true}`。只认顶层没有 `choices` 数组、`data` 里有的
+/// 形状，标准响应不受影响。
+fn is_chat_completion_envelope(body: &Value) -> bool {
+    !body.get("choices").is_some_and(Value::is_array)
+        && body
+            .get("data")
+            .and_then(|data| data.get("choices"))
+            .is_some_and(Value::is_array)
+}
+
+/// 把包在 `data` 里的 Chat Completions 响应解开；顶层的非 null 字段优先于 `data`
+/// 里的同名字段（顶层占位的非数组 `choices` 除外）。不是这种形状时原样返回。
+// Adapted from farion1231/cc-switch 80640b52
+pub(crate) fn unwrap_chat_completion_envelope(body: Value) -> Value {
+    if !is_chat_completion_envelope(&body) {
+        return body;
+    }
+    let mut outer = match body {
+        Value::Object(outer) => outer,
+        other => return other,
+    };
+    let Some(Value::Object(mut completion)) = outer.remove("data") else {
+        return Value::Object(outer);
+    };
+    for (key, value) in outer {
+        if key != "choices" && !value.is_null() {
+            completion.insert(key, value);
+        }
+    }
+    Value::Object(completion)
+}
+
+/// 只读场景（用量解析）用的同款解包：仅包层响应才复制一份。
+pub(crate) fn chat_completion_body(body: &Value) -> std::borrow::Cow<'_, Value> {
+    if is_chat_completion_envelope(body) {
+        std::borrow::Cow::Owned(unwrap_chat_completion_envelope(body.clone()))
+    } else {
+        std::borrow::Cow::Borrowed(body)
+    }
+}
+
 /// OpenAI 响应 → Anthropic 响应
 pub fn openai_to_anthropic(body: Value) -> Result<Value, ProxyError> {
+    let body = unwrap_chat_completion_envelope(body);
     let choices = body
         .get("choices")
         .and_then(|c| c.as_array())
@@ -690,6 +733,56 @@ pub fn openai_to_anthropic(body: Value) -> Result<Value, ProxyError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn openai_to_anthropic_unwraps_data_envelope() {
+        let input = json!({
+            "success": true,
+            "data": {
+                "id": "chatcmpl-wrapped",
+                "object": "chat.completion",
+                "model": "relay/deepseek",
+                "choices": [{
+                    "message": {"role": "assistant", "content": "OK"},
+                    "finish_reason": "stop"
+                }],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 1, "total_tokens": 13}
+            }
+        });
+        let result = openai_to_anthropic(input).unwrap();
+        assert_eq!(result["id"], "chatcmpl-wrapped");
+        assert_eq!(result["content"][0]["text"], "OK");
+        assert_eq!(result["usage"]["input_tokens"], 12);
+    }
+
+    #[test]
+    fn unwrap_chat_completion_envelope_prefers_top_level_fields_and_leaves_others() {
+        let input = json!({
+            "model": "top-model",
+            "id": null,
+            "choices": null,
+            "data": {"id": "inner", "model": "inner-model", "choices": [{"message": {"content": "x"}}]}
+        });
+        let unwrapped = unwrap_chat_completion_envelope(input);
+        assert_eq!(unwrapped["model"], "top-model");
+        assert_eq!(unwrapped["id"], "inner");
+        assert_eq!(unwrapped["choices"][0]["message"]["content"], "x");
+        assert!(unwrapped.get("data").is_none());
+
+        for original in [
+            json!({"choices": [], "data": {"choices": [{"x": 1}]}}),
+            json!({"data": {"text": "no choices"}}),
+            json!({"data": [1, 2]}),
+            json!([1]),
+        ] {
+            assert_eq!(unwrap_chat_completion_envelope(original.clone()), original);
+            assert!(matches!(
+                chat_completion_body(&original),
+                std::borrow::Cow::Borrowed(_)
+            ));
+        }
+        assert!(openai_to_anthropic(json!({"data": {"text": "no choices"}})).is_err());
+    }
 
     #[test]
     fn inline_think_non_streaming_separates_reasoning() {
