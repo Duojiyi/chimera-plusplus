@@ -113,30 +113,30 @@ const posixScriptInstallCommand = (url: string) =>
   `bash -c 'tmp=$(mktemp) && curl -fsSL ${url} -o $tmp && bash $tmp; status=$?; rm -f $tmp; exit $status'`;
 
 const POSIX_ONE_CLICK_INSTALL_COMMANDS = `# Claude Code
-${posixScriptInstallCommand("https://claude.ai/install.sh")} || npm i -g @anthropic-ai/claude-code@latest
+${posixScriptInstallCommand("https://claude.ai/install.sh")} || npm i -g @anthropic-ai/claude-code@latest --ignore-scripts=false --include=optional --allow-scripts=@anthropic-ai/claude-code
 # Codex
-npm i -g @openai/codex@latest
+npm i -g @openai/codex@latest --ignore-scripts=false --include=optional --allow-scripts=@openai/codex
 # Gemini CLI
-npm i -g @google/gemini-cli@latest
+npm i -g @google/gemini-cli@latest --ignore-scripts=false --include=optional --allow-scripts=@google/gemini-cli
 # Grok Build
-npm i -g @xai-official/grok@latest
+npm i -g @xai-official/grok@latest --ignore-scripts=false --include=optional --allow-scripts=@xai-official/grok
 # OpenCode
-${posixScriptInstallCommand("https://opencode.ai/install")} || npm i -g opencode-ai@latest
+${posixScriptInstallCommand("https://opencode.ai/install")} || npm i -g opencode-ai@latest --ignore-scripts=false --include=optional --allow-scripts=opencode-ai
 # Pi (Node.js >=22.19.0)
-npm i -g @earendil-works/pi-coding-agent@latest`;
+npm i -g @earendil-works/pi-coding-agent@latest --ignore-scripts=false --include=optional --allow-scripts=@earendil-works/pi-coding-agent`;
 
 const WINDOWS_ONE_CLICK_INSTALL_COMMANDS = `# Claude Code
-npm i -g @anthropic-ai/claude-code@latest
+npm i -g @anthropic-ai/claude-code@latest --ignore-scripts=false --include=optional --allow-scripts=@anthropic-ai/claude-code
 # Codex
-npm i -g @openai/codex@latest
+npm i -g @openai/codex@latest --ignore-scripts=false --include=optional --allow-scripts=@openai/codex
 # Gemini CLI
-npm i -g @google/gemini-cli@latest
+npm i -g @google/gemini-cli@latest --ignore-scripts=false --include=optional --allow-scripts=@google/gemini-cli
 # Grok Build
-npm i -g @xai-official/grok@latest
+npm i -g @xai-official/grok@latest --ignore-scripts=false --include=optional --allow-scripts=@xai-official/grok
 # OpenCode
-npm i -g opencode-ai@latest
+npm i -g opencode-ai@latest --ignore-scripts=false --include=optional --allow-scripts=opencode-ai
 # Pi (Node.js >=22.19.0)
-npm i -g @earendil-works/pi-coding-agent@latest`;
+npm i -g @earendil-works/pi-coding-agent@latest --ignore-scripts=false --include=optional --allow-scripts=@earendil-works/pi-coding-agent`;
 
 const ONE_CLICK_INSTALL_COMMANDS = isWindows()
   ? WINDOWS_ONE_CLICK_INSTALL_COMMANDS

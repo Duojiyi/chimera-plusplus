@@ -962,7 +962,7 @@ fn parse_codex_positive_u64(value: Option<&Value>) -> Option<u64> {
 /// 解析可能带千分位的数字字符串（"1,050,000"、"1_050_000"、"1，050，000"）。
 /// 分隔符只能出现在数字之间；其它字符仍判为无效，不静默回落成别的值。
 // Adapted from BigPizzaV3/CodexPlusPlus 0295c9f3
-fn parse_grouped_u64(text: &str) -> Option<u64> {
+pub(crate) fn parse_grouped_u64(text: &str) -> Option<u64> {
     let is_separator = |c: char| matches!(c, ',' | '_' | '，');
     let mut previous_was_separator = true;
     let mut digits = String::with_capacity(text.len());

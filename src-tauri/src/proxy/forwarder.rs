@@ -3717,7 +3717,7 @@ fn codex_model_declares_context_1m(provider: &crate::provider::Provider, model: 
             .or_else(|| entry.get("context_window"))
         {
             Some(Value::Number(n)) => n.as_u64(),
-            Some(Value::String(s)) => s.trim().parse::<u64>().ok(),
+            Some(Value::String(s)) => crate::codex_config::parse_grouped_u64(s.trim()),
             _ => None,
         };
         window.is_some_and(|w| w >= ONE_M_CONTEXT_WINDOW)
@@ -5198,6 +5198,7 @@ value"
             "modelCatalog": { "models": [
                 { "model": "Claude-Sonnet-X", "contextWindow": 1_000_000 },
                 { "model": "claude-string-window", "contextWindow": "1048576" },
+                { "model": "claude-grouped-window", "contextWindow": "1,050,000" },
                 { "model": "claude-small", "contextWindow": 200_000 },
                 { "model": "claude-undeclared" },
                 { "model": "claude-suffixed[1m]", "context_window": 1_000_000 }
@@ -5214,6 +5215,10 @@ value"
         assert!(codex_model_declares_context_1m(
             &provider,
             "claude-suffixed"
+        ));
+        assert!(codex_model_declares_context_1m(
+            &provider,
+            "claude-grouped-window"
         ));
         assert!(!codex_model_declares_context_1m(&provider, "claude-small"));
         assert!(!codex_model_declares_context_1m(
