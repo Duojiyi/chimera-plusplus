@@ -128,6 +128,51 @@ describe("Codex TOML utils", () => {
     expect(extractCodexBaseUrl(output)).toBe("https://api.example.com/v1");
   });
 
+  it("keeps array-of-tables entries such as [[skills.config]] out of the line's keys", () => {
+    const input = [
+      'model_provider = "custom"',
+      "",
+      "[[skills.config]] # written by Codex",
+      'path = "C:/skills/a"',
+      'base_url = "https://skill.example/v1"',
+      "enabled = true",
+      "",
+      "[model_providers.custom]",
+      'name = "custom"',
+      'wire_api = "responses"',
+      "",
+      "[[skills.config]]",
+      'path = "C:/skills/b"',
+      "enabled = false",
+      "",
+    ].join("\n");
+
+    // The skill entry's base_url is not the provider's.
+    expect(extractCodexBaseUrl(input)).toBeUndefined();
+
+    let output = setCodexBaseUrl(input, "https://api.example.com/v1");
+    output = setCodexModelName(output, "gpt-5.5");
+
+    const parsed = parseToml(output) as {
+      model?: string;
+      model_providers: Record<string, Record<string, unknown>>;
+      skills: { config: Array<Record<string, unknown>> };
+    };
+    expect(parsed.model).toBe("gpt-5.5");
+    expect(parsed.model_providers.custom.base_url).toBe(
+      "https://api.example.com/v1",
+    );
+    expect(parsed.skills.config).toEqual([
+      {
+        path: "C:/skills/a",
+        base_url: "https://skill.example/v1",
+        enabled: true,
+      },
+      { path: "C:/skills/b", enabled: false },
+    ]);
+    expect(extractCodexBaseUrl(output)).toBe("https://api.example.com/v1");
+  });
+
   it("recovers a single misplaced base_url from another section", () => {
     const input = [
       'model_provider = "custom"',

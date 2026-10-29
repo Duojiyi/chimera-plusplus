@@ -460,7 +460,30 @@ export const hasTomlCommonConfigSnippet = (
 
 // ========== Codex base_url utils ==========
 
-const TOML_SECTION_HEADER_PATTERN = /^\s*\[([^\]\r\n]+)\]\s*$/;
+// `[table]` and `[[array.of.tables]]` headers, with an optional trailing
+// comment. Array tables (Codex writes `[[skills.config]]`) are section
+// boundaries too, but never the table a line's keys belong to.
+// Adapted from farion1231/cc-switch ddcb1117
+const TOML_SECTION_HEADER_PATTERN =
+  /^\s*(\[\[?)\s*([^\]\r\n]+?)\s*(\]\]?)\s*(?:#.*)?$/;
+
+type TomlSectionHeader = { name: string; isArrayTable: boolean };
+
+const parseTomlSectionHeader = (
+  line: string,
+): TomlSectionHeader | undefined => {
+  const match = line.match(TOML_SECTION_HEADER_PATTERN);
+  if (!match || match[1].length !== match[3].length) return undefined;
+  return { name: match[2], isArrayTable: match[1].length === 2 };
+};
+
+// Section name recorded for keys inside an array table: it can never equal a
+// standard table name, so those keys are never read or moved as line keys.
+const tomlArrayTableSectionName = (name: string): string =>
+  `[[${normalizeTomlTableName(name)}]]`;
+
+const isTomlArrayTableSection = (sectionName?: string): boolean =>
+  sectionName?.startsWith("[[") === true;
 const TOML_BARE_KEY_PATTERN = /^[A-Za-z0-9_-]+$/;
 // 点分键的一段（基本字符串、字面字符串或裸键）及其后的 "." 或结尾
 const TOML_DOTTED_KEY_SEGMENT_PATTERN =
@@ -609,13 +632,16 @@ const getTomlSectionRange = (
 
   for (let index = 0; index < lines.length; index += 1) {
     if (stringLines[index]) continue;
-    const match = lines[index].match(TOML_SECTION_HEADER_PATTERN);
-    if (!match) {
+    const header = parseTomlSectionHeader(lines[index]);
+    if (!header) {
       continue;
     }
 
     if (headerLineIndex === -1) {
-      if (normalizeTomlTableName(match[1]) === targetName) {
+      if (
+        !header.isArrayTable &&
+        normalizeTomlTableName(header.name) === targetName
+      ) {
         headerLineIndex = index;
       }
       continue;
@@ -643,7 +669,7 @@ const getTopLevelEndIndex = (lines: string[]): number => {
   const stringLines = getTomlMultilineStringLines(lines);
   const firstSectionIndex = lines.findIndex(
     (line, index) =>
-      !stringLines[index] && TOML_SECTION_HEADER_PATTERN.test(line),
+      !stringLines[index] && parseTomlSectionHeader(line) !== undefined,
   );
   return firstSectionIndex === -1 ? lines.length : firstSectionIndex;
 };
@@ -778,9 +804,11 @@ const findTomlAssignments = (
 
   lines.forEach((line, index) => {
     if (stringLines[index]) return;
-    const sectionMatch = line.match(TOML_SECTION_HEADER_PATTERN);
-    if (sectionMatch) {
-      currentSectionName = normalizeTomlTableName(sectionMatch[1]);
+    const header = parseTomlSectionHeader(line);
+    if (header) {
+      currentSectionName = header.isArrayTable
+        ? tomlArrayTableSectionName(header.name)
+        : normalizeTomlTableName(header.name);
       return;
     }
 
@@ -822,6 +850,7 @@ const getRecoverableBaseUrlAssignments = (
   assignments.filter(
     ({ sectionName }) =>
       sectionName !== targetSectionName &&
+      !isTomlArrayTableSection(sectionName) &&
       !isMcpServerSection(sectionName) &&
       !isOtherProviderSection(sectionName, targetSectionName),
   );
