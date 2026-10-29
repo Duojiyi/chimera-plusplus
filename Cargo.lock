@@ -673,7 +673,7 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
- "zip 9.0.5",
+ "zip",
 ]
 
 [[package]]
@@ -696,7 +696,7 @@ dependencies = [
  "tokio",
  "tungstenite 0.26.2",
  "url",
- "zip 9.0.5",
+ "zip",
 ]
 
 [[package]]
@@ -740,6 +740,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-archive"
+version = "0.1.0"
+source = "git+https://github.com/Wangnov/Codex-App-Manager.git?rev=474658de8b3013d6f2ee68ce0cc0402219de11cc#474658de8b3013d6f2ee68ce0cc0402219de11cc"
+dependencies = [
+ "zip",
+]
+
+[[package]]
 name = "codex-plus-core"
 version = "1.2.42-chimera.1"
 dependencies = [
@@ -765,7 +773,7 @@ dependencies = [
  "uuid",
  "windows 0.58.0",
  "wiremock",
- "zip 9.0.5",
+ "zip",
 ]
 
 [[package]]
@@ -820,9 +828,10 @@ dependencies = [
 [[package]]
 name = "codex-theme-engine"
 version = "0.1.0"
-source = "git+https://github.com/Wangnov/Codex-App-Manager.git?rev=31bd3f23f74d6e263cbeb86cb210f8fe64e281d4#31bd3f23f74d6e263cbeb86cb210f8fe64e281d4"
+source = "git+https://github.com/Wangnov/Codex-App-Manager.git?rev=474658de8b3013d6f2ee68ce0cc0402219de11cc#474658de8b3013d6f2ee68ce0cc0402219de11cc"
 dependencies = [
  "base64 0.23.1",
+ "codex-archive",
  "futures-util",
  "log",
  "serde",
@@ -833,14 +842,15 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.30.0",
  "url",
- "zip 8.6.0",
+ "zip",
 ]
 
 [[package]]
 name = "codex-win-engine"
 version = "0.1.0"
-source = "git+https://github.com/Wangnov/Codex-App-Manager.git?rev=31bd3f23f74d6e263cbeb86cb210f8fe64e281d4#31bd3f23f74d6e263cbeb86cb210f8fe64e281d4"
+source = "git+https://github.com/Wangnov/Codex-App-Manager.git?rev=474658de8b3013d6f2ee68ce0cc0402219de11cc#474658de8b3013d6f2ee68ce0cc0402219de11cc"
 dependencies = [
+ "codex-archive",
  "libc",
  "log",
  "roxmltree",
@@ -851,7 +861,7 @@ dependencies = [
  "uuid",
  "windows 0.62.2",
  "windows-sys 0.61.2",
- "zip 8.6.0",
+ "zip",
 ]
 
 [[package]]
@@ -6574,20 +6584,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.118",
-]
-
-[[package]]
-name = "zip"
-version = "8.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d04a6b5381502aa6087c94c669499eb1602eb9c5e8198e534de571f7154809b"
-dependencies = [
- "crc32fast",
- "flate2",
- "indexmap 2.14.0",
- "memchr",
- "typed-path",
- "zopfli",
 ]
 
 [[package]]
