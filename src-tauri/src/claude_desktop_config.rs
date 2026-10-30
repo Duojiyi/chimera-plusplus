@@ -240,6 +240,8 @@ fn detect_standard_installation() -> Option<PathBuf> {
             }
         }
         first_program_file(candidates)
+            .or_else(detect_msix_installation)
+            .or_else(detect_msix_execution_alias)
     }
     #[cfg(target_os = "macos")]
     {
@@ -252,6 +254,75 @@ fn detect_standard_installation() -> Option<PathBuf> {
     {
         None
     }
+}
+
+/// Package family suffix of Anthropic's signed Claude MSIX (Microsoft Store and
+/// the MSIX installer): `Claude_<version>_<arch>__pzs8sxrjxfjjc`. Only this
+/// publisher is accepted, so a look-alike package cannot pass as Claude.
+#[cfg(any(windows, test))]
+const CLAUDE_MSIX_PUBLISHER_SUFFIX: &str = "__pzs8sxrjxfjjc";
+
+/// The newest registered Claude MSIX package whose `app\Claude.exe` exists.
+/// `packages` are (package full name, package root folder) pairs.
+#[cfg(any(windows, test))]
+fn pick_msix_claude_executable(
+    packages: &[(String, PathBuf)],
+    exists: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    let version = |name: &str| -> Vec<u64> {
+        name.split('_')
+            .nth(1)
+            .unwrap_or_default()
+            .split('.')
+            .map(|part| part.parse().unwrap_or(0))
+            .collect()
+    };
+    packages
+        .iter()
+        .filter(|(name, _)| {
+            name.starts_with("Claude_") && name.ends_with(CLAUDE_MSIX_PUBLISHER_SUFFIX)
+        })
+        .map(|(name, root)| (version(name), root.join("app").join("Claude.exe")))
+        .filter(|(_, exe)| exists(exe))
+        .max_by_key(|(version, _)| version.clone())
+        .map(|(_, exe)| exe)
+}
+
+/// Store / MSIX installs live under the protected `WindowsApps` folder, which
+/// the file-system candidates cannot list; the per-user package repository in
+/// the registry names their install root.
+#[cfg(windows)]
+fn detect_msix_installation() -> Option<PathBuf> {
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+    const PACKAGES: &str = r"Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages";
+    let packages_key = RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey(PACKAGES)
+        .ok()?;
+    let packages: Vec<(String, PathBuf)> = packages_key
+        .enum_keys()
+        .flatten()
+        .filter(|name| name.starts_with("Claude_"))
+        .filter_map(|name| {
+            let root: String = packages_key
+                .open_subkey(&name)
+                .ok()?
+                .get_value("PackageRootFolder")
+                .ok()?;
+            Some((name, PathBuf::from(root)))
+        })
+        .collect();
+    pick_msix_claude_executable(&packages, Path::is_file)
+}
+
+/// Fallback when the package repository cannot be read: the MSIX registers an
+/// app execution alias. It is a reparse point that ordinary metadata calls
+/// cannot follow, so only its presence is checked.
+#[cfg(windows)]
+fn detect_msix_execution_alias() -> Option<PathBuf> {
+    let alias = PathBuf::from(std::env::var_os("LOCALAPPDATA")?)
+        .join("Microsoft/WindowsApps/claude-desktop.exe");
+    fs::symlink_metadata(&alias).ok().map(|_| alias)
 }
 
 pub fn get_status(db: &Database, proxy_running: bool) -> Result<ClaudeDesktopStatus, AppError> {
@@ -1545,6 +1616,42 @@ fn unsupported_platform_error() -> AppError {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn msix_detection_takes_the_newest_signed_claude_package() {
+        let packages = vec![
+            (
+                "Claude_4.4212.0.0_x64__pzs8sxrjxfjjc".to_string(),
+                PathBuf::from("C:/WindowsApps/Claude_4.4212.0.0_x64__pzs8sxrjxfjjc"),
+            ),
+            (
+                "Claude_4.10.0.0_x64__pzs8sxrjxfjjc".to_string(),
+                PathBuf::from("C:/WindowsApps/Claude_4.10.0.0_x64__pzs8sxrjxfjjc"),
+            ),
+            // Same name, other publisher: never accepted.
+            (
+                "Claude_9.0.0.0_x64__someoneelse01".to_string(),
+                PathBuf::from("C:/WindowsApps/Claude_9.0.0.0_x64__someoneelse01"),
+            ),
+        ];
+        let newest = PathBuf::from("C:/WindowsApps/Claude_4.4212.0.0_x64__pzs8sxrjxfjjc")
+            .join("app")
+            .join("Claude.exe");
+        assert_eq!(
+            pick_msix_claude_executable(&packages, |_| true),
+            Some(newest.clone())
+        );
+        // A registered package whose files are gone is skipped.
+        assert_eq!(
+            pick_msix_claude_executable(&packages, |path| path != newest.as_path()),
+            Some(
+                PathBuf::from("C:/WindowsApps/Claude_4.10.0.0_x64__pzs8sxrjxfjjc")
+                    .join("app")
+                    .join("Claude.exe")
+            )
+        );
+        assert_eq!(pick_msix_claude_executable(&packages[2..], |_| true), None);
+    }
+
     #[test]
     fn installation_detection_requires_a_program_file_not_configuration() {
         let home = tempfile::tempdir().unwrap();
