@@ -29,6 +29,11 @@
   --glass-primary-edge: rgb(23 98 150 / 60%);
   --glass-selection: #e2f1fe;
   --glass-selection-ink: #104c77;
+  /* Switch off state: a slate track and a solid thumb, each at least 3:1
+     against the other (and the track edge against the card), so an off
+     switch never reads as white on white. */
+  --glass-switch-off-track: #dde5ed;
+  --glass-switch-off-thumb: #6c8194;
 }
 
 .dark,
@@ -56,6 +61,8 @@
   --glass-primary-edge: rgb(132 207 255 / 56%);
   --glass-selection: #203e57;
   --glass-selection-ink: #daefff;
+  --glass-switch-off-track: #2a3846;
+  --glass-switch-off-thumb: #9fb4c7;
 }
 
 .chimera-shell.chimera-shell {
@@ -293,13 +300,15 @@
 /* Custom non-Radix dialogs are also used in the first-run flow. Keep their
    layout, focus handling, z-order and scroll ownership unchanged. */
 .modal-backdrop.modal-backdrop,
-.command-palette-backdrop.command-palette-backdrop {
+.command-palette-backdrop.command-palette-backdrop,
+.route-line-manager-backdrop.route-line-manager-backdrop {
   -webkit-backdrop-filter: blur(5px);
   backdrop-filter: blur(5px);
 }
 .modal-backdrop
   :is(.confirm-dialog, .model-picker, .diagnostics-dialog, .history-dialog),
 .command-palette-backdrop .command-palette,
+.route-line-manager-backdrop .route-line-manager,
 .chimera-shell .onboarding-card {
   border-color: var(--glass-border);
   border-radius: var(--radius-panel);
@@ -471,5 +480,111 @@
     --plate-fg-3: CanvasText;
     --plate-control-border: ButtonText;
     --plate-control-hover: ButtonFace;
+  }
+}
+
+/* The hand-drawn switches (设置, Skills 与 MCP, Pi/OpenCode lines) take the
+   same 36 × 20 glass track and 16px thumb as the Radix .glass-switch
+   (liquid-glass-ui.css); the views keep only button semantics and focus. */
+:is(.settings-switch, .skills-resource-switch, .tool-line-toggle) {
+  box-sizing: border-box;
+  flex: 0 0 36px;
+  width: 36px;
+  height: 20px;
+  padding: 0;
+  border: 2px solid var(--switch-off-border);
+  border-radius: 999px;
+  background: var(--switch-off-bg);
+  box-shadow: inset 0 1px 2px rgb(15 23 42 / 12%);
+  transition:
+    background-color var(--dur-fast, 150ms) var(--ease-out, ease),
+    border-color var(--dur-fast, 150ms) var(--ease-out, ease);
+}
+:is(
+  .settings-switch > u,
+  .skills-resource-switch-thumb,
+  .tool-line-toggle > span
+) {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--switch-thumb-off);
+  transition:
+    transform var(--dur-fast, 150ms) var(--ease-out, ease),
+    background-color var(--dur-fast, 150ms) var(--ease-out, ease);
+}
+:is(
+  .settings-switch.is-on,
+  .skills-resource-switch[aria-checked="true"],
+  .tool-line-toggle[aria-pressed="true"]
+) {
+  border-color: var(--glass-primary-edge, var(--switch-on-bg));
+  background: linear-gradient(
+    180deg,
+    var(--glass-primary-top, var(--switch-on-bg)),
+    var(--switch-on-bg)
+  );
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 22%),
+    0 2px 5px rgb(15 23 42 / 12%);
+}
+:is(
+  .settings-switch.is-on > u,
+  .skills-resource-switch[aria-checked="true"] .skills-resource-switch-thumb,
+  .tool-line-toggle[aria-pressed="true"] > span
+) {
+  transform: translateX(16px);
+  background: #fff linear-gradient(180deg, #fff, #e8edf5);
+  box-shadow: 0 1px 3px rgb(15 23 42 / 24%);
+}
+/* Hover, and a disabled switch that still shows its state: no fading, just
+   a muted track and the not-allowed cursor (the reason is in its title). */
+:is(.skills-resource-switch, .tool-line-toggle):hover:not(:disabled):not(
+    [aria-disabled="true"]
+  ),
+button:hover:not(:disabled) > .settings-switch {
+  border-color: var(--glass-focus, var(--switch-on-bg));
+}
+:is(.skills-resource-switch, .tool-line-toggle):is(
+  :disabled,
+  [aria-disabled="true"]
+),
+:disabled > .settings-switch {
+  cursor: not-allowed;
+  opacity: 1;
+  filter: saturate(0.45);
+}
+@media (prefers-reduced-motion: reduce) {
+  :is(.settings-switch, .skills-resource-switch, .tool-line-toggle),
+  :is(
+    .settings-switch > u,
+    .skills-resource-switch-thumb,
+    .tool-line-toggle > span
+  ) {
+    transition: none;
+  }
+}
+@media (forced-colors: active) {
+  :is(.settings-switch, .skills-resource-switch, .tool-line-toggle) {
+    border-color: ButtonText !important;
+    background: Canvas !important;
+    filter: none !important;
+  }
+  :is(
+    .settings-switch > u,
+    .skills-resource-switch-thumb,
+    .tool-line-toggle > span
+  ) {
+    background: ButtonText !important;
+    box-shadow: none !important;
+  }
+  :is(
+    .settings-switch.is-on,
+    .skills-resource-switch[aria-checked="true"],
+    .tool-line-toggle[aria-pressed="true"]
+  ) {
+    background: Highlight !important;
+    forced-color-adjust: none;
   }
 }

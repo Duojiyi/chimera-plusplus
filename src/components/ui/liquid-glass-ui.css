@@ -305,7 +305,6 @@
   color: var(--glass-ink, var(--text-1, #172536));
 }
 
-.glass-ui.glass-switch[data-state="unchecked"],
 .glass-ui.glass-checkbox[data-state="unchecked"] {
   background-color: var(--glass-control-bg, var(--bg-subtle, #e8eef7));
   /* Functional boundaries need more contrast than decorative glass edges. */
@@ -317,6 +316,30 @@
   background-color: #fff;
   background-image: linear-gradient(180deg, #fff, #e8edf5);
   box-shadow: 0 1px 3px rgb(15 23 42 / 24%);
+}
+
+/* Off: slate track, solid grey thumb (--switch-* tokens, ≥ 3:1 each way). */
+.glass-ui.glass-switch[data-state="unchecked"] {
+  background-color: var(--switch-off-bg);
+  background-image: none;
+  border-color: var(--switch-off-border);
+  box-shadow: inset 0 1px 2px rgb(15 23 42 / 12%);
+}
+.glass-switch-thumb[data-state="unchecked"] {
+  background-color: var(--switch-thumb-off);
+  background-image: none;
+  box-shadow: none;
+}
+
+/* Hover, and a disabled switch that still shows its state: no fading, just
+   a muted track and the not-allowed cursor (the reason is in its title). */
+.glass-ui.glass-switch:hover:not(:disabled):not([aria-disabled="true"]) {
+  border-color: var(--glass-focus, var(--switch-on-bg));
+}
+.glass-ui.glass-switch:is(:disabled, [aria-disabled="true"]) {
+  cursor: not-allowed;
+  opacity: 1;
+  filter: saturate(0.45);
 }
 
 /* An outline is independent of the existing Radix/Tailwind shadow rings. */

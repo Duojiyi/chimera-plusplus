@@ -398,44 +398,14 @@
   box-shadow: 0 0 0 3px
     color-mix(in srgb, var(--success-solid) 20%, transparent);
 }
-/* The app's one switch (管理工具, Skills, 设置, 1M 上下文): --switch-* tokens,
-   ink track when on, outlined track with a muted thumb when off. */
+/* Accumulating tools' on/off switch: the shared glass switch
+   (liquid-glass-ui.css); only the button behaviour lives here. */
 .tool-line-toggle {
   display: inline-flex;
-  flex-shrink: 0;
   align-items: center;
-  width: 36px;
-  height: 20px;
-  padding: 3px;
-  border: 1px solid var(--switch-off-border);
-  border-radius: 999px;
-  background: var(--switch-off-bg);
   cursor: pointer;
-  transition:
-    background-color var(--dur-fast, 150ms) var(--ease-out, ease),
-    border-color var(--dur-fast, 150ms) var(--ease-out, ease);
 }
-.tool-line-toggle > span {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: var(--switch-thumb-off);
-  transition:
-    transform var(--dur-fast, 150ms) var(--ease-out, ease),
-    background-color var(--dur-fast, 150ms) var(--ease-out, ease);
-}
-.tool-line-toggle[aria-pressed="true"] {
-  border-color: var(--switch-on-bg);
-  background: var(--switch-on-bg);
-}
-.tool-line-toggle[aria-pressed="true"] > span {
-  transform: translateX(16px);
-  background: var(--switch-thumb-on);
-}
-.tool-line-toggle:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
+/* Disabled look: the shared glass switch (liquid-glass-ui.css). */
 .tool-line-name {
   display: flex;
   align-items: center;

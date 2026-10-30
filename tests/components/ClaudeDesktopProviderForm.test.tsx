@@ -43,7 +43,8 @@ describe("ClaudeDesktopProviderForm", () => {
     expect(
       screen.getByDisplayValue("https://api.chimerahub.org/v1"),
     ).toBeVisible();
-    expect(screen.getByDisplayValue("ChimeraHub")).toBeVisible();
+    // Every editor pre-fills the same name for a new line.
+    expect(screen.getByDisplayValue("新线路")).toBeVisible();
     expect(screen.getByRole("switch", { name: "需要模型映射" })).toBeChecked();
   });
   it.each(["github_copilot", "codex_oauth", "xai_oauth"])(

@@ -143,7 +143,9 @@ interface ProviderPresetSelectorProps {
   selectedPresetId: string | null;
   presetEntries: PresetEntry[];
   presetCategoryLabels: Record<string, string>;
-  onPresetChange: (value: string) => void;
+  /** `keepName` when the template is restored: like the Codex line editor,
+   * restoring refills everything but the line's name. */
+  onPresetChange: (value: string, options?: { keepName?: boolean }) => void;
   onUniversalPresetSelect?: (preset: UniversalProviderPreset) => void;
   onManageUniversalProviders?: () => void;
   category?: ProviderCategory; // 当前选中的分类
@@ -182,12 +184,12 @@ export function ProviderPresetSelector({
         <ConfirmDialog
           isOpen={confirmRestore}
           title="恢复默认模板？"
-          message="这会用模板重新填写线路名称、地址、密钥和模型，当前填写的内容不会保留。"
+          message="这会用模板重新填写地址、密钥和模型，当前填写的内容不会保留；线路名称保持不变。"
           confirmText="恢复模板"
           cancelText="取消"
           onConfirm={() => {
             setConfirmRestore(false);
-            onPresetChange(only.id);
+            onPresetChange(only.id, { keepName: true });
           }}
           onCancel={() => setConfirmRestore(false)}
         />

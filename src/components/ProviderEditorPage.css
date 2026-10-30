@@ -180,7 +180,8 @@
 }
 .provider-editor-page .mapping-head,
 .provider-editor-page .mapping-row {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 88px 84px 62px;
+  /* 思考等级 fits "3 档 · medium" without an ellipsis. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 88px 136px 62px;
   gap: 8px;
 }
 .provider-editor-page .mapping-head {
@@ -264,6 +265,13 @@
 .mapping-note {
   font-size: 12px;
   color: var(--text-3);
+}
+/* A GPT row's window above the 272K subscription window. */
+.provider-editor-page .mapping-window-note {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--warning-fg);
+  font-size: 13px;
 }
 /* The model field with its 1M box (Claude Code). */
 .provider-editor-page .editor-model-line {

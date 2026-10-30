@@ -310,7 +310,7 @@ describe("ProviderPresetSelector", () => {
     await user.keyboard("{Enter}");
     expect(onPresetChange).not.toHaveBeenCalled();
     await user.click(await screen.findByRole("button", { name: "恢复模板" }));
-    expect(onPresetChange).toHaveBeenCalledWith("builtin");
+    expect(onPresetChange).toHaveBeenCalledWith("builtin", { keepName: true });
   });
   it("does not expose legacy presets when the template is unavailable", () => {
     renderSelector();

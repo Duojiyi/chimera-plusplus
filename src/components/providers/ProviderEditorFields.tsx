@@ -1,6 +1,8 @@
 import {
+  Fragment,
   forwardRef,
   useCallback,
+  useEffect,
   useRef,
   useState,
   type ReactNode,
@@ -22,6 +24,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import type { ConnectionState } from "@/chimeraUtils";
+import { settingsApi } from "@/lib/api/settings";
+import type { AppId } from "@/lib/api/types";
 import { vscodeApi } from "@/lib/api/vscode";
 import type { ModelFetchErrorCode } from "@/lib/api/model-fetch";
 
@@ -380,14 +384,112 @@ export function EditorTemplateCard({
   );
 }
 
+/** The name every editor pre-fills for a new line. */
+export const NEW_LINE_NAME = "新线路";
+
+/**
+ * Where saving the tool's line in use writes, as the backend resolves it
+ * (a custom config directory included): Claude Code's settings file, the
+ * config directory of the other tools. Null until known or when the read
+ * fails, so the notice then names only the tool instead of guessing a
+ * default path.
+ */
+export function useLiveConfigLocation(
+  appId: AppId,
+  enabled: boolean,
+): string | null {
+  const [location, setLocation] = useState<string | null>(null);
+  useEffect(() => {
+    setLocation(null);
+    if (!enabled) return;
+    let active = true;
+    Promise.resolve()
+      .then(() =>
+        appId === "claude"
+          ? settingsApi.getClaudeCodeConfigPath()
+          : settingsApi.getConfigDir(appId),
+      )
+      .then((path) => {
+        if (active && typeof path === "string" && path.trim())
+          setLocation(path.trim());
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [appId, enabled]);
+  return location;
+}
+
+/** The in-use notice's one wording, for every tool's editor. */
+export function inUseNoticeText(
+  toolName: string,
+  location: string | null,
+): string {
+  return `这是正在使用的线路。保存后立即写入 ${toolName} 的配置${
+    location ? `（${location}）` : ""
+  }，已打开的 ${toolName} 可能需要重新打开才会生效。`;
+}
+
 /** One quiet line above the form when the line being edited is in use. */
-export function EditorInUseNotice({ children }: { children: ReactNode }) {
+export function EditorInUseNotice({
+  appId,
+  toolName,
+}: {
+  appId: AppId;
+  toolName: string;
+}) {
+  const location = useLiveConfigLocation(appId, true);
   return (
     <p className="editor-model-notice" role="note">
       <Info size={15} aria-hidden="true" />
-      <span>{children}</span>
+      <span className="editor-in-use-text">
+        {inUseNoticeText(toolName, location)}
+      </span>
     </p>
   );
+}
+
+/** A line editor's 保存详情: what the line will hold, then what saving does.
+ * Keys never appear here. */
+export function EditorSaveSummary({
+  rows,
+  children,
+}: {
+  rows: ReadonlyArray<readonly [label: string, value: ReactNode]>;
+  children?: ReactNode;
+}) {
+  return (
+    <details
+      className="editor-preview chimera-disclosure is-inline"
+      aria-label="线路草稿预览"
+    >
+      <summary>保存详情</summary>
+      <div className="chimera-disclosure-body">
+        <dl className="editor-save-summary">
+          {rows.map(([label, value]) => (
+            <Fragment key={label}>
+              <dt>{label}</dt>
+              <dd>{value}</dd>
+            </Fragment>
+          ))}
+        </dl>
+        {children}
+      </div>
+    </details>
+  );
+}
+
+/** The address's origin for 保存详情; a draft that is not a valid http(s)
+ * URL never echoes text that might hold a credential. */
+export function previewOrigin(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (["http:", "https:"].includes(parsed.protocol)) return parsed.origin;
+  } catch {
+    /* fall through */
+  }
+  return "尚未填写有效地址";
 }
 
 /** A 1M context checkbox in a model row. */

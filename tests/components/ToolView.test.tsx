@@ -29,6 +29,31 @@ vi.mock("@/lib/api/providers", () => ({
     importOpenCodeFromLive: vi.fn(),
   },
 }));
+// The Grok Build / Claude Desktop line editor, reduced to what the tool page
+// hands it: the delete request and the reason it is blocked.
+vi.mock("@/views/ToolViewEditor", () => ({
+  default: ({
+    provider,
+    onDelete,
+    deleteBlockedReason,
+  }: {
+    provider: Provider | null;
+    onDelete?: () => void;
+    deleteBlockedReason?: string | null;
+  }) => (
+    <section aria-label={`编辑器 ${provider?.name ?? "新建"}`}>
+      {onDelete && (
+        <button
+          type="button"
+          onClick={onDelete}
+          title={deleteBlockedReason ?? undefined}
+        >
+          编辑器删除线路
+        </button>
+      )}
+    </section>
+  ),
+}));
 vi.mock("@/components/settings/AboutSection", () => ({
   AboutSection: () => null,
 }));
@@ -801,5 +826,55 @@ describe("list-level route deletion", () => {
     );
     expect(screen.getByText("Removable route")).toBeInTheDocument();
     expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+});
+
+describe("deleting from a Grok Build line editor", () => {
+  const lines: Record<string, Provider> = {
+    a: { id: "a", name: "Line A", settingsConfig: {} },
+    b: { id: "b", name: "Line B", settingsConfig: {} },
+  };
+
+  it("confirms, deletes and closes the editor of a line not in use", async () => {
+    vi.mocked(providersApi.getAll).mockResolvedValue(lines);
+    vi.mocked(providersApi.getCurrent).mockResolvedValue("a");
+    vi.mocked(providersApi.delete).mockResolvedValue(true);
+    render(<ToolView toolId="grokbuild" native />);
+    fireEvent.click(await screen.findByRole("button", { name: "编辑Line B" }));
+    const editor = await screen.findByRole("region", { name: "编辑器 Line B" });
+    const remove = within(editor).getByRole("button", {
+      name: "编辑器删除线路",
+    });
+    expect(remove).not.toHaveAttribute("title");
+    fireEvent.click(remove);
+    fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
+    await waitFor(() =>
+      expect(providersApi.delete).toHaveBeenCalledWith("b", "grokbuild"),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("region", { name: "编辑器 Line B" }),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
+  it("gives the current line the list's reason instead of deleting it", async () => {
+    vi.mocked(providersApi.getAll).mockResolvedValue(lines);
+    vi.mocked(providersApi.getCurrent).mockResolvedValue("a");
+    render(<ToolView toolId="grokbuild" native />);
+    fireEvent.click(await screen.findByRole("button", { name: "编辑Line A" }));
+    const editor = await screen.findByRole("region", { name: "编辑器 Line A" });
+    expect(
+      within(editor).getByRole("button", { name: "编辑器删除线路" }),
+    ).toHaveAttribute("title", "当前线路正在使用，请先切换到其他线路再删除。");
+  });
+
+  it("offers no delete in a new line's editor", async () => {
+    render(<ToolView toolId="grokbuild" native />);
+    fireEvent.click(await screen.findByRole("button", { name: "添加线路" }));
+    const editor = await screen.findByRole("region", { name: "编辑器 新建" });
+    expect(
+      within(editor).queryByRole("button", { name: "编辑器删除线路" }),
+    ).toBeNull();
   });
 });

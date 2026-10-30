@@ -15,10 +15,13 @@ import {
 } from "@/components/ui/form";
 import {
   EditorChoice,
+  EditorSaveSummary,
   EditorToggle,
+  NEW_LINE_NAME,
   OneMCheck,
   ROUTED_PROTOCOL_NOTE,
   SectionStatus,
+  previewOrigin,
   type EditorChoiceOption,
 } from "@/components/providers/ProviderEditorFields";
 import { HelpTip } from "@/components/ui/help-tip";
@@ -84,6 +87,8 @@ export interface ClaudeDesktopProviderFormProps {
   onNameChange?: (name: string) => void;
   /** The request address as typed (null when the line has none). */
   onBaseUrlChange?: (url: string | null) => void;
+  /** What saving does; shows the 保存详情 card (line editor only). */
+  saveSummaryNote?: string;
   initialData?: {
     name?: string;
     websiteUrl?: string;
@@ -259,6 +264,7 @@ export function ClaudeDesktopProviderForm({
   onDirtyChange,
   onNameChange,
   onBaseUrlChange,
+  saveSummaryNote,
   initialData,
   showButtons = true,
 }: ClaudeDesktopProviderFormProps) {
@@ -351,7 +357,7 @@ export function ClaudeDesktopProviderForm({
 
   const defaultValues: ProviderFormData = useMemo(
     () => ({
-      name: initialData?.name ?? getChimeraHubTemplate().name,
+      name: initialData?.name ?? NEW_LINE_NAME,
       websiteUrl: initialData?.websiteUrl ?? "",
       notes: initialData?.notes ?? "",
       settingsConfig: JSON.stringify(
@@ -463,8 +469,12 @@ export function ClaudeDesktopProviderForm({
     formWebsiteUrl: form.watch("websiteUrl") || "",
   });
 
-  const applyDesktopPreset = (preset: ClaudeDesktopProviderPreset) => {
-    form.setValue("name", preset.nameKey ? t(preset.nameKey) : preset.name);
+  const applyDesktopPreset = (
+    preset: ClaudeDesktopProviderPreset,
+    keepName = false,
+  ) => {
+    if (!keepName || !form.getValues("name")?.trim())
+      form.setValue("name", preset.nameKey ? t(preset.nameKey) : preset.name);
     form.setValue("websiteUrl", preset.websiteUrl);
     form.setValue("notes", "");
     form.setValue("icon", preset.icon ?? "");
@@ -499,7 +509,10 @@ export function ClaudeDesktopProviderForm({
     }
   };
 
-  const handlePresetChange = (value: string) => {
+  const handlePresetChange = (
+    value: string,
+    { keepName = false }: { keepName?: boolean } = {},
+  ) => {
     setSelectedPresetId(value);
 
     if (value === "custom") {
@@ -526,7 +539,7 @@ export function ClaudeDesktopProviderForm({
       providerType: entry.preset.providerType,
       requiresOAuth: entry.preset.requiresOAuth,
     });
-    applyDesktopPreset(entry.preset);
+    applyDesktopPreset(entry.preset, keepName);
   };
 
   const updateRoute = (index: number, patch: Partial<RouteRowValues>) => {
@@ -861,6 +874,20 @@ export function ClaudeDesktopProviderForm({
   ].filter((value) => !value?.trim()).length;
   const protocolMissing =
     needsModelMapping && !routes.some((route) => route.model.trim()) ? 1 : 0;
+  // 保存详情: the models the line requests and how it reaches them.
+  const summaryModels = routes
+    .map((route) => (needsModelMapping ? route.model : route.route).trim())
+    .filter(Boolean);
+  const summaryProtocol =
+    activeProviderType === "xai_oauth"
+      ? "Responses（经本地路由）"
+      : needsModelMapping
+        ? `${
+            DESKTOP_FORMAT_CHOICES.find(
+              ([value]) => value === apiFormat,
+            )?.[1] ?? apiFormat
+          }（经本地路由）`
+        : "Anthropic Messages（直连）";
 
   return (
     <Form {...form}>
@@ -1231,6 +1258,35 @@ export function ClaudeDesktopProviderForm({
               </FormItem>
             )}
           />
+        )}
+
+        {saveSummaryNote !== undefined && (
+          <EditorSaveSummary
+            rows={
+              isOfficial
+                ? [
+                    ["线路", watchedName?.trim() || "未命名线路"],
+                    ["登录", "Claude Desktop 内置的官方登录"],
+                  ]
+                : [
+                    ["线路", watchedName?.trim() || "未命名线路"],
+                    [
+                      "地址",
+                      usesManagedOAuth ? "托管账号" : previewOrigin(baseUrl),
+                    ],
+                    [
+                      "模型",
+                      summaryModels.length > 2
+                        ? `${summaryModels.slice(0, 2).join("、")} 等 ${summaryModels.length} 个`
+                        : summaryModels.join("、") || "由 Claude Desktop 选择",
+                    ],
+                    ["协议", summaryProtocol],
+                    ["写入", "Claude Desktop 的第三方接入配置"],
+                  ]
+            }
+          >
+            <p>{saveSummaryNote}</p>
+          </EditorSaveSummary>
         )}
 
         {showButtons && (

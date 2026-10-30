@@ -287,32 +287,11 @@ button.settings-reference-row:hover:not(:disabled) > svg {
   height: 28px;
 }
 
-/* Switch drawn inside a whole-row role="switch" button. */
-.settings-switch {
-  flex-shrink: 0;
-  width: 36px;
-  height: 20px;
-  padding: 3px;
-  border: 1px solid var(--switch-off-border);
-  border-radius: 999px;
-  background: var(--switch-off-bg);
-}
+/* Switch drawn inside a whole-row role="switch" button; track and thumb
+   come from the shared glass switch (liquid-glass-ui.css). */
 .settings-switch u {
   display: block;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: var(--switch-thumb-off);
   text-decoration: none;
-  transition: transform var(--dur-fast) ease-out;
-}
-.settings-switch.is-on {
-  border-color: var(--switch-on-bg);
-  background: var(--switch-on-bg);
-}
-.settings-switch.is-on u {
-  transform: translateX(16px);
-  background: var(--switch-thumb-on);
 }
 
 /* One segmented control for the whole page, matching 用量's range control. */

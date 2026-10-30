@@ -718,67 +718,16 @@ details.skills-lifecycle-panel > button {
   appearance: none;
   -webkit-appearance: none;
   display: inline-flex;
-  flex: 0 0 38px;
   align-items: center;
   justify-content: flex-start;
-  width: 38px;
-  height: 22px;
-  box-sizing: border-box;
-  padding: 3px;
-  border: 1px solid var(--switch-off-border);
-  border-radius: 999px;
-  background: var(--switch-off-bg);
-  box-shadow:
-    inset 0 1px 1px color-mix(in srgb, var(--text-1) 8%, transparent),
-    0 1px 2px color-mix(in srgb, var(--text-1) 8%, transparent);
   color: transparent;
   font: inherit;
   line-height: 0;
   cursor: pointer;
-  transition:
-    background-color var(--dur-fast, 150ms) var(--ease-out, ease),
-    border-color var(--dur-fast, 150ms) var(--ease-out, ease),
-    box-shadow var(--dur-fast, 150ms) var(--ease-out, ease);
 }
 
 .skills-resource-switch-thumb {
   display: block;
-  width: 14px;
-  height: 14px;
-  flex: 0 0 14px;
-  border-radius: 50%;
-  background: var(--switch-thumb-off);
-  box-shadow: 0 1px 2px color-mix(in srgb, var(--text-1) 18%, transparent);
-  transition:
-    transform var(--dur-fast, 150ms) var(--ease-out, ease),
-    background-color var(--dur-fast, 150ms) var(--ease-out, ease),
-    box-shadow var(--dur-fast, 150ms) var(--ease-out, ease);
-}
-
-.skills-resource-switch[aria-checked="true"] {
-  border-color: var(--switch-on-bg);
-  background: var(--switch-on-bg);
-  box-shadow: 0 1px 2px color-mix(in srgb, var(--text-1) 16%, transparent);
-}
-
-.skills-resource-switch[aria-checked="true"] .skills-resource-switch-thumb {
-  transform: translateX(16px);
-  background: var(--switch-thumb-on);
-  box-shadow: 0 1px 2px color-mix(in srgb, var(--text-1) 22%, transparent);
-}
-
-.skills-resource-switch:hover:not(:disabled) {
-  border-color: color-mix(
-    in srgb,
-    var(--brand-text) 54%,
-    var(--switch-off-border)
-  );
-  background: color-mix(in srgb, var(--brand-text) 5%, var(--switch-off-bg));
-}
-
-.skills-resource-switch[aria-checked="true"]:hover:not(:disabled) {
-  border-color: var(--switch-on-bg);
-  background: color-mix(in srgb, var(--switch-on-bg) 88%, var(--brand-text));
 }
 
 .skills-resource-switch:active:not(:disabled) .skills-resource-switch-thumb {
@@ -790,10 +739,7 @@ details.skills-lifecycle-panel > button {
   transform: translateX(16px) scale(0.9);
 }
 
-.skills-resource-switch:disabled {
-  cursor: not-allowed;
-  opacity: 0.48;
-}
+/* Disabled look: the shared glass switch (liquid-glass-ui.css). */
 
 .skills-resource-switch:focus-visible {
   outline: 2px solid var(--focus, var(--brand-text));

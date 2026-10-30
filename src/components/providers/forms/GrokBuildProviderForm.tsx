@@ -17,8 +17,11 @@ import {
   EditorAdvanced,
   EditorField,
   EditorLabel,
+  EditorSaveSummary,
   EditorSelect,
+  NEW_LINE_NAME,
   SectionStatus,
+  previewOrigin,
 } from "@/components/providers/ProviderEditorFields";
 import { useDarkMode } from "@/hooks/useDarkMode";
 import { providerSchema, type ProviderFormData } from "@/lib/schemas/provider";
@@ -112,6 +115,7 @@ export function GrokBuildProviderForm({
   onDirtyChange,
   onNameChange,
   onBaseUrlChange,
+  saveSummaryNote,
   initialData,
   showButtons = true,
 }: GrokBuildProviderFormProps) {
@@ -129,7 +133,7 @@ export function GrokBuildProviderForm({
           ...parsed,
           upstreamModel: getChimeraHubTemplate().model,
           baseUrl: getChimeraHubTemplate().baseUrl,
-          name: getChimeraHubTemplate().name,
+          name: NEW_LINE_NAME,
         };
   }, [initialConfigText, initialData?.name]);
 
@@ -328,7 +332,10 @@ export function GrokBuildProviderForm({
     }
   };
 
-  const handlePresetChange = (presetId: string) => {
+  const handlePresetChange = (
+    presetId: string,
+    { keepName = false }: { keepName?: boolean } = {},
+  ) => {
     setSelectedPresetId(presetId);
     if (presetId === "custom") {
       setCategory("custom");
@@ -359,7 +366,9 @@ export function GrokBuildProviderForm({
     if (!entry) return;
     invalidRawDraft.current = false;
     const preset = entry.preset;
-    const presetName = preset.nameKey ? String(t(preset.nameKey)) : preset.name;
+    const presetName =
+      (keepName && form.getValues("name")?.trim()) ||
+      (preset.nameKey ? String(t(preset.nameKey)) : preset.name);
     const presetBaseUrl = extractCodexBaseUrl(preset.config) ?? "";
     const presetModel = extractCodexModelName(preset.config) ?? profile;
     const presetApiFormat =
@@ -859,6 +868,27 @@ export function GrokBuildProviderForm({
             </FormItem>
           )}
         />
+
+        {saveSummaryNote !== undefined && (
+          <EditorSaveSummary
+            rows={
+              category === "official"
+                ? [
+                    ["线路", watchedName?.trim() || "未命名线路"],
+                    ["登录", "Grok Build 自身的登录"],
+                  ]
+                : [
+                    ["线路", watchedName?.trim() || "未命名线路"],
+                    ["地址", previewOrigin(baseUrl)],
+                    ["模型", upstreamModel.trim() || profile.trim() || "—"],
+                    ["协议", API_BACKEND_LABELS[apiBackend] ?? apiBackend],
+                    ["写入", "Grok Build 的 config.toml"],
+                  ]
+            }
+          >
+            <p>{saveSummaryNote}</p>
+          </EditorSaveSummary>
+        )}
 
         {showButtons && (
           <div className="editor-save-actions">

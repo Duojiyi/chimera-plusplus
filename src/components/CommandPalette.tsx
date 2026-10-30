@@ -325,13 +325,15 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
                         if (!selected) setSelectedIndex(index);
                       }}
                     >
-                      {item.line ? (
-                        <LineBadge line={item.line} size="sm" />
-                      ) : (
-                        <span className="command-palette-icon">
-                          {Icon && <Icon size={16} aria-hidden="true" />}
-                        </span>
-                      )}
+                      {/* One fixed slot for badges and icons, so a two-character
+                          badge (自建, 智谱) does not push its title right. */}
+                      <span className="command-palette-icon">
+                        {item.line ? (
+                          <LineBadge line={item.line} size="sm" />
+                        ) : (
+                          Icon && <Icon size={16} aria-hidden="true" />
+                        )}
+                      </span>
                       <span className="command-palette-text">
                         <span className="command-palette-title">
                           {item.title}

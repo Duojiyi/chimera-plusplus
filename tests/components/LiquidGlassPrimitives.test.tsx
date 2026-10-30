@@ -742,6 +742,70 @@ describe("liquid glass stylesheet safeguards", () => {
     },
   );
 
+  it.each([
+    ["light", "#ffffff"],
+    ["dark", "#1f2a36"],
+  ])(
+    "keeps an off switch visible on a %s card: thumb, track and edge at 3:1",
+    (mode, card) => {
+      const theme = parse(
+        readFileSync(
+          path.resolve(__dirname, "../../src/theme/liquid-glass.css"),
+          "utf8",
+        ),
+      );
+      const colors = new Map<string, string>();
+      theme.walkRules((rule) => {
+        if (!rule.selectors.includes(mode === "light" ? ":root" : ".dark"))
+          return;
+        rule.walkDecls(
+          /^--glass-(switch-off-track|switch-off-thumb|control-border)$/,
+          (declaration) => {
+            colors.set(declaration.prop, declaration.value);
+          },
+        );
+      });
+      const track = colors.get("--glass-switch-off-track")!;
+      const thumb = colors.get("--glass-switch-off-thumb")!;
+      const edge = colors.get("--glass-control-border")!;
+      const contrast = (a: string, b: string) => {
+        const [hi, lo] = [relativeLuminance(a), relativeLuminance(b)].sort(
+          (x, y) => y - x,
+        );
+        return (hi + 0.05) / (lo + 0.05);
+      };
+      // The reported bug: a white thumb on a near-white track.
+      expect(thumb.toLowerCase()).not.toMatch(/^#f{3}(f{3})?$/);
+      expect(contrast(thumb, track)).toBeGreaterThanOrEqual(3);
+      expect(contrast(edge, card)).toBeGreaterThanOrEqual(3);
+
+      // Every switch reads these through the --switch-* tokens.
+      const tokens = readFileSync(
+        path.resolve(__dirname, "../../src/theme/tokens.css"),
+        "utf8",
+      );
+      expect(tokens).toMatch(
+        /--switch-off-bg:\s*var\(--glass-switch-off-track\b/,
+      );
+      expect(tokens).toMatch(
+        /--switch-thumb-off:\s*var\(--glass-switch-off-thumb\b/,
+      );
+      const thumbOff = document.createElement("span");
+      thumbOff.className = "glass-switch-thumb";
+      thumbOff.dataset.state = "unchecked";
+      const decls = new Map<string, string>();
+      stylesheet.walkRules((rule) => {
+        if (rule.parent?.type !== "root" || !thumbOff.matches(rule.selector))
+          return;
+        rule.walkDecls((declaration) => {
+          decls.set(declaration.prop, declaration.value);
+        });
+      });
+      expect(decls.get("background-color")).toBe("var(--switch-thumb-off)");
+      expect(decls.get("background-image")).toBe("none");
+    },
+  );
+
   it.each(portalSurfaces)(
     "removes blur and uses an opaque reduced-transparency backing on shell-free %s",
     (surface) => {

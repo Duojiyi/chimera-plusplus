@@ -265,11 +265,14 @@
   --plate-fg-1: var(--text-plate-1);
   --plate-fg-2: var(--text-plate-2);
   --plate-fg-3: var(--text-plate-3);
-  --switch-on-bg: var(--text-1);
-  --switch-off-bg: var(--bg-surface);
-  --switch-off-border: var(--border-control);
-  --switch-thumb-on: var(--text-inverse);
-  --switch-thumb-off: var(--text-3);
+  /* The app's one switch is the liquid-glass switch: a blue track with a
+     white thumb when on, a slate track with a solid grey thumb when off.
+     The glass variables follow the theme, so dark needs no override. */
+  --switch-on-bg: var(--glass-primary-bottom, var(--text-1));
+  --switch-off-bg: var(--glass-switch-off-track, var(--bg-surface));
+  --switch-off-border: var(--glass-control-border, var(--border-control));
+  --switch-thumb-on: var(--p-n-995);
+  --switch-thumb-off: var(--glass-switch-off-thumb, var(--text-3));
   --check-on-bg: var(--text-1);
   --check-glyph: var(--text-inverse);
   --check-border: var(--border-control);

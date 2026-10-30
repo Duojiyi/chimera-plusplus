@@ -271,6 +271,9 @@ export interface ProviderFormProps {
   /** The request address as typed (null when the line has none), for the
    * editor footer's address test. */
   onBaseUrlChange?: (url: string | null) => void;
+  /** What saving does, for the 保存详情 card of the Claude Desktop and Grok
+   * Build line editors; the card is left out without it. */
+  saveSummaryNote?: string;
   initialData?: {
     name?: string;
     websiteUrl?: string;

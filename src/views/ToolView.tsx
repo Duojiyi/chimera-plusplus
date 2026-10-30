@@ -485,6 +485,13 @@ function KnownToolView({
     }
   };
 
+  // The current line of a switch tool cannot be deleted: the list row and
+  // the line editor's header give the same reason.
+  const deleteBlockedReason = (provider: Provider) =>
+    tool.category === "switch" && provider.id === currentId
+      ? "当前线路正在使用，请先切换到其他线路再删除。"
+      : null;
+
   const deleteProvider = async () => {
     if (
       !removing ||
@@ -495,7 +502,7 @@ function KnownToolView({
       mutationRequest.current
     )
       return;
-    if (tool.category === "switch" && removing.id === currentId) return;
+    if (deleteBlockedReason(removing)) return;
     const provider = removing;
     const request = Symbol();
     mutationRequest.current = request;
@@ -506,6 +513,10 @@ function KnownToolView({
       if (mutationRequest.current !== request) return;
       if (!deleted) throw new Error("线路未删除，请刷新后重试");
       setRemoving(null);
+      // Deleted from its own editor: the editor has nothing left to edit.
+      setEditing((open) =>
+        open !== "new" && open?.id === provider.id ? null : open,
+      );
       toast.success(`已删除「${provider.name}」`);
       window.dispatchEvent(
         new CustomEvent("chimera-provider-mutated", {
@@ -551,6 +562,14 @@ function KnownToolView({
             provider={editing === "new" ? null : editing}
             onClose={() => setEditing(null)}
             onSaved={() => void load()}
+            onDelete={
+              editing !== "new" && native && canMutate
+                ? () => setRemoving(editing)
+                : undefined
+            }
+            deleteBlockedReason={
+              editing === "new" ? null : deleteBlockedReason(editing)
+            }
           />
         </Suspense>
       )}
@@ -864,7 +883,7 @@ function KnownToolView({
                   : summary.baseUrl ||
                     (provider.category === "official" ? "官方默认端点" : "—");
                 const model = summary.model || "—";
-                const protectedCurrent = tool.category === "switch" && current;
+                const protectedCurrent = Boolean(deleteBlockedReason(provider));
                 const deleteButton = (
                   <button
                     type="button"
@@ -977,7 +996,9 @@ function KnownToolView({
                       )}
                       {!builtIn &&
                         (protectedCurrent && native ? (
-                          <DisabledReason reason="当前线路正在使用，请先切换到其他线路再删除。">
+                          <DisabledReason
+                            reason={deleteBlockedReason(provider) ?? undefined}
+                          >
                             {deleteButton}
                           </DisabledReason>
                         ) : (

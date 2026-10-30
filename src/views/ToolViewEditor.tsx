@@ -2,8 +2,9 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { ChevronLeft } from "lucide-react";
+import { ChevronLeft, Trash2 } from "lucide-react";
 import { FullScreenPanel } from "@/components/common/FullScreenPanel";
+import { DisabledReason } from "@/components/ui/help-tip";
 import {
   EditorInUseNotice,
   EditorSaveActions,
@@ -33,11 +34,17 @@ export default function ToolViewEditor({
   provider,
   onClose,
   onSaved,
+  onDelete,
+  deleteBlockedReason = null,
 }: {
   appId: AdditionalToolAppId;
   provider: Provider | null;
   onClose: () => void;
   onSaved: () => void;
+  /** Asks the tool page to delete the line being edited (it confirms). */
+  onDelete?: () => void;
+  /** Why the line cannot be deleted right now; null when it can. */
+  deleteBlockedReason?: string | null;
 }) {
   const [busy, setBusy] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -144,6 +151,21 @@ export default function ToolViewEditor({
           <span className="editor-draft-status" role="status">
             {busy ? "正在保存…" : dirty ? "未保存修改" : ""}
           </span>
+          {provider && onDelete && (
+            <DisabledReason
+              reason={deleteBlockedReason ?? undefined}
+              align="end"
+            >
+              <button
+                type="button"
+                className="danger"
+                onClick={onDelete}
+                disabled={busy}
+              >
+                <Trash2 size={15} aria-hidden="true" /> 删除线路
+              </button>
+            </DisabledReason>
+          )}
         </>
       }
       footer={
@@ -178,11 +200,7 @@ export default function ToolViewEditor({
         </>
       }
     >
-      {inUse && (
-        <EditorInUseNotice>
-          这是正在使用的线路。保存后同步写入 {toolName} 的配置。
-        </EditorInUseNotice>
-      )}
+      {inUse && <EditorInUseNotice appId={appId} toolName={toolName} />}
       <div onChangeCapture={() => setDirty(true)}>
         <ProviderForm
           appId={appId}
@@ -196,6 +214,13 @@ export default function ToolViewEditor({
           onDirtyChange={() => setDirty(true)}
           onNameChange={setDraftName}
           onBaseUrlChange={setDraftUrl}
+          saveSummaryNote={
+            !provider
+              ? `仅保存到 Chimera++；在列表中切换到这条线路后才写入 ${toolName} 的配置。`
+              : inUse
+                ? `这是正在使用的线路，保存后立即写入 ${toolName} 的配置。`
+                : `仅保存，不切换到这条线路；切换后才写入 ${toolName} 的配置。`
+          }
         />
       </div>
       {connection.kind === "error" && (

@@ -126,15 +126,18 @@ import {
   EditorInUseNotice,
   EditorLabel,
   EditorSaveActions,
+  EditorSaveSummary,
   EditorSelect,
   EditorTemplateCard,
   EditorTestAction,
   EditorToggle,
   Field,
   ModelFetchNotice,
+  NEW_LINE_NAME,
   OneMCheck,
   PROMPT_CACHE_OPTIONS,
   ROUTED_PROTOCOL_NOTE,
+  previewOrigin as addressOrigin,
   SaveLabel,
   SectionStatus,
   type EditorChoiceOption,
@@ -775,7 +778,7 @@ export function providerDraft(
   // Only a brand-new line starts from the template; an existing line keeps its
   // own values, and a missing one stays empty instead of becoming ChimeraHub's.
   const template = native
-    ? { name: "新线路", websiteUrl: "", config: "", auth: {} }
+    ? { name: NEW_LINE_NAME, websiteUrl: "", config: "", auth: {} }
     : provider
       ? { name: provider.name, websiteUrl: "", config: "", auth: {} }
       : getChimeraHubTemplate();
@@ -826,6 +829,10 @@ export function providerDraft(
     modelsUrl: typeof meta.modelsUrl === "string" ? meta.modelsUrl : "",
     customUserAgent:
       typeof meta.customUserAgent === "string" ? meta.customUserAgent : "",
+    codexAutoReviewModel:
+      typeof meta.codexAutoReviewModel === "string"
+        ? meta.codexAutoReviewModel
+        : "",
     promptCacheRouting: meta.promptCacheRouting ?? "auto",
     codexChatReasoning: meta.codexChatReasoning ?? {},
     goalModeEnabled: isCodexGoalModeEnabled(config),
@@ -1127,7 +1134,7 @@ export default function ChimeraApp({
     const ownsOpen = () =>
       request === editorOpenSeqRef.current && !editorRef.current;
     if (lineId === "new") {
-      openEditor(providerDraft(null, "新线路", appId), appId);
+      openEditor(providerDraft(null, NEW_LINE_NAME, appId), appId);
       return;
     }
     try {
@@ -2004,6 +2011,8 @@ export default function ChimeraApp({
           isFullUrl: draft.isFullUrl || undefined,
           modelsUrl: draft.modelsUrl.trim() || undefined,
           customUserAgent: draft.customUserAgent.trim() || undefined,
+          // Empty means unset: the key is left out, never saved as "".
+          codexAutoReviewModel: draft.codexAutoReviewModel.trim() || undefined,
           promptCacheRouting:
             resolvedApiFormat === "openai_chat" &&
             draft.promptCacheRouting !== "auto"
@@ -2986,7 +2995,10 @@ export default function ChimeraApp({
               deletingProviderId={deletingProviderId}
               onAdd={() =>
                 openEditor(
-                  providerDraft(null, providers.length ? "新线路" : "默认线路"),
+                  providerDraft(
+                    null,
+                    providers.length ? NEW_LINE_NAME : "默认线路",
+                  ),
                 )
               }
               onTestSpeed={testConnection}
@@ -3204,7 +3216,7 @@ export default function ChimeraApp({
             return;
           }
           openEditor(
-            providerDraft(null, providers.length ? "新线路" : "默认线路"),
+            providerDraft(null, providers.length ? NEW_LINE_NAME : "默认线路"),
           );
         }}
         onSpeedTestAll={() => {
@@ -5508,6 +5520,37 @@ const CODEX_FORMAT_OPTIONS: EditorChoiceOption<CodexApiFormatSelection>[] = [
   ["anthropic", "Anthropic Messages", ROUTED_PROTOCOL_NOTE],
 ];
 
+// Adapted from farion1231/cc-switch 8d7a7415
+/** ChatGPT subscription window most relays serve GPT models from. */
+const GPT_SUBSCRIPTION_WINDOW = 272_000;
+
+/** A GPT mapping row whose typed window exceeds the subscription window:
+ * kept as typed, but the form says what a relay usually serves. */
+function gptWindowAboveSubscription(item: {
+  model: string;
+  contextWindow?: string | number;
+}): boolean {
+  const model = item.model.trim().toLowerCase().split("/").pop() ?? "";
+  const tokens = Number(item.contextWindow);
+  return (
+    /^gpt-/.test(model) &&
+    Number.isFinite(tokens) &&
+    tokens > GPT_SUBSCRIPTION_WINDOW
+  );
+}
+
+/** A mapping row's 思考等级 button text: the level count and default. */
+function reasoningSummary(item: {
+  reasoningLevels?: readonly string[];
+  defaultReasoningLevel?: string;
+}): string {
+  const count = item.reasoningLevels?.length ?? 0;
+  if (!count) return "自动";
+  return item.defaultReasoningLevel
+    ? `${count} 档 · ${item.defaultReasoningLevel}`
+    : `${count} 档`;
+}
+
 export function ProviderEditor({
   appId = "codex",
   editor,
@@ -5606,6 +5649,18 @@ export function ProviderEditor({
   const advancedRef = useRef<HTMLDetailsElement>(null);
   const [validationAttempted, setValidationAttempted] = useState(false);
   const [restorePending, setRestorePending] = useState(false);
+  // Claude Code's model fields as the editor opened them: the empty-tier
+  // warning of a new line waits for the first change to any of them.
+  const modelSignature = JSON.stringify([
+    editor.model,
+    editor.subagentModel,
+    editor.claudeTiers,
+  ]);
+  const [initialModelSignature] = useState(modelSignature);
+  const [modelsTouched, setModelsTouched] = useState(false);
+  useEffect(() => {
+    if (modelSignature !== initialModelSignature) setModelsTouched(true);
+  }, [modelSignature, initialModelSignature]);
   useEffect(() => {
     headingRef.current?.focus({ preventScroll: true });
   }, []);
@@ -5657,7 +5712,7 @@ export function ProviderEditor({
     setOpenInstructionsRow(null);
     setValidationAttempted(false);
     setEditor({
-      ...providerDraft(null, editor.name || "新线路", appId),
+      ...providerDraft(null, editor.name || NEW_LINE_NAME, appId),
       id: editor.id,
     });
     setRestorePending(false);
@@ -5717,13 +5772,7 @@ export function ProviderEditor({
         { model: "", displayName: "", contextWindow: "" },
       ],
     });
-  let previewOrigin = "尚未填写有效地址";
-  try {
-    const url = new URL(editor.baseUrl);
-    if (["http:", "https:"].includes(url.protocol)) previewOrigin = url.origin;
-  } catch {
-    /* Invalid drafts never echo potential credentials into the preview. */
-  }
+  const previewOrigin = addressOrigin(editor.baseUrl);
   const remoteCompactionAvailable = codexRemoteCompactionAllowed(
     editor.apiFormat,
     codexProbeModels(editor.model, editor.catalogModels),
@@ -5742,16 +5791,36 @@ export function ProviderEditor({
       : modelEntered
         ? inferredFormat
         : null;
-  const routing = isCodex && lineFormat ? codexDraftRouting(editor) : null;
-  const addressHint = !isCodex
-    ? `按服务商文档填写 ${toolName} 的完整基础地址，不自动追加路径。`
-    : editor.isFullUrl
-      ? "已开启完整 API 地址：按原样请求此地址，不补全路径。"
-      : !routing
-        ? "直连时填写完整基础地址；经本地路由时只填域名也可以。"
-        : routing.routed
-          ? "经本地路由：只填域名时会自动补 /v1。"
-          : "直连上游：请填写完整基础地址，通常以 /v1 结尾。";
+  // The draft's 自动审批模型 counts for routing like the saved one would.
+  const routing =
+    isCodex && lineFormat
+      ? codexDraftRouting({
+          ...editor,
+          original: {
+            ...(editor.original ?? {
+              id: editor.id,
+              name: editor.name,
+              settingsConfig: {},
+            }),
+            meta: {
+              ...editor.original?.meta,
+              codexAutoReviewModel:
+                editor.codexAutoReviewModel.trim() || undefined,
+            },
+          },
+        })
+      : null;
+  const addressHint = isClaude
+    ? "Chimera++ 不改写这个地址；Claude Code 会在后面拼接 /v1/messages。"
+    : !isCodex
+      ? `按服务商文档填写 ${toolName} 的完整基础地址，Chimera++ 不改写这个地址。`
+      : editor.isFullUrl
+        ? "已开启完整 API 地址：按原样请求此地址，不补全路径。"
+        : !routing
+          ? "直连时填写完整基础地址；经本地路由时只填域名也可以。"
+          : routing.routed
+            ? "经本地路由：只填域名时会自动补 /v1。"
+            : "直连上游：请填写完整基础地址，通常以 /v1 结尾。";
   const addressHelp = isCodex
     ? "Codex 在这个地址后拼接请求路径：直连时拼接 /responses；经本地路由时按协议拼接，只填域名会先补 /v1。"
     : isClaude
@@ -5769,13 +5838,6 @@ export function ProviderEditor({
         ? `自动（${codexApiFormatLabel(lineFormat)}）`
         : "自动";
   const additive = appId === "opencode" || appId === "pi";
-  const inUseNote = !inUse
-    ? null
-    : additive
-      ? `这条线路已启用。保存后立即写入 ${toolName} 的配置。`
-      : isCodex
-        ? "这是正在使用的线路。保存后立即写入 Codex 的配置；运行中的 Codex 可能需要重启。"
-        : `这是正在使用的线路。保存后立即写入 ${toolName} 的配置，重新打开 ${toolName} 后生效。`;
   // Claude Code keeps a `[1M]` suffix on the stored model; the input shows
   // the bare ID and the 1M box shows the suffix.
   const defaultModelInput = isClaude
@@ -5786,9 +5848,13 @@ export function ProviderEditor({
     isClaude && claudeModelOneM(editor, "default") ? " · 1M" : ""
   }`;
   // An empty tier without a default model makes Claude Code ask for the
-  // original Claude model name, which a third-party service may reject.
+  // original Claude model name, which a third-party service may reject. A
+  // blank new line waits until its models were touched or saving was tried.
   const unsetTiers =
-    isClaude && !defaultModelId && editor.original?.category !== "official"
+    isClaude &&
+    !defaultModelId &&
+    editor.original?.category !== "official" &&
+    (editor.original || modelsTouched || validationAttempted)
       ? CLAUDE_TIER_ROWS.filter(
           (tier) => !editor.claudeTiers[tier].model.trim(),
         ).map((tier) => claudeTierLabel(tier))
@@ -5817,6 +5883,7 @@ export function ProviderEditor({
     editor.isFullUrl && "完整 API 地址",
     editor.modelsUrl.trim() && "模型列表地址",
     editor.customUserAgent.trim() && "自定义 User-Agent",
+    editor.codexAutoReviewModel.trim() && "自动审批模型",
     lineFormat === "anthropic" && editor.maxOutputTokens && "最大输出 tokens",
     lineFormat === "anthropic" &&
       editor.impersonateClaudeCode &&
@@ -5888,7 +5955,7 @@ export function ProviderEditor({
       <div className="editor-scroll">
         <fieldset className="editor-form" disabled={savingProvider}>
           <legend className="sr-only">线路配置</legend>
-          {inUseNote && <EditorInUseNotice>{inUseNote}</EditorInUseNotice>}
+          {inUse && <EditorInUseNotice appId={appId} toolName={toolName} />}
           {saveError && (
             <p className="editor-feedback" role="alert">
               {saveError}
@@ -6141,13 +6208,7 @@ export function ProviderEditor({
             )}
             <EditorField
               className="editor-default-model"
-              label={
-                isCodex
-                  ? "默认模型 *"
-                  : needsModel
-                    ? "模型 ID *"
-                    : "默认模型（可选）"
-              }
+              label={isCodex || needsModel ? "默认模型 *" : "默认模型（可选）"}
               htmlFor="provider-model-input"
             >
               <div className="editor-model-line">
@@ -6477,6 +6538,11 @@ export function ProviderEditor({
                       <span>上下文 / tokens（可选）</span>
                       <input
                         aria-label={`模型 ${index + 1} 上下文窗口`}
+                        aria-describedby={
+                          gptWindowAboveSubscription(item)
+                            ? `mapping-window-note-${index}`
+                            : undefined
+                        }
                         type="number"
                         min="1"
                         inputMode="numeric"
@@ -6501,6 +6567,7 @@ export function ProviderEditor({
                         type="button"
                         className="reasoning-trigger"
                         aria-label={`模型 ${index + 1} 思考等级`}
+                        title={reasoningSummary(item)}
                         aria-controls={`reasoning-panel-${index}`}
                         aria-expanded={openReasoningRow === index}
                         onClick={() =>
@@ -6516,13 +6583,7 @@ export function ProviderEditor({
                               : undefined
                           }
                         >
-                          {(item.reasoningLevels?.length ?? 0) > 0
-                            ? `${item.reasoningLevels!.length} 档${
-                                item.defaultReasoningLevel
-                                  ? ` · ${item.defaultReasoningLevel}`
-                                  : ""
-                              }`
-                            : "自动"}
+                          {reasoningSummary(item)}
                         </span>
                         <ChevronDown
                           size={14}
@@ -6584,6 +6645,16 @@ export function ProviderEditor({
                         role="alert"
                       >
                         请填写实际请求模型，或删除此行。
+                      </p>
+                    )}
+                    {gptWindowAboveSubscription(item) && (
+                      <p
+                        className="mapping-window-note"
+                        id={`mapping-window-note-${index}`}
+                        role="note"
+                      >
+                        中转站的 GPT 多来自 ChatGPT 订阅，窗口只有
+                        272K。窗口填大了不会提前压缩，等上游拒收时这一轮会失败；确认这家支持更大窗口再这样填。
                       </p>
                     )}
                     {openReasoningRow === index && (
@@ -6872,6 +6943,26 @@ export function ProviderEditor({
                       placeholder="留空使用默认请求标识"
                     />
                   </EditorField>
+                  <EditorField
+                    label="自动审批模型（可选）"
+                    htmlFor="provider-auto-review-model-input"
+                    help="Codex「替我审批」固定请求 codex-auto-review；上游不认识这个模型时，在这里填实际要用的模型。"
+                    hint="填写后这条线路会经本地路由。"
+                    hintId="provider-auto-review-model-hint"
+                  >
+                    <input
+                      id="provider-auto-review-model-input"
+                      name="provider-auto-review-model"
+                      autoComplete="off"
+                      spellCheck={false}
+                      aria-describedby="provider-auto-review-model-hint"
+                      value={editor.codexAutoReviewModel}
+                      onChange={(event) =>
+                        patch("codexAutoReviewModel", event.target.value)
+                      }
+                      placeholder="留空则请求 codex-auto-review"
+                    />
+                  </EditorField>
                 </div>
                 {lineFormat === "anthropic" && (
                   <div className="advanced-group">
@@ -7011,37 +7102,25 @@ export function ProviderEditor({
             </p>
           )}
         </fieldset>
-        <details
-          className="editor-preview chimera-disclosure is-inline"
-          aria-label="线路草稿预览"
+        <EditorSaveSummary
+          rows={[
+            ["线路", editor.name.trim() || "未命名线路"],
+            ["地址", previewOrigin],
+            ["模型", defaultModelLabel || "由客户端选择"],
+            ["协议", protocolSummary],
+            ...(routing
+              ? [["连接", describeCodexRouting(routing)] as const]
+              : []),
+          ]}
         >
-          <summary>保存详情</summary>
-          <div className="chimera-disclosure-body">
-            <dl className="editor-save-summary">
-              <dt>线路</dt>
-              <dd>{editor.name.trim() || "未命名线路"}</dd>
-              <dt>地址</dt>
-              <dd>{previewOrigin}</dd>
-              <dt>模型</dt>
-              <dd>{defaultModelLabel || "由客户端选择"}</dd>
-              <dt>协议</dt>
-              <dd>{protocolSummary}</dd>
-              {routing && (
-                <>
-                  <dt>连接</dt>
-                  <dd>{describeCodexRouting(routing)}</dd>
-                </>
-              )}
-            </dl>
-            <p>
-              {additive
-                ? `保存并启用，不影响其他 ${toolName} 线路，也不切换 ${toolName} 的默认模型。只改这条线路的首个模型，它已有的其他模型与高级设置会保留。`
-                : isCodex
-                  ? "保存后设为当前 Codex 线路。运行中的 Codex 可能需要重启。"
-                  : `保存后设为当前 ${toolName} 线路。模型留空时由 ${toolName} 选择，未填写密钥时沿用它自己的登录方式。`}
-            </p>
-          </div>
-        </details>
+          <p>
+            {additive
+              ? `保存并启用，不影响其他 ${toolName} 线路，也不切换 ${toolName} 的默认模型。只改这条线路的首个模型，它已有的其他模型与高级设置会保留。`
+              : isCodex
+                ? "保存后设为当前 Codex 线路。运行中的 Codex 可能需要重启。"
+                : `保存后设为当前 ${toolName} 线路。模型留空时由 ${toolName} 选择，未填写密钥时沿用它自己的登录方式。`}
+          </p>
+        </EditorSaveSummary>
       </div>
       <div className="editor-bottom">
         <footer>

@@ -233,6 +233,20 @@ describe("Claude Code 1M declaration", () => {
     );
   });
 
+  it("waits until a blank new line's models were touched", () => {
+    setup("claude", null);
+    expect(screen.queryByText(/未设置，也没有默认模型/)).toBeNull();
+    fireEvent.change(field("Opus 实际请求模型"), {
+      target: { value: "big-1" },
+    });
+    expect(screen.getByText(/未设置，也没有默认模型/)).toHaveTextContent(
+      "Sonnet、Fable、Haiku 未设置",
+    );
+    // Clearing the field again keeps the warning: the line was touched.
+    fireEvent.change(field("Opus 实际请求模型"), { target: { value: "" } });
+    expect(screen.getByText(/未设置，也没有默认模型/)).toBeInTheDocument();
+  });
+
   it("does not warn while a default model fills the empty tiers", () => {
     setup("claude");
     expect(screen.queryByText(/未设置，也没有默认模型/)).toBeNull();
@@ -243,14 +257,69 @@ describe("active-line notice", () => {
   it.each([
     ["codex", "保存后立即写入 Codex 的配置"],
     ["claude", "保存后立即写入 Claude Code 的配置"],
-    ["opencode", "这条线路已启用。保存后立即写入 OpenCode 的配置"],
+    ["opencode", "保存后立即写入 OpenCode 的配置"],
   ] as const)("names what saving %s's line in use writes", (appId, text) => {
     setup(appId, line, { inUse: true });
-    expect(screen.getByRole("note")).toHaveTextContent(text);
+    // One wording for every tool.
+    expect(screen.getByRole("note")).toHaveTextContent(
+      `这是正在使用的线路。${text}`,
+    );
   });
 
   it("stays away from a line that is not in use", () => {
     setup("claude", line, { inUse: false });
     expect(screen.queryByRole("note")).toBeNull();
+  });
+});
+
+describe("Codex model mapping rows", () => {
+  it("warns when a GPT row's window exceeds the subscription window", () => {
+    setup("codex", null);
+    fireEvent.click(screen.getByRole("button", { name: /添加模型/ }));
+    fireEvent.change(field("模型 1 实际请求模型"), {
+      target: { value: "openai/gpt-5.5" },
+    });
+    const window = screen.getByRole("spinbutton", {
+      name: "模型 1 上下文窗口",
+    });
+    fireEvent.change(window, { target: { value: "272000" } });
+    expect(screen.queryByText(/窗口只有\s*272K/)).toBeNull();
+    fireEvent.change(window, { target: { value: "1050000" } });
+    const note = screen.getByText(/窗口只有\s*272K/);
+    expect(window).toHaveAttribute("aria-describedby", note.id);
+    // Kept as typed, and other model families are left alone.
+    expect(window).toHaveValue(1050000);
+    fireEvent.change(field("模型 1 实际请求模型"), {
+      target: { value: "deepseek-v4" },
+    });
+    expect(screen.queryByText(/窗口只有\s*272K/)).toBeNull();
+  });
+
+  it("gives the 思考等级 button its full text as a title", () => {
+    setup("codex", null);
+    fireEvent.click(screen.getByRole("button", { name: /添加模型/ }));
+    expect(
+      screen.getByRole("button", { name: "模型 1 思考等级" }),
+    ).toHaveAttribute("title", "自动");
+  });
+});
+
+describe("line editor field names", () => {
+  it.each(["opencode", "pi"] as const)(
+    "calls %s's required model 默认模型 like the other tools",
+    (appId) => {
+      setup(appId, null);
+      expect(field("默认模型 *")).toBeInTheDocument();
+      expect(screen.queryByRole("textbox", { name: /模型 ID/ })).toBeNull();
+    },
+  );
+
+  it("says who appends the Claude Code request path", () => {
+    setup("claude", null);
+    expect(
+      screen.getByText(
+        "Chimera++ 不改写这个地址；Claude Code 会在后面拼接 /v1/messages。",
+      ),
+    ).toBeInTheDocument();
   });
 });

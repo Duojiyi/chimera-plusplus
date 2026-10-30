@@ -53,7 +53,7 @@ describe("GrokBuildProviderForm", () => {
     ).toBe("https://api.chimerahub.org/v1");
     expect(
       container.querySelector<HTMLInputElement>('input[name="name"]')?.value,
-    ).toBe("ChimeraHub");
+    ).toBe("新线路");
     expect(
       (screen.getByLabelText("raw-config") as HTMLTextAreaElement).value,
     ).toContain("gpt-5.6-sol");
@@ -63,6 +63,10 @@ describe("GrokBuildProviderForm", () => {
     fireEvent.click(screen.getByRole("button", { name: "恢复 Chimera 模板" }));
     fireEvent.click(await screen.findByRole("button", { name: "恢复模板" }));
     expect(screen.getByLabelText("raw-config")).toHaveValue(configBefore);
+    // Restoring the template keeps the line's name, as in the Codex editor.
+    expect(
+      container.querySelector<HTMLInputElement>('input[name="name"]')?.value,
+    ).toBe("新线路");
   });
 
   it("submits Chimera defaults under the native Grok profile", async () => {

@@ -608,6 +608,65 @@ describe("Codex line save path", () => {
   });
 });
 
+describe("Codex 自动审批模型", () => {
+  const savedMeta = async () => {
+    await waitFor(() =>
+      expect(calls("update_and_activate_provider")).toHaveLength(1),
+    );
+    const [update] = calls("update_and_activate_provider") as Array<{
+      provider: Provider;
+    }>;
+    return update.provider.meta ?? {};
+  };
+  const verified = () => ({
+    valid: true,
+    defaultModel: "gpt-a",
+    modelCount: 1,
+    runtimeVerified: true,
+  });
+
+  it("saves the typed model trimmed and routes the line locally", async () => {
+    routeInvoke({
+      update_and_activate_provider: () => true,
+      verify_codex_model_catalog: verified,
+    });
+    mount();
+    await editAlpha();
+    const input = screen.getByRole("textbox", { name: "自动审批模型（可选）" });
+    expect(input).toHaveValue("");
+    expect(screen.queryAllByText(/改写审批模型/)).toHaveLength(0);
+    fillField("provider-auto-review-model", "  review-1 ");
+    expect(screen.getAllByText(/改写审批模型/).length).toBeGreaterThan(0);
+    fireEvent.click(saveButton());
+    expect(await savedMeta()).toMatchObject({
+      codexAutoReviewModel: "review-1",
+    });
+  });
+
+  it("leaves the field unset when it is cleared, never an empty string", async () => {
+    mocks.getAll.mockResolvedValue({
+      Alpha: provider("Alpha", { meta: { codexAutoReviewModel: "old" } }),
+      Beta: provider("Beta"),
+    });
+    routeInvoke({
+      update_and_activate_provider: () => true,
+      verify_codex_model_catalog: verified,
+    });
+    mount();
+    await editAlpha();
+    expect(
+      screen.getByRole("textbox", { name: "自动审批模型（可选）" }),
+    ).toHaveValue("old");
+    fillField("provider-auto-review-model", "   ");
+    fireEvent.click(saveButton());
+    const meta = await savedMeta();
+    expect(meta.codexAutoReviewModel).toBeUndefined();
+    expect(JSON.parse(JSON.stringify(meta))).not.toHaveProperty(
+      "codexAutoReviewModel",
+    );
+  });
+});
+
 describe("opening Codex", () => {
   // Shared restart scope (CODEX_RESTART_SCOPE) names every window that closes.
   const confirmText =
