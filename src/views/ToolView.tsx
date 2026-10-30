@@ -24,6 +24,7 @@ import type { Provider } from "@/types";
 import type { AppId } from "@/lib/api/types";
 import { providersApi } from "@/lib/api/providers";
 import { vscodeApi } from "@/lib/api/vscode";
+import { ClaudeAccountsCard } from "@/components/claude-accounts/ClaudeAccountsCard";
 import type { ToolName } from "@/components/settings/AboutSection";
 import {
   toolProviderSummary,
@@ -667,6 +668,9 @@ function KnownToolView({
             />
           </Suspense>
         ) : null}
+        {tool.appId === "claude-desktop" ? (
+          <ClaudeAccountsCard mode="desktop" native={native} />
+        ) : null}
 
         {canImport(tool.appId) && importApplies && !loading && !error && (
           <section className="tool-discovery" aria-label="本机配置导入">
@@ -778,6 +782,10 @@ function KnownToolView({
               )}
             </section>
           )}
+
+        {tool.appId === "claude" && !loading && !error ? (
+          <ClaudeAccountsCard mode="code" native={native} />
+        ) : null}
 
         {error && !loading && (
           <div className="tool-load-error" role="alert">

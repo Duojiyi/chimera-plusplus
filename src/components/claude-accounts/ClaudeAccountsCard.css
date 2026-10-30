@@ -1,0 +1,479 @@
+/* Claude accounts card: the same glass feature-card material as the tool
+   page's cards (liquid-glass-pages.css), with token fallbacks so it stays
+   legible where the glass variables are absent. */
+.claude-accounts-card {
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  gap: 14px;
+  min-width: 0;
+  padding: 18px 20px;
+  border: 1px solid var(--glass-border, var(--border-subtle));
+  border-radius: var(--radius-panel, 12px);
+  background:
+    linear-gradient(
+      155deg,
+      var(--glass-highlight, transparent),
+      transparent 74%
+    ),
+    var(--glass-surface-strong, var(--bg-surface));
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight, transparent),
+    var(--glass-shadow, none);
+  color: var(--text-1);
+  font-size: 13px;
+}
+
+.claude-accounts-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.claude-accounts-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-control, 10px);
+  background: var(--glass-accent-soft, var(--bg-subtle));
+  color: var(--glass-accent, var(--brand-text));
+  box-shadow: inset 0 0 0 1px var(--glass-border, var(--border-subtle));
+}
+.claude-accounts-title {
+  flex: 1;
+  min-width: 0;
+}
+.claude-accounts-title h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.1px;
+}
+.claude-accounts-title p {
+  margin: 4px 0 0;
+  max-width: 64ch;
+  color: var(--text-2);
+  line-height: 1.7;
+  text-wrap: pretty;
+}
+.claude-accounts-heading > button {
+  flex-shrink: 0;
+  gap: 6px;
+}
+
+.claude-accounts-note,
+.claude-accounts-empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--text-3);
+  line-height: 1.7;
+}
+.claude-accounts-note.is-warning {
+  padding: 8px 12px;
+  border: 1px solid var(--warning-border);
+  border-radius: var(--radius-control, 8px);
+  background: var(--warning-bg);
+  color: var(--warning-fg);
+}
+.claude-accounts-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-control, 8px);
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+}
+
+/* The live login: a quiet inset plate, accented once signed in. */
+.claude-accounts-live {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: var(--radius-ring, 10px);
+  background: var(--glass-control-bg, var(--bg-subtle));
+  box-shadow: inset 0 0 0 1px var(--glass-border, var(--border-subtle));
+  color: var(--text-3);
+}
+.claude-accounts-live[data-signed-in="true"] {
+  color: var(--glass-accent, var(--brand-text));
+}
+.claude-accounts-live > div {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  min-width: 0;
+}
+.claude-accounts-live strong {
+  overflow: hidden;
+  color: var(--text-1);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.claude-accounts-eyebrow {
+  flex-basis: 100%;
+  color: var(--text-3);
+  font-size: 11px;
+  letter-spacing: 0.2px;
+}
+.claude-accounts-saved {
+  color: var(--success-fg);
+  font-size: 12px;
+}
+.claude-accounts-plan {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--glass-accent-soft, var(--bg-subtle));
+  color: var(--glass-accent-strong, var(--brand-text));
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+
+.claude-accounts-list {
+  /* Rows share one column template (subgrid) so the quota meters and the
+     action buttons line up from row to row whatever each row holds. */
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) minmax(240px, 340px) auto;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.claude-account-row {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  align-items: center;
+  gap: 12px 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-ring, 10px);
+  background: var(--bg-surface);
+  transition:
+    border-color var(--dur-fast, 120ms) ease,
+    box-shadow var(--dur-fast, 120ms) ease;
+}
+.claude-account-row:hover {
+  border-color: var(--glass-border, var(--border-control));
+}
+.claude-account-row[data-current="true"] {
+  border-color: color-mix(
+    in srgb,
+    var(--glass-accent, #087bb9) 45%,
+    transparent
+  );
+  box-shadow: inset 3px 0 0 var(--glass-accent, var(--brand));
+}
+.claude-account-row.is-default > .claude-account-identity {
+  grid-column: 2 / -1;
+}
+.claude-accounts-list > .claude-accounts-empty {
+  grid-column: 1 / -1;
+}
+.claude-account-row.is-default {
+  background: transparent;
+  border-style: dashed;
+}
+.claude-account-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: color-mix(in srgb, #c46d50 14%, var(--bg-surface));
+  color: #b05e43;
+  font-size: 13px;
+  font-weight: 600;
+}
+.claude-account-identity {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.claude-account-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.claude-account-name strong {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.claude-account-tag {
+  padding: 1px 7px;
+  border-radius: 6px;
+  background: var(--glass-accent-soft, var(--bg-subtle));
+  color: var(--glass-accent-strong, var(--brand-text));
+  font-size: 11px;
+}
+.claude-account-tag.is-muted,
+.claude-account-tag[data-tone="muted"] {
+  background: var(--bg-subtle);
+  color: var(--text-3);
+}
+.claude-account-tag[data-tone="warning"] {
+  background: var(--warning-bg);
+  color: var(--warning-fg);
+}
+.claude-account-tag[data-tone="success"] {
+  background: var(--success-bg);
+  color: var(--success-fg);
+}
+.claude-account-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  overflow: hidden;
+  color: var(--text-2);
+  font-size: 12px;
+  text-overflow: ellipsis;
+}
+.claude-account-meta code {
+  color: var(--text-3);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+}
+.claude-account-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+.claude-account-actions > button:first-child:not([aria-label]) {
+  gap: 6px;
+  margin-right: 4px;
+}
+
+/* Quota strip: two hairline meters, model chips, one quiet footer line. */
+.claude-quota {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.claude-quota-meters {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.claude-quota-meter {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.claude-quota-meter-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  color: var(--text-3);
+  font-size: 11px;
+}
+.claude-quota-meter-head strong {
+  color: var(--text-1);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.claude-quota-bar {
+  position: relative;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--meter-track, var(--bg-subtle));
+}
+.claude-quota-bar > span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: inherit;
+  background: var(--meter-fill, var(--brand));
+  transition: width var(--dur-base, 200ms) var(--ease-out, ease-out);
+}
+.claude-quota-bar[data-level="mid"] > span {
+  background: var(--warning-solid);
+}
+.claude-quota-bar[data-level="high"] > span {
+  background: var(--danger-solid);
+}
+.claude-quota-meter small {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1px 8px;
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.claude-quota-reset {
+  color: var(--success-fg);
+  font-weight: 600;
+}
+.claude-quota-models {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.claude-quota-models li {
+  display: inline-flex;
+  gap: 4px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  color: var(--text-2);
+  font-size: 11px;
+}
+.claude-quota-models li strong {
+  color: var(--text-1);
+  font-variant-numeric: tabular-nums;
+}
+.claude-quota-models li[data-reset] strong {
+  color: var(--success-fg);
+}
+.claude-quota-extra {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 11px;
+}
+.claude-quota-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.claude-quota-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  color: var(--text-3);
+  font-size: 11px;
+}
+.claude-quota-note.is-warning {
+  color: var(--warning-fg);
+}
+.claude-quota-refresh {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 11px;
+  cursor: pointer;
+}
+.claude-quota-refresh:hover:not(:disabled) {
+  background: var(--bg-subtle);
+  color: var(--text-1);
+}
+.claude-quota-refresh:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.claude-quota-refresh:focus-visible {
+  outline: 2px solid var(--glass-focus, var(--focus-ring));
+  outline-offset: 1px;
+}
+
+.claude-accounts-dialog {
+  width: min(460px, calc(100vw - 48px));
+  gap: 14px;
+  padding: 22px;
+}
+.claude-accounts-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.claude-accounts-form label {
+  color: var(--text-2);
+  font-size: 12px;
+}
+.claude-accounts-form footer,
+.claude-accounts-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+.claude-accounts-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding-left: 20px;
+  color: var(--text-2);
+  line-height: 1.8;
+}
+.claude-accounts-steps code {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--code-display-bg, var(--bg-subtle));
+  color: var(--text-1);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  user-select: all;
+}
+
+@container (max-width: 760px) {
+  .claude-accounts-list {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+  .claude-account-row > .claude-quota {
+    grid-column: 2 / -1;
+    grid-row: 2;
+  }
+}
+@container (max-width: 480px) {
+  .claude-accounts-heading {
+    flex-wrap: wrap;
+  }
+  .claude-accounts-list {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  .claude-account-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .claude-account-row,
+  .claude-quota-bar > span {
+    transition: none;
+  }
+}
+@media (forced-colors: active) {
+  .claude-accounts-card,
+  .claude-account-row {
+    border-color: CanvasText;
+    background: Canvas;
+    box-shadow: none;
+  }
+  .claude-quota-bar > span {
+    background: Highlight;
+  }
+}

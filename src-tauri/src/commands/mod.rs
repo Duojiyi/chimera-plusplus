@@ -3,6 +3,7 @@
 mod auth;
 mod balance;
 mod cc_switch_import;
+mod claude_accounts;
 mod codex_oauth;
 mod codex_runtime;
 mod coding_plan;
@@ -45,6 +46,7 @@ mod webdav_sync;
 
 pub use auth::*;
 pub use balance::*;
+pub use claude_accounts::*;
 pub use codex_oauth::*;
 pub use codex_runtime::*;
 pub use coding_plan::*;

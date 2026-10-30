@@ -10,6 +10,30 @@ numbers belong to a separate upstream line.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Claude Code accounts: save several Claude logins and switch between them in one click. All accounts share the same Claude Code config folder, so conversations, history, settings and MCP stay put; saved logins are encrypted on this machine, the current login is saved again before every switch, and a running Claude Code is detected before the switch.
+- Each saved Claude account shows its plan, the 5-hour and weekly usage with the time left until each resets (and when a window has just reset), per-model weekly limits and extra usage. A saved login whose refresh was rejected is marked as needing a new login.
+- Claude Desktop accounts: give each account its own data folder and open several accounts side by side; the default Claude Desktop stays untouched.
+- Codex: optional model for automatic approval reviews (`codex-auto-review`) per line.
+- Restore or clear the backups kept when deleting sessions, for every tool.
+
+### Changed
+
+- Codex engine back on the upstream Codex App Manager v0.5.17 release, with a matching runtime.
+- Switches look the same and stay visible everywhere (including the prompts page); the line editors share one layout.
+- oh-my-pi: saving a config that would lose content asks first; Skills that are skipped are listed instead of hidden.
+
+### Fixed
+
+- Claude Desktop installed from the Microsoft Store (MSIX) is now detected.
+- In-app updates installed through the MSI never restart Windows on their own.
+- TOML `[[array tables]]` in config.toml are no longer treated as recoverable sections; smart quotes typed into config fields are straightened.
+- Codex → Gemini: schema enums are normalized and array-wrapped errors are unwrapped; redacted thinking blocks and image-generation results that strict upstreams reject are handled; requests that would forward to Chimera++ itself are refused.
+- More robust file handling on Windows (retrying locked replaces, byte-order marks in JSON, deferred migration of locked history files), grouped numbers such as `1,000,000` in context sizes, tray single-click on Windows, and clearer messages when a port is blocked.
+
 ## [2.8.7] - 2026-10-20
 
 ### Changed

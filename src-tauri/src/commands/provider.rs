@@ -2434,7 +2434,7 @@ async fn query_provider_usage_inner(
                     tier.resets_at.clone()
                 };
                 crate::provider::UsageData {
-                    plan_name: Some(tier.name.clone()),
+                    plan_name: Some(crate::services::subscription::tier_display_name(&tier.name)),
                     remaining: Some(remaining),
                     total: Some(total),
                     used: Some(used),
@@ -2490,7 +2490,7 @@ async fn query_provider_usage_inner(
             .tiers
             .iter()
             .map(|tier| crate::provider::UsageData {
-                plan_name: Some(tier.name.clone()),
+                plan_name: Some(crate::services::subscription::tier_display_name(&tier.name)),
                 remaining: Some(100.0 - tier.utilization),
                 total: Some(100.0),
                 used: Some(tier.utilization),

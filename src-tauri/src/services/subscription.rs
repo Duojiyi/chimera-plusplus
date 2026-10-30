@@ -96,6 +96,9 @@ pub struct ExtraUsage {
     pub used_credits: Option<f64>,
     pub utilization: Option<f64>,
     pub currency: Option<String>,
+    /// ISO 8601 重置时间（月度超额周期）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<String>,
 }
 
 /// 订阅额度查询结果
@@ -219,7 +222,8 @@ fn read_claude_credentials_from_file() -> (Option<String>, CredentialStatus, Opt
         }
     };
 
-    parse_claude_credentials_json(&content)
+    // Editors on Windows may save it with a byte-order mark.
+    parse_claude_credentials_json(content.strip_prefix('\u{feff}').unwrap_or(&content))
 }
 
 /// 解析 Claude 凭据 JSON（Keychain 和文件共用）
@@ -342,6 +346,7 @@ struct ApiExtraUsage {
     used_credits: Option<f64>,
     utilization: Option<f64>,
     currency: Option<String>,
+    resets_at: Option<String>,
 }
 
 /// 已知的 Claude 用量窗口名称。`QuotaTier::name` 会是其中之一。
@@ -349,6 +354,17 @@ pub const TIER_FIVE_HOUR: &str = "five_hour";
 pub const TIER_SEVEN_DAY: &str = "seven_day";
 pub const TIER_SEVEN_DAY_OPUS: &str = "seven_day_opus";
 pub const TIER_SEVEN_DAY_SONNET: &str = "seven_day_sonnet";
+/// 按模型的周窗口（新版 `limits` 数组）：`model_weekly:<模型显示名>`。
+pub const TIER_MODEL_WEEKLY_PREFIX: &str = "model_weekly:";
+
+/// Tier name for flat usage rows: the per-model weekly windows read as
+/// "每周 · <model>"; known tier ids stay as they are for the frontend labels.
+pub(crate) fn tier_display_name(name: &str) -> String {
+    match name.strip_prefix(TIER_MODEL_WEEKLY_PREFIX) {
+        Some(model) => format!("每周 · {model}"),
+        None => name.to_string(),
+    }
+}
 
 /// Coding Plan（Kimi / MiniMax）的周窗口 tier 名。与 `coding_plan::query_*`
 /// 写入、tray 渲染、commands::provider 扁平化三处共用同一标识。
@@ -382,7 +398,7 @@ const KNOWN_TIERS: &[&str] = &[
 /// 瞬时传输失败（网络/超时/读体中断）返回 `Err`（前端 reject → retry + 保留上次
 /// 成功值）；确定性失败（鉴权/非 2xx/响应体非法 JSON）返回 `Ok(success:false)`。
 /// codex/gemini 两个查询函数遵守同一约定。
-async fn query_claude_quota(access_token: &str) -> Result<SubscriptionQuota, String> {
+pub(crate) async fn query_claude_quota(access_token: &str) -> Result<SubscriptionQuota, String> {
     let client = crate::proxy::http_client::get();
 
     let resp = client
@@ -410,20 +426,18 @@ async fn query_claude_quota(access_token: &str) -> Result<SubscriptionQuota, Str
     }
 
     if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
+        // The body is not echoed: it is unbounded and of no use to the user.
         return Ok(SubscriptionQuota::error(
             "claude",
             CredentialStatus::Valid,
-            format!("API error (HTTP {status}): {body}"),
+            format!("API error (HTTP {status})"),
         ));
     }
 
-    // 先 bytes() 再解析：读体失败（超时/连接中断）是瞬时 → Err；拿到完整响应体
-    // 后解析失败才是确定性。reqwest 的 json() 把读体错误也包成 decode，无法区分。
-    let raw = match resp.bytes().await {
-        Ok(b) => b,
-        Err(e) => return Err(format!("Failed to read API response: {e}")),
-    };
+    // 先读完有界响应体再解析：读体失败（超时/连接中断/超限）是瞬时 → Err；
+    // 拿到完整响应体后解析失败才是确定性。
+    let raw = read_response_bytes_limited(resp, MAX_QUOTA_RESPONSE_BYTES, "Claude quota response")
+        .await?;
     let body: serde_json::Value = match serde_json::from_slice(&raw) {
         Ok(v) => v,
         Err(e) => {
@@ -435,6 +449,22 @@ async fn query_claude_quota(access_token: &str) -> Result<SubscriptionQuota, Str
         }
     };
 
+    let (tiers, extra_usage) = parse_claude_usage(&body);
+
+    Ok(SubscriptionQuota {
+        tool: "claude".to_string(),
+        credential_status: CredentialStatus::Valid,
+        credential_message: None,
+        success: true,
+        tiers,
+        extra_usage,
+        error: None,
+        queried_at: Some(now_millis()),
+    })
+}
+
+/// 解析 `/api/oauth/usage` 响应体：时间窗口、按模型的周窗口与超额用量。
+pub(crate) fn parse_claude_usage(body: &serde_json::Value) -> (Vec<QuotaTier>, Option<ExtraUsage>) {
     // 解析已知的 tier 窗口
     let mut tiers = Vec::new();
     for &tier_name in KNOWN_TIERS {
@@ -456,7 +486,7 @@ async fn query_claude_quota(access_token: &str) -> Result<SubscriptionQuota, Str
     // 也解析未知窗口（API 可能返回新的窗口类型）
     if let Some(obj) = body.as_object() {
         for (key, value) in obj {
-            if key == "extra_usage" || KNOWN_TIERS.contains(&key.as_str()) {
+            if key == "extra_usage" || key == "limits" || KNOWN_TIERS.contains(&key.as_str()) {
                 continue;
             }
             if let Ok(w) = serde_json::from_value::<ApiUsageWindow>(value.clone()) {
@@ -483,19 +513,40 @@ async fn query_claude_quota(access_token: &str) -> Result<SubscriptionQuota, Str
                 used_credits: e.used_credits,
                 utilization: e.utilization,
                 currency: e.currency,
+                resets_at: e.resets_at,
             })
     });
 
-    Ok(SubscriptionQuota {
-        tool: "claude".to_string(),
-        credential_status: CredentialStatus::Valid,
-        credential_message: None,
-        success: true,
-        tiers,
-        extra_usage,
-        error: None,
-        queried_at: Some(now_millis()),
-    })
+    // Adapted from realiti4/claude-swap 72ccd58 (src/claude_swap/oauth.py)
+    // Per-model weekly limits (e.g. Fable) only appear in the newer `limits`
+    // array, as entries with `scope.model.display_name` + `percent`.
+    if let Some(limits) = body.get("limits").and_then(serde_json::Value::as_array) {
+        for limit in limits {
+            let name = limit
+                .pointer("/scope/model/display_name")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|name| !name.is_empty());
+            let percent = limit
+                .get("percent")
+                .and_then(serde_json::Value::as_f64)
+                .filter(|percent| percent.is_finite());
+            if let (Some(name), Some(percent)) = (name, percent) {
+                tiers.push(QuotaTier {
+                    name: format!("{TIER_MODEL_WEEKLY_PREFIX}{name}"),
+                    utilization: percent,
+                    resets_at: limit
+                        .get("resets_at")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string),
+                    used_value_usd: None,
+                    max_value_usd: None,
+                });
+            }
+        }
+    }
+
+    (tiers, extra_usage)
 }
 
 // ── Codex 凭据读取 ──────────────────────────────────────
@@ -765,18 +816,24 @@ fn codex_quota_tier(
     window: CodexRateLimitWindow,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Option<QuotaTier> {
-    let utilization = window
-        .used_percent
-        .filter(|used| used.is_finite())?
-        .clamp(0.0, 100.0);
-    let resets_at = window.reset_at.and_then(unix_ts_to_iso).or_else(|| {
-        window
-            .reset_after_seconds
-            .filter(|seconds| *seconds >= 0)
-            .and_then(chrono::Duration::try_seconds)
-            .and_then(|after| now.checked_add_signed(after))
-            .map(|time| time.to_rfc3339())
-    });
+    let used = window.used_percent.filter(|used| used.is_finite())?;
+    let utilization = used.clamp(0.0, 100.0);
+    // Adapted from farion1231/cc-switch e1821b5e
+    // An unused window carries a placeholder reset ("now + window length")
+    // that restarts on every refresh, so it gets no countdown. The raw value
+    // is checked, so a tiny non-zero use still keeps its real reset time.
+    let resets_at = if used <= 0.0 {
+        None
+    } else {
+        window.reset_at.and_then(unix_ts_to_iso).or_else(|| {
+            window
+                .reset_after_seconds
+                .filter(|seconds| *seconds >= 0)
+                .and_then(chrono::Duration::try_seconds)
+                .and_then(|after| now.checked_add_signed(after))
+                .map(|time| time.to_rfc3339())
+        })
+    };
     Some(QuotaTier {
         name: window
             .limit_window_seconds
@@ -1495,6 +1552,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn per_model_weekly_tiers_get_a_readable_name() {
+        assert_eq!(tier_display_name("model_weekly:Fable"), "每周 · Fable");
+        assert_eq!(tier_display_name(TIER_FIVE_HOUR), TIER_FIVE_HOUR);
+    }
+
+    #[test]
+    fn claude_usage_reads_windows_model_limits_and_extra_usage() {
+        let body = serde_json::json!({
+            "five_hour": {"utilization": 12.5, "resets_at": "2026-10-30T10:00:00Z"},
+            "seven_day": {"utilization": 40.0, "resets_at": "2026-11-02T00:00:00Z"},
+            "seven_day_opus": null,
+            "limits": [
+                {"kind": "weekly_scoped", "percent": 33, "resets_at": "2026-11-03T00:00:00Z",
+                 "scope": {"model": {"display_name": "Fable"}}},
+                {"kind": "weekly_scoped", "percent": "bad", "scope": {"model": {"display_name": "X"}}},
+                {"percent": 5}
+            ],
+            "extra_usage": {
+                "is_enabled": true, "monthly_limit": 5000, "used_credits": 1250,
+                "utilization": 25.0, "currency": "USD", "resets_at": "2026-11-01T00:00:00Z"
+            }
+        });
+        let (tiers, extra) = parse_claude_usage(&body);
+        let names: Vec<&str> = tiers.iter().map(|tier| tier.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![TIER_FIVE_HOUR, TIER_SEVEN_DAY, "model_weekly:Fable"]
+        );
+        assert_eq!(tiers[2].utilization, 33.0);
+        assert_eq!(tiers[2].resets_at.as_deref(), Some("2026-11-03T00:00:00Z"));
+        let extra = extra.unwrap();
+        assert!(extra.is_enabled);
+        assert_eq!(extra.used_credits, Some(1250.0));
+        assert_eq!(extra.resets_at.as_deref(), Some("2026-11-01T00:00:00Z"));
+    }
+
+    #[test]
     fn window_seconds_map_to_expected_tier_names() {
         // 官方特例窗口
         assert_eq!(window_seconds_to_tier_name(18000), TIER_FIVE_HOUR);
@@ -1572,6 +1666,36 @@ mod tests {
         // An absolute reset time wins over the relative one; percentages clamp.
         assert_eq!(tiers[1].name, TIER_THIRTY_DAY);
         assert_eq!(tiers[1].utilization, 100.0);
+        assert_eq!(
+            tiers[1].resets_at.as_deref(),
+            Some("2026-09-09T04:00:00+00:00")
+        );
+    }
+
+    #[test]
+    fn codex_usage_gives_an_unused_window_no_placeholder_countdown() {
+        let now = quota_time("2026-09-09T03:00:00Z");
+        let body = serde_json::json!({
+            "rate_limit": {
+                "primary_window": {
+                    "used_percent": 0,
+                    "limit_window_seconds": 18000,
+                    "reset_at": now.timestamp() + 18000,
+                    "reset_after_seconds": 18000
+                },
+                "secondary_window": {
+                    "used_percent": 0.4,
+                    "limit_window_seconds": 604_800,
+                    "reset_at": now.timestamp() + 3600
+                }
+            }
+        });
+        let tiers = parse_codex_usage(&serde_json::to_vec(&body).unwrap(), None, now).unwrap();
+        assert_eq!(tiers.len(), 2);
+        assert_eq!(tiers[0].utilization, 0.0);
+        assert!(tiers[0].resets_at.is_none());
+        // Light use keeps the real reset time.
+        assert_eq!(tiers[1].utilization, 0.4);
         assert_eq!(
             tiers[1].resets_at.as_deref(),
             Some("2026-09-09T04:00:00+00:00")

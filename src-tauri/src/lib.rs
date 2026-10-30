@@ -2,6 +2,7 @@ mod app_config;
 mod app_store;
 mod auto_launch;
 mod builtin_templates;
+mod claude_accounts;
 mod claude_desktop_config;
 mod claude_mcp;
 mod claude_plugin;
@@ -1691,6 +1692,17 @@ pub fn run() {
             commands::poll_official_device_login,
             commands::cancel_official_device_login,
             commands::remove_official_account,
+            commands::list_claude_code_accounts,
+            commands::save_current_claude_code_login,
+            commands::switch_claude_code_account,
+            commands::rename_claude_code_account,
+            commands::delete_claude_code_account,
+            commands::get_claude_code_account_quota,
+            commands::list_claude_desktop_profiles,
+            commands::create_claude_desktop_profile,
+            commands::rename_claude_desktop_profile,
+            commands::delete_claude_desktop_profile,
+            commands::launch_claude_desktop_profile,
             commands::get_notes,
             commands::set_notes,
             commands::get_codex_mcp_section_preview,

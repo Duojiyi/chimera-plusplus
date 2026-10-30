@@ -298,20 +298,29 @@ fn copy_file_hashed(source: &Path, target: &Path) -> io::Result<(u64, String)> {
         .write(true)
         .create_new(true)
         .open(target)?;
-    let mut hasher = Sha256::new();
-    let mut buffer = vec![0u8; 64 * 1024];
-    let mut size: u64 = 0;
-    loop {
-        let read = input.read(&mut buffer)?;
-        if read == 0 {
-            break;
+    let copied = (|| -> io::Result<(u64, String)> {
+        let mut hasher = Sha256::new();
+        let mut buffer = vec![0u8; 64 * 1024];
+        let mut size: u64 = 0;
+        loop {
+            let read = input.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..read]);
+            output.write_all(&buffer[..read])?;
+            size += read as u64;
         }
-        hasher.update(&buffer[..read]);
-        output.write_all(&buffer[..read])?;
-        size += read as u64;
+        output.sync_all()?;
+        Ok((size, format!("{:x}", hasher.finalize())))
+    })();
+    if copied.is_err() {
+        // The target was created here: a partial copy must not stay behind,
+        // or a later restore would skip it as already present.
+        drop(output);
+        let _ = std::fs::remove_file(target);
     }
-    output.sync_all()?;
-    Ok((size, format!("{:x}", hasher.finalize())))
+    copied
 }
 
 fn hash_file(path: &Path) -> io::Result<(u64, String)> {
@@ -771,8 +780,31 @@ fn is_within_any_root(path: &Path, roots: &[PathBuf]) -> bool {
     })
 }
 
+/// `path` relative to `root`; on Windows the comparison ignores case, as the
+/// file system does (a config dir spelled `.Claude` is the same folder).
+fn relative_to<'a>(path: &'a Path, root: &Path) -> Option<std::borrow::Cow<'a, Path>> {
+    if let Ok(relative) = path.strip_prefix(root) {
+        return Some(std::borrow::Cow::Borrowed(relative));
+    }
+    if !cfg!(windows) {
+        return None;
+    }
+    let mut parts = path.components();
+    for root_part in root.components() {
+        let part = parts.next()?;
+        if !part
+            .as_os_str()
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&root_part.as_os_str().to_string_lossy())
+        {
+            return None;
+        }
+    }
+    Some(std::borrow::Cow::Owned(parts.as_path().to_path_buf()))
+}
+
 fn is_within_root(path: &Path, root: &Path) -> bool {
-    let Ok(relative) = path.strip_prefix(root) else {
+    let Some(relative) = relative_to(path, root) else {
         return false;
     };
     if relative.as_os_str().is_empty()
