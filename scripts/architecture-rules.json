@@ -19,6 +19,7 @@
     "config_health": 4,
     "store": 4,
     "usage_script": 4,
+    "claude_accounts": 4,
 
     "proxy": 3,
 
