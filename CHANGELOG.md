@@ -10,6 +10,17 @@ numbers belong to a separate upstream line.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.8.9] - 2026-10-31
+
+### Added
+
+- Prompts: Pi and oh-my-pi get a prompt library like the other tools. The active prompt is written to Pi's `AGENTS.md` in its agent folder (`~/.pi/agent`, or `PI_CODING_AGENT_DIR`) and to oh-my-pi's in the active profile's agent folder (`~/.omp/agent` or `~/.omp/profiles/<name>/agent`). An existing file is imported once as a prompt; a file both tools would share is managed under Pi only.
+
+### Changed
+
+- The prompts page lists only tools shown in the sidebar (Codex always), and falls back to Codex when the selected tool is hidden.
+- Updated autoprefixer, postcss and the pinned install action used by CI.
+
 ## [2.8.8] - 2026-10-30
 
 ### Added
