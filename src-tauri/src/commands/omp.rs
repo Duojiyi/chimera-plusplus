@@ -490,7 +490,8 @@ mod tests {
             &original.path,
             false,
         )
-        .unwrap_err();
+        .err()
+        .expect("a models.yml with comments needs confirmation");
         assert!(error.starts_with(OMP_LOSSY_REWRITE_CODE), "{error}");
         assert_eq!(fs::read_to_string(&path).unwrap(), original_text);
 
