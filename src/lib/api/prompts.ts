@@ -1,6 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { AppId } from "./types";
 
+/** Prompt targets: every tool id plus oh-my-pi, which has no provider lines. */
+export type PromptAppId = AppId | "omp";
+
 export interface Prompt {
   id: string;
   name: string;
@@ -49,24 +52,28 @@ export function promptErrorCode(reason: unknown): string | null {
 }
 
 export const promptsApi = {
-  async getCategories(app: AppId): Promise<PromptCategory[]> {
+  async getCategories(app: PromptAppId): Promise<PromptCategory[]> {
     return await invoke("get_prompt_categories", { app });
   },
-  async createCategory(app: AppId, name: string): Promise<string> {
+  async createCategory(app: PromptAppId, name: string): Promise<string> {
     return await invoke("create_prompt_category", { app, name });
   },
-  async renameCategory(app: AppId, id: string, name: string): Promise<void> {
+  async renameCategory(
+    app: PromptAppId,
+    id: string,
+    name: string,
+  ): Promise<void> {
     return await invoke("rename_prompt_category", { app, id, name });
   },
-  async deleteCategory(app: AppId, id: string): Promise<void> {
+  async deleteCategory(app: PromptAppId, id: string): Promise<void> {
     return await invoke("delete_prompt_category", { app, id });
   },
-  async getPrompts(app: AppId): Promise<Record<string, Prompt>> {
+  async getPrompts(app: PromptAppId): Promise<Record<string, Prompt>> {
     return await invoke("get_prompts", { app });
   },
 
   async upsertPrompt(
-    app: AppId,
+    app: PromptAppId,
     id: string,
     prompt: Prompt,
     expected?: Prompt,
@@ -80,22 +87,22 @@ export const promptsApi = {
   },
 
   async setPromptEnabled(
-    app: AppId,
+    app: PromptAppId,
     id: string,
     enabled: boolean,
   ): Promise<void> {
     return await invoke("set_prompt_enabled", { app, id, enabled });
   },
 
-  async deletePrompt(app: AppId, id: string): Promise<void> {
+  async deletePrompt(app: PromptAppId, id: string): Promise<void> {
     return await invoke("delete_prompt", { app, id });
   },
 
-  async enablePrompt(app: AppId, id: string): Promise<void> {
+  async enablePrompt(app: PromptAppId, id: string): Promise<void> {
     return await invoke("enable_prompt", { app, id });
   },
 
-  async importFromFile(app: AppId, filePath?: string): Promise<string> {
+  async importFromFile(app: PromptAppId, filePath?: string): Promise<string> {
     return await invoke("import_prompt_from_file", {
       app,
       ...(filePath ? { filePath } : {}),
@@ -106,7 +113,7 @@ export const promptsApi = {
     return await invoke("adopt_foreign_codex_prompt", { expectedContent });
   },
 
-  async getCurrentFileContent(app: AppId): Promise<string | null> {
+  async getCurrentFileContent(app: PromptAppId): Promise<string | null> {
     return await invoke("get_current_prompt_file_content", { app });
   },
 

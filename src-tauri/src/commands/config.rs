@@ -141,6 +141,18 @@ pub async fn get_config_dir(app: String) -> Result<String, String> {
 
 #[tauri::command]
 pub async fn open_config_folder(handle: AppHandle, app: String) -> Result<bool, String> {
+    // oh-my-pi has no provider lines, only its agent folder (prompts, models).
+    if app.trim().eq_ignore_ascii_case("omp") {
+        crate::product_policy::require(crate::product_policy::Capability::MultiTool)
+            .map_err(|e| e.to_string())?;
+        let dir = crate::pi_config::omp_dir::agent_dir()?;
+        std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {e}"))?;
+        handle
+            .opener()
+            .open_path(dir.to_string_lossy().to_string(), None::<String>)
+            .map_err(|e| format!("打开文件夹失败: {e}"))?;
+        return Ok(true);
+    }
     let config_dir = match AppType::from_str(&app).map_err(|e| e.to_string())? {
         AppType::Claude => config::get_claude_config_dir(),
         AppType::ClaudeDesktop => {

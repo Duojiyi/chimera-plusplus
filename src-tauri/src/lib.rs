@@ -458,6 +458,21 @@ fn macos_tray_icon() -> Option<Image<'static>> {
     }
 }
 
+/// Pi (when this build offers it) and oh-my-pi, whose AGENTS.md the prompt
+/// library manages.
+fn pi_family_prompt_apps() -> Vec<crate::prompt_files::PromptApp> {
+    use crate::app_config::AppType;
+    use crate::prompt_files::PromptApp;
+    let mut apps = Vec::new();
+    if product_policy::require_app(&AppType::Pi).is_ok() {
+        apps.push(PromptApp::Tool(AppType::Pi));
+    }
+    if product_policy::require(product_policy::Capability::MultiTool).is_ok() {
+        apps.push(PromptApp::Omp);
+    }
+    apps
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 设置 panic hook，在应用崩溃时记录日志到 Chimera++ 配置目录。
@@ -1230,13 +1245,20 @@ pub fn run() {
             {
                 log::info!("Prompts table empty, importing from live configurations...");
 
-                for app in [
-                    crate::app_config::AppType::Claude,
-                    crate::app_config::AppType::Codex,
-                    crate::app_config::AppType::Gemini,
-                    crate::app_config::AppType::GrokBuild,
-                    crate::app_config::AppType::OpenCode,
-                ] {
+                use crate::app_config::AppType;
+                use crate::prompt_files::PromptApp;
+                let mut prompt_apps: Vec<PromptApp> = [
+                    AppType::Claude,
+                    AppType::Codex,
+                    AppType::Gemini,
+                    AppType::GrokBuild,
+                    AppType::OpenCode,
+                ]
+                .into_iter()
+                .map(PromptApp::from)
+                .collect();
+                prompt_apps.extend(pi_family_prompt_apps());
+                for app in prompt_apps {
                     match crate::services::prompt::PromptService::import_from_file_on_first_launch(
                         &app_state,
                         app.clone(),
@@ -1245,6 +1267,30 @@ pub fn run() {
                             log::info!("✓ Imported {count} prompt(s) for {}", app.as_str());
                         }
                         Ok(_) => log::debug!("○ No prompt file found for {}", app.as_str()),
+                        Err(e) => log::warn!("✗ Failed to import prompt for {}: {e}", app.as_str()),
+                    }
+                }
+            }
+
+            // Pi and oh-my-pi joined the prompt library later: bring in an
+            // existing AGENTS.md once per tool, even when other tools'
+            // prompts are already there.
+            if product_policy::import_content_on_startup() {
+                for app in pi_family_prompt_apps() {
+                    let key = format!("prompt_live_imported:{}", app.as_str());
+                    if app_state.db.get_setting(&key).ok().flatten().is_some() {
+                        continue;
+                    }
+                    match crate::services::prompt::PromptService::import_from_file_on_first_launch(
+                        &app_state,
+                        app.clone(),
+                    ) {
+                        Ok(count) => {
+                            if count > 0 {
+                                log::info!("✓ Imported {count} prompt(s) for {}", app.as_str());
+                            }
+                            let _ = app_state.db.set_setting(&key, "1");
+                        }
                         Err(e) => log::warn!("✗ Failed to import prompt for {}: {e}", app.as_str()),
                     }
                 }

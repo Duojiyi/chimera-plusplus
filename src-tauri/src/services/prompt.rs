@@ -8,7 +8,7 @@ use crate::config::cas::{ChangesetError, ContentHash, FileSnapshot};
 use crate::error::AppError;
 use crate::managed_prompts::BlockState;
 use crate::prompt::Prompt;
-use crate::prompt_files::{codex_override_file_path, prompt_file_path};
+use crate::prompt_files::{codex_override_file_path, prompt_file_path, PromptApp};
 use crate::security_limits::{
     read_limited, read_to_string_limited, ResourceLimitError, MAX_CONFIG_FILE_BYTES,
 };
@@ -147,17 +147,19 @@ pub struct PromptService;
 impl PromptService {
     pub fn get_prompts(
         state: &AppState,
-        app: AppType,
+        app: impl Into<PromptApp>,
     ) -> Result<IndexMap<String, Prompt>, AppError> {
+        let app: PromptApp = app.into();
         state.db.get_prompts(app.as_str())
     }
 
     pub fn upsert_prompt(
         state: &AppState,
-        app: AppType,
+        app: impl Into<PromptApp>,
         _id: &str,
         prompt: Prompt,
     ) -> Result<(), AppError> {
+        let app: PromptApp = app.into();
         Self::upsert_prompt_checked(state, app, _id, prompt, None)
     }
 
@@ -165,11 +167,12 @@ impl PromptService {
     /// while holding the same app lock used for the eventual file write.
     pub fn upsert_prompt_checked(
         state: &AppState,
-        app: AppType,
+        app: impl Into<PromptApp>,
         _id: &str,
         prompt: Prompt,
         expected: Option<Prompt>,
     ) -> Result<(), AppError> {
+        let app: PromptApp = app.into();
         if prompt.template_id.as_ref().is_some_and(|id| {
             id.is_empty()
                 || id.len() > 128
@@ -183,7 +186,7 @@ impl PromptService {
             return Err(AppError::InvalidInput("提示词标识不一致或为空。".into()));
         }
         validate_prompt_content(&prompt.content, prompt.enabled)?;
-        if app == AppType::Codex {
+        if app.is_codex() {
             return update_codex_prompts(state, |prompts| {
                 check_prompt_baseline(prompts, _id, expected.as_ref())?;
                 state
@@ -214,11 +217,12 @@ impl PromptService {
     /// Toggle a saved record by ID, never by a potentially stale preview body.
     pub fn set_prompt_enabled(
         state: &AppState,
-        app: AppType,
+        app: impl Into<PromptApp>,
         id: &str,
         enabled: bool,
     ) -> Result<(), AppError> {
-        if app == AppType::Codex {
+        let app: PromptApp = app.into();
+        if app.is_codex() {
             return update_codex_prompts(state, |prompts| {
                 let prompt = prompts
                     .get_mut(id)
@@ -248,7 +252,12 @@ impl PromptService {
         apply_non_codex_prompts(state, &app, &before, next, enabled)
     }
 
-    pub fn delete_prompt(state: &AppState, app: AppType, id: &str) -> Result<(), AppError> {
+    pub fn delete_prompt(
+        state: &AppState,
+        app: impl Into<PromptApp>,
+        id: &str,
+    ) -> Result<(), AppError> {
+        let app: PromptApp = app.into();
         let _guard =
             futures::executor::block_on(state.proxy_service.lock_switch_for_app(app.as_str()));
         let prompts = state.db.get_prompts(app.as_str())?;
@@ -263,8 +272,13 @@ impl PromptService {
         Ok(())
     }
 
-    pub fn enable_prompt(state: &AppState, app: AppType, id: &str) -> Result<(), AppError> {
-        if app == AppType::Codex {
+    pub fn enable_prompt(
+        state: &AppState,
+        app: impl Into<PromptApp>,
+        id: &str,
+    ) -> Result<(), AppError> {
+        let app: PromptApp = app.into();
+        if app.is_codex() {
             return update_codex_prompts(state, |prompts| {
                 if !prompts.contains_key(id) {
                     return Err(AppError::InvalidInput("提示词不存在。".into()));
@@ -278,8 +292,12 @@ impl PromptService {
         Self::set_prompt_enabled(state, app, id, true)
     }
 
-    pub fn import_from_file(state: &AppState, app: AppType) -> Result<String, AppError> {
-        let file_path = prompt_file_path(&app)?;
+    pub fn import_from_file(
+        state: &AppState,
+        app: impl Into<PromptApp>,
+    ) -> Result<String, AppError> {
+        let app: PromptApp = app.into();
+        let file_path = app.file_path()?;
 
         if !file_path.exists() {
             return Err(AppError::Message("提示词文件不存在".to_string()));
@@ -312,9 +330,10 @@ impl PromptService {
     /// Import a user-selected Markdown file as an inactive library entry only.
     pub fn import_markdown_file(
         state: &AppState,
-        app: AppType,
+        app: impl Into<PromptApp>,
         path: &std::path::Path,
     ) -> Result<String, AppError> {
+        let app: PromptApp = app.into();
         if !path.is_absolute()
             || !path
                 .extension()
@@ -333,7 +352,7 @@ impl PromptService {
         if content.trim().is_empty() {
             return Err(AppError::InvalidInput("不能导入空提示词。".into()));
         }
-        if app == AppType::Codex {
+        if app.is_codex() {
             // Validate with the same rules as activation; importing is not takeover.
             crate::managed_prompts::project("", Some(&content), None)?;
         }
@@ -356,7 +375,7 @@ impl PromptService {
             updated_at: Some(timestamp),
         };
         // Import persists only the library entry on whole-file clients.
-        if app == AppType::Codex {
+        if app.is_codex() {
             Self::upsert_prompt(state, app, &id, prompt)?;
         } else {
             let _guard =
@@ -414,8 +433,9 @@ impl PromptService {
         Ok(id)
     }
 
-    pub fn get_current_file_content(app: AppType) -> Result<Option<String>, AppError> {
-        let file_path = prompt_file_path(&app)?;
+    pub fn get_current_file_content(app: impl Into<PromptApp>) -> Result<Option<String>, AppError> {
+        let app: PromptApp = app.into();
+        let file_path = app.file_path()?;
         match read_to_string_limited(&file_path, MAX_CONFIG_FILE_BYTES) {
             Ok(content) => Ok(Some(content)),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -560,9 +580,10 @@ impl PromptService {
     /// 返回导入的数量
     pub fn import_from_file_on_first_launch(
         state: &AppState,
-        app: AppType,
+        app: impl Into<PromptApp>,
     ) -> Result<usize, AppError> {
-        let _guard = if app != AppType::Codex {
+        let app: PromptApp = app.into();
+        let _guard = if !app.is_codex() {
             Some(futures::executor::block_on(
                 state.proxy_service.lock_switch_for_app(app.as_str()),
             ))
@@ -575,7 +596,7 @@ impl PromptService {
             return Ok(0);
         }
 
-        let file_path = prompt_file_path(&app)?;
+        let file_path = app.file_path()?;
 
         // 检查文件是否存在
         if !file_path.exists() {
@@ -652,7 +673,7 @@ fn check_prompt_baseline(
 /// A failed operation may leave this inactive recovery copy, never new active state.
 fn apply_non_codex_prompts(
     state: &AppState,
-    app: &AppType,
+    app: &PromptApp,
     before: &IndexMap<String, Prompt>,
     mut next: IndexMap<String, Prompt>,
     force_write: bool,
@@ -670,7 +691,7 @@ fn apply_non_codex_prompts(
     // Metadata-only changes never overwrite external file edits.
     if force_write || previous != current {
         let content = current.unwrap_or("").to_owned();
-        let snapshot = crate::config::cas::FileSnapshot::read(prompt_file_path(app)?)?;
+        let snapshot = crate::config::cas::FileSnapshot::read(app.file_path()?)?;
         let live = std::str::from_utf8(snapshot.contents().unwrap_or_default())
             .map_err(|_| AppError::InvalidInput("提示词文件必须为 UTF-8。".into()))?;
         let already_preserved = next
@@ -710,12 +731,12 @@ fn apply_non_codex_prompts(
 /// Commit all library changes atomically; only restore our own file version on failure.
 fn commit_non_codex_prompt_changes(
     state: &AppState,
-    app: &AppType,
+    app: &PromptApp,
     before: &IndexMap<String, Prompt>,
     next: &IndexMap<String, Prompt>,
     changes: crate::config::cas::Changeset,
 ) -> Result<(), AppError> {
-    assert_ne!(app, &AppType::Codex);
+    assert!(!app.is_codex());
     let applied = changes.commit()?;
     if let Err(error) = persist_non_codex_prompts(&state.db, app.as_str(), before, next) {
         if let Err(rollback) = applied.rollback() {
@@ -1525,6 +1546,35 @@ mod audit_a03_tests {
 
     #[test]
     #[serial]
+    fn pi_and_omp_prompts_write_their_agents_md() {
+        for app in [PromptApp::Tool(AppType::Pi), PromptApp::Omp] {
+            let _home = TempHome::new();
+            crate::settings::reload_settings().unwrap();
+            let state = AppState::new(Arc::new(Database::memory().unwrap()));
+            let path = app.file_path().unwrap();
+            assert_eq!(path.file_name().unwrap(), "AGENTS.md");
+            PromptService::upsert_prompt(
+                &state,
+                app.clone(),
+                "rules",
+                prompt("rules", "Be brief.", false),
+            )
+            .unwrap();
+            assert!(!path.exists(), "an inactive prompt writes nothing");
+            PromptService::enable_prompt(&state, app.clone(), "rules").unwrap();
+            assert_eq!(fs::read_to_string(&path).unwrap(), "Be brief.");
+            assert!(state.db.get_prompts(app.as_str()).unwrap()["rules"].enabled);
+            assert_eq!(
+                PromptService::get_current_file_content(app.clone())
+                    .unwrap()
+                    .as_deref(),
+                Some("Be brief.")
+            );
+        }
+    }
+
+    #[test]
+    #[serial]
     fn category_only_edits_never_touch_live_instructions() {
         for app in [AppType::Codex, AppType::Claude, AppType::Gemini] {
             let (_home, state, path) = setup(&app);
@@ -1693,10 +1743,14 @@ mod audit_a03_tests {
             .write(FileSnapshot::read(&path).unwrap(), b"replacement".to_vec())
             .unwrap();
         fs::write(&path, "external edit").unwrap();
-        assert!(
-            commit_non_codex_prompt_changes(&state, &AppType::Claude, &before, &next, changes)
-                .is_err()
-        );
+        assert!(commit_non_codex_prompt_changes(
+            &state,
+            &AppType::Claude.into(),
+            &before,
+            &next,
+            changes
+        )
+        .is_err());
         assert_eq!(fs::read_to_string(&path).unwrap(), "external edit");
         assert_eq!(state.db.get_prompts("claude").unwrap(), before);
         let mut changes = Changeset::new();
@@ -1707,10 +1761,14 @@ mod audit_a03_tests {
             .db
             .save_prompt("claude", &prompt("old", "newer DB", true))
             .unwrap();
-        assert!(
-            commit_non_codex_prompt_changes(&state, &AppType::Claude, &before, &next, changes)
-                .is_err()
-        );
+        assert!(commit_non_codex_prompt_changes(
+            &state,
+            &AppType::Claude.into(),
+            &before,
+            &next,
+            changes
+        )
+        .is_err());
         assert_eq!(fs::read_to_string(&path).unwrap(), "external edit");
         assert_eq!(
             state.db.get_prompts("claude").unwrap()["old"].content,

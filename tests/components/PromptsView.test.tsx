@@ -360,12 +360,47 @@ describe("unified prompt library", () => {
     expect(screen.getByRole("status")).toHaveTextContent("正在读取提示词…");
     expect(screen.getAllByText(/正在读取/)).toHaveLength(1);
     expect(
-      screen.queryByRole("option", { name: /Pi|MiniMax|Desktop/ }),
+      screen.queryByRole("option", { name: /MiniMax|Desktop/ }),
     ).not.toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Pi" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: "oh-my-pi" }),
+    ).toBeInTheDocument();
     expect(
       screen.getByRole("combobox", { name: "提示词目标工具" }),
-    ).toHaveAccessibleDescription("Claude Desktop 和 Pi 暂不支持提示词");
+    ).toHaveAccessibleDescription("Claude Desktop 暂不支持提示词");
     expect(screen.queryByText(/暂不支持/)).not.toBeInTheDocument();
+  });
+
+  it("leaves out tools hidden in settings but always offers Codex", async () => {
+    vi.mocked(promptsApi.getPrompts).mockReturnValue(new Promise(() => {}));
+    render(
+      <PromptsView
+        visibleApps={{ codex: false, pi: false, omp: true, claude: true }}
+      />,
+    );
+    expect(screen.getByRole("option", { name: "Codex" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Pi" })).toBeNull();
+    expect(
+      screen.getByRole("option", { name: "oh-my-pi" }),
+    ).toBeInTheDocument();
+  });
+
+  it("opens Codex when the requested tool is hidden", async () => {
+    vi.mocked(promptsApi.getPrompts).mockReturnValue(new Promise(() => {}));
+    render(<PromptsView initialApp="pi" visibleApps={{ omp: true }} />);
+    expect(screen.getByLabelText("提示词目标工具")).toHaveValue("codex");
+    expect(screen.queryByRole("option", { name: "Gemini CLI" })).toBeNull();
+  });
+
+  it("manages oh-my-pi's AGENTS.md through the omp prompt library", async () => {
+    render(<PromptsView initialApp="omp" />);
+    await waitFor(() =>
+      expect(promptsApi.getPrompts).toHaveBeenCalledWith("omp"),
+    );
+    expect(promptsApi.getCategories).toHaveBeenCalledWith("omp");
+    expect(promptsApi.getCurrentFileContent).toHaveBeenCalledWith("omp");
+    expect(promptsApi.getCodexStatus).not.toHaveBeenCalled();
   });
 });
 

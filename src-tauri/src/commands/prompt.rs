@@ -3,9 +3,9 @@ use std::str::FromStr;
 
 use tauri::State;
 
-use crate::app_config::AppType;
 use crate::error::AppError;
 use crate::prompt::{Prompt, PromptCategory};
+use crate::prompt_files::PromptApp;
 use crate::services::prompt::{CodexPromptResolution, CodexPromptStatus};
 use crate::services::PromptService;
 use crate::store::AppState;
@@ -15,7 +15,7 @@ pub async fn get_prompts(
     app: String,
     state: State<'_, AppState>,
 ) -> Result<IndexMap<String, Prompt>, String> {
-    let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    let app_type = PromptApp::from_str(&app).map_err(|e| e.to_string())?;
     PromptService::get_prompts(&state, app_type).map_err(|e| e.to_string())
 }
 
@@ -27,7 +27,7 @@ pub async fn upsert_prompt(
     expected: Option<Prompt>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    let app_type = PromptApp::from_str(&app).map_err(|e| e.to_string())?;
     let state = state.inner().clone();
     run_blocking(move || {
         PromptService::upsert_prompt_checked(&state, app_type, &id, prompt, expected)
@@ -41,7 +41,7 @@ pub async fn delete_prompt(
     id: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    let app_type = PromptApp::from_str(&app).map_err(|e| e.to_string())?;
     let state = state.inner().clone();
     run_blocking(move || PromptService::delete_prompt(&state, app_type, &id)).await
 }
@@ -52,7 +52,7 @@ pub async fn enable_prompt(
     id: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    let app_type = PromptApp::from_str(&app).map_err(|e| e.to_string())?;
     let state = state.inner().clone();
     run_blocking(move || PromptService::enable_prompt(&state, app_type, &id)).await
 }
@@ -64,7 +64,7 @@ pub async fn set_prompt_enabled(
     enabled: bool,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    let app_type = PromptApp::from_str(&app).map_err(|e| e.to_string())?;
     let state = state.inner().clone();
     run_blocking(move || PromptService::set_prompt_enabled(&state, app_type, &id, enabled)).await
 }
@@ -75,7 +75,7 @@ pub async fn import_prompt_from_file(
     file_path: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    let app_type = PromptApp::from_str(&app).map_err(|e| e.to_string())?;
     let state = state.inner().clone();
     run_blocking(move || match file_path {
         Some(path) => {
@@ -88,7 +88,7 @@ pub async fn import_prompt_from_file(
 
 #[tauri::command]
 pub async fn get_current_prompt_file_content(app: String) -> Result<Option<String>, String> {
-    let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    let app_type = PromptApp::from_str(&app).map_err(|e| e.to_string())?;
     run_blocking(move || PromptService::get_current_file_content(app_type)).await
 }
 
@@ -177,7 +177,7 @@ pub async fn get_prompt_categories(
     app: String,
     state: State<'_, AppState>,
 ) -> Result<Vec<PromptCategory>, String> {
-    let app = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    let app = PromptApp::from_str(&app).map_err(|e| e.to_string())?;
     let state = state.inner().clone();
     let guard = state.proxy_service.lock_switch_for_app(app.as_str()).await;
     run_blocking(move || {
@@ -193,7 +193,7 @@ pub async fn create_prompt_category(
     name: String,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    let app = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    let app = PromptApp::from_str(&app).map_err(|e| e.to_string())?;
     let state = state.inner().clone();
     let guard = state.proxy_service.lock_switch_for_app(app.as_str()).await;
     run_blocking(move || {
@@ -211,7 +211,7 @@ pub async fn rename_prompt_category(
     name: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let app = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    let app = PromptApp::from_str(&app).map_err(|e| e.to_string())?;
     let state = state.inner().clone();
     let guard = state.proxy_service.lock_switch_for_app(app.as_str()).await;
     run_blocking(move || {
@@ -227,7 +227,7 @@ pub async fn delete_prompt_category(
     id: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let app = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    let app = PromptApp::from_str(&app).map_err(|e| e.to_string())?;
     let state = state.inner().clone();
     let guard = state.proxy_service.lock_switch_for_app(app.as_str()).await;
     run_blocking(move || {

@@ -40,6 +40,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import type { AppId } from "@/lib/api/types";
+import type { VisibleApps } from "@/types";
 import {
   promptsApi,
   type CodexPromptResolution,
@@ -72,8 +73,21 @@ const PROMPT_TOOLS = [
   { id: "gemini", name: "Gemini CLI", file: "GEMINI.md" },
   { id: "grokbuild", name: "Grok Build", file: "AGENTS.md" },
   { id: "opencode", name: "OpenCode", file: "AGENTS.md" },
+  { id: "pi", name: "Pi", file: "AGENTS.md" },
+  { id: "omp", name: "oh-my-pi", file: "AGENTS.md" },
 ] as const;
-const UNSUPPORTED_PROMPT_TOOLS = "Claude Desktop 和 Pi 暂不支持提示词";
+type PromptToolId = (typeof PROMPT_TOOLS)[number]["id"];
+const UNSUPPORTED_PROMPT_TOOLS = "Claude Desktop 暂不支持提示词";
+
+/** Only tools shown in the sidebar (Codex always); all when not given. */
+function visiblePromptTools(visibleApps?: Partial<VisibleApps>) {
+  return PROMPT_TOOLS.filter(
+    (tool) =>
+      tool.id === "codex" ||
+      !visibleApps ||
+      visibleApps[tool.id as keyof VisibleApps] === true,
+  );
+}
 const FOREIGN_BEGIN = "<!-- CODEX-X:INSTRUCTIONS:BEGIN -->";
 type Template = (typeof bundledPromptTemplates)[number];
 type Entry = { prompt: Prompt; saved: boolean; template?: Template };
@@ -126,12 +140,19 @@ function libraryEntries(
 }
 
 export const PromptsView: React.FC<{
-  initialApp?: AppId;
+  initialApp?: AppId | "omp";
   refreshVersion?: number;
-}> = ({ initialApp = "codex", refreshVersion = 0 }) => {
-  const [targetApp, setTargetApp] = useState(
-    () => PROMPT_TOOLS.find((tool) => tool.id === initialApp)?.id ?? "codex",
+  visibleApps?: Partial<VisibleApps>;
+}> = ({ initialApp = "codex", refreshVersion = 0, visibleApps }) => {
+  const tools = visiblePromptTools(visibleApps);
+  const [targetApp, setTargetApp] = useState<PromptToolId>(
+    () => tools.find((tool) => tool.id === initialApp)?.id ?? "codex",
   );
+  const toolKey = tools.map((tool) => tool.id).join(",");
+  // A tool hidden after the page opened falls back to Codex.
+  useEffect(() => {
+    if (!toolKey.split(",").includes(targetApp)) setTargetApp("codex");
+  }, [toolKey, targetApp]);
   const target = PROMPT_TOOLS.find((tool) => tool.id === targetApp)!;
   const isCodex = targetApp === "codex";
   const [prompts, setPrompts] = useState<Prompt[]>([]);
@@ -488,7 +509,7 @@ export const PromptsView: React.FC<{
                 setShowFile(false);
               }}
             >
-              {PROMPT_TOOLS.map((tool) => (
+              {tools.map((tool) => (
                 <option key={tool.id} value={tool.id}>
                   {tool.name}
                 </option>

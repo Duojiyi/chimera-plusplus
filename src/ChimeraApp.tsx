@@ -3055,7 +3055,10 @@ export default function ChimeraApp({
               />
             )}
             {view === "prompts" && (
-              <PromptsView refreshVersion={providerRefreshVersion} />
+              <PromptsView
+                refreshVersion={providerRefreshVersion}
+                visibleApps={toolSettings?.visibleApps ?? {}}
+              />
             )}
             {view === "skills-mcp" && (
               <SkillsMcpView

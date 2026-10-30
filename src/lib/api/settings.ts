@@ -132,7 +132,7 @@ export const settingsApi = {
     return await invoke("get_config_dir", { app: appId });
   },
 
-  async openConfigFolder(appId: AppId): Promise<void> {
+  async openConfigFolder(appId: AppId | "omp"): Promise<void> {
     await invoke("open_config_folder", { app: appId });
   },
 
