@@ -8,8 +8,15 @@ import {
   type UpdateContextValue,
 } from "@/contexts/UpdateContext";
 
-const { checkForUpdateMock } = vi.hoisted(() => ({
-  checkForUpdateMock: vi.fn(),
+const { checkForUpdateMock, takeUnfinishedUpdateMock, warningMock } =
+  vi.hoisted(() => ({
+    checkForUpdateMock: vi.fn(),
+    takeUnfinishedUpdateMock: vi.fn(),
+    warningMock: vi.fn(),
+  }));
+
+vi.mock("sonner", () => ({
+  toast: { warning: warningMock },
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -23,6 +30,7 @@ vi.mock("@/lib/updater", () => ({
 vi.mock("@/lib/api/settings", () => ({
   settingsApi: {
     stageUpdateDownload: vi.fn().mockResolvedValue("2.0.0"),
+    takeUnfinishedUpdate: takeUnfinishedUpdateMock,
   },
 }));
 
@@ -40,6 +48,8 @@ describe("UpdateProvider periodic checks", () => {
     vi.setSystemTime(new Date("2026-07-31T00:00:00Z"));
     localStorage.clear();
     checkForUpdateMock.mockResolvedValue({ status: "up-to-date" });
+    takeUnfinishedUpdateMock.mockResolvedValue(null);
+    warningMock.mockClear();
     Object.defineProperty(document, "visibilityState", {
       configurable: true,
       value: "visible",
@@ -49,6 +59,25 @@ describe("UpdateProvider periodic checks", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.useRealTimers();
+  });
+
+  it("says once that an installed update waits for a Windows restart", async () => {
+    takeUnfinishedUpdateMock.mockResolvedValue("2.8.8");
+    render(
+      <UpdateProvider>
+        <UpdateProbe />
+      </UpdateProvider>,
+    );
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(takeUnfinishedUpdateMock).toHaveBeenCalledTimes(1);
+    expect(warningMock).toHaveBeenCalledWith(
+      "更新到 v2.8.8 尚未完成",
+      expect.objectContaining({ duration: Infinity }),
+    );
   });
 
   it("checks again when a hidden app becomes visible after the interval", async () => {

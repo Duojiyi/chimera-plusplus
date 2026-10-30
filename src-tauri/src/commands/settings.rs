@@ -691,7 +691,13 @@ pub async fn install_update_and_restart(
         crate::remove_tray_icon_before_exit(&app);
         crate::destroy_single_instance_lock(&app);
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        // With REBOOT=ReallySuppress a file in use is replaced only at the
+        // next Windows restart while the installer relaunches the old app;
+        // the marker lets that next start say so instead of looking like a
+        // failed update.
+        write_pending_update(&update.version);
         update.install(bytes).map_err(|e| {
+            clear_pending_update();
             crate::codex_accounts::login::resume_after_failed_shutdown();
             // The installer never took over, so no relaunch follows.
             crate::lightweight::take_window_on_next_start(&app);
@@ -726,6 +732,71 @@ pub async fn install_update_and_restart(
     }
 }
 
+const PENDING_UPDATE_FILE: &str = "pending-update.json";
+/// An older marker is stale (the user installed something else meanwhile).
+const PENDING_UPDATE_MAX_AGE_SECS: i64 = 7 * 24 * 60 * 60;
+
+fn pending_update_path() -> std::path::PathBuf {
+    crate::config::get_app_config_dir().join(PENDING_UPDATE_FILE)
+}
+
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn write_pending_update(version: &str) {
+    let marker = serde_json::json!({
+        "version": version,
+        "at": chrono::Utc::now().timestamp(),
+    });
+    if let Err(error) =
+        crate::config::atomic_write(&pending_update_path(), marker.to_string().as_bytes())
+    {
+        log::warn!("记录待完成的更新失败: {error}");
+    }
+}
+
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn clear_pending_update() {
+    let _ = std::fs::remove_file(pending_update_path());
+}
+
+/// `a.b.c` as numbers; a pre-release suffix is ignored.
+fn version_triple(version: &str) -> Option<(u64, u64, u64)> {
+    let core = version.trim().trim_start_matches('v');
+    let core = core.split(['-', '+']).next()?;
+    let mut parts = core.split('.').map(|part| part.parse::<u64>().ok());
+    Some((
+        parts.next()??,
+        parts.next()??,
+        parts.next().flatten().unwrap_or(0),
+    ))
+}
+
+/// The version an earlier in-app update installed but that is not running:
+/// the installer could not replace a file in use and Windows finishes the
+/// replacement at the next restart. Read once; the marker is removed.
+pub(crate) fn unfinished_update(marker: &str, current: &str, now_secs: i64) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(marker).ok()?;
+    let version = value.get("version")?.as_str()?;
+    let at = value.get("at")?.as_i64()?;
+    if !(0..PENDING_UPDATE_MAX_AGE_SECS).contains(&(now_secs - at)) {
+        return None;
+    }
+    (version_triple(current)? < version_triple(version)?).then(|| version.to_string())
+}
+
+#[tauri::command]
+pub async fn take_unfinished_update(app: AppHandle) -> Result<Option<String>, String> {
+    let path = pending_update_path();
+    let Ok(marker) = std::fs::read_to_string(&path) else {
+        return Ok(None);
+    };
+    let _ = std::fs::remove_file(&path);
+    Ok(unfinished_update(
+        &marker,
+        &app.package_info().version.to_string(),
+        chrono::Utc::now().timestamp(),
+    ))
+}
+
 /// 检查是否有可用的应用更新，返回可用的新版本号（无更新时返回 None）。
 ///
 /// 数据库版本过新的恢复界面用它判断：升级应用能否解决问题。若返回 None，说明
@@ -747,8 +818,30 @@ pub async fn check_app_update_available(app: AppHandle) -> Result<Option<String>
 
 #[cfg(test)]
 mod update_tests {
-    use super::{download_update_bytes, stage_update_bytes, StagedUpdate};
+    use super::{download_update_bytes, stage_update_bytes, unfinished_update, StagedUpdate};
     use std::time::Duration;
+
+    #[test]
+    fn an_update_still_on_the_old_version_is_reported_once_fresh() {
+        let marker = r#"{"version":"2.8.8","at":1000}"#;
+        assert_eq!(
+            unfinished_update(marker, "2.8.7", 2000).as_deref(),
+            Some("2.8.8")
+        );
+        // Installed: nothing to say.
+        assert_eq!(unfinished_update(marker, "2.8.8", 2000), None);
+        assert_eq!(unfinished_update(marker, "2.9.0", 2000), None);
+        // Stale or damaged markers are ignored.
+        assert_eq!(
+            unfinished_update(marker, "2.8.7", 1000 + 8 * 24 * 3600),
+            None
+        );
+        assert_eq!(unfinished_update("{", "2.8.7", 2000), None);
+        assert_eq!(
+            unfinished_update(r#"{"version":"x","at":1000}"#, "2.8.7", 2000),
+            None
+        );
+    }
 
     #[tokio::test]
     async fn a_stalled_staging_download_times_out_and_releases_the_slot() {

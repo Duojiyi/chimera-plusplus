@@ -1,5 +1,5 @@
 //! Claude Desktop accounts: one Chromium `--user-data-dir` per account under
-//! `<Chimera data>/claude-desktop-profiles/<id>/user-data`. Sign-in, settings
+//! `<local app data>/Chimera++/claude-desktop-profiles/<id>/user-data`. Sign-in, settings
 //! and MCP are separate per profile and several profiles can run side by
 //! side; Desktop conversations live on the account's server side, so nothing
 //! is lost by opening another profile. The app's own default profile is never
@@ -58,8 +58,11 @@ struct ProfileRecord {
     created_at: String,
 }
 
+/// Next to the Claude account vault in the local app data, not in the
+/// Chimera++ data folder: that folder can be moved in settings, and the
+/// profiles (with their sign-ins) would then drop out of the list.
 fn profiles_root() -> PathBuf {
-    crate::config::get_app_config_dir().join(PROFILES_DIR)
+    crate::codex_accounts::vault::default_vault_root().with_file_name(PROFILES_DIR)
 }
 
 fn profile_dir(root: &Path, id: &str) -> Result<PathBuf, AppError> {

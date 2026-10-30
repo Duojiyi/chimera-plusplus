@@ -12,6 +12,7 @@ import { settingsApi } from "@/lib/api/settings";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import { isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { toast } from "sonner";
 
 export interface UpdateDownloadProgress {
   downloaded: number;
@@ -168,6 +169,27 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
 
     setIsDismissed(getDismissedVersion() === current);
   }, [updateInfo?.availableVersion, getDismissedVersion]);
+
+  // An in-app update that Windows only finishes after a restart (a file
+  // was in use): say so once instead of offering the same update again.
+  useEffect(() => {
+    if (!isTauri()) return;
+    let active = true;
+    void Promise.resolve()
+      .then(() => settingsApi.takeUnfinishedUpdate())
+      .then((version) => {
+        if (!active || !version) return;
+        toast.warning(`更新到 v${version} 尚未完成`, {
+          description:
+            "安装时有文件被占用，Windows 会在重启电脑后完成替换。请重启电脑；如果之后仍是旧版本，再点一次更新。",
+          duration: Infinity,
+        });
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const isCheckingRef = useRef(false);
   const isInstallingRef = useRef(false);

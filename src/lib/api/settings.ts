@@ -105,6 +105,14 @@ export const settingsApi = {
   },
 
   /**
+   * 上次应用内更新已安装、但仍在运行旧版本时返回目标版本号（只返回一次）：
+   * 有文件被占用，Windows 要在重启电脑后才完成替换。
+   */
+  async takeUnfinishedUpdate(): Promise<string | null> {
+    return await invoke("take_unfinished_update");
+  },
+
+  /**
    * 后台下载并暂存更新包，返回已暂存的版本号（无更新时为 null）。
    * 之后调用 installUpdateAndRestart 会直接复用这份字节，跳过下载。
    */

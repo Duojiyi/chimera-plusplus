@@ -1778,6 +1778,7 @@ pub fn run() {
             commands::set_log_config,
             commands::restart_app,
             commands::install_update_and_restart,
+            commands::take_unfinished_update,
             commands::stage_update_download,
             commands::check_app_update_available,
             commands::check_for_updates,
