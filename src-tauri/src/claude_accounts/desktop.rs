@@ -3,7 +3,7 @@
 //! and MCP are separate per profile and several profiles can run side by
 //! side; Desktop conversations live on the account's server side, so nothing
 //! is lost by opening another profile. The app's own default profile is never
-//! read or written.
+//! written; its sign-in is only read to show plan and quota (desktop_auth).
 //!
 //! The approach (Chromium `--user-data-dir`; first sign-in only while no
 //! other Claude Desktop runs, because the `claude://` sign-in callback goes
@@ -79,6 +79,11 @@ fn existing_profile_dir(root: &Path, id: &str) -> Result<PathBuf, AppError> {
         }
         Err(error) => Err(AppError::io(&dir, error)),
     }
+}
+
+/// A profile's Chromium user-data folder, for reading its sign-in.
+pub(crate) fn profile_user_data(id: &str) -> Result<PathBuf, AppError> {
+    Ok(existing_profile_dir(&profiles_root(), id)?.join(USER_DATA_DIR))
 }
 
 /// Whether Claude Desktop's `config.json` holds a token cache. The cache is

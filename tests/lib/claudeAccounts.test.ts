@@ -76,6 +76,11 @@ describe("Claude accounts command contract", () => {
       { id: "a1" },
     ],
     [
+      () => claudeAccountsApi.desktopQuota("default", true),
+      "get_claude_desktop_profile_quota",
+      { id: "default", force: true },
+    ],
+    [
       () => claudeAccountsApi.launchDesktop("a1"),
       "launch_claude_desktop_profile",
       { id: "a1" },

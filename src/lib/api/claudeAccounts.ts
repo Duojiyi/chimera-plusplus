@@ -87,6 +87,16 @@ export interface ClaudeDesktopProfile {
   signedIn: boolean;
 }
 
+/** A Claude Desktop account's plan and quota, read with its own sign-in. */
+export interface ClaudeDesktopQuota {
+  email?: string | null;
+  plan?: string | null;
+  quota: ClaudeQuota;
+}
+
+/** Id of Claude Desktop's own (default) data folder. */
+export const DEFAULT_DESKTOP_ID = "default";
+
 export const claudeAccountsApi = {
   listCode: (): Promise<ClaudeCodeAccounts> =>
     invoke<ClaudeCodeAccounts>("list_claude_code_accounts"),
@@ -117,6 +127,13 @@ export const claudeAccountsApi = {
 
   listDesktop: (): Promise<ClaudeDesktopProfile[]> =>
     invoke<ClaudeDesktopProfile[]>("list_claude_desktop_profiles"),
+
+  /** `id` is a profile id or {@link DEFAULT_DESKTOP_ID}. Never refreshes the sign-in. */
+  desktopQuota: (id: string, force = false): Promise<ClaudeDesktopQuota> =>
+    invoke<ClaudeDesktopQuota>("get_claude_desktop_profile_quota", {
+      id,
+      force,
+    }),
 
   createDesktop: (name: string): Promise<ClaudeDesktopProfile> =>
     invoke<ClaudeDesktopProfile>("create_claude_desktop_profile", { name }),

@@ -8,7 +8,7 @@ use crate::claude_accounts::code::{
     self, CodeAccountDto, CodeAccountsDto, CodeVault, LivePaths, SwitchOutcome,
 };
 use crate::claude_accounts::desktop::{self, DesktopProfileDto};
-use crate::claude_accounts::quota::{self, QuotaView};
+use crate::claude_accounts::quota::{self, DesktopQuotaDto, QuotaView};
 use crate::error::AppError;
 use crate::store::AppState;
 
@@ -102,6 +102,16 @@ pub async fn list_claude_desktop_profiles() -> Result<Vec<DesktopProfileDto>, Ap
     tauri::async_runtime::spawn_blocking(desktop::list)
         .await
         .map_err(unfinished)?
+}
+
+/// Plan and quota of a Claude Desktop account (`default` = the app's own
+/// data folder), read with its sign-in but never refreshing it.
+#[tauri::command]
+pub async fn get_claude_desktop_profile_quota(
+    id: String,
+    force: bool,
+) -> Result<DesktopQuotaDto, AppError> {
+    quota::desktop_quota(id, force).await
 }
 
 #[tauri::command]

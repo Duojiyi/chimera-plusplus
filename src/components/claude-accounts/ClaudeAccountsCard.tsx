@@ -23,6 +23,7 @@ import {
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import {
   claudeAccountsApi,
+  DEFAULT_DESKTOP_ID,
   type ClaudeCodeAccount,
   type ClaudeCodeAccounts,
   type ClaudeDesktopProfile,
@@ -82,7 +83,20 @@ const QUOTA_STATUS_TEXT: Partial<Record<ClaudeQuota["status"], string>> = {
   not_signed_in: "未登录",
 };
 
-type QuotaState = { view?: ClaudeQuota; loading: boolean };
+/** Claude Desktop reads with the app's own sign-in and never renews it. */
+const DESKTOP_STATUS_TEXT: Partial<Record<ClaudeQuota["status"], string>> = {
+  live_expired: "登录已过期：打开一次这个账号的 Claude Desktop 会自动续期",
+  unavailable: "暂时无法读取额度",
+  not_signed_in: "未登录",
+};
+
+type QuotaState = {
+  view?: ClaudeQuota;
+  loading: boolean;
+  /** Claude Desktop only: from the account's profile. */
+  email?: string | null;
+  plan?: string | null;
+};
 
 function QuotaMeter({
   window: w,
@@ -134,16 +148,18 @@ function QuotaStrip({
   now,
   onRefresh,
   label,
+  statusText = QUOTA_STATUS_TEXT,
 }: {
   state?: QuotaState;
   now: number;
   onRefresh: () => void;
   label: string;
+  statusText?: Partial<Record<ClaudeQuota["status"], string>>;
 }) {
   const view = state?.view;
   const main = view?.windows.filter((w) => w.kind !== "model") ?? [];
   const models = view?.windows.filter((w) => w.kind === "model") ?? [];
-  const note = view ? QUOTA_STATUS_TEXT[view.status] : undefined;
+  const note = view ? statusText[view.status] : undefined;
   return (
     <div className="claude-quota" aria-label={`${label} 的额度`}>
       {main.length > 0 ? (
@@ -245,30 +261,45 @@ export function ClaudeAccountsCard({
     };
   }, []);
 
-  const readQuota = useCallback(async (id: string, force: boolean) => {
-    setQuota((all) => ({ ...all, [id]: { ...all[id], loading: true } }));
-    try {
-      const view = await claudeAccountsApi.codeQuota(id, force);
-      if (mounted.current)
-        setQuota((all) => ({ ...all, [id]: { view, loading: false } }));
-    } catch {
-      if (mounted.current)
-        setQuota((all) => ({
-          ...all,
-          [id]: {
-            view: all[id]?.view
-              ? { ...all[id].view!, status: "unavailable" }
-              : {
-                  status: "unavailable",
-                  windows: [],
-                  extraUsage: null,
-                  fetchedAt: null,
-                },
-            loading: false,
-          },
-        }));
-    }
-  }, []);
+  const readQuota = useCallback(
+    async (id: string, force: boolean) => {
+      setQuota((all) => ({ ...all, [id]: { ...all[id], loading: true } }));
+      try {
+        const next: QuotaState =
+          mode === "code"
+            ? {
+                view: await claudeAccountsApi.codeQuota(id, force),
+                loading: false,
+              }
+            : await claudeAccountsApi
+                .desktopQuota(id, force)
+                .then(({ quota: view, email, plan }) => ({
+                  view,
+                  email,
+                  plan,
+                  loading: false,
+                }));
+        if (mounted.current) setQuota((all) => ({ ...all, [id]: next }));
+      } catch {
+        if (mounted.current)
+          setQuota((all) => ({
+            ...all,
+            [id]: {
+              view: all[id]?.view
+                ? { ...all[id].view!, status: "unavailable" }
+                : {
+                    status: "unavailable",
+                    windows: [],
+                    extraUsage: null,
+                    fetchedAt: null,
+                  },
+              loading: false,
+            },
+          }));
+      }
+    },
+    [mode],
+  );
 
   const load = useCallback(async () => {
     if (!native) return;
@@ -283,7 +314,11 @@ export function ClaudeAccountsCard({
             if (!account.unreadable) void readQuota(account.id, false);
       } else {
         const result = await claudeAccountsApi.listDesktop();
-        if (mounted.current) setDesktop(result);
+        if (!mounted.current) return;
+        setDesktop(result);
+        void readQuota(DEFAULT_DESKTOP_ID, false);
+        for (const profile of result)
+          if (profile.signedIn) void readQuota(profile.id, false);
       }
     } catch (cause) {
       if (mounted.current) setLoadError(errorText(cause));
@@ -435,6 +470,10 @@ export function ClaudeAccountsCard({
 
   const codeRows = code?.accounts ?? [];
   const desktopRows = desktop ?? [];
+  const defaultQuota = quota[DEFAULT_DESKTOP_ID];
+  const defaultSignedIn =
+    defaultQuota?.view !== undefined &&
+    defaultQuota.view.status !== "not_signed_in";
 
   return (
     <section className="claude-accounts-card" aria-labelledby={headingId}>
@@ -643,20 +682,40 @@ export function ClaudeAccountsCard({
         </p>
       ) : (
         <ul className="claude-accounts-list" aria-label="Claude Desktop 账号">
-          <li className="claude-account-row is-default">
+          <li
+            className={
+              defaultSignedIn
+                ? "claude-account-row is-default has-quota"
+                : "claude-account-row is-default"
+            }
+          >
             <span className="claude-account-avatar" aria-hidden="true">
               默
             </span>
             <div className="claude-account-identity">
               <div className="claude-account-name">
                 <strong>默认账号</strong>
-                <span className="claude-account-tag is-muted">只读</span>
+                <span className="claude-account-tag is-muted">系统默认</span>
+                {defaultQuota?.plan ? (
+                  <span className="claude-accounts-plan">
+                    {defaultQuota.plan}
+                  </span>
+                ) : null}
               </div>
               <span className="claude-account-meta">
-                Claude Desktop
-                自己的系统默认目录，未加隔离；从开始菜单打开的就是它。
+                {defaultQuota?.email ??
+                  "从开始菜单打开的 Claude Desktop；只读取它的登录来显示额度，不做改动。"}
               </span>
             </div>
+            {defaultSignedIn ? (
+              <QuotaStrip
+                state={defaultQuota}
+                now={now}
+                label="默认账号"
+                statusText={DESKTOP_STATUS_TEXT}
+                onRefresh={() => void readQuota(DEFAULT_DESKTOP_ID, true)}
+              />
+            ) : null}
           </li>
           {desktopRows.length === 0 ? (
             <li className="claude-accounts-empty">
@@ -682,13 +741,29 @@ export function ClaudeAccountsCard({
                         ? "未登录"
                         : "尚未打开"}
                   </span>
+                  {quota[profile.id]?.plan ? (
+                    <span className="claude-accounts-plan">
+                      {quota[profile.id]?.plan}
+                    </span>
+                  ) : null}
                 </div>
                 <span className="claude-account-meta">
                   {profile.signedIn
-                    ? "可与其他账号同时打开"
+                    ? (quota[profile.id]?.email ?? "可与其他账号同时打开")
                     : "首次登录前请先完全退出 Claude Desktop（包括托盘图标）"}
                 </span>
               </div>
+              {profile.signedIn ? (
+                <QuotaStrip
+                  state={quota[profile.id]}
+                  now={now}
+                  label={profile.name}
+                  statusText={DESKTOP_STATUS_TEXT}
+                  onRefresh={() => void readQuota(profile.id, true)}
+                />
+              ) : (
+                <span aria-hidden="true" />
+              )}
               <div className="claude-account-actions">
                 <Button
                   size="sm"

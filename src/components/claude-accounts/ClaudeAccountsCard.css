@@ -176,7 +176,7 @@
   );
   box-shadow: inset 3px 0 0 var(--glass-accent, var(--brand));
 }
-.claude-account-row.is-default > .claude-account-identity {
+.claude-account-row.is-default:not(.has-quota) > .claude-account-identity {
   grid-column: 2 / -1;
 }
 .claude-accounts-list > .claude-accounts-empty {

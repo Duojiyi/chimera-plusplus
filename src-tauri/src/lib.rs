@@ -1699,6 +1699,7 @@ pub fn run() {
             commands::delete_claude_code_account,
             commands::get_claude_code_account_quota,
             commands::list_claude_desktop_profiles,
+            commands::get_claude_desktop_profile_quota,
             commands::create_claude_desktop_profile,
             commands::rename_claude_desktop_profile,
             commands::delete_claude_desktop_profile,

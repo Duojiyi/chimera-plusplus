@@ -85,6 +85,11 @@ pub struct Snapshot {
     pub windows: Vec<StoredWindow>,
     #[serde(default)]
     pub extra_usage: Option<ExtraUsageView>,
+    /// Claude Desktop accounts only: what the profile API said last time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -552,6 +557,8 @@ pub(crate) async fn read_quota(
         fetched_at: now,
         windows: merge_windows(previous.as_ref(), fresh_windows(&quota), now),
         extra_usage: extra_usage_view(&quota),
+        email: None,
+        plan: None,
     };
     if let Err(error) = write_snapshot(vault, id, &snapshot) {
         log::warn!("保存 Claude 账号额度快照失败: {error}");
@@ -574,6 +581,139 @@ pub async fn account_quota(id: String, force: bool) -> Result<QuotaView, AppErro
         &NetworkQuotaHttp,
     )
     .await
+}
+
+// ===== Claude Desktop =====
+
+/// A Claude Desktop account's plan and quota, read with the profile's own
+/// token. Never refreshed: an expired token is Claude Desktop's to renew.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopQuotaDto {
+    pub email: Option<String>,
+    pub plan: Option<String>,
+    pub quota: QuotaView,
+}
+
+/// `default` is Claude Desktop's own data folder.
+pub(crate) const DEFAULT_DESKTOP_ID: &str = "default";
+const MAX_PROFILE_RESPONSE_BYTES: usize = 64 * 1024;
+
+/// Email and organization type from the OAuth profile endpoint.
+async fn desktop_profile(access_token: &str) -> (Option<String>, Option<String>) {
+    let response = crate::proxy::http_client::get()
+        .get("https://api.anthropic.com/api/oauth/profile")
+        .header("Authorization", format!("Bearer {access_token}"))
+        .header("anthropic-beta", "oauth-2025-04-20")
+        .header("Accept", "application/json")
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await;
+    let Ok(response) = response else {
+        return (None, None);
+    };
+    if !response.status().is_success() {
+        return (None, None);
+    }
+    let Some(body) = read_body_limited(response, MAX_PROFILE_RESPONSE_BYTES).await else {
+        return (None, None);
+    };
+    let Ok(value) = serde_json::from_slice::<Value>(&body) else {
+        return (None, None);
+    };
+    let text = |pointer: &str| {
+        value
+            .pointer(pointer)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty() && text.len() <= 320)
+            .map(str::to_string)
+    };
+    (
+        text("/account/email"),
+        text("/organization/organization_type"),
+    )
+}
+
+pub async fn desktop_quota(id: String, force: bool) -> Result<DesktopQuotaDto, AppError> {
+    use super::desktop_auth::{self, TokenRead};
+
+    let user_data = if id == DEFAULT_DESKTOP_ID {
+        desktop_auth::default_user_data_dir()
+    } else {
+        super::validate_account_id(&id)?;
+        Some(super::desktop::profile_user_data(&id)?)
+    };
+    let key = format!("desktop-{id}");
+    let lock = code::account_lock(&key);
+    let _guard = lock.lock().await;
+    let vault = CodeVault::open_default()?;
+    let now = now_ms();
+    let previous = read_snapshot(&vault, &key);
+    let answer = |status: QuotaStatus, plan: Option<String>| DesktopQuotaDto {
+        email: previous
+            .as_ref()
+            .and_then(|snapshot| snapshot.email.clone()),
+        plan: plan.or_else(|| previous.as_ref().and_then(|snapshot| snapshot.plan.clone())),
+        quota: view_of(previous.as_ref(), status, now),
+    };
+
+    let Some(user_data) = user_data else {
+        return Ok(answer(QuotaStatus::NotSignedIn, None));
+    };
+    if !desktop_auth::supported() {
+        return Ok(answer(QuotaStatus::Unavailable, None));
+    }
+    let read =
+        tauri::async_runtime::spawn_blocking(move || desktop_auth::read_token(&user_data, now))
+            .await
+            .map_err(|_| AppError::Message("后台任务未完成，请重试".to_string()))?;
+    let entry = match read {
+        TokenRead::Ok(entry) => entry,
+        TokenRead::NotSignedIn => return Ok(answer(QuotaStatus::NotSignedIn, None)),
+        TokenRead::Expired { plan } => return Ok(answer(QuotaStatus::LiveExpired, plan)),
+        TokenRead::Unreadable => return Ok(answer(QuotaStatus::Unavailable, None)),
+    };
+    let token_plan = desktop_auth::plan_of(&entry);
+    let limit = if force {
+        MANUAL_DEBOUNCE_MS
+    } else {
+        AUTO_INTERVAL_MS
+    };
+    let age = previous.as_ref().map(|snapshot| now - snapshot.fetched_at);
+    if age.is_some_and(|age| (0..limit).contains(&age)) {
+        return Ok(answer(QuotaStatus::Cached, token_plan));
+    }
+
+    let quota = match crate::services::subscription::query_claude_quota(&entry.token).await {
+        Ok(quota) if quota.success => quota,
+        Ok(quota) if is_auth_failure(&quota) => {
+            return Ok(answer(QuotaStatus::LiveExpired, token_plan))
+        }
+        _ => return Ok(answer(QuotaStatus::Unavailable, token_plan)),
+    };
+    let (email, organization_type) = desktop_profile(&entry.token).await;
+    let plan = token_plan
+        .or_else(|| super::plan_label(organization_type.as_deref(), None).map(str::to_string));
+    let snapshot = Snapshot {
+        fetched_at: now,
+        windows: merge_windows(previous.as_ref(), fresh_windows(&quota), now),
+        extra_usage: extra_usage_view(&quota),
+        email: email.or_else(|| {
+            previous
+                .as_ref()
+                .and_then(|snapshot| snapshot.email.clone())
+        }),
+        plan: plan.clone(),
+    };
+    if let Err(error) = write_snapshot(&vault, &key, &snapshot) {
+        log::warn!("保存 Claude Desktop 账号额度快照失败: {error}");
+    }
+    Ok(DesktopQuotaDto {
+        email: snapshot.email.clone(),
+        plan,
+        quota: view_of(Some(&snapshot), QuotaStatus::Fresh, now),
+    })
 }
 
 #[cfg(test)]
@@ -681,6 +821,8 @@ mod tests {
                 fetched_at: NOW,
                 windows: fresh_windows(&reading),
                 extra_usage: None,
+                email: None,
+                plan: None,
             }),
             QuotaStatus::Fresh,
             NOW,
@@ -724,6 +866,8 @@ mod tests {
                 reset_observed_at: None,
             }],
             extra_usage: None,
+            email: None,
+            plan: None,
         };
         let view = view_of(Some(&snapshot), QuotaStatus::Cached, NOW);
         assert!(view.windows[0].reset);
@@ -743,6 +887,8 @@ mod tests {
                 reset_observed_at: None,
             }],
             extra_usage: None,
+            email: None,
+            plan: None,
         };
         let fresh = vec![StoredWindow {
             name: TIER_FIVE_HOUR.to_string(),
@@ -757,6 +903,8 @@ mod tests {
             fetched_at: NOW,
             windows: merged,
             extra_usage: None,
+            email: None,
+            plan: None,
         };
         let again = merge_windows(Some(&next), fresh.clone(), NOW + 60_000);
         assert!(again[0].reset_observed_at.is_some());
@@ -766,6 +914,8 @@ mod tests {
                 fetched_at: NOW,
                 windows: fresh.clone(),
                 extra_usage: None,
+                email: None,
+                plan: None,
             }),
             fresh,
             NOW,
@@ -784,6 +934,8 @@ mod tests {
                 reset_observed_at: Some(iso(observed)),
             }],
             extra_usage: None,
+            email: None,
+            plan: None,
         };
         let recent = view_of(Some(&snapshot(NOW - 600_000)), QuotaStatus::Fresh, NOW);
         assert!(recent.windows[0].reset);

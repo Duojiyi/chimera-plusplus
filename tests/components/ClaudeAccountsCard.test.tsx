@@ -31,7 +31,9 @@ vi.mock("@/lib/api/claudeAccounts", () => ({
     renameDesktop: vi.fn(),
     deleteDesktop: vi.fn(),
     launchDesktop: vi.fn(),
+    desktopQuota: vi.fn(),
   },
+  DEFAULT_DESKTOP_ID: "default",
 }));
 vi.mock("sonner", () => ({
   toast: { error: vi.fn(), success: vi.fn(), info: vi.fn(), warning: vi.fn() },
@@ -118,6 +120,11 @@ beforeEach(() => {
   api.listCode.mockResolvedValue(structuredClone(accounts));
   api.codeQuota.mockResolvedValue(quota);
   api.listDesktop.mockResolvedValue([]);
+  api.desktopQuota.mockResolvedValue({
+    email: null,
+    plan: null,
+    quota: { status: "not_signed_in", windows: [], extraUsage: null },
+  });
 });
 
 describe("ClaudeAccountsCard · Claude Code", () => {
@@ -265,6 +272,47 @@ describe("ClaudeAccountsCard · Claude Code", () => {
 });
 
 describe("ClaudeAccountsCard · Claude Desktop", () => {
+  it("shows the default account's plan, email and quota from its own sign-in", async () => {
+    api.desktopQuota.mockResolvedValue({
+      email: "desk@example.com",
+      plan: "Pro",
+      quota,
+    });
+    render(<ClaudeAccountsCard mode="desktop" />);
+    expect(await screen.findByText("desk@example.com")).toBeInTheDocument();
+    expect(screen.getByText("Pro")).toBeInTheDocument();
+    expect(api.desktopQuota).toHaveBeenCalledWith("default", false);
+    const meters = await screen.findAllByRole("meter", { name: "5 小时已用" });
+    expect(meters[0]).toHaveAttribute("aria-valuenow", "42");
+    fireEvent.click(
+      screen.getByRole("button", { name: "刷新 默认账号 的额度" }),
+    );
+    await waitFor(() =>
+      expect(api.desktopQuota).toHaveBeenCalledWith("default", true),
+    );
+  });
+
+  it("asks to open Claude Desktop when its sign-in has expired", async () => {
+    api.desktopQuota.mockResolvedValue({
+      email: null,
+      plan: "Max 5x",
+      quota: { status: "live_expired", windows: [], extraUsage: null },
+    });
+    render(<ClaudeAccountsCard mode="desktop" />);
+    expect(
+      await screen.findByText(/打开一次这个账号的 Claude Desktop 会自动续期/),
+    ).toBeInTheDocument();
+  });
+
+  it("does not show a quota for a signed-out default account", async () => {
+    render(<ClaudeAccountsCard mode="desktop" />);
+    expect(await screen.findByText("默认账号")).toBeInTheDocument();
+    await waitFor(() => expect(api.desktopQuota).toHaveBeenCalled());
+    expect(
+      screen.queryByRole("button", { name: "刷新 默认账号 的额度" }),
+    ).toBeNull();
+  });
+
   it("shows the read-only default and adds a profile that opens at once", async () => {
     api.createDesktop.mockResolvedValue({
       id: "p1",
