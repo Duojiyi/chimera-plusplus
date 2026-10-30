@@ -302,6 +302,24 @@ pub enum SkillStorageLocation {
 }
 
 /// 可发现的技能（来自仓库）
+/// A local Skill folder the scan left out because its content could not be
+/// read or verified. Only the folder name and a fixed reason are exposed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SkippedSkillDir {
+    pub directory: String,
+    /// Scan labels the folder was found under (e.g. "codex", "agents").
+    pub found_in: Vec<String>,
+    pub reason: String,
+}
+
+/// Result of an unmanaged-Skill scan, including the folders that were skipped.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnmanagedSkillScan {
+    pub skills: Vec<UnmanagedSkill>,
+    pub skipped: Vec<SkippedSkillDir>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoverableSkill {
     /// 唯一标识: "owner/name:directory"
@@ -2009,6 +2027,15 @@ impl SkillService {
         db: &Arc<Database>,
         current_app: Option<AppType>,
     ) -> Result<Vec<UnmanagedSkill>> {
+        Ok(Self::scan_unmanaged_report(db, current_app)?.skills)
+    }
+
+    /// Same scan as [`Self::scan_unmanaged_scoped`], plus the folders that were
+    /// left out because their content could not be read or verified.
+    pub fn scan_unmanaged_report(
+        db: &Arc<Database>,
+        current_app: Option<AppType>,
+    ) -> Result<UnmanagedSkillScan> {
         let managed_skills = db.get_all_installed_skills()?;
         let managed_dirs: HashSet<String> = managed_skills
             .values()
@@ -2040,6 +2067,7 @@ impl SkillService {
         }
 
         let mut unmanaged: HashMap<(String, String), UnmanagedSkill> = HashMap::new();
+        let mut skipped: HashMap<(String, &'static str), Vec<String>> = HashMap::new();
 
         for (scan_dir, label) in &scan_sources {
             if !Self::normal_directory_exists(scan_dir)? {
@@ -2077,6 +2105,14 @@ impl SkillService {
                             "跳过无法校验内容的 Skill 目录 {}: {error:#}",
                             physical_path.display()
                         );
+                        // The UI only gets the folder name and a fixed reason;
+                        // the full error (paths, IO details) stays in the log.
+                        let found_in = skipped
+                            .entry((dir_name, Self::scan_skip_reason(&error)))
+                            .or_default();
+                        if !found_in.contains(label) {
+                            found_in.push(label.clone());
+                        }
                         continue;
                     }
                 };
@@ -2107,7 +2143,41 @@ impl SkillService {
             skill.found_in.sort();
         }
         result.sort_by(|a, b| a.directory.cmp(&b.directory).then(a.path.cmp(&b.path)));
-        Ok(result)
+        let mut skipped: Vec<_> = skipped
+            .into_iter()
+            .map(|((directory, reason), mut found_in)| {
+                found_in.sort();
+                SkippedSkillDir {
+                    directory,
+                    found_in,
+                    reason: reason.to_string(),
+                }
+            })
+            .collect();
+        skipped.sort_by(|a, b| a.directory.cmp(&b.directory).then(a.reason.cmp(&b.reason)));
+        Ok(UnmanagedSkillScan {
+            skills: result,
+            skipped,
+        })
+    }
+
+    /// A short, fixed reason for a skipped folder. Never includes the error
+    /// text itself, which may carry paths or IO details.
+    fn scan_skip_reason(error: &anyhow::Error) -> &'static str {
+        if error
+            .chain()
+            .any(|cause| cause.downcast_ref::<std::io::Error>().is_some())
+        {
+            return "无法读取目录或文件";
+        }
+        let message = error.to_string();
+        if message.contains("符号链接") || message.contains("junction") {
+            "包含符号链接或 junction"
+        } else if message.contains("超过限制") || message.contains("过长") {
+            "超出 Skill 大小或数量限制"
+        } else {
+            "内容无法校验"
+        }
     }
 
     /// 从应用目录导入 Skills
@@ -6050,6 +6120,71 @@ mod scoped_import_regression_tests {
         let rows = SkillService::scan_unmanaged_scoped(&database, Some(AppType::Codex)).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].directory, "plain");
+
+        let report = SkillService::scan_unmanaged_report(&database, Some(AppType::Codex)).unwrap();
+        assert_eq!(report.skills.len(), 1);
+        assert_eq!(
+            report.skipped,
+            vec![SkippedSkillDir {
+                directory: "linked".to_string(),
+                found_in: vec!["codex".to_string()],
+                reason: "包含符号链接或 junction".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn scan_report_lists_oversized_skill_folders_without_their_contents() {
+        let (_home, database) = context();
+        for directory in ["oversized", "plain"] {
+            write_skill(&app_skill(&AppType::Codex, directory), directory);
+        }
+        let oversized = app_skill(&AppType::Codex, "oversized");
+        fs::File::create(oversized.join("payload.bin"))
+            .unwrap()
+            .set_len(MAX_SKILL_SINGLE_FILE_BYTES + 1)
+            .unwrap();
+
+        let report = SkillService::scan_unmanaged_report(&database, Some(AppType::Codex)).unwrap();
+        assert_eq!(
+            report
+                .skills
+                .iter()
+                .map(|row| row.directory.as_str())
+                .collect::<Vec<_>>(),
+            ["plain"]
+        );
+        assert_eq!(report.skipped.len(), 1);
+        assert_eq!(report.skipped[0].directory, "oversized");
+        assert_eq!(report.skipped[0].found_in, ["codex"]);
+        assert_eq!(report.skipped[0].reason, "超出 Skill 大小或数量限制");
+        let json = serde_json::to_value(&report.skipped).unwrap();
+        assert_eq!(json[0]["foundIn"], serde_json::json!(["codex"]));
+        assert!(!json.to_string().contains("payload.bin"));
+        // The plain list stays what existing callers have always received.
+        assert_eq!(
+            serde_json::to_value(&report.skills).unwrap(),
+            serde_json::to_value(
+                SkillService::scan_unmanaged_scoped(&database, Some(AppType::Codex)).unwrap()
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn scan_skip_reason_never_echoes_the_error_text() {
+        let io = anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+            .context("读取目录失败: C:/secret/path");
+        assert_eq!(SkillService::scan_skip_reason(&io), "无法读取目录或文件");
+        assert_eq!(
+            SkillService::scan_skip_reason(&anyhow!("Skill 路径过长: C:/x")),
+            "超出 Skill 大小或数量限制"
+        );
+        assert_eq!(
+            SkillService::scan_skip_reason(&anyhow!("something else: C:/x")),
+            "内容无法校验"
+        );
     }
 
     #[test]

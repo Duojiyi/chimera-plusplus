@@ -235,6 +235,8 @@ export function resolveCodexDraftFormats(
 export interface CodexDraftRoutingInput extends CodexDraftFormatInput {
   isFullUrl: boolean;
   customUserAgent: string;
+  /** The editor's 自动审批模型; absent leaves the saved value as it is. */
+  codexAutoReviewModel?: string;
 }
 
 /** The meta fields of a saved line that decide whether it is routed. Shared by
@@ -249,6 +251,11 @@ export function codexDraftRoutingMeta(
     codexModelApiFormats: formats.modelApiFormats,
     isFullUrl: draft.isFullUrl || undefined,
     customUserAgent: draft.customUserAgent.trim() || undefined,
+    // Empty means unset, as the save writes it; a caller that does not edit
+    // the field leaves the saved meta untouched.
+    ...(draft.codexAutoReviewModel !== undefined && {
+      codexAutoReviewModel: draft.codexAutoReviewModel.trim() || undefined,
+    }),
   };
 }
 

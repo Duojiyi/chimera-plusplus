@@ -3,6 +3,7 @@ import {
   ChevronLeft,
   Eye,
   EyeOff,
+  Info,
   Loader2,
   Pencil,
   RefreshCw,
@@ -19,11 +20,14 @@ import {
   EditorChoice,
   EditorField,
   EditorSaveActions,
+  EditorSaveSummary,
   EditorSelect,
   EditorTemplateCard,
   EditorTestAction,
   SaveLabel,
   SectionStatus,
+  inUseNoticeText,
+  previewOrigin,
   useAddressTest,
   type EditorChoiceOption,
 } from "@/components/providers/ProviderEditorFields";
@@ -65,11 +69,22 @@ const STANDARD_APIS: EditorChoiceOption<string>[] = [
   ["google-generative-ai", "Gemini"],
 ];
 const OTHER_API = "__other__";
+const TOOL_NAME = "oh-my-pi";
 const AUTH_OPTIONS = [
   ["apiKey", "API Key / 环境变量"],
   ["none", "免认证（本地服务）"],
   ["oauth", "已有 OAuth 授权"],
 ] as const;
+
+/** 保存详情's model row: the first ID and how many more. */
+function draftModelsSummary(models: string): string {
+  const ids = models
+    .split("\n")
+    .map((id) => id.trim())
+    .filter(Boolean);
+  if (!ids.length) return "内置模型覆盖";
+  return ids.length > 1 ? `${ids[0]} 等 ${ids.length} 个` : ids[0];
+}
 
 interface Draft {
   original: string | null;
@@ -410,6 +425,19 @@ export function OmpProviders({
               <span className="editor-draft-status" role="status">
                 {busy ? "正在保存…" : dirty ? "未保存修改" : ""}
               </span>
+              {draft.original !== null && (
+                <button
+                  type="button"
+                  className="danger"
+                  disabled={busy || !native}
+                  onClick={() =>
+                    draft.original !== null &&
+                    setPending({ delete: draft.original })
+                  }
+                >
+                  <Trash2 size={15} aria-hidden="true" /> 删除线路
+                </button>
+              )}
             </>
           }
           footer={
@@ -436,6 +464,16 @@ export function OmpProviders({
             </>
           }
         >
+          {/* oh-my-pi loads every line in models.yml, so a saved line is
+              always in use: saving it rewrites the live config. */}
+          {draft.original !== null && (
+            <p className="editor-model-notice" role="note">
+              <Info size={15} aria-hidden="true" />
+              <span className="editor-in-use-text">
+                {inUseNoticeText(TOOL_NAME, document?.path?.trim() || null)}
+              </span>
+            </p>
+          )}
           <form
             id="omp-provider-form"
             aria-label="编辑 OMP 线路"
@@ -612,17 +650,37 @@ export function OmpProviders({
                 </p>
               )}
             </fieldset>
-            <details className="editor-preview chimera-disclosure is-inline">
-              <summary>保存详情</summary>
-              <div className="chimera-disclosure-body">
-                <p>仅写入当前 OMP profile，不影响 Pi，也不自动切换默认模型。</p>
-                <p className="break-all">配置位置：{document?.path}</p>
-                <p>
-                  未编辑字段会保留；保存会规范化 YAML 排版并移除注释。不读取
-                  auth 文件，不执行密钥命令。
-                </p>
-              </div>
-            </details>
+            <EditorSaveSummary
+              rows={[
+                ["线路", draft.id.trim() || "未命名线路"],
+                [
+                  "地址",
+                  draft.baseUrl.trim()
+                    ? previewOrigin(draft.baseUrl.trim())
+                    : "继承内置端点",
+                ],
+                ["模型", draftModelsSummary(draft.models)],
+                [
+                  "协议",
+                  draft.api.trim()
+                    ? (apiLabels[draft.api.trim()] ?? draft.api.trim())
+                    : "沿用模型自身的协议",
+                ],
+                ["写入", `${TOOL_NAME} 的 models.yml`],
+              ]}
+            >
+              <p>
+                {draft.original === null
+                  ? `保存后立即写入 ${TOOL_NAME} 的 models.yml；${TOOL_NAME} 会加载其中所有线路，重新加载后即可选择模型。`
+                  : `这是正在使用的线路，保存后立即写入 ${TOOL_NAME} 的 models.yml。`}
+              </p>
+              <p>仅写入当前 OMP profile，不影响 Pi，也不自动切换默认模型。</p>
+              <p className="break-all">配置位置：{document?.path}</p>
+              <p>
+                未编辑字段会保留；保存会规范化 YAML 排版并移除注释。不读取 auth
+                文件，不执行密钥命令。
+              </p>
+            </EditorSaveSummary>
           </form>
         </FullScreenPanel>
       ) : (

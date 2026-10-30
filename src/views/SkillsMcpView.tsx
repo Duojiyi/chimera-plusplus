@@ -21,6 +21,7 @@ import {
   type DiscoverableSkill,
   type SkillRepo,
   type UnmanagedSkill,
+  type SkippedSkillDir,
   type SkillBackupEntry,
   type SkillUpdateInfo,
 } from "@/lib/api/skills";
@@ -128,6 +129,7 @@ export const SkillsMcpView: React.FC<{
   const [repoOpen, setRepoOpen] = useState(false);
   const [repos, setRepos] = useState<SkillRepo[] | null>(null);
   const [unmanaged, setUnmanaged] = useState<UnmanagedSkill[] | null>(null);
+  const [skippedSkills, setSkippedSkills] = useState<SkippedSkillDir[]>([]);
   const [scanning, setScanning] = useState(true);
   const [scanError, setScanError] = useState<string | null>(null);
   const scanGeneration = useRef(0);
@@ -177,13 +179,15 @@ export const SkillsMcpView: React.FC<{
     setScanning(true);
     setScanError(null);
     try {
-      const found = await skillsApi.scanUnmanaged(
+      const scan = await skillsApi.scanUnmanagedWithSkipped(
         scanAllSources ? undefined : targetApp,
       );
       if (request !== scanGeneration.current) return;
+      const found = scan?.skills;
       if (!Array.isArray(found))
         throw new Error("Invalid Skills scan response");
       setUnmanaged(found);
+      setSkippedSkills(Array.isArray(scan.skipped) ? scan.skipped : []);
       setSelectedImports((previous) =>
         previous.filter((key) =>
           found.some((skill) => importKey(skill) === key),
@@ -198,6 +202,7 @@ export const SkillsMcpView: React.FC<{
   }, [scanAllSources, targetApp]);
   useEffect(() => {
     setUnmanaged(null);
+    setSkippedSkills([]);
     setSelectedImports([]);
   }, [scanSkills]);
   useEffect(() => {
@@ -1219,6 +1224,22 @@ export const SkillsMcpView: React.FC<{
                     )}
                     {!scanning && !scanError && unmanaged?.length === 0 && (
                       <p>未发现可添加的本地 Skills。</p>
+                    )}
+                    {!scanError && skippedSkills.length > 0 && (
+                      <p
+                        className="skills-scan-scope-hint"
+                        data-testid="skills-scan-skipped"
+                      >
+                        {skippedSkills.length} 个本地 Skill
+                        目录无法读取或校验，已跳过：
+                        {skippedSkills
+                          .map(
+                            (dir) =>
+                              `${dir.directory}（${dir.reason}，来源：${dir.foundIn.map(sourceLabel).join("、")}）`,
+                          )
+                          .join("；")}
+                        。
+                      </p>
                     )}
                     {unmanaged?.map((skill) => {
                       const key = importKey(skill);

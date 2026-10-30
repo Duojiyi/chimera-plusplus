@@ -67,6 +67,18 @@ export interface UnmanagedSkill {
   contentHash?: string;
 }
 
+/** 扫描时因无法读取或校验而跳过的本地 Skill 目录（只含目录名与固定原因） */
+export interface SkippedSkillDir {
+  directory: string;
+  foundIn: string[];
+  reason: string;
+}
+
+export interface UnmanagedSkillScan {
+  skills: UnmanagedSkill[];
+  skipped: SkippedSkillDir[];
+}
+
 /** 导入已有 Skill 时提交的应用启用状态 */
 export interface ImportSkillSelection {
   directory: string;
@@ -162,6 +174,18 @@ export const skillsApi = {
     return await invoke("scan_unmanaged_skills", {
       currentApp: currentApp ?? null,
     });
+  },
+
+  /** 扫描未管理的 Skills，并列出因无法读取而跳过的目录 */
+  async scanUnmanagedWithSkipped(
+    currentApp?: AppId,
+  ): Promise<UnmanagedSkillScan> {
+    const result = await invoke<UnmanagedSkillScan | UnmanagedSkill[]>(
+      "scan_unmanaged_skills",
+      { currentApp: currentApp ?? null, includeSkipped: true },
+    );
+    // An older backend ignores includeSkipped and replies with the plain list.
+    return Array.isArray(result) ? { skills: result, skipped: [] } : result;
   },
 
   /** 从应用目录导入 Skills */

@@ -3,6 +3,7 @@ import {
   describeCodexDetectionFailure,
   catalogInputModalities,
   catalogRowSupportsImage,
+  codexDraftRouting,
   findCodexCatalogModelsWithoutProtocol,
   sanitizeCodexModelRoutesForSave,
 } from "@/chimeraUtils";
@@ -204,5 +205,46 @@ describe("protocol detection diagnostics", () => {
       status: "未返回原因",
       excerpt: "",
     });
+  });
+});
+
+describe("codexDraftRouting 自动审批模型", () => {
+  const base = {
+    id: "line",
+    name: "Line",
+    apiFormat: "openai_responses" as const,
+    model: "gpt-5",
+    catalogModels: [],
+    isFullUrl: false,
+    customUserAgent: "",
+  };
+  const saved = {
+    id: "line",
+    name: "Line",
+    settingsConfig: {},
+    meta: { codexAutoReviewModel: "saved-reviewer" },
+  };
+  it("follows the draft value, so a filled field routes the line", () => {
+    expect(
+      codexDraftRouting({
+        ...base,
+        original: null,
+        codexAutoReviewModel: " reviewer ",
+      }).reasons,
+    ).toContain("auto-review-model");
+  });
+  it("treats a cleared field as unset even when the saved line has one", () => {
+    expect(
+      codexDraftRouting({
+        ...base,
+        original: saved,
+        codexAutoReviewModel: "  ",
+      }).reasons,
+    ).not.toContain("auto-review-model");
+  });
+  it("keeps the saved value when the caller does not pass the field", () => {
+    expect(codexDraftRouting({ ...base, original: saved }).reasons).toContain(
+      "auto-review-model",
+    );
   });
 });

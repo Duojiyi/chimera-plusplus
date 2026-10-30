@@ -5,12 +5,14 @@
 //! - SSOT 存储在 ~/.cc-switch/skills/
 
 use crate::app_config::{AppType, InstalledSkill, UnmanagedSkill};
+use crate::database::Database;
 use crate::error::format_skill_error;
 use crate::services::skill::{
     DiscoverableSkill, ImportSkillSelection, MigrationResult, Skill, SkillBackupEntry, SkillRepo,
-    SkillService, SkillStorageLocation, SkillUninstallResult, SkillUpdateInfo,
+    SkillService, SkillStorageLocation, SkillUninstallResult, SkillUpdateInfo, UnmanagedSkillScan,
 };
 use crate::store::AppState;
+use serde::Serialize;
 use std::str::FromStr;
 use std::sync::Arc;
 use tauri::State;
@@ -96,17 +98,41 @@ pub fn toggle_skill_app(
     Ok(true)
 }
 
+/// `scan_unmanaged_skills` reply: the plain list callers have always received,
+/// or the list plus skipped folders when `includeSkipped` is set.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum ScanUnmanagedSkillsResponse {
+    Skills(Vec<UnmanagedSkill>),
+    WithSkipped(UnmanagedSkillScan),
+}
+
 /// 扫描未管理的 Skills
 #[tauri::command]
 pub fn scan_unmanaged_skills(
     current_app: Option<String>,
+    include_skipped: Option<bool>,
     app_state: State<'_, AppState>,
-) -> Result<Vec<UnmanagedSkill>, String> {
+) -> Result<ScanUnmanagedSkillsResponse, String> {
     let scope = current_app
         .map(|app| app.parse::<AppType>())
         .transpose()
         .map_err(|e| e.to_string())?;
-    SkillService::scan_unmanaged_scoped(&app_state.db, scope).map_err(|e| e.to_string())
+    scan_unmanaged_response(&app_state.db, scope, include_skipped.unwrap_or(false))
+        .map_err(|e| e.to_string())
+}
+
+fn scan_unmanaged_response(
+    db: &Arc<Database>,
+    scope: Option<AppType>,
+    include_skipped: bool,
+) -> anyhow::Result<ScanUnmanagedSkillsResponse> {
+    let report = SkillService::scan_unmanaged_report(db, scope)?;
+    Ok(if include_skipped {
+        ScanUnmanagedSkillsResponse::WithSkipped(report)
+    } else {
+        ScanUnmanagedSkillsResponse::Skills(report.skills)
+    })
 }
 
 /// 从应用目录导入 Skills
@@ -325,4 +351,52 @@ pub fn install_skills_from_zip(
     let path = std::path::Path::new(&file_path);
 
     SkillService::install_from_zip(&app_state.db, path, &app_type).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::skill::SkippedSkillDir;
+
+    fn row() -> UnmanagedSkill {
+        UnmanagedSkill {
+            directory: "plain".to_string(),
+            name: "Plain".to_string(),
+            description: None,
+            found_in: vec!["codex".to_string()],
+            path: "/skills/plain".to_string(),
+            content_hash: "abc".to_string(),
+        }
+    }
+
+    #[test]
+    fn scan_reply_keeps_the_plain_list_unless_skipped_folders_are_requested() {
+        let plain = serde_json::to_value(ScanUnmanagedSkillsResponse::Skills(vec![row()])).unwrap();
+        assert!(plain.is_array());
+        assert_eq!(plain[0]["directory"], "plain");
+
+        let detailed = serde_json::to_value(ScanUnmanagedSkillsResponse::WithSkipped(
+            UnmanagedSkillScan {
+                skills: vec![row()],
+                skipped: vec![SkippedSkillDir {
+                    directory: "broken".to_string(),
+                    found_in: vec!["agents".to_string()],
+                    reason: "无法读取目录或文件".to_string(),
+                }],
+            },
+        ))
+        .unwrap();
+        assert_eq!(
+            detailed["skills"][0]["foundIn"],
+            serde_json::json!(["codex"])
+        );
+        assert_eq!(
+            detailed["skipped"],
+            serde_json::json!([{
+                "directory": "broken",
+                "foundIn": ["agents"],
+                "reason": "无法读取目录或文件"
+            }])
+        );
+    }
 }

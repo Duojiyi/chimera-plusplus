@@ -91,6 +91,14 @@ export const FullScreenPanel: React.FC<FullScreenPanelProps> = ({
           return;
         }
 
+        // Every open panel listens on window, so with panels stacked (an editor
+        // with a speed-test panel over it) only the top one may close. Portals
+        // append to <body> in open order, so the last panel is on top.
+        const panels = document.querySelectorAll("[data-fullscreen-panel]");
+        if (panels[panels.length - 1] !== panelRef.current) {
+          return;
+        }
+
         if (isTextEditableTarget(event.target)) {
           return; // 让输入框自己处理 ESC（比如清空、失焦等）
         }

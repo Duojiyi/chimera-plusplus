@@ -89,6 +89,14 @@ export function RequestLogTable({
   const total = result?.total ?? 0;
   const totalPages = Math.ceil(total / pageSize);
 
+  // When the log shrinks (retention cleanup, a refetch) the current page can
+  // fall past the end; step back to the last page that still has rows.
+  useEffect(() => {
+    if (result && page > 0 && page >= totalPages) {
+      setPage(Math.max(0, totalPages - 1));
+    }
+  }, [result, page, totalPages]);
+
   useEffect(() => {
     setPage(0);
   }, [

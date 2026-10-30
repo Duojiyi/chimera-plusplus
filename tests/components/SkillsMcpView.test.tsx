@@ -40,6 +40,7 @@ vi.mock("@/lib/api/skills", () => ({
     addRepo: vi.fn(),
     removeRepo: vi.fn(),
     scanUnmanaged: vi.fn(),
+    scanUnmanagedWithSkipped: vi.fn(),
     importFromApps: vi.fn(),
     checkUpdates: vi.fn(),
     updateSkill: vi.fn(),
@@ -93,6 +94,13 @@ const deferredScan = () => {
 beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(skillsApi.scanUnmanaged).mockResolvedValue([]);
+  // The view asks for skipped folders too; most tests only stub the list.
+  vi.mocked(skillsApi.scanUnmanagedWithSkipped).mockImplementation(
+    async (app) => ({
+      skills: await skillsApi.scanUnmanaged(app),
+      skipped: [],
+    }),
+  );
   vi.mocked(skillsApi.getInstalled).mockResolvedValue([skill]);
   vi.mocked(mcpApi.getAllServers).mockResolvedValue({});
   vi.mocked(officialAccountsApi.getNotes).mockResolvedValue({});
@@ -737,6 +745,25 @@ describe("A06 resource lifecycle and A07 refresh", () => {
       ).not.toBeChecked();
     },
   );
+
+  it("names local Skill folders the scan had to skip", async () => {
+    vi.mocked(skillsApi.scanUnmanagedWithSkipped).mockResolvedValue({
+      skills: [],
+      skipped: [
+        {
+          directory: "broken",
+          foundIn: ["codex", "agents"],
+          reason: "无法读取目录或文件",
+        },
+      ],
+    });
+    render(<SkillsMcpView initialApp="codex" />);
+    const notice = await screen.findByTestId("skills-scan-skipped");
+    expect(notice).toHaveTextContent(
+      "1 个本地 Skill 目录无法读取或校验，已跳过：broken（无法读取目录或文件，来源：Codex、通用目录 .agents）。",
+    );
+    expect(screen.getByText("未发现可添加的本地 Skills。")).toBeVisible();
+  });
 
   it("accepts one backend-merged row for identical copies across tool directories", async () => {
     vi.mocked(skillsApi.scanUnmanaged).mockResolvedValue([

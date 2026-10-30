@@ -89,4 +89,36 @@ describe("FullScreenPanel", () => {
     );
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
+  it("closes only the top panel on Escape when panels are stacked", () => {
+    const closeOuter = vi.fn();
+    const closeInner = vi.fn();
+    const { rerender } = render(
+      <FullScreenPanel isOpen title="编辑线路" onClose={closeOuter}>
+        <FullScreenPanel isOpen={false} title="测速" onClose={closeInner}>
+          测速内容
+        </FullScreenPanel>
+      </FullScreenPanel>,
+    );
+    rerender(
+      <FullScreenPanel isOpen title="编辑线路" onClose={closeOuter}>
+        <FullScreenPanel isOpen title="测速" onClose={closeInner}>
+          测速内容
+        </FullScreenPanel>
+      </FullScreenPanel>,
+    );
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(closeInner).toHaveBeenCalledOnce();
+    expect(closeOuter).not.toHaveBeenCalled();
+
+    rerender(
+      <FullScreenPanel isOpen title="编辑线路" onClose={closeOuter}>
+        <FullScreenPanel isOpen={false} title="测速" onClose={closeInner}>
+          测速内容
+        </FullScreenPanel>
+      </FullScreenPanel>,
+    );
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(closeOuter).toHaveBeenCalledOnce();
+    expect(closeInner).toHaveBeenCalledOnce();
+  });
 });

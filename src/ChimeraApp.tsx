@@ -5791,25 +5791,7 @@ export function ProviderEditor({
       : modelEntered
         ? inferredFormat
         : null;
-  // The draft's 自动审批模型 counts for routing like the saved one would.
-  const routing =
-    isCodex && lineFormat
-      ? codexDraftRouting({
-          ...editor,
-          original: {
-            ...(editor.original ?? {
-              id: editor.id,
-              name: editor.name,
-              settingsConfig: {},
-            }),
-            meta: {
-              ...editor.original?.meta,
-              codexAutoReviewModel:
-                editor.codexAutoReviewModel.trim() || undefined,
-            },
-          },
-        })
-      : null;
+  const routing = isCodex && lineFormat ? codexDraftRouting(editor) : null;
   const addressHint = isClaude
     ? "Chimera++ 不改写这个地址；Claude Code 会在后面拼接 /v1/messages。"
     : !isCodex

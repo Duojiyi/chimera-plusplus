@@ -399,3 +399,66 @@ it("aligns the route list with tool headers, navigation and endpoint tables", as
   expect(actions).toBeVisible();
   expect(table).toBeVisible();
 });
+
+it("deletes the open line from the editor header through the same confirmation", async () => {
+  render(<OmpView native />);
+  await edit();
+  const panel = screen.getByRole("dialog", { name: "编辑 Oh My Pi 线路" });
+  fireEvent.click(within(panel).getByRole("button", { name: "删除线路" }));
+  expect(ompApi.save).not.toHaveBeenCalled();
+  const confirm = await screen.findByRole("dialog", {
+    name: "删除 OMP 线路？",
+  });
+  fireEvent.click(within(confirm).getByRole("button", { name: "确认删除" }));
+  await waitFor(() =>
+    expect(ompApi.save).toHaveBeenCalledWith(
+      { future: true, providers: {} },
+      initial(),
+    ),
+  );
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("dialog", { name: "编辑 Oh My Pi 线路" }),
+    ).not.toBeInTheDocument(),
+  );
+  expect(await screen.findByText("尚未配置自定义线路")).toBeVisible();
+});
+
+it("uses the shared in-use banner and save summary, and never shows the key", async () => {
+  render(<OmpView native />);
+  await edit();
+  const panel = screen.getByRole("dialog", { name: "编辑 Oh My Pi 线路" });
+  expect(within(panel).getByRole("note")).toHaveTextContent(
+    "这是正在使用的线路。保存后立即写入 oh-my-pi 的配置（C:/test/.omp/agent/models.yml），已打开的 oh-my-pi 可能需要重新打开才会生效。",
+  );
+  const summary = within(panel).getByText("保存详情").closest("details")!;
+  const rows = Array.from(summary.querySelectorAll("dt")).map((dt) => [
+    dt.textContent,
+    dt.nextElementSibling?.textContent,
+  ]);
+  expect(rows).toEqual([
+    ["线路", "test"],
+    ["地址", "https://example.com"],
+    ["模型", "model-1"],
+    ["协议", "Chat Completions"],
+    ["写入", "oh-my-pi 的 models.yml"],
+  ]);
+  expect(summary).not.toHaveTextContent("SECRET_ENV");
+  expect(summary).toHaveTextContent("这是正在使用的线路，保存后立即写入");
+});
+
+it("shows no in-use banner or header delete for a new line", async () => {
+  render(<OmpView native />);
+  await screen.findByText("test");
+  fireEvent.click(screen.getByRole("button", { name: "添加线路" }));
+  const panel = await screen.findByRole("dialog", {
+    name: "添加 Oh My Pi 线路",
+  });
+  expect(within(panel).queryByRole("note")).not.toBeInTheDocument();
+  expect(
+    within(panel).queryByRole("button", { name: "删除线路" }),
+  ).not.toBeInTheDocument();
+  expect(
+    within(panel).getByText("保存详情").closest("details"),
+  ).toHaveTextContent("保存后立即写入 oh-my-pi 的 models.yml");
+});

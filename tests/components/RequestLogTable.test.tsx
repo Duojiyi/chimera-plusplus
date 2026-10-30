@@ -158,4 +158,40 @@ describe("RequestLogTable", () => {
       );
     });
   });
+
+  it("steps back to the last page when the log shrinks under the current page", async () => {
+    const range: UsageRangeSelection = { preset: "today" };
+    const view = () => (
+      <RequestLogTable
+        range={range}
+        rangeLabel="Today"
+        appType="all"
+        refreshIntervalMs={0}
+      />
+    );
+    const { rerender } = render(view());
+
+    fireEvent.click(screen.getByRole("button", { name: "6" }));
+    await waitFor(() => {
+      expect(useRequestLogsMock).toHaveBeenLastCalledWith(
+        expect.objectContaining({ page: 5 }),
+      );
+    });
+
+    // A refetch now reports only 30 rows: two pages.
+    useRequestLogsMock.mockImplementation(
+      ({ page = 0, pageSize = 20 }: { page?: number; pageSize?: number }) => ({
+        data: { data: [], total: 30, page, pageSize },
+        isLoading: false,
+      }),
+    );
+    rerender(view());
+
+    await waitFor(() => {
+      expect(useRequestLogsMock).toHaveBeenLastCalledWith(
+        expect.objectContaining({ page: 1 }),
+      );
+    });
+    expect(screen.queryByRole("button", { name: "6" })).not.toBeInTheDocument();
+  });
 });
