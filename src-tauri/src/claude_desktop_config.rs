@@ -1929,7 +1929,12 @@ mod tests {
             .as_array()
             .expect("inferenceModels")
             .iter()
-            .map(|item| item["name"].as_str().expect("model name"))
+            // Plain entries are bare strings; ones with options are objects.
+            .map(|item| {
+                item.as_str()
+                    .or_else(|| item["name"].as_str())
+                    .expect("model name")
+            })
             .collect();
         // Tier first, then name within the same tier.
         assert_eq!(
