@@ -8,7 +8,15 @@ import {
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { SessionManagerPage } from "@/components/sessions/SessionManagerPage";
 import {
   sessionsApi,
@@ -169,6 +177,23 @@ const openExport = async () => {
 };
 
 describe("SessionManagerPage", () => {
+  // The virtual lists size their viewport from clientWidth/clientHeight,
+  // which jsdom reports as 0; give scroll containers a real size.
+  const sizes: Array<{ mockRestore: () => void }> = [];
+  beforeAll(() => {
+    sizes.push(
+      vi
+        .spyOn(HTMLElement.prototype, "clientHeight", "get")
+        .mockReturnValue(320),
+      vi
+        .spyOn(HTMLElement.prototype, "clientWidth", "get")
+        .mockReturnValue(800),
+    );
+  });
+  afterAll(() => {
+    for (const size of sizes) size.mockRestore();
+  });
+
   beforeEach(() => {
     toastSuccessMock.mockReset();
     toastErrorMock.mockReset();
