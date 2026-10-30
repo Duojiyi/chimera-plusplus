@@ -16,6 +16,7 @@ import {
   Copy,
   FileText,
   FolderOpen,
+  History,
   Info,
   LayoutGrid,
   List,
@@ -61,6 +62,10 @@ import {
   SessionDeleteDialog,
   type SessionDeleteTarget,
 } from "./SessionDeleteDialog";
+import {
+  DELETE_BACKUPS_QUERY_KEY,
+  SessionDeleteBackupsDialog,
+} from "./SessionDeleteBackupsDialog";
 import { SessionExportButton } from "./SessionExportButton";
 import { SessionItem } from "./SessionItem";
 import { SessionMessageItem } from "./SessionMessageItem";
@@ -243,6 +248,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
   const [selectionMode, setSelectionMode] = useState(false);
   const [isReclaiming, setIsReclaiming] = useState(false);
   const [reclaimConfirmOpen, setReclaimConfirmOpen] = useState(false);
+  const [deleteBackupsOpen, setDeleteBackupsOpen] = useState(false);
 
   const [search, setSearch] = useState("");
   const [providerFilter, setProviderFilter] = useState<ProviderFilter>(
@@ -580,6 +586,9 @@ export function SessionManagerPage({ appId }: { appId: string }) {
         );
       }
       await queryClient.invalidateQueries({ queryKey: ["sessions"] });
+      void queryClient.invalidateQueries({
+        queryKey: DELETE_BACKUPS_QUERY_KEY,
+      });
 
       const completed = results.filter((result) => result.success).length;
       const cleanupPending = results.filter(
@@ -1544,6 +1553,22 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                             variant="ghost"
                             size="icon"
                             className="size-7"
+                            aria-label="已删除的会话"
+                            onClick={() => setDeleteBackupsOpen(true)}
+                          >
+                            <History className="size-3.5" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          已删除的会话（从备份恢复）
+                        </TooltipContent>
+                      </Tooltip>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="size-7"
                             aria-label={t("common.refresh", {
                               defaultValue: "刷新",
                             })}
@@ -1955,6 +1980,10 @@ export function SessionManagerPage({ appId }: { appId: string }) {
         })}
         onConfirm={() => void handleReclaimHistory()}
         onCancel={() => setReclaimConfirmOpen(false)}
+      />
+      <SessionDeleteBackupsDialog
+        open={deleteBackupsOpen}
+        onOpenChange={setDeleteBackupsOpen}
       />
       <SessionDeleteDialog
         targets={deleteTargets}

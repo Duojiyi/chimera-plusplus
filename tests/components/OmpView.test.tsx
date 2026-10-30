@@ -14,6 +14,11 @@ vi.mock("@/lib/api/omp", async (original) => ({
   ...(await original<typeof import("@/lib/api/omp")>()),
   ompApi: { read: vi.fn(), save: vi.fn() },
 }));
+const invokeMock = vi.hoisted(() => vi.fn());
+vi.mock("@tauri-apps/api/core", async (original) => ({
+  ...(await original<typeof import("@tauri-apps/api/core")>()),
+  invoke: invokeMock,
+}));
 vi.mock("@/lib/api/piPlugins", async (original) => ({
   ...(await original<typeof import("@/lib/api/piPlugins")>()),
   piPluginsApi: { run: vi.fn() },
@@ -128,6 +133,37 @@ describe("OMP native routes and hierarchy", () => {
       expect(ompApi.save).toHaveBeenCalledWith(
         { future: true, providers: {} },
         initial(),
+      ),
+    );
+    expect(await screen.findByText("尚未配置自定义线路")).toBeVisible();
+  });
+  it("asks again before rewriting a models.yml with comments, then saves with the backup flag", async () => {
+    vi.mocked(ompApi.save).mockImplementation(
+      async (value, _document, allowLossyRewrite) => {
+        if (!allowLossyRewrite)
+          throw "OMP_LOSSY_REWRITE: models.yml 含注释、锚点或别名";
+        return {
+          ...initial(),
+          revision: "r2",
+          value: value as PiDocument["value"],
+        };
+      },
+    );
+    render(<OmpView native />);
+    fireEvent.click(await screen.findByRole("button", { name: "删除test" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
+    const dialog = await screen.findByRole("dialog", {
+      name: "models.yml 含注释或锚点",
+    });
+    expect(dialog).toHaveTextContent("注释会丢失");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(ompApi.save).toHaveBeenCalledTimes(1);
+    fireEvent.click(within(dialog).getByRole("button", { name: "备份后保存" }));
+    await waitFor(() =>
+      expect(ompApi.save).toHaveBeenLastCalledWith(
+        { future: true, providers: {} },
+        initial(),
+        true,
       ),
     );
     expect(await screen.findByText("尚未配置自定义线路")).toBeVisible();

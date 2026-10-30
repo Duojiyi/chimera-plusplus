@@ -9,6 +9,90 @@ use std::{
 
 const LIMIT: u64 = 1024 * 1024;
 
+/// Prefix of the error a save returns when the file holds YAML that a
+/// rewrite through serde_yaml cannot keep (comments, anchors, aliases, tags,
+/// merge keys). The UI asks the user, then saves again with
+/// `allow_lossy_rewrite`.
+pub(crate) const OMP_LOSSY_REWRITE_CODE: &str = "OMP_LOSSY_REWRITE";
+
+/// Whether `text` uses YAML that the parse-and-serialize save would drop or
+/// expand. A light line scan, not a parser: `#` only counts after whitespace
+/// or at the line start, `&` `*` `!` `<<` only where a node can start (line
+/// start, after `: `, `- `, `[`, `{`, `,`), and quoted text is skipped, so a
+/// plain value such as `Search & Fetch` or `http://x/#a` is not flagged. It
+/// may flag a `#` inside a block scalar; that only asks the user once more.
+// Adapted from farion1231/cc-switch e332cfdb
+fn yaml_has_lossy_constructs(text: &str) -> bool {
+    text.lines().any(line_has_lossy_construct)
+}
+
+fn line_has_lossy_construct(line: &str) -> bool {
+    let chars: Vec<char> = line.chars().collect();
+    let mut quote: Option<char> = None;
+    let mut node_start = true;
+    let mut previous: Option<char> = None;
+    let mut index = 0;
+    while index < chars.len() {
+        let c = chars[index];
+        let next = chars.get(index + 1).copied();
+        if let Some(open) = quote {
+            if open == '"' && c == '\\' {
+                index += 2;
+                continue;
+            }
+            if c == open {
+                quote = None;
+            }
+            previous = Some(c);
+            index += 1;
+            continue;
+        }
+        let next_is_space = next.is_none_or(char::is_whitespace);
+        match c {
+            '#' if previous.is_none_or(char::is_whitespace) => return true,
+            '"' | '\'' if node_start => quote = Some(c),
+            '&' | '*' | '!' if node_start && !next_is_space => return true,
+            '<' if node_start && next == Some('<') => {
+                let rest: String = chars[index + 2..].iter().collect();
+                if rest.trim_start().starts_with(':') {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        node_start = match c {
+            ' ' | '\t' => node_start,
+            ':' | '-' => next_is_space,
+            '[' | '{' | ',' => true,
+            _ => false,
+        };
+        previous = Some(c);
+        index += 1;
+    }
+    false
+}
+
+/// Copy the file about to be rewritten next to it as
+/// `<name>.bak-<timestamp>` (permissions kept by `fs::copy`).
+fn backup_before_lossy_rewrite(path: &Path) -> Result<PathBuf, String> {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("models.yml");
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    let mut backup = path.with_file_name(format!("{name}.bak-{stamp}"));
+    let mut attempt = 1;
+    while exists(&backup)? {
+        attempt += 1;
+        backup = path.with_file_name(format!("{name}.bak-{stamp}-{attempt}"));
+    }
+    if !fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file()) {
+        return Err("OMP 配置不是普通文件，保存已取消".into());
+    }
+    fs::copy(path, &backup).map_err(|_| "无法备份 OMP 配置，保存已取消；草稿已保留")?;
+    Ok(backup)
+}
+
 fn profile(value: &str) -> Result<Option<&str>, String> {
     let value = value.trim();
     if value.is_empty() || value == "default" {
@@ -251,10 +335,20 @@ fn save(
     value: Value,
     expected_revision: &str,
     expected_path: &str,
+    allow_lossy_rewrite: bool,
 ) -> Result<crate::pi_config::PiDocument, String> {
     let current = read(dir)?;
     if current.revision != expected_revision || current.path != expected_path {
         return Err("OMP 配置已被外部修改，请保留草稿并重新读取后再保存".into());
+    }
+    let original = bytes(Path::new(&current.path))?;
+    let lossy = original
+        .as_deref()
+        .is_some_and(|data| yaml_has_lossy_constructs(&String::from_utf8_lossy(data)));
+    if lossy && !allow_lossy_rewrite {
+        return Err(format!(
+            "{OMP_LOSSY_REWRITE_CODE}: models.yml 含注释、锚点或别名，保存会重写整个文件：注释会丢失，锚点和别名会展开成重复内容。"
+        ));
     }
     let providers = value
         .get("providers")
@@ -278,6 +372,10 @@ fn save(
         return Err("OMP 配置不能超过 1 MiB".into());
     }
     let path = PathBuf::from(&current.path);
+    if lossy {
+        let backup = backup_before_lossy_rewrite(&path)?;
+        log::info!("[OMP] 重写前已备份 {}", backup.display());
+    }
     crate::config::atomic_write_checked::<crate::error::AppError, _>(&path, &data, true, || {
         let latest_path = model_path(dir).map_err(crate::error::AppError::Config)?;
         let latest = bytes(&path).map_err(crate::error::AppError::Config)?;
@@ -308,10 +406,17 @@ pub(crate) fn save_omp_models(
     value: Value,
     expected_revision: String,
     expected_path: String,
+    allow_lossy_rewrite: Option<bool>,
 ) -> Result<crate::pi_config::PiDocument, String> {
     crate::product_policy::require(crate::product_policy::Capability::MultiTool)?;
     let _operation = super::pi_plugins::lock_package_operation()?;
-    save(&agent_dir()?, value, &expected_revision, &expected_path)
+    save(
+        &agent_dir()?,
+        value,
+        &expected_revision,
+        &expected_path,
+        allow_lossy_rewrite.unwrap_or(false),
+    )
 }
 
 #[cfg(test)]
@@ -332,14 +437,76 @@ mod tests {
             value.clone(),
             &original.revision,
             &original.path,
+            false,
         )
         .unwrap();
         assert!(saved.path.ends_with("models.yaml"));
         assert_eq!(saved.value["future"], true);
         assert_eq!(saved.revision, read(dir.path()).unwrap().revision);
-        assert!(save(dir.path(), value, &original.revision, &original.path).is_err());
+        assert!(save(dir.path(), value, &original.revision, &original.path, false).is_err());
         fs::write(dir.path().join("models.yml"), "providers: {}\n").unwrap();
-        assert!(save(dir.path(), saved.value, &saved.revision, &saved.path).is_err());
+        assert!(save(dir.path(), saved.value, &saved.revision, &saved.path, false).is_err());
+    }
+
+    #[test]
+    fn detects_comments_anchors_aliases_tags_and_merge_keys_only_where_yaml_has_them() {
+        for lossy in [
+            "# heading\nproviders: {}\n",
+            "providers: {} # trailing\n",
+            "base: &base\n  api: openai-completions\n",
+            "providers:\n  a: *base\n",
+            "providers:\n  a:\n    <<: *base\n",
+            "providers:\n  - !custom x\n",
+            "list: [a, &b c]\n",
+        ] {
+            assert!(yaml_has_lossy_constructs(lossy), "{lossy:?}");
+        }
+        for plain in [
+            "providers:\n  a:\n    name: Search & Fetch\n",
+            "url: http://example.com/#fragment\n",
+            "color: \"#fff\"\n",
+            "color: '#fff'\n",
+            "note: it's * fine & good!\n",
+            "key: \"a \\\" # still quoted\"\n",
+            "providers: {}\n",
+        ] {
+            assert!(!yaml_has_lossy_constructs(plain), "{plain:?}");
+        }
+    }
+
+    #[test]
+    fn lossy_files_need_confirmation_and_are_backed_up_before_the_rewrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("models.yml");
+        let original_text = "# my notes\nproviders: {}\n";
+        fs::write(&path, original_text).unwrap();
+        let original = read(dir.path()).unwrap();
+        let value = json!({"providers":{"local":{"baseUrl":"http://localhost:1234/v1","auth":"none","api":"openai-completions","models":[{"id":"local"}]}}});
+
+        let error = save(
+            dir.path(),
+            value.clone(),
+            &original.revision,
+            &original.path,
+            false,
+        )
+        .unwrap_err();
+        assert!(error.starts_with(OMP_LOSSY_REWRITE_CODE), "{error}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), original_text);
+
+        let saved = save(dir.path(), value, &original.revision, &original.path, true).unwrap();
+        assert!(saved.value["providers"]["local"].is_object());
+        assert!(!fs::read_to_string(&path).unwrap().contains("my notes"));
+        let backups: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("models.yml.bak-"))
+            .collect();
+        assert_eq!(backups.len(), 1, "{backups:?}");
+        assert_eq!(
+            fs::read_to_string(dir.path().join(&backups[0])).unwrap(),
+            original_text
+        );
     }
     #[test]
     fn refuses_legacy_and_invalid_config() {

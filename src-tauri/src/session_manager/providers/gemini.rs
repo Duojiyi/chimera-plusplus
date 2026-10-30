@@ -5,6 +5,7 @@ use serde_json::Value;
 use crate::security_limits::{
     read_dir_without_links, read_to_string_limited, MAX_CONFIG_FILE_BYTES,
 };
+use crate::session_manager::delete_backup::{backup_root, backup_session_files};
 use crate::session_manager::{SessionMessage, SessionMeta};
 
 use super::utils::{parse_timestamp_to_ms, truncate_summary};
@@ -115,6 +116,15 @@ pub fn load_messages(path: &Path) -> Result<Vec<SessionMessage>, String> {
 }
 
 pub fn delete_session(_root: &Path, path: &Path, session_id: &str) -> Result<bool, String> {
+    delete_session_with_backup(path, session_id, &backup_root(PROVIDER_ID))
+}
+
+/// Copy the session file aside first; a failed backup deletes nothing.
+fn delete_session_with_backup(
+    path: &Path,
+    session_id: &str,
+    backup_dir: &Path,
+) -> Result<bool, String> {
     let meta = parse_session(path).ok_or_else(|| {
         format!(
             "Failed to parse Gemini session metadata: {}",
@@ -128,6 +138,14 @@ pub fn delete_session(_root: &Path, path: &Path, session_id: &str) -> Result<boo
             meta.session_id
         ));
     }
+
+    backup_session_files(
+        backup_dir,
+        PROVIDER_ID,
+        session_id,
+        meta.title.as_deref(),
+        &[path.to_path_buf()],
+    )?;
 
     std::fs::remove_file(path).map_err(|e| {
         format!(
@@ -202,9 +220,24 @@ mod tests {
         )
         .expect("write session");
 
-        delete_session(temp.path(), &path, "gemini-session-123").expect("delete session");
+        let original = std::fs::read(&path).unwrap();
+        let backups = tempdir().expect("backup dir");
+        delete_session_with_backup(&path, "gemini-session-123", backups.path())
+            .expect("delete session");
 
         assert!(!path.exists());
+        let generation = std::fs::read_dir(backups.path())
+            .unwrap()
+            .next()
+            .expect("one backup")
+            .unwrap()
+            .path();
+        let manifest: Value =
+            serde_json::from_slice(&std::fs::read(generation.join("manifest.json")).unwrap())
+                .unwrap();
+        assert_eq!(manifest["tool"], "gemini");
+        let copy = generation.join(manifest["files"][0]["backupFile"].as_str().unwrap());
+        assert_eq!(std::fs::read(copy).unwrap(), original);
     }
 
     #[test]

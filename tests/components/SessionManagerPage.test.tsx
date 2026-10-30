@@ -562,6 +562,99 @@ describe("SessionManagerPage", () => {
     ).toBeEnabled();
   });
 
+  it("tells the user a Claude delete is backed up and restorable", async () => {
+    renderPage("all");
+    await screen.findByRole("heading", { name: "Claude Session" });
+    fireEvent.click(screen.getByRole("button", { name: /删除会话/i }));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("删除前会自动备份");
+    expect(dialog).not.toHaveTextContent("无法恢复");
+  });
+
+  it("restores a deleted session from its backup and clears backups after a second click", async () => {
+    const backups = [
+      {
+        id: "claude/20261029_101500_a",
+        providerId: "claude",
+        createdAt: "2026-10-29T10:15:00+08:00",
+        sessionIds: ["claude-deleted-1"],
+        title: "Deleted Claude Session",
+        fileCount: 2,
+        totalBytes: 2048,
+        restorableFiles: 2,
+      },
+      {
+        id: "codex/20261028_090000_b",
+        providerId: "codex",
+        createdAt: "2026-10-28T09:00:00+08:00",
+        sessionIds: ["0198aaaa-codex"],
+        fileCount: 1,
+        totalBytes: 100,
+        restorableFiles: 0,
+      },
+    ];
+    const list = vi
+      .spyOn(sessionsApi, "listDeleteBackups")
+      .mockResolvedValue(backups);
+    const restore = vi
+      .spyOn(sessionsApi, "restoreDeleteBackup")
+      .mockResolvedValue({
+        providerId: "claude",
+        restoredFiles: 1,
+        skippedExisting: 1,
+      });
+    const clear = vi
+      .spyOn(sessionsApi, "clearDeleteBackups")
+      .mockResolvedValue({ removedBackups: 2, freedBytes: 2148 });
+    try {
+      renderPage("all");
+      await screen.findByRole("heading", { name: "Claude Session" });
+      fireEvent.click(screen.getByRole("button", { name: "已删除的会话" }));
+      const dialog = await screen.findByRole("dialog", {
+        name: /已删除的会话/,
+      });
+      const items = within(
+        await within(dialog).findByRole("list", { name: "删除备份" }),
+      ).getAllByRole("listitem");
+      expect(items[0]).toHaveTextContent("Deleted Claude Session");
+      // A backup without a title is named by its session id.
+      expect(dialog).toHaveTextContent("会话 0198aaaa");
+      expect(dialog).toHaveTextContent("Codex 会根据会话文件重新建立索引");
+      expect(
+        within(dialog).getByRole("button", { name: "恢复 会话 0198aaaa" }),
+      ).toBeDisabled();
+
+      fireEvent.click(
+        within(dialog).getByRole("button", {
+          name: "恢复 Deleted Claude Session",
+        }),
+      );
+      await waitFor(() =>
+        expect(restore).toHaveBeenCalledWith("claude/20261029_101500_a"),
+      );
+      await waitFor(() =>
+        expect(toastSuccessMock).toHaveBeenCalledWith(
+          "已恢复「Deleted Claude Session」",
+          { description: "1 个文件的原位置已有内容，没有覆盖。" },
+        ),
+      );
+
+      const clearButton = within(dialog).getByRole("button", {
+        name: "清空备份",
+      });
+      fireEvent.click(clearButton);
+      expect(clear).not.toHaveBeenCalled();
+      fireEvent.click(
+        within(dialog).getByRole("button", { name: "确认清空 2 份备份" }),
+      );
+      await waitFor(() => expect(clear).toHaveBeenCalledTimes(1));
+    } finally {
+      list.mockRestore();
+      restore.mockRestore();
+      clear.mockRestore();
+    }
+  });
+
   it("lists the sessions a batch delete removes and counts the rest beyond eight", async () => {
     const many: SessionListEntry[] = Array.from({ length: 11 }, (_, index) => ({
       providerId: "codex",

@@ -676,11 +676,16 @@ fn direct_inference_model_specs(provider: &Provider) -> Result<Vec<InferenceMode
         });
     }
 
-    // Sort supports_1m=true first within each name so the subsequent dedup_by
-    // (which keeps the first occurrence) preserves the 1M-capable variant.
+    // Claude Desktop treats the first inferenceModels entry as the default
+    // model, so order by tier (sonnet → opus → fable → haiku) first and by name
+    // within a tier. Sort supports_1m=true first within each name so the
+    // subsequent dedup_by (which keeps the first occurrence) preserves the
+    // 1M-capable variant.
+    // Adapted from farion1231/cc-switch 983113a1
     result.sort_by(|a, b| {
-        a.name
-            .cmp(&b.name)
+        claude_role_rank(&a.name)
+            .cmp(&claude_role_rank(&b.name))
+            .then_with(|| a.name.cmp(&b.name))
             .then_with(|| b.supports_1m.cmp(&a.supports_1m))
     });
     result.dedup_by(|a, b| a.name == b.name);
@@ -737,7 +742,15 @@ pub fn proxy_model_routes(provider: &Provider) -> Result<Vec<ResolvedModelRoute>
         });
     }
 
-    result.sort_by(|a, b| a.route_id.cmp(&b.route_id));
+    // Tier order first (see direct_inference_model_specs): the first route
+    // becomes Claude Desktop's default model and the first /v1/models entry.
+    // Repair above still walks route ids alphabetically so repaired ids stay
+    // stable across versions.
+    result.sort_by(|a, b| {
+        claude_role_rank(&a.route_id)
+            .cmp(&claude_role_rank(&b.route_id))
+            .then_with(|| a.route_id.cmp(&b.route_id))
+    });
     result.dedup_by(|a, b| a.route_id == b.route_id);
 
     if result.is_empty() {
@@ -931,6 +944,18 @@ fn claude_role_keyword(model: &str) -> Option<&'static str> {
         Some("sonnet")
     } else {
         None
+    }
+}
+
+/// Output order of Claude tiers, matching the frontend ROLE_ORDER
+/// (sonnet → opus → fable → haiku); ids without a tier keyword sort last.
+fn claude_role_rank(model: &str) -> usize {
+    match claude_role_keyword(model) {
+        Some("sonnet") => 0,
+        Some("opus") => 1,
+        Some("fable") => 2,
+        Some("haiku") => 3,
+        _ => 4,
     }
 }
 
@@ -1748,6 +1773,106 @@ mod tests {
             profile["inferenceModels"],
             json!([{ "name": "claude-sonnet-4-6", "supports1m": true, "prefer1m": true }])
         );
+    }
+
+    fn tier_routes(
+        ids: &[&str],
+        upstream: impl Fn(&str) -> String,
+    ) -> std::collections::HashMap<String, ClaudeDesktopModelRoute> {
+        ids.iter()
+            .map(|route_id| {
+                (
+                    route_id.to_string(),
+                    ClaudeDesktopModelRoute {
+                        model: upstream(route_id),
+                        label_override: None,
+                        supports_1m: Some(false),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn claude_desktop_direct_writes_inference_models_in_tier_order() {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = test_paths(temp.path());
+        let mut provider = direct_provider("direct-tier-order");
+        provider.meta = Some(ProviderMeta {
+            claude_desktop_mode: Some(ClaudeDesktopMode::Direct),
+            api_format: Some("anthropic".to_string()),
+            claude_desktop_model_routes: tier_routes(
+                &[
+                    "claude-haiku-4-5",
+                    "claude-sonnet-4-6",
+                    "claude-fable-5",
+                    "claude-opus-4-8",
+                    "claude-sonnet-4-5",
+                ],
+                str::to_string,
+            ),
+            ..Default::default()
+        });
+        let db = test_db();
+
+        apply_provider_to_paths(&db, &provider, &paths).expect("apply provider");
+
+        let profile: Value = read_json_file(&paths.profile_path).expect("read profile");
+        let names: Vec<&str> = profile["inferenceModels"]
+            .as_array()
+            .expect("inferenceModels")
+            .iter()
+            .map(|item| item["name"].as_str().expect("model name"))
+            .collect();
+        // Tier first, then name within the same tier.
+        assert_eq!(
+            names,
+            vec![
+                "claude-sonnet-4-5",
+                "claude-sonnet-4-6",
+                "claude-opus-4-8",
+                "claude-fable-5",
+                "claude-haiku-4-5",
+            ]
+        );
+    }
+
+    #[test]
+    fn claude_desktop_proxy_routes_and_model_list_use_tier_order() {
+        let mut provider = proxy_provider("proxy-tier-order");
+        provider.meta = Some(ProviderMeta {
+            claude_desktop_mode: Some(ClaudeDesktopMode::Proxy),
+            api_format: Some("openai_chat".to_string()),
+            claude_desktop_model_routes: tier_routes(
+                &[
+                    "claude-haiku-4-5",
+                    "claude-fable-5",
+                    "claude-sonnet-5",
+                    "claude-opus-4-8",
+                ],
+                |route_id| format!("upstream-{route_id}"),
+            ),
+            ..Default::default()
+        });
+
+        let route_ids: Vec<String> = proxy_model_routes(&provider)
+            .expect("routes")
+            .into_iter()
+            .map(|route| route.route_id)
+            .collect();
+        assert_eq!(
+            route_ids,
+            vec![
+                "claude-sonnet-5",
+                "claude-opus-4-8",
+                "claude-fable-5",
+                "claude-haiku-4-5",
+            ]
+        );
+
+        let models = model_list_response(&provider).expect("model list");
+        assert_eq!(models["first_id"], json!("claude-sonnet-5"));
+        assert_eq!(models["last_id"], json!("claude-haiku-4-5"));
     }
 
     #[test]

@@ -41,6 +41,33 @@ export interface CodexHistoryReclaimResult {
   skippedReason?: string;
 }
 
+/** A backup taken before a session delete, as `list_session_delete_backups` returns it. */
+export interface SessionDeleteBackup {
+  /** `<tool>/<generation>`; passed back to restore. */
+  id: string;
+  providerId: string;
+  /** RFC 3339 time of the delete. */
+  createdAt?: string;
+  sessionIds: string[];
+  title?: string;
+  fileCount: number;
+  totalBytes: number;
+  /** Files whose original location is free, so a restore would write them. */
+  restorableFiles: number;
+}
+
+export interface SessionDeleteRestoreResult {
+  providerId: string;
+  restoredFiles: number;
+  /** Files left alone because something already exists at their path. */
+  skippedExisting: number;
+}
+
+export interface SessionDeleteBackupsCleared {
+  removedBackups: number;
+  freedBytes: number;
+}
+
 export const sessionsApi = {
   /** The native save dialog owns the destination; null means the user cancelled. */
   async exportFile(options: {
@@ -85,6 +112,21 @@ export const sessionsApi = {
    */
   async reclaimCodexHistory(): Promise<CodexHistoryReclaimResult> {
     return await invoke("reclaim_codex_history_sessions");
+  },
+
+  async listDeleteBackups(): Promise<SessionDeleteBackup[]> {
+    return await invoke("list_session_delete_backups");
+  },
+
+  /** Never overwrites: files whose path is taken again are skipped. */
+  async restoreDeleteBackup(
+    backupId: string,
+  ): Promise<SessionDeleteRestoreResult> {
+    return await invoke("restore_session_delete_backup", { backupId });
+  },
+
+  async clearDeleteBackups(): Promise<SessionDeleteBackupsCleared> {
+    return await invoke("clear_session_delete_backups");
   },
 
   async launchTerminal(options: {

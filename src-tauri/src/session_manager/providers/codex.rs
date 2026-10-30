@@ -9,7 +9,6 @@ use regex::Regex;
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 
 use crate::codex_config::{get_codex_config_dir, read_codex_config_text};
 use crate::codex_state_db::{
@@ -18,6 +17,10 @@ use crate::codex_state_db::{
 };
 use crate::error::AppError;
 use crate::security_limits::{read_limited, MAX_CONFIG_FILE_BYTES};
+use crate::session_manager::delete_backup::{
+    available_space, backup_files, human_size, manifest_entries, new_generation_name,
+    prune_session_delete_backups, write_manifest, BackedUpFile,
+};
 use crate::session_manager::{SessionDeleteResult, SessionMessage, SessionMeta};
 
 use super::utils::{
@@ -555,19 +558,6 @@ fn notice(content: String) -> SessionMessage {
     }
 }
 
-/// A byte count for people: "512 字节", "64 KB", "18.2 MB".
-fn human_size(bytes: u64) -> String {
-    const KIB: f64 = 1024.0;
-    let size = bytes as f64;
-    if size < KIB {
-        format!("{bytes} 字节")
-    } else if size < KIB * KIB {
-        format!("{:.0} KB", size / KIB)
-    } else {
-        format!("{:.1} MB", size / (KIB * KIB))
-    }
-}
-
 /// Finish as much cleanup as possible. The caller keeps the original request
 /// when cleanup_pending is true and can retry even though the rollout is gone.
 pub(crate) fn delete_session_records(
@@ -606,6 +596,7 @@ pub(crate) fn delete_session(
     }
     let mut cleanup = SessionCleanup::prepare(root, session_id)?;
     cleanup.requested_rollout = Some(path.to_path_buf());
+    cleanup.title = meta.title;
     // Nothing has been removed yet: a failed backup leaves the session intact.
     cleanup.backup()?;
     match std::fs::remove_file(path) {
@@ -638,6 +629,9 @@ struct SessionCleanup {
     /// The rollout the caller asked to delete, backed up with the subtree's
     /// rollouts even if its name does not follow Codex's pattern.
     requested_rollout: Option<PathBuf>,
+    /// The session's list title, kept in the backup manifest so the restore
+    /// list can name it.
+    title: Option<String>,
 }
 
 impl SessionCleanup {
@@ -691,11 +685,7 @@ impl SessionCleanup {
             }
         }
 
-        let backup_dir = session_delete_backup_root(&config_dir).join(format!(
-            "{}_{}",
-            chrono::Local::now().format("%Y%m%d_%H%M%S"),
-            uuid::Uuid::new_v4()
-        ));
+        let backup_dir = session_delete_backup_root(&config_dir).join(new_generation_name());
         Ok(Self {
             config_dir,
             homes,
@@ -704,6 +694,7 @@ impl SessionCleanup {
             errors,
             backup_dir,
             requested_rollout: None,
+            title: None,
         })
     }
 
@@ -749,7 +740,7 @@ impl SessionCleanup {
                 }));
             }
         }
-        let rollouts = backup_rollout_files(
+        let rollouts = backup_files(
             &self.rollout_sources(),
             &backup_dir.join(SESSION_BACKUP_ROLLOUTS_DIR),
             available_space,
@@ -758,7 +749,7 @@ impl SessionCleanup {
             self.write_backup_manifest(&state_db_backups, &rollouts)?;
         }
         if let Some(root) = backup_dir.parent() {
-            prune_session_delete_backups(root, backup_dir, KEPT_SESSION_DELETE_BACKUPS);
+            prune_session_delete_backups(root, backup_dir);
         }
         // history.jsonl is copied by its rewrite, under the same lock: Codex
         // holds that lock while it appends, and Windows refuses reads of a
@@ -780,41 +771,17 @@ impl SessionCleanup {
     fn write_backup_manifest(
         &self,
         state_db_backups: &[Value],
-        rollouts: &[RolloutBackup],
+        rollouts: &[BackedUpFile],
     ) -> Result<(), String> {
         let manifest = json!({
             "version": 1,
             "createdAt": chrono::Local::now().to_rfc3339(),
             "threadIds": self.thread_ids,
+            "title": self.title,
             "stateDbBackups": state_db_backups,
-            "rollouts": rollouts
-                .iter()
-                .map(|rollout| json!({
-                    "originalPath": rollout.source.to_string_lossy(),
-                    "backupFile": format!("{SESSION_BACKUP_ROLLOUTS_DIR}/{}", rollout.file_name),
-                    "size": rollout.size,
-                    "sha256": rollout.sha256,
-                }))
-                .collect::<Vec<_>>(),
+            "rollouts": manifest_entries(rollouts, SESSION_BACKUP_ROLLOUTS_DIR),
         });
-        let path = self.backup_dir.join(SESSION_BACKUP_MANIFEST);
-        let failed = |error: String| {
-            format!(
-                "Failed to back up {} before deleting the session: {error}",
-                path.display()
-            )
-        };
-        let text =
-            serde_json::to_vec_pretty(&manifest).map_err(|error| failed(error.to_string()))?;
-        std::fs::create_dir_all(&self.backup_dir).map_err(|error| failed(error.to_string()))?;
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .map_err(|error| failed(error.to_string()))?;
-        file.write_all(&text)
-            .and_then(|()| file.sync_all())
-            .map_err(|error| failed(error.to_string()))
+        write_manifest(&self.backup_dir, &manifest)
     }
 
     fn run(self) -> SessionDeleteResult {
@@ -957,9 +924,7 @@ impl SessionCleanup {
 
 #[cfg(not(test))]
 fn session_delete_backup_root(_config_dir: &Path) -> PathBuf {
-    crate::config::get_app_config_dir()
-        .join("backups")
-        .join("codex-session-delete")
+    crate::session_manager::delete_backup::backup_root(PROVIDER_ID)
 }
 
 /// Tests keep their backups inside the temporary Codex home.
@@ -968,258 +933,7 @@ fn session_delete_backup_root(config_dir: &Path) -> PathBuf {
     config_dir.join("session-delete-backups")
 }
 
-/// Backups of earlier deletes kept besides the current one; older ones are
-/// removed so deleting sessions does not grow disk use without bound.
-const KEPT_SESSION_DELETE_BACKUPS: usize = 20;
-/// A backup younger than this is never pruned, so a large batch delete keeps
-/// every backup it made.
-const SESSION_DELETE_BACKUP_MIN_AGE: std::time::Duration =
-    std::time::Duration::from_secs(7 * 24 * 60 * 60);
-
-/// Remove the oldest delete backups beyond `keep` that are also older than
-/// [`SESSION_DELETE_BACKUP_MIN_AGE`]. Directory names start with a sortable
-/// timestamp; links and stray files are left alone, and the backup just made
-/// is never removed. Failures only log: the delete itself is safe.
-fn prune_session_delete_backups(root: &Path, current: &Path, keep: usize) {
-    prune_session_delete_backups_older_than(root, current, keep, SESSION_DELETE_BACKUP_MIN_AGE);
-}
-
-fn prune_session_delete_backups_older_than(
-    root: &Path,
-    current: &Path,
-    keep: usize,
-    min_age: std::time::Duration,
-) {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return;
-    };
-    let mut generations: Vec<PathBuf> = entries
-        .flatten()
-        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
-        .map(|entry| entry.path())
-        .filter(|path| path != current)
-        .collect();
-    generations.sort();
-    let excess = generations.len().saturating_sub(keep);
-    for old in generations.into_iter().take(excess) {
-        let old_enough = std::fs::metadata(&old)
-            .and_then(|metadata| metadata.modified())
-            .ok()
-            .and_then(|modified| modified.elapsed().ok())
-            .is_some_and(|age| age >= min_age);
-        if !old_enough {
-            continue;
-        }
-        if let Err(error) = std::fs::remove_dir_all(&old) {
-            log::warn!(
-                "Failed to remove old session delete backup {}: {error}",
-                old.display()
-            );
-        }
-    }
-}
-
 const SESSION_BACKUP_ROLLOUTS_DIR: &str = "rollouts";
-const SESSION_BACKUP_MANIFEST: &str = "manifest.json";
-
-/// One rollout copied aside before a delete.
-#[derive(Debug)]
-struct RolloutBackup {
-    source: PathBuf,
-    /// File name inside the backup's `rollouts` directory.
-    file_name: String,
-    size: u64,
-    sha256: String,
-}
-
-/// Copy `sources` into `dir`, hashing while copying, and verify each copy
-/// against a second read of its source: a rollout Codex is still appending to
-/// would otherwise be kept half-written. Any failure (including too little
-/// free space, checked up front) removes the partial copies and fails, so the
-/// caller deletes nothing.
-// Adapted from BigPizzaV3/CodexPlusPlus 5126bfd
-fn backup_rollout_files<F>(
-    sources: &[PathBuf],
-    dir: &Path,
-    available_space: F,
-) -> Result<Vec<RolloutBackup>, String>
-where
-    F: FnOnce(&Path) -> io::Result<u64>,
-{
-    let failed = |path: &Path, error: String| {
-        format!(
-            "Failed to back up {} before deleting the session: {error}",
-            path.display()
-        )
-    };
-    let mut planned = Vec::new();
-    let mut total: u64 = 0;
-    for source in sources {
-        match std::fs::symlink_metadata(source) {
-            Ok(metadata) if metadata.is_file() => {
-                total = total.saturating_add(metadata.len());
-                planned.push(source);
-            }
-            Ok(_) => return Err(failed(source, "not a regular file".to_string())),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(failed(source, error.to_string())),
-        }
-    }
-    if planned.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    std::fs::create_dir_all(dir).map_err(|error| failed(dir, error.to_string()))?;
-    let free = match available_space(dir) {
-        Ok(free) => free,
-        Err(error) => {
-            let _ = std::fs::remove_dir_all(dir);
-            return Err(failed(dir, error.to_string()));
-        }
-    };
-    if free < total {
-        let _ = std::fs::remove_dir_all(dir);
-        return Err(format!(
-            "备份空间不足，原数据未删除：会话备份需要 {}，{} 只剩 {}。",
-            human_size(total),
-            dir.display(),
-            human_size(free)
-        ));
-    }
-
-    let mut backups = Vec::with_capacity(planned.len());
-    for (index, source) in planned.into_iter().enumerate() {
-        match backup_one_rollout(source, dir, index) {
-            Ok(backup) => backups.push(backup),
-            Err(error) => {
-                let _ = std::fs::remove_dir_all(dir);
-                return Err(failed(source, error));
-            }
-        }
-    }
-    Ok(backups)
-}
-
-fn backup_one_rollout(source: &Path, dir: &Path, index: usize) -> Result<RolloutBackup, String> {
-    let name = source
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "rollout.jsonl".to_string());
-    let file_name = format!("{index}-{name}");
-    let target = dir.join(&file_name);
-    let (size, sha256) = copy_file_hashed(source, &target).map_err(|error| error.to_string())?;
-    verify_rollout_copy(source, &target, size, &sha256)?;
-    Ok(RolloutBackup {
-        source: source.to_path_buf(),
-        file_name,
-        size,
-        sha256,
-    })
-}
-
-/// Both the source and the copy must still hash to what was copied.
-fn verify_rollout_copy(source: &Path, copy: &Path, size: u64, sha256: &str) -> Result<(), String> {
-    let source_now = hash_file(source).map_err(|error| error.to_string())?;
-    if source_now != (size, sha256.to_string()) {
-        return Err(
-            "会话文件在备份期间发生了变化，原数据未删除。请在 Codex 中结束这个会话后重试。"
-                .to_string(),
-        );
-    }
-    let copy_now = hash_file(copy).map_err(|error| error.to_string())?;
-    if copy_now != (size, sha256.to_string()) {
-        return Err("会话备份校验失败，原数据未删除。".to_string());
-    }
-    Ok(())
-}
-
-fn copy_file_hashed(source: &Path, target: &Path) -> io::Result<(u64, String)> {
-    let mut input = crate::security_limits::open_regular_file_no_symlink(source)?;
-    let mut output = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(target)?;
-    let mut hasher = Sha256::new();
-    let mut buffer = vec![0u8; 64 * 1024];
-    let mut size: u64 = 0;
-    loop {
-        let read = input.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-        output.write_all(&buffer[..read])?;
-        size += read as u64;
-    }
-    output.sync_all()?;
-    Ok((size, format!("{:x}", hasher.finalize())))
-}
-
-fn hash_file(path: &Path) -> io::Result<(u64, String)> {
-    let mut input = crate::security_limits::open_regular_file_no_symlink(path)?;
-    let mut hasher = Sha256::new();
-    let mut buffer = vec![0u8; 64 * 1024];
-    let mut size: u64 = 0;
-    loop {
-        let read = input.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-        size += read as u64;
-    }
-    Ok((size, format!("{:x}", hasher.finalize())))
-}
-
-/// Free bytes available to this process on the volume that holds `dir`.
-fn available_space(dir: &Path) -> io::Result<u64> {
-    #[cfg(windows)]
-    {
-        use std::os::windows::ffi::OsStrExt;
-        use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
-        let wide: Vec<u16> = dir
-            .as_os_str()
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-        let mut free: u64 = 0;
-        // SAFETY: `wide` is NUL-terminated and outlives the call; the two
-        // optional out-pointers may be null.
-        let ok = unsafe {
-            GetDiskFreeSpaceExW(
-                wide.as_ptr(),
-                &mut free,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-            )
-        };
-        if ok == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(free)
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::ffi::OsStrExt;
-        let path = std::ffi::CString::new(dir.as_os_str().as_bytes())
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-        // SAFETY: `path` is NUL-terminated and `stat` is a plain C struct that
-        // statvfs fills in.
-        let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
-        if unsafe { libc::statvfs(path.as_ptr(), &mut stat) } != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        // The field widths differ between platforms.
-        #[allow(clippy::unnecessary_cast)]
-        let (blocks, block_size) = (stat.f_bavail as u64, stat.f_frsize as u64);
-        Ok(blocks.saturating_mul(block_size))
-    }
-    #[cfg(not(any(windows, unix)))]
-    {
-        let _ = dir;
-        Ok(u64::MAX)
-    }
-}
 
 /// Rollout files (active or archived) whose name carries one of `thread_ids`,
 /// the way Codex names them (`rollout-<timestamp>-<thread id>.jsonl[.zst]`,
@@ -2078,7 +1792,9 @@ fn collect_jsonl_files_at_depth(root: &Path, files: &mut Vec<PathBuf>, depth: us
 mod tests {
     use super::super::codex_io::open_lines_with_limits;
     use super::*;
+    use crate::session_manager::delete_backup::BACKUP_MANIFEST as SESSION_BACKUP_MANIFEST;
     use serde_json::json;
+    use sha2::{Digest, Sha256};
     use std::fs::OpenOptions;
     use tempfile::tempdir;
 
@@ -3328,34 +3044,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn session_delete_backups_keep_only_the_newest_generations() {
-        let temp = tempdir().expect("tempdir");
-        let root = temp.path();
-        for name in [
-            "20261001_000000_a",
-            "20261002_000000_b",
-            "20261003_000000_c",
-        ] {
-            std::fs::create_dir_all(root.join(name).join("rollouts")).unwrap();
-        }
-        std::fs::write(root.join("notes.txt"), b"keep").unwrap();
-        let current = root.join("20261004_000000_d");
-        std::fs::create_dir_all(&current).unwrap();
-
-        // Recent backups survive even beyond the count (a large batch delete).
-        prune_session_delete_backups(root, &current, 1);
-        assert!(root.join("20261001_000000_a").exists());
-
-        prune_session_delete_backups_older_than(root, &current, 1, std::time::Duration::ZERO);
-
-        assert!(!root.join("20261001_000000_a").exists());
-        assert!(!root.join("20261002_000000_b").exists());
-        assert!(root.join("20261003_000000_c").exists());
-        assert!(current.exists());
-        assert!(root.join("notes.txt").exists());
-    }
-
     fn session_backup_generations(home: &Path) -> Vec<PathBuf> {
         std::fs::read_dir(home.join("session-delete-backups"))
             .unwrap()
@@ -3374,6 +3062,8 @@ mod tests {
         let archived_copy = archived.join(rollout_name(ROOT_ID, "jsonl.zst"));
         std::fs::write(&archived_copy, b"\x28\xb5\x2f\xfdarchived").unwrap();
         let main_bytes = std::fs::read(&main).unwrap();
+        let expected_title = parse_session(&main).and_then(|meta| meta.title);
+        assert!(expected_title.is_some());
 
         let result = delete_session(&sessions, &main, ROOT_ID).unwrap();
         assert!(!result.cleanup_pending, "{:?}", result.error);
@@ -3387,6 +3077,8 @@ mod tests {
         .unwrap();
         assert_eq!(manifest["version"], json!(1));
         assert_eq!(manifest["threadIds"], json!([ROOT_ID]));
+        // The restore list names the session by its title.
+        assert_eq!(manifest["title"], json!(expected_title));
         let rollouts = manifest["rollouts"].as_array().unwrap();
         assert_eq!(rollouts.len(), 2);
         let main_entry = rollouts
@@ -3403,54 +3095,6 @@ mod tests {
         assert!(rollouts.iter().any(|entry| entry["backupFile"]
             .as_str()
             .is_some_and(|file| file.ends_with(".jsonl.zst"))));
-    }
-
-    #[test]
-    fn rollout_backup_without_enough_space_copies_and_deletes_nothing() {
-        let temp = tempdir().unwrap();
-        let home = temp.path();
-        let (sessions, _) = codex_home_with_sessions(home);
-        let main = sessions.join(rollout_name(ROOT_ID, "jsonl"));
-        write_codex_session(&main, ROOT_ID, "root");
-        let dir = home.join("backup").join(SESSION_BACKUP_ROLLOUTS_DIR);
-
-        let error = backup_rollout_files(std::slice::from_ref(&main), &dir, |_| Ok(1))
-            .expect_err("too little space must fail");
-        assert!(error.contains("备份空间不足"), "{error}");
-        assert!(main.exists());
-        assert!(!dir.exists(), "no partial copy is left behind");
-
-        let backups =
-            backup_rollout_files(std::slice::from_ref(&main), &dir, |_| Ok(u64::MAX)).unwrap();
-        assert_eq!(backups.len(), 1);
-        assert_eq!(
-            std::fs::read(dir.join(&backups[0].file_name)).unwrap(),
-            std::fs::read(&main).unwrap()
-        );
-    }
-
-    #[test]
-    fn a_rollout_that_changes_after_its_copy_fails_verification() {
-        let temp = tempdir().unwrap();
-        let source = temp.path().join(rollout_name(ROOT_ID, "jsonl"));
-        write_codex_session(&source, ROOT_ID, "root");
-        let copy = temp.path().join("copy.jsonl");
-        let (size, sha256) = copy_file_hashed(&source, &copy).unwrap();
-        verify_rollout_copy(&source, &copy, size, &sha256).expect("unchanged copy verifies");
-
-        // Codex appends another line after the copy was taken.
-        let mut writer = OpenOptions::new().append(true).open(&source).unwrap();
-        writer.write_all(b"{\"type\":\"late\"}\n").unwrap();
-        drop(writer);
-
-        let error = verify_rollout_copy(&source, &copy, size, &sha256).unwrap_err();
-        assert!(error.contains("发生了变化"), "{error}");
-    }
-
-    #[test]
-    fn available_space_reports_the_temp_volume() {
-        let temp = tempdir().unwrap();
-        assert!(available_space(temp.path()).unwrap() > 0);
     }
 
     #[test]

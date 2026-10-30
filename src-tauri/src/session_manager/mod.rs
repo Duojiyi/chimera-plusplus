@@ -1,3 +1,4 @@
+pub mod delete_backup;
 pub mod providers;
 pub mod terminal;
 

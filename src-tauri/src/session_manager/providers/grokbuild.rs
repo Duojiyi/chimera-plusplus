@@ -7,9 +7,12 @@ use crate::security_limits::{
     canonicalize_within_root, collect_files_with_extensions, read_to_string_limited,
     MAX_SESSION_FILE_BYTES, MAX_SESSION_SCAN_DEPTH,
 };
+use crate::session_manager::delete_backup::{backup_root, backup_session_files};
 use crate::session_manager::{SessionMessage, SessionMeta};
 
-use super::utils::{extract_text, parse_timestamp_to_ms, truncate_summary, TITLE_MAX_CHARS};
+use super::utils::{
+    deletion_files, extract_text, parse_timestamp_to_ms, truncate_summary, TITLE_MAX_CHARS,
+};
 
 #[derive(Debug, Deserialize)]
 struct GrokSessionInfo {
@@ -91,7 +94,20 @@ pub fn load_messages(path: &Path) -> Result<Vec<SessionMessage>, String> {
     Ok(messages)
 }
 
+const PROVIDER_ID: &str = "grokbuild";
+
 pub fn delete_session(root: &Path, path: &Path, session_id: &str) -> Result<bool, String> {
+    delete_session_with_backup(root, path, session_id, &backup_root(PROVIDER_ID))
+}
+
+/// Copy every file of the session directory aside first; a failed backup
+/// deletes nothing.
+fn delete_session_with_backup(
+    root: &Path,
+    path: &Path,
+    session_id: &str,
+    backup_dir: &Path,
+) -> Result<bool, String> {
     let path = canonicalize_within_root(path, root).map_err(|_| {
         format!(
             "Grok Build session source is outside the session root: {}",
@@ -129,6 +145,15 @@ pub fn delete_session(root: &Path, path: &Path, session_id: &str) -> Result<bool
             session_dir.display()
         ));
     }
+    let title = parse_summary(&path).and_then(|meta| meta.title);
+    let files = deletion_files(&root, session_dir)?;
+    backup_session_files(
+        backup_dir,
+        PROVIDER_ID,
+        session_id,
+        title.as_deref(),
+        &files,
+    )?;
     std::fs::remove_dir_all(session_dir).map_err(|e| {
         format!(
             "Failed to delete Grok Build session directory {}: {e}",
@@ -183,7 +208,7 @@ fn parse_summary(path: &Path) -> Option<SessionMeta> {
         .and_then(parse_timestamp_to_ms);
 
     Some(SessionMeta {
-        provider_id: "grokbuild".to_string(),
+        provider_id: PROVIDER_ID.to_string(),
         session_id: session_id.clone(),
         title,
         summary: session_summary,
@@ -272,11 +297,27 @@ mod tests {
         .expect("write summary");
         std::fs::write(sibling_dir.join("keep.txt"), "keep").expect("write sibling file");
 
-        let deleted = delete_session(&root, &summary_path, session_id).expect("delete session");
+        std::fs::write(session_dir.join("chat.jsonl"), "{}").expect("write chat");
+        let backups = tempdir().expect("backup dir");
+
+        let deleted = delete_session_with_backup(&root, &summary_path, session_id, backups.path())
+            .expect("delete session");
 
         assert!(deleted);
         assert!(!session_dir.exists());
         assert!(sibling_dir.exists());
+        // Both files of the session directory were copied aside first.
+        let generation = std::fs::read_dir(backups.path())
+            .unwrap()
+            .next()
+            .expect("one backup")
+            .unwrap()
+            .path();
+        let manifest: Value =
+            serde_json::from_slice(&std::fs::read(generation.join("manifest.json")).unwrap())
+                .unwrap();
+        assert_eq!(manifest["tool"], "grokbuild");
+        assert_eq!(manifest["files"].as_array().unwrap().len(), 2);
     }
 
     #[test]
@@ -290,8 +331,10 @@ mod tests {
         std::fs::write(&summary_path, r#"{"info":{"id":"session-outside"}}"#)
             .expect("write summary");
 
-        let error = delete_session(&root, &summary_path, "session-outside")
-            .expect_err("outside path must be rejected");
+        let backups = tempdir().expect("backup dir");
+        let error =
+            delete_session_with_backup(&root, &summary_path, "session-outside", backups.path())
+                .expect_err("outside path must be rejected");
 
         assert!(error.contains("outside the session root"));
         assert!(outside_dir.exists());

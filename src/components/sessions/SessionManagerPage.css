@@ -874,3 +874,53 @@
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
+
+/* ---- Deleted-session backups ---- */
+.session-backups-dialog {
+  max-width: 520px;
+}
+.session-backups-dialog-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 17px;
+}
+.session-backups-dialog-title svg {
+  color: var(--text-2);
+}
+.session-backups-empty {
+  margin: 0;
+  padding: 20px 12px;
+  border: 1px dashed var(--border-subtle);
+  border-radius: 6px;
+  color: var(--text-3);
+  font-size: 13px;
+  text-align: center;
+}
+.session-delete-list:has(.session-backup-item) {
+  max-height: 320px;
+  overflow-y: auto;
+}
+.session-backup-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 8px 8px 12px;
+}
+.session-backup-item + .session-backup-item {
+  border-top: 1px solid var(--border-subtle);
+}
+.session-backup-item-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.session-backup-restore {
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+}
+.session-backups-footer {
+  justify-content: space-between;
+}

@@ -43,8 +43,10 @@ struct ModelEntry {
     owned_by: Option<String>,
 }
 
-/// `models[]` 条目对应的模型 id：`slug` 优先，回退 OpenAI 风格的 `id`；
-/// 非数组、非对象、非字符串或空串一律跳过，绝不报错。
+/// `models[]` 条目对应的模型 id：`slug` 优先，回退 OpenAI 风格的 `id`，
+/// 再回退 Gemini 原生 `name`（仅 `models/xxx` 形式，去掉 `models/` 前缀；
+/// 其他 `name` 多是展示名，不当 id）。非数组、非对象、非字符串或空串一律
+/// 跳过，绝不报错。
 fn catalog_model_ids(models: Option<serde_json::Value>) -> Vec<String> {
     let Some(serde_json::Value::Array(entries)) = models else {
         return Vec::new();
@@ -55,6 +57,12 @@ fn catalog_model_ids(models: Option<serde_json::Value>) -> Vec<String> {
             ["slug", "id"]
                 .iter()
                 .find_map(|k| m.get(k)?.as_str().filter(|s| !s.is_empty()))
+                .or_else(|| {
+                    m.get("name")?
+                        .as_str()?
+                        .strip_prefix("models/")
+                        .filter(|s| !s.is_empty())
+                })
         })
         .map(str::to_string)
         .collect()
@@ -215,9 +223,15 @@ async fn fetch_models_unredacted(
             "[ModelFetch] Trying endpoint: {}",
             crate::url_for_log_with_secrets(url, &log_secrets)
         );
+        // Gemini 原生端点只认 `x-goog-api-key`（Bearer 会被当成 OAuth 令牌拒绝）。
+        let (auth_header, auth_value) = if is_gemini_native_models_url(url) {
+            ("x-goog-api-key", api_key.to_string())
+        } else {
+            ("Authorization", format!("Bearer {api_key}"))
+        };
         let mut request = client
             .get(url)
-            .header("Authorization", format!("Bearer {api_key}"))
+            .header(auth_header, auth_value)
             .timeout(Duration::from_secs(FETCH_TIMEOUT_SECS));
         // 自定义 User-Agent / 自定义请求头：部分 /models 端点同样有 UA 白名单
         // （如 Kimi Coding Plan）或企业网关识别头，与转发 / 检测路径保持一致，
@@ -1618,10 +1632,16 @@ fn build_api_format_probe_urls(
 ///
 /// 候选顺序：
 /// 1. `models_url_override` 非空 → 只返回它
-/// 2. baseURL 拼 `/v1/models`；若已以版本段 `/v{N}` 结尾（`/v1`、智谱
-///    `/api/coding/paas/v4` 等），版本号已在路径里，改拼 `/models`
-/// 3. 版本段非 `/v1`（如 `/v4`）时再追加 `/v1/models` 作为兜底次候选
-/// 4. 若 baseURL 命中 [`KNOWN_COMPAT_SUFFIXES`]，剥离后缀再拼 `/v1/models`、`/models`
+/// 2. Gemini 原生地址（`generativelanguage.googleapis.com` 且路径不含
+///    `/openai`）→ 只返回 `/v1beta/models`
+/// 3. 已以版本段结尾（`/v1`、`/v1beta`、智谱 `/api/coding/paas/v4` 等）时，
+///    版本号已在路径里，拼 `/models`；版本段非 `/v1` 时再追加 `/v1/models`
+///    作为兜底次候选
+/// 4. 命中 [`KNOWN_COMPAT_SUFFIXES`] 或只有域名时拼 `/v1/models`
+/// 5. 其他带路径的地址（如 `/v1beta/openai`、`/api`）与转发规则
+///    （`proxy/codex_url.rs`：自定义前缀原样保留、不插入 `/v1`）一致，首选
+///    `{base}/models`；路径里还没有版本段时再追加 `{base}/v1/models`
+/// 6. 命中 [`KNOWN_COMPAT_SUFFIXES`] 时，剥离后缀再拼 `/v1/models`、`/models`
 ///
 /// 结果已去重且保持首次出现顺序。
 pub fn build_models_url_candidates(
@@ -1658,7 +1678,11 @@ pub fn build_models_url_candidates(
         return Ok(candidates);
     }
 
-    // baseURL 已以版本段 /v{N} 结尾时（如 `/v1`、智谱 `/api/coding/paas/v4`），
+    if let Some(native) = gemini_native_models_url(trimmed) {
+        return Ok(vec![native]);
+    }
+
+    // baseURL 已以版本段结尾时（如 `/v1`、`/v1beta`、智谱 `/api/coding/paas/v4`），
     // OpenAI 惯例的模型端点是 `{base}/models`，不能再补 `/v1`
     // （否则 .../coding/paas/v4/v1/models → 404）。
     if ends_with_version_segment(trimmed) {
@@ -1667,8 +1691,16 @@ pub fn build_models_url_candidates(
         if !trimmed.ends_with("/v1") {
             candidates.push(format!("{trimmed}/v1/models"));
         }
-    } else {
+    } else if strip_compat_suffix(trimmed).is_some() || base_path(trimmed).is_empty() {
         candidates.push(format!("{trimmed}/v1/models"));
+    } else {
+        // 自定义前缀（`…/v1beta/openai`、`…/api`）：与转发规则一致，前缀原样
+        // 保留、不插入 /v1。
+        // Adapted from BigPizzaV3/CodexPlusPlus 254467f9
+        candidates.push(format!("{trimmed}/models"));
+        if !path_has_version_segment(trimmed) {
+            candidates.push(format!("{trimmed}/v1/models"));
+        }
     }
 
     if let Some(stripped) = strip_compat_suffix(trimmed) {
@@ -1714,13 +1746,53 @@ fn strip_compat_suffix(base_url: &str) -> Option<&str> {
     None
 }
 
-/// 判断 baseURL 是否以 OpenAI 风格的版本段 `/v{N}` 结尾（`N` 为一个或多个数字），
-/// 例如 `/v1`、`.../paas/v4`。这类 URL 版本号已在路径中，模型端点应为
-/// `{base}/models`，不能再补 `/v1`（智谱 Coding Plan 即 `.../coding/paas/v4`）。
+/// 判断 baseURL 是否以版本段结尾：`v` + 一个或多个数字 + 可选的字母数字后缀，
+/// 例如 `/v1`、`.../paas/v4`、Gemini 的 `/v1beta`。这类 URL 版本号已在路径中，
+/// 模型端点应为 `{base}/models`，不能再补 `/v1`（智谱 Coding Plan 即
+/// `.../coding/paas/v4`）。
 fn ends_with_version_segment(url: &str) -> bool {
-    let last = url.rsplit('/').next().unwrap_or("");
-    last.strip_prefix('v')
-        .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+    is_version_segment(url.rsplit('/').next().unwrap_or(""))
+}
+
+fn is_version_segment(segment: &str) -> bool {
+    let Some(rest) = segment.strip_prefix('v') else {
+        return false;
+    };
+    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+    digits > 0 && rest.bytes().all(|b| b.is_ascii_alphanumeric())
+}
+
+/// baseURL 的路径部分（不含 scheme 与 host、末尾无 `/`），无路径时为空串。
+fn base_path(url: &str) -> &str {
+    let after_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
+    after_scheme
+        .find('/')
+        .map_or("", |index| after_scheme[index..].trim_end_matches('/'))
+}
+
+fn path_has_version_segment(url: &str) -> bool {
+    base_path(url).split('/').any(is_version_segment)
+}
+
+const GEMINI_NATIVE_HOST: &str = "generativelanguage.googleapis.com";
+
+/// Gemini 原生（非 OpenAI 兼容）地址的模型列表端点：`/v1beta/models`，
+/// 返回 `models[].name`（`models/gemini-…`）。`pageSize=1000` 一次取全。
+fn gemini_native_models_url(base_url: &str) -> Option<String> {
+    let url = Url::parse(base_url).ok()?;
+    if url.host_str()? != GEMINI_NATIVE_HOST || url.path().contains("/openai") {
+        return None;
+    }
+    Some(format!(
+        "{}://{GEMINI_NATIVE_HOST}/v1beta/models?pageSize=1000",
+        url.scheme()
+    ))
+}
+
+fn is_gemini_native_models_url(url: &str) -> bool {
+    Url::parse(url).is_ok_and(|url| {
+        url.host_str() == Some(GEMINI_NATIVE_HOST) && !url.path().contains("/openai")
+    })
 }
 
 #[cfg(test)]
@@ -1938,6 +2010,10 @@ mod tests {
             "https://open.bigmodel.cn/api/coding/paas/v4"
         ));
         assert!(ends_with_version_segment("https://x.com/v10"));
+        assert!(ends_with_version_segment("https://x.com/v1beta"));
+        assert!(ends_with_version_segment("https://x.com/v2alpha1"));
+        assert!(!ends_with_version_segment("https://x.com/vbeta"));
+        assert!(!ends_with_version_segment("https://x.com/v1-beta"));
         assert!(!ends_with_version_segment("https://x.com/api"));
         assert!(!ends_with_version_segment("https://x.com/vX"));
         assert!(!ends_with_version_segment("https://x.com/models"));
@@ -3228,8 +3304,79 @@ mod tests {
 
     #[test]
     fn test_candidates_no_suffix_no_strip() {
+        // A custom prefix is kept verbatim like the forwarder does; /v1 stays
+        // as a fallback because the path has no version segment yet.
         let c = build_models_url_candidates("https://openrouter.ai/api", false, None).unwrap();
-        assert_eq!(c, vec!["https://openrouter.ai/api/v1/models"]);
+        assert_eq!(
+            c,
+            vec![
+                "https://openrouter.ai/api/models",
+                "https://openrouter.ai/api/v1/models",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_candidates_custom_prefix_after_version_does_not_insert_v1() {
+        let c = build_models_url_candidates(
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+            false,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            c,
+            vec!["https://generativelanguage.googleapis.com/v1beta/openai/models"]
+        );
+        let c =
+            build_models_url_candidates("https://gw.example.com/v1/openai/", false, None).unwrap();
+        assert_eq!(c, vec!["https://gw.example.com/v1/openai/models"]);
+        // A trailing beta version segment is a version, not a prefix.
+        let c = build_models_url_candidates("https://gw.example.com/v1beta", false, None).unwrap();
+        assert_eq!(
+            c,
+            vec![
+                "https://gw.example.com/v1beta/models",
+                "https://gw.example.com/v1beta/v1/models",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_candidates_gemini_native_lists_v1beta_models_with_api_key_header() {
+        for base in [
+            "https://generativelanguage.googleapis.com",
+            "https://generativelanguage.googleapis.com/v1beta",
+            "https://generativelanguage.googleapis.com/v1beta/models/",
+        ] {
+            let c = build_models_url_candidates(base, false, None).unwrap();
+            assert_eq!(
+                c,
+                vec!["https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000"],
+                "{base}"
+            );
+            assert!(is_gemini_native_models_url(&c[0]));
+        }
+        assert!(!is_gemini_native_models_url(
+            "https://generativelanguage.googleapis.com/v1beta/openai/models"
+        ));
+        assert!(!is_gemini_native_models_url(
+            "https://api.example.com/v1/models"
+        ));
+    }
+
+    #[test]
+    fn test_catalog_model_ids_reads_gemini_native_names() {
+        let json = r#"{"models": [
+            {"name": "models/gemini-2.5-pro", "displayName": "Gemini 2.5 Pro"},
+            {"name": "models/"},
+            {"name": "Display Only"}
+        ], "nextPageToken": ""}"#;
+        let resp: ModelsResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            catalog_model_ids(resp.models),
+            vec!["gemini-2.5-pro".to_string()]
+        );
     }
 
     #[test]

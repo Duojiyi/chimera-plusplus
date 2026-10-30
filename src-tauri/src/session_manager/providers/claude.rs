@@ -8,11 +8,12 @@ use crate::security_limits::{
     collect_files_with_extensions, open_limited_regular_file, MAX_SESSION_FILE_BYTES,
     MAX_SESSION_SCAN_DEPTH,
 };
+use crate::session_manager::delete_backup::{backup_root, backup_session_files};
 use crate::session_manager::{SessionMessage, SessionMeta};
 
 use super::utils::{
-    extract_text, parse_timestamp_to_ms, path_basename, read_head_tail_lines, truncate_summary,
-    TITLE_MAX_CHARS,
+    deletion_files, extract_text, parse_timestamp_to_ms, path_basename, read_head_tail_lines,
+    truncate_summary, TITLE_MAX_CHARS,
 };
 
 const PROVIDER_ID: &str = "claude";
@@ -120,7 +121,18 @@ fn push_message(messages: &mut Vec<SessionMessage>, role: &str, content: &Value,
     });
 }
 
-pub fn delete_session(_root: &Path, path: &Path, session_id: &str) -> Result<bool, String> {
+pub fn delete_session(root: &Path, path: &Path, session_id: &str) -> Result<bool, String> {
+    delete_session_with_backup(root, path, session_id, &backup_root(PROVIDER_ID))
+}
+
+/// Copy the session file and its sidecar directory (sub-agent transcripts,
+/// tool results) aside first; a failed backup deletes nothing.
+fn delete_session_with_backup(
+    root: &Path,
+    path: &Path,
+    session_id: &str,
+    backup_dir: &Path,
+) -> Result<bool, String> {
     let meta = parse_session(path).ok_or_else(|| {
         format!(
             "Failed to parse Claude session metadata: {}",
@@ -135,8 +147,22 @@ pub fn delete_session(_root: &Path, path: &Path, session_id: &str) -> Result<boo
         ));
     }
 
-    if let Some(stem) = path.file_stem() {
-        let sibling = path.parent().unwrap_or_else(|| Path::new("")).join(stem);
+    let sibling = path
+        .file_stem()
+        .map(|stem| path.parent().unwrap_or_else(|| Path::new("")).join(stem));
+    let mut files = vec![path.to_path_buf()];
+    if let Some(sibling) = &sibling {
+        files.extend(deletion_files(root, sibling)?);
+    }
+    backup_session_files(
+        backup_dir,
+        PROVIDER_ID,
+        session_id,
+        meta.title.as_deref(),
+        &files,
+    )?;
+
+    if let Some(sibling) = sibling {
         remove_path_if_exists(&sibling).map_err(|e| {
             format!(
                 "Failed to delete Claude session sidecar {}: {e}",
@@ -202,8 +228,8 @@ fn parse_session(path: &Path) -> Option<SessionMeta> {
                     let text = message.get("content").map(extract_text).unwrap_or_default();
                     let trimmed = text.trim();
                     if !trimmed.is_empty()
-                        && !trimmed.contains("<local-command-caveat>")
                         && !trimmed.starts_with("<command-name>")
+                        && !is_injected_text(trimmed)
                     {
                         first_user_message = Some(trimmed.to_string());
                     }
@@ -248,7 +274,13 @@ fn parse_session(path: &Path) -> Option<SessionMeta> {
             }
             if let Some(message) = value.get("message") {
                 let text = message.get("content").map(extract_text).unwrap_or_default();
-                if !text.trim().is_empty() {
+                let trimmed = text.trim();
+                // A local command run last (`/model`, `/cost`) ends the file
+                // with its command line and its output.
+                if !trimmed.is_empty()
+                    && !trimmed.starts_with("<command-name>")
+                    && !is_injected_text(trimmed)
+                {
                     summary = Some(text);
                 }
             }
@@ -286,6 +318,21 @@ fn parse_session(path: &Path) -> Option<SessionMeta> {
         resume_command: super::utils::resume_command("claude --resume", &session_id),
         archived: false,
     })
+}
+
+/// Text Claude Code writes into the transcript as a user turn although the
+/// user did not type it: the local-command caveat, a local command's output
+/// and background task notifications.
+// Adapted from farion1231/cc-switch 1a3057dc
+fn is_injected_text(text: &str) -> bool {
+    text.contains("<local-command-caveat>")
+        || [
+            "<local-command-stdout>",
+            "<local-command-stderr>",
+            "<task-notification>",
+        ]
+        .iter()
+        .any(|prefix| text.starts_with(prefix))
 }
 
 fn is_agent_session(path: &Path) -> bool {
@@ -341,10 +388,47 @@ mod tests {
         )
         .expect("write session");
 
-        delete_session(temp.path(), &path, "session-123").expect("delete session");
+        let backups = tempdir().expect("backup dir");
+        delete_session_with_backup(temp.path(), &path, "session-123", backups.path())
+            .expect("delete session");
 
         assert!(!path.exists());
         assert!(!sidecar.exists());
+
+        // The file and every sidecar file were copied aside first.
+        let generation = std::fs::read_dir(backups.path())
+            .unwrap()
+            .next()
+            .expect("one backup")
+            .unwrap()
+            .path();
+        let manifest: Value =
+            serde_json::from_slice(&std::fs::read(generation.join("manifest.json")).unwrap())
+                .unwrap();
+        assert_eq!(manifest["tool"], "claude");
+        assert_eq!(manifest["sessionIds"], serde_json::json!(["session-123"]));
+        assert_eq!(manifest["files"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn delete_session_keeps_everything_when_the_backup_fails() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("abc123-session.jsonl");
+        std::fs::write(
+            &path,
+            "{\"sessionId\":\"session-123\",\"cwd\":\"/tmp/project\",\"timestamp\":\"2026-03-06T10:00:00Z\"}
+",
+        )
+        .expect("write session");
+        // A file where the backup directory has to go.
+        let blocker = tempdir().expect("blocker");
+        let backup_dir = blocker.path().join("taken");
+        std::fs::write(&backup_dir, b"").unwrap();
+
+        let error = delete_session_with_backup(temp.path(), &path, "session-123", &backup_dir)
+            .expect_err("backup failure must stop the delete");
+        assert!(error.contains("Failed to back up"), "{error}");
+        assert!(path.exists());
     }
 
     #[test]
@@ -495,6 +579,33 @@ mod tests {
 
         let meta = parse_session(&path).unwrap();
         assert_eq!(meta.title.as_deref(), Some("请帮我重构这个函数"));
+    }
+
+    #[test]
+    fn parse_session_skips_local_command_output_in_title_and_summary() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("session-model.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                "{\"type\":\"user\",\"isMeta\":true,\"message\":{\"role\":\"user\",\"content\":\"<local-command-caveat>Caveat: local commands.</local-command-caveat>\"},\"sessionId\":\"session-model\",\"timestamp\":\"2026-03-06T10:00:00Z\",\"cwd\":\"/tmp/project\"}\n",
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<command-name>/model</command-name>\\n<command-args>opus</command-args>\"},\"sessionId\":\"session-model\",\"timestamp\":\"2026-03-06T10:00:01Z\",\"cwd\":\"/tmp/project\"}\n",
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<local-command-stdout>Set model to opus</local-command-stdout>\"},\"sessionId\":\"session-model\",\"timestamp\":\"2026-03-06T10:00:02Z\",\"cwd\":\"/tmp/project\"}\n",
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<task-notification>Background task done</task-notification>\"},\"sessionId\":\"session-model\",\"timestamp\":\"2026-03-06T10:00:03Z\",\"cwd\":\"/tmp/project\"}\n",
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Fix the login redirect\"},\"sessionId\":\"session-model\",\"timestamp\":\"2026-03-06T10:01:00Z\",\"cwd\":\"/tmp/project\"}\n",
+                "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":\"The redirect now keeps the return URL.\"},\"timestamp\":\"2026-03-06T10:02:00Z\",\"cwd\":\"/tmp/project\"}\n",
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<command-name>/model</command-name>\\n<command-args>sonnet</command-args>\"},\"sessionId\":\"session-model\",\"timestamp\":\"2026-03-06T10:03:00Z\",\"cwd\":\"/tmp/project\"}\n",
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<local-command-stderr>Unknown model</local-command-stderr>\"},\"sessionId\":\"session-model\",\"timestamp\":\"2026-03-06T10:03:01Z\",\"cwd\":\"/tmp/project\"}\n",
+            ),
+        )
+        .expect("write");
+
+        let meta = parse_session(&path).unwrap();
+        assert_eq!(meta.title.as_deref(), Some("Fix the login redirect"));
+        assert_eq!(
+            meta.summary.as_deref(),
+            Some("The redirect now keeps the return URL.")
+        );
     }
 
     #[test]

@@ -163,6 +163,40 @@ pub async fn delete_sessions(
     .map_err(|e| format!("Failed to delete sessions: {e}"))?
 }
 
+/// Backups taken before session deletes (every tool), newest first.
+#[tauri::command]
+pub async fn list_session_delete_backups(
+) -> Result<Vec<session_manager::delete_backup::SessionDeleteBackupSummary>, String> {
+    tauri::async_runtime::spawn_blocking(
+        session_manager::delete_backup::list_session_delete_backups,
+    )
+    .await
+    .map_err(|e| format!("读取删除备份失败: {e}"))
+}
+
+/// Put the files of one delete backup back where they were; files whose path
+/// is taken again are left alone.
+#[tauri::command]
+pub async fn restore_session_delete_backup(
+    backupId: String,
+) -> Result<session_manager::delete_backup::SessionDeleteRestoreOutcome, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        session_manager::delete_backup::restore_session_delete_backup(&backupId)
+    })
+    .await
+    .map_err(|e| format!("恢复会话失败: {e}"))?
+}
+
+#[tauri::command]
+pub async fn clear_session_delete_backups(
+) -> Result<session_manager::delete_backup::SessionDeleteBackupsCleared, String> {
+    tauri::async_runtime::spawn_blocking(
+        session_manager::delete_backup::clear_session_delete_backups,
+    )
+    .await
+    .map_err(|e| format!("清理删除备份失败: {e}"))?
+}
+
 /// Codex keeps its session DBs open while it runs, so a delete underneath it
 /// races its own writes. Refuse until the user has closed it.
 fn ensure_codex_closed_for_delete() -> Result<(), String> {

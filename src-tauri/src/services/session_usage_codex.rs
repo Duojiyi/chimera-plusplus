@@ -12,6 +12,8 @@
 //! - `session_meta` → 提取唯一 thread_id（子代理的 session_id 指向父线程）
 //! - `turn_context` / `event_msg` (type=thread_settings_applied) → 提取当前 model
 //! - `event_msg` (type=token_count) → 提取累计 token 用量，计算 delta
+//! - `token_usage_record` → 紧随其后的 token_count 的 last 全 0 时（远程压缩），
+//!   补记这次请求的用量
 
 use crate::codex_config::get_codex_config_dir;
 use crate::database::{lock_conn, Database};
@@ -171,6 +173,50 @@ struct ParsedTokenEvent {
     undated: bool,
 }
 
+/// Usage Codex wrote only as a `token_usage_record`: a remote compaction
+/// records the request there, then sends a `token_count` whose
+/// `last_token_usage` is all zero (`Session::recompute_token_usage`), so the
+/// count alone would bill it as nothing. It takes no `event_index`, so the
+/// request ids of every later count stay what earlier syncs stored.
+#[derive(Debug)]
+struct UsageRecordEvent {
+    line_offset: i64,
+    /// `usage:<response_id>` (or `usage:line<N>` without one).
+    request_suffix: String,
+    delta: DeltaTokens,
+    model: String,
+    timestamp: Option<String>,
+    undated: bool,
+}
+
+/// A `token_usage_record` waiting for the `token_count` that follows it.
+struct PendingUsageRecord {
+    event: UsageRecordEvent,
+    usage: CumulativeTokens,
+}
+
+fn same_request_counters(left: &CumulativeTokens, right: &CumulativeTokens) -> bool {
+    left.input == right.input
+        && left.cached_input == right.cached_input
+        && left.cache_write_input == right.cache_write_input
+        && left.output == right.output
+}
+
+fn counters_are_zero(usage: &CumulativeTokens) -> bool {
+    same_request_counters(usage, &CumulativeTokens::default())
+}
+
+/// Cache reads cannot exceed the input, cache writes the fresh input.
+fn clamp_cache_counters(delta: DeltaTokens) -> DeltaTokens {
+    DeltaTokens {
+        cached_input: delta.cached_input.min(delta.input),
+        cache_write_input: delta
+            .cache_write_input
+            .min(delta.input.saturating_sub(delta.cached_input)),
+        ..delta
+    }
+}
+
 #[derive(Debug)]
 enum ParentResolution {
     None,
@@ -192,6 +238,7 @@ struct ParsedCodexFile {
     root_timestamp: Option<DateTime<Utc>>,
     parent: ParentResolution,
     token_events: Vec<ParsedTokenEvent>,
+    usage_record_events: Vec<UsageRecordEvent>,
     line_offset: i64,
     has_billable_tokens: bool,
     incomplete_tail: bool,
@@ -1011,6 +1058,8 @@ fn parse_codex_file(
     let mut latest_timestamp: Option<String> = None;
     let mut event_index = 0u32;
     let mut token_events = Vec::new();
+    let mut usage_record_events = Vec::new();
+    let mut pending_usage: Option<PendingUsageRecord> = None;
     let mut line_offset = 0i64;
     let mut has_billable_tokens = false;
     let mut incomplete_tail = false;
@@ -1081,7 +1130,8 @@ fn parse_codex_file(
         let is_event_msg = line.contains("\"event_msg\"");
         let is_turn_context = line.contains("\"turn_context\"");
         let is_session_meta = line.contains("\"session_meta\"");
-        if !is_event_msg && !is_turn_context && !is_session_meta {
+        let is_usage_record = line.contains("\"token_usage_record\"");
+        if !is_event_msg && !is_turn_context && !is_session_meta && !is_usage_record {
             continue;
         }
         if is_event_msg
@@ -1218,6 +1268,20 @@ fn parse_codex_file(
                 let last = info
                     .get("last_token_usage")
                     .and_then(parse_cumulative_tokens);
+                // Adapted from farion1231/cc-switch 8cfe5644
+                if let Some(pending) = pending_usage.take() {
+                    // A matching `last` bills the request below. An all-zero
+                    // `last` is the empty count after a remote compaction,
+                    // which recorded its usage only in the record. Any other
+                    // mismatch is left alone rather than billed twice.
+                    let covered = last
+                        .as_ref()
+                        .is_some_and(|last| same_request_counters(last, &pending.usage));
+                    if !covered && last.as_ref().is_some_and(counters_are_zero) {
+                        has_billable_tokens = true;
+                        usage_record_events.push(pending.event);
+                    }
+                }
                 // Codex sends the unchanged count again whenever it refreshes
                 // rate limits (`update_rate_limits`): the same (total, last)
                 // pair is the same request.
@@ -1244,13 +1308,7 @@ fn parse_codex_file(
                     // so a later total-only count does not bill it again.
                     prev_total = Some(prev_total.unwrap_or_default().saturating_add(last));
                 }
-                let delta = DeltaTokens {
-                    cached_input: delta.cached_input.min(delta.input),
-                    cache_write_input: delta
-                        .cache_write_input
-                        .min(delta.input.saturating_sub(delta.cached_input)),
-                    ..delta
-                };
+                let delta = clamp_cache_counters(delta);
                 let nonzero_index = if delta.is_zero() {
                     None
                 } else {
@@ -1269,6 +1327,38 @@ fn parse_codex_file(
                     timestamp: line_timestamp.or_else(|| latest_timestamp.clone()),
                 });
             }
+            "token_usage_record" => {
+                // Only the record right before a count can be the one it
+                // reports on.
+                pending_usage = None;
+                let Some(payload) = value.get("payload") else {
+                    continue;
+                };
+                let Some(usage) = payload.get("usage").and_then(parse_cumulative_tokens) else {
+                    continue;
+                };
+                let delta = clamp_cache_counters(request_delta(&usage));
+                if delta.is_zero() {
+                    continue;
+                }
+                let key = payload
+                    .get("response_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                    .map_or_else(|| format!("line{line_offset}"), str::to_string);
+                pending_usage = Some(PendingUsageRecord {
+                    event: UsageRecordEvent {
+                        line_offset,
+                        request_suffix: format!("usage:{key}"),
+                        delta,
+                        model: current_model.clone(),
+                        undated: line_timestamp.is_none(),
+                        timestamp: line_timestamp.or_else(|| latest_timestamp.clone()),
+                    },
+                    usage,
+                });
+            }
             _ => {}
         }
     }
@@ -1277,6 +1367,12 @@ fn parse_codex_file(
     // start, never to the time of the sync.
     if let Some(started) = root_timestamp {
         for event in token_events
+            .iter_mut()
+            .filter(|event| event.timestamp.is_none())
+        {
+            event.timestamp = Some(started.to_rfc3339());
+        }
+        for event in usage_record_events
             .iter_mut()
             .filter(|event| event.timestamp.is_none())
         {
@@ -1291,6 +1387,7 @@ fn parse_codex_file(
         root_timestamp,
         parent,
         token_events,
+        usage_record_events,
         line_offset,
         has_billable_tokens,
         incomplete_tail,
@@ -1697,6 +1794,38 @@ fn sync_single_codex_file(
         }
 
         let request_id = format!("{CODEX_THREAD_REQUEST_ID_PREFIX}:{root_thread_id}:{event_index}");
+        match insert_codex_session_entry(
+            &tx,
+            &request_id,
+            &event.delta,
+            &event.model,
+            parsed.source_session_id.as_deref(),
+            event.timestamp.as_deref(),
+            &mut result.suspected_duplicates,
+        ) {
+            Ok(true) => {
+                result.imported = result.imported.saturating_add(1);
+                if event.undated {
+                    result.undated_events = result.undated_events.saturating_add(1);
+                }
+            }
+            Ok(false) => result.skipped = result.skipped.saturating_add(1),
+            Err(e) => return Err(e),
+        }
+    }
+    // Records inside the history a fork replays belong to the parent.
+    let replayed_through = replay_prefix
+        .checked_sub(1)
+        .and_then(|last| parsed.token_events.get(last))
+        .map_or(0, |event| event.line_offset);
+    for event in &parsed.usage_record_events {
+        if event.line_offset <= last_offset || event.line_offset <= replayed_through {
+            continue;
+        }
+        let request_id = format!(
+            "{CODEX_THREAD_REQUEST_ID_PREFIX}:{root_thread_id}:{}",
+            event.request_suffix
+        );
         match insert_codex_session_entry(
             &tx,
             &request_id,
@@ -3784,6 +3913,144 @@ mod tests {
         assert_eq!(
             imported_usage(&db)?,
             vec![(request_id(CHILD_A_ID, 1), 300, 150, 50)]
+        );
+        Ok(())
+    }
+
+    fn token_usage_record_at(
+        response_id: &str,
+        [input, cached, output]: [u64; 3],
+        timestamp: &str,
+    ) -> serde_json::Value {
+        // The line Codex writes for `RolloutItem::TokenUsageRecord`.
+        serde_json::json!({
+            "timestamp": timestamp,
+            "type": "token_usage_record",
+            "payload": {
+                "thread_id": PARENT_ID,
+                "turn_id": "turn-1",
+                "session_id": PARENT_ID,
+                "root_turn_id": "turn-1",
+                "response_id": response_id,
+                "usage": {
+                    "input_tokens": input,
+                    "cached_input_tokens": cached,
+                    "cache_write_input_tokens": 0,
+                    "output_tokens": output,
+                    "reasoning_output_tokens": 0,
+                    "total_tokens": input + output
+                },
+                "turn_token_usage": {},
+                "thread_token_usage": {}
+            }
+        })
+    }
+
+    fn usage_request_id(thread: &str, response_id: &str) -> String {
+        format!("{CODEX_THREAD_REQUEST_ID_PREFIX}:{thread}:usage:{response_id}")
+    }
+
+    #[test]
+    fn remote_compaction_usage_is_imported_from_its_usage_record() -> Result<(), AppError> {
+        clear_codex_replay_caches();
+        let db = Database::memory()?;
+        let temp = tempdir().unwrap();
+        let file = rollout_path(temp.path(), PARENT_ID);
+        write_jsonl(
+            &file,
+            &[
+                session_meta(PARENT_ID),
+                turn_context(),
+                token_count_with_last_at([100, 0, 10], [100, 0, 10], "2026-07-10T03:00:02Z"),
+                // The compaction: its usage only in the record, then an
+                // empty count from the token-usage recompute.
+                token_usage_record_at("resp_compact", [26_705, 0, 491], "2026-07-10T03:00:03Z"),
+                token_count_with_last_at([100, 0, 10], [0, 0, 0], "2026-07-10T03:00:03Z"),
+                token_count_with_last_at([300, 0, 30], [200, 0, 20], "2026-07-10T03:00:04Z"),
+            ],
+        );
+
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 3);
+        assert_eq!(
+            imported_usage(&db)?,
+            vec![
+                // Later counts keep the request ids they always had.
+                (request_id(PARENT_ID, 1), 100, 0, 10),
+                (request_id(PARENT_ID, 2), 200, 0, 20),
+                (usage_request_id(PARENT_ID, "resp_compact"), 26_705, 0, 491),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn usage_record_covered_by_its_token_count_is_not_imported_twice() -> Result<(), AppError> {
+        clear_codex_replay_caches();
+        let db = Database::memory()?;
+        let temp = tempdir().unwrap();
+        let file = rollout_path(temp.path(), PARENT_ID);
+        write_jsonl(
+            &file,
+            &[
+                session_meta(PARENT_ID),
+                turn_context(),
+                token_usage_record_at("resp_turn", [26_705, 1_000, 491], "2026-07-10T03:00:02Z"),
+                token_count_with_last_at(
+                    [26_705, 1_000, 491],
+                    [26_705, 1_000, 491],
+                    "2026-07-10T03:00:03Z",
+                ),
+                // A record with no count after it is not billed on its own.
+                token_usage_record_at("resp_open", [5, 0, 5], "2026-07-10T03:00:04Z"),
+            ],
+        );
+
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+        assert_eq!(
+            imported_usage(&db)?,
+            vec![(request_id(PARENT_ID, 1), 26_705, 1_000, 491)]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn compaction_usage_already_behind_the_cursor_is_not_imported_again() -> Result<(), AppError> {
+        clear_codex_replay_caches();
+        let db = Database::memory()?;
+        let temp = tempdir().unwrap();
+        let file = rollout_path(temp.path(), PARENT_ID);
+        let mut lines = vec![
+            session_meta(PARENT_ID),
+            turn_context(),
+            token_usage_record_at("resp_a", [1_000, 0, 50], "2026-07-10T03:00:02Z"),
+            token_count_with_last_at([0, 0, 0], [0, 0, 0], "2026-07-10T03:00:02Z"),
+        ];
+        write_jsonl(&file, &lines);
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+
+        lines.push(token_usage_record_at(
+            "resp_b",
+            [2_000, 0, 60],
+            "2026-07-10T03:00:05Z",
+        ));
+        lines.push(token_count_with_last_at(
+            [0, 0, 0],
+            [0, 0, 0],
+            "2026-07-10T03:00:05Z",
+        ));
+        write_jsonl(&file, &lines);
+        let second = sync_test_file(&db, &file, &[&file])?;
+        assert_eq!(second.imported, 1);
+        assert_eq!(
+            second.skipped, 0,
+            "the first record stays behind the cursor"
+        );
+        assert_eq!(
+            imported_usage(&db)?,
+            vec![
+                (usage_request_id(PARENT_ID, "resp_a"), 1_000, 0, 50),
+                (usage_request_id(PARENT_ID, "resp_b"), 2_000, 0, 60),
+            ]
         );
         Ok(())
     }

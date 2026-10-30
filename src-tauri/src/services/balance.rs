@@ -164,11 +164,6 @@ fn make_auth_error(status: reqwest::StatusCode) -> UsageResult {
 // ── 纯解析函数 ──────────────────────────────────────────────
 
 fn parse_deepseek_response(body: &serde_json::Value) -> Result<Vec<UsageData>, String> {
-    let is_available = body
-        .get("is_available")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(true);
-
     let infos = match body.get("balance_infos").and_then(|v| v.as_array()) {
         Some(arr) if !arr.is_empty() => arr,
         _ => return Err("Missing or empty 'balance_infos' in response".to_string()),
@@ -191,12 +186,11 @@ fn parse_deepseek_response(body: &serde_json::Value) -> Result<Vec<UsageData>, S
             total: None,
             used: None,
             unit: Some(currency.to_string()),
-            is_valid: Some(is_available),
-            invalid_message: if !is_available {
-                Some("Insufficient balance".to_string())
-            } else {
-                None
-            },
+            // `is_available: false` means the balance is used up (or
+            // overdrawn), not that the key is invalid; the amount says so.
+            // Adapted from farion1231/cc-switch b9f317af
+            is_valid: Some(true),
+            invalid_message: None,
             extra: None,
         });
     }
@@ -953,6 +947,20 @@ mod tests {
         }))
         .expect("ds ok");
         assert_eq!(ds_ok[0].remaining, Some(0.0));
+    }
+
+    #[test]
+    fn deepseek_empty_or_overdrawn_balance_keeps_the_key_valid() {
+        for (balance, expected) in [("-24.96", -24.96), ("-0.00", 0.0), ("0.00", 0.0)] {
+            let data = parse_deepseek_response(&json!({
+                "is_available": false,
+                "balance_infos": [{ "currency": "CNY", "total_balance": balance }]
+            }))
+            .expect("parsed");
+            assert_eq!(data[0].remaining, Some(expected), "{balance}");
+            assert_eq!(data[0].is_valid, Some(true), "{balance}");
+            assert_eq!(data[0].invalid_message, None, "{balance}");
+        }
     }
 
     #[test]

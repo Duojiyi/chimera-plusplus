@@ -64,6 +64,7 @@ const ROUTE_NOTES: Record<CodexRoutingReason, string> = {
   "full-url": "完整 API 地址",
   "user-agent": "自定义 User-Agent",
   "request-overrides": "自定义请求头",
+  "auto-review-model": "改写审批模型",
   "managed-auth": "托管登录",
   "auto-detect": "自动识别协议",
 };

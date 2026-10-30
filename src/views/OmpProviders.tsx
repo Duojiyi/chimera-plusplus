@@ -35,6 +35,8 @@ import { ompApi, ompApis } from "@/lib/api/omp";
 import type { PiDocument } from "@/lib/api/pi";
 
 type ObjectValue = Record<string, unknown>;
+/** Prefix of the save error for a models.yml a rewrite would lose parts of. */
+const LOSSY_REWRITE_CODE = "OMP_LOSSY_REWRITE";
 const object = (value: unknown): ObjectValue =>
   value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as ObjectValue)
@@ -98,6 +100,11 @@ export function OmpProviders({
   // (deleting a line); edit failures stay inside the open editor.
   const [errorSource, setErrorSource] = useState<"read" | "write">("read");
   const [notice, setNotice] = useState("");
+  // The file has comments or anchors the rewrite would lose: the save waits
+  // for an explicit second confirmation (`deleteId` repeats a removal).
+  const [lossyRetry, setLossyRetry] = useState<{ deleteId?: string } | null>(
+    null,
+  );
   const [pending, setPending] = useState<
     "save" | "discard" | "reload" | "restore" | { delete: string } | null
   >(null);
@@ -223,7 +230,7 @@ export function OmpProviders({
       throw new Error("请至少填写地址、密钥或模型配置");
     return { ...document.value, providers: { ...providers, [id]: provider } };
   };
-  const save = async (deleteId?: string) => {
+  const save = async (deleteId?: string, allowLossyRewrite = false) => {
     if (!document || !native || running.current) return;
     running.current = true;
     setBusy(true);
@@ -236,18 +243,29 @@ export function OmpProviders({
         delete next[deleteId];
         value = { ...document.value, providers: next };
       } else value = build();
-      setDocument(await ompApi.save(value, document));
+      setDocument(
+        allowLossyRewrite
+          ? await ompApi.save(value, document, true)
+          : await ompApi.save(value, document),
+      );
       setDraft(null);
       setPending(null);
+      setLossyRetry(null);
       setNotice(
         deleteId !== undefined
           ? "线路已删除。"
           : "线路已保存。请在 OMP 中重新加载并选择模型。",
       );
     } catch (e) {
-      setErrorSource("write");
-      setError(e instanceof Error ? e.message : String(e));
+      const message = e instanceof Error ? e.message : String(e);
       setPending(null);
+      setLossyRetry(null);
+      if (!allowLossyRewrite && message.startsWith(LOSSY_REWRITE_CODE)) {
+        setLossyRetry({ deleteId });
+        return;
+      }
+      setErrorSource("write");
+      setError(message);
     } finally {
       running.current = false;
       setBusy(false);
@@ -812,6 +830,16 @@ export function OmpProviders({
             else setDraft(null);
           }
         }}
+      />
+      <ConfirmDialog
+        isOpen={lossyRetry !== null}
+        busy={busy}
+        title="models.yml 含注释或锚点"
+        message="OMP 配置文件里有注释、锚点或别名。保存会重写整个文件：注释会丢失，锚点和别名会展开成重复内容。保存前会把原文件备份到同一目录（原文件名后加 .bak-时间）。"
+        variant="destructive"
+        confirmText="备份后保存"
+        onCancel={() => setLossyRetry(null)}
+        onConfirm={() => void save(lossyRetry?.deleteId, true)}
       />
     </section>
   );

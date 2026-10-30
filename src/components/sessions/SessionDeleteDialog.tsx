@@ -23,6 +23,9 @@ import {
 /** More rows than this and the list stops being read; the rest is counted. */
 export const DELETE_PREVIEW_LIMIT = 8;
 
+/** Tools whose session files are backed up before a delete. */
+const BACKED_UP_PROVIDERS = new Set(["claude", "codex", "gemini", "grokbuild"]);
+
 export interface SessionDeleteTarget {
   session: SessionMeta;
   /** The content is already gone; only index cleanup is left to finish. */
@@ -63,6 +66,11 @@ export function SessionDeleteDialog({
     (session) => session.providerId === "codex",
   );
   const includesSubSessions = sessions.some(hasSubSessions);
+  // OpenCode keeps sessions in its own store; only the other tools' deletes
+  // are copied aside first.
+  const unbackedUp = sessions.filter(
+    (session) => !BACKED_UP_PROVIDERS.has(session.providerId),
+  ).length;
   const shown = targets.slice(0, DELETE_PREVIEW_LIMIT);
   const hidden = count - shown.length;
 
@@ -88,7 +96,11 @@ export function SessionDeleteDialog({
           <DialogDescription className="session-delete-dialog-lead">
             {cleanupOnly
               ? "这些会话的内容已经删除，还有索引记录没有清理干净。"
-              : "以下本地会话记录将被永久删除，删除后无法恢复。"}
+              : unbackedUp === 0
+                ? "以下本地会话记录将被删除。删除前会自动备份，可在「已删除的会话」里恢复。"
+                : unbackedUp === count
+                  ? "以下本地会话记录将被永久删除，删除后无法恢复。"
+                  : "以下本地会话记录将被删除。OpenCode 会话删除后无法恢复，其余会话删除前会自动备份，可在「已删除的会话」里恢复。"}
           </DialogDescription>
         </DialogHeader>
 
