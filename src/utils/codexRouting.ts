@@ -22,6 +22,7 @@ export type CodexRoutingReason =
   | "full-url"
   | "user-agent"
   | "request-overrides"
+  | "auto-review-model"
   | "managed-auth"
   | "auto-detect";
 
@@ -32,6 +33,7 @@ export const codexRoutingReasonLabels: Record<CodexRoutingReason, string> = {
   "full-url": "完整 API 地址",
   "user-agent": "自定义 User-Agent",
   "request-overrides": "自定义请求头",
+  "auto-review-model": "改写审批模型",
   "managed-auth": "托管登录",
   "auto-detect": "自动识别协议",
 };
@@ -166,6 +168,8 @@ export function codexProviderRouting(provider: Provider): CodexRouting {
   if (provider.meta?.isFullUrl === true) reasons.push("full-url");
   if (nonEmpty(provider.meta?.customUserAgent)) reasons.push("user-agent");
   if (hasRequestOverrides(provider)) reasons.push("request-overrides");
+  if (nonEmpty(provider.meta?.codexAutoReviewModel))
+    reasons.push("auto-review-model");
   if (usesManagedAuth(provider)) reasons.push("managed-auth");
   if (isAutoDetectCandidate(provider)) reasons.push("auto-detect");
   return { routed: reasons.length > 0, reasons };

@@ -229,6 +229,9 @@ export interface ProviderMeta {
   maxOutputTokens?: number;
   // Custom User-Agent for local proxy routing. Only applied by the local proxy.
   customUserAgent?: string;
+  // Model the local proxy sends instead of Codex's fixed `codex-auto-review`
+  // ("替我审批" reviews), for upstreams that do not know that model.
+  codexAutoReviewModel?: string;
   // Local proxy request overrides. Only applied by the local proxy after route transforms.
   localProxyRequestOverrides?: LocalProxyRequestOverrides;
   // 供应商类型（用于识别 Copilot 等特殊供应商）

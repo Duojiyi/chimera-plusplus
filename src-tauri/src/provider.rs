@@ -678,6 +678,13 @@ pub struct ProviderMeta {
         skip_serializing_if = "Option::is_none"
     )]
     pub common_config_enabled: Option<bool>,
+    /// Codex「替我审批」固定请求 `codex-auto-review`；第三方上游不认识这个模型时，
+    /// 经本地代理改写成这里指定的模型。空表示原样转发。
+    #[serde(
+        rename = "codexAutoReviewModel",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub codex_auto_review_model: Option<String>,
     /// Claude Desktop 3P 写入模式：direct（直连）或 proxy（预留）
     #[serde(rename = "claudeDesktopMode", skip_serializing_if = "Option::is_none")]
     pub claude_desktop_mode: Option<ClaudeDesktopMode>,
@@ -890,6 +897,14 @@ pub fn parse_custom_user_agent(
 }
 
 impl ProviderMeta {
+    /// 「替我审批」请求要改写成的模型；未设置或只有空白时为 `None`。
+    pub fn codex_auto_review_model(&self) -> Option<&str> {
+        self.codex_auto_review_model
+            .as_deref()
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+    }
+
     /// Codex OAuth FAST mode 是否启用。默认关闭，因为 `service_tier="priority"`
     /// 会按更高速率消耗 ChatGPT 订阅配额，用户需显式开启以换取更低延迟。
     pub fn codex_fast_mode_enabled(&self) -> bool {

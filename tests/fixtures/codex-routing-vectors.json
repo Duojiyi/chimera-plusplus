@@ -232,5 +232,27 @@
     },
     "routed": true,
     "reasons": ["auto-detect"]
+  },
+  {
+    "name": "an auto-review model needs the router to rewrite the model",
+    "provider": {
+      "id": "v20",
+      "name": "Auto review",
+      "settingsConfig": {},
+      "meta": { "apiFormat": "openai_responses", "codexAutoReviewModel": "gpt-5.5" }
+    },
+    "routed": true,
+    "reasons": ["auto-review-model"]
+  },
+  {
+    "name": "a blank auto-review model keeps the line direct",
+    "provider": {
+      "id": "v21",
+      "name": "Blank auto review",
+      "settingsConfig": {},
+      "meta": { "apiFormat": "openai_responses", "codexAutoReviewModel": "  " }
+    },
+    "routed": false,
+    "reasons": []
   }
 ]

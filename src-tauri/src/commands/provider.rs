@@ -989,6 +989,8 @@ fn provider_requires_automatic_routing(app_type: &AppType, provider: &Provider) 
                 .local_proxy_request_overrides
                 .as_ref()
                 .is_some_and(|overrides| !overrides.is_empty())
+            // Only the local router can rewrite the auto-review model.
+            || meta.codex_auto_review_model().is_some()
     });
 
     provider.uses_managed_account_auth()

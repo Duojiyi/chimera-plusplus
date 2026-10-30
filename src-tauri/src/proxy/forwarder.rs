@@ -1394,6 +1394,9 @@ impl RequestForwarder {
 
         // 与 CCH 对齐：请求前不做 thinking 主动改写（仅保留兼容入口）
         let mut mapped_body = normalize_thinking_type(mapped_body);
+        if matches!(app_type, AppType::Codex) {
+            rewrite_codex_auto_review_model(provider, &mut mapped_body);
+        }
 
         // Codex 的上游协议可随模型不同而变化。必须先执行模型映射，再根据实际
         // 发往上游的模型决定转换路径；否则混合模型目录会把所有模型误判成默认协议。
@@ -3724,6 +3727,32 @@ fn codex_model_declares_context_1m(provider: &crate::provider::Provider, model: 
     })
 }
 
+/// Model name Codex requests for "替我审批" reviews (openai/codex
+/// `model-provider/src/provider.rs` `DEFAULT_APPROVAL_REVIEW_PREFERRED_MODEL`).
+const CODEX_AUTO_REVIEW_MODEL: &str = "codex-auto-review";
+
+/// Third-party upstreams usually do not know `codex-auto-review`; a line can
+/// name the model that should answer those requests instead.
+// Adapted from BigPizzaV3/CodexPlusPlus a95c683b
+fn rewrite_codex_auto_review_model(provider: &Provider, body: &mut Value) -> bool {
+    let Some(target) = provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.codex_auto_review_model())
+    else {
+        return false;
+    };
+    let is_review = body
+        .get("model")
+        .and_then(Value::as_str)
+        .is_some_and(|model| model.trim().eq_ignore_ascii_case(CODEX_AUTO_REVIEW_MODEL));
+    if !is_review {
+        return false;
+    }
+    body["model"] = Value::String(target.to_string());
+    true
+}
+
 fn map_reqwest_send_error(error: reqwest::Error) -> ProxyError {
     let is_timeout = error.is_timeout();
     let is_connect = error.is_connect();
@@ -5190,6 +5219,29 @@ value"
         let mut p = test_provider_with_type(Some("anthropic"));
         p.settings_config = settings_config;
         p
+    }
+
+    #[test]
+    fn auto_review_requests_use_the_line_model_only_when_configured() {
+        let mut provider = provider_with_settings(json!({}));
+        let mut body = json!({ "model": "Codex-Auto-Review", "input": [] });
+        assert!(!rewrite_codex_auto_review_model(&provider, &mut body));
+        assert_eq!(body["model"], "Codex-Auto-Review");
+
+        provider
+            .meta
+            .get_or_insert_with(Default::default)
+            .codex_auto_review_model = Some(" gpt-5.5 ".to_string());
+        assert!(rewrite_codex_auto_review_model(&provider, &mut body));
+        assert_eq!(body["model"], "gpt-5.5");
+
+        let mut other = json!({ "model": "deepseek-v4" });
+        assert!(!rewrite_codex_auto_review_model(&provider, &mut other));
+        assert_eq!(other["model"], "deepseek-v4");
+
+        provider.meta.as_mut().unwrap().codex_auto_review_model = Some("  ".to_string());
+        let mut blank = json!({ "model": "codex-auto-review" });
+        assert!(!rewrite_codex_auto_review_model(&provider, &mut blank));
     }
 
     #[test]

@@ -51,9 +51,14 @@ fn coerce_enums(schema: &mut Value) -> bool {
             }
             changed
         }
-        Value::Array(items) => items
-            .iter_mut()
-            .fold(false, |changed, item| coerce_enums(item) || changed),
+        Value::Array(items) => {
+            // Every item must be visited, so no short-circuiting `any`.
+            let mut changed = false;
+            for item in items.iter_mut() {
+                changed |= coerce_enums(item);
+            }
+            changed
+        }
         _ => false,
     }
 }
