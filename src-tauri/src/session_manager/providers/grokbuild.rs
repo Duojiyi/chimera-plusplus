@@ -133,7 +133,7 @@ fn delete_session_with_backup(
     let session_dir = path
         .parent()
         .ok_or_else(|| format!("Invalid Grok Build session path: {}", path.display()))?;
-    if session_dir == root || !session_dir.starts_with(root) {
+    if session_dir == root || !session_dir.starts_with(&root) {
         return Err(format!(
             "Refusing to delete Grok Build session directory outside its root: {}",
             session_dir.display()
