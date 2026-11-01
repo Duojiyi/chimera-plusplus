@@ -123,7 +123,7 @@ jobs:
           } | ConvertTo-Json | Set-Content candidate-assets/build-provenance.json
 
       - name: Upload Windows candidate
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: Chimera++-candidate-${{ inputs.candidate_version }}-windows-${{ steps.source.outputs.commit }}
           path: candidate-assets/
@@ -243,7 +243,7 @@ jobs:
             > candidate-assets/build-provenance.json
 
       - name: Upload macOS candidate
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: Chimera++-candidate-${{ inputs.candidate_version }}-macos-${{ steps.source.outputs.commit }}
           path: candidate-assets/
@@ -468,7 +468,7 @@ jobs:
             > candidate-assets/build-provenance.json
 
       - name: Upload Linux candidate
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: Chimera++-candidate-${{ inputs.candidate_version }}-linux-x86_64-${{ steps.source.outputs.commit }}
           path: candidate-assets/
