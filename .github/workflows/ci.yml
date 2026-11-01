@@ -145,7 +145,7 @@ jobs:
       # The shared lockfile is audited once; vulnerabilities block the release.
       - name: Install cargo-audit
         if: runner.os == 'Linux'
-        uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037
+        uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32
         with:
           tool: cargo-audit
 
