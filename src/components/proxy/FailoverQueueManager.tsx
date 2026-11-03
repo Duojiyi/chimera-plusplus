@@ -158,7 +158,7 @@ export function FailoverQueueManager({
         <AlertDescription className="text-sm">
           {t(
             "proxy.failoverQueue.info",
-            "队列顺序与首页供应商列表顺序一致。当请求失败时，系统会按顺序依次尝试队列中的供应商。",
+            "请求失败时按队列顺序换用下一条线路。",
           )}
         </AlertDescription>
       </Alert>
@@ -241,10 +241,7 @@ export function FailoverQueueManager({
       {/* 队列说明 */}
       {queue && queue.length > 0 && (
         <p className="text-xs text-muted-foreground">
-          {t(
-            "proxy.failoverQueue.orderHint",
-            "队列顺序与首页供应商列表顺序一致，可在首页拖拽调整顺序。",
-          )}
+          {t("proxy.failoverQueue.orderHint", "顺序与「线路」页一致。")}
         </p>
       )}
     </div>

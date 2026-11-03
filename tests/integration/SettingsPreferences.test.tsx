@@ -105,15 +105,15 @@ describe("atomic preference saves", () => {
     const rows = container.querySelectorAll(
       "#settings-general .settings-reference-row",
     );
-    expect(rows).toHaveLength(5);
-    expect(rows[0].querySelector("select")).toBeNull();
-    expect(rows[0]).toHaveTextContent("当前版本仅提供简体中文界面。");
-    expect(rows[1].querySelector('[role="group"]')).not.toBeNull();
+    // The language row is gone: a setting with one possible value is noise.
+    expect(rows).toHaveLength(4);
+    expect(container.querySelector("#settings-general select")).toBeNull();
+    expect(rows[0].querySelector('[role="group"]')).not.toBeNull();
+    expect(rows[1]).toHaveAttribute("role", "switch");
+    expect(rows[1]).toHaveTextContent("开机自启动");
     expect(rows[2]).toHaveAttribute("role", "switch");
-    expect(rows[2]).toHaveTextContent("开机自启动");
-    expect(rows[3]).toHaveAttribute("role", "switch");
-    expect(rows[3]).toHaveTextContent("静默启动");
-    expect(rows[4].querySelector('[role="radiogroup"]')).not.toBeNull();
+    expect(rows[2]).toHaveTextContent("静默启动");
+    expect(rows[3].querySelector('[role="radiogroup"]')).not.toBeNull();
     expect(screen.getByText("备份功能尚未开放")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "打开备份目录" })).toBeDisabled();
     expect(container.querySelector("#settings-backups tbody")).toBeNull();
@@ -258,7 +258,7 @@ describe("atomic preference saves", () => {
     await waitFor(() => expect(toggle).toBeEnabled());
     // The saved preference wins over whatever the OS entry currently says.
     expect(toggle).toHaveAttribute("aria-checked", "true");
-    expect(toggle).toHaveTextContent("登录系统后自动启动 Chimera++");
+    expect(toggle).toHaveTextContent("开机自启动");
     expect(toggle).not.toHaveTextContent("默认");
     expect(mocks.getAutoLaunch).not.toHaveBeenCalled();
     fireEvent.click(toggle);
@@ -317,7 +317,7 @@ describe("atomic preference saves", () => {
     const toggle = screen.getByRole("switch", { name: /静默启动/ });
     await waitFor(() => expect(toggle).toBeEnabled());
     expect(toggle).toHaveAttribute("aria-checked", "false");
-    expect(toggle).toHaveTextContent("启动后只在托盘运行");
+    expect(toggle).toHaveTextContent("启动时不打开主窗口");
     fireEvent.click(toggle);
     await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"));
     // The backend only starts hidden with the tray flag on as well.

@@ -103,11 +103,7 @@ const closeBehaviors = [
 // manager resolves "auto" to it on Windows. Say so instead of implying a
 // difference that does not exist.
 const updateSources = [
-  [
-    "auto",
-    "自动选择",
-    "推荐。由 Chimera++ 选择下载来源，目前从 GitHub 镜像下载并校验文件",
-  ],
+  ["auto", "自动选择", "目前使用 GitHub 镜像"],
   [
     "mirror",
     "镜像安装",
@@ -523,8 +519,8 @@ export function NewSettingsView({
       <header className="settings-page-header">
         <h1>{t("settings.title", { defaultValue: "设置" })}</h1>
         <p>
-          Chimera++ {appVersion} ·{" "}
-          {runningInTauri ? "配置只保存在本机" : "浏览器预览，不读取本机数据"}
+          Chimera++ {appVersion}
+          {runningInTauri ? "" : " · 浏览器预览，不读取本机数据"}
         </p>
       </header>
       <div className="settings-page-layout">
@@ -765,24 +761,10 @@ export function NewSettingsView({
               <div className="settings-reference-list">
                 <div className="settings-reference-row">
                   <span>
-                    <b id="settings-language-label">
-                      {t("settings.language", { defaultValue: "界面语言" })}
-                    </b>
-                    <small>当前版本仅提供简体中文界面。</small>
-                  </span>
-                  <span
-                    className="settings-static-value"
-                    aria-labelledby="settings-language-label"
-                  >
-                    简体中文
-                  </span>
-                </div>
-                <div className="settings-reference-row">
-                  <span>
                     <b id="settings-theme-label">
                       {t("settings.theme", { defaultValue: "应用主题" })}
                     </b>
-                    <small>只改变 Chimera++ 自身；Codex 皮肤在「外观」里</small>
+                    <small>Codex 皮肤在「外观」页设置</small>
                   </span>
                   <div
                     className="settings-segment"
@@ -829,7 +811,6 @@ export function NewSettingsView({
                 >
                   <span>
                     <b>开机自启动</b>
-                    <small>登录系统后自动启动 Chimera++</small>
                   </span>
                   <i
                     className={`settings-switch ${launchOnStartup ? "is-on" : ""}`}
@@ -862,9 +843,7 @@ export function NewSettingsView({
                 >
                   <span>
                     <b>静默启动</b>
-                    <small>
-                      启动后只在托盘运行，不打开主窗口；从托盘图标打开界面
-                    </small>
+                    <small>启动时不打开主窗口</small>
                   </span>
                   <i
                     className={`settings-switch ${silentStartup ? "is-on" : ""}`}
@@ -936,7 +915,7 @@ export function NewSettingsView({
                 >
                   <span>
                     <b>启动时检查 Codex 更新</b>
-                    <small>仅提醒，不会静默替换当前版本</small>
+                    <small>只提醒，不自动安装</small>
                   </span>
                   <i
                     className={`settings-switch ${updateChecks ? "is-on" : ""}`}
@@ -958,7 +937,7 @@ export function NewSettingsView({
                 >
                   <span>
                     <b>自动检查线路状态</b>
-                    <small>启动后测试当前线路的地址能否连通，不使用密钥</small>
+                    <small>启动时测试当前线路地址</small>
                   </span>
                   <i
                     className={`settings-switch ${providerChecks ? "is-on" : ""}`}
@@ -978,9 +957,7 @@ export function NewSettingsView({
                 >
                   <span>
                     <b>显示线路余额</b>
-                    <small>
-                      在线路页显示当前线路的余额或额度（支持的服务商会自动查询）
-                    </small>
+                    <small>仅部分服务商支持</small>
                   </span>
                   <i
                     className={`settings-switch ${showProviderBalance ? "is-on" : ""}`}
@@ -1140,10 +1117,7 @@ export function NewSettingsView({
             </section>
             {/* Part of the scroll flow, so it can never cover the last rows. */}
             <footer className="settings-page-footer">
-              <p>
-                将 Codex 偏好、Codex
-                安装方式和「关闭主窗口时」恢复为默认值；主题、开机自启动与静默启动保持不变。
-              </p>
+              <p>恢复 Codex 偏好、安装方式和关闭行为的默认值</p>
               <button
                 type="button"
                 className="secondary"

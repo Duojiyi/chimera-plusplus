@@ -1,12 +1,16 @@
 import "@testing-library/jest-dom";
 import { afterAll, afterEach, beforeAll, vi } from "vitest";
-import { cleanup } from "@testing-library/react";
+import { cleanup, configure } from "@testing-library/react";
 import i18n from "i18next";
 import { initReactI18next } from "react-i18next";
 import { server } from "./msw/server";
 import { resetProviderState } from "./msw/state";
 import "./msw/tauriMocks";
 import { loadChimeraHubTemplate } from "@/config/codexTemplates";
+
+// The whole-application suites render the full shell; a loaded machine (or
+// CI runner) needs more than the 1s default to see the next screen.
+configure({ asyncUtilTimeout: 4000 });
 
 beforeAll(async () => {
   server.listen({ onUnhandledRequest: "warn" });

@@ -95,7 +95,7 @@ describe("Claude Desktop setup panel", () => {
     const details = screen.getByText("诊断与兼容性").closest("details")!;
     expect(details).not.toHaveAttribute("open");
     expect(details).toHaveTextContent("C:/Users/test/Claude/profile.json");
-    expect(screen.getByText(/登录请在客户端完成/)).toBeVisible();
+    expect(screen.getByText(/切换线路后需重启 Claude Desktop/)).toBeVisible();
     expect(providersApi.importClaudeDesktopFromClaude).not.toHaveBeenCalled();
     expect(
       providersApi.ensureClaudeDesktopOfficialProvider,

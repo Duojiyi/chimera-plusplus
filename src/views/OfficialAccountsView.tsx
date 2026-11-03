@@ -1270,10 +1270,6 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
                   <small>{formatCountdown(expiresInSeconds)}</small>
                 )}
               </div>
-              <p className="account-dialog-note">
-                <ShieldCheck size={15} />
-                登录凭据仅保存在本机，不会显示在界面中。
-              </p>
             </>
           )}
           {!cliMissing && (

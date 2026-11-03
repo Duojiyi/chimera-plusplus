@@ -30,8 +30,7 @@ export default defineConfig(({ command }) => ({
             return "liquid-glass";
           }
           if (!id.includes("node_modules")) return undefined;
-          if (id.includes("/three/")) return "vendor-three";
-          if (id.includes("/smol-toml/") || id.includes("/jsonc-parser/")) {
+          if (id.includes("/smol-toml/")) {
             return "vendor-config";
           }
           if (

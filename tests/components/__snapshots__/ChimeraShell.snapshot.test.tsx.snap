@@ -1131,6 +1131,7 @@ exports[`keeps the shell markup stable across views and the line editor > titleb
       <button
         aria-label="检查更新"
         class="sr-only"
+        tabindex="-1"
         type="button"
       >
         检查更新
@@ -1302,6 +1303,7 @@ exports[`keeps the shell markup stable across views and the line editor > titleb
       <button
         aria-label="检查更新"
         class="sr-only"
+        tabindex="-1"
         type="button"
       >
         检查更新
@@ -1473,6 +1475,7 @@ exports[`keeps the shell markup stable across views and the line editor > titleb
       <button
         aria-label="检查更新"
         class="sr-only"
+        tabindex="-1"
         type="button"
       >
         检查更新
@@ -1539,7 +1542,7 @@ exports[`keeps the shell markup stable across views and the line editor > titleb
           aria-label="关闭窗口"
           class="window-control-close"
           disabled=""
-          title="请先保存或返回线路页面"
+          title="仅桌面应用可用"
           type="button"
         >
           <svg

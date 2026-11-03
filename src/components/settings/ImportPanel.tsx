@@ -69,7 +69,7 @@ export function ImportPanel({
     <section aria-labelledby="settings-import-heading">
       <h2 id="settings-import-heading">导入</h2>
       <p className="settings-tools-description">
-        通过导入链接添加资源。先查看内容与写入范围，再确认导入；不会因粘贴链接直接启用。
+        粘贴导入链接，预览确认后才会导入。
       </p>
       <form className="settings-import-form" onSubmit={submit}>
         <label htmlFor="settings-import-url">导入链接</label>
@@ -84,8 +84,7 @@ export function ImportPanel({
           placeholder="chimera://v1/import?… 或 ccswitch://v1/import?…"
         />
         <p className="settings-tools-description">
-          链接可能包含密钥，仅在本机处理。ccswitch://
-          仅支持供应商；其他资源请使用 chimera://。
+          ccswitch:// 链接只能导入线路。
         </p>
         <button
           type="submit"

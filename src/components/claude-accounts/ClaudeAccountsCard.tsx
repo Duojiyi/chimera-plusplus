@@ -440,7 +440,7 @@ export function ClaudeAccountsCard({
   const title = mode === "code" ? "Claude Code 账号" : "Claude Desktop 账号";
   const description =
     mode === "code"
-      ? "保存多个 Claude 登录并一键切换。所有账号共用同一个 Claude Code 配置目录，会话、历史、设置与 MCP 都保持不变；保存的登录加密存放在本机。"
+      ? "切换账号不影响会话、设置与 MCP。"
       : "每个账号一个独立的 Claude Desktop 数据目录，登录互不影响，可以同时打开。";
 
   const headerAction =

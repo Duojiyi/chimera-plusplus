@@ -76,6 +76,22 @@ describe("WindowControls", () => {
     unmount();
     expect(state.unlisten).toHaveBeenCalledOnce();
   });
+  it("lets the caller take over a close that needs a question first", async () => {
+    const onBeforeClose = vi.fn(() => true);
+    const { rerender } = render(
+      <WindowControls onBeforeClose={onBeforeClose} />,
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "关闭窗口" })).toBeEnabled(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "关闭窗口" }));
+    expect(onBeforeClose).toHaveBeenCalledOnce();
+    expect(state.close).not.toHaveBeenCalled();
+    // Nothing to ask about: the window closes as usual.
+    rerender(<WindowControls onBeforeClose={() => false} />);
+    fireEvent.click(screen.getByRole("button", { name: "关闭窗口" }));
+    expect(state.close).toHaveBeenCalledOnce();
+  });
   it("offers restore after maximizing and closes through Tauri", async () => {
     state.maximized = true;
     render(<WindowControls />);

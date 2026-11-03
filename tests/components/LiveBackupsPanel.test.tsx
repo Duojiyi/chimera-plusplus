@@ -310,7 +310,7 @@ describe("multi-tool Live recovery", () => {
   it("describes the tool picker with the tools that have no backups", () => {
     render(<LiveBackupsPanel />);
     expect(screen.getByLabelText("备份的工具")).toHaveAccessibleDescription(
-      "Pi 暂不支持配置备份；Claude Desktop 仅支持 Windows 和 macOS。",
+      "Pi 暂不支持备份。",
     );
   });
 });

@@ -306,8 +306,8 @@ export function CcSwitchImportPreview({
     >
       <h3 id="cc-switch-preview-heading">从 cc-switch 文件导入</h3>
       <p>
-        选择 cc-switch 的 config.json，逐条核对后导入线路。只导入线路，不导入
-        MCP 和提示词，也不执行脚本；导入的线路不会自动启用。
+        选择 cc-switch 的 config.json，预览后导入线路（不含 MCP
+        和提示词，不会自动启用）。
       </p>
       <button
         type="button"

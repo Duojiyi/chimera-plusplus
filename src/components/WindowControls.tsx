@@ -8,8 +8,12 @@ import "./WindowControls.css";
 
 export function WindowControls({
   closeDisabled = false,
+  onBeforeClose,
 }: {
   closeDisabled?: boolean;
+  /** Return true to take over the close (for example to ask about unsaved
+   * input first); the window is then not closed here. */
+  onBeforeClose?: () => boolean;
 }) {
   const mac = isMac();
   const native = isTauri();
@@ -48,6 +52,7 @@ export function WindowControls({
     };
   }, [native]);
   const act = async (action: "minimize" | "toggleMaximize" | "close") => {
+    if (action === "close" && onBeforeClose?.()) return;
     try {
       await getCurrentWindow()[action]();
     } catch {

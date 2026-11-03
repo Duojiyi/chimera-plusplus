@@ -81,7 +81,9 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   onRefresh,
 }) => {
   const [query, setQuery] = useState("");
-  const [selectedIndex, setSelectedIndex] = useState(0);
+  // -1 until the user types or moves: opening the palette and pressing Enter
+  // must not run the first entry (which is a line switch).
+  const [selectedIndex, setSelectedIndex] = useState(-1);
   const itemRefs = useRef<(HTMLDivElement | null)[]>([]);
   const dialogRef = useDialogFocus<HTMLDivElement>(onClose, isOpen);
   const idPrefix = useId();
@@ -89,7 +91,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   useEffect(() => {
     if (isOpen) {
       setQuery("");
-      setSelectedIndex(0);
+      setSelectedIndex(-1);
     }
   }, [isOpen]);
 
@@ -195,12 +197,13 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   }, [items, query]);
 
   useEffect(() => {
-    setSelectedIndex(0);
+    // A typed query selects its best match; an empty one selects nothing.
+    setSelectedIndex(query.trim() ? 0 : -1);
   }, [query]);
 
   useEffect(() => {
     if (selectedIndex >= filteredItems.length) {
-      setSelectedIndex(Math.max(0, filteredItems.length - 1));
+      setSelectedIndex(filteredItems.length ? filteredItems.length - 1 : -1);
     }
   }, [filteredItems.length, selectedIndex]);
 
@@ -214,8 +217,12 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       e.preventDefault();
       if (!filteredItems.length) return;
       const step = e.key === "ArrowDown" ? 1 : -1;
-      setSelectedIndex(
-        (prev) => (prev + step + filteredItems.length) % filteredItems.length,
+      setSelectedIndex((prev) =>
+        prev < 0
+          ? step > 0
+            ? 0
+            : filteredItems.length - 1
+          : (prev + step + filteredItems.length) % filteredItems.length,
       );
       return;
     }
@@ -272,7 +279,9 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
             aria-controls={listId}
             aria-autocomplete="list"
             aria-activedescendant={
-              filteredItems.length ? optionId(selectedIndex) : undefined
+              selectedIndex >= 0 && filteredItems.length
+                ? optionId(selectedIndex)
+                : undefined
             }
             autoComplete="off"
             spellCheck={false}

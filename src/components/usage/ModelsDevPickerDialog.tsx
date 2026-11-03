@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -24,7 +25,6 @@ import {
 import { useUpdateModelPricing } from "@/lib/query/usage";
 import { isTextEditableTarget } from "@/utils/domUtils";
 
-const MODELS_DEV_API_URL = "https://models.dev/api.json";
 // 全量约 5000 条：默认只展示最新发布的一批，搜索时才做全量匹配
 const DEFAULT_VISIBLE_ROWS = 50;
 const MAX_VISIBLE_ROWS = 200;
@@ -161,11 +161,11 @@ export function ModelsDevPickerDialog({
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["models-dev-pricing"],
     queryFn: async (): Promise<ModelsDevResponse> => {
-      const res = await fetch(MODELS_DEV_API_URL);
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
-      }
-      return res.json();
+      // The backend fetches it (through the app proxy); the renderer is not
+      // allowed to reach arbitrary hosts.
+      return JSON.parse(
+        await invoke<string>("fetch_models_dev_catalog"),
+      ) as ModelsDevResponse;
     },
     enabled: open,
     staleTime: 60 * 60 * 1000,

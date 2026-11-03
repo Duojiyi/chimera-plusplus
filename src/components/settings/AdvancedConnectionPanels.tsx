@@ -19,9 +19,6 @@ export function OutboundProxyPanel() {
     );
   return (
     <>
-      <p>
-        仅保存或清除时更改应用出站代理；测试和扫描需手动点击。不修改系统代理，也不会启动本地协议代理。
-      </p>
       <GlobalProxySettings />
     </>
   );
@@ -46,9 +43,7 @@ export function FailoverSettingsPanel() {
     !takeover.data?.[app];
   return (
     <section aria-label="自动故障转移管理" className="space-y-3">
-      <p>
-        管理现有本地代理的队列与阈值，不会自动启动代理、接管工具或开启故障转移。启用后可能切换供应商并产生用量费用。
-      </p>
+      <p>请求失败时按队列换用下一条线路，可能产生额外费用。</p>
       <label>
         故障转移工具{" "}
         <select

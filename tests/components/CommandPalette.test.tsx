@@ -77,12 +77,28 @@ describe("command palette uses persisted data", () => {
   });
   it("edits the selected line with Ctrl+Enter", () => {
     const callbacks = mount();
+    fireEvent.keyDown(screen.getByRole("combobox"), { key: "ArrowDown" });
     fireEvent.keyDown(screen.getByRole("combobox"), {
       key: "Enter",
       ctrlKey: true,
     });
     expect(callbacks.onEditProvider).toHaveBeenCalledWith("persisted-id");
     expect(callbacks.onSwitchProvider).not.toHaveBeenCalled();
+  });
+  it("runs nothing when Enter is pressed before choosing an entry", () => {
+    const callbacks = mount();
+    const input = screen.getByRole("combobox");
+    expect(input).not.toHaveAttribute("aria-activedescendant");
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(callbacks.onSwitchProvider).not.toHaveBeenCalled();
+    expect(callbacks.onAddProvider).not.toHaveBeenCalled();
+    // Typing selects the best match, and ArrowUp from nothing starts at the end.
+    fireEvent.change(input, { target: { value: "saved" } });
+    expect(input).toHaveAttribute("aria-activedescendant");
+    fireEvent.change(input, { target: { value: "" } });
+    expect(input).not.toHaveAttribute("aria-activedescendant");
+    fireEvent.keyDown(input, { key: "ArrowUp" });
+    expect(input).toHaveAttribute("aria-activedescendant");
   });
   it("does not fabricate providers for an empty store", () => {
     mount([]);

@@ -74,9 +74,11 @@ describe("Codex model-family protocol defaults in provider forms", () => {
   });
 
   it("ChimeraApp does not pass the React click event into provider saving", () => {
-    expect(appSource).toContain("onSave={() => void saveProvider()}");
-    expect(appSource).toContain("onClick={submit}");
-    expect(appSource).toContain("void onSave();");
+    expect(appSource).toContain(
+      "onSave={(activate) => void saveProvider(undefined, activate)}",
+    );
+    expect(appSource).toContain("onClick={() => submit(primarySave.activate)}");
+    expect(appSource).toContain("void onSave(activate);");
     expect(appSource).not.toContain("onSave={saveProvider}");
     expect(appSource).not.toContain("onClick={onSave}");
   });

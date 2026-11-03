@@ -143,7 +143,7 @@ function fillField(name: string, value: string) {
     target: { value },
   });
 }
-const saveButton = () => screen.getByRole("button", { name: "保存并切换" });
+const saveButton = () => screen.getByRole("button", { name: "保存" });
 
 beforeEach(() => {
   window.localStorage.clear();
@@ -168,6 +168,24 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   window.localStorage.clear();
+});
+
+describe("keyboard access", () => {
+  it("jumps past the sidebar to the page content and keeps hidden controls out of the tab order", async () => {
+    mount();
+    await screen.findByRole("button", { name: "切换到Beta" });
+    const skip = screen.getByRole("link", { name: "跳到主要内容" });
+    expect(skip).toHaveAttribute("href", "#chimera-content");
+    fireEvent.click(skip);
+    const content = document.getElementById("chimera-content");
+    expect(content).not.toBeNull();
+    expect(content).toHaveFocus();
+    // The invisible update control would be a stop with no visible focus.
+    expect(screen.getByRole("button", { name: "检查更新" })).toHaveAttribute(
+      "tabindex",
+      "-1",
+    );
+  });
 });
 
 describe("Codex line save path", () => {
@@ -198,7 +216,7 @@ describe("Codex line save path", () => {
       restart_codex_for_model_catalog: () => restarted,
     });
     mount();
-    fireEvent.click(await screen.findByRole("button", { name: /^Beta，/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "切换到Beta" }));
     const dialog = await screen.findByRole("alertdialog", {
       name: "重新加载模型列表？",
     });
@@ -922,7 +940,7 @@ describe("activity history", () => {
     await screen.findByRole("button", { name: /^Alpha，.*当前线路/ });
     // Let the profile key resolve before the first new record is written.
     await act(async () => {});
-    fireEvent.click(screen.getByRole("button", { name: /^Beta，/ }));
+    fireEvent.click(screen.getByRole("button", { name: "切换到Beta" }));
     await waitFor(() =>
       expect(mocks.toast.success).toHaveBeenCalledWith("已应用到 Codex", {
         description: undefined,

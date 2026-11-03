@@ -98,7 +98,7 @@ it("saves the app directory via the dedicated backend without saving tool settin
   );
   expect(settingsApi.save).not.toHaveBeenCalled();
   expect(settingsApi.patchConfigDirectory).not.toHaveBeenCalled();
-  expect(screen.getByRole("status")).toHaveTextContent("重启应用后生效");
+  expect(screen.getByRole("status")).toHaveTextContent("重启后将使用");
 });
 it("blocks saves after a failed load", async () => {
   vi.mocked(settingsApi.get).mockRejectedValue(new Error("failed"));

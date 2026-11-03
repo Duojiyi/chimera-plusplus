@@ -111,7 +111,7 @@ describe("native tool official entry", () => {
       expect(providersApi.importDefault).not.toHaveBeenCalled();
       expect(
         screen.getByRole("region", { name: "官方账号登录" }),
-      ).toHaveTextContent("此处不代表已登录");
+      ).toHaveTextContent("官方线路无需 API 密钥");
       expect(providersApi.addAndActivate).not.toHaveBeenCalled();
       expect(providersApi.switch).not.toHaveBeenCalled();
       expect(

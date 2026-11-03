@@ -88,7 +88,7 @@ const TOOL_META: Record<string, ToolMeta> = {
     shortName: "Gk",
     category: "switch",
     categoryLabel: "单线路",
-    description: "同一时间使用一条线路；配置不代表已安装或登录。",
+    description: "配置不代表已安装或登录。",
     color: "#2563EB",
   },
 
@@ -108,7 +108,7 @@ const TOOL_META: Record<string, ToolMeta> = {
     shortName: "CC",
     category: "switch",
     categoryLabel: "单线路",
-    description: `同一时间使用一条线路；切换后重新打开 ${keepTogether("Claude Code")} 生效。`,
+    description: `切换后重新打开 ${keepTogether("Claude Code")} 生效。`,
     color: "#D97706",
   },
   "gemini-cli": {
@@ -117,7 +117,7 @@ const TOOL_META: Record<string, ToolMeta> = {
     shortName: "Gm",
     category: "switch",
     categoryLabel: "单线路",
-    description: `同一时间使用一条线路；切换后重新打开 ${keepTogether("Gemini CLI")} 生效。`,
+    description: `切换后重新打开 ${keepTogether("Gemini CLI")} 生效。`,
     color: "#2563EB",
   },
   opencode: {
@@ -699,9 +699,7 @@ function KnownToolView({
                     ? "确认保存到 Chimera？同名线路会按本机配置更新，工具配置文件保持不变。"
                     : "确认保存到 Chimera？已有自定义线路时会跳过，工具配置文件保持不变。"}
                 </p>
-              ) : (
-                <p>只读检测，不会覆盖或切换现有配置。</p>
-              )}
+              ) : null}
             </div>
             <div className="tool-discovery-actions">
               {confirmImport && (
@@ -751,11 +749,8 @@ function KnownToolView({
                     : "使用 Google 官方账号"}
                 </strong>
                 <p>官方线路无需 API 密钥。切换到官方线路后，{loginCommand}</p>
-                <p className="tool-official-note">
-                  登录状态由 {tool.name} 管理，此处不代表已登录。
-                </p>
               </div>
-              {currentId === officialProvider.id && (
+              {tool.appId === "claude" && currentId === officialProvider.id && (
                 <Button
                   variant="outline"
                   size="sm"
@@ -857,9 +852,9 @@ function KnownToolView({
               )}
               <span>{providers.length} 条线路</span>
               {hasBuiltInEntry && <span>另有 1 个内置官方入口</span>}
-              <span className="tool-lines-source">
-                {tool.appId === "pi" ? "来自 Pi 配置文件" : "保存在 Chimera++"}
-              </span>
+              {tool.appId === "pi" && (
+                <span className="tool-lines-source">来自 Pi 配置文件</span>
+              )}
             </div>
             <div
               className="tool-lines"

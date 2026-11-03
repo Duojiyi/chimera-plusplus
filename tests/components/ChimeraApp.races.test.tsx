@@ -371,7 +371,7 @@ describe("Chimera tray/profile subscription", () => {
     mocks.getCurrent.mockResolvedValue("Beta");
     emit();
     await screen.findByRole("button", { name: /^Beta，.*当前线路/ });
-    fireEvent.click(screen.getByRole("button", { name: /^Alpha，/ }));
+    fireEvent.click(screen.getByRole("button", { name: "切换到Alpha" }));
     await waitFor(() =>
       expect(mocks.switchProvider).toHaveBeenCalledWith("Alpha", "codex"),
     );
@@ -612,7 +612,7 @@ describe("provider switch receipt", () => {
   it("does not issue a success receipt when switching fails", async () => {
     mocks.switchProvider.mockRejectedValueOnce(new Error("switch rejected"));
     mount();
-    fireEvent.click(await screen.findByRole("button", { name: /^Beta，/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "切换到Beta" }));
     await waitFor(() =>
       expect(mocks.toast.error).toHaveBeenCalledWith(
         "切换失败",
@@ -680,7 +680,8 @@ describe("current-line ownership and quiet titlebar", () => {
   it("clears a measured result when the same line endpoint changes", async () => {
     mocks.testEndpoints.mockResolvedValueOnce([{ latency: 182 }]);
     mount();
-    await screen.findByText("182 ms");
+    // The station sign and every row at that address show the measurement.
+    expect((await screen.findAllByText("182 ms")).length).toBeGreaterThan(0);
     const updated = provider("Alpha");
     updated.settingsConfig.config = String(
       updated.settingsConfig.config,

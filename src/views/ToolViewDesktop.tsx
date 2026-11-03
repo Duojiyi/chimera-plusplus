@@ -233,7 +233,7 @@ export default function ToolViewDesktop({
                 : !status
                   ? "暂时无法确认安装状态，请重试检测。"
                   : installed
-                    ? "已找到程序文件。账号登录需在 Claude Desktop 中完成。"
+                    ? "已找到程序文件。"
                     : "标准路径未发现客户端。"}
           </p>
           <div className="tool-desktop-actions">
@@ -420,7 +420,6 @@ export default function ToolViewDesktop({
               {busy === "official" ? "正在添加…" : "添加官方入口"}
             </Button>
           </div>
-          <p className="tool-desktop-hint">只保存导入，不切换当前配置。</p>
         </section>
       </div>
       {(error || actionError) && (
@@ -447,7 +446,7 @@ export default function ToolViewDesktop({
       )}
       <div className="tool-desktop-note">
         <Info size={15} aria-hidden="true" />
-        <span>切换后需手动重启 Claude Desktop；登录请在客户端完成。</span>
+        <span>切换线路后需重启 Claude Desktop。</span>
       </div>
       <details className="chimera-disclosure tool-desktop-details">
         <summary>诊断与兼容性</summary>

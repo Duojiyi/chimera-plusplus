@@ -225,10 +225,7 @@ export function AutoFailoverConfigPanel({
         <Alert className="border-blue-500/40 bg-blue-500/10">
           <Info className="h-4 w-4" />
           <AlertDescription className="text-sm">
-            {t(
-              "proxy.autoFailover.info",
-              "当故障转移队列中配置了多个供应商时，系统会在请求失败时按优先级顺序依次尝试。当某个供应商连续失败达到阈值时，熔断器会打开并在一段时间内跳过该供应商。",
-            )}
+            {t("proxy.autoFailover.info", "连续失败达到阈值的线路会暂时跳过。")}
           </AlertDescription>
         </Alert>
 

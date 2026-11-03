@@ -5,6 +5,7 @@ import {
   screen,
   within,
   waitFor,
+  cleanup,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -219,12 +220,11 @@ describe("full-page provider editor", () => {
     expect(button.closest("header")).not.toBeNull();
     fireEvent.click(button);
     expect(onDelete).toHaveBeenCalledOnce();
+    // A spare line is saved in place; switching to it is the second button.
+    expect(screen.getByRole("button", { name: "保存" })).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "保存并切换" }),
     ).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "保存" }),
-    ).not.toBeInTheDocument();
   });
 
   it("is a non-modal page, focuses the heading, and exposes mapping outside advanced settings", () => {
@@ -266,7 +266,7 @@ describe("full-page provider editor", () => {
     fireEvent.change(model, { target: { value: "gpt-5.4-mini" } });
     fireEvent.click(screen.getByRole("button", { name: "保存并切换" }));
     expect(onSave).toHaveBeenCalledTimes(1);
-    expect(onSave).toHaveBeenCalledWith();
+    expect(onSave).toHaveBeenCalledWith(true);
   });
 
   it("allows saving with no mappings and closes indexed panels before a row is deleted", () => {
@@ -278,6 +278,50 @@ describe("full-page provider editor", () => {
     expect(screen.getByText(/尚未添加自定义映射/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "保存并切换" }));
     expect(onSave).toHaveBeenCalledOnce();
+  });
+
+  it("offers a plain save beside the switch for a new line", () => {
+    const { onSave } = setup();
+    fireEvent.click(screen.getByRole("button", { name: "仅保存" }));
+    expect(onSave).toHaveBeenLastCalledWith(false);
+    fireEvent.click(screen.getByRole("button", { name: "保存并切换" }));
+    expect(onSave).toHaveBeenLastCalledWith(true);
+  });
+
+  it("saves a spare line in place and the line in use as a plain save", () => {
+    const existing = {
+      id: "existing",
+      name: "已有线路",
+      settingsConfig: { auth: {}, config: "" },
+    };
+    const spare = setup({
+      editor: {
+        ...providerDraft(existing),
+        apiKey: "test-key",
+        baseUrl: "https://example.com/v1",
+        model: "gpt-5.4",
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    expect(spare.onSave).toHaveBeenLastCalledWith(false);
+    fireEvent.click(screen.getByRole("button", { name: "保存并切换" }));
+    expect(spare.onSave).toHaveBeenLastCalledWith(true);
+    cleanup();
+
+    const current = setup({
+      editor: {
+        ...providerDraft(existing),
+        apiKey: "test-key",
+        baseUrl: "https://example.com/v1",
+        model: "gpt-5.4",
+      },
+      inUse: true,
+    });
+    expect(
+      screen.queryByRole("button", { name: "保存并切换" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    expect(current.onSave).toHaveBeenLastCalledWith(true);
   });
 
   it("locks fields and return actions during save", () => {

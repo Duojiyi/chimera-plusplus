@@ -334,8 +334,10 @@ export function ProviderLineTable({
                         type="button"
                         className="provider-row-name"
                         aria-label={`${label.name}，${label.source}${active ? "，当前线路" : ""}`}
-                        onClick={() => void onSwitch(p)}
-                        disabled={busy || active}
+                        // Reading a name is not a request to switch: it opens
+                        // the line for editing. Switching is the row's own button.
+                        onClick={() => onEdit(p)}
+                        disabled={busy || official}
                       >
                         <b title={label.name}>{label.name}</b>
                         <small

@@ -1,7 +1,7 @@
 import "./ToolVisibilityPage.css";
 import { useId, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { CircleAlert, Info } from "lucide-react";
+import { CircleAlert } from "lucide-react";
 import { settingsApi } from "@/lib/api/settings";
 import { productToolViews } from "@/lib/productCapabilities";
 import registry from "@/shared/tool-registry.json";
@@ -91,12 +91,8 @@ export function ToolVisibilityPage({ native }: { native: boolean }) {
     >
       <header className="tool-visibility-header">
         <h1 id={`${baseId}-title`}>管理工具</h1>
-        <p>选择在侧栏「其他工具」中显示哪些工具</p>
+        <p>选择侧栏显示的工具，隐藏不会删除配置。</p>
       </header>
-      <div className="tool-visibility-callout" role="note">
-        <Info size={16} aria-hidden="true" />
-        <p>仅调整侧栏显示，隐藏不会删除配置。</p>
-      </div>
       {!native && (
         <p className="tool-visibility-notice" role="status">
           浏览器预览无法读取或保存本机工具偏好，请在桌面应用中修改。
@@ -134,7 +130,6 @@ export function ToolVisibilityPage({ native }: { native: boolean }) {
             <span className="tool-visibility-name">
               {toolDisplayNames.codex}
             </span>
-            <p className="tool-visibility-description">核心入口</p>
           </div>
           <span className="tool-visibility-fixed">始终显示</span>
         </li>

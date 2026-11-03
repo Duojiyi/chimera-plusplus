@@ -109,8 +109,8 @@ export function LiveBackupsPanel({
       {/* The no-break space keeps "登录凭据 auth.json" on one line, so the
           balanced lines break at the sentence end. */}
       <p className="live-backups-description">
-        仅保存在本机，每个工具最多保留 20 份；不包含登录凭据{"\u00a0"}
-        auth.json。其他工具的配置可能含 API 密钥，请妥善保管备份。
+        每个工具保留最近 20 份，不含登录凭据；备份里可能有 API
+        密钥，请妥善保管。
       </p>
       <div className="live-backups-toolbar">
         <label className="live-backups-tool">
@@ -164,7 +164,7 @@ export function LiveBackupsPanel({
         </div>
       </div>
       <p id={noteId} className="live-backups-note">
-        Pi 暂不支持配置备份；Claude Desktop 仅支持 Windows 和 macOS。
+        Pi 暂不支持备份。
       </p>
       {/* Same table treatment as 应用数据库 (settings-backup-table). The
           trigger reads as the second line of the time, so the file names get

@@ -1027,6 +1027,9 @@ export default function ChimeraApp({
   const [modelPickTarget, setModelPickTarget] =
     useState<ClaudeModelField>("default");
   const [pendingEditorDiscard, setPendingEditorDiscard] = useState(false);
+  // The discard question was raised by the window's close button, so a
+  // confirmed discard also closes the window.
+  const [closeWindowAfterDiscard, setCloseWindowAfterDiscard] = useState(false);
   // Editor-local connection test result: the home banner reflects the active
   // line only and must never change because a draft was tested.
   const [draftConnection, setDraftConnection] = useState<ConnectionState>({
@@ -1184,6 +1187,22 @@ export default function ChimeraApp({
       return;
     }
     closeEditor();
+  };
+  // The window's close button while a line is being edited: nothing typed means
+  // it closes as usual; unsaved input is asked about first, as for 取消.
+  const guardWindowClose = () => {
+    const draft = editorRef.current;
+    if (!draft) return false;
+    if (providerSaveInFlightRef.current) return true;
+    if (
+      isEditorDraftDirty(draft, editorBaselineRef.current) ||
+      commonConfigDirty
+    ) {
+      setCloseWindowAfterDiscard(true);
+      setPendingEditorDiscard(true);
+      return true;
+    }
+    return false;
   };
   const [onboardingDeferred, setOnboardingDeferred] = useState(false);
   void activity;
@@ -1787,7 +1806,12 @@ export default function ChimeraApp({
   // `formatOverride` backs the "按 Chat / Responses / Anthropic 保存" quick
   // actions shown when detection fails: the choice is applied to the draft and
   // saved in one step, so a failed probe never strands the user.
-  const saveProvider = async (formatOverride?: CodexApiFormat) => {
+  // `activate` false saves the line without making it the tool's current one:
+  // editing a spare line must not rewrite the live config or restart Codex.
+  const saveProvider = async (
+    formatOverride?: CodexApiFormat,
+    activate = true,
+  ) => {
     if (designPreview) return;
     if (!editor) return;
     const draft =
@@ -1837,20 +1861,34 @@ export default function ChimeraApp({
         };
         try {
           if (draft.original) {
-            await providersApi.updateAndActivate(
-              provider,
-              editorAppId,
-              draft.original.id,
-            );
-          } else {
+            if (activate) {
+              await providersApi.updateAndActivate(
+                provider,
+                editorAppId,
+                draft.original.id,
+              );
+            } else {
+              await providersApi.update(
+                provider,
+                editorAppId,
+                draft.original.id,
+              );
+            }
+          } else if (activate) {
             await providersApi.addAndActivate(provider, editorAppId, false);
+          } else {
+            await providersApi.add(provider, editorAppId, false);
           }
           window.dispatchEvent(
             new CustomEvent("chimera-provider-mutated", {
               detail: { appId: editorAppId },
             }),
           );
-          toast.success(`${nativeToolNames[editorAppId]} 线路已保存并应用`);
+          toast.success(
+            activate
+              ? `${nativeToolNames[editorAppId]} 线路已保存并应用`
+              : `${nativeToolNames[editorAppId]} 线路已保存，当前线路不变`,
+          );
           closeEditor();
         } catch (error) {
           setEditorSaveError(`保存失败，编辑内容已保留：${String(error)}`);
@@ -2046,6 +2084,38 @@ export default function ChimeraApp({
           : undefined;
       let providerCommitted = false;
       try {
+        if (!activate) {
+          // The shared common config is applied to the live file, so a change
+          // to it cannot be saved without making this line current.
+          if (commonConfigDraft !== undefined) {
+            setEditorSaveError(
+              "通用配置有改动，需要用「保存并切换」才能写入 Codex。",
+            );
+            return;
+          }
+          if (draft.original) {
+            await providersApi.update(
+              provider,
+              editorAppId,
+              draft.original.id,
+              { clearApiKey: codexApiKeyCleared(draft.original, draft.apiKey) },
+            );
+          } else {
+            await providersApi.add(provider, editorAppId, false);
+          }
+          await loadProviders();
+          window.dispatchEvent(
+            new CustomEvent("chimera-provider-mutated", {
+              detail: { appId: editorAppId },
+            }),
+          );
+          closeEditor();
+          note("保存线路", "success", undefined, provider.name);
+          toast.success("线路已保存", {
+            description: "没有切换线路，Codex 仍使用当前线路。",
+          });
+          return;
+        }
         if (draft.original) {
           // "保存并应用" must not leave an edited inactive provider behind if
           // its activation fails. The backend updates, switches and compensates
@@ -2568,6 +2638,17 @@ export default function ChimeraApp({
 
   return (
     <div className="chimera-shell">
+      {/* The sidebar alone is eighteen tab stops; this jumps past it. */}
+      <a
+        className="skip-link"
+        href="#chimera-content"
+        onClick={(event) => {
+          event.preventDefault();
+          contentRef.current?.focus();
+        }}
+      >
+        跳到主要内容
+      </a>
       {/* 216px Sidebar (Frame 01 HdG9j). The graphite chrome is dark in both
           themes, so its tokens resolve as dark (designer-notes §31). */}
       {!editor && (
@@ -2582,7 +2663,7 @@ export default function ChimeraApp({
             className="box-border w-full h-[40px] shrink-0 flex flex-row gap-0 p-[0px_8px] justify-start items-center"
             {...DRAG_REGION_ATTR}
           >
-            {isMac() && <WindowControls closeDisabled={Boolean(editor)} />}
+            {isMac() && <WindowControls onBeforeClose={guardWindowClose} />}
             <div
               data-pencil-name="字标"
               className="text-[14px]/[20px] box-border text-[#EEF0F3] font-bold text-left whitespace-nowrap"
@@ -2841,7 +2922,7 @@ export default function ChimeraApp({
             {...DRAG_REGION_ATTR}
           >
             {isMac() && editor && (
-              <WindowControls closeDisabled={Boolean(editor)} />
+              <WindowControls onBeforeClose={guardWindowClose} />
             )}
             {!runningInTauri && (
               <span
@@ -2899,6 +2980,8 @@ export default function ChimeraApp({
                 aria-label="检查更新"
                 onClick={() => void runTitlebarUpdateCheck()}
                 className="sr-only"
+                // Invisible, so it must not be a keyboard stop where focus vanishes.
+                tabIndex={-1}
               >
                 检查更新
               </button>
@@ -2913,7 +2996,7 @@ export default function ChimeraApp({
                   <span>更新</span>
                 </button>
               )}
-              {!isMac() && <WindowControls closeDisabled={Boolean(editor)} />}
+              {!isMac() && <WindowControls onBeforeClose={guardWindowClose} />}
             </div>
           </div>
         </header>
@@ -2929,6 +3012,7 @@ export default function ChimeraApp({
         )}
         <section
           ref={contentRef}
+          id="chimera-content"
           tabIndex={-1}
           hidden={Boolean(editor)}
           className={`chimera-content${view === "providers" ? " is-provider-view" : ""}`}
@@ -3182,7 +3266,7 @@ export default function ChimeraApp({
               // protocol-override argument. Passing saveProvider directly
               // makes the MouseEvent become apiFormat and breaks IPC JSON
               // serialization through its circular DOM/React references.
-              onSave={() => void saveProvider()}
+              onSave={(activate) => void saveProvider(undefined, activate)}
               onDelete={() => {
                 if (editor.original) setPendingProviderDelete(editor.original);
               }}
@@ -3281,8 +3365,19 @@ export default function ChimeraApp({
       )}
       {pendingEditorDiscard && (
         <ConfirmDiscardEditor
-          onCancel={() => setPendingEditorDiscard(false)}
-          onConfirm={closeEditor}
+          onCancel={() => {
+            setPendingEditorDiscard(false);
+            setCloseWindowAfterDiscard(false);
+          }}
+          onConfirm={() => {
+            const closeWindow = closeWindowAfterDiscard;
+            setCloseWindowAfterDiscard(false);
+            closeEditor();
+            if (closeWindow)
+              void getCurrentWindow()
+                .close()
+                .catch(() => {});
+          }}
         />
       )}
       {pendingProviderDelete && (
@@ -5338,6 +5433,7 @@ export function NewProvidersView({
         managerTriggerRef={managerTriggerRef}
         providers={providers}
         currentId={current?.id ?? ""}
+        currentConnection={connection}
         switchingId={switchingId}
         deletingProviderId={deletingProviderId}
         labels={lineLabels}
@@ -5604,7 +5700,7 @@ export function ProviderEditor({
   onFetchModels: (target?: ClaudeModelField) => void;
   connection: ConnectionState;
   onTest: () => void;
-  onSave: () => void;
+  onSave: (activate: boolean) => void;
   onDelete: () => void;
   onRequestClose: () => void;
   escapeDisabled: boolean;
@@ -5720,7 +5816,7 @@ export function ProviderEditor({
     });
     setRestorePending(false);
   };
-  const submit = () => {
+  const submit = (activate: boolean) => {
     setValidationAttempted(true);
     const missing = [
       [editor.name, "provider-name"],
@@ -5745,7 +5841,7 @@ export function ProviderEditor({
       input?.scrollIntoView?.({ block: "center" });
       return;
     }
-    void onSave();
+    void onSave(activate);
   };
   const patch = (key: string, value: string) =>
     setEditor({ ...editor, [key]: value });
@@ -5823,6 +5919,20 @@ export function ProviderEditor({
         ? `自动（${codexApiFormatLabel(lineFormat)}）`
         : "自动";
   const additive = appId === "opencode" || appId === "pi";
+  // Editing a spare line only saves it; a new line is added and switched to,
+  // with a plain save offered beside it. The line in use is rewritten live.
+  const existing = Boolean(editor.original);
+  const primarySave = additive
+    ? { label: "保存并启用", activate: true }
+    : !existing
+      ? { label: "保存并切换", activate: true }
+      : { label: "保存", activate: inUse };
+  const secondarySave =
+    additive || (existing && inUse)
+      ? null
+      : existing
+        ? { label: "保存并切换", activate: true }
+        : { label: "仅保存", activate: false };
   // Claude Code keeps a `[1M]` suffix on the stored model; the input shows
   // the bare ID and the 1M box shows the suffix.
   const defaultModelInput = isClaude
@@ -7101,9 +7211,11 @@ export function ProviderEditor({
           <p>
             {additive
               ? `保存并启用，不影响其他 ${toolName} 线路，也不切换 ${toolName} 的默认模型。只改这条线路的首个模型，它已有的其他模型与高级设置会保留。`
-              : isCodex
-                ? "保存后设为当前 Codex 线路。运行中的 Codex 可能需要重启。"
-                : `保存后设为当前 ${toolName} 线路。模型留空时由 ${toolName} 选择，未填写密钥时沿用它自己的登录方式。`}
+              : existing && !inUse
+                ? `保存只更新这条线路，${toolName} 当前使用的线路不变。需要立刻使用它时点「保存并切换」。`
+                : isCodex
+                  ? "保存后设为当前 Codex 线路。运行中的 Codex 可能需要重启。"
+                  : `保存后设为当前 ${toolName} 线路。模型留空时由 ${toolName} 选择，未填写密钥时沿用它自己的登录方式。`}
           </p>
         </EditorSaveSummary>
       </div>
@@ -7118,15 +7230,22 @@ export function ProviderEditor({
             onCancel={onRequestClose}
             disabled={savingProvider}
           >
+            {secondarySave && (
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => submit(secondarySave.activate)}
+                disabled={savingProvider || fetchingModels}
+              >
+                {secondarySave.label}
+              </button>
+            )}
             <button
               className="primary"
-              onClick={submit}
+              onClick={() => submit(primarySave.activate)}
               disabled={savingProvider || fetchingModels}
             >
-              <SaveLabel
-                busy={savingProvider}
-                label={additive ? "保存并启用" : "保存并切换"}
-              />
+              <SaveLabel busy={savingProvider} label={primarySave.label} />
             </button>
           </EditorSaveActions>
         </footer>

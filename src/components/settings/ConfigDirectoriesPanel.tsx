@@ -82,7 +82,7 @@ export function ConfigDirectoriesPanel({
       }
       setMessage(
         field === "app"
-          ? "应用目录覆盖已保存，重启应用后生效。不会自动迁移旧目录内容。"
+          ? `应用数据目录已保存，重启后将使用：${path || "默认目录"}。当前仍使用旧目录；不会自动迁移内容。`
           : "工具目录已保存；不会自动迁移文件或启动工具。",
       );
       const pathNow =

@@ -3178,3 +3178,21 @@ body.is-mac
     animation-timeline: scroll(self block);
   }
 }
+
+/* Keyboard shortcut past the sidebar: invisible until it takes focus. */
+.skip-link {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  z-index: 1000;
+  padding: 6px 12px;
+  border-radius: 4px;
+  background: var(--bg-surface);
+  color: var(--text-1);
+  box-shadow: 0 0 0 2px var(--focus);
+  font-size: 13px;
+  transform: translateY(-200%);
+}
+.skip-link:focus {
+  transform: none;
+}

@@ -256,6 +256,9 @@ button.settings-reference-row:hover:not(:disabled) > svg {
 .settings-subpanel [role="alert"] {
   color: var(--danger-fg);
 }
+.settings-subpanel [role="note"] {
+  color: var(--text-2);
+}
 
 .settings-load-error {
   display: flex;

@@ -132,7 +132,7 @@ it("keeps the reset action in the scroll flow so it never covers a row", () => {
   const reset = screen.getByRole("button", { name: "恢复默认设置" });
   expect(scroller).toContainElement(reset);
   expect(reset.closest("footer")).toHaveTextContent(
-    "主题、开机自启动与静默启动保持不变",
+    "恢复 Codex 偏好、安装方式和关闭行为的默认值",
   );
 });
 

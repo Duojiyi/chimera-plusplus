@@ -129,6 +129,14 @@ describe("connected provider line table", () => {
     expect(screen.queryByText("anthropic")).not.toBeInTheDocument();
   });
 
+  it("opens a line for editing when its name is clicked, never switching", () => {
+    const p = props();
+    render(<ProviderLineTable {...p} />);
+    fireEvent.click(screen.getByRole("button", { name: /^Beta，/ }));
+    expect(p.onEdit).toHaveBeenCalledWith(providers[1]);
+    expect(p.onSwitch).not.toHaveBeenCalled();
+  });
+
   it("renders config and delegates the actual provider objects", async () => {
     const user = userEvent.setup();
     const p = props();
