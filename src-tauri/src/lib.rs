@@ -1441,11 +1441,9 @@ pub fn run() {
 
             #[cfg(not(target_os = "macos"))]
             {
-                if let Some(icon) = app.default_window_icon() {
-                    tray_builder = tray_builder.icon(icon.clone());
-                } else {
-                    log::warn!("Failed to get default window icon for tray");
-                }
+                // ponytail: 固定 32x32（与改动前 100% 缩放取到的默认窗口图标同尺寸），
+                // 高于 200% 缩放会被系统放大；需要更清晰时再按 DPI 提供多尺寸。
+                tray_builder = tray_builder.icon(tauri::include_image!("icons/tray/tray-icon.png"));
             }
 
             let _tray = tray_builder.build(app)?;
