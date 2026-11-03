@@ -5,6 +5,7 @@
 use once_cell::sync::Lazy;
 use tauri::menu::{CheckMenuItem, Menu, MenuBuilder, MenuItem, Submenu, SubmenuBuilder};
 use tauri::{Emitter, Manager};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 use crate::app_config::AppType;
 use crate::error::AppError;
@@ -62,6 +63,7 @@ pub struct TrayTexts {
 /// （`settings.language` 尚未写入）时托盘语言与界面语言一致：
 /// 繁中系统（zh-TW/HK/MO/Hant）→ `zh-TW`，其余 zh → `zh`，
 /// 日文 → `ja`，英文 → `en`，未知区域回退到 `zh`（与前端默认一致）。
+#[cfg_attr(not(test), allow(dead_code))]
 fn map_locale_to_tray_language(locale: &str) -> &'static str {
     let locale = locale.to_lowercase();
     if locale == "zh" {
@@ -85,10 +87,9 @@ fn map_locale_to_tray_language(locale: &str) -> &'static str {
 
 /// 读取系统区域并映射为托盘语言码；取不到区域时回退到 `zh`。
 fn detect_system_tray_language() -> &'static str {
-    sys_locale::get_locale()
-        .as_deref()
-        .map(map_locale_to_tray_language)
-        .unwrap_or("zh")
+    // The interface ships in Simplified Chinese only (PRODUCT.md); the tray
+    // follows it instead of the operating system locale.
+    "zh"
 }
 
 impl TrayTexts {
@@ -984,7 +985,7 @@ pub fn handle_tray_menu_event(app: &tauri::AppHandle, event_id: &str) {
         }
         "quit" => {
             log::info!("退出应用");
-            app.exit(0);
+            quit_unless_runtime_busy(app);
         }
         _ => {
             if handle_profile_tray_event(app, event_id) {
@@ -1118,6 +1119,30 @@ pub(crate) async fn refresh_all_usage_in_tray(app: &tauri::AppHandle) {
     }
 
     join_all(script_futures).await;
+}
+
+/// Quit from the tray. While Codex is being installed, updated or re-skinned the
+/// user is asked first, because ending the process mid-swap leaves work for the
+/// next start to repair.
+fn quit_unless_runtime_busy(app: &tauri::AppHandle) {
+    if !crate::commands::runtime_operation_in_progress() {
+        app.exit(0);
+        return;
+    }
+    let handle = app.clone();
+    app.dialog()
+        .message("Codex 正在安装、更新或应用外观。现在退出可能留下未完成的操作，下次启动时需要恢复。仍要退出吗？")
+        .title("Chimera++")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "仍要退出".to_string(),
+            "等待完成".to_string(),
+        ))
+        .show(move |quit_anyway| {
+            if quit_anyway {
+                handle.exit(0);
+            }
+        });
 }
 
 #[cfg(test)]

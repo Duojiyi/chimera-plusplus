@@ -230,6 +230,23 @@ pub fn load_messages(path: &Path) -> Result<Vec<SessionMessage>, String> {
     Ok(messages)
 }
 
+/// Only OpenCode's own database may be opened for a session reference, never a
+/// file named by the caller.
+pub fn ensure_sqlite_source_is_opencode_db(source: &str) -> Result<(), String> {
+    let (db_path, _) = parse_sqlite_source(source)
+        .ok_or_else(|| format!("Invalid SQLite source reference: {source}"))?;
+    let db_path = db_path
+        .canonicalize()
+        .map_err(|e| format!("Failed to canonicalize SQLite database path: {e}"))?;
+    let expected_db_path = get_opencode_db_path()
+        .canonicalize()
+        .map_err(|e| format!("Failed to canonicalize expected OpenCode database path: {e}"))?;
+    if db_path != expected_db_path {
+        return Err("OpenCode SQLite source is not the OpenCode database".to_string());
+    }
+    Ok(())
+}
+
 /// Load messages from the OpenCode SQLite database for a given source reference.
 /// Joins the `message` and `part` tables in memory to reconstruct full messages.
 pub fn load_messages_sqlite(source: &str) -> Result<Vec<SessionMessage>, String> {
@@ -800,6 +817,16 @@ mod tests {
         assert!(parse_sqlite_source("/tmp/opencode.db:ses_123").is_none());
         assert!(parse_sqlite_source("sqlite:/tmp/opencode.db:msg_123").is_none());
         assert!(parse_sqlite_source("sqlite:/tmp/opencode.db").is_none());
+    }
+
+    #[test]
+    fn a_session_reference_cannot_open_an_arbitrary_database() {
+        let temp = tempdir().expect("tempdir");
+        let foreign = temp.path().join("other.db");
+        std::fs::write(&foreign, b"").expect("write");
+        let source = format!("sqlite:{}:ses_1", foreign.display());
+        assert!(ensure_sqlite_source_is_opencode_db(&source).is_err());
+        assert!(ensure_sqlite_source_is_opencode_db("sqlite:/nope").is_err());
     }
 
     #[test]

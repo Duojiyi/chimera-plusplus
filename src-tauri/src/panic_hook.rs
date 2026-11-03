@@ -115,6 +115,37 @@ fn get_system_info() -> String {
     )
 }
 
+/// Drops userinfo, query and fragment, which is where URLs carry secrets.
+fn redact_url(raw: &str) -> String {
+    match url::Url::parse(raw) {
+        Ok(mut parsed) if parsed.has_host() => {
+            let _ = parsed.set_username("");
+            let _ = parsed.set_password(None);
+            parsed.set_query(None);
+            parsed.set_fragment(None);
+            parsed.to_string()
+        }
+        _ => "[URL]".to_string(),
+    }
+}
+
+/// Crash messages often quote an error that contains a request URL or an
+/// `Authorization` value. Query strings, userinfo and bearer tokens are removed
+/// before the text is written to disk.
+fn redact_crash_text(text: &str) -> String {
+    use once_cell::sync::Lazy;
+    use regex::Regex;
+
+    static URL: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r#"https?://[^\s"'<>)]+"#).expect("url pattern"));
+    static BEARER: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}").expect("auth pattern")
+    });
+
+    let urls = URL.replace_all(text, |captures: &regex::Captures| redact_url(&captures[0]));
+    BEARER.replace_all(&urls, "$1 [REDACTED]").into_owned()
+}
+
 /// 设置 panic hook，捕获崩溃信息并写入日志文件
 ///
 /// 在应用启动时调用此函数，确保任何 panic 都会被记录。
@@ -125,11 +156,8 @@ fn get_system_info() -> String {
 /// - 发生位置（文件:行号）
 /// - Backtrace（完整调用栈）
 pub fn setup_panic_hook() {
-    // 启用 backtrace（确保 release 模式也能捕获）
-    if std::env::var("RUST_BACKTRACE").is_err() {
-        std::env::set_var("RUST_BACKTRACE", "1");
-    }
-
+    // `Backtrace::force_capture` below does not depend on RUST_BACKTRACE, and
+    // setting it here would change every child process (Codex, CLIs) started later.
     let default_hook = panic::take_hook();
 
     panic::set_hook(Box::new(move |panic_info| {
@@ -167,6 +195,8 @@ pub fn setup_panic_hook() {
             // 尝试使用 Display trait
             format!("{panic_info}")
         };
+
+        let message = redact_crash_text(&message);
 
         // 获取位置信息
         let location = if let Some(loc) = panic_info.location() {
@@ -251,6 +281,22 @@ mod tests {
         let path = get_crash_log_path();
         assert!(path.ends_with("crash.log"));
         assert!(path.to_string_lossy().contains(".chimera-plus-plus"));
+    }
+
+    #[test]
+    fn crash_text_loses_url_secrets_and_bearer_tokens() {
+        let redacted = redact_crash_text(
+            "request to https://user:pw@api.example.com/v1/x?key=SECRETKEY123&a=1 failed: Authorization: Bearer abcdef0123456789",
+        );
+        assert!(!redacted.contains("SECRETKEY123"));
+        assert!(!redacted.contains("user:pw"));
+        assert!(!redacted.contains("abcdef0123456789"));
+        assert!(redacted.contains("api.example.com/v1/x"));
+        assert!(redacted.contains("Bearer [REDACTED]"));
+        assert_eq!(
+            redact_crash_text("plain panic message"),
+            "plain panic message"
+        );
     }
 
     #[test]

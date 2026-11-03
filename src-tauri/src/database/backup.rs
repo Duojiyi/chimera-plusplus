@@ -127,6 +127,24 @@ pub(crate) fn restrict_db_storage_permissions(db_path: &Path) {
 /// 能把临时文件重定向到任意目录，`writable_schema` 能绕过 schema 完整性检查。
 const IMPORT_ALLOWED_PRAGMAS: &[&str] = &["foreign_keys", "user_version"];
 
+/// An exported dump holds literals; the schema uses `datetime('now')` defaults and
+/// one `COALESCE` expression index. Every other function is refused:
+/// the bundled SQLite predates fixes for memory errors reachable through
+/// `concat_ws` and aggregate-heavy queries, and an imported file is untrusted.
+const IMPORT_ALLOWED_FUNCTIONS: &[&str] = &[
+    "datetime",
+    "date",
+    "time",
+    "strftime",
+    "julianday",
+    "coalesce",
+    "ifnull",
+    "nullif",
+];
+
+/// Largest SQL file accepted for import.
+const MAX_IMPORT_SQL_BYTES: u64 = 64 * 1024 * 1024;
+
 /// External SQL must stay inside the staging database and must not install
 /// temporary or executable schema objects. Temporary tables can shadow main
 /// tables during validation; triggers and views would survive SQLite Backup
@@ -147,6 +165,9 @@ fn import_authorizer(context: rusqlite::hooks::AuthContext<'_>) -> rusqlite::hoo
         | AuthAction::CreateView { .. }
         | AuthAction::CreateTempView { .. } => true,
         AuthAction::Unknown { .. } => true,
+        AuthAction::Function { function_name } => !IMPORT_ALLOWED_FUNCTIONS
+            .iter()
+            .any(|allowed| function_name.eq_ignore_ascii_case(allowed)),
         AuthAction::Pragma { pragma_name, .. } => !IMPORT_ALLOWED_PRAGMAS
             .iter()
             .any(|allowed| pragma_name.eq_ignore_ascii_case(allowed)),
@@ -321,6 +342,17 @@ impl Database {
             )));
         }
 
+        // The whole file is read into memory, so its size is checked first.
+        let size = fs::metadata(source_path)
+            .map_err(|e| AppError::io(source_path, e))?
+            .len();
+        if size > MAX_IMPORT_SQL_BYTES {
+            return Err(AppError::localized(
+                "backup.sql.too_large",
+                format!("SQL 备份文件过大（{size} 字节，上限 {MAX_IMPORT_SQL_BYTES} 字节）。"),
+                format!("The SQL backup is too large ({size} bytes; the limit is {MAX_IMPORT_SQL_BYTES})."),
+            ));
+        }
         let sql_raw = fs::read_to_string(source_path).map_err(|e| AppError::io(source_path, e))?;
         let sql_content = sql_raw.trim_start_matches('\u{feff}');
         self.import_sql_string(sql_content)
@@ -446,8 +478,8 @@ impl Database {
 
         Err(AppError::localized(
             "backup.sql.invalid_format",
-            "仅支持导入由 CC Switch 导出的 SQL 备份文件。",
-            "Only SQL backups exported by CC Switch are supported.",
+            "仅支持导入由 Chimera++ 或 CC Switch 导出的 SQL 备份文件。",
+            "Only SQL backups exported by Chimera++ or CC Switch are supported.",
         ))
     }
 
@@ -1603,6 +1635,38 @@ mod tests {
 
             let _ = std::fs::remove_file(&target);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn import_refuses_functions_outside_the_dump_vocabulary() -> Result<(), AppError> {
+        // `concat_ws` is reachable from a plain INSERT ... SELECT and sits in the
+        // range of SQLite releases with known memory-safety bugs.
+        for statement in [
+            "CREATE TABLE t (a TEXT); INSERT INTO t SELECT concat_ws(',', 'a', 'b');",
+            "CREATE TABLE t (a TEXT); INSERT INTO t VALUES (hex(randomblob(4)));",
+            "CREATE TABLE t (a TEXT); INSERT INTO t VALUES (load_extension('x'));",
+        ] {
+            let malicious = format!("{}\n{statement}\n", super::CC_SWITCH_SQL_EXPORT_HEADER);
+            let db = Database::memory()?;
+            assert!(
+                db.import_sql_string(&malicious).is_err(),
+                "{statement} must be refused"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn oversized_sql_files_are_refused_before_they_are_read() -> Result<(), AppError> {
+        let dir = tempfile::tempdir().map_err(|e| AppError::Message(e.to_string()))?;
+        let path = dir.path().join("huge.sql");
+        let file = std::fs::File::create(&path).map_err(|e| AppError::io(&path, e))?;
+        file.set_len(super::MAX_IMPORT_SQL_BYTES + 1)
+            .map_err(|e| AppError::io(&path, e))?;
+        let db = Database::memory()?;
+        let error = db.import_sql(&path).expect_err("too large");
+        assert!(error.to_string().contains("过大") || error.to_string().contains("too large"));
         Ok(())
     }
 

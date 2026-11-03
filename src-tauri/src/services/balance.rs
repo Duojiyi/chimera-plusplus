@@ -12,6 +12,7 @@
 //!   或该地址没有已知余额接口（`unsupported`）。
 
 use crate::provider::{UsageData, UsageResult};
+use crate::services::model_fetch::read_upstream_body;
 use serde::Serialize;
 use std::time::Duration;
 use url::Url;
@@ -409,8 +410,7 @@ async fn query_chimerahub(origin: &str, api_key: &str) -> Result<UsageResult, St
     if !status.is_success() {
         return Ok(make_error(format!("API error (HTTP {status})")));
     }
-    let raw = resp
-        .bytes()
+    let raw = read_upstream_body(resp)
         .await
         .map_err(|e| format!("Failed to read response: {e}"))?;
     let body =
@@ -460,12 +460,13 @@ async fn query_chimerahub_account(origin: &str, api_key: &str) -> Option<Chimera
         .ok()?
         .error_for_status()
         .ok()?;
-    let sub_json: serde_json::Value = sub.json().await.ok()?;
+    let sub_json: serde_json::Value =
+        serde_json::from_slice(&read_upstream_body(sub).await.ok()?).ok()?;
     let soft_limit = sub_json
         .get("soft_limit_usd")
         .and_then(|v| v.as_f64())
         .unwrap_or(0.0);
-    let used = client
+    let usage = client
         .get(format!("{origin}/v1/dashboard/billing/usage"))
         .header("Authorization", format!("Bearer {api_key}"))
         .header("Accept", "application/json")
@@ -474,9 +475,8 @@ async fn query_chimerahub_account(origin: &str, api_key: &str) -> Option<Chimera
         .await
         .ok()?
         .error_for_status()
-        .ok()?
-        .json::<serde_json::Value>()
-        .await
+        .ok()?;
+    let used = serde_json::from_slice::<serde_json::Value>(&read_upstream_body(usage).await.ok()?)
         .ok()?
         .get("total_usage")
         .and_then(|v| v.as_f64())
@@ -512,7 +512,7 @@ async fn query_deepseek(api_key: &str) -> Result<UsageResult, String> {
         return Ok(make_error(format!("API error (HTTP {status})")));
     }
 
-    let raw = match resp.bytes().await {
+    let raw = match read_upstream_body(resp).await {
         Ok(b) => b,
         Err(e) => return Err(format!("Failed to read response: {e}")),
     };
@@ -559,7 +559,7 @@ async fn query_stepfun(api_key: &str) -> Result<UsageResult, String> {
         return Ok(make_error(format!("API error (HTTP {status})")));
     }
 
-    let raw = match resp.bytes().await {
+    let raw = match read_upstream_body(resp).await {
         Ok(b) => b,
         Err(e) => return Err(format!("Failed to read response: {e}")),
     };
@@ -613,7 +613,7 @@ async fn query_siliconflow(api_key: &str, is_cn: bool) -> Result<UsageResult, St
         return Ok(make_error(format!("API error (HTTP {status})")));
     }
 
-    let raw = match resp.bytes().await {
+    let raw = match read_upstream_body(resp).await {
         Ok(b) => b,
         Err(e) => return Err(format!("Failed to read response: {e}")),
     };
@@ -657,8 +657,7 @@ async fn get_json(url: &str, api_key: &str) -> Result<JsonReply, String> {
     if !status.is_success() {
         return Ok(JsonReply::Status(status));
     }
-    let raw = resp
-        .bytes()
+    let raw = read_upstream_body(resp)
         .await
         .map_err(|e| format!("Failed to read response: {e}"))?;
     Ok(match serde_json::from_slice(&raw) {
@@ -758,7 +757,7 @@ async fn query_novita(api_key: &str) -> Result<UsageResult, String> {
         return Ok(make_error(format!("API error (HTTP {status})")));
     }
 
-    let raw = match resp.bytes().await {
+    let raw = match read_upstream_body(resp).await {
         Ok(b) => b,
         Err(e) => return Err(format!("Failed to read response: {e}")),
     };

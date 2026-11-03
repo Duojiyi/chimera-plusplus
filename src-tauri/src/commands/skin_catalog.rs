@@ -138,7 +138,10 @@ fn portable_root() -> Result<PathBuf, String> {
 static THEME_CDP_PORT: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
 
 fn theme_cdp_port() -> u16 {
-    *THEME_CDP_PORT.get_or_init(|| crate::codex_cdp::pick_ephemeral_loopback_port().unwrap_or(9345))
+    *THEME_CDP_PORT.get_or_init(|| {
+        crate::codex_cdp::pick_ephemeral_loopback_port()
+            .unwrap_or_else(|_| crate::codex_cdp::random_dynamic_port())
+    })
 }
 
 fn native_paths() -> NativeThemePaths {
@@ -185,12 +188,9 @@ async fn fetch_catalog_text_from(client: &reqwest::Client, url: &str) -> Result<
         })?;
     let status = response.status();
     if !status.is_success() {
-        let detail = response
-            .bytes()
-            .await
-            .map(|bytes| String::from_utf8_lossy(&bytes[..bytes.len().min(512)]).into_owned())
-            .unwrap_or_default();
-        let detail = detail.trim();
+        let detail = crate::services::model_fetch::read_upstream_error_text(response).await;
+        let detail: String = detail.trim().chars().take(512).collect();
+        let detail = detail.as_str();
         return Err(if detail.is_empty() {
             format!("皮肤目录服务器返回 HTTP {status}，请稍后重试。")
         } else {
@@ -203,12 +203,20 @@ async fn fetch_catalog_text_from(client: &reqwest::Client, url: &str) -> Result<
     {
         return Err(catalog_too_large_message());
     }
-    let bytes = response.bytes().await.map_err(|error| {
-        format!(
-            "读取皮肤目录响应失败：{}。请检查网络后重试。",
-            crate::services::bounded_download::describe_reqwest_error(&error)
-        )
-    })?;
+    let bytes = crate::services::model_fetch::read_response_text_limited(
+        response,
+        SKIN_CATALOG_MAX_BYTES,
+        "皮肤目录",
+    )
+    .await
+    .map_err(|error| {
+        if error.contains("exceeds the configured limit") {
+            catalog_too_large_message()
+        } else {
+            format!("读取皮肤目录响应失败：{error}。请检查网络后重试。")
+        }
+    })?
+    .into_bytes();
     if bytes.len() > SKIN_CATALOG_MAX_BYTES {
         return Err(catalog_too_large_message());
     }
@@ -425,16 +433,24 @@ pub async fn apply_skin_package(skin_id: String, confirm: bool) -> Result<(), St
                 .map_err(|e| format!("codexTheme 校验失败: {e}"))?;
                 codex_theme_engine::native::backup_native_theme(&native)
                     .map_err(|e| format!("备份 Codex 原生外观设置失败：{e}"))?;
-                let current = crate::codex_config::read_codex_config_text()
+                // Derived from one observation and committed against it, so
+                // a switch that writes config.toml meanwhile is not lost.
+                let snapshots = crate::codex_live_write::CodexLiveSnapshots::read()
                     .map_err(|e| format!("读取 Codex 配置失败：{e}"))?;
+                let current = snapshots
+                    .config_text()
+                    .map_err(|e| format!("读取 Codex 配置失败：{e}"))?
+                    .to_string();
                 let planned = codex_theme_engine::native::plan_native_config(
                     &current,
                     &codex_theme_engine::native::apply_plan(&parsed),
                 )
                 .map_err(|e| format!("生成 Codex 外观配置失败：{e}"))?;
-                crate::codex_live_write::write_codex_live_files(
+                crate::codex_live_write::plan_with_snapshots(
                     crate::codex_live_write::CodexLiveWrite::config_only(&planned),
+                    snapshots,
                 )
+                .and_then(|plan| plan.commit())
                 .map_err(|e| format!("写入 Codex 配置失败：{e}"))?;
             }
         }
@@ -508,14 +524,20 @@ pub async fn restore_skin_package(confirm: bool) -> Result<(), String> {
             .ok_or_else(|| NOT_INSTALLED_MESSAGE.to_string())?;
         close_codex(&installed, &portable_root)
             .map_err(|error| format!("恢复外观前无法关闭 Codex：{error}"))?;
-        let current = crate::codex_config::read_codex_config_text()
+        let snapshots = crate::codex_live_write::CodexLiveSnapshots::read()
             .map_err(|e| format!("读取 Codex 配置失败：{e}"))?;
+        let current = snapshots
+            .config_text()
+            .map_err(|e| format!("读取 Codex 配置失败：{e}"))?
+            .to_string();
         if let Some(planned) = codex_theme_engine::native::planned_restore_text(&native, &current)
             .map_err(|error| format!("生成恢复后的 Codex 配置失败：{error}"))?
         {
-            crate::codex_live_write::write_codex_live_files(
+            crate::codex_live_write::plan_with_snapshots(
                 crate::codex_live_write::CodexLiveWrite::config_only(&planned),
+                snapshots,
             )
+            .and_then(|plan| plan.commit())
             .map_err(|error| format!("写入 Codex 配置失败：{error}"))?;
             codex_theme_engine::native::drop_backup(&native)
                 .map_err(|error| format!("清理外观备份失败：{error}"))?;

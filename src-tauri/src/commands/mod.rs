@@ -10,7 +10,6 @@ mod coding_plan;
 mod config;
 mod copilot;
 mod deeplink;
-mod env;
 mod failover;
 mod global_proxy;
 
@@ -40,6 +39,7 @@ mod sync_support;
 mod xai_oauth;
 
 mod lightweight;
+mod models_dev;
 mod s3_sync;
 mod usage;
 mod webdav_sync;
@@ -53,7 +53,6 @@ pub use coding_plan::*;
 pub use config::*;
 pub use copilot::*;
 pub use deeplink::*;
-pub use env::*;
 pub use failover::*;
 pub use global_proxy::*;
 
@@ -80,6 +79,7 @@ pub use subscription::*;
 pub use xai_oauth::*;
 
 pub use lightweight::*;
+pub use models_dev::*;
 pub use s3_sync::*;
 pub use usage::*;
 pub use webdav_sync::*;

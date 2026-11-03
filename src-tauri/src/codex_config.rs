@@ -19,7 +19,6 @@ pub const CC_SWITCH_CODEX_MODEL_PROVIDER_ID: &str = "custom";
 /// config or history that still carries it is recognized and migrated.
 pub const CC_SWITCH_CODEX_OFFICIAL_PROXY_PROVIDER_ID: &str = "cc-switch-official";
 pub const CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME: &str = "cc-switch-model-catalog.json";
-pub(crate) const CODEX_PROXY_AUTH_PLACEHOLDER: &str = "PROXY_MANAGED";
 
 /// A model identity returned by Codex's own `debug models` command.
 ///
@@ -399,7 +398,11 @@ pub fn repair_rejected_codex_settings_at_startup() -> Result<bool, AppError> {
     if !config_path.exists() {
         return Ok(false);
     }
-    let text = fs::read_to_string(&config_path).map_err(|e| AppError::io(&config_path, e))?;
+    // The repair is derived from this observation and committed against it, so
+    // a proxy takeover or live restore that writes config.toml meanwhile is
+    // detected instead of overwritten.
+    let snapshots = crate::codex_live_write::CodexLiveSnapshots::read()?;
+    let text = snapshots.config_text()?.to_string();
     let repaired = strip_rejected_codex_settings(&text)?;
     let repaired = rename_non_official_openai_named_provider_tables(&repaired)?.unwrap_or(repaired);
     if repaired == text {
@@ -410,9 +413,11 @@ pub fn repair_rejected_codex_settings_at_startup() -> Result<bool, AppError> {
         chrono::Local::now().format("%Y%m%d%H%M%S")
     ));
     fs::write(&backup_path, text.as_bytes()).map_err(|e| AppError::io(&backup_path, e))?;
-    crate::codex_live_write::write_codex_live_files(
+    crate::codex_live_write::plan_with_snapshots(
         crate::codex_live_write::CodexLiveWrite::config_only(&repaired),
-    )?;
+        snapshots,
+    )?
+    .commit()?;
     log::info!(
         "✓ Repaired Codex config.toml (backup: {})",
         backup_path.display()
@@ -3489,7 +3494,7 @@ fn remove_codex_proxy_placeholders_from_providers(providers: &mut toml_edit::Tab
             let should_remove = table
                 .get("experimental_bearer_token")
                 .and_then(|item| item.as_str())
-                == Some(CODEX_PROXY_AUTH_PLACEHOLDER);
+                .is_some_and(crate::proxy_marker::is_proxy_token);
             if should_remove {
                 table.remove("experimental_bearer_token");
             }
@@ -3497,7 +3502,7 @@ fn remove_codex_proxy_placeholders_from_providers(providers: &mut toml_edit::Tab
             let should_remove = table
                 .get("experimental_bearer_token")
                 .and_then(|value| value.as_str())
-                == Some(CODEX_PROXY_AUTH_PLACEHOLDER);
+                .is_some_and(crate::proxy_marker::is_proxy_token);
             if should_remove {
                 table.remove("experimental_bearer_token");
             }

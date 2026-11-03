@@ -6,6 +6,7 @@
 use super::subscription::{
     CredentialStatus, QuotaTier, SubscriptionQuota, TIER_FIVE_HOUR, TIER_MONTHLY, TIER_WEEKLY_LIMIT,
 };
+use crate::services::model_fetch::{read_upstream_body, read_upstream_error_text};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // ── 供应商检测 ──────────────────────────────────────────────
@@ -130,13 +131,13 @@ async fn query_kimi(api_key: &str) -> Result<SubscriptionQuota, String> {
     }
 
     if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
+        let body = read_upstream_error_text(resp).await;
         return Ok(make_error(format!("API error (HTTP {status}): {body}")));
     }
 
     // 先 bytes() 再解析：读体失败（超时/连接中断）是瞬时 → Err；拿到完整响应体
     // 后解析失败才是确定性。reqwest 的 json() 把读体错误也包成 decode，无法区分。
-    let raw = match resp.bytes().await {
+    let raw = match read_upstream_body(resp).await {
         Ok(b) => b,
         Err(e) => return Err(format!("Failed to read response: {e}")),
     };
@@ -349,13 +350,13 @@ async fn query_zhipu(base_url: &str, api_key: &str) -> Result<SubscriptionQuota,
     }
 
     if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
+        let body = read_upstream_error_text(resp).await;
         return Ok(make_error(format!("API error (HTTP {status}): {body}")));
     }
 
     // 先 bytes() 再解析：读体失败（超时/连接中断）是瞬时 → Err；拿到完整响应体
     // 后解析失败才是确定性。reqwest 的 json() 把读体错误也包成 decode，无法区分。
-    let raw = match resp.bytes().await {
+    let raw = match read_upstream_body(resp).await {
         Ok(b) => b,
         Err(e) => return Err(format!("Failed to read response: {e}")),
     };
@@ -445,13 +446,13 @@ async fn query_minimax(api_key: &str, is_cn: bool) -> Result<SubscriptionQuota, 
     }
 
     if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
+        let body = read_upstream_error_text(resp).await;
         return Ok(make_error(format!("API error (HTTP {status}): {body}")));
     }
 
     // 先 bytes() 再解析：读体失败（超时/连接中断）是瞬时 → Err；拿到完整响应体
     // 后解析失败才是确定性。reqwest 的 json() 把读体错误也包成 decode，无法区分。
-    let raw = match resp.bytes().await {
+    let raw = match read_upstream_body(resp).await {
         Ok(b) => b,
         Err(e) => return Err(format!("Failed to read response: {e}")),
     };
@@ -523,13 +524,13 @@ async fn query_zenmux(base_url: &str, api_key: &str) -> Result<SubscriptionQuota
     }
 
     if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
+        let body = read_upstream_error_text(resp).await;
         return Ok(make_error(format!("API error (HTTP {status}): {body}")));
     }
 
     // 先 bytes() 再解析：读体失败（超时/连接中断）是瞬时 → Err；拿到完整响应体
     // 后解析失败才是确定性。reqwest 的 json() 把读体错误也包成 decode，无法区分。
-    let raw = match resp.bytes().await {
+    let raw = match read_upstream_body(resp).await {
         Ok(b) => b,
         Err(e) => return Err(format!("Failed to read response: {e}")),
     };
@@ -936,7 +937,7 @@ async fn volcengine_openapi_call(
         // 火山 OpenAPI 网关对签名/凭据类错误常返 4xx（多为 HTTP 400）并携带与 200
         // 路径相同的 ResponseMetadata.Error 信封，而非 401/403。这里也解析信封，让
         // Bearer 被拒时仍能给出 AK/SK 引导并标记凭据失效，而不是当成普通 API 错误。
-        let raw = resp.text().await.unwrap_or_default();
+        let raw = read_upstream_error_text(resp).await;
         if let Ok(body) = serde_json::from_str::<serde_json::Value>(&raw) {
             if let Some((code, msg)) = volcengine_response_error(&body) {
                 if volcengine_is_auth_error_code(&code) {
@@ -952,7 +953,7 @@ async fn volcengine_openapi_call(
 
     // 同 Bearer 路径：先 bytes() 再解析——读体失败是瞬时（Transient），解析失败
     // 是确定性（Soft）。reqwest 的 json() 把读体错误也包成 decode，无法区分。
-    let raw = match resp.bytes().await {
+    let raw = match read_upstream_body(resp).await {
         Ok(b) => b,
         Err(e) => return VolcCall::Transient(format!("Failed to read response: {e}")),
     };
@@ -1244,13 +1245,13 @@ async fn query_zhipu_team_at(
     }
 
     if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
+        let body = read_upstream_error_text(resp).await;
         return Ok(make_error(format!("API error (HTTP {status}): {body}")));
     }
 
     // 先 bytes() 再解析：读体失败（超时/连接中断）是瞬时 → Err；拿到完整响应体
     // 后解析失败才是确定性。reqwest 的 json() 把读体错误也包成 decode，无法区分。
-    let raw = match resp.bytes().await {
+    let raw = match read_upstream_body(resp).await {
         Ok(b) => b,
         Err(e) => return Err(format!("Failed to read response: {e}")),
     };

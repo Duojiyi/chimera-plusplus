@@ -1,13 +1,36 @@
 use std::process::Command;
 
-pub fn launch_terminal(
-    target: &str,
-    command: &str,
-    cwd: Option<&str>,
-    custom_config: Option<&str>,
-) -> Result<(), String> {
+/// The only commands a session terminal may run: a provider's resume command
+/// with an inert session id, exactly as the session scanners build them.
+const RESUME_COMMAND_PREFIXES: [&str; 5] = [
+    "claude --resume",
+    "codex resume",
+    "gemini --resume",
+    "grok --resume",
+    "opencode -s",
+];
+
+fn is_resume_command(command: &str) -> bool {
+    RESUME_COMMAND_PREFIXES.iter().any(|prefix| {
+        command
+            .strip_prefix(prefix)
+            .and_then(|rest| rest.strip_prefix(" \""))
+            .and_then(|rest| rest.strip_suffix('"'))
+            .is_some_and(|id| {
+                id.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)
+                    && id
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+            })
+    })
+}
+
+pub fn launch_terminal(target: &str, command: &str, cwd: Option<&str>) -> Result<(), String> {
     if command.trim().is_empty() {
         return Err("Resume command is empty".to_string());
+    }
+    if !is_resume_command(command) {
+        return Err("Only a session resume command can be launched in a terminal".to_string());
     }
 
     if !cfg!(target_os = "macos") {
@@ -24,7 +47,6 @@ pub fn launch_terminal(
         "alacritty" => launch_alacritty(command, cwd),
         #[cfg(unix)]
         "warp" => launch_warp(command, cwd),
-        "custom" => launch_custom(command, cwd, custom_config),
         _ => Err(format!("Unsupported terminal target: {target}")),
     }
 }
@@ -233,15 +255,21 @@ fn launch_warp(command: &str, cwd: Option<&str>) -> Result<(), String> {
         .append_pair("path", &script_file.path().to_string_lossy());
     let warp_url = warp_url.to_string();
 
+    let script_path = script_file.path().to_path_buf();
     let status = Command::new("open")
         .args(["-a", "Warp", &warp_url])
-        .status()
-        .map_err(|e| format!("Failed to launch Warp: {e}"))?;
+        .status();
 
-    if status.success() {
-        Ok(())
-    } else {
-        Err("Failed to launch Warp.".to_string())
+    match status {
+        Ok(status) if status.success() => Ok(()),
+        outcome => {
+            // The script deletes itself only once it runs.
+            let _ = std::fs::remove_file(&script_path);
+            match outcome {
+                Ok(_) => Err("Failed to launch Warp.".to_string()),
+                Err(e) => Err(format!("Failed to launch Warp: {e}")),
+            }
+        }
     }
 }
 
@@ -271,48 +299,6 @@ fn launch_alacritty(command: &str, cwd: Option<&str>) -> Result<(), String> {
         Ok(())
     } else {
         Err("Failed to launch Alacritty.".to_string())
-    }
-}
-
-fn launch_custom(
-    command: &str,
-    cwd: Option<&str>,
-    custom_config: Option<&str>,
-) -> Result<(), String> {
-    let template = custom_config.ok_or("No custom terminal config provided")?;
-
-    if template.trim().is_empty() {
-        return Err("Custom terminal command template is empty".to_string());
-    }
-
-    let cmd_str = command;
-    // `{cwd}` 是磁盘上扫来的路径，先做转义；`{command}` 保持原样——模板作者写下
-    // 这个占位符的本意就是让它当命令展开。
-    //
-    // ⚠️ 这里的转义**不是完备防护**，只在占位符处于未加引号的 shell 词位置时成立。
-    // 模板若写成 `echo "{cwd}"`，插入的单引号会落进双引号里变成普通字符，`cwd`
-    // 里的 `$(...)` 照样求值。安全性取决于模板怎么写，而模板不由这里控制。
-    //
-    // 目前本分支无 UI 入口（终端选项列表没有 `custom`，前端也从不传
-    // `customConfig`），所以不可达。**接线前必须换掉这个方案**——正确做法是让
-    // 模板声明参数位、由此处按 argv 传递，而不是让用户拼 shell 字符串。
-    let dir_str = shell_escape(cwd.unwrap_or("."));
-
-    let final_cmd_line = template
-        .replace("{command}", cmd_str)
-        .replace("{cwd}", &dir_str);
-
-    // Execute via sh -c
-    let status = Command::new("sh")
-        .arg("-c")
-        .arg(&final_cmd_line)
-        .status()
-        .map_err(|e| format!("Failed to execute custom terminal launcher: {e}"))?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err("Custom terminal execution returned error code".to_string())
     }
 }
 
@@ -436,5 +422,33 @@ mod tests {
             build_shell_command("claude --resume x", Some("/tmp/$(id -un)")),
             "cd '/tmp/$(id -un)' && claude --resume x"
         );
+    }
+
+    #[test]
+    fn only_provider_resume_commands_may_be_launched() {
+        for command in [
+            "claude --resume \"0b6d-aa_1\"",
+            "codex resume \"019a1d9c-7b5e-7c11-8a2e-0123456789ab\"",
+            "gemini --resume \"abc123\"",
+            "grok --resume \"abc123\"",
+            "opencode -s \"ses_123-Ab\"",
+        ] {
+            assert!(is_resume_command(command), "{command}");
+        }
+        for command in [
+            "",
+            "rm -rf ~",
+            "codex resume \"x\"; rm -rf ~",
+            "codex resume \"$(id)\"",
+            "codex resume \"-bad\"",
+            "codex resume x",
+            "codex resume \"a b\"",
+            "codex resume \"a\" && id",
+            "sh -c id",
+            "claude --resume \"\"",
+        ] {
+            assert!(!is_resume_command(command), "{command}");
+        }
+        assert!(launch_terminal("terminal", "touch /tmp/pwned", None).is_err());
     }
 }

@@ -101,6 +101,9 @@ impl ProxyServer {
             codex_wire_api_auto: Arc::new(RwLock::new(std::collections::HashMap::new())),
         };
 
+        if let Err(error) = super::local_auth::ensure_proxy_token(&state.db) {
+            log::error!("[Proxy] 无法创建本地代理令牌: {error}");
+        }
         Self {
             config,
             state,
@@ -119,9 +122,9 @@ impl ProxyServer {
             format!("{}:{}", self.config.listen_address, self.config.listen_port)
                 .parse()
                 .map_err(|e| ProxyError::BindFailed(format!("无效的地址: {e}")))?;
-        // The proxy has no caller-auth token and forwards provider credentials.
-        // Non-loopback binds would expose it to the LAN, so reject them until an
-        // explicit bearer-token feature is added.
+        // The proxy forwards provider credentials and its token guards a single
+        // machine's users, not a network. Non-loopback binds would expose it to
+        // the LAN, so they stay rejected.
         if !addr.ip().is_loopback() {
             return Err(ProxyError::BindFailed(
                 "非 loopback 代理监听已被拒绝：本代理没有调用方鉴权，仅允许 127.0.0.1/localhost"
@@ -451,13 +454,13 @@ impl ProxyServer {
             .route("/gemini/v1beta/*path", any(handlers::handle_gemini))
             // Gemini 的 GA 版本也叫 /v1，给原 SDK 留一条出口
             .route("/gemini/v1/*path", any(handlers::handle_gemini))
-            // 提高默认请求体大小限制（避免 413 Payload Too Large）
-            .layer(DefaultBodyLimit::max(200 * 1024 * 1024))
-            // No auth token guards these endpoints (Codex/Claude/Gemini CLIs
-            // are the intended callers and none of them support one), so the
-            // only thing standing between an arbitrary local web page and
-            // this port's real, database-backed provider credentials is
-            // this check. `Origin` is a browser-context header: fetch/XHR
+            // Request bodies are buffered whole; image-heavy Responses requests
+            // are the largest legitimate callers, well inside this cap.
+            .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
+            // Browsers never carry the proxy token, but a page can still fire
+            // credential-less requests at this port, so a browser-context
+            // request is turned away before anything else sees it. `Origin`
+            // is a browser-context header: fetch/XHR
             // from a page always sets it — even on a same-site "simple"
             // request that never triggers a CORS preflight, a bare
             // `text/plain` POST included — while every legitimate caller
@@ -469,6 +472,14 @@ impl ProxyServer {
             // authenticated line doesn't require reading the reply. Reject
             // at the door instead.
             .layer(middleware::from_fn(reject_browser_origin_requests))
+            // Outermost, so an unauthenticated caller costs nothing beyond the
+            // header check: loopback Host, then the install's proxy token, then
+            // the global concurrency cap.
+            .layer(middleware::from_fn_with_state(
+                self.state.clone(),
+                require_local_proxy_auth,
+            ))
+            .layer(middleware::from_fn(limit_concurrent_requests))
             .with_state(self.state.clone())
     }
 
@@ -504,6 +515,105 @@ impl ProxyServer {
             .provider_router
             .reset_provider_breaker(provider_id, app_type)
             .await;
+    }
+}
+
+/// Largest request body any proxy endpoint buffers.
+const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024 * 1024;
+/// Requests being read or forwarded at once; a local flood gets 429 instead of
+/// exhausting memory with large bodies.
+const MAX_CONCURRENT_REQUESTS: usize = 128;
+
+static REQUEST_PERMITS: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> =
+    std::sync::OnceLock::new();
+
+async fn limit_concurrent_requests(request: Request, next: Next) -> Response {
+    // A body that announces itself as too large is refused before any of it is read.
+    let declared_length = request
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<usize>().ok());
+    if declared_length.is_some_and(|length| length > MAX_REQUEST_BODY_BYTES) {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "Request body exceeds the local Chimera++ proxy limit.",
+        )
+            .into_response();
+    }
+    let permits = REQUEST_PERMITS
+        .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_REQUESTS)))
+        .clone();
+    let Ok(_permit) = permits.try_acquire_owned() else {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            "Too many concurrent requests to the local Chimera++ proxy.",
+        )
+            .into_response();
+    };
+    next.run(request).await
+}
+
+/// Endpoints and requests that need no credential: the liveness probe, the
+/// Claude Desktop gateway (it checks its own token), and WebSocket handshakes,
+/// which are only answered with 426 so the client falls back to HTTP.
+fn proxy_request_is_public(request: &Request) -> bool {
+    let path = request.uri().path();
+    path == "/health"
+        || path.starts_with("/claude-desktop/")
+        || request
+            .headers()
+            .get(header::UPGRADE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
+}
+
+/// Only callers that name the loopback interface and present the install's
+/// proxy token are served. Without this any local process (or a page using DNS
+/// rebinding) could spend the real provider credentials held in the database.
+async fn require_local_proxy_auth(
+    axum::extract::State(state): axum::extract::State<ProxyState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    use super::local_auth::{authorize, host_is_loopback, proxy_token, ProxyAuth};
+
+    if let Some(host) = request
+        .headers()
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+    {
+        if !host_is_loopback(host) {
+            return (
+                StatusCode::MISDIRECTED_REQUEST,
+                "The local Chimera++ proxy only answers requests addressed to the loopback interface.",
+            )
+                .into_response();
+        }
+    }
+    if proxy_request_is_public(&request) {
+        return next.run(request).await;
+    }
+
+    let legacy_accepted = super::local_auth::legacy_token_accepted(&state.db);
+    match authorize(
+        request.headers(),
+        request.uri().query(),
+        &proxy_token(),
+        legacy_accepted,
+    ) {
+        ProxyAuth::Authorized => next.run(request).await,
+        ProxyAuth::LegacyPlaceholder => {
+            log::warn!(
+                "[Proxy] 客户端仍在使用旧版代理占位符；重启该工具或重新开启代理接管后会换成新令牌"
+            );
+            next.run(request).await
+        }
+        ProxyAuth::Rejected => (
+            StatusCode::UNAUTHORIZED,
+            "Missing or invalid local proxy token. Re-enable proxy takeover in Chimera++ or restart the tool so it reads the updated token.",
+        )
+            .into_response(),
     }
 }
 
@@ -623,6 +733,120 @@ mod tests {
                 "{path}"
             );
         }
+    }
+
+    async fn call(
+        router: &mut Router,
+        request: http::Request<axum::body::Body>,
+    ) -> http::Response<axum::body::Body> {
+        <Router as tower::Service<http::Request<axum::body::Body>>>::call(router, request)
+            .await
+            .unwrap()
+    }
+
+    fn post_responses(builder: http::request::Builder) -> http::Request<axum::body::Body> {
+        builder
+            .method("POST")
+            .uri("/v1/responses")
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from("{}"))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn proxy_endpoints_require_the_install_token() {
+        let db = Arc::new(Database::memory().expect("init db"));
+        let server = ProxyServer::new(ProxyConfig::default(), db, None);
+        let mut router = server.build_router();
+        let token = crate::proxy::local_auth::proxy_token();
+
+        let anonymous = call(&mut router, post_responses(http::Request::builder())).await;
+        assert_eq!(anonymous.status(), http::StatusCode::UNAUTHORIZED);
+
+        let wrong = call(
+            &mut router,
+            post_responses(
+                http::Request::builder().header(http::header::AUTHORIZATION, "Bearer sk-not-ours"),
+            ),
+        )
+        .await;
+        assert_eq!(wrong.status(), http::StatusCode::UNAUTHORIZED);
+
+        for header in ["authorization", "x-api-key", "x-goog-api-key"] {
+            let value = if header == "authorization" {
+                format!("Bearer {token}")
+            } else {
+                token.clone()
+            };
+            let allowed = call(
+                &mut router,
+                post_responses(http::Request::builder().header(header, value)),
+            )
+            .await;
+            assert_ne!(allowed.status(), http::StatusCode::UNAUTHORIZED, "{header}");
+        }
+
+        // The status page is not public either.
+        let status = http::Request::builder()
+            .uri("/status")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(
+            call(&mut router, status).await.status(),
+            http::StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[tokio::test]
+    async fn requests_addressed_to_another_host_name_are_refused() {
+        let db = Arc::new(Database::memory().expect("init db"));
+        let server = ProxyServer::new(ProxyConfig::default(), db, None);
+        let mut router = server.build_router();
+        let token = crate::proxy::local_auth::proxy_token();
+
+        // DNS rebinding: the page's own host name resolves to 127.0.0.1.
+        for path in ["/health", "/v1/models"] {
+            let rebinding = http::Request::builder()
+                .uri(path)
+                .header(http::header::HOST, "attacker.example:15721")
+                .header(http::header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(axum::body::Body::empty())
+                .unwrap();
+            assert_eq!(
+                call(&mut router, rebinding).await.status(),
+                http::StatusCode::MISDIRECTED_REQUEST,
+                "{path}"
+            );
+        }
+        let local = http::Request::builder()
+            .uri("/health")
+            .header(http::header::HOST, "127.0.0.1:15721")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(
+            call(&mut router, local).await.status(),
+            http::StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn oversized_request_bodies_are_refused_before_buffering() {
+        let db = Arc::new(Database::memory().expect("init db"));
+        let server = ProxyServer::new(ProxyConfig::default(), db, None);
+        let mut router = server.build_router();
+        let token = crate::proxy::local_auth::proxy_token();
+        let body = vec![b' '; MAX_REQUEST_BODY_BYTES + 1];
+        let request = http::Request::builder()
+            .method("POST")
+            .uri("/v1/responses")
+            .header(http::header::AUTHORIZATION, format!("Bearer {token}"))
+            .header(http::header::CONTENT_LENGTH, body.len())
+            .body(axum::body::Body::from(body))
+            .unwrap();
+        assert_eq!(
+            call(&mut router, request).await.status(),
+            http::StatusCode::PAYLOAD_TOO_LARGE
+        );
     }
 
     #[tokio::test]

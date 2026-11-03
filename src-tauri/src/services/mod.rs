@@ -7,8 +7,6 @@ pub mod codex_oauth_models;
 pub mod codex_portable_layout;
 pub mod coding_plan;
 pub mod config;
-pub mod env_checker;
-pub mod env_manager;
 pub mod live_backup;
 pub mod mcp;
 pub mod model_fetch;

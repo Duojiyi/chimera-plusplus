@@ -334,6 +334,32 @@ async fn read_response_body_limited(
     Ok(body)
 }
 
+/// Largest quota / balance / token response read from a configured upstream.
+const MAX_UPSTREAM_JSON_BYTES: usize = 1024 * 1024;
+/// How much of an error body is kept for an error message.
+const MAX_UPSTREAM_ERROR_BYTES: usize = 64 * 1024;
+
+/// A whole upstream JSON body, refused once it exceeds 1 MiB (checked against
+/// both `Content-Length` and the bytes actually received).
+pub(crate) async fn read_upstream_body(response: reqwest::Response) -> Result<Vec<u8>, String> {
+    read_response_body_limited(response, MAX_UPSTREAM_JSON_BYTES, "upstream response").await
+}
+
+/// The start of an error body, for messages only. Never fails and never reads
+/// past 64 KiB, so a hostile upstream cannot make an error path allocate freely.
+pub(crate) async fn read_upstream_error_text(response: reqwest::Response) -> String {
+    let mut stream = response.bytes_stream();
+    let mut body = Vec::new();
+    while let Some(Ok(chunk)) = stream.next().await {
+        let room = MAX_UPSTREAM_ERROR_BYTES - body.len();
+        body.extend_from_slice(&chunk[..chunk.len().min(room)]);
+        if body.len() >= MAX_UPSTREAM_ERROR_BYTES {
+            break;
+        }
+    }
+    String::from_utf8_lossy(&body).into_owned()
+}
+
 pub(crate) async fn read_response_text_limited(
     response: reqwest::Response,
     max_bytes: usize,

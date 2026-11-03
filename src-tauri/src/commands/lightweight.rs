@@ -4,16 +4,6 @@ pub fn enter_lightweight_mode(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn exit_lightweight_mode(app: tauri::AppHandle) -> Result<(), String> {
-    crate::lightweight::exit_lightweight_mode(&app)
-}
-
-#[tauri::command]
-pub fn is_lightweight_mode() -> bool {
-    crate::lightweight::is_lightweight_mode()
-}
-
-#[tauri::command]
 pub fn hide_main_window(app: tauri::AppHandle) -> Result<(), String> {
     crate::lightweight::hide_main_window(&app)
 }

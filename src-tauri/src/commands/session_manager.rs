@@ -96,15 +96,7 @@ pub async fn get_session_messages(
 }
 
 #[tauri::command]
-pub async fn launch_session_terminal(
-    command: String,
-    cwd: Option<String>,
-    custom_config: Option<String>,
-) -> Result<bool, String> {
-    let command = command.clone();
-    let cwd = cwd.clone();
-    let custom_config = custom_config.clone();
-
+pub async fn launch_session_terminal(command: String, cwd: Option<String>) -> Result<bool, String> {
     // Read preferred terminal from global settings
     let preferred = crate::settings::get_preferred_terminal();
     // Map global setting terminal names to session terminal names
@@ -116,12 +108,7 @@ pub async fn launch_session_terminal(
     };
 
     tauri::async_runtime::spawn_blocking(move || {
-        session_manager::terminal::launch_terminal(
-            &target,
-            &command,
-            cwd.as_deref(),
-            custom_config.as_deref(),
-        )
+        session_manager::terminal::launch_terminal(&target, &command, cwd.as_deref())
     })
     .await
     .map_err(|e| format!("Failed to launch terminal: {e}"))??;

@@ -551,7 +551,7 @@ mod tests {
         let provider = db
             .get_all_providers("codex")
             .unwrap()
-            .remove("inferred")
+            .shift_remove("inferred")
             .unwrap();
         assert_eq!(provider.meta.unwrap().common_config_enabled, Some(true));
         let config = provider.settings_config["config"].as_str().unwrap();
@@ -578,7 +578,7 @@ mod tests {
         let provider = db
             .get_all_providers("codex")
             .unwrap()
-            .remove("raw")
+            .shift_remove("raw")
             .unwrap();
         db.save_provider("codex", &provider).unwrap();
         assert_ne!(db.snapshot_provider_config_rows("codex").unwrap(), before);

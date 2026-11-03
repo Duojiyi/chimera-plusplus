@@ -19,8 +19,13 @@ use std::sync::Arc;
 use tauri::Emitter;
 use tokio::sync::{Mutex, RwLock};
 
-/// 用于接管 Live 配置时的占位符（避免客户端提示缺少 key，同时不泄露真实 Token）
+/// The bare placeholder older versions wrote into taken-over live configs. Live
+/// configs now carry the install's proxy token (`PROXY_MANAGED.<secret>`); tests
+/// still use this value because `proxy_token()` returns it there.
+#[cfg(test)]
 const PROXY_TOKEN_PLACEHOLDER: &str = "PROXY_MANAGED";
+
+use crate::proxy::local_auth::{is_proxy_token, proxy_token};
 
 /// 代理接管模式下需要从 Claude Live 配置中移除的"模型覆盖"字段。
 ///
@@ -74,6 +79,11 @@ pub struct HotSwitchOutcome {
 
 impl ProxyService {
     pub fn new(db: Arc<Database>) -> Self {
+        // Live configs are written with this install's token, so it must exist
+        // before the first takeover write, not only once a server is built.
+        if let Err(error) = crate::proxy::local_auth::ensure_proxy_token(&db) {
+            log::error!("[Proxy] 无法创建本地代理令牌: {error}");
+        }
         Self {
             db,
             server: Arc::new(RwLock::new(None)),
@@ -182,16 +192,13 @@ impl ProxyService {
                 let mut replaced_any = false;
                 for key in token_keys {
                     if env.contains_key(key) {
-                        env.insert(key.to_string(), json!(PROXY_TOKEN_PLACEHOLDER));
+                        env.insert(key.to_string(), json!(proxy_token()));
                         replaced_any = true;
                     }
                 }
 
                 if !replaced_any {
-                    env.insert(
-                        "ANTHROPIC_AUTH_TOKEN".to_string(),
-                        json!(PROXY_TOKEN_PLACEHOLDER),
-                    );
+                    env.insert("ANTHROPIC_AUTH_TOKEN".to_string(), json!(proxy_token()));
                 }
             }
             ClaudeTakeoverAuthPolicy::ManagedAccount { keep_auth_token } => {
@@ -205,15 +212,9 @@ impl ProxyService {
                 //   settings（预设不含该键），且旧版接管已把存量用户 live 中的键删光。
                 // - Copilot 仅 API_KEY：避免与 /login 管理的 key 冲突（#1049）。
                 if keep_auth_token {
-                    env.insert(
-                        "ANTHROPIC_AUTH_TOKEN".to_string(),
-                        json!(PROXY_TOKEN_PLACEHOLDER),
-                    );
+                    env.insert("ANTHROPIC_AUTH_TOKEN".to_string(), json!(proxy_token()));
                 } else {
-                    env.insert(
-                        "ANTHROPIC_API_KEY".to_string(),
-                        json!(PROXY_TOKEN_PLACEHOLDER),
-                    );
+                    env.insert("ANTHROPIC_API_KEY".to_string(), json!(proxy_token()));
                 }
             }
         }
@@ -433,7 +434,7 @@ impl ProxyService {
             effective["env"] = json!({});
         }
         effective["env"]["GOOGLE_GEMINI_BASE_URL"] = json!(url);
-        effective["env"]["GEMINI_API_KEY"] = json!(PROXY_TOKEN_PLACEHOLDER);
+        effective["env"]["GEMINI_API_KEY"] = json!(proxy_token());
         self.write_gemini_live(&effective)?;
         // Gemini common config can also target settings.json. Preserve all
         // unrelated settings, including client-owned MCP and OAuth fields.
@@ -1305,7 +1306,7 @@ impl ProxyService {
         !stored_url.is_empty()
             && stored_url == live_url
             && !stored_key.trim().is_empty()
-            && stored_key.trim() != PROXY_TOKEN_PLACEHOLDER
+            && !is_proxy_token(stored_key.trim())
             && stored_key.trim() == live_key.trim()
     }
 
@@ -1345,9 +1346,7 @@ impl ProxyService {
                                     .and_then(|v| v.as_str())
                                     .map(|s| (key, s.trim()))
                             })
-                            .filter(|(_, token)| {
-                                !token.is_empty() && *token != PROXY_TOKEN_PLACEHOLDER
-                            });
+                            .filter(|(_, token)| !token.is_empty() && !is_proxy_token(token));
 
                             if let Some((token_key, token)) = token_pair {
                                 let env_obj = provider
@@ -1446,7 +1445,7 @@ impl ProxyService {
                             .and_then(|v| v.get("OPENAI_API_KEY"))
                             .and_then(|v| v.as_str())
                             .map(|s| s.trim())
-                            .filter(|s| !s.is_empty() && *s != PROXY_TOKEN_PLACEHOLDER)
+                            .filter(|s| !s.is_empty() && !is_proxy_token(s))
                         {
                             if let Some(auth_obj) = provider
                                 .settings_config
@@ -1506,7 +1505,7 @@ impl ProxyService {
                             .and_then(|v| v.get("GEMINI_API_KEY"))
                             .and_then(|v| v.as_str())
                             .map(|s| s.trim())
-                            .filter(|s| !s.is_empty() && *s != PROXY_TOKEN_PLACEHOLDER)
+                            .filter(|s| !s.is_empty() && !is_proxy_token(s))
                         {
                             if let Some(env_obj) = provider
                                 .settings_config
@@ -1570,7 +1569,7 @@ impl ProxyService {
                         if let Some(token) =
                             crate::grok_config::extract_inline_api_key(live_config_toml)
                         {
-                            if !token.is_empty() && token != PROXY_TOKEN_PLACEHOLDER {
+                            if !token.is_empty() && !is_proxy_token(&token) {
                                 if let Some(provider_config) = provider
                                     .settings_config
                                     .get("config")
@@ -2043,12 +2042,9 @@ impl ProxyService {
             .get("config")
             .and_then(Value::as_str)
             .ok_or_else(|| "Grok Build 配置缺少 config 字段".to_string())?;
-        let updated = crate::grok_config::apply_proxy_takeover(
-            config_toml,
-            proxy_base_url,
-            PROXY_TOKEN_PLACEHOLDER,
-        )
-        .map_err(|e| format!("更新 Grok Build 接管配置失败: {e}"))?;
+        let updated =
+            crate::grok_config::apply_proxy_takeover(config_toml, proxy_base_url, &proxy_token())
+                .map_err(|e| format!("更新 Grok Build 接管配置失败: {e}"))?;
         config["config"] = json!(updated);
         Ok(())
     }
@@ -2120,11 +2116,11 @@ impl ProxyService {
             if let Some(env) = live_config.get_mut("env").and_then(|v| v.as_object_mut()) {
                 env.insert("GOOGLE_GEMINI_BASE_URL".to_string(), json!(&proxy_url));
                 // 使用占位符，避免显示缺少 key 的警告
-                env.insert("GEMINI_API_KEY".to_string(), json!(PROXY_TOKEN_PLACEHOLDER));
+                env.insert("GEMINI_API_KEY".to_string(), json!(proxy_token()));
             } else {
                 live_config["env"] = json!({
                     "GOOGLE_GEMINI_BASE_URL": &proxy_url,
-                    "GEMINI_API_KEY": PROXY_TOKEN_PLACEHOLDER
+                    "GEMINI_API_KEY": proxy_token()
                 });
             }
             self.write_gemini_live(&live_config)?;
@@ -2214,11 +2210,11 @@ impl ProxyService {
 
                 if let Some(env) = live_config.get_mut("env").and_then(|v| v.as_object_mut()) {
                     env.insert("GOOGLE_GEMINI_BASE_URL".to_string(), json!(&proxy_url));
-                    env.insert("GEMINI_API_KEY".to_string(), json!(PROXY_TOKEN_PLACEHOLDER));
+                    env.insert("GEMINI_API_KEY".to_string(), json!(proxy_token()));
                 } else {
                     live_config["env"] = json!({
                         "GOOGLE_GEMINI_BASE_URL": &proxy_url,
-                        "GEMINI_API_KEY": PROXY_TOKEN_PLACEHOLDER
+                        "GEMINI_API_KEY": proxy_token()
                     });
                 }
 
@@ -2796,7 +2792,11 @@ impl ProxyService {
             "OPENROUTER_API_KEY",
             "OPENAI_API_KEY",
         ] {
-            if env.get(key).and_then(|v| v.as_str()) == Some(PROXY_TOKEN_PLACEHOLDER) {
+            if env
+                .get(key)
+                .and_then(|v| v.as_str())
+                .is_some_and(is_proxy_token)
+            {
                 env.remove(key);
             }
         }
@@ -2826,7 +2826,10 @@ impl ProxyService {
 
         let mut auth_changed = false;
         if let Some(auth) = config.get_mut("auth").and_then(|v| v.as_object_mut()) {
-            if auth.get("OPENAI_API_KEY").and_then(|v| v.as_str()) == Some(PROXY_TOKEN_PLACEHOLDER)
+            if auth
+                .get("OPENAI_API_KEY")
+                .and_then(|v| v.as_str())
+                .is_some_and(is_proxy_token)
             {
                 auth.remove("OPENAI_API_KEY");
                 auth_changed = true;
@@ -2843,7 +2846,7 @@ impl ProxyService {
             let updated = Self::remove_local_toml_base_url(cfg_str);
             let updated =
                 crate::codex_config::remove_codex_experimental_bearer_token_if(&updated, |token| {
-                    token == PROXY_TOKEN_PLACEHOLDER
+                    is_proxy_token(token)
                 })
                 .map_err(|e| format!("清理 Codex 接管占位符失败: {e}"))?;
             let updated = crate::codex_config::remove_codex_official_proxy_route(&updated)
@@ -2866,7 +2869,11 @@ impl ProxyService {
             return Ok(());
         };
 
-        if env.get("GEMINI_API_KEY").and_then(|v| v.as_str()) == Some(PROXY_TOKEN_PLACEHOLDER) {
+        if env
+            .get("GEMINI_API_KEY")
+            .and_then(|v| v.as_str())
+            .is_some_and(is_proxy_token)
+        {
             env.remove("GEMINI_API_KEY");
         }
 
@@ -2888,7 +2895,7 @@ impl ProxyService {
         let Some(config_toml) = config.get("config").and_then(Value::as_str) else {
             return Ok(());
         };
-        if !crate::grok_config::has_proxy_placeholder(config_toml, PROXY_TOKEN_PLACEHOLDER) {
+        if !crate::grok_config::has_proxy_placeholder(config_toml) {
             return Ok(());
         }
 
@@ -2974,7 +2981,11 @@ impl ProxyService {
             "OPENROUTER_API_KEY",
             "OPENAI_API_KEY",
         ] {
-            if env.get(key).and_then(|v| v.as_str()) == Some(PROXY_TOKEN_PLACEHOLDER) {
+            if env
+                .get(key)
+                .and_then(|v| v.as_str())
+                .is_some_and(is_proxy_token)
+            {
                 return true;
             }
         }
@@ -2988,7 +2999,7 @@ impl ProxyService {
             .and_then(|v| v.as_object())
             .and_then(|auth| auth.get("OPENAI_API_KEY"))
             .and_then(|v| v.as_str())
-            == Some(PROXY_TOKEN_PLACEHOLDER)
+            .is_some_and(is_proxy_token)
         {
             return true;
         }
@@ -2998,7 +3009,7 @@ impl ProxyService {
             .and_then(|v| v.as_str())
             .and_then(crate::codex_config::extract_codex_experimental_bearer_token)
             .as_deref()
-            == Some(PROXY_TOKEN_PLACEHOLDER)
+            .is_some_and(is_proxy_token)
     }
 
     fn is_codex_live_taken_over(&self, config: &Value) -> bool {
@@ -3040,16 +3051,16 @@ impl ProxyService {
             Some(env) => env,
             None => return false,
         };
-        env.get("GEMINI_API_KEY").and_then(|v| v.as_str()) == Some(PROXY_TOKEN_PLACEHOLDER)
+        env.get("GEMINI_API_KEY")
+            .and_then(|v| v.as_str())
+            .is_some_and(is_proxy_token)
     }
 
     fn is_grok_live_taken_over(config: &Value) -> bool {
         config
             .get("config")
             .and_then(Value::as_str)
-            .is_some_and(|config_toml| {
-                crate::grok_config::has_proxy_placeholder(config_toml, PROXY_TOKEN_PLACEHOLDER)
-            })
+            .is_some_and(crate::grok_config::has_proxy_placeholder)
     }
 
     /// 判断给定的 Live/备份配置是否已被代理接管（包含占位符）
@@ -3600,11 +3611,11 @@ impl ProxyService {
         }
 
         if let Some(auth) = settings.get_mut("auth").and_then(|v| v.as_object_mut()) {
-            auth.insert("OPENAI_API_KEY".to_string(), json!(PROXY_TOKEN_PLACEHOLDER));
+            auth.insert("OPENAI_API_KEY".to_string(), json!(proxy_token()));
         } else if let Some(root) = settings.as_object_mut() {
             root.insert(
                 "auth".to_string(),
-                json!({ "OPENAI_API_KEY": PROXY_TOKEN_PLACEHOLDER }),
+                json!({ "OPENAI_API_KEY": proxy_token() }),
             );
         }
     }
@@ -3746,8 +3757,10 @@ impl ProxyService {
                     config.get("auth"),
                     config.get("config").and_then(|v| v.as_str()),
                 ) {
-                    if auth.get("OPENAI_API_KEY").and_then(|v| v.as_str())
-                        == Some(PROXY_TOKEN_PLACEHOLDER)
+                    if auth
+                        .get("OPENAI_API_KEY")
+                        .and_then(|v| v.as_str())
+                        .is_some_and(is_proxy_token)
                     {
                         let live_config = crate::codex_config::prepare_codex_provider_live_config(
                             auth, config_str,
@@ -3784,7 +3797,9 @@ impl ProxyService {
     }
 
     fn codex_auth_has_proxy_placeholder(auth: &Value) -> bool {
-        auth.get("OPENAI_API_KEY").and_then(|v| v.as_str()) == Some(PROXY_TOKEN_PLACEHOLDER)
+        auth.get("OPENAI_API_KEY")
+            .and_then(|v| v.as_str())
+            .is_some_and(is_proxy_token)
     }
 
     fn write_codex_takeover_live_for_provider(

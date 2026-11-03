@@ -2906,6 +2906,11 @@ pub async fn open_provider_terminal(
     cwd: Option<String>,
 ) -> Result<bool, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    // The launcher starts `claude --settings …`; opening it for another tool
+    // would run the wrong program with that tool's credentials.
+    if app_type != AppType::Claude {
+        return Err("只有 Claude Code 线路支持从这里打开终端".to_string());
+    }
     let launch_cwd = resolve_launch_cwd(cwd)?;
 
     // 获取提供商配置
@@ -2920,8 +2925,7 @@ pub async fn open_provider_terminal(
     let config = &provider.settings_config;
     let env_vars = extract_env_vars_from_config(config, &app_type);
 
-    // 根据平台启动终端，传入提供商ID用于生成唯一的配置文件名
-    launch_terminal_with_env(env_vars, &providerId, launch_cwd.as_deref())
+    launch_terminal_with_env(env_vars, launch_cwd.as_deref())
         .map_err(|e| format!("启动终端失败: {e}"))?;
 
     Ok(true)
@@ -3018,39 +3022,60 @@ fn resolve_launch_cwd(cwd: Option<String>) -> Result<Option<PathBuf>, String> {
 /// 使用 --settings 参数传入提供商特定的 API 配置
 fn launch_terminal_with_env(
     env_vars: Vec<(String, String)>,
-    provider_id: &str,
     cwd: Option<&Path>,
 ) -> Result<(), String> {
-    let temp_dir = std::env::temp_dir();
-    let config_file = temp_dir.join(format!(
-        "claude_{}_{}.json",
-        provider_id,
-        std::process::id()
-    ));
+    // A fresh directory only this user can enter holds the key-bearing settings
+    // file and the launcher script, so nothing sits at a predictable path in a
+    // shared temp directory. The launcher removes the whole directory when it ends.
+    let launch_dir = tempfile::Builder::new()
+        .prefix("chimera-launch-")
+        .tempdir()
+        .map_err(|e| format!("创建临时目录失败: {e}"))?
+        .keep();
+    let config_file = launch_dir.join("claude-settings.json");
 
     // 创建并写入配置文件
-    write_claude_config(&config_file, &env_vars)?;
+    if let Err(error) = write_claude_config(&config_file, &env_vars) {
+        let _ = std::fs::remove_dir_all(&launch_dir);
+        return Err(error);
+    }
 
     #[cfg(target_os = "macos")]
     {
-        launch_macos_terminal(&config_file, cwd)?;
-        Ok(())
+        discard_launch_dir_on_error(launch_macos_terminal(&config_file, cwd), &launch_dir)
     }
 
     #[cfg(target_os = "linux")]
     {
-        launch_linux_terminal(&config_file, cwd)?;
-        Ok(())
+        discard_launch_dir_on_error(launch_linux_terminal(&config_file, cwd), &launch_dir)
     }
 
     #[cfg(target_os = "windows")]
     {
-        launch_windows_terminal(&temp_dir, &config_file, cwd)?;
-        Ok(())
+        discard_launch_dir_on_error(
+            launch_windows_terminal(&launch_dir, &config_file, cwd),
+            &launch_dir,
+        )
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     Err("不支持的操作系统".to_string())
+}
+
+/// A launch that failed never ran its cleanup trap, so the key-bearing
+/// directory is removed here.
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "linux", target_os = "windows")),
+    allow(dead_code)
+)]
+fn discard_launch_dir_on_error(
+    result: Result<(), String>,
+    launch_dir: &Path,
+) -> Result<(), String> {
+    if result.is_err() {
+        let _ = std::fs::remove_dir_all(launch_dir);
+    }
+    result
 }
 
 /// 写入 claude 配置文件
@@ -3070,7 +3095,23 @@ fn write_claude_config(
     let config_json =
         serde_json::to_string_pretty(&config_obj).map_err(|e| format!("序列化配置失败: {e}"))?;
 
-    std::fs::write(config_file, config_json).map_err(|e| format!("写入配置文件失败: {e}"))
+    write_private_file(config_file, config_json.as_bytes())
+        .map_err(|e| format!("写入配置文件失败: {e}"))
+}
+
+/// Create a new file readable only by the current user; never follows or
+/// overwrites an existing path.
+fn write_private_file(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)?.write_all(contents)
 }
 
 /// macOS: 根据用户首选终端启动
@@ -3085,8 +3126,8 @@ fn launch_macos_terminal(config_file: &std::path::Path, cwd: Option<&Path>) -> R
     let exec_line = build_exec_line(&shell, cwd);
     let final_cd_command = build_final_shell_cd_command(&shell, cwd);
 
-    let temp_dir = std::env::temp_dir();
-    let script_file = temp_dir.join(format!("cc_switch_launcher_{}.sh", std::process::id()));
+    let launch_dir = config_file.parent().ok_or("启动目录无效")?.to_path_buf();
+    let script_file = launch_dir.join("launcher.sh");
     let config_path = config_file.to_string_lossy();
     let provider_command = build_provider_command_line(&shell, &config_path, cwd);
 
@@ -3094,7 +3135,7 @@ fn launch_macos_terminal(config_file: &std::path::Path, cwd: Option<&Path>) -> R
     // 脚本使用 POSIX sh 语法确保可移植性，exec 行切换到用户交互式 shell
     let script_content = format!(
         r#"#!/usr/bin/env sh
-trap 'rm -f "{config_path}" "{script_file}"' EXIT
+trap 'rm -rf "{launch_dir}"' EXIT
 echo "Using provider-specific claude config:"
 echo "{config_path}"
 {provider_command}
@@ -3102,7 +3143,7 @@ echo "{config_path}"
 {exec_line}
 "#,
         config_path = config_path,
-        script_file = script_file.display(),
+        launch_dir = launch_dir.display(),
         provider_command = provider_command,
         final_cd_command = final_cd_command,
         exec_line = exec_line,
@@ -3417,15 +3458,15 @@ fn launch_linux_terminal(config_file: &std::path::Path, cwd: Option<&Path>) -> R
         ("ghostty", vec!["-e"]),
     ];
 
-    // Create temp script file
-    let temp_dir = std::env::temp_dir();
-    let script_file = temp_dir.join(format!("cc_switch_launcher_{}.sh", std::process::id()));
+    // The script lives next to the settings file in the private launch directory.
+    let launch_dir = config_file.parent().ok_or("启动目录无效")?.to_path_buf();
+    let script_file = launch_dir.join("launcher.sh");
     let config_path = config_file.to_string_lossy();
     let provider_command = build_provider_command_line(&shell, &config_path, cwd);
 
     let script_content = format!(
         r#"#!/usr/bin/env sh
-trap 'rm -f "{config_path}" "{script_file}"' EXIT
+trap 'rm -rf "{launch_dir}"' EXIT
 echo "Using provider-specific claude config:"
 echo "{config_path}"
 {provider_command}
@@ -3433,7 +3474,7 @@ echo "{config_path}"
 {exec_line}
 "#,
         config_path = config_path,
-        script_file = script_file.display(),
+        launch_dir = launch_dir.display(),
         provider_command = provider_command,
         final_cd_command = final_cd_command,
         exec_line = exec_line,
@@ -3513,14 +3554,15 @@ fn which_command(cmd: &str) -> bool {
 /// Windows: 根据用户首选终端启动
 #[cfg(target_os = "windows")]
 fn launch_windows_terminal(
-    temp_dir: &std::path::Path,
+    launch_dir: &std::path::Path,
     config_file: &std::path::Path,
     cwd: Option<&Path>,
 ) -> Result<(), String> {
     let preferred = crate::settings::get_preferred_terminal();
     let terminal = preferred.as_deref().unwrap_or("cmd");
 
-    let bat_file = temp_dir.join(format!("cc_switch_claude_{}.bat", std::process::id()));
+    let bat_file = launch_dir.join("launcher.bat");
+    let launch_dir_for_batch = escape_windows_batch_value(&launch_dir.to_string_lossy());
     let config_path_for_batch = escape_windows_batch_value(&config_file.to_string_lossy());
     let cwd_command = build_windows_cwd_command(cwd);
 
@@ -3532,14 +3574,17 @@ echo {}
 claude --settings \"{}\"
 del \"{}\" >nul 2>&1
 del \"%~f0\" >nul 2>&1
+rmdir \"{}\" >nul 2>&1
 ",
         config_path_for_batch,
         config_path_for_batch,
         config_path_for_batch,
+        launch_dir_for_batch,
         cwd_command = cwd_command,
     );
 
-    std::fs::write(&bat_file, &content).map_err(|e| format!("写入批处理文件失败: {e}"))?;
+    write_private_file(&bat_file, content.as_bytes())
+        .map_err(|e| format!("写入批处理文件失败: {e}"))?;
 
     let bat_path = bat_file.to_string_lossy();
     let ps_cmd = format!("& '{}'", bat_path);

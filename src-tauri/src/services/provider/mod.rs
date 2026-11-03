@@ -2605,7 +2605,17 @@ impl ProviderService {
             if !add_to_live {
                 return Ok(true);
             }
-            write_live_with_common_config(state.db.as_ref(), &app_type, &provider)?;
+            if let Err(error) =
+                write_live_with_common_config(state.db.as_ref(), &app_type, &provider)
+            {
+                // The row was added a moment ago; a live file that cannot be
+                // written (damaged OpenCode config, for example) must not leave
+                // an orphan that looks configured but is not applied.
+                if let Err(rollback) = state.db.delete_provider(app_type.as_str(), &provider.id) {
+                    log::warn!("回滚新增线路 {} 失败: {rollback}", provider.id);
+                }
+                return Err(error);
+            }
             return Ok(true);
         }
 

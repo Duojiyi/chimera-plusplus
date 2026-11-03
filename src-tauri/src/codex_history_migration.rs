@@ -474,7 +474,71 @@ fn scan_existing_codex_history_provider_ids(
     // 官方接管路由桶同属官方会话，由 `maybe_migrate_codex_official_proxy_history_bucket`
     // 迁回官方当前所在的桶；这里若把它并进第三方 custom 桶，关开关时无法按账本还原。
     ids.remove(CC_SWITCH_CODEX_OFFICIAL_PROXY_PROVIDER_ID);
+    // Sessions that belong to a route the user keeps in config.toml (a provider
+    // table, or a profile's provider) or to one Codex ships (Ollama, LM Studio)
+    // are not stranded; relabelling them would hide them from that route.
+    for id in codex_owned_provider_ids(config_text) {
+        ids.remove(&id);
+    }
     ids
+}
+
+/// Codex's own local-model providers.
+const CODEX_BUILTIN_PROVIDER_IDS: &[&str] = &["ollama", "lmstudio", "oss", "amazon-bedrock"];
+
+/// Provider ids whose history this recovery must leave alone: Codex's built-ins
+/// plus every provider table and profile provider defined in `config.toml`.
+fn codex_owned_provider_ids(config_text: &str) -> BTreeSet<String> {
+    let mut ids: BTreeSet<String> = CODEX_BUILTIN_PROVIDER_IDS
+        .iter()
+        .map(|id| id.to_string())
+        .collect();
+    let Ok(doc) = config_text.parse::<DocumentMut>() else {
+        return ids;
+    };
+    if let Some(providers) = doc
+        .get("model_providers")
+        .and_then(|item| item.as_table_like())
+    {
+        ids.extend(providers.iter().map(|(id, _)| id.trim().to_string()));
+    }
+    if let Some(profiles) = doc.get("profiles").and_then(|item| item.as_table_like()) {
+        for (_, profile) in profiles.iter() {
+            if let Some(id) = profile
+                .as_table_like()
+                .and_then(|profile| profile.get("model_provider"))
+                .and_then(|id| id.as_str())
+            {
+                ids.insert(id.trim().to_string());
+            }
+        }
+    }
+    ids.remove(CC_SWITCH_CODEX_MODEL_PROVIDER_ID);
+    ids
+}
+
+/// How many whole-file backup generations the recovery keeps.
+const RECLAIM_BACKUP_GENERATIONS_KEPT: usize = 5;
+
+/// Keep the newest `keep` generation folders of a migration's backups. Names
+/// start with a timestamp, so name order is age order.
+fn prune_backup_generations(migration_name: &str, keep: usize) {
+    let root = get_app_config_dir().join("backups").join(migration_name);
+    let Ok(entries) = fs::read_dir(&root) else {
+        return;
+    };
+    let mut generations: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    generations.sort();
+    let excess = generations.len().saturating_sub(keep);
+    for old in generations.into_iter().take(excess) {
+        if let Err(error) = fs::remove_dir_all(&old) {
+            log::warn!("清理旧的历史恢复备份失败 {}: {error}", old.display());
+        }
+    }
 }
 
 /// 本机 Codex 历史（rollout 头部 + state DB）里出现过的全部 `model_provider` id。
@@ -624,6 +688,9 @@ pub fn reclaim_all_codex_history_into_current_bucket(
         &files.deferred_session_ids,
     )?;
     write_backup_generation_meta(&backup_root, &canonical_dir_string(&codex_dir))?;
+    if backup_root.exists() {
+        prune_backup_generations(RECLAIM_ALL_BACKUP_NAME, RECLAIM_BACKUP_GENERATIONS_KEPT);
+    }
 
     Ok(CodexHistoryReclaimAllOutcome {
         reclaimed_jsonl_files,
@@ -2566,6 +2633,71 @@ base_url = "https://proxy.example/v1"
         // 当前桶无需归拢；官方桶归「统一会话历史」开关管，不在此代劳。
         assert!(!found.contains("custom"), "got {found:?}");
         assert!(!found.contains("openai"), "got {found:?}");
+    }
+
+    #[test]
+    fn history_recovery_leaves_routes_the_user_keeps_alone() {
+        let dir = tempdir().expect("tempdir");
+        let codex_dir = dir.path().join(".codex");
+        let session_dir = codex_dir.join("sessions/2026/07/05");
+        fs::create_dir_all(&session_dir).expect("create session dir");
+        for provider_id in [
+            "stranded-relay",
+            "azure-work",
+            "profile-only",
+            "ollama",
+            "lmstudio",
+        ] {
+            fs::write(
+                session_dir.join(format!("{provider_id}.jsonl")),
+                format!(
+                    "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{provider_id}-s\",\"model_provider\":\"{provider_id}\"}}}}
+"
+                ),
+            )
+            .expect("write session");
+        }
+        let config = r#"
+model_provider = "custom"
+
+[model_providers.azure-work]
+name = "Azure"
+base_url = "https://example.openai.azure.com"
+
+[profiles.review]
+model_provider = "profile-only"
+"#;
+
+        let found = scan_existing_codex_history_provider_ids(&codex_dir, config);
+
+        // A relay left behind by an old setup is still recovered; routes that are
+        // defined in config.toml, or that Codex ships, are not touched.
+        assert_eq!(found, source_ids(&["stranded-relay"]));
+    }
+
+    #[test]
+    #[serial]
+    fn old_backup_generations_are_pruned_to_the_newest_few() {
+        let dir = tempdir().expect("tempdir");
+        let _home = EnvVarGuard::set("CC_SWITCH_TEST_HOME", dir.path());
+        let root = get_app_config_dir()
+            .join("backups")
+            .join(RECLAIM_ALL_BACKUP_NAME);
+        for stamp in 1..=8 {
+            let generation = root.join(format!("20260101_00000{stamp}_x"));
+            fs::create_dir_all(&generation).expect("generation");
+            fs::write(generation.join("meta.json"), "{}").expect("meta");
+        }
+        prune_backup_generations(RECLAIM_ALL_BACKUP_NAME, RECLAIM_BACKUP_GENERATIONS_KEPT);
+        let mut left: Vec<String> = fs::read_dir(&root)
+            .expect("read")
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left.len(), RECLAIM_BACKUP_GENERATIONS_KEPT);
+        assert_eq!(left[0], "20260101_000004_x");
+        assert_eq!(left[4], "20260101_000008_x");
     }
 
     #[test]

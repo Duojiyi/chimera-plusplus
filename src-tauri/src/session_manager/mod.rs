@@ -132,12 +132,29 @@ pub fn scan_sessions() -> Vec<SessionMeta> {
     sessions
 }
 
+/// The session file to read, once it is known to sit inside one of the
+/// provider's session roots. Reads follow the same containment rule as
+/// deletion, so a caller cannot point the parsers at an arbitrary file.
+fn resolve_session_source_within_roots(
+    source_path: &Path,
+    roots: &[PathBuf],
+) -> Result<PathBuf, String> {
+    roots
+        .iter()
+        .filter(|root| root.exists())
+        .find_map(|root| crate::security_limits::canonicalize_within_root(source_path, root).ok())
+        .ok_or_else(|| "Session source is outside the provider's session directories".to_string())
+}
+
 pub fn load_messages(provider_id: &str, source_path: &str) -> Result<Vec<SessionMessage>, String> {
     // SQLite sessions use a "sqlite:" prefixed source_path
     if provider_id == "opencode" && source_path.starts_with("sqlite:") {
+        opencode::ensure_sqlite_source_is_opencode_db(source_path)?;
         return opencode::load_messages_sqlite(source_path);
     }
-    let path = Path::new(source_path);
+    let roots = provider_roots(provider_id)?;
+    let validated = resolve_session_source_within_roots(Path::new(source_path), &roots)?;
+    let path = validated.as_path();
     match provider_id {
         "codex" => codex::load_messages(path),
         "claude" => claude::load_messages(path),
@@ -330,6 +347,37 @@ where
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn session_reads_are_confined_to_provider_roots() {
+        let temp = tempdir().expect("temp dir");
+        let root = temp.path().join("sessions");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(root.join("2026")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let inside_file = root.join("2026").join("a.jsonl");
+        let outside_file = outside.join("secret.jsonl");
+        std::fs::write(
+            &inside_file,
+            "{}
+",
+        )
+        .unwrap();
+        std::fs::write(
+            &outside_file,
+            "{}
+",
+        )
+        .unwrap();
+        let roots = vec![temp.path().join("missing"), root.clone()];
+
+        let resolved = resolve_session_source_within_roots(&inside_file, &roots).unwrap();
+        assert_eq!(resolved, inside_file.canonicalize().unwrap());
+        assert!(resolve_session_source_within_roots(&outside_file, &roots).is_err());
+        // Traversal out of the root is refused as well.
+        let sneaky = root.join("..").join("outside").join("secret.jsonl");
+        assert!(resolve_session_source_within_roots(&sneaky, &roots).is_err());
+    }
 
     fn write_codex_session(path: &Path, session_id: &str) {
         std::fs::write(

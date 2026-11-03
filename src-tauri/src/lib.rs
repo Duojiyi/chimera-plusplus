@@ -30,6 +30,7 @@ mod lightweight;
 #[cfg(target_os = "linux")]
 mod linux_fix;
 mod managed_prompts;
+mod proxy_marker;
 
 mod mcp;
 mod model_capabilities;
@@ -535,7 +536,13 @@ pub fn run() {
 
     let mut builder = tauri::Builder::default()
         .manage(commands::PendingDeepLinks::default())
-        .manage(commands::DeepLinkRefusals::default());
+        .manage(commands::DeepLinkRefusals::default())
+        // 后台暂存的更新包（内存态，见 commands::StagedUpdate 的说明）。注册在
+        // Builder 层而不是 setup 里：数据库版本过新时 setup 会提前返回，而恢复界面
+        // 的「升级应用」恰恰要用它。
+        .manage(commands::StagedUpdateState(Arc::new(
+            tokio::sync::Mutex::new(commands::StagedUpdate::default()),
+        )));
 
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     {
@@ -1488,11 +1495,6 @@ pub fn run() {
             let skill_service = SkillService::new();
             app.manage(commands::skill::SkillServiceState(Arc::new(skill_service)));
 
-            // 后台暂存的更新包（内存态，见 commands::StagedUpdate 的说明）。
-            app.manage(commands::StagedUpdateState(Arc::new(
-                tokio::sync::Mutex::new(commands::StagedUpdate::default()),
-            )));
-
             // 初始化 CopilotAuthManager
             {
                 use crate::proxy::providers::copilot_auth::CopilotAuthManager;
@@ -1781,8 +1783,6 @@ pub fn run() {
             commands::import_claude_desktop_providers_from_claude,
             commands::ensure_claude_desktop_official_provider,
             commands::ensure_grokbuild_official_provider,
-            commands::get_claude_config_status,
-            commands::get_config_status,
             commands::get_claude_code_config_path,
             commands::get_config_dir,
             commands::open_config_folder,
@@ -1840,8 +1840,6 @@ pub fn run() {
             commands::set_rectifier_config,
             commands::get_optimizer_config,
             commands::set_optimizer_config,
-            commands::get_copilot_optimizer_config,
-            commands::set_copilot_optimizer_config,
             commands::get_log_config,
             commands::set_log_config,
             commands::restart_app,
@@ -1852,10 +1850,7 @@ pub fn run() {
             commands::check_for_updates,
             commands::is_portable_mode,
             commands::copy_text_to_clipboard,
-            commands::get_claude_plugin_status,
-            commands::read_claude_plugin_config,
             commands::apply_claude_plugin_config,
-            commands::is_claude_plugin_applied,
             commands::apply_claude_onboarding_skip,
             commands::clear_claude_onboarding_skip,
             // Claude MCP management
@@ -1963,13 +1958,9 @@ pub fn run() {
             commands::commit_cc_switch_import,
             commands::merge_deeplink_config,
             commands::preview_deeplink_import,
-            commands::import_from_deeplink,
             commands::import_from_deeplink_unified,
             update_tray_menu,
             // Environment variable management
-            commands::check_env_conflicts,
-            commands::delete_env_vars,
-            commands::restore_env_backup,
             // Skill management (v3.10.0+ unified)
             commands::get_installed_skills,
             commands::get_skill_backups,
@@ -2120,8 +2111,7 @@ pub fn run() {
             // lightweight mode (for testing or low-resource environments)
             commands::hide_main_window,
             commands::enter_lightweight_mode,
-            commands::exit_lightweight_mode,
-            commands::is_lightweight_mode,
+            commands::fetch_models_dev_catalog,
         ]);
 
     let app = builder
@@ -2513,12 +2503,11 @@ fn initialize_common_config_snippets(state: &store::AppState) {
 // ============================================================
 
 /// 检测是否为中文环境
+/// Startup failure dialogs appear before settings can be read. Only Simplified
+/// Chinese is delivered (PRODUCT.md), and Windows sets none of the POSIX locale
+/// variables, so they are always shown in Chinese.
 fn is_chinese_locale() -> bool {
-    std::env::var("LANG")
-        .or_else(|_| std::env::var("LC_ALL"))
-        .or_else(|_| std::env::var("LC_MESSAGES"))
-        .map(|lang| lang.starts_with("zh"))
-        .unwrap_or(false)
+    true
 }
 
 /// 显示迁移错误对话框
@@ -2733,6 +2722,25 @@ fn tray_click_opens_main_window(
 
 #[cfg(test)]
 mod tests {
+    /// The database-too-new recovery screen calls `install_update_and_restart`,
+    /// which needs the staged-update state. `setup` returns before registering
+    /// anything in that case, so the state must be added on the Builder.
+    #[test]
+    fn staged_update_state_is_registered_before_setup_can_return_early() {
+        let production = include_str!("lib.rs")
+            .split(
+                "#[cfg(test)]
+mod tests {",
+            )
+            .next()
+            .expect("source");
+        assert!(production.contains(".manage(commands::StagedUpdateState("));
+        assert!(
+            !production.contains("app.manage(commands::StagedUpdateState"),
+            "registering it inside setup breaks the recovery screen"
+        );
+    }
+
     use super::{
         classify_exit_request, enabled_proxy_apps_on_startup, redact_url_for_log,
         redact_url_for_log_with_secrets, redact_url_origin_for_log, runtime_log_level_allows,

@@ -24,12 +24,11 @@ pub(crate) fn codex_live_backup_without_auth(
     let Some(auth) = root.remove("auth") else {
         return Ok(None);
     };
-    let placeholder = crate::codex_config::CODEX_PROXY_AUTH_PLACEHOLDER;
-    if auth
+    let placeholder = auth
         .get("OPENAI_API_KEY")
         .and_then(serde_json::Value::as_str)
-        == Some(placeholder)
-    {
+        .filter(|key| crate::proxy_marker::is_proxy_token(key));
+    if let Some(placeholder) = placeholder {
         if auth.as_object().is_some_and(|auth| auth.len() == 1) {
             return Ok(None);
         }

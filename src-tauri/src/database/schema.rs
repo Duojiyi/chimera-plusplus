@@ -1346,7 +1346,7 @@ impl Database {
         Ok(())
     }
 
-    /// v8 → v9: 全面补充模型定价（清空 + 重新 seed）
+    /// v8 → v9: 补充缺失的模型定价（保留已有行，不覆盖用户改过的价格）
     fn migrate_v8_to_v9(conn: &Connection) -> Result<(), AppError> {
         conn.execute(
             "CREATE TABLE IF NOT EXISTS model_pricing (
@@ -1358,10 +1358,12 @@ impl Database {
             [],
         )
         .map_err(|e| AppError::Database(format!("创建 model_pricing 表失败: {e}")))?;
-        conn.execute("DELETE FROM model_pricing", [])
-            .map_err(|e| AppError::Database(format!("清空模型定价失败: {e}")))?;
+        // Rows already present stay as they are: a price the user changed cannot
+        // be told from an old built-in one at this version, and the built-in
+        // refresh that runs later only touches rows still holding a built-in
+        // value. Models the table lacks are added.
         Self::seed_model_pricing(conn)?;
-        log::info!("v8 -> v9 迁移完成：已刷新全部模型定价数据");
+        log::info!("v8 -> v9 迁移完成：已补充缺失的模型定价，保留已有价格");
         Ok(())
     }
 

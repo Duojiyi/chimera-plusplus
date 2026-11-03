@@ -3,6 +3,7 @@
 //! 读取 CLI 工具的已有 OAuth 凭据，查询官方订阅额度。
 //! 第一层：仅读取凭据，不实现登录/刷新。
 
+use crate::services::model_fetch::{read_upstream_body, read_upstream_error_text};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -1184,7 +1185,8 @@ async fn refresh_gemini_token(refresh_token: &str) -> Option<String> {
         return None;
     }
 
-    let body: serde_json::Value = resp.json().await.ok()?;
+    let body: serde_json::Value =
+        serde_json::from_slice(&read_upstream_body(resp).await.ok()?).ok()?;
     body.get("access_token")?.as_str().map(String::from)
 }
 
@@ -1279,7 +1281,7 @@ async fn query_gemini_quota(access_token: &str) -> Result<SubscriptionQuota, Str
         ));
     }
     if !load_status.is_success() {
-        let body = load_resp.text().await.unwrap_or_default();
+        let body = read_upstream_error_text(load_resp).await;
         return Ok(SubscriptionQuota::error(
             "gemini",
             CredentialStatus::Valid,
@@ -1287,7 +1289,7 @@ async fn query_gemini_quota(access_token: &str) -> Result<SubscriptionQuota, Str
         ));
     }
 
-    let load_raw = match load_resp.bytes().await {
+    let load_raw = match read_upstream_body(load_resp).await {
         Ok(b) => b,
         Err(e) => return Err(format!("Failed to read loadCodeAssist response: {e}")),
     };
@@ -1338,7 +1340,7 @@ async fn query_gemini_quota(access_token: &str) -> Result<SubscriptionQuota, Str
         ));
     }
     if !quota_status.is_success() {
-        let body = quota_resp.text().await.unwrap_or_default();
+        let body = read_upstream_error_text(quota_resp).await;
         return Ok(SubscriptionQuota::error(
             "gemini",
             CredentialStatus::Valid,
@@ -1346,7 +1348,7 @@ async fn query_gemini_quota(access_token: &str) -> Result<SubscriptionQuota, Str
         ));
     }
 
-    let quota_raw = match quota_resp.bytes().await {
+    let quota_raw = match read_upstream_body(quota_resp).await {
         Ok(b) => b,
         Err(e) => return Err(format!("Failed to read quota response: {e}")),
     };

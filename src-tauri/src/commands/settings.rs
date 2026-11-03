@@ -972,10 +972,11 @@ mod update_tests {
     }
 }
 
-/// 获取 app_config_dir 覆盖配置 (从 Store)
+/// 获取已保存的 app_config_dir 覆盖配置 (从 Store)。它在下次启动后生效，
+/// 读取它不会改变本次运行正在使用的目录。
 #[tauri::command]
 pub async fn get_app_config_dir_override(app: AppHandle) -> Result<Option<String>, String> {
-    Ok(crate::app_store::refresh_app_config_dir_override(&app)
+    Ok(crate::app_store::saved_app_config_dir_override(&app)
         .map(|p| p.to_string_lossy().to_string()))
 }
 
@@ -985,6 +986,16 @@ pub async fn set_app_config_dir_override(
     app: AppHandle,
     path: Option<String>,
 ) -> Result<bool, String> {
+    // Chimera++'s own data must not live inside Codex's data directory.
+    if let Some(raw) = path.as_deref().map(str::trim).filter(|raw| !raw.is_empty()) {
+        let codex_home = crate::codex_config::get_codex_config_dir();
+        let codex_canonical = codex_home.canonicalize().unwrap_or(codex_home);
+        let candidate = std::path::PathBuf::from(raw);
+        let candidate = candidate.canonicalize().unwrap_or(candidate);
+        if candidate.starts_with(&codex_canonical) {
+            return Err("应用数据目录不能放在 Codex 数据目录里。".to_string());
+        }
+    }
     crate::app_store::set_app_config_dir_to_store(&app, path.as_deref())?;
     Ok(true)
 }
@@ -1611,30 +1622,6 @@ pub async fn set_optimizer_config(
     state
         .db
         .set_optimizer_config(&config)
-        .map_err(|e| e.to_string())?;
-    Ok(true)
-}
-
-/// 获取 Copilot 优化器配置
-#[tauri::command]
-pub async fn get_copilot_optimizer_config(
-    state: tauri::State<'_, crate::AppState>,
-) -> Result<crate::proxy::types::CopilotOptimizerConfig, String> {
-    state
-        .db
-        .get_copilot_optimizer_config()
-        .map_err(|e| e.to_string())
-}
-
-/// 设置 Copilot 优化器配置
-#[tauri::command]
-pub async fn set_copilot_optimizer_config(
-    state: tauri::State<'_, crate::AppState>,
-    config: crate::proxy::types::CopilotOptimizerConfig,
-) -> Result<bool, String> {
-    state
-        .db
-        .set_copilot_optimizer_config(&config)
         .map_err(|e| e.to_string())?;
     Ok(true)
 }

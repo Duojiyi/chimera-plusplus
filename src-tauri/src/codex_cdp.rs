@@ -34,14 +34,21 @@ pub(crate) fn pick_ephemeral_loopback_port() -> std::io::Result<u16> {
     listener.local_addr().map(|addr| addr.port())
 }
 
+/// A random port from the dynamic range, for the (never observed) case that
+/// the OS refuses to hand out an ephemeral one. Still unpredictable, unlike a
+/// fixed number published in the source.
+pub(crate) fn random_dynamic_port() -> u16 {
+    let bytes = uuid::Uuid::new_v4().into_bytes();
+    49_152 + u16::from_le_bytes([bytes[0], bytes[1]]) % 16_384
+}
+
 /// The CDP debug port Chimera++ uses for this run's Codex renderer injection
 /// and probing. Stable for the lifetime of the Chimera++ process (so launch,
 /// injection, and later probes agree), but not a compile-time constant — see
-/// the module-level comment above `RENDERER_DEBUG_PORT`. Falls back to the
-/// historical 9330 only if the OS refuses to hand out an ephemeral port at
-/// all (never observed in practice; keeps this infallible for callers).
+/// the module-level comment above `RENDERER_DEBUG_PORT`.
 pub fn codex_renderer_debug_port() -> u16 {
-    *RENDERER_DEBUG_PORT.get_or_init(|| pick_ephemeral_loopback_port().unwrap_or(9330))
+    *RENDERER_DEBUG_PORT
+        .get_or_init(|| pick_ephemeral_loopback_port().unwrap_or_else(|_| random_dynamic_port()))
 }
 
 const TARGET_WAIT_TIMEOUT: Duration = Duration::from_secs(10);

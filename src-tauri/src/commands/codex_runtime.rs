@@ -1664,6 +1664,16 @@ fn operation_lock() -> OperationLock {
     OperationLock::new(runtime_root().join("operation.lock"))
 }
 
+/// Whether a Codex install, update or skin operation holds the runtime lock at
+/// this moment. Quitting in the middle of one can leave a half-swapped folder
+/// that only the install journal repairs at the next start.
+pub(crate) fn runtime_operation_in_progress() -> bool {
+    matches!(
+        operation_lock().try_acquire("app_exit_probe"),
+        Err(LockError::AlreadyHeld { .. })
+    )
+}
+
 /// Runtime operations are user-initiated and mostly short, but a restart holds
 /// the lock for as long as Codex takes to close and come back (tens of seconds
 /// on MSIX). Failing the instant the lock is busy turned any overlap into a

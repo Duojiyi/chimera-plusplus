@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { findConfigWrites } from "./check-single-config-writer.mjs";
+import {
+  findConfigWrites,
+  findReadThenBlindWrites,
+} from "./check-single-config-writer.mjs";
 
 test("allows a read-only snapshot passed to the guarded write primitive", () => {
   assert.deepEqual(
@@ -96,6 +99,37 @@ fn production() {}
 #[cfg(test)]
 mod tests {
     fn writes_for_a_test() { std::fs::write(get_codex_config_path(), "x").unwrap(); }
+}`),
+    [],
+  );
+});
+
+test("reading config.toml and then writing through the plain primitive is flagged", () => {
+  const found = findReadThenBlindWrites(`
+fn repair() {
+    let text = crate::codex_config::read_codex_config_text().unwrap();
+    let next = derive(&text);
+    crate::codex_live_write::write_codex_live_files(CodexLiveWrite::config_only(&next)).unwrap();
+}`);
+  assert.equal(found.length, 1);
+  assert.equal(found[0].line, 5);
+});
+
+test("deriving from snapshots and committing against them is allowed", () => {
+  assert.deepEqual(
+    findReadThenBlindWrites(`
+fn repair() {
+    let snapshots = CodexLiveSnapshots::read().unwrap();
+    let next = derive(snapshots.config_text().unwrap());
+    plan_with_snapshots(CodexLiveWrite::config_only(&next), snapshots).unwrap().commit().unwrap();
+}
+
+fn write_only() {
+    write_codex_live_files(CodexLiveWrite::config_only("x")).unwrap();
+}
+
+fn read_only() {
+    let _ = read_codex_config_text();
 }`),
     [],
   );

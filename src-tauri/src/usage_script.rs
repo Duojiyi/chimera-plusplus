@@ -459,6 +459,28 @@ fn validate_single_usage(result: &Value) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Escape a value for the inside of a JavaScript string literal (single,
+/// double or template quotes), so a key or URL that contains quotes,
+/// backslashes, newlines or `${` cannot end the literal and run as code.
+fn escape_js_string_content(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\'' => escaped.push_str("\\'"),
+            '`' => escaped.push_str("\\`"),
+            '$' => escaped.push_str("\\$"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\u{2028}' => escaped.push_str("\\u2028"),
+            '\u{2029}' => escaped.push_str("\\u2029"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
 /// 构建替换变量后的脚本，保持与旧版脚本的兼容性
 fn build_script_with_vars(
     script_code: &str,
@@ -468,14 +490,14 @@ fn build_script_with_vars(
     user_id: Option<&str>,
 ) -> String {
     let mut replaced = script_code
-        .replace("{{apiKey}}", api_key)
-        .replace("{{baseUrl}}", base_url);
+        .replace("{{apiKey}}", &escape_js_string_content(api_key))
+        .replace("{{baseUrl}}", &escape_js_string_content(base_url));
 
     if let Some(token) = access_token {
-        replaced = replaced.replace("{{accessToken}}", token);
+        replaced = replaced.replace("{{accessToken}}", &escape_js_string_content(token));
     }
     if let Some(uid) = user_id {
-        replaced = replaced.replace("{{userId}}", uid);
+        replaced = replaced.replace("{{userId}}", &escape_js_string_content(uid));
     }
 
     replaced
@@ -635,6 +657,27 @@ fn is_loopback_host(url: &Url) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn substituted_values_cannot_leave_their_string_literal() {
+        let hostile = "k\"; globalThis.pwned = 1; //'`${x}\\\n";
+        let script = build_script_with_vars(
+            r#"const key = "{{apiKey}}"; const url = '{{baseUrl}}'; const t = `{{accessToken}}`;"#,
+            hostile,
+            "https://api.example.com/a'b",
+            Some("tok\"en"),
+            None,
+        );
+        assert!(
+            script.contains(r#"const key = "k\"; globalThis.pwned = 1; //\'\`\${x}\\\n";"#),
+            "{script}"
+        );
+        assert!(script.contains(r"https://api.example.com/a\'b"));
+        assert!(script.contains(r#"tok\"en"#));
+        // Ordinary keys are untouched.
+        let plain = build_script_with_vars("\"{{apiKey}}\"", "sk-abc_123", "", None, None);
+        assert_eq!(plain, "\"sk-abc_123\"");
+    }
 
     async fn serve_usage_router(router: axum::Router) -> (String, tokio::task::JoinHandle<()>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

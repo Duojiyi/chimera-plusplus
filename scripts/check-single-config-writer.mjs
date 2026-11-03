@@ -114,6 +114,37 @@ export function findConfigWrites(content) {
   return findings;
 }
 
+// A function that reads config.toml's text and then calls
+// `write_codex_live_files` re-reads the file inside that call for its CAS
+// baseline, so a write by anyone else in between is overwritten silently. Such
+// callers must read `CodexLiveSnapshots` and commit with `plan_with_snapshots`.
+const blindRead =
+  /(?<![\w.])(?:crate::codex_config::)?read_codex_config_text\s*\(|fs::read_to_string\s*\(\s*&?[\w.]*config_path/g;
+const blindWrite =
+  /(?<![\w.])(?:crate::codex_live_write::)?write_codex_live_files\s*\(/g;
+
+export function findReadThenBlindWrites(content) {
+  const text = productionText(content);
+  const findings = [];
+  const starts = [
+    0,
+    ...[...text.matchAll(fnHeader)].map((match) => match.index),
+    text.length,
+  ];
+  for (let scope = 0; scope < starts.length - 1; scope += 1) {
+    const offset = starts[scope];
+    const body = text.slice(offset, starts[scope + 1]);
+    const write = [...body.matchAll(blindWrite)][0];
+    if (write && [...body.matchAll(blindRead)].length > 0) {
+      findings.push({
+        line: lineOf(text, offset + write.index),
+        call: "write_codex_live_files after reading config.toml",
+      });
+    }
+  }
+  return findings;
+}
+
 function main() {
   const findings = [];
   for (const file of rustFiles(sourceRoot)) {
@@ -127,7 +158,11 @@ function main() {
       name.endsWith("_tests.rs")
     )
       continue;
-    for (const finding of findConfigWrites(fs.readFileSync(file, "utf8"))) {
+    const content = fs.readFileSync(file, "utf8");
+    for (const finding of findConfigWrites(content)) {
+      findings.push(`${relative}:${finding.line} ${finding.call}`);
+    }
+    for (const finding of findReadThenBlindWrites(content)) {
       findings.push(`${relative}:${finding.line} ${finding.call}`);
     }
   }
