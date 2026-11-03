@@ -164,7 +164,7 @@ cargo fmt --check --manifest-path src-tauri/Cargo.toml
 
 ### 桌面开发与 Rust 验证
 
-遵循 [AGENTS.md](AGENTS.md)：编码代理只有在用户明确要求时，才能运行会编译 Rust 的命令；未经许可不得删除已有 Rust 构建产物或缓存。下面的桌面命令及 Clippy、Rust 测试都会触发编译，不属于默认轻量检查。
+编码代理只有在用户明确要求时，才能运行会编译 Rust 的命令；未经许可不得删除已有 Rust 构建产物或缓存。下面的桌面命令及 Clippy、Rust 测试都会触发编译，不属于默认轻量检查。
 
 ```bash
 pnpm dev

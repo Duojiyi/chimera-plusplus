@@ -43,6 +43,27 @@ jobs:
           [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
           printf 'commit=%s\n' "$commit" >> "$GITHUB_OUTPUT"
 
+      - name: Verify candidate source is trusted
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ steps.source.outputs.commit }}
+        run: |
+          set -euo pipefail
+          # The signing key is only released for code that is already on main
+          # or carries a release tag; an arbitrary branch or SHA is refused.
+          if git merge-base --is-ancestor "$SOURCE_COMMIT" origin/main; then
+            echo "Candidate commit $SOURCE_COMMIT is reachable from main"
+            exit 0
+          fi
+          for tag in $(git tag --points-at "$SOURCE_COMMIT"); do
+            if [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+              echo "Candidate commit $SOURCE_COMMIT carries release tag $tag"
+              exit 0
+            fi
+          done
+          echo "Refusing to sign $SOURCE_COMMIT: it is not reachable from main and has no release tag" >&2
+          exit 1
+
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
@@ -86,6 +107,16 @@ jobs:
 
       - name: Build Windows candidate
         run: pnpm tauri build --bundles msi
+
+      - name: Scrub Tauri signing key
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Packaging and evidence steps run third-party build code; they must
+          # not inherit the updater key that the build step needed.
+          rm -f "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/tauri_signing.key"
+          printf 'TAURI_SIGNING_PRIVATE_KEY=%s\nTAURI_SIGNING_PRIVATE_KEY_PASSWORD=%s\n' '' '' >> "$GITHUB_ENV"
 
       - name: Collect candidate evidence
         shell: pwsh
@@ -151,6 +182,27 @@ jobs:
           [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
           printf 'commit=%s\n' "$commit" >> "$GITHUB_OUTPUT"
 
+      - name: Verify candidate source is trusted
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ steps.source.outputs.commit }}
+        run: |
+          set -euo pipefail
+          # The signing key is only released for code that is already on main
+          # or carries a release tag; an arbitrary branch or SHA is refused.
+          if git merge-base --is-ancestor "$SOURCE_COMMIT" origin/main; then
+            echo "Candidate commit $SOURCE_COMMIT is reachable from main"
+            exit 0
+          fi
+          for tag in $(git tag --points-at "$SOURCE_COMMIT"); do
+            if [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+              echo "Candidate commit $SOURCE_COMMIT carries release tag $tag"
+              exit 0
+            fi
+          done
+          echo "Refusing to sign $SOURCE_COMMIT: it is not reachable from main and has no release tag" >&2
+          exit 1
+
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
@@ -195,6 +247,16 @@ jobs:
 
       - name: Build universal macOS candidate
         run: pnpm tauri build --target universal-apple-darwin --bundles app
+
+      - name: Scrub Tauri signing key
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Packaging and evidence steps run third-party build code; they must
+          # not inherit the updater key that the build step needed.
+          rm -f "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/tauri_signing.key"
+          printf 'TAURI_SIGNING_PRIVATE_KEY=%s\nTAURI_SIGNING_PRIVATE_KEY_PASSWORD=%s\n' '' '' >> "$GITHUB_ENV"
 
       - name: Collect candidate evidence
         shell: bash
@@ -271,6 +333,27 @@ jobs:
           [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
           printf 'commit=%s\n' "$commit" >> "$GITHUB_OUTPUT"
 
+      - name: Verify candidate source is trusted
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ steps.source.outputs.commit }}
+        run: |
+          set -euo pipefail
+          # The signing key is only released for code that is already on main
+          # or carries a release tag; an arbitrary branch or SHA is refused.
+          if git merge-base --is-ancestor "$SOURCE_COMMIT" origin/main; then
+            echo "Candidate commit $SOURCE_COMMIT is reachable from main"
+            exit 0
+          fi
+          for tag in $(git tag --points-at "$SOURCE_COMMIT"); do
+            if [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+              echo "Candidate commit $SOURCE_COMMIT carries release tag $tag"
+              exit 0
+            fi
+          done
+          echo "Refusing to sign $SOURCE_COMMIT: it is not reachable from main and has no release tag" >&2
+          exit 1
+
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
@@ -331,6 +414,16 @@ jobs:
 
       - name: Build Linux candidate
         run: pnpm tauri build --bundles appimage,deb,rpm
+
+      - name: Scrub Tauri signing key
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Packaging and evidence steps run third-party build code; they must
+          # not inherit the updater key that the build step needed.
+          rm -f "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/tauri_signing.key"
+          printf 'TAURI_SIGNING_PRIVATE_KEY=%s\nTAURI_SIGNING_PRIVATE_KEY_PASSWORD=%s\n' '' '' >> "$GITHUB_ENV"
 
       - name: Smoke test Linux packages
         shell: bash

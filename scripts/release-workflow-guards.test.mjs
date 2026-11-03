@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
-import { readCargoLockRevision } from "./lib/cargo-lock-revisions.mjs";
+import { listCargoLockGitDependencies, readCargoLockRevision } from "./lib/cargo-lock-revisions.mjs";
 
 const readWorkflow = (name) =>
   readFileSync(
@@ -109,6 +109,78 @@ test("candidate checks fail at the first native command failure", () => {
   assert.match(step ?? "", /shell: bash/);
   assert.match(step ?? "", /set -euo pipefail/);
   assert.doesNotMatch(candidate, /default: "2\.4\.6"/);
+});
+
+const stepNames = (workflow) => [...workflow.matchAll(/^      - name: (.+)$/gm)].map((match) => match[1]);
+
+test("candidate only receives the signing key for main or release-tagged commits", () => {
+  const jobs = candidate.split(/^  (?=windows:|macos:|linux:)/m).slice(1);
+  assert.equal(jobs.length, 3);
+  for (const job of jobs) {
+    const names = stepNames(job);
+    const trust = names.indexOf("Verify candidate source is trusted");
+    const install = names.indexOf("Install frontend dependencies");
+    const prepare = names.indexOf("Prepare Tauri signing key");
+    assert.ok(trust >= 0, "every candidate job verifies where the commit comes from");
+    // The check runs before any step that executes code from the requested ref.
+    assert.ok(trust < install && install < prepare);
+    assert.match(job, /git merge-base --is-ancestor "\$SOURCE_COMMIT" origin\/main/);
+    assert.match(job, /git tag --points-at "\$SOURCE_COMMIT"/);
+  }
+});
+
+test("the updater key is scrubbed from the job right after the build that signs", () => {
+  const candidateJobs = candidate.split(/^  (?=windows:|macos:|linux:)/m).slice(1);
+  const releaseJob = release.slice(release.indexOf("\n  release:\n"), release.indexOf("\n  publish-release:\n"));
+  for (const [workflowJob, build, firstEvidence] of [
+    [candidateJobs[0], /^Build Windows candidate$/, "Collect candidate evidence"],
+    [candidateJobs[1], /^Build universal macOS candidate$/, "Collect candidate evidence"],
+    [candidateJobs[2], /^Build Linux candidate$/, "Smoke test Linux packages"],
+    [releaseJob, /^Build Tauri App \(Linux\)$/, "Prepare macOS Assets"],
+  ]) {
+    const names = stepNames(workflowJob);
+    const built = names.findIndex((name) => build.test(name));
+    const scrub = names.indexOf("Scrub Tauri signing key");
+    assert.ok(built >= 0 && scrub === built + 1, "scrub directly follows the last signing build");
+    assert.ok(scrub < names.indexOf(firstEvidence));
+  }
+  for (const workflow of [candidate, release]) {
+    const scrub = workflow.match(/- name: Scrub Tauri signing key\n([\s\S]*?)(?=\n      - name:)/)?.[1] ?? "";
+    assert.match(scrub, /if: always\(\)/);
+    assert.match(scrub, /rm -f "\$\{RUNNER_TEMP:-\$\{TMPDIR:-\/tmp\}\}\/tauri_signing\.key"/);
+    assert.match(scrub, /TAURI_SIGNING_PRIVATE_KEY=%s\\nTAURI_SIGNING_PRIVATE_KEY_PASSWORD=%s\\n' '' '' >> "\$GITHUB_ENV"/);
+  }
+});
+
+test("the AGPL notice names the exact commit Cargo.lock builds", () => {
+  const notices = readFileSync(new URL("../THIRD_PARTY_NOTICES.md", import.meta.url), "utf8");
+  const lock = readFileSync(new URL("../src-tauri/Cargo.lock", import.meta.url), "utf8");
+  const noticed = /pinned to commit\s+`([0-9a-f]{40})`/.exec(notices)?.[1];
+  assert.ok(noticed, "THIRD_PARTY_NOTICES.md names the pinned commit");
+  for (const crate of ["chimera-runtime", "chimera-platform", "chimera-domain"]) {
+    assert.equal(readCargoLockRevision(lock, crate), noticed, `${crate} is built from the noticed commit`);
+  }
+  for (const source of ["realiti4/claude-swap", "Nemo-Illusionist/claude-code-account-switcher", "openai/codex"]) {
+    assert.ok(notices.includes(source), `${source} adapted code is acknowledged`);
+  }
+});
+
+test("every distribution carries the AGPL text, the notices and a source offer", () => {
+  const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
+  assert.match(read("LICENSE-AGPL-3.0"), /GNU AFFERO GENERAL PUBLIC LICENSE\s+Version 3, 19 November 2007/);
+  assert.match(read("LICENSE"), /^MIT License/);
+  const bundle = JSON.parse(read("src-tauri/tauri.conf.json")).bundle;
+  assert.deepEqual(bundle.resources, {
+    "../LICENSE": "licenses/LICENSE-MIT.txt",
+    "../LICENSE-AGPL-3.0": "licenses/LICENSE-AGPL-3.0.txt",
+    "../THIRD_PARTY_NOTICES.md": "licenses/THIRD_PARTY_NOTICES.md",
+  });
+  // Source licence metadata matches the AGPL notice instead of claiming plain MIT.
+  assert.equal(JSON.parse(read("package.json")).license, "MIT AND AGPL-3.0-only");
+  assert.match(read("src-tauri/Cargo.toml"), /^license = "MIT AND AGPL-3\.0-only"$/m);
+  // The in-app source offer points at the commit Cargo.lock builds.
+  const offered = /AGPL_SOURCE_COMMIT = "([0-9a-f]{40})"/.exec(read("src/lib/licenses.ts"))?.[1];
+  assert.equal(offered, readCargoLockRevision(read("src-tauri/Cargo.lock"), "chimera-runtime"));
 });
 test(
   "PowerShell evidence generation stops on failed native commands",
@@ -221,10 +293,24 @@ test("the app, its runtime crate and the release share one Codex engine revision
   // Both engines come from one upstream revision, and the release provenance
   // names the repository they are actually built from.
   assert.deepEqual(pinned("codex-theme-engine", "dependencies"), engine);
-  const release = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
-  const declared = [...release.matchAll(/codex-(?:win|theme)-engine['"]?[;,]\s*['"]?repository['"]?\s*[=:]\s*['"]([^'"]+)['"]/g)].map(
-    (match) => match[1],
-  );
-  assert.equal(declared.length, 6, "release.yml declares engine provenance in six places");
-  for (const repository of declared) assert.equal(repository, engine.git);
+  // The release provenance is generated from Cargo.lock on every platform, so
+  // it names the repository the engines are actually built from.
+  const listed = listCargoLockGitDependencies(lock);
+  for (const name of ["codex-win-engine", "codex-theme-engine"]) {
+    assert.equal(listed.find((dependency) => dependency.package === name)?.repository, engine.git);
+  }
+});
+
+test("release provenance lists every git dependency locked in Cargo.lock", () => {
+  const lock = readFileSync(new URL("../src-tauri/Cargo.lock", import.meta.url), "utf8");
+  const locked = (lock.match(/^source = "git\+/gm) ?? []).length;
+  const listed = listCargoLockGitDependencies(lock);
+  assert.equal(listed.length, locked, "every git source in Cargo.lock is listed");
+  for (const name of ["chimera-domain", "chimera-platform", "chimera-runtime", "codex-archive", "codex-theme-engine", "codex-win-engine"]) {
+    assert.ok(listed.some((dependency) => dependency.package === name), `${name} is part of the provenance`);
+  }
+  assert.equal(release.split("node scripts/list-cargo-lock-git-dependencies.mjs").length - 1, 3);
+  assert.doesNotMatch(release, /extract-cargo-lock-revision/);
+  const verifier = readFileSync(new URL("./verify-release-evidence.mjs", import.meta.url), "utf8");
+  assert.match(verifier, /is missing Cargo\.lock git packages/);
 });

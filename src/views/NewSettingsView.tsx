@@ -27,6 +27,7 @@ import {
 import type { Settings } from "@/types";
 import { settingsApi, type PreferencesPatch } from "@/lib/api/settings";
 import { getCurrentVersion } from "@/lib/updater";
+import { licenseLinks } from "@/lib/licenses";
 import { useUpdate } from "@/contexts/UpdateContext";
 import { extractErrorMessage } from "@/utils/errorUtils";
 
@@ -1118,6 +1119,23 @@ export function NewSettingsView({
                     </small>
                   </div>
                 )}
+              </div>
+              <div
+                className="settings-licenses"
+                role="group"
+                aria-label="许可证与源代码"
+              >
+                <small>Chimera++ 按 MIT 与 AGPL-3.0 许可发行。</small>
+                {licenseLinks(appVersion).map((link) => (
+                  <button
+                    key={link.label}
+                    type="button"
+                    className="settings-licenses-link"
+                    onClick={() => void settingsApi.openExternal(link.url)}
+                  >
+                    {link.label}
+                  </button>
+                ))}
               </div>
             </section>
             {/* Part of the scroll flow, so it can never cover the last rows. */}

@@ -22,7 +22,7 @@ pub(crate) const CODEX_STATE_DB_FILENAME: &str = "state_5.sqlite";
 /// Env var that overrides the Codex SQLite state directory.
 const CODEX_SQLITE_HOME_ENV: &str = "CODEX_SQLITE_HOME";
 
-// Adapted from openai/codex codex-rs/state/src/sqlite.rs (MIT)
+// Adapted from openai/codex codex-rs/state/src/sqlite.rs (Apache-2.0, modified)
 /// The per-thread SQLite files Codex 0.157 keeps side by side in one SQLite
 /// home (`RUNTIME_DBS` in `state/src/sqlite.rs`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -25,7 +25,7 @@ There are many ways to contribute:
 - Rust 1.95 and Cargo, pinned by [rust-toolchain.toml](rust-toolchain.toml) and required by [Cargo.toml](src-tauri/Cargo.toml)
 - [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your operating system; complete Codex runtime maintenance requires Windows
 
-Follow [AGENTS.md](AGENTS.md). Coding agents must not run commands that compile Rust without an explicit user request, or delete existing Rust artifacts or caches without permission.
+Coding agents must not run commands that compile Rust without an explicit user request, or delete existing Rust artifacts or caches without permission.
 
 ### Quick Start
 
@@ -169,7 +169,7 @@ convention the file you are editing already uses.
 - Rust 1.95 和 Cargo，由 [rust-toolchain.toml](rust-toolchain.toml) 固定，[Cargo.toml](src-tauri/Cargo.toml) 要求的最低版本同为 1.95
 - 对应操作系统的 [Tauri 2 开发依赖](https://v2.tauri.app/start/prerequisites/)；完整 Codex 运行时维护功能需要 Windows
 
-遵循 [AGENTS.md](AGENTS.md)：编码代理只有在用户明确要求时，才能运行会编译 Rust 的命令；未经许可不得删除已有 Rust 构建产物或缓存。
+编码代理只有在用户明确要求时，才能运行会编译 Rust 的命令；未经许可不得删除已有 Rust 构建产物或缓存。
 
 ### 快速开始
 

@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { readCargoLockRevisionFromFile } from "./lib/cargo-lock-revisions.mjs";
+import { listCargoLockGitDependencies, readCargoLockRevisionFromFile } from "./lib/cargo-lock-revisions.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -97,6 +97,16 @@ function verifyExternalGitDependencies(value, name, lockfilePath) {
         `${name}.externalGitDependencies revision for ${dependency.package} (${dependency.revision}) does not match the revision actually locked in Cargo.lock (${lockedRevision})`,
       );
     }
+  }
+
+  // The list must also be complete: every git-pinned package in Cargo.lock is
+  // part of the build, so none may be missing from the provenance.
+  const expected = listCargoLockGitDependencies(fs.readFileSync(lockfilePath, "utf8")).map(
+    (dependency) => `${dependency.package}\u0000${dependency.repository}`,
+  );
+  const missing = expected.filter((identity) => !identities.has(identity));
+  if (missing.length > 0) {
+    throw new Error(`${name}.externalGitDependencies is missing Cargo.lock git packages: ${missing.map((identity) => identity.split("\u0000")[0]).join(", ")}`);
   }
 }
 

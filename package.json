@@ -19,7 +19,7 @@
   },
   "keywords": [],
   "author": "Duojiyi and CC Switch contributors",
-  "license": "MIT",
+  "license": "MIT AND AGPL-3.0-only",
   "devDependencies": {
     "@tauri-apps/cli": "^2.12.4",
     "@testing-library/jest-dom": "^6.6.3",

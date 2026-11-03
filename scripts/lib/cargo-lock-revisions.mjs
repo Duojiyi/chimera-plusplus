@@ -45,6 +45,26 @@ export function readCargoLockRevision(lockfileText, packageName) {
   return [...revisions][0];
 }
 
+/**
+ * List every package in a Cargo.lock that is pinned to a git revision, as
+ * `{ package, repository, revision }`, sorted by package name. Release
+ * provenance is generated from this list and verified against it, so a new
+ * git dependency can never be missing from the evidence.
+ */
+export function listCargoLockGitDependencies(lockfileText) {
+  const dependencies = [];
+  for (const block of lockfileText.split(/\r?\n(?=\[\[package\]\])/)) {
+    const nameMatch = /^\[\[package\]\]\r?\nname = "([^"]+)"/.exec(block);
+    const sourceMatch = /\r?\nsource = "git\+([^"?#]+)\?rev=([0-9a-f]{40})#([0-9a-f]{40})"/.exec(block);
+    if (!nameMatch || !sourceMatch) continue;
+    if (sourceMatch[2] !== sourceMatch[3]) {
+      throw new Error(`Package ${nameMatch[1]} in Cargo.lock resolves rev ${sourceMatch[2]} to a different commit ${sourceMatch[3]}`);
+    }
+    dependencies.push({ package: nameMatch[1], repository: sourceMatch[1], revision: sourceMatch[2] });
+  }
+  return dependencies.sort((a, b) => a.package.localeCompare(b.package));
+}
+
 /** Same as {@link readCargoLockRevision}, but reads the lockfile from disk. */
 export function readCargoLockRevisionFromFile(lockfilePath, packageName) {
   return readCargoLockRevision(fs.readFileSync(lockfilePath, "utf8"), packageName);

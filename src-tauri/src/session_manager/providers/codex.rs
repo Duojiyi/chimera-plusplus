@@ -977,7 +977,7 @@ fn read_spawned_descendants(db_path: &Path, thread_id: &str) -> Result<Vec<Strin
 }
 
 // Adapted from openai/codex codex-rs/state/src/runtime/threads.rs
-// (`ThreadRelationFilter::DescendantsOf`) (MIT)
+// (`ThreadRelationFilter::DescendantsOf`) (Apache-2.0, modified)
 /// Every thread spawned from `thread_id`, transitively, per `thread_spawn_edges`.
 fn spawned_descendants(conn: &Connection, thread_id: &str) -> rusqlite::Result<Vec<String>> {
     if !has_column(conn, "thread_spawn_edges", "parent_thread_id")?
@@ -1003,7 +1003,7 @@ fn spawned_descendants(conn: &Connection, thread_id: &str) -> rusqlite::Result<V
 
 // Adapted from openai/codex codex-rs/state/src/runtime/threads.rs
 // (`delete_threads_strict`) and codex-rs/thread-store/src/local/thread_history.rs
-// (`delete_thread`) (MIT)
+// (`delete_thread`) (Apache-2.0, modified)
 /// Rows keyed by thread id in each runtime DB, children before parents.
 /// `thread_spawn_edges` is listed for both ends, and `threads` comes last.
 /// `local_thread_catalog` is deliberately absent.
@@ -1117,7 +1117,7 @@ fn delete_thread_rows(
 }
 
 // Adapted from openai/codex codex-rs/state/src/runtime/memories.rs
-// (`delete_thread_memory`, `enqueue_global_consolidation_with_executor`) (MIT)
+// (`delete_thread_memory`, `enqueue_global_consolidation_with_executor`) (Apache-2.0, modified)
 const MEMORY_STAGE1_JOB_KIND: &str = "memory_stage1";
 const MEMORY_CONSOLIDATE_JOB_KIND: &str = "memory_consolidate_global";
 const MEMORY_CONSOLIDATE_JOB_KEY: &str = "global";

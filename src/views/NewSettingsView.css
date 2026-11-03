@@ -726,6 +726,29 @@ button.settings-reference-row:hover:not(:disabled) > svg {
   color: var(--text-3);
   font-size: 13px;
 }
+.settings-licenses {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 16px;
+  margin-top: 12px;
+  font-size: 13px;
+}
+.settings-licenses small {
+  color: var(--text-2);
+  font-size: 13px;
+}
+.settings-licenses-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--brand-text);
+  font-size: 13px;
+  cursor: pointer;
+}
+.settings-licenses-link:hover {
+  text-decoration: underline;
+}
 
 .settings-page-footer {
   display: flex;

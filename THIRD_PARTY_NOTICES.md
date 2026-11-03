@@ -4,7 +4,7 @@
 
 Chimera++ links three crates from this project's own repository: `chimera-runtime`,
 `chimera-platform` and `chimera-domain`, pinned to commit
-`ac846589c9bb3b60cbaec3f7d26287c55afdc493` of
+`a3dac60c48bd6ff466e93a8a072450a153915b15` of
 https://github.com/Duojiyi/chimera-plusplus. Their workspace declares
 `AGPL-3.0-only`; the `LICENSE`, `NOTICE` and `THIRD_PARTY_SOURCES.md` files at that
 commit state the terms and the provenance of the code.
@@ -140,3 +140,33 @@ SHA-256 of the vendored files:
 
 - Overpass: `970717df17a7f9911dee45f60695d05bfa9d745fa0a11fc5c348371fa21f0073`
 - Overpass Mono: `49f230e10251608f0ae1a2ce46be768d7b9ddcbe5cdca2e9f6b762fcbce1ae4f`
+
+## claude-swap
+
+Source: https://github.com/realiti4/claude-swap
+
+Licensed under the MIT License. The Claude subscription quota parsing in
+`src-tauri/src/services/subscription.rs` and `src-tauri/src/claude_accounts/quota.rs`
+is adapted from `src/claude_swap/oauth.py` at commit
+`72ccd58` (the exact commit is recorded in the source comments). The full license
+text is available from the upstream repository.
+
+## claude-code-account-switcher
+
+Source: https://github.com/Nemo-Illusionist/claude-code-account-switcher
+
+Licensed under the MIT License. The Claude Desktop cache parsing and token choice in
+`src-tauri/src/claude_accounts/desktop_auth.rs` are adapted from `src/desktop_auth.rs`
+at commit `bb3446ab`. The full license text is available from the upstream repository.
+
+## OpenAI Codex
+
+Source: https://github.com/openai/codex
+
+Licensed under the Apache License, Version 2.0. Chimera++ does not bundle Codex. Small
+parts of the thread-deletion and thread-relation logic in
+`src-tauri/src/session_manager/providers/codex.rs` and the state database path handling
+in `src-tauri/src/codex_state_db.rs` are adapted from `codex-rs/state` and
+`codex-rs/thread-store`; the adapted code is modified and each location carries an
+attribution comment. A copy of the Apache-2.0 license is available at
+https://www.apache.org/licenses/LICENSE-2.0.
