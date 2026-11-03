@@ -473,6 +473,61 @@ fn pi_family_prompt_apps() -> Vec<crate::prompt_files::PromptApp> {
     apps
 }
 
+/// Serialises second-launch handling so rapid double-clicks cannot rebuild or
+/// focus the main window concurrently.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+static SECOND_INSTANCE_WORK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// What happens when the user starts Chimera++ again while it is running:
+/// leave lightweight mode, hand over any deep link, and focus the window.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn handle_second_instance(app: &tauri::AppHandle, args: Vec<String>) {
+    log::info!("=== Single Instance Callback Triggered ===");
+    log::debug!("Args count: {}", args.len());
+    for (i, arg) in args.iter().enumerate() {
+        log::debug!("  arg[{i}]: {}", url_for_log(arg));
+    }
+
+    if crate::lightweight::is_lightweight_mode() {
+        if let Err(e) = crate::lightweight::exit_lightweight_mode(app) {
+            log::error!("退出轻量模式重建窗口失败: {e}");
+        }
+    }
+
+    // Check for deep link URL in args (mainly for Windows/Linux command line)
+    let mut found_deeplink = false;
+    for arg in &args {
+        if handle_deeplink_url(app, arg, false, "single_instance args") {
+            found_deeplink = true;
+        }
+    }
+
+    if !found_deeplink {
+        log::info!(
+            "ℹ No deep link URL found in args (this is expected on macOS when launched via system)"
+        );
+    }
+
+    // Show and focus window regardless
+    if let Some(window) = app.get_webview_window("main") {
+        // A silent start or close-to-tray leaves the running instance
+        // with skip_taskbar(true); show() alone keeps it off the
+        // taskbar, and minimizing it then makes it vanish.
+        // Adapted from farion1231/cc-switch 6f6087cdb (MIT).
+        #[cfg(target_os = "windows")]
+        {
+            let _ = window.set_skip_taskbar(false);
+        }
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+        #[cfg(target_os = "linux")]
+        {
+            linux_fix::nudge_main_window(window.clone());
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 设置 panic hook，在应用崩溃时记录日志到 Chimera++ 配置目录。
@@ -485,48 +540,17 @@ pub fn run() {
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-            log::info!("=== Single Instance Callback Triggered ===");
-            log::debug!("Args count: {}", args.len());
-            for (i, arg) in args.iter().enumerate() {
-                log::debug!("  arg[{i}]: {}", url_for_log(arg));
-            }
-
-            if crate::lightweight::is_lightweight_mode() {
-                if let Err(e) = crate::lightweight::exit_lightweight_mode(app) {
-                    log::error!("退出轻量模式重建窗口失败: {e}");
-                }
-            }
-
-            // Check for deep link URL in args (mainly for Windows/Linux command line)
-            let mut found_deeplink = false;
-            for arg in &args {
-                if handle_deeplink_url(app, arg, false, "single_instance args") {
-                    found_deeplink = true;
-                }
-            }
-
-            if !found_deeplink {
-                log::info!("ℹ No deep link URL found in args (this is expected on macOS when launched via system)");
-            }
-
-            // Show and focus window regardless
-            if let Some(window) = app.get_webview_window("main") {
-                // A silent start or close-to-tray leaves the running instance
-                // with skip_taskbar(true); show() alone keeps it off the
-                // taskbar, and minimizing it then makes it vanish.
-                // Adapted from farion1231/cc-switch 6f6087cdb (MIT).
-                #[cfg(target_os = "windows")]
-                {
-                    let _ = window.set_skip_taskbar(false);
-                }
-                let _ = window.unminimize();
-                let _ = window.show();
-                let _ = window.set_focus();
-                #[cfg(target_os = "linux")]
-                {
-                    linux_fix::nudge_main_window(window.clone());
-                }
-            }
+            // On Windows this callback runs on the thread that received the
+            // second launch's WM_COPYDATA message. Rebuilding a WebView2 window
+            // there blocks that thread (and with it the tray), so the work moves
+            // to a worker and runs one launch at a time.
+            let app = app.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let _serialized = SECOND_INSTANCE_WORK
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                handle_second_instance(&app, args);
+            });
         }));
     }
 

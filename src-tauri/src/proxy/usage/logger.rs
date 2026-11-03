@@ -11,6 +11,20 @@ use rust_decimal::Decimal;
 use sha2::{Digest, Sha256};
 use std::str::FromStr;
 
+/// Character cap for `proxy_request_logs.error_message`. A relay that answers
+/// every failure with a full HTML page would otherwise grow the database (and
+/// every backup) without bound. Truncating by characters never splits UTF-8.
+pub(crate) const MAX_ERROR_MESSAGE_CHARS: usize = 4096;
+
+/// Keep the first `MAX_ERROR_MESSAGE_CHARS` characters: the status line, the
+/// error code and the description all come first.
+fn bound_error_message(message: &str) -> &str {
+    match message.char_indices().nth(MAX_ERROR_MESSAGE_CHARS) {
+        Some((byte_index, _)) => &message[..byte_index],
+        None => message,
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct UsageSemantic {
     app_type: String,
@@ -180,6 +194,7 @@ impl<'a> UsageLogger<'a> {
         } else {
             "INSERT OR IGNORE"
         };
+        let error_message = log.error_message.as_deref().map(bound_error_message);
         let sql = format!(
             "{insert_verb} INTO proxy_request_logs (
                 request_id, provider_id, app_type, model, request_model, pricing_model,
@@ -213,7 +228,7 @@ impl<'a> UsageLogger<'a> {
                     log.latency_ms as i64,
                     log.first_token_ms.map(|v| v as i64),
                     log.status_code as i64,
-                    log.error_message,
+                    error_message,
                     log.session_id,
                     log.provider_type,
                     log.is_streaming as i64,
@@ -619,6 +634,51 @@ mod tests {
             )?,
             3
         );
+        Ok(())
+    }
+
+    #[test]
+    fn bound_error_message_keeps_char_boundaries() {
+        assert_eq!(bound_error_message(""), "");
+        assert_eq!(bound_error_message("short"), "short");
+
+        let exact = "e".repeat(MAX_ERROR_MESSAGE_CHARS);
+        assert_eq!(bound_error_message(&exact), exact);
+
+        // 3-byte and 4-byte characters: the cut lands on a character boundary.
+        for unit in ["汉", "🦀"] {
+            let long = unit.repeat(MAX_ERROR_MESSAGE_CHARS + 1);
+            let bounded = bound_error_message(&long);
+            assert_eq!(bounded.chars().count(), MAX_ERROR_MESSAGE_CHARS);
+            assert_eq!(bounded, unit.repeat(MAX_ERROR_MESSAGE_CHARS));
+        }
+    }
+
+    #[test]
+    fn log_error_bounds_oversized_error_message() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let logger = UsageLogger::new(&db);
+
+        let prefix = "HTTP 502 Bad Gateway: <html><title>上游错误</title>";
+        let body = format!("{prefix}{}", "🦀".repeat(MAX_ERROR_MESSAGE_CHARS * 100));
+        logger.log_error(
+            "req-huge-error".to_string(),
+            "provider-1".to_string(),
+            "claude".to_string(),
+            "claude-sonnet-4-5".to_string(),
+            502,
+            body,
+            50,
+        )?;
+
+        let conn = crate::database::lock_conn!(db.conn);
+        let stored: String = conn.query_row(
+            "SELECT error_message FROM proxy_request_logs WHERE request_id = 'req-huge-error'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(stored.chars().count(), MAX_ERROR_MESSAGE_CHARS);
+        assert!(stored.starts_with(prefix));
         Ok(())
     }
 

@@ -32,6 +32,10 @@ const RECURSIVE_UNSUPPORTED_FIELDS: &[&str] = &["external_web_access"];
 /// Top-level request fields xAI rejects regardless of model.
 const TOP_LEVEL_UNSUPPORTED_FIELDS: &[&str] = &["prompt_cache_retention", "safety_identifier"];
 
+/// `include` markers emitted by Codex that xAI's Responses API rejects
+/// (Codex 0.163+ asks for `output.encrypted_content` on every request).
+const XAI_UNSUPPORTED_INCLUDE_MARKERS: &[&str] = &["output.encrypted_content"];
+
 /// Top-level sampling fields rejected specifically by grok-4.5.
 const GROK_45_UNSUPPORTED_FIELDS: &[&str] = &[
     "presence_penalty",
@@ -75,6 +79,11 @@ pub(crate) fn sanitize_xai_responses_request(body: &mut Value) -> bool {
         changed |= remove_top_level_field(body, field);
     }
 
+    // 1b. Codex may request replay-only output tokens that xAI does not
+    //     support. Every other include marker is kept so newly supported xAI
+    //     features keep working.
+    changed |= filter_unsupported_include_markers(body);
+
     // 2. grok-4.5 additionally rejects these sampling knobs.
     if request_targets_grok_45(body) {
         for field in GROK_45_UNSUPPORTED_FIELDS {
@@ -105,6 +114,27 @@ pub(crate) fn sanitize_xai_responses_request(body: &mut Value) -> bool {
     changed |= rewrite_xai_call_id_less_tool_outputs(body);
 
     changed
+}
+
+fn filter_unsupported_include_markers(body: &mut Value) -> bool {
+    let Some(include) = body.get_mut("include").and_then(Value::as_array_mut) else {
+        return false;
+    };
+    let original_len = include.len();
+    include.retain(|item| {
+        !item
+            .as_str()
+            .is_some_and(|marker| XAI_UNSUPPORTED_INCLUDE_MARKERS.contains(&marker))
+    });
+    if include.len() == original_len {
+        return false;
+    }
+    if include.is_empty() {
+        if let Some(object) = body.as_object_mut() {
+            object.remove("include");
+        }
+    }
+    true
 }
 
 /// Whether the request's (possibly provider-prefixed) model resolves to
@@ -1203,6 +1233,56 @@ mod tests {
         assert!(sanitize_xai_responses_request(&mut body));
         assert!(body.get("prompt_cache_retention").is_none());
         assert!(body.get("safety_identifier").is_none());
+    }
+
+    #[test]
+    fn filters_unsupported_include_marker_preserving_other_values() {
+        let mut body = json!({
+            "model": "grok-4.7",
+            "include": [
+                "reasoning.encrypted_content",
+                "output.encrypted_content",
+                "web_search_call.action.sources"
+            ]
+        });
+
+        assert!(sanitize_xai_responses_request(&mut body));
+        assert_eq!(
+            body["include"],
+            json!([
+                "reasoning.encrypted_content",
+                "web_search_call.action.sources"
+            ])
+        );
+        assert!(!sanitize_xai_responses_request(&mut body));
+    }
+
+    #[test]
+    fn drops_include_when_only_unsupported_marker_remains() {
+        let mut body = json!({
+            "model": "grok-4.7",
+            "include": ["output.encrypted_content"]
+        });
+
+        assert!(sanitize_xai_responses_request(&mut body));
+        assert!(body.get("include").is_none());
+    }
+
+    #[test]
+    fn keeps_supported_include_values_unchanged() {
+        let mut body = json!({
+            "model": "grok-4.7",
+            "include": ["reasoning.encrypted_content", "web_search_call.action.sources"]
+        });
+
+        assert!(!sanitize_xai_responses_request(&mut body));
+        assert_eq!(
+            body["include"],
+            json!([
+                "reasoning.encrypted_content",
+                "web_search_call.action.sources"
+            ])
+        );
     }
 
     #[test]

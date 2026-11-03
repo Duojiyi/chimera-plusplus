@@ -2852,18 +2852,64 @@ pub async fn list_codex_runtime_releases(
     page: Option<u32>,
 ) -> Result<Vec<CodexRuntimeRelease>, String> {
     require_windows()?;
-    let page = page.unwrap_or(1).clamp(1, 50);
-    let url =
-        format!("https://api.github.com/repos/{MIRROR_REPO}/releases?per_page=10&page={page}");
-    let body = fetch_mirror_text(&url)
-        .await
-        .map_err(|error| format!("获取历史版本目录失败: {error}"))?;
-    let releases: serde_json::Value =
-        serde_json::from_str(&body).map_err(|error| format!("解析历史版本目录失败: {error}"))?;
-    let Some(items) = releases.as_array() else {
-        return Err("历史版本目录格式异常".to_string());
-    };
-    Ok(releases_from_items(items))
+    let page = page.unwrap_or(1).clamp(1, 50) as usize;
+    // GitHub lists releases by creation time, and every mirror release points
+    // at the same commit, so the API order is not version order and a page of
+    // ten can miss the newest builds. Read the catalog, order it by version,
+    // then page locally.
+    let mut releases = Vec::new();
+    for api_page in 1..=MIRROR_CATALOG_MAX_PAGES {
+        let url = format!(
+            "https://api.github.com/repos/{MIRROR_REPO}/releases?per_page={MIRROR_CATALOG_PAGE_SIZE}&page={api_page}"
+        );
+        let body = fetch_mirror_text(&url)
+            .await
+            .map_err(|error| format!("获取历史版本目录失败: {error}"))?;
+        let value: serde_json::Value = serde_json::from_str(&body)
+            .map_err(|error| format!("解析历史版本目录失败: {error}"))?;
+        let Some(items) = value.as_array() else {
+            return Err("历史版本目录格式异常".to_string());
+        };
+        releases.extend(releases_from_items(items));
+        if items.len() < MIRROR_CATALOG_PAGE_SIZE {
+            break;
+        }
+    }
+    sort_releases_newest_first(&mut releases);
+    Ok(release_page(releases, page))
+}
+
+const MIRROR_CATALOG_PAGE_SIZE: usize = 100;
+const MIRROR_CATALOG_MAX_PAGES: usize = 3;
+const HISTORY_PAGE_SIZE: usize = 10;
+
+/// Numeric version of a mirror tag such as `codex-app-26.1027.30824`.
+fn release_version(tag: &str) -> Option<Vec<u64>> {
+    let digits = tag.trim_start_matches(|c: char| !c.is_ascii_digit());
+    let parts: Option<Vec<u64>> = digits
+        .split('.')
+        .map(|part| part.parse::<u64>().ok())
+        .collect();
+    parts.filter(|parts| !parts.is_empty())
+}
+
+/// Highest version first; unparsable tags fall back to publish time and sort
+/// after every versioned release.
+fn sort_releases_newest_first(releases: &mut [CodexRuntimeRelease]) {
+    releases.sort_by(|a, b| {
+        release_version(&b.tag)
+            .cmp(&release_version(&a.tag))
+            .then_with(|| b.published_at.cmp(&a.published_at))
+            .then_with(|| b.tag.cmp(&a.tag))
+    });
+}
+
+fn release_page(releases: Vec<CodexRuntimeRelease>, page: usize) -> Vec<CodexRuntimeRelease> {
+    releases
+        .into_iter()
+        .skip((page.max(1) - 1) * HISTORY_PAGE_SIZE)
+        .take(HISTORY_PAGE_SIZE)
+        .collect()
 }
 
 /// 解析指定历史版本的安装计划（TASK-009 / TASK-028）。
@@ -3672,6 +3718,59 @@ mod tests {
         assert!(!releases[1].installable);
         assert!(releases[1].prerelease);
         assert!(releases[1].name.is_none());
+    }
+
+    fn catalog_release(tag: &str, published_at: Option<&str>) -> super::CodexRuntimeRelease {
+        super::CodexRuntimeRelease {
+            tag: tag.to_string(),
+            name: None,
+            published_at: published_at.map(str::to_string),
+            prerelease: false,
+            installable: true,
+        }
+    }
+
+    #[test]
+    fn release_catalog_orders_by_version_not_api_order() {
+        // The mirror's API order puts 26.930 before 26.1027 (same creation time).
+        let mut releases = vec![
+            catalog_release("codex-app-26.930.61225", Some("2026-09-12T21:35:28Z")),
+            catalog_release("codex-app-26.917.71314", Some("2026-09-12T21:35:28Z")),
+            catalog_release("codex-app-26.1027.30824", Some("2026-09-12T21:35:28Z")),
+            catalog_release("codex-app-26.1023.11111", None),
+            catalog_release("nightly", Some("2026-10-30T00:00:00Z")),
+        ];
+        super::sort_releases_newest_first(&mut releases);
+        let tags: Vec<&str> = releases
+            .iter()
+            .map(|release| release.tag.as_str())
+            .collect();
+        assert_eq!(
+            tags,
+            [
+                "codex-app-26.1027.30824",
+                "codex-app-26.1023.11111",
+                "codex-app-26.930.61225",
+                "codex-app-26.917.71314",
+                "nightly",
+            ]
+        );
+    }
+
+    #[test]
+    fn release_catalog_pages_locally_after_sorting() {
+        let releases: Vec<_> = (1..=25)
+            .map(|n| catalog_release(&format!("codex-app-26.{n}.1"), None))
+            .collect();
+        let mut sorted = releases.clone();
+        super::sort_releases_newest_first(&mut sorted);
+        let first = super::release_page(sorted.clone(), 1);
+        let third = super::release_page(sorted.clone(), 3);
+        assert_eq!(first.len(), 10);
+        assert_eq!(first[0].tag, "codex-app-26.25.1");
+        assert_eq!(third.len(), 5);
+        assert_eq!(third[4].tag, "codex-app-26.1.1");
+        assert!(super::release_page(sorted, 4).is_empty());
     }
 
     #[test]

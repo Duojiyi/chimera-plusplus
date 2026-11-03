@@ -233,7 +233,7 @@ pub(crate) fn copy_tool_call_extra_content(target: &mut Value, source: &Value) -
 
 /// Placeholder Gemini documents for skipping thought-signature validation.
 /// It can degrade the model's reasoning, so it is only a last resort.
-const GEMINI_SKIP_THOUGHT_SIGNATURE: &str = "skip_thought_signature_validator";
+pub(crate) const GEMINI_SKIP_THOUGHT_SIGNATURE: &str = "skip_thought_signature_validator";
 
 /// Fill the Gemini skip placeholder where a real thought signature is gone.
 ///
@@ -301,7 +301,7 @@ pub(crate) fn fill_gemini_thought_signature_fallback(chat_body: &mut Value) -> u
 
 /// Gemini 3 and later (a relay prefix such as `google/` is allowed) enforce
 /// tool-call thought signatures.
-fn requires_gemini_thought_signature(model: &str) -> bool {
+pub(crate) fn requires_gemini_thought_signature(model: &str) -> bool {
     let name = model
         .rsplit('/')
         .next()

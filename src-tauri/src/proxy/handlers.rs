@@ -263,20 +263,14 @@ fn validate_claude_desktop_gateway_auth(
 ) -> Result<(), ProxyError> {
     let expected = crate::claude_desktop_config::get_or_create_gateway_token(state.db.as_ref())
         .map_err(|e| ProxyError::AuthError(e.to_string()))?;
-    let Some(value) = headers.get(axum::http::header::AUTHORIZATION) else {
+    // Claude Desktop sends the token as `x-api-key`; other clients use
+    // `Authorization: Bearer`. Either is accepted, compared in constant time.
+    if super::local_auth::presented_credentials(headers).is_empty() {
         return Err(ProxyError::AuthError(
-            "Claude Desktop gateway 缺少 Authorization 头".to_string(),
+            "Claude Desktop gateway 缺少 Authorization / x-api-key 头".to_string(),
         ));
-    };
-    let value = value
-        .to_str()
-        .map_err(|_| ProxyError::AuthError("Authorization 头格式无效".to_string()))?;
-    let token = value
-        .strip_prefix("Bearer ")
-        .or_else(|| value.strip_prefix("bearer "))
-        .unwrap_or("")
-        .trim();
-    if token != expected {
+    }
+    if !super::local_auth::request_presents_token(headers, &expected) {
         return Err(ProxyError::AuthError(
             "Claude Desktop gateway token 无效".to_string(),
         ));
@@ -387,23 +381,13 @@ async fn handle_claude_transform(
         .as_ref()
         .and_then(|meta| meta.provider_type.as_deref())
         == Some("codex_oauth");
-    // Codex OAuth 会把 openai_responses 响应强制升级为 SSE，即使客户端发的是 stream:false。
-    // should_use_claude_transform_streaming 默认会把这个组合路由到流式转换器——虽然能避免
-    // JSON parse 报 422，但会让非流客户端收到 text/event-stream，违反 Anthropic 非流语义。
-    // 这里为这个特定组合打开 override：把上游 SSE 聚合成 Anthropic JSON 回给客户端，其它
-    // 场景（任意上游 is_sse、非 Codex OAuth 等）仍沿用原有流式兜底。
-    let aggregate_codex_oauth_responses_sse =
-        !is_stream && is_codex_oauth && api_format == "openai_responses";
-    let use_streaming = if aggregate_codex_oauth_responses_sse {
-        false
-    } else {
-        should_use_claude_transform_streaming(
-            is_stream,
-            response.is_sse(),
-            api_format,
-            is_codex_oauth,
-        )
-    };
+    // Claude 的模型验证要求非流式 JSON，并直接读取 usage.input_tokens。
+    // Chat/Responses 上游即使强制返回 SSE，也必须聚合后再交给非流客户端。
+    // Codex OAuth 强制 SSE，但可能不标 Content-Type，保留这个额外识别条件。
+    let aggregate_responses_sse =
+        !is_stream && api_format == "openai_responses" && (is_codex_oauth || response.is_sse());
+    let use_streaming =
+        should_use_claude_transform_streaming(is_stream, response.is_sse(), api_format);
     let tool_schema_hints = transform_gemini::extract_anthropic_tool_schema_hints(original_body);
     let tool_schema_hints = (!tool_schema_hints.is_empty()).then_some(tool_schema_hints);
 
@@ -524,7 +508,7 @@ async fn handle_claude_transform(
 
     let body_str = String::from_utf8_lossy(&body_bytes);
 
-    let upstream_response: Value = if aggregate_codex_oauth_responses_sse {
+    let upstream_response: Value = if aggregate_responses_sse {
         responses_sse_to_response_value(&body_str)?
     } else {
         match serde_json::from_slice(&body_bytes) {
@@ -2857,13 +2841,13 @@ fn should_use_claude_transform_streaming(
     requested_streaming: bool,
     upstream_is_sse: bool,
     api_format: &str,
-    is_codex_oauth: bool,
 ) -> bool {
-    requested_streaming || upstream_is_sse || (is_codex_oauth && api_format == "openai_responses")
+    requested_streaming
+        || (upstream_is_sse && !matches!(api_format, "openai_chat" | "openai_responses"))
 }
 
 /// 把 OpenAI Responses SSE 流聚合成一个完整的 Responses JSON 对象，供下游转成 Anthropic
-/// 非流响应。仅在 Codex OAuth 把 `stream:false` 强制升级为 SSE 的场景下调用。
+/// 非流响应。用于上游把 `stream:false` 强制升级为 SSE 的场景。
 ///
 /// 复用 `proxy::sse` 的 `take_sse_block`/`strip_sse_field`：`take_sse_block` 同时支持
 /// `\n\n` 与 `\r\n\r\n` 两种分隔符，`strip_sse_field` 兼容带/不带空格的字段写法。
@@ -2912,13 +2896,20 @@ fn responses_sse_to_response_value(body: &str) -> Result<Value, ProxyError> {
             }
         };
 
+        // Compatible gateways may identify events only through the JSON payload.
+        let event_name = if event_name.is_empty() {
+            data.get("type").and_then(Value::as_str).unwrap_or("")
+        } else {
+            event_name
+        };
+
         match event_name {
             "response.output_item.done" => {
                 if let Some(item) = data.get("item") {
                     output_items.push(item.clone());
                 }
             }
-            "response.completed" => {
+            "response.completed" | "response.incomplete" => {
                 completed_response = Some(data.get("response").cloned().unwrap_or(data));
             }
             "response.failed" => {
@@ -2942,7 +2933,9 @@ fn responses_sse_to_response_value(body: &str) -> Result<Value, ProxyError> {
     process_block(&buffer, false)?;
 
     let mut response = completed_response.ok_or_else(|| {
-        ProxyError::TransformError("No response.completed event in upstream SSE".to_string())
+        ProxyError::TransformError(
+            "No response.completed or response.incomplete event in upstream SSE".to_string(),
+        )
     })?;
 
     if !output_items.is_empty() {
@@ -2950,7 +2943,7 @@ fn responses_sse_to_response_value(body: &str) -> Result<Value, ProxyError> {
             obj.insert("output".to_string(), Value::Array(output_items));
         } else {
             return Err(ProxyError::TransformError(
-                "response.completed payload is not an object".to_string(),
+                "Terminal Responses SSE payload is not an object".to_string(),
             ));
         }
     }
@@ -4417,22 +4410,20 @@ data: [DONE]\n\n";
     }
 
     #[test]
-    fn codex_oauth_responses_force_streaming_even_if_client_sent_false() {
-        assert!(should_use_claude_transform_streaming(
+    fn non_streaming_responses_request_aggregates_forced_sse() {
+        assert!(!should_use_claude_transform_streaming(
             false,
-            false,
-            "openai_responses",
             true,
+            "openai_responses",
         ));
     }
 
     #[test]
-    fn upstream_sse_response_always_uses_streaming_path() {
-        assert!(should_use_claude_transform_streaming(
+    fn non_streaming_chat_request_aggregates_forced_sse() {
+        assert!(!should_use_claude_transform_streaming(
             false,
             true,
             "openai_chat",
-            false,
         ));
     }
 
@@ -4442,7 +4433,25 @@ data: [DONE]\n\n";
             false,
             false,
             "openai_responses",
+        ));
+    }
+
+    #[test]
+    fn requested_streaming_keeps_streaming_for_chat_and_responses() {
+        for api_format in ["openai_chat", "openai_responses"] {
+            for upstream_is_sse in [false, true] {
+                assert!(should_use_claude_transform_streaming(
+                    true,
+                    upstream_is_sse,
+                    api_format
+                ));
+            }
+        }
+        // Gemini has no non-streaming SSE aggregator; preserve its fallback.
+        assert!(should_use_claude_transform_streaming(
             false,
+            true,
+            "gemini_native"
         ));
     }
 
@@ -4494,11 +4503,60 @@ data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"upstr
     }
 
     #[test]
-    fn responses_sse_to_response_value_errors_when_no_completed_event() {
+    fn responses_sse_to_response_value_errors_when_no_terminal_event() {
         let sse = "event: response.output_item.done\n\
 data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\"}}\n\n";
 
         assert!(responses_sse_to_response_value(sse).is_err());
+    }
+
+    #[test]
+    fn responses_sse_to_response_value_accepts_incomplete_terminal_event() {
+        let sse = concat!(
+            "event: response.incomplete\n",
+            "data: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"resp_incomplete\",\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"output\":[],\"usage\":{\"input_tokens\":7,\"output_tokens\":16}}}\n"
+        );
+
+        let response = responses_sse_to_response_value(sse).unwrap();
+        assert_eq!(response["id"], "resp_incomplete");
+        assert_eq!(response["status"], "incomplete");
+        assert_eq!(
+            response["incomplete_details"]["reason"],
+            "max_output_tokens"
+        );
+        assert_eq!(response["usage"]["input_tokens"], 7);
+        assert_eq!(response["usage"]["output_tokens"], 16);
+    }
+
+    #[test]
+    fn responses_sse_to_response_value_uses_payload_type_without_event_names() {
+        let sse = concat!(
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hi\"}]}}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_data_only\",\"status\":\"completed\",\"output\":[]}}\n\n"
+        );
+
+        let response = responses_sse_to_response_value(sse).unwrap();
+        assert_eq!(response["id"], "resp_data_only");
+        assert_eq!(response["output"][0]["content"][0]["text"], "Hi");
+    }
+
+    #[test]
+    fn responses_sse_to_response_value_preserves_data_only_failure() {
+        let sse = "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"upstream failed\"}}}\n\n";
+
+        let err = responses_sse_to_response_value(sse).unwrap_err();
+        assert!(matches!(err, ProxyError::TransformError(message) if message == "upstream failed"));
+    }
+
+    #[test]
+    fn responses_sse_to_response_value_prefers_explicit_event_name() {
+        let sse = concat!(
+            "event: response.failed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"error\":{\"message\":\"upstream failed\"}}}\n\n"
+        );
+
+        let err = responses_sse_to_response_value(sse).unwrap_err();
+        assert!(matches!(err, ProxyError::TransformError(message) if message == "upstream failed"));
     }
 
     #[test]

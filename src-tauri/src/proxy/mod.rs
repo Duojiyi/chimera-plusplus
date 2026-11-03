@@ -21,6 +21,7 @@ pub mod http_client;
 pub mod hyper_client;
 mod image_generation_rectifier;
 pub(crate) mod json_canonical;
+pub(crate) mod local_auth;
 pub mod log_codes;
 pub mod media_sanitizer;
 pub mod model_mapper;

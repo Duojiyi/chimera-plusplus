@@ -235,6 +235,9 @@ struct ParsedCodexFile {
     root_thread_id: Option<String>,
     source_session_id: Option<String>,
     root_meta_seen: bool,
+    /// `session_meta.payload.history_base`: a fork that references its parent's
+    /// records by byte range and ordinal instead of copying them.
+    bounded_history: Option<serde_json::Value>,
     root_timestamp: Option<DateTime<Utc>>,
     parent: ParentResolution,
     token_events: Vec<ParsedTokenEvent>,
@@ -1050,6 +1053,7 @@ fn parse_codex_file(
     let mut reader = open_rollout_reader(file_path).map_err(AppError::Config)?;
     let mut source_session_id = root_thread_id.clone();
     let mut root_meta_seen = false;
+    let mut bounded_history = None;
     let mut root_timestamp = None;
     let mut parent = ParentResolution::None;
     let mut current_model = "unknown".to_string();
@@ -1165,6 +1169,7 @@ fn parse_codex_file(
                 root_timestamp = parse_timestamp(value.get("timestamp"));
                 let payload = value.get("payload").unwrap_or(&serde_json::Value::Null);
                 parent = explicit_parent_from_meta(payload);
+                bounded_history = payload.get("history_base").cloned();
 
                 let meta_thread_id = non_empty_string(
                     payload
@@ -1384,6 +1389,7 @@ fn parse_codex_file(
         root_thread_id,
         source_session_id,
         root_meta_seen,
+        bounded_history,
         root_timestamp,
         parent,
         token_events,
@@ -1612,6 +1618,139 @@ fn mark_deferred(
     }
 }
 
+/// Largest parent prefix a bounded reference may ask to be verified.
+const MAX_BOUNDED_HISTORY_BYTES: u64 = 64 * 1024 * 1024;
+
+/// A bounded-reference fork stores only its own requests. Accept it only with a
+/// complete physical parent prefix (byte range, consecutive ordinals) and an
+/// exact inherited counter baseline; otherwise the existing replay/deferred
+/// path applies. Rollout files are never rewritten.
+///
+/// Without this a parent that went idle before the fork was deferred forever,
+/// because the replay logic waits for the parent to be written past the fork
+/// time, and a strict rebuild failed on the deferred file.
+fn verified_bounded_fork(parsed: &ParsedCodexFile, index: &RolloutIndex) -> Option<()> {
+    let ParentResolution::Parent { id: parent_id, .. } = &parsed.parent else {
+        return None;
+    };
+    let reference = parsed.bounded_history.as_ref()?;
+    if reference.get("thread_id")?.as_str()? != parent_id {
+        return None;
+    }
+    let end = reference.get("end_byte_offset")?.as_u64()?;
+    let count = reference.get("end_ordinal_exclusive")?.as_u64()?;
+    if end == 0 || end > MAX_BOUNDED_HISTORY_BYTES || count == 0 {
+        return None;
+    }
+    let cutoff = parsed.root_timestamp?;
+    let first = parsed.token_events.first()?;
+
+    // Reject copied or replayed history, cumulative-only accounting and
+    // missing timestamps: every request of this file must be newer than the fork.
+    let after_fork = |timestamp: &Option<String>, undated: bool| -> Option<()> {
+        let at = DateTime::parse_from_rfc3339(timestamp.as_deref()?).ok()?;
+        (!undated && at.with_timezone(&Utc) > cutoff).then_some(())
+    };
+    for event in &parsed.token_events {
+        let last = event.signature.last.as_ref()?;
+        last.input?;
+        last.output?;
+        after_fork(&event.timestamp, event.undated)?;
+    }
+    for event in &parsed.usage_record_events {
+        after_fork(&event.timestamp, event.undated)?;
+    }
+
+    // The first count is the inherited total plus the child's own request.
+    let total = first.signature.total.as_ref()?;
+    let last = first.signature.last.as_ref()?;
+    let counter_baseline = |total: Option<u64>, last: Option<u64>| match (total, last) {
+        (Some(total), Some(last)) => total.checked_sub(last).map(Some),
+        (None, None) => Some(None),
+        _ => None,
+    };
+    let baseline = TokenCountersSignature {
+        input: Some(total.input?.checked_sub(last.input?)?),
+        cached_input: Some(total.cached_input?.checked_sub(last.cached_input?)?),
+        cache_write_input: counter_baseline(total.cache_write_input, last.cache_write_input)?,
+        output: Some(total.output?.checked_sub(last.output?)?),
+        reasoning_output: Some(
+            total
+                .reasoning_output?
+                .checked_sub(last.reasoning_output?)?,
+        ),
+        total: Some(total.total?.checked_sub(last.total?)?),
+    };
+
+    let mut verified = false;
+    for path in index.get(parent_id)? {
+        // The reference names one physical rollout, not every page of the thread.
+        if thread_id_from_filename(path).as_deref() != Some(parent_id) {
+            continue;
+        }
+        let stamp = |path: &Path| -> Option<ParentFileStamp> {
+            let metadata = fs::metadata(path).ok()?;
+            Some((metadata_modified_nanos(&metadata), metadata.len()))
+        };
+        let before = stamp(path)?;
+        let mut reader = open_rollout_reader(path).ok()?;
+        let mut used = 0u64;
+        let mut ordinal = 0u64;
+        let mut first_record = true;
+        let mut parent_total = None;
+        while used < end {
+            let mut line = Vec::new();
+            let read = reader
+                .by_ref()
+                .take(end - used)
+                .read_until(b'\n', &mut line)
+                .ok()?;
+            if read == 0 || line.last() != Some(&b'\n') {
+                return None;
+            }
+            used += read as u64;
+            let value: serde_json::Value = serde_json::from_slice(&line).ok()?;
+            if first_record {
+                ordinal = value.get("ordinal")?.as_u64()?;
+                let inherited = value
+                    .pointer("/payload/history_base/end_ordinal_exclusive")
+                    .and_then(|ordinal| ordinal.as_u64())
+                    .unwrap_or(0);
+                if ordinal != inherited
+                    || value.get("type")?.as_str()? != "session_meta"
+                    || value.pointer("/payload/id")?.as_str()? != parent_id
+                {
+                    return None;
+                }
+                first_record = false;
+            }
+            if value.get("ordinal")?.as_u64()? != ordinal {
+                return None;
+            }
+            ordinal = ordinal.checked_add(1)?;
+            if value.get("type").and_then(|kind| kind.as_str()) == Some("event_msg")
+                && value
+                    .pointer("/payload/type")
+                    .and_then(|kind| kind.as_str())
+                    == Some("token_count")
+            {
+                if let Some(total) = value.pointer("/payload/info/total_token_usage") {
+                    parent_total = parse_signature_counters(Some(total));
+                }
+            }
+        }
+        // The prefix must not have changed while it was verified.
+        if stamp(path)? != before {
+            return None;
+        }
+        if used != end || ordinal != count || parent_total.as_ref() != Some(&baseline) {
+            return None;
+        }
+        verified = true;
+    }
+    verified.then_some(())
+}
+
 /// 同步单个 Codex JSONL 文件。
 fn sync_single_codex_file(
     db: &Database,
@@ -1716,6 +1855,13 @@ fn sync_single_codex_file(
         // the sub-agent's usage is imported rather than deferred forever,
         // which would also block every strict rebuild.
         ParentResolution::Parent { id, forked: false } if !rollout_index.contains_key(id) => 0,
+        // A bounded-reference fork has no replayed prefix to skip once its
+        // parent baseline is verified.
+        ParentResolution::Parent { .. }
+            if verified_bounded_fork(&parsed, rollout_index).is_some() =>
+        {
+            0
+        }
         ParentResolution::Parent { id: parent_id, .. } => {
             let Some(cutoff) = parsed.root_timestamp else {
                 return Ok(mark_deferred(
@@ -3914,6 +4060,104 @@ mod tests {
             imported_usage(&db)?,
             vec![(request_id(CHILD_A_ID, 1), 300, 150, 50)]
         );
+        Ok(())
+    }
+
+    fn append_jsonl(path: &Path, value: serde_json::Value) {
+        use std::io::Write;
+        let mut writer = fs::OpenOptions::new().append(true).open(path).unwrap();
+        writeln!(writer, "{value}").unwrap();
+    }
+
+    #[test]
+    fn bounded_fork_of_an_idle_parent_is_imported_and_stays_imported() -> Result<(), AppError> {
+        // The parent went idle before the fork, so the replay logic that waits
+        // for the parent to be written past the fork time never completes.
+        for inherited in [0u64, 100] {
+            clear_codex_replay_caches();
+            let db = Database::memory()?;
+            let temp = tempdir().unwrap();
+            let parent = rollout_path(temp.path(), PARENT_ID);
+            let child = rollout_path(temp.path(), CHILD_A_ID);
+            let mut records = vec![
+                session_meta(PARENT_ID),
+                token_count_with_last_at(
+                    [1_000, 900, 100],
+                    [1_000, 900, 100],
+                    "2026-07-10T03:00:01Z",
+                ),
+            ];
+            for (offset, record) in records.iter_mut().enumerate() {
+                record["ordinal"] = serde_json::json!(inherited + offset as u64);
+            }
+            records[0]["payload"]["history_base"] =
+                serde_json::json!({ "end_ordinal_exclusive": inherited });
+            write_jsonl(&parent, &records);
+
+            let mut meta =
+                session_meta_at(CHILD_A_ID, Some(PARENT_ID), None, "2026-07-10T03:00:20Z");
+            meta["payload"]["history_base"] = serde_json::json!({
+                "thread_id": PARENT_ID,
+                "end_byte_offset": fs::metadata(&parent).unwrap().len(),
+                "end_ordinal_exclusive": inherited + 2,
+            });
+            let first = token_count_with_last_at(
+                [1_200, 1_000, 120],
+                [200, 100, 20],
+                "2026-07-10T03:00:25Z",
+            );
+            write_jsonl(&child, &[meta.clone(), first]);
+
+            let files = [&parent as &Path, &child as &Path];
+            let result = sync_test_file(&db, &child, &files)?;
+            assert!(!result.deferred, "a verified bounded fork is not deferred");
+            assert_eq!(result.imported, 1);
+            assert_eq!(
+                imported_usage(&db)?,
+                vec![(request_id(CHILD_A_ID, 1), 200, 100, 20)]
+            );
+
+            // A replay of the whole file must not rebill anything, and an
+            // appended request is billed exactly once.
+            clear_codex_replay_caches();
+            assert_eq!(sync_test_file(&db, &child, &files)?.imported, 0);
+            append_jsonl(
+                &child,
+                token_count_with_last_at(
+                    [1_400, 1_100, 140],
+                    [200, 100, 20],
+                    "2026-07-10T03:00:30Z",
+                ),
+            );
+            assert_eq!(sync_test_file(&db, &child, &files)?.imported, 1);
+            assert_eq!(sync_test_file(&db, &child, &files)?.imported, 0);
+            assert_eq!(imported_usage(&db)?.len(), 2);
+
+            // A reference that does not describe the parent prefix is not trusted.
+            let index = build_rollout_index(&[parent.clone(), child.clone()]);
+            let parsed = parse_codex_file(&child, Some(CHILD_A_ID.into()), false)?;
+            assert!(verified_bounded_fork(&parsed, &index).is_some());
+            for (key, wrong) in [
+                ("end_byte_offset", serde_json::json!(1)),
+                ("end_ordinal_exclusive", serde_json::json!(1)),
+                ("thread_id", serde_json::json!(CHILD_B_ID)),
+            ] {
+                let mut broken = parse_codex_file(&child, Some(CHILD_A_ID.into()), false)?;
+                broken.bounded_history.as_mut().unwrap()[key] = wrong;
+                assert!(verified_bounded_fork(&broken, &index).is_none(), "{key}");
+            }
+            // History copied into the child, a missing per-request counter and
+            // a stale baseline all fall back to the replay path.
+            let mut copied = parse_codex_file(&child, Some(CHILD_A_ID.into()), false)?;
+            copied.token_events[0].timestamp = Some("2026-07-10T03:00:01Z".into());
+            assert!(verified_bounded_fork(&copied, &index).is_none());
+            let mut cumulative_only = parse_codex_file(&child, Some(CHILD_A_ID.into()), false)?;
+            cumulative_only.token_events[0].signature.last = None;
+            assert!(verified_bounded_fork(&cumulative_only, &index).is_none());
+            let mut stale = parse_codex_file(&child, Some(CHILD_A_ID.into()), false)?;
+            stale.token_events[0].signature.last.as_mut().unwrap().input = Some(999);
+            assert!(verified_bounded_fork(&stale, &index).is_none());
+        }
         Ok(())
     }
 

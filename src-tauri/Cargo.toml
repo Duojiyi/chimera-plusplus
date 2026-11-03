@@ -91,6 +91,7 @@ indexmap = { version = "2", features = ["serde"] }
 rust_decimal = "1.43"
 uuid = { version = "1.11", features = ["v4"] }
 sha2 = "0.10"
+subtle = "2.6"
 hmac = "0.12"
 json5 = "0.4"
 json-five = "0.3.1"
