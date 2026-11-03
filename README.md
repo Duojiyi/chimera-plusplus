@@ -55,7 +55,7 @@ Chimera++ 用于管理 Codex 的供应商配置、模型和本机运行时。它
 | 平台            | 支持情况 | 说明                                                                     |
 | --------------- | -------- | ------------------------------------------------------------------------ |
 | Windows x64     | 完整支持 | 推荐平台；支持线路管理、Codex 快速启动和运行时维护                       |
-| Windows ARM64   | 完整支持 | 提供原生 MSI 与绿色版                                                    |
+| Windows ARM64   | 预览     | 提供原生 MSI 与绿色版；发布构建不运行 Rust 测试，原生 ARM 行为尚无自动化覆盖 |
 | macOS Universal | 可用     | 同时支持 Intel 与 Apple Silicon；Codex 快速启动和 Windows 安装维护不可用 |
 | Linux x86_64    | 可用     | 提供 deb / rpm / AppImage；Codex 快速启动和 Windows 安装维护不可用       |
 
