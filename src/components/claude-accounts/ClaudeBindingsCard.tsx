@@ -25,6 +25,7 @@ import {
 } from "@/lib/api/claudeAccounts";
 import { BINDINGS_CHANGED_EVENT } from "./ClaudeAccountsCard";
 import { errorText } from "./quota";
+import { useReturnFocus } from "./useReturnFocus";
 import { useStoredFlag } from "./useStoredFlag";
 
 /** The last part of a path, for the row's title. */
@@ -69,6 +70,7 @@ export function ClaudeBindingsCard({
   const [chosen, setChosen] = useState("");
   const mounted = useRef(true);
   const pending = useRef(false);
+  useReturnFocus(adding !== null);
 
   useEffect(() => {
     mounted.current = true;
@@ -193,7 +195,7 @@ export function ClaudeBindingsCard({
             时自动用对应账号，子目录继承；不改你的终端和环境变量。
           </p>
         </div>
-        {native && open && bindings !== null ? (
+        {native && open && bindings !== null && sessionsSupported ? (
           <div className="claude-bindings-actions">
             {sessionsSupported ? (
               <Button
@@ -243,6 +245,10 @@ export function ClaudeBindingsCard({
         <p className="claude-accounts-note" role="status">
           <Loader2 size={14} className="animate-spin" aria-hidden="true" />
           正在读取…
+        </p>
+      ) : !sessionsSupported ? (
+        <p className="claude-accounts-note">
+          目录绑定要靠并行会话来打开，目前只支持 Windows。
         </p>
       ) : bindings.length === 0 ? (
         <p className="claude-accounts-empty">

@@ -5,8 +5,10 @@
 //! here"). Nothing outside this app is changed: no PATH entry, no shell hook.
 //!
 //! `<vault>/bindings.json` maps a normalized folder path to the login's id
-//! and email. The id is tried first; if the login was deleted and added
-//! again (a new id), the email finds it.
+//! and who it is. The id is tried first; if the login was deleted and added
+//! again (a new id), the same person and organization find it, or, when that
+//! was not known, the one login with that email. Two candidates are no match:
+//! the folder is then asked to be bound again.
 
 use std::collections::BTreeMap;
 
@@ -26,6 +28,10 @@ struct Entry {
     account_id: String,
     #[serde(default)]
     email: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    account_uuid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    organization_uuid: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -146,25 +152,29 @@ fn write_file(vault: &CodeVault, file: &mut Store) -> Result<(), AppError> {
     private_write(&bindings_path(vault), &data)
 }
 
-fn find_account(vault: &CodeVault, entry: &Entry) -> Option<Slot> {
-    let slots = vault.readable_slots();
-    slots
+fn find_account(slots: &[Slot], entry: &Entry) -> Option<Slot> {
+    if let Some(slot) = slots.iter().find(|slot| slot.id == entry.account_id) {
+        return Some(slot.clone());
+    }
+    let wanted = Identity {
+        account_uuid: entry.account_uuid.clone(),
+        organization_uuid: entry.organization_uuid.clone(),
+        email: entry.email.clone(),
+        fingerprint: None,
+    };
+    let mut found = slots
         .iter()
-        .find(|slot| slot.id == entry.account_id)
-        .or_else(|| {
-            let email = entry.email.as_deref()?;
-            slots.iter().find(|slot| {
-                slot.identity()
-                    .email
-                    .as_deref()
-                    .is_some_and(|e| e.eq_ignore_ascii_case(email))
-            })
-        })
-        .cloned()
+        .filter(|slot| same_login(&slot.identity(), &wanted));
+    match (found.next(), found.next()) {
+        (Some(only), None) => Some(only.clone()),
+        _ => None,
+    }
 }
 
-fn dto_of(vault: &CodeVault, entry: &Entry) -> BindingDto {
-    let slot = find_account(vault, entry);
+/// How a binding stands. Whether its folder exists is not known here: that
+/// asks the disk, which is not done while the vault is locked.
+fn dto_of(slots: &[Slot], entry: &Entry) -> BindingDto {
+    let slot = find_account(slots, entry);
     BindingDto {
         path: entry.path.clone(),
         account_id: slot
@@ -177,17 +187,26 @@ fn dto_of(vault: &CodeVault, entry: &Entry) -> BindingDto {
             Some(slot) if slot.disabled => BindingState::Disabled,
             Some(_) => BindingState::Ready,
         },
-        path_missing: !Path::new(&entry.path).is_dir(),
+        path_missing: false,
     }
 }
 
+fn probed(mut dto: BindingDto) -> BindingDto {
+    dto.path_missing = !Path::new(&dto.path).is_dir();
+    dto
+}
+
 pub(crate) fn list_in(vault: &CodeVault) -> Result<Vec<BindingDto>, AppError> {
-    let _guard = CODE_LOCK.lock()?;
-    let file = read_file(vault)?;
+    let (file, slots) = {
+        let _guard = CODE_LOCK.lock()?;
+        (read_file(vault)?, vault.readable_slots())
+    };
+    // A folder on a share that is down can take long to answer; the vault is
+    // not held for it.
     Ok(file
         .entries
         .values()
-        .map(|entry| dto_of(vault, entry))
+        .map(|entry| probed(dto_of(&slots, entry)))
         .collect())
 }
 
@@ -198,6 +217,11 @@ pub(crate) fn set_in(
     account_id: &str,
 ) -> Result<BindingDto, AppError> {
     ensure_supported()?;
+    if !cfg!(windows) {
+        return Err(AppError::Message(
+            "目录绑定要靠并行会话来用，目前只支持 Windows".to_string(),
+        ));
+    }
     crate::claude_accounts::validate_account_id(account_id)?;
     let (key, display) = check_path(path)?;
     if !Path::new(&display).is_dir() {
@@ -214,14 +238,17 @@ pub(crate) fn set_in(
             "最多绑定 {MAX_BINDINGS} 个目录"
         )));
     }
+    let ident = slot.identity();
     let entry = Entry {
         path: display,
         account_id: slot.id.clone(),
-        email: slot.identity().email,
+        email: ident.email,
+        account_uuid: ident.account_uuid,
+        organization_uuid: ident.organization_uuid,
     };
     file.entries.insert(key, entry.clone());
     write_file(vault, &mut file)?;
-    Ok(dto_of(vault, &entry))
+    Ok(dto_of(&[slot], &entry))
 }
 
 pub(crate) fn remove_in(vault: &CodeVault, path: &str) -> Result<(), AppError> {
@@ -237,22 +264,30 @@ pub(crate) fn remove_in(vault: &CodeVault, path: &str) -> Result<(), AppError> {
 /// The nearest binding at or above `dir`.
 pub(crate) fn resolve_in(vault: &CodeVault, dir: &str) -> Result<Option<BindingDto>, AppError> {
     let (key, _) = check_path(dir)?;
-    let _guard = CODE_LOCK.lock()?;
-    let file = read_file(vault)?;
-    let best = file
-        .entries
-        .iter()
-        .filter(|(bound, _)| {
-            let bound = bound.as_str();
-            key == bound
-                || (key.starts_with(bound)
-                    && (bound.ends_with('\\')
-                        || bound.ends_with('/')
-                        || key[bound.len()..].starts_with(['\\', '/'])))
-        })
-        .max_by_key(|(bound, _)| bound.len())
-        .map(|(_, entry)| dto_of(vault, entry));
-    Ok(best)
+    let (best, slots) = {
+        let _guard = CODE_LOCK.lock()?;
+        let file = read_file(vault)?;
+        let best = file
+            .entries
+            .iter()
+            .filter(|(bound, _)| {
+                let bound = bound.as_str();
+                key == bound
+                    || (key.starts_with(bound)
+                        && (bound.ends_with('\\')
+                            || bound.ends_with('/')
+                            || key[bound.len()..].starts_with(['\\', '/'])))
+            })
+            .max_by_key(|(bound, _)| bound.len())
+            .map(|(_, entry)| entry.clone());
+        let slots = if best.is_some() {
+            vault.readable_slots()
+        } else {
+            Vec::new()
+        };
+        (best, slots)
+    };
+    Ok(best.map(|entry| probed(dto_of(&slots, &entry))))
 }
 
 #[cfg(test)]
@@ -357,6 +392,38 @@ mod tests {
             (found.state, found.account_id.as_str()),
             (BindingState::Ready, again.as_str())
         );
+    }
+
+    #[test]
+    fn a_binding_never_falls_back_to_another_login_with_the_same_email() {
+        let f = fixture();
+        let personal = saved(&f, "a@example.com", "uuid-personal", "token-p");
+        let team = saved(&f, "a@example.com", "uuid-team", "token-t");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_string_lossy().to_string();
+        set_in(&f.vault, &path, &personal).unwrap();
+        {
+            let _guard = CODE_LOCK.lock().unwrap();
+            f.vault.remove_slot(&personal).unwrap();
+        }
+        let dto = &list_in(&f.vault).unwrap()[0];
+        assert_eq!(
+            dto.state,
+            BindingState::Missing,
+            "the team login is someone else's quota"
+        );
+        assert_ne!(dto.account_id, team);
+        let again = saved(&f, "a@example.com", "uuid-personal", "token-p2");
+        assert_eq!(list_in(&f.vault).unwrap()[0].account_id, again);
+
+        // An older file that knew only the email finds a login only when it is the one.
+        let mut file = read_file(&f.vault).unwrap();
+        for entry in file.entries.values_mut() {
+            entry.account_uuid = None;
+            entry.organization_uuid = None;
+        }
+        write_file(&f.vault, &mut file).unwrap();
+        assert_eq!(list_in(&f.vault).unwrap()[0].state, BindingState::Missing);
     }
 
     #[test]

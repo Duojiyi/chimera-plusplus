@@ -159,7 +159,7 @@ pub(crate) fn set_disabled_in(
             return Err(sessions::running_error());
         }
         let live = read_live(paths)?;
-        if live_identity(&live).is_some_and(|ident| same_login(&ident, &slot.identity())) {
+        if live_holds(&live, &slot) {
             return Err(AppError::Message(
                 "这个账号正是 Claude Code 现在使用的登录。先切换到别的账号，再停用它".to_string(),
             ));

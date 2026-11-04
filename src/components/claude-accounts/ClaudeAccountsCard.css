@@ -534,6 +534,13 @@
   flex-basis: 100%;
   color: var(--text-3);
 }
+.claude-login-note {
+  margin: 0;
+  color: var(--warning-fg);
+  font-size: 12px;
+  line-height: 1.7;
+  text-wrap: pretty;
+}
 
 /* The row's lead: a grip to drag it (saved logins only) and the avatar. */
 .claude-account-lead {
@@ -554,7 +561,7 @@
   background: transparent;
   color: var(--text-3);
   cursor: grab;
-  opacity: 0.45;
+  opacity: 0.75;
   transition:
     opacity var(--dur-fast, 120ms) ease,
     background-color var(--dur-fast, 120ms) ease;
@@ -585,10 +592,12 @@
 }
 
 /* Held out of use: quiet, but still readable and still actionable. */
-.claude-account-row[data-disabled="true"] .claude-account-avatar,
+.claude-account-row[data-disabled="true"] .claude-account-avatar {
+  opacity: 0.6;
+}
 .claude-account-row[data-disabled="true"] .claude-account-identity strong,
 .claude-account-row[data-disabled="true"] .claude-account-meta {
-  opacity: 0.55;
+  color: var(--text-3);
 }
 .claude-account-row[data-disabled="true"] {
   border-style: dashed;

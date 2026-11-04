@@ -226,8 +226,9 @@ describe("ClaudeBindingsCard", () => {
     listing([account({})], false);
     api.listBindings.mockResolvedValue([binding()]);
     render(<ClaudeBindingsCard />);
-    await screen.findByRole("list", { name: "已绑定的目录" });
+    expect(await screen.findByText(/目前只支持 Windows/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /打开 Claude/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /绑定目录/ })).toBeNull();
   });
 
   it("will not start a binding with no usable account", async () => {

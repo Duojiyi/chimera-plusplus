@@ -1781,6 +1781,7 @@ pub fn run() {
             commands::get_claude_desktop_swap_status,
             commands::capture_claude_desktop_login,
             commands::switch_claude_desktop_account,
+            commands::prepare_claude_desktop_login,
             commands::export_claude_logins,
             commands::import_claude_logins,
             commands::begin_claude_browser_login,

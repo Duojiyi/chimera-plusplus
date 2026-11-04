@@ -40,7 +40,7 @@ export function resetText(resetsAt: string | null | undefined, now: number) {
 export const QUOTA_STATUS_TEXT: Partial<Record<ClaudeQuota["status"], string>> =
   {
     needs_relogin:
-      "需要重新登录：在 Claude Code 中 /login 这个账号，再保存当前登录",
+      "需要重新登录：用「添加账号 → 从浏览器授权添加」登录同一个账号即可更新（也可以在终端 /login 后选「在终端登录后保存」）",
     live_expired: "当前登录已过期，请在 Claude Code 中继续使用以自动刷新",
     unavailable: "暂时无法刷新",
     not_signed_in: "未登录",
@@ -126,7 +126,7 @@ export function QuotaStrip({
   const models = view?.windows.filter((w) => w.kind === "model") ?? [];
   const note = view ? statusText[view.status] : undefined;
   return (
-    <div className="claude-quota" aria-label={`${label} 的额度`}>
+    <div className="claude-quota" role="group" aria-label={`${label} 的额度`}>
       {main.length > 0 ? (
         <div className="claude-quota-meters">
           {main.map((w) => (

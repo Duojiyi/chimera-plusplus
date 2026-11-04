@@ -93,7 +93,11 @@ function overview(
 beforeEach(() => {
   vi.resetAllMocks();
   window.localStorage.clear();
-  api.usageOverview.mockResolvedValue(overview());
+  // The answer is for the range asked.
+  api.usageOverview.mockImplementation(async (days) => ({
+    ...overview(),
+    rangeDays: days ?? null,
+  }));
 });
 
 describe("number formats", () => {
@@ -200,6 +204,55 @@ describe("usageFacts", () => {
   });
 });
 
+describe("numbers", () => {
+  it("rounds up into the next unit instead of showing 1000K", () => {
+    expect(compact(999_499)).toBe("999K");
+    expect(compact(999_500)).toBe("1M");
+    expect(compact(999_999)).toBe("1M");
+    expect(compact(999_499_999)).toBe("999M");
+    expect(compact(999_500_000)).toBe("1B");
+    expect(compact(999.6)).toBe("1K");
+    expect(compact(Number.NaN)).toBe("0");
+    expect(compact(-5)).toBe("0");
+  });
+
+  it("decides the decimals on the rounded amount", () => {
+    expect(money(bucket({}, { costUsd: 99.996 }))).toBe("$100");
+    expect(money(bucket({}, { costUsd: 0.9996 }))).toBe("$1.00");
+    expect(money(bucket({}, { costUsd: 99.994 }))).toBe("$99.99");
+  });
+});
+
+describe("the calendar across a clock change", () => {
+  it("keeps the first day of a long range where the clocks went back", () => {
+    const before = process.env.TZ;
+    process.env.TZ = "America/New_York";
+    try {
+      // The zone took: November 1 2026 is a 25-hour day there.
+      expect(
+        new Date(2026, 10, 2).getTime() - new Date(2026, 10, 1).getTime(),
+      ).toBe(25 * 3_600_000);
+      const today = new Date(2026, 10, 4);
+      const weeks = heatmapWeeks(
+        [day("2026-08-07", 5), day("2026-11-03", 5)],
+        90,
+        today,
+      );
+      const cells = weeks.flat();
+      expect(cells.find((cell) => cell.day === "2026-08-07")?.inRange).toBe(
+        true,
+      );
+      expect(cells.find((cell) => cell.day === "2026-08-06")?.inRange).toBe(
+        false,
+      );
+      expect(cells.find((cell) => cell.day === "2026-08-07")?.tokens).toBe(5);
+    } finally {
+      if (before === undefined) delete process.env.TZ;
+      else process.env.TZ = before;
+    }
+  });
+});
+
 describe("day labels", () => {
   it("names days for people and lists the last days oldest first", () => {
     expect(dayLabel("2026-11-04")).toBe("11月4日");
@@ -224,7 +277,7 @@ describe("ClaudeUsageCard", () => {
     expect(screen.getByText("45M")).toBeInTheDocument();
     expect(screen.getByText("1.2M")).toBeInTheDocument();
     expect(
-      screen.getByRole("img", { name: "最近 30 天每天的用量" }),
+      screen.getByRole("list", { name: "最近 30 天每天的用量" }),
     ).toBeInTheDocument();
     const projects = screen.getByRole("list", { name: "项目" });
     expect(within(projects).getByText("api")).toBeInTheDocument();
@@ -243,11 +296,13 @@ describe("ClaudeUsageCard", () => {
         "claude-fable-5",
       ),
     ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("tab", { name: "账号" }));
-    const sources = screen.getByRole("list", { name: "账号" });
+    fireEvent.click(screen.getByRole("tab", { name: "来源" }));
+    const sources = screen.getByRole("list", { name: "来源" });
     expect(within(sources).getByText("工作号")).toBeInTheDocument();
     // An account's id is not something to show.
     expect(within(sources).queryByText("a1b2")).toBeNull();
+    // Where the log does not say whose it is, the card says so.
+    expect(screen.getByText(/都在「默认登录」里/)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("radio", { name: "全部" }));
     await waitFor(() =>
@@ -367,12 +422,12 @@ describe("ClaudeUsageCard", () => {
   it("shows bars for a short range and a calendar with facts for a long one", async () => {
     render(<ClaudeUsageCard defaultOpen />);
     expect(
-      await screen.findByRole("img", { name: "最近 30 天每天的用量" }),
+      await screen.findByRole("list", { name: "最近 30 天每天的用量" }),
     ).toBeInTheDocument();
-    expect(screen.queryByRole("img", { name: /热力图/ })).toBeNull();
+    expect(screen.queryByRole("list", { name: /每日用量，共/ })).toBeNull();
     fireEvent.click(screen.getByRole("radio", { name: "90 天" }));
     expect(
-      await screen.findByRole("img", { name: /每日用量热力图/ }),
+      await screen.findByRole("list", { name: /每日用量，共/ }),
     ).toBeInTheDocument();
     expect(screen.getByText("活跃天数")).toBeInTheDocument();
     expect(screen.getByText("最长连续")).toBeInTheDocument();

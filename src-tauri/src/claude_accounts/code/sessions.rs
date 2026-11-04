@@ -26,7 +26,10 @@
 use super::*;
 
 const SESSIONS_DIR: &str = "sessions";
-const LOCK_FILE: &str = ".session.lock";
+const LOCK_PREFIX: &str = ".session.";
+const LOCK_SUFFIX: &str = ".lock";
+const LAUNCHER_FILE: &str = "start-claude.bat";
+const REMOVED_DIR: &str = "sessions-removed";
 const MANIFEST_FILE: &str = ".chimera-shared.json";
 const CREDENTIALS_FILE: &str = ".credentials.json";
 const CLAUDE_JSON_FILE: &str = ".claude.json";
@@ -43,15 +46,36 @@ const SHARED_ITEMS: &[&str] = &[
 const MAX_SHARED_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_SHARED_FILES: usize = 4000;
 
-/// Environment variables that make Claude Code ignore a login. A session is
-/// an explicit request for one account, so they are cleared for it.
+/// Environment variables that send Claude Code to another login or another
+/// endpoint. A session (and a browser sign-in) is an explicit request for one
+/// account, so they are cleared for it, in the process and, for a session, in
+/// the copied `settings.json` too.
 pub(crate) const AUTH_OVERRIDE_ENV: &[&str] = &[
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_PROFILE",
+    "ANTHROPIC_FEDERATION_RULE_ID",
+    "ANTHROPIC_ORGANIZATION_ID",
     "CLAUDE_CODE_OAUTH_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
     "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
 ];
+
+/// Whether a `settings.json` `env` entry belongs to a provider or an endpoint
+/// rather than to the account: all of `ANTHROPIC_*` (the model names a
+/// provider writes next to its address too) and the cloud-provider switches.
+fn is_provider_env(name: &str) -> bool {
+    name.starts_with("ANTHROPIC_")
+        || name.starts_with("CLAUDE_CODE_USE_")
+        || AUTH_OVERRIDE_ENV.contains(&name)
+}
+
+/// Top-level `settings.json` keys that run a program to get a credential.
+const CREDENTIAL_SETTINGS: &[&str] = &["apiKeyHelper", "awsAuthRefresh", "awsCredentialExport"];
 
 pub(crate) fn sessions_root(vault: &CodeVault) -> PathBuf {
     vault.root.join(SESSIONS_DIR)
@@ -62,29 +86,48 @@ pub(crate) fn profile_dir(vault: &CodeVault, id: &str) -> Result<PathBuf, AppErr
     Ok(sessions_root(vault).join(id))
 }
 
-/// The file the launcher keeps open while `claude` runs.
-pub(crate) fn lock_path(dir: &Path) -> PathBuf {
-    dir.join(LOCK_FILE)
-}
-
+/// Whether any launcher of this folder still holds its lock file. Each
+/// launch keeps a file of its own open for as long as `claude` runs (two
+/// launches cannot share one: the redirection that holds it does not share
+/// writes), so any file that cannot be opened is a terminal that is open. A
+/// file that can be opened is left over from one that ended and is removed.
 #[cfg(windows)]
-fn lock_held(path: &Path) -> bool {
+fn locks_held(dir: &Path) -> bool {
     use std::os::windows::fs::OpenOptionsExt;
-    // Share mode 0 conflicts with any handle that is still open.
-    match fs::OpenOptions::new().read(true).share_mode(0).open(path) {
-        Ok(_) => false,
-        Err(error) => error.raw_os_error() == Some(32),
+    let Ok(entries) = fs::read_dir(dir) else {
+        return false;
+    };
+    let mut held = false;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !(name.starts_with(LOCK_PREFIX) && name.ends_with(LOCK_SUFFIX)) {
+            continue;
+        }
+        let path = entry.path();
+        // Share mode 0 conflicts with any handle that is still open.
+        match fs::OpenOptions::new().read(true).share_mode(0).open(&path) {
+            Ok(file) => {
+                drop(file);
+                let _ = fs::remove_file(&path);
+            }
+            Err(error) if error.raw_os_error() == Some(32) => held = true,
+            Err(_) => {}
+        }
     }
+    held
 }
 
 #[cfg(not(windows))]
-fn lock_held(_path: &Path) -> bool {
+fn locks_held(_dir: &Path) -> bool {
     false
 }
 
 /// Whether a terminal is open on this login's session folder.
 pub(crate) fn is_running(vault: &CodeVault, id: &str) -> bool {
-    profile_dir(vault, id).is_ok_and(|dir| lock_held(&lock_path(&dir)))
+    profile_dir(vault, id).is_ok_and(|dir| locks_held(&dir))
 }
 
 fn read_object(path: &Path) -> Option<Map<String, Value>> {
@@ -347,25 +390,103 @@ fn copy_tree(src: &Path, dst: &Path, budget: &mut Budget) -> io::Result<()> {
     fs::copy(src, dst).map(|_| ())
 }
 
-fn sync_shared(dir: &Path, default_dir: &Path) -> Vec<String> {
-    let mut copied = Vec::new();
-    let mut budget = Budget { bytes: 0, files: 0 };
+/// `settings.json` without what would send the session to another login:
+/// the `env` entries that name a credential or an endpoint (the local proxy
+/// takeover and third-party providers write them there, and Claude Code
+/// applies them over the process environment) and the keys that run a
+/// program to get one. The names removed are returned.
+fn shared_settings(text: &str) -> Result<(String, Vec<String>), AppError> {
+    let mut value: Value = serde_json::from_str(strip_bom(text))
+        .map_err(|_| AppError::Message("settings.json 不是有效的 JSON".to_string()))?;
+    let map = value
+        .as_object_mut()
+        .ok_or_else(|| AppError::Message("settings.json 不是 JSON 对象".to_string()))?;
+    let mut removed = Vec::new();
+    for key in CREDENTIAL_SETTINGS {
+        if map.shift_remove(*key).is_some() {
+            removed.push((*key).to_string());
+        }
+    }
+    if let Some(env) = map.get_mut("env").and_then(Value::as_object_mut) {
+        let names: Vec<String> = env
+            .keys()
+            .filter(|name| is_provider_env(name))
+            .cloned()
+            .collect();
+        for name in names {
+            env.shift_remove(&name);
+            removed.push(name);
+        }
+    }
+    let text = serde_json::to_string_pretty(&value)
+        .map_err(|e| AppError::JsonSerialize { source: e })?
+        + "\n";
+    Ok((text, removed))
+}
+
+fn copy_settings(src: &Path, dst: &Path, warnings: &mut Vec<String>) -> Result<(), AppError> {
+    let bytes = read_limited(src, MAX_LIVE_FILE_BYTES).map_err(|e| AppError::io(src, e))?;
+    let text = String::from_utf8(bytes)
+        .map_err(|_| AppError::Message("settings.json 不是 UTF-8 文本".to_string()))?;
+    let (filtered, removed) = shared_settings(&text)?;
+    if !removed.is_empty() {
+        warnings.push(format!(
+            "已忽略 settings.json 里的供应商和认证设置（{}），会话只用这个账号的登录",
+            removed.join("、")
+        ));
+    }
+    private_write(dst, filtered.as_bytes())
+}
+
+/// What was shared, and what could not be.
+struct Shared {
+    copied: Vec<String>,
+    warnings: Vec<String>,
+}
+
+fn sync_shared(dir: &Path, default_dir: &Path) -> Shared {
+    let mut shared = Shared {
+        copied: Vec::new(),
+        warnings: Vec::new(),
+    };
     for name in SHARED_ITEMS {
         let src = default_dir.join(name);
-        let dst = dir.join(name);
-        if fs::symlink_metadata(&src).is_err() {
+        let Ok(meta) = fs::symlink_metadata(&src) else {
             continue;
-        }
+        };
+        // A link at the top (a dotfiles repo, a sync tool) is followed once;
+        // links inside what it points to are not.
+        let src = if is_link_or_reparse_point(&meta) {
+            match fs::canonicalize(&src) {
+                Ok(real) => real,
+                Err(_) => {
+                    shared
+                        .warnings
+                        .push(format!("{name} 是个读不到目标的链接，没有共享"));
+                    continue;
+                }
+            }
+        } else {
+            src
+        };
+        let dst = dir.join(name);
         remove_path(&dst);
-        match copy_tree(&src, &dst, &mut budget) {
-            Ok(()) => copied.push((*name).to_string()),
+        let mut budget = Budget { bytes: 0, files: 0 };
+        let result = if *name == "settings.json" {
+            copy_settings(&src, &dst, &mut shared.warnings).map_err(|e| e.to_string())
+        } else {
+            copy_tree(&src, &dst, &mut budget).map_err(|e| e.to_string())
+        };
+        match result {
+            Ok(()) => shared.copied.push((*name).to_string()),
             Err(error) => {
                 log::warn!("复制共享配置 {name} 失败: {error}");
                 remove_path(&dst);
+                shared.warnings.push(format!("{name} 没有共享：{error}"));
             }
         }
     }
-    copied
+    shared
 }
 
 // ===== operations =====
@@ -374,14 +495,70 @@ fn sync_shared(dir: &Path, default_dir: &Path) -> Vec<String> {
 pub(crate) struct Prepared {
     pub dir: PathBuf,
     pub name: String,
+    /// The batch file that runs `claude` on this folder.
+    pub launcher: PathBuf,
+    /// Things that were not shared or were left out, for the user to read.
+    pub warnings: Vec<String>,
 }
 
 fn live_matches(paths: &LivePaths, slot: &Slot) -> bool {
     read_live(paths)
         .ok()
         .as_ref()
-        .and_then(live_identity)
-        .is_some_and(|ident| same_login(&ident, &slot.identity()))
+        .is_some_and(|live| live_holds(live, slot))
+}
+
+/// The batch file that runs `claude` on a session folder: it clears what
+/// would override the login, points `CLAUDE_CONFIG_DIR` at the folder, and
+/// keeps a lock file of its own open for as long as `claude` runs. It
+/// restores the console's code page and leaves nothing in the shell's
+/// environment, so it can be run from a shell the user already has open.
+pub(crate) fn launcher_script(dir: &Path) -> String {
+    let mut lines = vec![
+        "@echo off".to_string(),
+        "setlocal DisableDelayedExpansion".to_string(),
+        NO_CURRENT_DIR_LINE.to_string(),
+        "for /f \"tokens=2 delims=:\" %%a in ('chcp') do set \"CHIMERA_CP=%%a\"".to_string(),
+        "chcp 65001 >nul".to_string(),
+    ];
+    lines.extend(launcher_body(dir));
+    lines.push("chcp %CHIMERA_CP% >nul".to_string());
+    lines.push("endlocal".to_string());
+    lines.join("\r\n") + "\r\n"
+}
+
+/// Keeps cmd from looking in the current folder before `PATH`: the folder a
+/// session is opened in is a project the user may not trust, and a `claude.cmd`
+/// in it would run before Claude Code's own trust prompt.
+pub(crate) const NO_CURRENT_DIR_LINE: &str = "set \"NoDefaultCurrentDirectoryInExePath=1\"";
+
+/// The lines that run `claude` on a session folder, for the launcher and for
+/// the script that opens a terminal (which has them inline: `call` would read
+/// a `%` or `^` in the launcher's path a second time).
+pub(crate) fn launcher_body(dir: &Path) -> Vec<String> {
+    let quoted = dir.to_string_lossy().replace('%', "%%");
+    let mut lines = Vec::new();
+    for name in AUTH_OVERRIDE_ENV {
+        lines.push(format!("set \"{name}=\""));
+    }
+    // Whatever else a provider switch left in the environment: model names,
+    // headers, timeouts.
+    for prefix in ["ANTHROPIC_", "CLAUDE_CODE_USE_"] {
+        lines.push(format!(
+            "for /f \"delims==\" %%v in ('set {prefix} 2^>nul') do set \"%%v=\""
+        ));
+    }
+    lines.push(format!("set \"CLAUDE_CONFIG_DIR={quoted}\""));
+    lines.push(format!(
+        "(call claude) 9>\"{quoted}\\{LOCK_PREFIX}%RANDOM%%RANDOM%{LOCK_SUFFIX}\""
+    ));
+    lines
+}
+
+fn write_launcher(dir: &Path) -> Result<PathBuf, AppError> {
+    let path = dir.join(LAUNCHER_FILE);
+    private_write(&path, launcher_script(dir).as_bytes())?;
+    Ok(path)
 }
 
 /// Whether this login is the one Claude Code is signed in with now.
@@ -418,13 +595,16 @@ pub(crate) fn prepare_in(
     }
     ensure_private_dir(&sessions_root(vault))?;
     ensure_private_dir(&dir)?;
-    let prepared = |slot: &Slot| Prepared {
+    let launcher = write_launcher(&dir)?;
+    let prepared = |slot: &Slot, warnings: Vec<String>| Prepared {
         dir: dir.clone(),
         name: slot.name.clone(),
+        launcher: launcher.clone(),
+        warnings,
     };
-    if lock_held(&lock_path(&dir)) {
+    if locks_held(&dir) {
         // A second terminal on the same folder shares the first one's tokens.
-        return Ok(prepared(&slot));
+        return Ok(prepared(&slot, Vec::new()));
     }
 
     harvest_locked(vault, id)?;
@@ -442,27 +622,47 @@ pub(crate) fn prepare_in(
         .unwrap_or_default();
     let manifest = read_manifest(&dir);
     let mcp = seed_claude_json(&dir, &paths.claude_json, &slot, manifest.mcp)?;
-    let items = sync_shared(&dir, &default_dir);
+    let shared = sync_shared(&dir, &default_dir);
     // Items that were shared before and are gone from the default folder.
-    for stale in manifest.items.iter().filter(|name| !items.contains(name)) {
+    for stale in manifest
+        .items
+        .iter()
+        .filter(|name| !shared.copied.contains(name))
+    {
         if SHARED_ITEMS.contains(&stale.as_str()) {
             remove_path(&dir.join(stale));
         }
     }
-    write_manifest(&dir, &Manifest { items, mcp })?;
-    Ok(prepared(&slot))
+    write_manifest(
+        &dir,
+        &Manifest {
+            items: shared.copied,
+            mcp,
+        },
+    )?;
+    Ok(prepared(&slot, shared.warnings))
+}
+
+/// PowerShell reads all four of these as a quote.
+fn powershell_quoted(text: &str) -> String {
+    let doubled: String = text
+        .chars()
+        .flat_map(|c| match c {
+            '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}' => vec![c, c],
+            other => vec![other],
+        })
+        .collect();
+    format!("'{doubled}'")
 }
 
 /// The commands that start `claude` on a prepared folder from a shell the
-/// user already has open (cmd, PowerShell).
-pub(crate) fn shell_commands(dir: &Path) -> (String, String) {
-    let text = dir.to_string_lossy();
+/// user already has open (cmd, PowerShell). They run the folder's launcher,
+/// so the lock and the cleared variables apply there too.
+pub(crate) fn shell_commands(launcher: &Path) -> (String, String) {
+    let text = launcher.to_string_lossy();
     (
-        format!("set \"CLAUDE_CONFIG_DIR={text}\" && claude"),
-        format!(
-            "$env:CLAUDE_CONFIG_DIR = '{}'; claude",
-            text.replace('\'', "''")
-        ),
+        format!("\"{text}\""),
+        format!("& {}", powershell_quoted(&text)),
     )
 }
 
@@ -473,8 +673,20 @@ pub(crate) fn remove_profile_locked(vault: &CodeVault, id: &str) -> Result<(), A
     if fs::symlink_metadata(&dir).is_err() {
         return Ok(());
     }
-    if lock_held(&lock_path(&dir)) {
+    if locks_held(&dir) {
         return Err(running_error());
+    }
+    // The conversations written there are the user's: they move aside instead
+    // of going with the login.
+    let projects = dir.join("projects");
+    if fs::read_dir(&projects).is_ok_and(|mut entries| entries.next().is_some()) {
+        let keep = removed_root(vault).join(format!(
+            "{id}-{}",
+            chrono::Utc::now().format("%Y%m%dT%H%M%S")
+        ));
+        ensure_private_dir(&removed_root(vault))?;
+        fs::create_dir_all(&keep).map_err(|e| AppError::io(&keep, e))?;
+        fs::rename(&projects, keep.join("projects")).map_err(|e| AppError::io(&projects, e))?;
     }
     for name in [CREDENTIALS_FILE, CLAUDE_JSON_FILE] {
         let _ = scrub_file(&dir.join(name));
@@ -482,8 +694,16 @@ pub(crate) fn remove_profile_locked(vault: &CodeVault, id: &str) -> Result<(), A
     fs::remove_dir_all(&dir).map_err(|e| AppError::io(&dir, e))
 }
 
+/// Where the conversations of deleted logins' session folders are kept.
+pub(crate) fn removed_root(vault: &CodeVault) -> PathBuf {
+    vault.root.join(REMOVED_DIR)
+}
+
 pub(crate) fn running_error() -> AppError {
-    AppError::Message("这个账号正在一个并行会话的终端里使用。先关闭那个终端，再继续。".to_string())
+    AppError::Message(
+        "这个账号正在一个并行会话的终端里使用。先关闭那个终端，再继续。（终端已经关了还这样提示，是有后台进程还占着它，在任务管理器里结束它们。）"
+            .to_string(),
+    )
 }
 
 #[cfg(test)]
@@ -698,10 +918,9 @@ mod tests {
         fs::write(&f.paths.claude_json, claude.to_string()).unwrap();
 
         let dir = prepare_in(&f.vault, &f.paths, &a).unwrap().dir;
-        assert_eq!(
-            fs::read_to_string(dir.join("settings.json")).unwrap(),
-            "{\"model\":\"opus\"}"
-        );
+        let settings: Value =
+            serde_json::from_str(&fs::read_to_string(dir.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(settings, json!({"model": "opus"}));
         assert_eq!(
             fs::read_to_string(dir.join("skills/one/SKILL.md")).unwrap(),
             "skill"
@@ -747,19 +966,23 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn an_open_terminal_is_a_held_lock_and_blocks_removing_the_folder() {
+    fn open_terminals_hold_lock_files_and_block_removing_the_folder() {
         use std::os::windows::fs::OpenOptionsExt;
         let f = fixture();
         let (a, _b) = two(&f);
         let dir = prepare_in(&f.vault, &f.paths, &a).unwrap().dir;
         assert!(!is_running(&f.vault, &a));
-        // What `9>file` in the launcher does: the file stays open, shared for read and write.
-        let held = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .share_mode(3)
-            .open(lock_path(&dir))
-            .unwrap();
+        // What `9>file` in a launcher does: the file stays open, writes unshared.
+        let hold = |name: &str| {
+            fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .share_mode(1)
+                .open(dir.join(name))
+                .unwrap()
+        };
+        let first = hold(".session.1.lock");
+        let second = hold(".session.2.lock");
         assert!(is_running(&f.vault, &a));
         {
             let _guard = CODE_LOCK.lock().unwrap();
@@ -769,27 +992,92 @@ mod tests {
                 .to_string()
                 .contains("并行会话"));
         }
-        // A second prepare while it runs leaves the folder's credentials alone.
+        // A second prepare while they run leaves the folder's credentials alone.
         let before = fs::read(dir.join(CREDENTIALS_FILE)).unwrap();
         prepare_in(&f.vault, &f.paths, &a).unwrap();
         assert_eq!(fs::read(dir.join(CREDENTIALS_FILE)).unwrap(), before);
-        drop(held);
+
+        drop(first);
+        assert!(is_running(&f.vault, &a), "the other terminal is still open");
+        assert!(
+            !dir.join(".session.1.lock").exists(),
+            "the ended one is swept"
+        );
+        drop(second);
         assert!(!is_running(&f.vault, &a));
+        assert!(!dir.join(".session.2.lock").exists());
         let _guard = CODE_LOCK.lock().unwrap();
         remove_profile_locked(&f.vault, &a).unwrap();
         assert!(!dir.exists());
     }
 
     #[test]
-    fn shell_commands_set_the_folder_for_cmd_and_powershell() {
-        let (cmd, powershell) = shell_commands(Path::new(r"C:\Users\me\it's\sessions\a1"));
+    fn the_launcher_clears_overrides_holds_its_own_lock_and_leaves_no_trace() {
+        let script = launcher_script(Path::new(r"C:\Users\me\v\sessions\a1"));
+        assert!(script.starts_with("@echo off\r\nsetlocal DisableDelayedExpansion\r\n"));
+        for name in AUTH_OVERRIDE_ENV {
+            assert!(script.contains(&format!("set \"{name}=\"\r\n")), "{name}");
+        }
+        assert!(script.contains("set \"ANTHROPIC_BASE_URL=\"\r\n"));
+        // Whatever else begins that way goes too, and cmd does not run what
+        // sits in the folder it is opened in.
+        assert!(script
+            .contains("for /f \"delims==\" %%v in ('set ANTHROPIC_ 2^>nul') do set \"%%v=\"\r\n"));
+        assert!(script.contains(
+            "for /f \"delims==\" %%v in ('set CLAUDE_CODE_USE_ 2^>nul') do set \"%%v=\"\r\n"
+        ));
+        assert!(script.contains("set \"NoDefaultCurrentDirectoryInExePath=1\"\r\n"));
+        assert!(script.contains("set \"CLAUDE_CONFIG_DIR=C:\\Users\\me\\v\\sessions\\a1\"\r\n"));
+        // Its own lock file per launch, so two terminals can both run.
+        assert!(script.contains(
+            "(call claude) 9>\"C:\\Users\\me\\v\\sessions\\a1\\.session.%RANDOM%%RANDOM%.lock\"\r\n"
+        ));
+        // The console and the shell it was run from are left as they were.
+        assert!(script.contains("chcp 65001 >nul\r\n"));
+        assert!(script.ends_with("chcp %CHIMERA_CP% >nul\r\nendlocal\r\n"));
+        assert!(launcher_script(Path::new(r"C:\100%\x")).contains("100%%"));
+    }
+
+    #[test]
+    fn shell_commands_run_the_launcher_from_cmd_and_powershell() {
+        let launcher = Path::new(r"C:\Users\me\it's\sessions\a1\start-claude.bat");
+        let (cmd, powershell) = shell_commands(launcher);
         assert_eq!(
             cmd,
-            "set \"CLAUDE_CONFIG_DIR=C:\\Users\\me\\it's\\sessions\\a1\" && claude"
+            "\"C:\\Users\\me\\it's\\sessions\\a1\\start-claude.bat\""
         );
         assert_eq!(
             powershell,
-            "$env:CLAUDE_CONFIG_DIR = 'C:\\Users\\me\\it''s\\sessions\\a1'; claude"
+            "& 'C:\\Users\\me\\it''s\\sessions\\a1\\start-claude.bat'"
         );
+        // PowerShell also reads curly quotes as quotes.
+        let (_, curly) = shell_commands(Path::new("C:\\Users\\O\u{2019}Brien\\start-claude.bat"));
+        assert_eq!(
+            curly,
+            "& 'C:\\Users\\O\u{2019}\u{2019}Brien\\start-claude.bat'"
+        );
+    }
+
+    #[test]
+    fn shared_settings_drop_every_provider_entry_but_keep_the_rest() {
+        let (text, removed) = shared_settings(
+            r#"{"model":"opus","apiKeyHelper":"x","env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:1","ANTHROPIC_AUTH_TOKEN":"PROXY_MANAGED.k","ANTHROPIC_MODEL":"kimi-k2","ANTHROPIC_DEFAULT_SONNET_MODEL":"kimi-k2","CLAUDE_CODE_USE_BEDROCK":"1","API_TIMEOUT_MS":"600000","EDITOR":"vim"}}"#,
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["model"], "opus");
+        assert_eq!(
+            value["env"],
+            json!({"API_TIMEOUT_MS": "600000", "EDITOR": "vim"})
+        );
+        assert!(value.get("apiKeyHelper").is_none());
+        for name in [
+            "ANTHROPIC_MODEL",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "ANTHROPIC_BASE_URL",
+            "apiKeyHelper",
+        ] {
+            assert!(removed.contains(&name.to_string()), "{name}");
+        }
     }
 }

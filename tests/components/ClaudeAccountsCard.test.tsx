@@ -43,6 +43,7 @@ vi.mock("@/lib/api/claudeAccounts", () => ({
     desktopSwapStatus: vi.fn(),
     captureDesktopLogin: vi.fn(),
     switchDesktop: vi.fn(),
+    prepareDesktopLogin: vi.fn(),
     exportLogins: vi.fn(),
     importLogins: vi.fn(),
     beginBrowserLogin: vi.fn(),
@@ -570,6 +571,20 @@ describe("ClaudeAccountsCard · adding accounts and moving logins as files", () 
     await waitFor(() => expect(screen.queryByText("导入完成")).toBeNull());
   });
 
+  it("passes on what an import wants the user to know", async () => {
+    api.importLogins.mockResolvedValue({
+      imported: [savedAccount],
+      updated: [],
+      skipped: [],
+      notes: ["「new@example.com」的文件里没有账号信息（oauthAccount）。"],
+    });
+    render(<ClaudeAccountsCard mode="code" />);
+    await pickFromMenu(/^添加账号/, /导入凭证文件/);
+    expect(await screen.findByRole("note")).toHaveTextContent(
+      "文件里没有账号信息",
+    );
+  });
+
   it("does not reload when the import dialog is cancelled or nothing was added", async () => {
     api.importLogins.mockResolvedValueOnce(null);
     render(<ClaudeAccountsCard mode="code" />);
@@ -647,6 +662,41 @@ describe("ClaudeAccountsCard · adding accounts and moving logins as files", () 
       expect(screen.queryByText("在浏览器里授权 Claude 账号")).toBeNull(),
     );
   });
+
+  it("ends a waiting authorization when the page is left", async () => {
+    api.beginBrowserLogin.mockResolvedValue("flow-7");
+    api.pollBrowserLogin.mockResolvedValue({ state: "waiting" });
+    api.cancelBrowserLogin.mockResolvedValue();
+    const { unmount } = render(<ClaudeAccountsCard mode="code" />);
+    await pickFromMenu(/^添加账号/, /从浏览器授权添加/);
+    await screen.findByText(/等待授权完成/);
+    expect(api.cancelBrowserLogin).not.toHaveBeenCalled();
+    unmount();
+    await waitFor(() =>
+      expect(api.cancelBrowserLogin).toHaveBeenCalledWith("flow-7"),
+    );
+  });
+
+  it("tells a lost or crashed authorization apart from a failed one", async () => {
+    api.beginBrowserLogin.mockResolvedValue("flow-8");
+    api.pollBrowserLogin.mockResolvedValue({ state: "unknown" });
+    render(<ClaudeAccountsCard mode="code" />);
+    await pickFromMenu(/^添加账号/, /从浏览器授权添加/);
+    expect(
+      await screen.findByText(/这次授权已经结束，或应用被重启过/, undefined, {
+        timeout: 6000,
+      }),
+    ).toBeInTheDocument();
+
+    api.beginBrowserLogin.mockResolvedValue("flow-9");
+    api.pollBrowserLogin.mockRejectedValue(new Error("IO 错误: 管道已断开"));
+    fireEvent.click(
+      await screen.findByRole("button", { name: /重试|重新开始/ }),
+    );
+    expect(
+      await screen.findByText(/管道已断开/, undefined, { timeout: 6000 }),
+    ).toBeInTheDocument();
+  }, 15_000);
 
   it("shows a failed authorization and lets the user try again", async () => {
     api.beginBrowserLogin
@@ -751,6 +801,22 @@ describe("ClaudeAccountsCard · tokens and API keys", () => {
       "这个令牌已经保存过了",
     );
     expect(screen.getByLabelText("令牌或密钥")).toHaveValue(TOKEN);
+  });
+
+  it("forgets what was typed when the dialog is closed without saving", async () => {
+    const user = userEvent.setup();
+    render(<ClaudeAccountsCard mode="code" />);
+    const field = await openSecretDialog();
+    await user.type(field, TOKEN);
+    await user.type(screen.getByLabelText("账号名称（可选）"), "CI");
+    await user.click(screen.getByRole("button", { name: "取消" }));
+    await waitFor(() =>
+      expect(screen.queryByLabelText("令牌或密钥")).toBeNull(),
+    );
+    const again = await openSecretDialog();
+    expect(again).toHaveValue("");
+    expect(screen.getByLabelText("账号名称（可选）")).toHaveValue("");
+    expect(again).toHaveAttribute("type", "password");
   });
 
   it("shows a token or key as such, without a quota it cannot have", async () => {
@@ -861,6 +927,7 @@ describe("ClaudeAccountsCard · parallel sessions and folders", () => {
       dir: null,
       viaBinding: false,
       usesDefaultLogin: false,
+      warnings: ["没有共享 skills：它是符号链接。"],
     });
     render(<ClaudeAccountsCard mode="code" />);
     fireEvent.click(
@@ -873,7 +940,9 @@ describe("ClaudeAccountsCard · parallel sessions and folders", () => {
       expect(toast.success).toHaveBeenCalledWith(
         "已在新终端打开「个人」",
         expect.objectContaining({
-          description: expect.stringContaining("当前的登录不受影响"),
+          description: expect.stringMatching(
+            /当前的登录不受影响.*没有共享 skills/,
+          ),
         }),
       ),
     );
@@ -977,7 +1046,9 @@ describe("ClaudeAccountsCard · order", () => {
     grip.focus();
     await user.keyboard("{ArrowDown}");
     expect(names()).toEqual(["工作", "第三", "个人"]);
-    expect(api.reorder).toHaveBeenCalledWith(["work", "third", "me"]);
+    await waitFor(() =>
+      expect(api.reorder).toHaveBeenCalledWith(["work", "third", "me"]),
+    );
     expect(
       screen.getByText("已把「个人」移到第 3 位，共 3 个"),
     ).toBeInTheDocument();
@@ -1010,7 +1081,62 @@ describe("ClaudeAccountsCard · order", () => {
     fireEvent.dragOver(firstRow, { dataTransfer: transfer });
     fireEvent.drop(firstRow, { dataTransfer: transfer });
     expect(names()).toEqual(["第三", "工作", "个人"]);
-    expect(api.reorder).toHaveBeenCalledWith(["third", "work", "me"]);
+    await waitFor(() =>
+      expect(api.reorder).toHaveBeenCalledWith(["third", "work", "me"]),
+    );
+  });
+
+  it("moves a row up or down from its menu, for those who cannot drag", async () => {
+    const user = userEvent.setup();
+    api.listCode.mockResolvedValue(three());
+    render(<ClaudeAccountsCard mode="code" />);
+    await screen.findByRole("list", { name: "已保存的 Claude Code 账号" });
+    await user.click(screen.getByRole("button", { name: "个人 的更多操作" }));
+    await user.click(await screen.findByRole("menuitem", { name: "下移" }));
+    expect(names()).toEqual(["工作", "第三", "个人"]);
+    await waitFor(() =>
+      expect(api.reorder).toHaveBeenCalledWith(["work", "third", "me"]),
+    );
+    // The first row cannot go up, nor the last one down.
+    await user.click(screen.getByRole("button", { name: "工作 的更多操作" }));
+    expect(
+      await screen.findByRole("menuitem", { name: "上移" }),
+    ).toHaveAttribute("aria-disabled", "true");
+  });
+
+  it("keeps the newest order when moves come one after another", async () => {
+    const user = userEvent.setup();
+    api.listCode.mockResolvedValue(three());
+    const finished: string[] = [];
+    let release: (() => void) | undefined;
+    api.reorder
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            release = () => {
+              finished.push("first");
+              resolve();
+            };
+          }),
+      )
+      .mockImplementationOnce(async () => {
+        finished.push("second");
+      });
+    render(<ClaudeAccountsCard mode="code" />);
+    await screen.findByRole("list", { name: "已保存的 Claude Code 账号" });
+    const grip = screen.getByRole("button", { name: /移动 个人/ });
+    grip.focus();
+    await user.keyboard("{ArrowDown}");
+    await waitFor(() => expect(api.reorder).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /移动 个人/ })).toHaveFocus(),
+    );
+    await user.keyboard("{ArrowUp}");
+    // The second save waits for the first one.
+    expect(api.reorder).toHaveBeenCalledTimes(1);
+    release?.();
+    await waitFor(() => expect(api.reorder).toHaveBeenCalledTimes(2));
+    expect(finished).toEqual(["first", "second"]);
   });
 
   it("reloads the real order when saving it fails", async () => {
@@ -1048,6 +1174,7 @@ describe("ClaudeAccountsCard · the default Claude Desktop", () => {
   });
   const outcome = (over: Partial<ClaudeDesktopSwapOutcome> = {}) => ({
     status: "done" as const,
+    wasRunning: false,
     restarted: false,
     savedOutgoingFor: null,
     stashedOutgoing: false,
@@ -1139,7 +1266,7 @@ describe("ClaudeAccountsCard · the default Claude Desktop", () => {
     );
     api.switchDesktop
       .mockResolvedValueOnce(outcome({ status: "desktop_running" }))
-      .mockResolvedValueOnce(outcome({ restarted: true }));
+      .mockResolvedValueOnce(outcome({ wasRunning: true, restarted: true }));
     render(<ClaudeAccountsCard mode="desktop" />);
     fireEvent.click(
       await screen.findByRole("button", { name: /切换默认 Desktop/ }),
@@ -1151,6 +1278,108 @@ describe("ClaudeAccountsCard · the default Claude Desktop", () => {
     fireEvent.click(screen.getByRole("button", { name: "关闭并继续" }));
     await waitFor(() =>
       expect(api.switchDesktop).toHaveBeenLastCalledWith("work", true),
+    );
+    await waitFor(() =>
+      expect(screen.queryByText("需要先关闭 Claude Desktop")).toBeNull(),
+    );
+  });
+
+  it("takes Desktop back to its sign-in page for a login with no Desktop sign-in yet", async () => {
+    api.desktopSwapStatus.mockResolvedValue(swapStatus());
+    api.prepareDesktopLogin.mockResolvedValue(
+      outcome({ restarted: true, savedOutgoingFor: "me" }),
+    );
+    render(<ClaudeAccountsCard mode="desktop" />);
+    const list = await screen.findByRole("list", {
+      name: "已保存的 Claude 登录列表",
+    });
+    // The login Desktop is signed in as is saved; the other one is prepared.
+    expect(
+      within(list).getByRole("button", { name: /保存 Desktop 登录 个人/ }),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      within(list).getByRole("button", { name: /用此账号登录 Desktop 工作/ }),
+    );
+    await waitFor(() =>
+      expect(api.prepareDesktopLogin).toHaveBeenCalledWith("work", false),
+    );
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith(
+        "默认 Claude Desktop 已回到登录页",
+        expect.objectContaining({
+          description: expect.stringContaining("保存 Desktop 登录"),
+        }),
+      ),
+    );
+  });
+
+  it("asks before closing a running Desktop to go back to its sign-in page", async () => {
+    api.desktopSwapStatus.mockResolvedValue(swapStatus({ running: true }));
+    api.prepareDesktopLogin
+      .mockResolvedValueOnce(outcome({ status: "desktop_running" }))
+      .mockResolvedValueOnce(outcome({ wasRunning: true, restarted: true }));
+    render(<ClaudeAccountsCard mode="desktop" />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: /用此账号登录 Desktop 工作/ }),
+    );
+    expect(
+      await screen.findByText(/不会被退出，之后还能切换回来/),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "关闭并继续" }));
+    await waitFor(() =>
+      expect(api.prepareDesktopLogin).toHaveBeenLastCalledWith("work", true),
+    );
+  });
+
+  it("says so when Desktop was closed and could not be opened again", async () => {
+    api.desktopSwapStatus.mockResolvedValue(
+      swapStatus({
+        snapshots: [
+          { accountId: "work", capturedAt: "2026-11-04", isCurrent: false },
+        ],
+      }),
+    );
+    api.switchDesktop.mockResolvedValue(
+      outcome({ wasRunning: true, restarted: false }),
+    );
+    render(<ClaudeAccountsCard mode="desktop" />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: /切换默认 Desktop/ }),
+    );
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith(
+        "默认 Claude Desktop 已切换到「工作」",
+        expect.objectContaining({
+          description: expect.stringContaining("请手动打开"),
+        }),
+      ),
+    );
+  });
+
+  it("names what closing Desktop ends, and drops the question when the swap fails", async () => {
+    api.desktopSwapStatus.mockResolvedValue(
+      swapStatus({
+        running: true,
+        snapshots: [
+          { accountId: "work", capturedAt: "2026-11-04", isCurrent: false },
+        ],
+      }),
+    );
+    api.switchDesktop
+      .mockResolvedValueOnce(outcome({ status: "desktop_running" }))
+      .mockRejectedValueOnce(new Error("登录文件被占用"));
+    render(<ClaudeAccountsCard mode="desktop" />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: /切换默认 Desktop/ }),
+    );
+    expect(
+      await screen.findByText(/Claude Code 会话、定时任务和 MCP 服务/),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "关闭并继续" }));
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(
+        expect.stringContaining("登录文件被占用"),
+      ),
     );
     await waitFor(() =>
       expect(screen.queryByText("需要先关闭 Claude Desktop")).toBeNull(),
@@ -1187,9 +1416,12 @@ describe("ClaudeAccountsCard · saved logins on the Claude Desktop page", () => 
     );
     await user.click(screen.getByRole("button", { name: /^添加登录/ }));
     expect(
-      await screen.findByRole("menuitem", { name: /粘贴令牌或 API Key/ }),
+      await screen.findByRole("menuitem", { name: /导入凭证文件/ }),
     ).toBeVisible();
-    // Signing in from a terminal is a Claude Code thing.
+    // A token or a key, and signing in from a terminal, are Claude Code things.
+    expect(
+      screen.queryByRole("menuitem", { name: /粘贴令牌或 API Key/ }),
+    ).toBeNull();
     expect(
       screen.queryByRole("menuitem", { name: /在终端登录后保存/ }),
     ).toBeNull();

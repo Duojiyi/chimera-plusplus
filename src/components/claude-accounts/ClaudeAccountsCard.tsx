@@ -36,6 +36,7 @@ import {
   errorText,
   type QuotaState,
 } from "./quota";
+import { useReturnFocus } from "./useReturnFocus";
 import { moveBy, useSortable } from "./useSortable";
 
 export { clockText, errorText, resetText } from "./quota";
@@ -66,7 +67,7 @@ type DeleteTarget = {
 };
 
 type DesktopSwapTarget = {
-  kind: "capture" | "switch";
+  kind: "capture" | "switch" | "prepare";
   account: ClaudeCodeAccount;
 };
 
@@ -77,15 +78,29 @@ function swapMessage(
 ) {
   const notes: string[] = [];
   if (outcome.restarted) notes.push("Claude Desktop 已重新打开。");
+  else if (outcome.wasRunning)
+    notes.push("Claude Desktop 已被关闭，没能自动重新打开，请手动打开。");
   if (outcome.savedOutgoingFor)
     notes.push(`原来的登录已保存到「${nameOf(outcome.savedOutgoingFor)}」。`);
   if (outcome.stashedOutgoing)
-    notes.push("原来的登录不属于已保存的账号，已放进暂存区（保留最近 3 份）。");
+    notes.push(
+      "原来的登录不属于已保存的账号，已暂存在保险库的 desktop-auth/.stash 里（保留最近 5 份，目前只能手动取回）。",
+    );
+  if (target.kind === "prepare")
+    notes.unshift(
+      `在里面登录「${target.account.name}」，再回到这里点这一行的「保存 Desktop 登录」。`,
+    );
   toast.success(
     target.kind === "switch"
       ? `默认 Claude Desktop 已切换到「${target.account.name}」`
-      : `已保存默认 Claude Desktop 的登录，属于「${target.account.name}」`,
-    { description: notes.join("") || undefined },
+      : target.kind === "prepare"
+        ? "默认 Claude Desktop 已回到登录页"
+        : `已保存默认 Claude Desktop 的登录，属于「${target.account.name}」`,
+    {
+      description: notes.join("") || undefined,
+      // Read it through: some of these say where a login went.
+      duration: notes.length > 0 ? 15_000 : undefined,
+    },
   );
 }
 
@@ -115,6 +130,9 @@ export function ClaudeAccountsCard({
   const [announcement, setAnnouncement] = useState("");
   const mounted = useRef(true);
   const pending = useRef(false);
+  /** The newest list read wins; a move invalidates the ones still on the way. */
+  const loadGeneration = useRef(0);
+  const orderQueue = useRef<Promise<void>>(Promise.resolve());
 
   useEffect(() => {
     mounted.current = true;
@@ -169,6 +187,8 @@ export function ClaudeAccountsCard({
 
   const load = useCallback(async () => {
     if (!native) return;
+    const mine = ++loadGeneration.current;
+    const stale = () => !mounted.current || mine !== loadGeneration.current;
     setLoadError(null);
     const readQuotas = (accounts: ClaudeCodeAccount[], vault: boolean) => {
       for (const account of accounts)
@@ -182,12 +202,12 @@ export function ClaudeAccountsCard({
     try {
       if (mode === "code") {
         const result = await claudeAccountsApi.listCode();
-        if (!mounted.current) return;
+        if (stale()) return;
         setCode(result);
         if (result.supported) readQuotas(result.accounts, false);
       } else {
         const result = await claudeAccountsApi.listDesktop();
-        if (!mounted.current) return;
+        if (stale()) return;
         setDesktop(result);
         void readQuota(DEFAULT_DESKTOP_ID, false);
         for (const profile of result)
@@ -195,21 +215,31 @@ export function ClaudeAccountsCard({
         // The saved logins are shared with Claude Code; a failure here only
         // hides that section.
         const vault = await claudeAccountsApi.listCode().catch(() => null);
-        if (!mounted.current) return;
+        if (stale()) return;
         setCode(vault);
         if (vault?.supported) readQuotas(vault.accounts, true);
         const status = await claudeAccountsApi
           .desktopSwapStatus()
           .catch(() => null);
-        if (mounted.current) setSwap(status);
+        if (!stale()) setSwap(status);
       }
     } catch (cause) {
-      if (mounted.current) setLoadError(errorText(cause));
+      if (!stale()) setLoadError(errorText(cause));
     }
   }, [mode, native, readQuota]);
 
   useEffect(() => {
     void load();
+  }, [load]);
+
+  // Signing in from a terminal happens elsewhere; read again when the window
+  // is brought back.
+  useEffect(() => {
+    const refresh = () => {
+      if (!pending.current) void load();
+    };
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
   }, [load]);
 
   /** One mutation at a time; reloads afterwards. */
@@ -226,6 +256,8 @@ export function ClaudeAccountsCard({
       if (mounted.current) {
         setBusy(null);
         await load();
+        // The folder bindings show these accounts too.
+        window.dispatchEvent(new CustomEvent(BINDINGS_CHANGED_EVENT));
       }
     }
   };
@@ -354,10 +386,14 @@ export function ClaudeAccountsCard({
   const openSession = (account: ClaudeCodeAccount) =>
     run(`session:${account.id}`, async () => {
       const launch = await claudeAccountsApi.openSession({ id: account.id });
+      const warnings = launch.warnings ?? [];
+      const base = launch.usesDefaultLogin
+        ? "它就是 Claude Code 当前的登录，打开的是普通终端。"
+        : "这个终端只用这个账号，Claude Code 当前的登录不受影响。它有自己的对话记录，看不到别的登录下的对话；设置、技能等每次启动都以默认登录的为准，在这个终端里改的不保留。";
       toast.success(`已在新终端打开「${launch.accountName ?? account.name}」`, {
-        description: launch.usesDefaultLogin
-          ? "它就是 Claude Code 当前的登录，打开的是普通终端。"
-          : "这个终端只用这个账号，Claude Code 当前的登录不受影响。",
+        description:
+          warnings.length > 0 ? `${base}${warnings.join("；")}。` : base,
+        duration: warnings.length > 0 ? 15_000 : undefined,
       });
     });
 
@@ -383,7 +419,6 @@ export function ClaudeAccountsCard({
       const folder = await claudeAccountsApi.pickFolder();
       if (!folder) return;
       await claudeAccountsApi.setBinding(folder, account.id);
-      window.dispatchEvent(new CustomEvent(BINDINGS_CHANGED_EVENT));
       toast.success(`已把 ${folder} 绑定到「${account.name}」`, {
         description: "从 Chimera 在这个目录打开 Claude 时，会用这个账号。",
       });
@@ -397,8 +432,17 @@ export function ClaudeAccountsCard({
       const call =
         target.kind === "capture"
           ? claudeAccountsApi.captureDesktopLogin
-          : claudeAccountsApi.switchDesktop;
-      const outcome = await call(target.account.id, close);
+          : target.kind === "prepare"
+            ? claudeAccountsApi.prepareDesktopLogin
+            : claudeAccountsApi.switchDesktop;
+      let outcome: ClaudeDesktopSwapOutcome;
+      try {
+        outcome = await call(target.account.id, close);
+      } catch (cause) {
+        // The question was answered; a failure is shown on its own.
+        if (close) setDesktopConfirm(null);
+        throw cause;
+      }
       if (outcome.status === "desktop_running") {
         setDesktopConfirm(target);
         return;
@@ -413,6 +457,8 @@ export function ClaudeAccountsCard({
     .map((account) => account.id);
 
   const commitOrder = (next: string[]) => {
+    // A list read before this move would put the old order back.
+    loadGeneration.current += 1;
     setCode((current) => {
       if (!current) return current;
       const byId = new Map(current.accounts.map((a) => [a.id, a]));
@@ -420,10 +466,16 @@ export function ClaudeAccountsCard({
       const rest = current.accounts.filter((a) => !next.includes(a.id));
       return { ...current, accounts: [...listed, ...rest] };
     });
-    void claudeAccountsApi.reorder(next).catch((cause) => {
-      toast.error(errorText(cause));
-      void load();
-    });
+    // One after the other, so the last move is the one that stays saved.
+    orderQueue.current = orderQueue.current
+      .then(() => claudeAccountsApi.reorder(next))
+      .then(
+        () => undefined,
+        (cause) => {
+          toast.error(errorText(cause));
+          if (mounted.current) void load();
+        },
+      );
   };
   const sortable = useSortable(readableIds, commitOrder);
   const moveAccount = (id: string, delta: -1 | 1) => {
@@ -447,8 +499,17 @@ export function ClaudeAccountsCard({
   const title = mode === "code" ? "Claude Code 账号" : "Claude Desktop 账号";
   const description =
     mode === "code"
-      ? "切换账号不影响会话、设置与 MCP；也可以让多个账号在各自的终端里同时用。"
+      ? code?.sessionsSupported
+        ? "切换账号不影响会话、设置与 MCP；也可以让多个账号在各自的终端里同时用。"
+        : "切换账号不影响会话、设置与 MCP。"
       : "每个账号一个独立的 Claude Desktop 数据目录，登录互不影响，可以同时打开。";
+  useReturnFocus(
+    nameDialog !== null ||
+      loginGuide ||
+      removing !== null ||
+      runningSwitch !== null ||
+      desktopConfirm !== null,
+  );
 
   const codeRows = code?.accounts ?? [];
   const exportable = codeRows.filter(
@@ -473,7 +534,10 @@ export function ClaudeAccountsCard({
           disabled={disabled}
           browserSupported={code.browserLoginSupported}
           exportable={exportable}
-          onChanged={() => void load()}
+          onChanged={() => {
+            void load();
+            window.dispatchEvent(new CustomEvent(BINDINGS_CHANGED_EVENT));
+          }}
           onTerminalGuide={() => void startLoginGuide()}
         />
       ) : null
@@ -504,6 +568,10 @@ export function ClaudeAccountsCard({
           ? sortable(account.id)
           : undefined
       }
+      position={{
+        first: readableIds[0] === account.id,
+        last: readableIds[readableIds.length - 1] === account.id,
+      }}
       desktop={
         forDesktop
           ? {
@@ -527,6 +595,9 @@ export function ClaudeAccountsCard({
       }
       onSwitchDesktop={() =>
         void runDesktopSwap({ kind: "switch", account }, false)
+      }
+      onPrepareDesktop={() =>
+        void runDesktopSwap({ kind: "prepare", account }, false)
       }
     />
   );
@@ -663,7 +734,7 @@ export function ClaudeAccountsCard({
                     <span>
                       {currentSaved
                         ? currentHasSnapshot
-                          ? `这个登录已保存为「${currentSaved.name}」的 Desktop 登录，可以随时切换回来。`
+                          ? `这个登录已保存为「${currentSaved.name}」的 Desktop 登录，可以切换回来。要换别的账号，用它们那一行的按钮；不要在 Desktop 里退出登录，退出会让保存的登录失效。`
                           : `登录的是已保存的账号「${currentSaved.name}」，还没有保存它的 Desktop 登录。`
                         : "登录的账号不在已保存的账号里。先用下面的「添加登录」加入它，再保存 Desktop 登录。"}
                     </span>
@@ -810,16 +881,24 @@ export function ClaudeAccountsCard({
                   <h3>已保存的 Claude 登录</h3>
                   <p>
                     与 Claude Code
-                    账号共用。可以添加登录、导入导出凭证文件，并把默认 Claude
-                    Desktop 切换到某个账号。
+                    账号共用。可以添加登录、导入导出凭证文件。要让默认 Claude
+                    Desktop 切换到某个账号，先点这一行的「用此账号登录
+                    Desktop」，在回到登录页的 Desktop 里登录它，再点「保存
+                    Desktop 登录」，之后就能一键切换。
                   </p>
                 </div>
                 <AddAccountMenu
                   disabled={disabled}
                   browserSupported={code.browserLoginSupported}
                   exportable={exportable}
-                  onChanged={() => void load()}
+                  onChanged={() => {
+                    void load();
+                    window.dispatchEvent(
+                      new CustomEvent(BINDINGS_CHANGED_EVENT),
+                    );
+                  }}
                   label="添加登录"
+                  mode="desktop"
                 />
               </div>
               {codeRows.length === 0 ? (
@@ -909,7 +988,9 @@ export function ClaudeAccountsCard({
         <DialogContent className="claude-accounts-dialog">
           <DialogTitle>登录新的 Claude 账号</DialogTitle>
           <DialogDescription>
-            当前登录已保存，登录新账号不会丢失它，会话记录也不受影响。
+            {guideFrom
+              ? "当前登录已保存，登录新账号不会丢失它，会话记录也不受影响。"
+              : "现在没有可保存的登录。登录新账号后，回来把它保存为账号。"}
           </DialogDescription>
           <ol className="claude-accounts-steps">
             <li>
@@ -945,7 +1026,7 @@ export function ClaudeAccountsCard({
         title={`删除「${removing?.name ?? ""}」？`}
         message={
           mode === "code" || removing?.vault
-            ? `只删除 Chimera 保存的这份登录${removing?.email ? `（${removing.email}）` : ""}。不会退出 Claude Code，不影响会话记录和其他账号；它的并行会话目录和已保存的 Desktop 登录也会一起删除。以后要再用这个账号需重新登录并保存。`
+            ? `只删除 Chimera 保存的这份登录${removing?.email ? `（${removing.email}）` : ""}。不会退出 Claude Code，不影响其他账号；它的并行会话目录和已保存的 Desktop 登录（包括暂存区里属于它的）也会一起删除，并行会话里的对话记录会移到保险库的 sessions-removed 文件夹里保留，绑定到它的目录会显示为失效。以后要再用这个账号需重新登录并保存。`
             : `将删除「${removing?.name ?? ""}」在本机的 Claude Desktop 独立目录：登录状态、设置、MCP 配置与缓存。不影响系统默认的 Claude Desktop 和其他账号，也不会删除服务器上的对话。此操作不可撤销。`
         }
         confirmText="确认删除"
@@ -979,8 +1060,10 @@ export function ClaudeAccountsCard({
         title="需要先关闭 Claude Desktop"
         message={
           desktopConfirm?.kind === "switch"
-            ? `切换默认 Claude Desktop 到「${desktopConfirm.account.name}」要先把它关掉（包括托盘里的），换好登录后会自动重新打开。现在的登录会先保存起来，不会丢。未保存的输入会丢失，请先在 Desktop 里保存。`
-            : "保存默认 Claude Desktop 的登录要先把它关掉（包括托盘里的），保存好后会自动重新打开。未保存的输入会丢失，请先在 Desktop 里保存。"
+            ? `切换默认 Claude Desktop 到「${desktopConfirm.account.name}」要先把它关掉（包括托盘里的），换好登录后会自动重新打开。关闭会一并结束 Desktop 里正在运行的 Claude Code 会话、定时任务和 MCP 服务，未保存的输入也会丢失，请先处理好。现在的登录会先保存起来。换好后如果 Desktop 回到登录页，重新登录一次即可。`
+            : desktopConfirm?.kind === "prepare"
+              ? `要让默认 Claude Desktop 回到登录页，先要把它关掉（包括托盘里的）。现在的登录会先保存起来，不会被退出，之后还能切换回来；然后打开 Desktop，你在里面登录「${desktopConfirm.account.name}」，再回来点「保存 Desktop 登录」。关闭会一并结束 Desktop 里正在运行的 Claude Code 会话、定时任务和 MCP 服务，未保存的输入也会丢失，请先处理好。`
+              : "保存默认 Claude Desktop 的登录要先把它关掉（包括托盘里的），保存好后会自动重新打开。关闭会一并结束 Desktop 里正在运行的 Claude Code 会话、定时任务和 MCP 服务，未保存的输入也会丢失，请先处理好。"
         }
         confirmText="关闭并继续"
         cancelText="取消"

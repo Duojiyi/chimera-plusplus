@@ -89,9 +89,14 @@ pub async fn delete_claude_code_account(id: String) -> Result<(), AppError> {
     let _guard = lock.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
         let vault = CodeVault::open_default()?;
+        let uuid = code::account_uuid_of(&vault, &id).ok().flatten();
         code::delete_in(&vault, &id)?;
-        // Its Claude Desktop sign-in snapshot goes with it.
-        desktop_swap::remove_snapshot(&vault, &id)
+        // Its Claude Desktop sign-in goes with it; a failure here is picked up
+        // by the next sweep of leftovers.
+        if let Err(error) = desktop_swap::forget_account(&vault, &id, uuid.as_deref()) {
+            log::warn!("删除账号后清理 Desktop 登录失败: {error}");
+        }
+        Ok(())
     })
     .await
     .map_err(unfinished)?
@@ -169,7 +174,7 @@ pub async fn export_claude_logins<R: tauri::Runtime>(
     }
     tauri::async_runtime::spawn_blocking(move || {
         let vault = CodeVault::open_default()?;
-        let exported = transfer::export_in(&vault, ids.as_deref())?;
+        let exported = transfer::export_in(&vault, &LivePaths::current(), ids.as_deref())?;
         let file_name = format!(
             "chimera-claude-logins-{}.json",
             chrono::Local::now().format("%Y%m%d")
@@ -223,10 +228,9 @@ pub async fn import_claude_logins<R: tauri::Runtime>(
         let path = selected
             .into_path()
             .map_err(|e| AppError::Message(format!("无效的文件位置: {e}")))?;
-        let bytes = crate::security_limits::read_limited(&path, transfer::MAX_IMPORT_BYTES)
-            .map_err(|e| {
-                AppError::Message(format!("无法读取这个文件（需要 8 MiB 以内的 JSON）: {e}"))
-            })?;
+        let bytes = read_chosen_file(&path, transfer::MAX_IMPORT_BYTES).map_err(|e| {
+            AppError::Message(format!("无法读取这个文件（需要 8 MiB 以内的 JSON）: {e}"))
+        })?;
         let text = String::from_utf8(bytes)
             .map_err(|_| AppError::Message("这个文件不是 UTF-8 文本".to_string()))?;
         let vault = CodeVault::open_default()?;
@@ -234,6 +238,20 @@ pub async fn import_claude_logins<R: tauri::Runtime>(
     })
     .await
     .map_err(unfinished)?
+}
+
+/// A file the user picked in the system dialog, read up to `limit` bytes.
+/// Links are followed: a file in a OneDrive folder is a reparse point too.
+fn read_chosen_file(path: &Path, limit: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(limit + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        return Err(std::io::Error::other("文件太大"));
+    }
+    Ok(bytes)
 }
 
 /// Opens the claude.ai authorization in the browser (and a console window for
@@ -288,6 +306,8 @@ pub struct SessionLaunch {
     /// The account is the login Claude Code already uses, so a plain
     /// terminal was opened instead of a session folder.
     pub uses_default_login: bool,
+    /// Things that were not shared into the session, for the user to read.
+    pub warnings: Vec<String>,
 }
 
 /// How to start `claude` on a login's session folder from a shell that is
@@ -315,35 +335,44 @@ fn batch_quoted(path: &Path) -> String {
     path.to_string_lossy().replace('%', "%%")
 }
 
-/// The batch file that starts `claude`: on a session folder (clearing the
-/// variables that would override its login, and keeping `.session.lock` open
-/// for as long as `claude` runs), or plain.
-pub(crate) fn session_script(config_dir: Option<&Path>, cwd: Option<&Path>) -> String {
-    let mut lines = vec!["@echo off".to_string(), "chcp 65001 >nul".to_string()];
-    if let Some(dir) = config_dir {
-        for name in sessions::AUTH_OVERRIDE_ENV {
-            lines.push(format!("set \"{name}=\""));
+/// The batch file that starts `claude`: on a session folder (clearing what
+/// would override the login and holding the lock, as the folder's launcher
+/// does), or plain. It makes the folder current (the user's home when none
+/// was chosen), restores the console's code page, and removes its own folder
+/// when it ends.
+pub(crate) fn session_script(session_dir: Option<&Path>, cwd: Option<&Path>) -> String {
+    let mut lines = vec![
+        "@echo off".to_string(),
+        "setlocal DisableDelayedExpansion".to_string(),
+        sessions::NO_CURRENT_DIR_LINE.to_string(),
+        "for /f \"tokens=2 delims=:\" %%a in ('chcp') do set \"CHIMERA_CP=%%a\"".to_string(),
+        "chcp 65001 >nul".to_string(),
+    ];
+    lines.push(match cwd {
+        Some(cwd) => {
+            let text = batch_quoted(cwd);
+            if text.starts_with(r"\\") {
+                // `cd` cannot make a UNC path current; `pushd` maps it first.
+                format!("pushd \"{text}\" || goto :done")
+            } else {
+                format!("cd /d \"{text}\" || goto :done")
+            }
         }
-        lines.push(format!("set \"CLAUDE_CONFIG_DIR={}\"", batch_quoted(dir)));
-    }
-    if let Some(cwd) = cwd {
-        let text = batch_quoted(cwd);
-        lines.push(if text.starts_with(r"\\") {
-            // `cd` cannot make a UNC path current; `pushd` maps it first.
-            format!("pushd \"{text}\" || exit /b 1")
-        } else {
-            format!("cd /d \"{text}\" || exit /b 1")
-        });
-    }
-    match config_dir {
-        Some(dir) => lines.push(format!(
-            "(call claude) 9>\"{}\"",
-            batch_quoted(&sessions::lock_path(dir))
-        )),
+        // Not wherever this app happens to be running from.
+        None => "cd /d \"%USERPROFILE%\" || goto :done".to_string(),
+    });
+    match session_dir {
+        Some(dir) => lines.extend(sessions::launcher_body(dir)),
         None => lines.push("call claude".to_string()),
     }
-    lines.push("del \"%~f0\" >nul 2>&1".to_string());
-    lines.push("rmdir \"%~dp0\" >nul 2>&1".to_string());
+    lines.extend([
+        ":done".to_string(),
+        "chcp %CHIMERA_CP% >nul".to_string(),
+        "endlocal".to_string(),
+        // A batch file cannot delete itself and go on; ending it with an
+        // error and running the removal after it can.
+        "(goto) 2>nul & rmdir /s /q \"%~dp0\"".to_string(),
+    ]);
     lines.join("\r\n") + "\r\n"
 }
 
@@ -446,6 +475,7 @@ pub async fn open_claude_session(
             dir: cwd.map(|dir| dir.display().to_string()),
             via_binding,
             uses_default_login,
+            warnings: prepared.map(|p| p.warnings).unwrap_or_default(),
         })
     })
     .await
@@ -459,7 +489,7 @@ pub async fn get_claude_session_commands(id: String) -> Result<SessionCommands, 
     tauri::async_runtime::spawn_blocking(move || {
         let vault = CodeVault::open_default()?;
         let prepared = sessions::prepare_in(&vault, &LivePaths::current(), &id)?;
-        let (cmd, powershell) = sessions::shell_commands(&prepared.dir);
+        let (cmd, powershell) = sessions::shell_commands(&prepared.launcher);
         Ok(SessionCommands {
             dir: prepared.dir.display().to_string(),
             cmd,
@@ -532,10 +562,15 @@ fn cost_of(pricing: &crate::proxy::usage::calculator::ModelPricing, tokens: &usa
     use rust_decimal::prelude::ToPrimitive;
     use rust_decimal::Decimal;
     let million = Decimal::from(1_000_000);
+    // The cache-write price is the 5-minute one; the part kept for an hour
+    // costs 1.6 times that, as on the usage page.
+    let one_hour = tokens.cache_write_1h.min(tokens.cache_write);
+    let weighted_writes = Decimal::from(tokens.cache_write - one_hour)
+        + Decimal::from(one_hour) * Decimal::new(16, 1);
     let cost = Decimal::from(tokens.input) * pricing.input_cost_per_million / million
         + Decimal::from(tokens.output) * pricing.output_cost_per_million / million
         + Decimal::from(tokens.cache_read) * pricing.cache_read_cost_per_million / million
-        + Decimal::from(tokens.cache_write) * pricing.cache_creation_cost_per_million / million;
+        + weighted_writes * pricing.cache_creation_cost_per_million / million;
     cost.to_f64().unwrap_or(0.0)
 }
 
@@ -656,13 +691,32 @@ pub enum DesktopSwapState {
 #[serde(rename_all = "camelCase")]
 pub struct DesktopSwapOutcome {
     pub status: DesktopSwapState,
-    /// It was running, was closed for this, and has been opened again.
+    /// It was running and was closed for this.
+    pub was_running: bool,
+    /// ...and has been opened again.
     pub restarted: bool,
     /// The sign-in that was replaced was kept as this login's snapshot.
     pub saved_outgoing_for: Option<String>,
     /// The sign-in that was replaced matched no saved login and was stashed.
     pub stashed_outgoing: bool,
 }
+
+impl DesktopSwapOutcome {
+    fn running() -> Self {
+        Self {
+            status: DesktopSwapState::DesktopRunning,
+            was_running: false,
+            restarted: false,
+            saved_outgoing_for: None,
+            stashed_outgoing: false,
+        }
+    }
+}
+
+/// One change of the default Desktop's sign-in at a time: they all work on the
+/// same data folder, whatever login they are for.
+static DESKTOP_SWAP: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
 fn desktop_main_dir() -> Result<PathBuf, AppError> {
     desktop_swap::main_data_dir().ok_or_else(|| {
@@ -685,6 +739,41 @@ fn reopen_desktop(db: &crate::database::Database) -> bool {
             false
         }
     }
+}
+
+/// Reopens Desktop unless a swap was left unfinished: opened on a folder
+/// that is half one login and half another, it takes it for a different
+/// person and resets what it keeps for the old one.
+fn reopen_if_whole(db: &crate::database::Database, vault: &CodeVault) -> bool {
+    if desktop_swap::needs_recovery(vault) {
+        return false;
+    }
+    reopen_desktop(db)
+}
+
+/// Closes the running Desktop. When that fails, what was ended is not known
+/// to the caller, so the error says so.
+fn close_desktop_for_swap(main: &Path) -> Result<bool, AppError> {
+    desktop_swap::close_main_desktop(main).map_err(|error| {
+        AppError::Message(format!(
+            "{error}（Chimera 已经尝试结束它；如果它的窗口不见了，请手动重新打开）"
+        ))
+    })
+}
+
+/// A failed swap that had closed Desktop says what became of it.
+fn after_close(error: AppError, was_running: bool, restarted: bool) -> AppError {
+    if !was_running {
+        return error;
+    }
+    AppError::Message(format!(
+        "{error}（Claude Desktop 已被关闭{}）",
+        if restarted {
+            "，已重新打开"
+        } else {
+            "，请手动打开"
+        }
+    ))
 }
 
 /// Which logins have a Claude Desktop sign-in saved, and who Desktop is
@@ -711,29 +800,27 @@ pub async fn capture_claude_desktop_login(
     close_desktop: bool,
 ) -> Result<DesktopSwapOutcome, AppError> {
     crate::claude_accounts::validate_account_id(&id)?;
+    let _swap = DESKTOP_SWAP.lock().await;
     let lock = code::account_lock(&id);
     let _guard = lock.lock().await;
     let db = state.db.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let vault = CodeVault::open_default()?;
         let main = desktop_main_dir()?;
-        let mut was_running = false;
-        if desktop_swap::data_locked(&main) {
-            if !close_desktop {
-                return Ok(DesktopSwapOutcome {
-                    status: DesktopSwapState::DesktopRunning,
-                    restarted: false,
-                    saved_outgoing_for: None,
-                    stashed_outgoing: false,
-                });
-            }
-            was_running = desktop_swap::close_main_desktop(&main)?;
+        // The cheap checks come before Desktop is closed for them.
+        desktop_swap::check_capture(&vault, &main, &id)?;
+        let running = desktop_swap::data_locked(&main);
+        if running && !close_desktop {
+            return Ok(DesktopSwapOutcome::running());
         }
+        let was_running = running && close_desktop_for_swap(&main)?;
         let captured = desktop_swap::capture_in(&vault, &main, &id);
-        let restarted = was_running && reopen_desktop(&db);
-        captured?;
+        let restarted = was_running && reopen_if_whole(&db, &vault);
+        captured.map_err(|error| after_close(error, was_running, restarted))?;
+        quota::forget_default_desktop(&vault);
         Ok(DesktopSwapOutcome {
             status: DesktopSwapState::Done,
+            was_running,
             restarted,
             saved_outgoing_for: None,
             stashed_outgoing: false,
@@ -751,30 +838,67 @@ pub async fn switch_claude_desktop_account(
     close_desktop: bool,
 ) -> Result<DesktopSwapOutcome, AppError> {
     crate::claude_accounts::validate_account_id(&id)?;
+    let _swap = DESKTOP_SWAP.lock().await;
     let lock = code::account_lock(&id);
     let _guard = lock.lock().await;
     let db = state.db.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let vault = CodeVault::open_default()?;
         let main = desktop_main_dir()?;
-        let mut was_running = false;
-        if desktop_swap::data_locked(&main) {
-            if !close_desktop {
-                return Ok(DesktopSwapOutcome {
-                    status: DesktopSwapState::DesktopRunning,
-                    restarted: false,
-                    saved_outgoing_for: None,
-                    stashed_outgoing: false,
-                });
-            }
-            was_running = desktop_swap::close_main_desktop(&main)?;
+        desktop_swap::check_switch(&vault, &main, &id)?;
+        let running = desktop_swap::data_locked(&main);
+        if running && !close_desktop {
+            return Ok(DesktopSwapOutcome::running());
         }
+        let was_running = running && close_desktop_for_swap(&main)?;
         let switched = desktop_swap::switch_in(&vault, &main, &id);
-        // Reopen even when the swap failed: the old sign-in was put back.
-        let restarted = was_running && reopen_desktop(&db);
-        let result = switched?;
+        // Reopen even when the swap failed, as long as the old sign-in was put back.
+        let restarted = was_running && reopen_if_whole(&db, &vault);
+        let result = switched.map_err(|error| after_close(error, was_running, restarted))?;
+        quota::forget_default_desktop(&vault);
         Ok(DesktopSwapOutcome {
             status: DesktopSwapState::Done,
+            was_running,
+            restarted,
+            saved_outgoing_for: result.saved_outgoing_for,
+            stashed_outgoing: result.stashed_outgoing,
+        })
+    })
+    .await
+    .map_err(unfinished)?
+}
+
+/// Takes the default Desktop back to its sign-in page, so this saved login
+/// can be signed in there and then saved. The sign-in that was in use is kept
+/// first and nobody is signed out; Desktop is opened again at the sign-in page.
+#[tauri::command]
+pub async fn prepare_claude_desktop_login(
+    state: State<'_, AppState>,
+    id: String,
+    close_desktop: bool,
+) -> Result<DesktopSwapOutcome, AppError> {
+    crate::claude_accounts::validate_account_id(&id)?;
+    let _swap = DESKTOP_SWAP.lock().await;
+    let lock = code::account_lock(&id);
+    let _guard = lock.lock().await;
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let vault = CodeVault::open_default()?;
+        let main = desktop_main_dir()?;
+        desktop_swap::check_prepare(&vault, &main, &id)?;
+        let running = desktop_swap::data_locked(&main);
+        if running && !close_desktop {
+            return Ok(DesktopSwapOutcome::running());
+        }
+        let was_running = running && close_desktop_for_swap(&main)?;
+        let prepared = desktop_swap::prepare_login_in(&vault, &main, &id);
+        // Desktop is opened either way: the sign-in page is what this is for.
+        let restarted = reopen_if_whole(&db, &vault);
+        let result = prepared.map_err(|error| after_close(error, was_running, restarted))?;
+        quota::forget_default_desktop(&vault);
+        Ok(DesktopSwapOutcome {
+            status: DesktopSwapState::Done,
+            was_running,
             restarted,
             saved_outgoing_for: result.saved_outgoing_for,
             stashed_outgoing: result.stashed_outgoing,
@@ -789,32 +913,47 @@ mod session_tests {
     use super::*;
 
     #[test]
-    fn the_session_script_clears_overrides_and_keeps_the_lock_open_while_claude_runs() {
-        let script = session_script(
-            Some(Path::new(r"C:\Users\me\v\sessions\a1")),
-            Some(Path::new(r"D:\work\100%")),
+    fn the_session_script_runs_claude_on_the_session_folder_from_the_chosen_folder_and_removes_itself(
+    ) {
+        let dir = Path::new(r"C:\Users\me\v\100%\sessions\a^1");
+        let script = session_script(Some(dir), Some(Path::new(r"D:\work\100%")));
+        let mut expected = vec![
+            "@echo off".to_string(),
+            "setlocal DisableDelayedExpansion".to_string(),
+            // Not the folder it is opened in: that is a project the user may not trust.
+            "set \"NoDefaultCurrentDirectoryInExePath=1\"".to_string(),
+            "for /f \"tokens=2 delims=:\" %%a in ('chcp') do set \"CHIMERA_CP=%%a\"".to_string(),
+            "chcp 65001 >nul".to_string(),
+            "cd /d \"D:\\work\\100%%\" || goto :done".to_string(),
+        ];
+        // The launcher's lines are inline: `call` would read the `%` and `^`
+        // of the path a second time.
+        expected.extend(sessions::launcher_body(dir));
+        expected.extend([
+            ":done".to_string(),
+            "chcp %CHIMERA_CP% >nul".to_string(),
+            "endlocal".to_string(),
+            "(goto) 2>nul & rmdir /s /q \"%~dp0\"".to_string(),
+        ]);
+        assert_eq!(script, expected.join("\r\n") + "\r\n");
+        assert!(
+            script.contains("set \"CLAUDE_CONFIG_DIR=C:\\Users\\me\\v\\100%%\\sessions\\a^1\"\r\n")
         );
-        assert!(script.starts_with("@echo off\r\nchcp 65001 >nul\r\n"));
-        for name in sessions::AUTH_OVERRIDE_ENV {
-            assert!(script.contains(&format!("set \"{name}=\"\r\n")), "{name}");
-        }
-        assert!(script.contains("set \"CLAUDE_CONFIG_DIR=C:\\Users\\me\\v\\sessions\\a1\"\r\n"));
-        assert!(script.contains("cd /d \"D:\\work\\100%%\" || exit /b 1\r\n"));
-        assert!(script
-            .contains("(call claude) 9>\"C:\\Users\\me\\v\\sessions\\a1\\.session.lock\"\r\n"));
-        assert!(script.ends_with("del \"%~f0\" >nul 2>&1\r\nrmdir \"%~dp0\" >nul 2>&1\r\n"));
+        assert!(!script.contains("call \""), "nothing is called by path");
         // Lines are CRLF only, as cmd expects.
         assert!(!script.replace("\r\n", "").contains('\n'));
     }
 
     #[test]
-    fn a_plain_launch_sets_no_account_and_unc_folders_use_pushd() {
+    fn a_plain_launch_calls_claude_and_unc_folders_use_pushd() {
         let script = session_script(None, Some(Path::new(r"\\srv\share\repo")));
-        assert!(!script.contains("CLAUDE_CONFIG_DIR"));
-        assert!(!script.contains("ANTHROPIC_API_KEY"));
-        assert!(script.contains("pushd \"\\\\srv\\share\\repo\" || exit /b 1\r\n"));
+        assert!(script.contains("pushd \"\\\\srv\\share\\repo\" || goto :done\r\n"));
         assert!(script.contains("call claude\r\n"));
-        assert!(!script.contains("9>"));
+        assert!(script.contains("set \"NoDefaultCurrentDirectoryInExePath=1\"\r\n"));
+        // No folder chosen: the user's home, not wherever this app runs from.
+        let no_folder = session_script(Some(Path::new(r"C:\l\sessions\a1")), None);
+        assert!(no_folder.contains("cd /d \"%USERPROFILE%\" || goto :done\r\n"));
+        assert!(!no_folder.contains("pushd"));
     }
 
     #[test]
@@ -823,5 +962,66 @@ mod session_tests {
         assert!(checked_folder("C:\\no\\such\\folder\\anywhere-123456").is_err());
         let dir = tempfile::tempdir().unwrap();
         assert!(checked_folder(&dir.path().to_string_lossy()).is_ok());
+    }
+
+    #[test]
+    fn usage_costs_match_the_usage_page_including_one_hour_cache_writes() {
+        use crate::proxy::usage::calculator::{CostCalculator, ModelPricing};
+        use crate::proxy::usage::parser::TokenUsage;
+        use rust_decimal::prelude::ToPrimitive;
+        let pricing = ModelPricing::from_strings("4", "20", "0.2", "5").unwrap();
+        for (input, output, read, write, one_hour) in [
+            (
+                1_000_000_u64,
+                500_000_u64,
+                2_000_000_u64,
+                300_000_u64,
+                0_u64,
+            ),
+            (10, 20, 30, 1_000_000, 400_000),
+            (0, 0, 0, 1_000_000, 1_000_000),
+            (5, 5, 5, 100, 900),
+        ] {
+            let tokens = usage::Tokens {
+                input,
+                output,
+                cache_read: read,
+                cache_write: write,
+                cache_write_1h: one_hour,
+            };
+            let page = CostCalculator::calculate(
+                &TokenUsage {
+                    input_tokens: input as u32,
+                    output_tokens: output as u32,
+                    cache_read_tokens: read as u32,
+                    cache_creation_tokens: write as u32,
+                    cache_creation_1h_tokens: one_hour as u32,
+                    model: None,
+                    message_id: None,
+                },
+                &pricing,
+                rust_decimal::Decimal::ONE,
+            )
+            .total_cost
+            .to_f64()
+            .unwrap();
+            assert!(
+                (cost_of(&pricing, &tokens) - page).abs() < 1e-9,
+                "{input} {output} {read} {write} {one_hour}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_swap_that_closed_desktop_says_what_became_of_it() {
+        let error = after_close(AppError::Message("登录文件被占用".to_string()), true, true);
+        assert_eq!(
+            error.to_string(),
+            "登录文件被占用（Claude Desktop 已被关闭，已重新打开）"
+        );
+        let error = after_close(AppError::Message("登录文件被占用".to_string()), true, false);
+        assert!(error.to_string().ends_with("，请手动打开）"));
+        let untouched = after_close(AppError::Message("x".to_string()), false, false);
+        assert_eq!(untouched.to_string(), "x");
     }
 }

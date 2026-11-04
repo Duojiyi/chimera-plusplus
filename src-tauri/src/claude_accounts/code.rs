@@ -63,6 +63,12 @@ static CODE_LOCK: Mutex<()> = Mutex::new(());
 
 /// One async lock per account: a token refresh and a switch of the same
 /// account never overlap, and at most one refresh per account runs.
+/// Present in a vault whose permissions were set. Setting them walks every
+/// file under the root (parallel session folders hold thousands), and folders
+/// made later inherit them.
+#[cfg(windows)]
+const ACL_MARKER: &str = ".acl-set";
+
 static ACCOUNT_LOCKS: LazyLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -322,12 +328,19 @@ impl CodeVault {
     pub(crate) fn open_at(root: PathBuf) -> Result<Self, AppError> {
         ensure_private_dir(&root)?;
         #[cfg(windows)]
-        crate::codex_accounts::vault::win::restrict_to_current_user(&root).map_err(|e| {
-            AppError::IoContext {
-                context: format!("无法设置 Claude 账号保险库权限: {}", root.display()),
-                source: e,
+        {
+            let marker = root.join(ACL_MARKER);
+            if fs::symlink_metadata(&marker).is_err() {
+                crate::codex_accounts::vault::win::restrict_to_current_user(&root).map_err(
+                    |e| AppError::IoContext {
+                        context: format!("无法设置 Claude 账号保险库权限: {}", root.display()),
+                        source: e,
+                    },
+                )?;
+                // Only after it worked, so a failure is tried again.
+                let _ = fs::write(&marker, b"");
             }
-        })?;
+        }
         for sub in [SLOTS_DIR, BACKUPS_DIR, QUOTA_DIR] {
             ensure_private_dir(&root.join(sub))?;
         }
@@ -377,7 +390,13 @@ impl CodeVault {
     pub(crate) fn write_slot(&self, slot: &Slot) -> Result<(), AppError> {
         let path = self.slot_path(&slot.id)?;
         let plain = serde_json::to_vec(slot).map_err(|e| AppError::JsonSerialize { source: e })?;
-        private_write(&path, &seal(&plain)?)
+        let sealed = seal(&plain)?;
+        if sealed.len() as u64 > MAX_SLOT_BYTES {
+            return Err(AppError::Message(
+                "这份登录的内容太大，无法保存".to_string(),
+            ));
+        }
+        private_write(&path, &sealed)
     }
 
     fn remove_slot(&self, id: &str) -> Result<(), AppError> {
@@ -523,6 +542,8 @@ struct Live {
     /// The Console API key Claude Code was given, when it is not signed in
     /// with a subscription (a subscription login wins over a key).
     api_key: Option<String>,
+    /// `primaryApiKey` as written, even beside a subscription login.
+    primary_key: Option<String>,
 }
 
 fn parse_object(bytes: Option<&[u8]>) -> Option<Map<String, Value>> {
@@ -570,8 +591,9 @@ fn read_live(paths: &LivePaths) -> Result<Live, AppError> {
     let credentials = read_optional(&paths.credentials)?;
     let claude_json = read_optional(&paths.claude_json)?;
     let (oauth, account) = parse_live(credentials.as_deref(), claude_json.as_deref());
+    let primary_key = parse_api_key(claude_json.as_deref());
     let api_key = if oauth.is_none() {
-        parse_api_key(claude_json.as_deref())
+        primary_key.clone()
     } else {
         None
     };
@@ -581,6 +603,7 @@ fn read_live(paths: &LivePaths) -> Result<Live, AppError> {
         oauth,
         account,
         api_key,
+        primary_key,
     })
 }
 
@@ -761,8 +784,25 @@ fn unreadable_dto(id: String) -> CodeAccountDto {
     }
 }
 
+/// A long-lived `claude setup-token` token: no refresh token to rotate.
+fn is_setup_token_oauth(oauth: &Value) -> bool {
+    refresh_token_of(oauth).is_none()
+        && oauth
+            .get("accessToken")
+            .and_then(Value::as_str)
+            .is_some_and(|token| token.starts_with("sk-ant-oat"))
+}
+
 fn live_identity(live: &Live) -> Option<Identity> {
     if let Some(oauth) = &live.oauth {
+        // The `oauthAccount` beside a token may be left over from another
+        // login (Claude Code wrote it back); only the token says who it is.
+        if is_setup_token_oauth(oauth) {
+            return Some(Identity {
+                fingerprint: token_fingerprint(Some(oauth)),
+                ..Identity::default()
+            });
+        }
         return Some(identity(live.account.as_ref(), Some(oauth)));
     }
     live.api_key.as_deref().map(|key| Identity {
@@ -892,6 +932,9 @@ pub(crate) fn save_current_in(
         .oauth
         .clone()
         .ok_or_else(|| AppError::Message(NO_LIVE_LOGIN.to_string()))?;
+    if is_setup_token_oauth(&oauth) {
+        return save_live_setup_token(vault, &oauth, name);
+    }
     let ident = identity(live.account.as_ref(), Some(&oauth));
     if tokens_owned_elsewhere(vault, &oauth, &ident) {
         return Err(AppError::Message(MISMATCHED_LOGIN.to_string()));
@@ -1043,6 +1086,16 @@ fn approved_responses(original: Option<&[u8]>, key: &str) -> Value {
     Value::Object(responses)
 }
 
+/// Whether `slot` is what Claude Code is signed in with: the same login, or
+/// the very tokens it holds (its `.claude.json` may name someone else).
+/// Refreshing or copying the saved tokens then would rotate them out from
+/// under Claude Code.
+fn live_holds(live: &Live, slot: &Slot) -> bool {
+    let live_refresh = live.oauth.as_ref().and_then(refresh_token_of);
+    live_identity(live).is_some_and(|ident| same_login(&ident, &slot.identity()))
+        || (live_refresh.is_some() && live_refresh == refresh_token_of(&slot.claude_ai_oauth))
+}
+
 /// The new contents of `.credentials.json` and `.claude.json`; `None` for a
 /// file that needs no write.
 type LiveFiles = (Option<Vec<u8>>, Option<Vec<u8>>);
@@ -1098,6 +1151,32 @@ fn save_outgoing_api_key(vault: &CodeVault, key: &str) -> Result<Option<String>,
     Ok(Some(slot.id))
 }
 
+/// Saves the setup-token Claude Code is using as an account.
+fn save_live_setup_token(
+    vault: &CodeVault,
+    oauth: &Value,
+    name: Option<String>,
+) -> Result<CodeAccountDto, AppError> {
+    let token = oauth
+        .get("accessToken")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let ident = Identity {
+        fingerprint: token_fingerprint(Some(oauth)),
+        ..Identity::default()
+    };
+    if let Some(slot) = find_matching(vault, &ident) {
+        return Ok(slot.dto(Some(&ident)));
+    }
+    let slot = manage::new_secret_slot(
+        vault,
+        name.unwrap_or_else(|| manage::SETUP_TOKEN_NAME.to_string()),
+        manage::Secret::SetupToken(token.to_string()),
+    )?;
+    vault.write_slot(&slot)?;
+    Ok(slot.dto(Some(&ident)))
+}
+
 /// Saves the API key Claude Code is using as an account.
 fn save_api_key(
     vault: &CodeVault,
@@ -1141,7 +1220,13 @@ pub(crate) fn switch_in(
     }
 
     if let Some(ident) = live_identity(&live) {
-        if same_login(&ident, &target_ident) {
+        // Not when `.claude.json` names this login but the tokens are another
+        // saved login's: then they are written over, below.
+        let tokens_are_its_own = !live
+            .oauth
+            .as_ref()
+            .is_some_and(|oauth| tokens_owned_elsewhere(vault, oauth, &ident));
+        if same_login(&ident, &target_ident) && tokens_are_its_own {
             // Take the newest tokens Claude Code holds for this login.
             if let (Some(oauth), SlotKind::Oauth) = (&live.oauth, target.kind) {
                 target.absorb(oauth.clone(), live.account.clone());
@@ -1182,25 +1267,50 @@ pub(crate) fn switch_in(
         _ => None,
     };
     if let Some((oauth, ident)) = outgoing_live {
-        let outgoing = match find_matching(vault, &ident) {
-            Some(mut slot) => {
-                slot.absorb(oauth.clone(), live.account.clone());
-                slot
+        if is_setup_token_oauth(oauth) {
+            if find_matching(vault, &ident).is_none() {
+                let token = oauth
+                    .get("accessToken")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let slot = manage::new_secret_slot(
+                    vault,
+                    manage::SETUP_TOKEN_NAME.to_string(),
+                    manage::Secret::SetupToken(token.to_string()),
+                )?;
+                vault.write_slot(&slot)?;
+                auto_saved_id = Some(slot.id);
             }
-            None => {
-                let name = fitted_name(ident.email.as_deref().unwrap_or_default(), DEFAULT_NAME);
-                let slot = new_slot(vault, name, oauth.clone(), live.account.clone())?;
-                auto_saved_id = Some(slot.id.clone());
-                slot
-            }
-        };
-        vault.write_slot(&outgoing)?;
+        } else {
+            let outgoing = match find_matching(vault, &ident) {
+                Some(mut slot) => {
+                    slot.absorb(oauth.clone(), live.account.clone());
+                    slot
+                }
+                None => {
+                    let name =
+                        fitted_name(ident.email.as_deref().unwrap_or_default(), DEFAULT_NAME);
+                    let slot = new_slot(vault, name, oauth.clone(), live.account.clone())?;
+                    auto_saved_id = Some(slot.id.clone());
+                    slot
+                }
+            };
+            vault.write_slot(&outgoing)?;
+        }
     }
-    if live.oauth.is_none() {
-        if let Some(key) = &live.api_key {
-            if let Some(saved) = save_outgoing_api_key(vault, key)? {
-                auto_saved_id = auto_saved_id.or(Some(saved));
-            }
+    // A key that is the login is kept; so is one beside a subscription login
+    // when an API key account is about to replace it.
+    let outgoing_key = live
+        .api_key
+        .as_ref()
+        .or(if target.kind == SlotKind::ApiKey {
+            live.primary_key.as_ref()
+        } else {
+            None
+        });
+    if let Some(key) = outgoing_key {
+        if let Some(saved) = save_outgoing_api_key(vault, key)? {
+            auto_saved_id = auto_saved_id.or(Some(saved));
         }
     }
 
@@ -1259,6 +1369,11 @@ impl CodeVault {
 
 /// The Anthropic account id of a subscription login, for matching it with
 /// the account Claude Desktop is signed in as.
+/// The ids of every saved login file, readable or not.
+pub(crate) fn all_account_ids(vault: &CodeVault) -> Vec<String> {
+    vault.slot_ids()
+}
+
 pub(crate) fn account_uuid_of(vault: &CodeVault, id: &str) -> Result<Option<String>, AppError> {
     let slot = vault.read_slot(id)?;
     if slot.kind != SlotKind::Oauth {
@@ -1275,7 +1390,12 @@ pub(crate) fn find_by_account_uuid(vault: &CodeVault, uuid: &str) -> Option<Stri
         .readable_slots()
         .into_iter()
         .find(|slot| {
-            slot.kind == SlotKind::Oauth && slot.identity().account_uuid.as_deref() == Some(uuid)
+            slot.kind == SlotKind::Oauth
+                && slot
+                    .identity()
+                    .account_uuid
+                    .as_deref()
+                    .is_some_and(|have| have.eq_ignore_ascii_case(uuid))
         })
         .map(|slot| slot.id)
 }
@@ -1332,11 +1452,7 @@ pub(crate) fn quota_source(
     // Same login by identity, or the very tokens Claude Code holds now (the
     // live `.claude.json` may name someone else): either way refreshing the
     // saved copy would rotate the refresh token out from under Claude Code.
-    let is_live = live.as_ref().is_some_and(|live| {
-        let live_refresh = live.oauth.as_ref().and_then(refresh_token_of);
-        live_identity(live).is_some_and(|ident| same_login(&ident, &slot.identity()))
-            || (live_refresh.is_some() && live_refresh == refresh_token_of(&slot.claude_ai_oauth))
-    });
+    let is_live = live.as_ref().is_some_and(|live| live_holds(live, &slot));
     Ok(if is_live {
         QuotaSource::Live
     } else {
@@ -1630,6 +1746,32 @@ pub(crate) mod tests {
             QuotaSource::Live
         ));
         switch_in(&fx.vault, &fx.paths, &me.id, false, || false).unwrap();
+        assert_eq!(
+            fx.vault.read_slot(&work.id).unwrap().oauth()["accessToken"],
+            "tok-work"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(target_os = "macos", ignore = "switching is unsupported on macOS")]
+    fn switching_to_the_login_a_half_switched_state_names_writes_its_own_tokens() {
+        let fx = fixture();
+        login(&fx.paths, "work@example.com", "u-work", "tok-work");
+        let work = save_current_in(&fx.vault, &fx.paths, None).unwrap();
+        login(&fx.paths, "me@example.com", "u-me", "tok-me");
+        let me = save_current_in(&fx.vault, &fx.paths, None).unwrap();
+        // Half-switched: `.claude.json` names work, the tokens are me's.
+        login(&fx.paths, "work@example.com", "u-work", "tok-me");
+
+        let outcome = switch_in(&fx.vault, &fx.paths, &work.id, false, || false).unwrap();
+        assert_eq!(outcome.status, SwitchStatus::Switched);
+        // Work got its own tokens back; me's were not put under work.
+        let live = read_live(&fx.paths).unwrap();
+        assert_eq!(live.oauth.unwrap()["accessToken"], "tok-work");
+        assert_eq!(
+            fx.vault.read_slot(&me.id).unwrap().oauth()["accessToken"],
+            "tok-me"
+        );
         assert_eq!(
             fx.vault.read_slot(&work.id).unwrap().oauth()["accessToken"],
             "tok-work"

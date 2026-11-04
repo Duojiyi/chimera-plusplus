@@ -30,19 +30,23 @@ const RANGES: { days: number | null; label: string }[] = [
 const MAX_HEATMAP_WEEKS = 53;
 const DAY_MS = 86_400_000;
 
-/** 1,234 → "1.2K", 3_400_000 → "3.4M". */
+const UNITS: [number, string][] = [
+  [1e3, "K"],
+  [1e6, "M"],
+  [1e9, "B"],
+];
+
+/** 1,234 → "1.2K", 3_400_000 → "3.4M"; rounds up into the next unit (999_950 → "1M"). */
 export function compact(value: number): string {
-  if (value < 1_000) return String(Math.round(value));
-  const units: [number, string][] = [
-    [1e9, "B"],
-    [1e6, "M"],
-    [1e3, "K"],
-  ];
-  for (const [size, unit] of units) {
-    if (value >= size) {
-      const scaled = value / size;
-      return `${scaled >= 100 ? Math.round(scaled) : scaled.toFixed(1).replace(/\.0$/, "")}${unit}`;
-    }
+  if (!Number.isFinite(value) || value <= 0) return "0";
+  if (Math.round(value) < 1_000) return String(Math.round(value));
+  for (let index = 0; index < UNITS.length; index++) {
+    const [size, unit] = UNITS[index];
+    const scaled = value / size;
+    const rounded =
+      scaled >= 100 ? Math.round(scaled) : Math.round(scaled * 10) / 10;
+    if (rounded >= 1_000 && index < UNITS.length - 1) continue;
+    return `${rounded}${unit}`;
   }
   return String(value);
 }
@@ -54,12 +58,14 @@ export function bucketTokens(bucket: ClaudeUsageBucket): number {
 
 export function money(bucket: ClaudeUsageBucket): string {
   if (bucket.costUsd === 0 && bucket.costPartial) return "—";
+  // Decide the precision on the rounded amount, so $99.996 is "$100", not "$100.00".
+  const value = bucket.costUsd;
   const text =
-    bucket.costUsd >= 100
-      ? bucket.costUsd.toFixed(0)
-      : bucket.costUsd >= 1
-        ? bucket.costUsd.toFixed(2)
-        : bucket.costUsd.toFixed(3);
+    Math.round(value * 100) / 100 >= 100
+      ? value.toFixed(0)
+      : Math.round(value * 1000) / 1000 >= 1
+        ? value.toFixed(2)
+        : value.toFixed(3);
   return `${bucket.costPartial ? "≥ " : ""}$${text}`;
 }
 
@@ -94,10 +100,18 @@ export function heatmapWeeks(
     const first = days[0]?.day;
     const firstDate = first
       ? new Date(`${first}T00:00:00`)
-      : new Date(end.getTime() - 29 * DAY_MS);
+      : new Date(end.getFullYear(), end.getMonth(), end.getDate() - 29);
+    // Rounded: a day is 23 or 25 hours long where the clocks change.
     spanDays = Math.round((end.getTime() - firstDate.getTime()) / DAY_MS) + 1;
   }
-  const start = new Date(end.getTime() - (Math.max(1, spanDays) - 1) * DAY_MS);
+  // By the calendar, not by milliseconds, so the first day is midnight.
+  const start = new Date(
+    end.getFullYear(),
+    end.getMonth(),
+    end.getDate() - (Math.max(1, spanDays) - 1),
+  );
+  const startKey = dayKey(start);
+  const endKey = dayKey(end);
   // Back to the Monday of the first week, forward to the Sunday of the last.
   const mondayOffset = (start.getDay() + 6) % 7;
   const gridStart = new Date(
@@ -131,7 +145,7 @@ export function heatmapWeeks(
         firstColumn.getDate() + w * 7 + d,
       );
       const key = dayKey(date);
-      const inRange = date >= start && date <= end;
+      const inRange = key >= startKey && key <= endKey;
       const tokens = inRange ? (byDay.get(key) ?? 0) : 0;
       const level =
         tokens === 0 || max === 0
@@ -209,50 +223,67 @@ export function lastDays(count: number, today: Date): string[] {
 function DayBars({
   rangeDays,
   byDay,
+  asOf,
 }: {
   rangeDays: number;
   byDay: Map<string, ClaudeUsageDay>;
+  /** The reading these days come from: "today" is taken again with each one. */
+  asOf: unknown;
 }) {
-  const dates = useMemo(() => lastDays(rangeDays, new Date()), [rangeDays]);
+  const dates = useMemo(
+    () => lastDays(rangeDays, new Date()),
+    [rangeDays, asOf],
+  );
   const max = Math.max(
     1,
     ...dates.map((d) => (byDay.get(d) ? bucketTokens(byDay.get(d)!) : 0)),
   );
   return (
-    <div
-      className="claude-usage-bars"
-      role="img"
-      aria-label={`最近 ${rangeDays} 天每天的用量`}
-    >
-      <div className="claude-usage-bars-plot">
-        {dates.map((date) => {
+    <>
+      <ul className="sr-only" aria-label={`最近 ${rangeDays} 天每天的用量`}>
+        {dates.flatMap((date) => {
           const usage = byDay.get(date);
-          const tokens = usage ? bucketTokens(usage) : 0;
-          return (
-            <span
-              key={date}
-              className="claude-usage-bar"
-              data-empty={tokens === 0 ? "true" : undefined}
-              style={{
-                height:
-                  tokens === 0
-                    ? undefined
-                    : `${Math.max(6, (tokens / max) * 100)}%`,
-              }}
-              title={
-                usage
-                  ? `${dayLabel(date)} · ${compact(tokens)} tokens · ${money(usage)} · ${usage.messages} 条消息`
-                  : `${dayLabel(date)} · 没有使用`
-              }
-            />
-          );
+          return usage && bucketTokens(usage) > 0
+            ? [
+                <li key={date}>
+                  {dayLabel(date)}：{compact(bucketTokens(usage))} tokens，
+                  {money(usage)}，{usage.messages} 条消息
+                </li>,
+              ]
+            : [];
         })}
+      </ul>
+      <div className="claude-usage-bars" aria-hidden="true">
+        <div className="claude-usage-bars-plot">
+          {dates.map((date) => {
+            const usage = byDay.get(date);
+            const tokens = usage ? bucketTokens(usage) : 0;
+            return (
+              <span
+                key={date}
+                className="claude-usage-bar"
+                data-empty={tokens === 0 ? "true" : undefined}
+                style={{
+                  height:
+                    tokens === 0
+                      ? undefined
+                      : `${Math.max(6, (tokens / max) * 100)}%`,
+                }}
+                title={
+                  usage
+                    ? `${dayLabel(date)} · ${compact(tokens)} tokens · ${money(usage)} · ${usage.messages} 条消息`
+                    : `${dayLabel(date)} · 没有使用`
+                }
+              />
+            );
+          })}
+        </div>
+        <div className="claude-usage-bars-axis" aria-hidden="true">
+          <span>{dayLabel(dates[0])}</span>
+          <span>今天</span>
+        </div>
       </div>
-      <div className="claude-usage-bars-axis" aria-hidden="true">
-        <span>{dayLabel(dates[0])}</span>
-        <span>今天</span>
-      </div>
-    </div>
+    </>
   );
 }
 
@@ -318,13 +349,27 @@ function Heatmap({
     [days, rangeDays],
   );
   const active = days.filter((d) => bucketTokens(d) > 0).length;
+  const scroller = useRef<HTMLDivElement>(null);
+  // A long history is wider than the card: show the latest weeks first.
+  useEffect(() => {
+    const element = scroller.current;
+    if (element) element.scrollLeft = element.scrollWidth;
+  }, [weeks]);
+  const recent = days.filter((d) => bucketTokens(d) > 0).slice(-30);
   return (
-    <div
-      className="claude-usage-heatmap"
-      role="img"
-      aria-label={`每日用量热力图，共 ${active} 天有使用`}
-    >
-      <div className="claude-usage-heat-grid">
+    <div className="claude-usage-heatmap" ref={scroller}>
+      <ul
+        className="sr-only"
+        aria-label={`每日用量，共 ${active} 天有使用，列出最近 ${recent.length} 天`}
+      >
+        {recent.map((usage) => (
+          <li key={usage.day}>
+            {dayLabel(usage.day)}：{compact(bucketTokens(usage))} tokens，
+            {money(usage)}，{usage.messages} 条消息
+          </li>
+        ))}
+      </ul>
+      <div className="claude-usage-heat-grid" aria-hidden="true">
         {weeks.map((column, index) => (
           <div key={index} className="claude-usage-heat-col">
             {column.map((cell) => {
@@ -369,19 +414,27 @@ type Breakdown = "projects" | "models" | "sources";
 const BREAKDOWNS: { id: Breakdown; label: string }[] = [
   { id: "projects", label: "项目" },
   { id: "models", label: "模型" },
-  { id: "sources", label: "账号" },
+  { id: "sources", label: "来源" },
 ];
+
+/** What a grouping does not tell, under its list. */
+const BREAKDOWN_NOTES: Partial<Record<Breakdown, string>> = {
+  sources:
+    "对话日志里没有记账号：只有并行会话、已删除的账号能分开算；用「切换到此账号」换号用的对话，都在「默认登录」里。",
+};
 const COLLAPSED_ROWS = 8;
 
 function BreakdownList({
   rows,
   label,
   showDetail,
+  note,
 }: {
   rows: ClaudeUsageNamed[];
   label: string;
   /** Under each name: its folder (projects only). */
   showDetail: boolean;
+  note?: string;
 }) {
   const [all, setAll] = useState(false);
   const max = Math.max(1, ...rows.map(bucketTokens));
@@ -428,6 +481,7 @@ function BreakdownList({
           {all ? "收起" : `显示全部 ${rows.length} 项`}
         </button>
       ) : null}
+      {note ? <p className="claude-usage-foot">{note}</p> : null}
     </>
   );
 }
@@ -495,6 +549,8 @@ export function ClaudeUsageCard({
     [overview],
   );
   const totals = overview?.totals;
+  // While another range loads, the chart keeps the range its data is for.
+  const shownRange = overview ? (overview.rangeDays ?? null) : rangeDays;
   const rows = overview
     ? tab === "projects"
       ? overview.projects
@@ -621,13 +677,17 @@ export function ClaudeUsageCard({
               </div>
 
               <div className="claude-usage-activity">
-                {rangeDays !== null && rangeDays <= 31 ? (
-                  <DayBars rangeDays={rangeDays} byDay={byDay} />
+                {shownRange !== null && shownRange <= 31 ? (
+                  <DayBars
+                    rangeDays={shownRange}
+                    byDay={byDay}
+                    asOf={overview}
+                  />
                 ) : (
                   <>
                     <Heatmap
                       days={overview.days}
-                      rangeDays={rangeDays}
+                      rangeDays={shownRange}
                       byDay={byDay}
                     />
                     <Facts days={overview.days} />
@@ -658,13 +718,18 @@ export function ClaudeUsageCard({
                   rows={rows}
                   label={BREAKDOWNS.find((b) => b.id === tab)?.label ?? ""}
                   showDetail={tab === "projects"}
+                  note={BREAKDOWN_NOTES[tab]}
                 />
               </div>
             </>
           )}
           <p className="claude-usage-foot">
             读取了 {overview.filesScanned} 个会话文件
-            {overview.truncated ? "（文件太多，只统计了一部分）" : ""}。
+            {overview.truncated ? "（文件太多，只统计了一部分）" : ""}
+            {overview.filesSkipped
+              ? `；有 ${overview.filesSkipped} 个文件没有读到（打不开、太大或是链接），没有计入`
+              : ""}
+            。
           </p>
         </div>
       )}

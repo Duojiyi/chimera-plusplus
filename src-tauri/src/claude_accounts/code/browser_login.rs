@@ -24,22 +24,9 @@ const PROBE_OUTPUT_BYTES: usize = 64 * 1024;
 const STAGED_FILE_BYTES: u64 = 8 * 1024 * 1024;
 const LOGIN_FLAG: &str = "--claudeai";
 
-/// Variables that would send the login somewhere else or replace the
-/// subscription OAuth the flow is meant to produce.
-const SCRUBBED_ENV: &[&str] = &[
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_AUTH_TOKEN",
-    "ANTHROPIC_BASE_URL",
-    "ANTHROPIC_PROFILE",
-    "ANTHROPIC_FEDERATION_RULE_ID",
-    "ANTHROPIC_ORGANIZATION_ID",
-    "CLAUDE_CODE_OAUTH_TOKEN",
-    "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
-    "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR",
-    "CLAUDE_CODE_USE_BEDROCK",
-    "CLAUDE_CODE_USE_VERTEX",
-    "CLAUDE_CODE_USE_FOUNDRY",
-];
+// Variables that would send the login somewhere else or replace the
+// subscription OAuth the flow is meant to produce.
+use super::sessions::AUTH_OVERRIDE_ENV as SCRUBBED_ENV;
 
 #[cfg(windows)]
 const CLI_ENV: &str = "CHIMERA_LOGIN_CLI";
@@ -143,6 +130,7 @@ fn sweep_orphans(vault: &CodeVault, keep: Option<&Path>) {
 
 // ===== the CLI process =====
 
+#[cfg_attr(not(windows), allow(dead_code))]
 fn prepare_env(command: &mut Command, dir: &Path) {
     for name in SCRUBBED_ENV {
         command.env_remove(name);

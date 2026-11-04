@@ -33,6 +33,7 @@ import {
   type ClaudeLoginImportReport,
 } from "@/lib/api/claudeAccounts";
 import { errorText } from "./quota";
+import { useReturnFocus } from "./useReturnFocus";
 
 const POLL_INTERVAL_MS = 2_000;
 
@@ -79,6 +80,12 @@ export interface AddAccountMenuProps {
   onTerminalGuide?: () => void;
   /** The trigger's text. */
   label?: string;
+  /**
+   * `desktop`: the page of the Claude Desktop accounts. A login saved there
+   * is a Claude Code one; tokens and keys have no use, and Desktop has to be
+   * signed in once before it can switch to the login.
+   */
+  mode?: "code" | "desktop";
 }
 
 /**
@@ -93,6 +100,7 @@ export function AddAccountMenu({
   onChanged,
   onTerminalGuide,
   label = "添加账号",
+  mode = "code",
 }: AddAccountMenuProps) {
   const [browser, setBrowser] = useState<Browser>({ phase: "idle" });
   const [report, setReport] = useState<ClaudeLoginImportReport | null>(null);
@@ -103,6 +111,11 @@ export function AddAccountMenu({
   const flowId = useRef<string | null>(null);
   const onChangedRef = useRef(onChanged);
   onChangedRef.current = onChanged;
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
+  const anyDialog =
+    browser.phase !== "idle" || report !== null || confirmExport || secretOpen;
+  useReturnFocus(anyDialog);
 
   const waitingId = browser.phase === "waiting" ? browser.id : null;
   flowId.current = waitingId;
@@ -137,7 +150,9 @@ export function AddAccountMenu({
               : `「${result.account.name}」已更新为刚授权的登录`,
             {
               description:
-                "Claude Code 当前的登录没有改动；要使用它，请在账号列表里切换。",
+                modeRef.current === "desktop"
+                  ? "已保存。要让默认 Claude Desktop 用它：点这一行的「用此账号登录 Desktop」，在回到登录页的 Desktop 里登录它，再点「保存 Desktop 登录」。"
+                  : "Claude Code 当前的登录没有改动；要使用它，请在账号列表里切换。",
             },
           );
           onChangedRef.current();
@@ -243,13 +258,15 @@ export function AddAccountMenu({
               </span>
             </DropdownMenuItem>
           ) : null}
-          <DropdownMenuItem onSelect={() => setSecretOpen(true)}>
-            <KeyRound size={15} aria-hidden="true" />
-            <span>
-              <strong>粘贴令牌或 API Key</strong>
-              <small>claude setup-token 的令牌，或 Console 的密钥</small>
-            </span>
-          </DropdownMenuItem>
+          {mode === "code" ? (
+            <DropdownMenuItem onSelect={() => setSecretOpen(true)}>
+              <KeyRound size={15} aria-hidden="true" />
+              <span>
+                <strong>粘贴令牌或 API Key</strong>
+                <small>claude setup-token 的令牌，或 Console 的密钥</small>
+              </span>
+            </DropdownMenuItem>
+          ) : null}
           <DropdownMenuItem onSelect={() => void importFile()}>
             <FileUp size={15} aria-hidden="true" />
             <span>
@@ -390,6 +407,11 @@ export function AddAccountMenu({
               </li>
             ))}
           </ul>
+          {report?.notes?.map((note, index) => (
+            <p key={`n:${index}`} className="claude-login-note" role="note">
+              {note}
+            </p>
+          ))}
           <footer className="claude-accounts-form-actions">
             <Button onClick={() => setReport(null)}>知道了</Button>
           </footer>
@@ -400,7 +422,7 @@ export function AddAccountMenu({
         isOpen={confirmExport}
         busy={working === "export"}
         title="导出的文件里是明文令牌"
-        message={`文件包含 ${exportable} 个账号的 access token 和 refresh token（API Key 也在其中），拿到它的人可以直接登录这些 Claude 账号。只保存在可信的位置，用完立即删除，不要上传或发给别人。格式与 claude-swap 兼容，可以导入那边使用。`}
+        message={`文件包含 ${exportable} 个账号的 access token 和 refresh token（API Key 也在其中），拿到它的人可以直接登录这些 Claude 账号。只保存在可信的位置，用完立即删除，不要上传或发给别人。格式与 claude-swap 兼容，可以导入那边使用。这是这台电脑上正在使用的同一份登录：拿到别处用了之后，这里的同一账号可能要重新登录。${mode === "desktop" ? "文件里没有 Claude Desktop 的登录：Desktop 的登录只在本机本用户有效，不能导出。" : ""}`}
         confirmText="我了解，选择保存位置"
         cancelText="取消"
         variant="destructive"
@@ -446,7 +468,7 @@ function SecretDialog({
       const saved = await claudeAccountsApi.addSecret(secret, name);
       toast.success(`已添加「${saved.name}」`, {
         description:
-          "没有联网验证。在终端切换到它并运行一次 claude，就能确认可用。",
+          "没有联网验证。在这里切换到它，再在终端运行一次 claude，就能确认可用。",
       });
       onOpenChange(false);
       reset();

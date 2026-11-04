@@ -651,6 +651,14 @@ async fn desktop_profile(access_token: &str) -> (Option<String>, Option<String>)
     )
 }
 
+/// The default Desktop's stored reading belongs to whoever was signed in when
+/// it was taken; after the sign-in changed, it would show them as the new one.
+pub(crate) fn forget_default_desktop(vault: &CodeVault) {
+    if let Ok(path) = vault.quota_path(&format!("desktop-{DEFAULT_DESKTOP_ID}")) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 pub async fn desktop_quota(id: String, force: bool) -> Result<DesktopQuotaDto, AppError> {
     use super::desktop_auth::{self, TokenRead};
 

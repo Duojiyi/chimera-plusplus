@@ -1,5 +1,7 @@
 import {
+  ArrowDown,
   ArrowLeftRight,
+  ArrowUp,
   Ban,
   Copy,
   FolderTree,
@@ -47,6 +49,8 @@ export interface AccountRowProps {
   canOpenSession: boolean;
   /** Present when the row can be dragged. */
   sortable?: SortableRowProps;
+  /** Where the row stands among those that can be moved. */
+  position?: { first: boolean; last: boolean };
   /** Claude Desktop page: this login's saved Desktop sign-in. */
   desktop?: {
     supported: boolean;
@@ -65,6 +69,7 @@ export interface AccountRowProps {
   onMove: (delta: -1 | 1) => void;
   onSaveDesktop: () => void;
   onSwitchDesktop: () => void;
+  onPrepareDesktop: () => void;
 }
 
 /** What a token or key account says where an OAuth login shows its quota. */
@@ -86,6 +91,7 @@ export function AccountRow({
   canSwitch,
   canOpenSession,
   sortable,
+  position,
   desktop,
   onSwitch,
   onRefresh,
@@ -98,6 +104,7 @@ export function AccountRow({
   onMove,
   onSaveDesktop,
   onSwitchDesktop,
+  onPrepareDesktop,
 }: AccountRowProps) {
   const current = canSwitch && account.isCurrent;
   const usable = !account.unreadable && !account.disabled;
@@ -218,6 +225,7 @@ export function AccountRow({
                 ? "这个账号需要重新登录后才能切换"
                 : undefined
             }
+            aria-label={`切换到此账号 ${account.name}`}
             onClick={onSwitch}
           >
             {busy === `switch:${account.id}` ? (
@@ -254,6 +262,7 @@ export function AccountRow({
                 size="sm"
                 variant="outline"
                 disabled={disabled}
+                aria-label={`切换默认 Desktop 到 ${account.name}`}
                 onClick={onSwitchDesktop}
               >
                 {busy === `desktop:${account.id}` ? (
@@ -274,12 +283,33 @@ export function AccountRow({
               variant="outline"
               disabled={disabled}
               title="把默认 Claude Desktop 现在的登录保存下来，以后可以切换回来"
+              aria-label={`保存 Desktop 登录 ${account.name}`}
               onClick={onSaveDesktop}
             >
               <Monitor size={14} aria-hidden="true" />
               保存 Desktop 登录
             </Button>
-          ) : null
+          ) : (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={disabled}
+              title="让默认 Claude Desktop 回到登录页，原来的登录先保存起来，不会被退出"
+              aria-label={`用此账号登录 Desktop ${account.name}`}
+              onClick={onPrepareDesktop}
+            >
+              {busy === `desktop:${account.id}` ? (
+                <Loader2
+                  size={14}
+                  className="animate-spin"
+                  aria-hidden="true"
+                />
+              ) : (
+                <Monitor size={14} aria-hidden="true" />
+              )}
+              用此账号登录 Desktop
+            </Button>
+          )
         ) : null}
 
         <DropdownMenu>
@@ -301,6 +331,24 @@ export function AccountRow({
                 重命名
               </DropdownMenuItem>
             ) : null}
+            {sortable && position ? (
+              <>
+                <DropdownMenuItem
+                  disabled={position.first}
+                  onSelect={() => onMove(-1)}
+                >
+                  <ArrowUp size={14} aria-hidden="true" />
+                  上移
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  disabled={position.last}
+                  onSelect={() => onMove(1)}
+                >
+                  <ArrowDown size={14} aria-hidden="true" />
+                  下移
+                </DropdownMenuItem>
+              </>
+            ) : null}
             {!account.unreadable ? (
               <DropdownMenuItem
                 disabled={account.isCurrent && !account.disabled}
@@ -314,7 +362,9 @@ export function AccountRow({
                 {account.disabled
                   ? "启用"
                   : account.isCurrent
-                    ? "停用（正在使用，先切换到别的账号）"
+                    ? canSwitch
+                      ? "停用（正在使用，先切换到别的账号）"
+                      : "停用（它是 Claude Code 当前的登录，先在 Claude Code 页切换）"
                     : "停用"}
               </DropdownMenuItem>
             ) : null}

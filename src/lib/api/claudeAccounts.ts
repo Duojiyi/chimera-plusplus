@@ -69,6 +69,8 @@ export interface ClaudeSessionLaunch {
   viaBinding: boolean;
   /** The account is Claude Code's current login: a plain terminal opened. */
   usesDefaultLogin: boolean;
+  /** Things that were not shared into the session folder. */
+  warnings?: string[];
 }
 
 export interface ClaudeSessionCommands {
@@ -82,6 +84,8 @@ export interface ClaudeUsageTokens {
   output: number;
   cacheRead: number;
   cacheWrite: number;
+  /** The part of `cacheWrite` kept for an hour. */
+  cacheWrite1h?: number;
 }
 
 export interface ClaudeUsageBucket {
@@ -107,7 +111,10 @@ export interface ClaudeUsageNamed extends ClaudeUsageBucket {
 export interface ClaudeUsageOverview {
   rangeDays?: number | null;
   filesScanned: number;
+  /** Some files were left out because there were too many. */
   truncated: boolean;
+  /** Links, and files that could not be read or are too large. */
+  filesSkipped?: number;
   totals: ClaudeUsageBucket;
   days: ClaudeUsageDay[];
   projects: ClaudeUsageNamed[];
@@ -135,7 +142,9 @@ export interface ClaudeDesktopSwapStatus {
 
 export interface ClaudeDesktopSwapOutcome {
   status: "done" | "desktop_running";
-  /** It was running, was closed for this, and has been opened again. */
+  /** It was running and was closed for this. */
+  wasRunning: boolean;
+  /** ...and has been opened again. */
   restarted: boolean;
   savedOutgoingFor?: string | null;
   stashedOutgoing: boolean;
@@ -159,6 +168,8 @@ export interface ClaudeLoginImportReport {
   imported: ClaudeCodeAccount[];
   updated: ClaudeCodeAccount[];
   skipped: ClaudeLoginSkipped[];
+  /** Things worth knowing about what was imported. */
+  notes?: string[];
 }
 
 export type ClaudeBrowserLoginPoll =
@@ -321,6 +332,19 @@ export const claudeAccountsApi = {
     closeDesktop = false,
   ): Promise<ClaudeDesktopSwapOutcome> =>
     invoke<ClaudeDesktopSwapOutcome>("switch_claude_desktop_account", {
+      id,
+      closeDesktop,
+    }),
+
+  /**
+   * Takes the default Desktop back to its sign-in page (keeping the sign-in
+   * in use, signing nobody out), so a saved login can be signed in there.
+   */
+  prepareDesktopLogin: (
+    id: string,
+    closeDesktop = false,
+  ): Promise<ClaudeDesktopSwapOutcome> =>
+    invoke<ClaudeDesktopSwapOutcome>("prepare_claude_desktop_login", {
       id,
       closeDesktop,
     }),

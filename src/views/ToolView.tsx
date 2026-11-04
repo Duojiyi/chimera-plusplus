@@ -780,7 +780,7 @@ function KnownToolView({
             </section>
           )}
 
-        {tool.appId === "claude" && !loading && !error ? (
+        {tool.appId === "claude" ? (
           <>
             <ClaudeAccountsCard mode="code" native={native} />
             <ClaudeBindingsCard native={native} />

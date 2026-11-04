@@ -21,6 +21,7 @@ const FORMAT_VERSION: u64 = 1;
 pub(crate) const MAX_IMPORT_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_TOKEN_LEN: usize = 16 * 1024;
 const MAX_OAUTH_BYTES: usize = 64 * 1024;
+const MAX_ACCOUNT_BYTES: usize = 16 * 1024;
 
 /// What an export produced. The text holds tokens; it is not `Debug`.
 pub(crate) struct Exported {
@@ -45,6 +46,8 @@ pub struct ImportReport {
     pub imported: Vec<CodeAccountDto>,
     pub updated: Vec<CodeAccountDto>,
     pub skipped: Vec<SkippedLogin>,
+    /// Things worth knowing about what was imported.
+    pub notes: Vec<String>,
 }
 
 fn platform_tag() -> &'static str {
@@ -80,10 +83,39 @@ fn token_entry(number: usize, slot: &Slot, label: &str, credentials: Value) -> V
 }
 
 /// The envelope for the saved logins named by `ids` (all of them for `None`).
-pub(crate) fn export_in(vault: &CodeVault, ids: Option<&[String]>) -> Result<Exported, AppError> {
+pub(crate) fn export_in(
+    vault: &CodeVault,
+    paths: &LivePaths,
+    ids: Option<&[String]>,
+) -> Result<Exported, AppError> {
     let _guard = CODE_LOCK.lock()?;
     // Newer tokens a session wrote belong in the file.
     sessions::harvest_all_locked(vault);
+    // So do the ones Claude Code holds for the login it is signed in with: it
+    // renews them as it goes, and the copy saved here is as old as the last
+    // switch, whose refresh token the server has long since replaced.
+    if let Ok(live) = read_live(paths) {
+        // Not when the tokens are another saved login's while `.claude.json`
+        // names a different one (a switch undone halfway): they would be put
+        // under the wrong login.
+        let stray = |oauth: &Value| {
+            live_identity(&live).is_some_and(|ident| tokens_owned_elsewhere(vault, oauth, &ident))
+        };
+        if let Some(oauth) = live
+            .oauth
+            .as_ref()
+            .filter(|oauth| !is_setup_token_oauth(oauth) && !stray(oauth))
+        {
+            for mut slot in vault.readable_slots() {
+                if slot.kind == SlotKind::Oauth && live_holds(&live, &slot) {
+                    slot.absorb(oauth.clone(), live.account.clone());
+                    if let Err(error) = vault.write_slot(&slot) {
+                        log::warn!("导出前同步当前登录失败: {error}");
+                    }
+                }
+            }
+        }
+    }
     let mut accounts = Vec::new();
     let mut skipped = 0usize;
     let mut slots = vault.readable_slots();
@@ -222,7 +254,12 @@ pub(super) fn valid_oauth(value: Option<&Value>, label: &str) -> Result<Value, A
 fn optional_account(value: Option<&Value>, label: &str) -> Result<Option<Value>, AppError> {
     match value {
         None | Some(Value::Null) => Ok(None),
-        Some(account) if account.is_object() => Ok(Some(account.clone())),
+        Some(account) if account.is_object() => {
+            if serde_json::to_vec(account).map_or(true, |bytes| bytes.len() > MAX_ACCOUNT_BYTES) {
+                return Err(invalid(format!("{label}的 oauthAccount 过大")));
+            }
+            Ok(Some(account.clone()))
+        }
         Some(_) => Err(invalid(format!("{label}的 oauthAccount 必须是对象"))),
     }
 }
@@ -371,6 +408,14 @@ fn store_candidate(
         .unwrap_or_else(|| fitted_name(ident.email.as_deref().unwrap_or_default(), DEFAULT_NAME));
     let slot = new_slot(vault, name, oauth, account)?;
     vault.write_slot(&slot)?;
+    // Without an account block a login is known only by its access token,
+    // which changes on every refresh.
+    if ident.email.is_none() && ident.account_uuid.is_none() {
+        report.notes.push(format!(
+            "「{}」的文件里没有账号信息（oauthAccount）。切换到它并用过之后，可能被当成另一个登录再保存一份。建议切换到它、在 Claude Code 里用一次，再点「保存当前登录」，或改用浏览器授权添加。",
+            slot.name
+        ));
+    }
     report.imported.push(slot.dto(None));
     Ok(())
 }
@@ -415,12 +460,79 @@ mod tests {
     }
 
     #[test]
+    fn an_export_carries_the_tokens_claude_code_holds_for_the_login_in_use() {
+        let f = fixture();
+        saved(&f, "a@example.com", "uuid-a", "token-a");
+        saved(&f, "b@example.com", "uuid-b", "token-b");
+        // Claude Code renewed A's tokens since they were saved here.
+        login(&f.paths, "a@example.com", "uuid-a", "token-a-renewed");
+        let envelope: Value =
+            serde_json::from_str(&export_in(&f.vault, &f.paths, None).unwrap().json).unwrap();
+        let token_of = |email: &str| {
+            envelope["accounts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["email"] == email)
+                .map(|entry| entry["credentials"]["claudeAiOauth"]["accessToken"].clone())
+                .unwrap()
+        };
+        assert_eq!(token_of("a@example.com"), "token-a-renewed");
+        assert_eq!(
+            token_of("b@example.com"),
+            "token-b",
+            "the other one is as saved"
+        );
+        // And the saved copy was brought up to date too.
+        let kept = f
+            .vault
+            .readable_slots()
+            .into_iter()
+            .find(|slot| slot.identity().email.as_deref() == Some("a@example.com"))
+            .unwrap();
+        assert_eq!(kept.claude_ai_oauth["accessToken"], "token-a-renewed");
+    }
+
+    #[test]
+    fn an_export_in_a_half_switched_state_leaves_every_login_as_saved() {
+        let f = fixture();
+        saved(&f, "a@example.com", "uuid-a", "token-a");
+        saved(&f, "b@example.com", "uuid-b", "token-b");
+        // `.claude.json` names A, the tokens are B's.
+        login(&f.paths, "a@example.com", "uuid-a", "token-b");
+        let envelope: Value =
+            serde_json::from_str(&export_in(&f.vault, &f.paths, None).unwrap().json).unwrap();
+        let token_of = |email: &str| {
+            envelope["accounts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["email"] == email)
+                .map(|entry| entry["credentials"]["claudeAiOauth"]["accessToken"].clone())
+                .unwrap()
+        };
+        assert_eq!(token_of("a@example.com"), "token-a");
+        assert_eq!(token_of("b@example.com"), "token-b");
+        let slots = f.vault.readable_slots();
+        assert_eq!(slots.len(), 2);
+        for slot in slots {
+            let email = slot.identity().email.unwrap();
+            let expected = if email == "a@example.com" {
+                "token-a"
+            } else {
+                "token-b"
+            };
+            assert_eq!(slot.claude_ai_oauth["accessToken"], expected, "{email}");
+        }
+    }
+
+    #[test]
     fn export_is_the_claude_swap_envelope_and_round_trips_into_another_vault() {
         let source = fixture();
         saved(&source, "a@example.com", "uuid-a", "token-a");
         saved(&source, "b@example.com", "uuid-b", "token-b");
 
-        let exported = export_in(&source.vault, None).unwrap();
+        let exported = export_in(&source.vault, &source.paths, None).unwrap();
         assert_eq!((exported.count, exported.skipped), (2, 0));
         let envelope: Value = serde_json::from_str(&exported.json).unwrap();
         assert_eq!(envelope["version"], 1);
@@ -468,12 +580,13 @@ mod tests {
             .unwrap()
             .id;
 
-        let one = export_in(&f.vault, Some(&[b_id])).unwrap();
+        let one = export_in(&f.vault, &f.paths, Some(&[b_id])).unwrap();
         assert_eq!(one.count, 1);
         assert!(one.json.contains("b@example.com") && !one.json.contains("a@example.com"));
 
-        assert!(export_in(&f.vault, Some(&["nope".to_string()])).is_err());
-        assert!(export_in(&fixture().vault, None).is_err());
+        assert!(export_in(&f.vault, &f.paths, Some(&["nope".to_string()])).is_err());
+        let empty = fixture();
+        assert!(export_in(&empty.vault, &empty.paths, None).is_err());
     }
 
     #[test]
@@ -534,6 +647,11 @@ mod tests {
         let report = import_in(&f.vault, &file).unwrap();
         assert_eq!(report.imported.len(), 1);
         assert_eq!(report.imported[0].plan.as_deref(), Some("Max"));
+        assert_eq!(
+            report.notes.len(),
+            1,
+            "the missing account info is pointed out"
+        );
         let stored = serde_json::to_string(&f.vault.readable_slots()[0].claude_ai_oauth).unwrap();
         assert!(!stored.contains("mcpOAuth"));
     }
@@ -616,7 +734,7 @@ mod tests {
         manage::add_secret_in(&source.vault, Some("CI"), TOKEN).unwrap();
         manage::add_secret_in(&source.vault, Some("Console"), KEY).unwrap();
 
-        let exported = export_in(&source.vault, None).unwrap();
+        let exported = export_in(&source.vault, &source.paths, None).unwrap();
         assert_eq!((exported.count, exported.skipped), (3, 0));
         let envelope: Value = serde_json::from_str(&exported.json).unwrap();
         let by_name = |name: &str| {
@@ -678,7 +796,7 @@ mod tests {
     fn reports_never_carry_a_token() {
         let f = fixture();
         saved(&f, "a@example.com", "uuid-a", "token-secret");
-        let exported = export_in(&f.vault, None).unwrap();
+        let exported = export_in(&f.vault, &f.paths, None).unwrap();
         let report = import_in(&fixture().vault, &exported.json).unwrap();
         let text = serde_json::to_string(&report).unwrap();
         assert!(!text.contains("token-secret") && !text.contains("r-token-secret"));
