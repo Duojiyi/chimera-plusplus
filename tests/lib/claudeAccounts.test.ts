@@ -56,6 +56,32 @@ describe("Claude accounts command contract", () => {
       { id: "a1", force: true },
     ],
     [
+      () => claudeAccountsApi.exportLogins(),
+      "export_claude_logins",
+      { ids: null },
+    ],
+    [
+      () => claudeAccountsApi.exportLogins(["a1"]),
+      "export_claude_logins",
+      { ids: ["a1"] },
+    ],
+    [() => claudeAccountsApi.importLogins(), "import_claude_logins", undefined],
+    [
+      () => claudeAccountsApi.beginBrowserLogin(),
+      "begin_claude_browser_login",
+      undefined,
+    ],
+    [
+      () => claudeAccountsApi.pollBrowserLogin("flow-1"),
+      "poll_claude_browser_login",
+      { id: "flow-1" },
+    ],
+    [
+      () => claudeAccountsApi.cancelBrowserLogin("flow-1"),
+      "cancel_claude_browser_login",
+      { id: "flow-1" },
+    ],
+    [
       () => claudeAccountsApi.listDesktop(),
       "list_claude_desktop_profiles",
       undefined,

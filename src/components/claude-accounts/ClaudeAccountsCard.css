@@ -447,6 +447,89 @@
     grid-row: 2;
   }
 }
+/* Login files and browser authorization: one quiet row of actions, and the
+   saved-logins section on the Claude Desktop page. */
+.claude-login-tools {
+  min-width: 0;
+}
+.claude-login-tools-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.claude-login-tools-actions > button {
+  gap: 6px;
+}
+
+.claude-login-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 14px;
+  border-top: 1px solid var(--glass-border, var(--border-subtle));
+}
+.claude-login-section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px 16px;
+}
+.claude-login-section-head > div:first-child {
+  flex: 1 1 280px;
+  min-width: 0;
+}
+.claude-login-section-head h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+.claude-login-section-head p {
+  margin: 4px 0 0;
+  max-width: 60ch;
+  color: var(--text-2);
+  line-height: 1.7;
+  text-wrap: pretty;
+}
+
+.claude-login-report {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 260px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+.claude-login-report li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+  padding: 8px 12px;
+  border-radius: var(--radius-control, 8px);
+  background: var(--glass-control-bg, var(--bg-subtle));
+  box-shadow: inset 0 0 0 1px var(--glass-border, var(--border-subtle));
+}
+.claude-login-report strong {
+  flex-shrink: 0;
+  color: var(--glass-accent, var(--brand-text));
+  font-size: 12px;
+  font-weight: 600;
+}
+.claude-login-report li[data-skipped="true"] strong {
+  color: var(--warning-fg);
+}
+.claude-login-report span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.claude-login-report small {
+  flex-basis: 100%;
+  color: var(--text-3);
+}
+
 @container (max-width: 480px) {
   .claude-accounts-heading {
     flex-wrap: wrap;

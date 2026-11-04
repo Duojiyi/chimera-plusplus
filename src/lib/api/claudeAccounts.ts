@@ -30,11 +30,40 @@ export interface ClaudeCodeLive {
 export interface ClaudeCodeAccounts {
   supported: boolean;
   unsupportedReason?: string | null;
+  /** Adding a login through the browser can be started from this app. */
+  browserLoginSupported: boolean;
   live: ClaudeCodeLive;
   /** The live login files could not be read. */
   liveError?: string | null;
   accounts: ClaudeCodeAccount[];
 }
+
+/** Written by an export: the file holds live tokens. */
+export interface ClaudeLoginExport {
+  path: string;
+  count: number;
+  /** Saved logins left out because they lack an account block. */
+  skipped: number;
+}
+
+export interface ClaudeLoginSkipped {
+  email?: string | null;
+  reason: string;
+}
+
+/** What an import did. Never carries a token. */
+export interface ClaudeLoginImportReport {
+  imported: ClaudeCodeAccount[];
+  updated: ClaudeCodeAccount[];
+  skipped: ClaudeLoginSkipped[];
+}
+
+export type ClaudeBrowserLoginPoll =
+  | { state: "waiting" }
+  | { state: "done"; account: ClaudeCodeAccount; created: boolean }
+  | { state: "failed"; message: string }
+  /** Finished, cancelled, or the app restarted. */
+  | { state: "unknown" };
 
 export type ClaudeSwitchStatus =
   "switched" | "already_current" | "claude_running";
@@ -124,6 +153,26 @@ export const claudeAccountsApi = {
   /** `force` is a manual refresh; otherwise a reading under 5 minutes old is reused. */
   codeQuota: (id: string, force = false): Promise<ClaudeQuota> =>
     invoke<ClaudeQuota>("get_claude_code_account_quota", { id, force }),
+
+  /** Opens a save dialog; `null` when it was cancelled. `ids` limits the export. */
+  exportLogins: (ids?: string[]): Promise<ClaudeLoginExport | null> =>
+    invoke<ClaudeLoginExport | null>("export_claude_logins", {
+      ids: ids ?? null,
+    }),
+
+  /** Opens a file dialog; `null` when it was cancelled. */
+  importLogins: (): Promise<ClaudeLoginImportReport | null> =>
+    invoke<ClaudeLoginImportReport | null>("import_claude_logins"),
+
+  /** Starts the browser authorization and returns the flow id to poll. */
+  beginBrowserLogin: (): Promise<string> =>
+    invoke<string>("begin_claude_browser_login"),
+
+  pollBrowserLogin: (id: string): Promise<ClaudeBrowserLoginPoll> =>
+    invoke<ClaudeBrowserLoginPoll>("poll_claude_browser_login", { id }),
+
+  cancelBrowserLogin: (id: string): Promise<void> =>
+    invoke<void>("cancel_claude_browser_login", { id }),
 
   listDesktop: (): Promise<ClaudeDesktopProfile[]> =>
     invoke<ClaudeDesktopProfile[]>("list_claude_desktop_profiles"),

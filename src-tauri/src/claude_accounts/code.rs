@@ -31,6 +31,9 @@ use super::{
 use crate::error::AppError;
 use crate::security_limits::{is_link_or_reparse_point, read_limited};
 
+pub(crate) mod browser_login;
+pub(crate) mod transfer;
+
 const VAULT_DIR: &str = "claude-vault";
 const SLOTS_DIR: &str = "accounts";
 const BACKUPS_DIR: &str = "backups";
@@ -119,6 +122,8 @@ pub struct CodeLiveDto {
 pub struct CodeAccountsDto {
     pub supported: bool,
     pub unsupported_reason: Option<String>,
+    /// Adding a login through the browser can be started from this app.
+    pub browser_login_supported: bool,
     pub live: CodeLiveDto,
     /// The live login files could not be read (shown instead of "signed out").
     pub live_error: Option<String>,
@@ -701,6 +706,7 @@ pub(crate) fn list_in(vault: &CodeVault, paths: &LivePaths) -> CodeAccountsDto {
     CodeAccountsDto {
         supported: switching_supported(),
         unsupported_reason: (!switching_supported()).then(|| UNSUPPORTED_MESSAGE.to_string()),
+        browser_login_supported: switching_supported() && browser_login::browser_login_supported(),
         live: live_dto,
         live_error,
         accounts,

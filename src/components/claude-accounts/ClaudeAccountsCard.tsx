@@ -21,6 +21,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { ClaudeLoginTools } from "./ClaudeLoginTools";
 import {
   claudeAccountsApi,
   DEFAULT_DESKTOP_ID,
@@ -221,13 +222,135 @@ function QuotaStrip({
   );
 }
 
+type SavedLoginRowProps = {
+  account: ClaudeCodeAccount;
+  quota?: QuotaState;
+  now: number;
+  disabled: boolean;
+  busy: string | null;
+  /** Claude Code can switch to this login (Claude Desktop cannot). */
+  canSwitch: boolean;
+  onSwitch: () => void;
+  onRefresh: () => void;
+  onRename: () => void;
+  onDelete: () => void;
+};
+
+function SavedLoginRow({
+  account,
+  quota,
+  now,
+  disabled,
+  busy,
+  canSwitch,
+  onSwitch,
+  onRefresh,
+  onRename,
+  onDelete,
+}: SavedLoginRowProps) {
+  return (
+    <li
+      className="claude-account-row"
+      data-current={(canSwitch && account.isCurrent) || undefined}
+    >
+      <span className="claude-account-avatar" aria-hidden="true">
+        {Array.from(account.name || account.email || "?")[0]?.toUpperCase()}
+      </span>
+      <div className="claude-account-identity">
+        <div className="claude-account-name">
+          <strong>{account.name}</strong>
+          {canSwitch && account.isCurrent ? (
+            <span className="claude-account-tag">使用中</span>
+          ) : null}
+          {account.plan ? (
+            <span className="claude-accounts-plan">{account.plan}</span>
+          ) : null}
+          {account.needsRelogin && !account.unreadable ? (
+            <span className="claude-account-tag" data-tone="warning">
+              需要重新登录
+            </span>
+          ) : null}
+        </div>
+        <span className="claude-account-meta">
+          {account.unreadable
+            ? "无法读取（可能因系统密码重置或迁移），只能删除"
+            : (account.email ?? "未读到邮箱")}
+          {account.fingerprint ? (
+            <code title="令牌指纹（SHA-256 前 8 位）">
+              #{account.fingerprint}
+            </code>
+          ) : null}
+        </span>
+      </div>
+      {!account.unreadable ? (
+        <QuotaStrip
+          state={quota}
+          now={now}
+          label={account.name}
+          onRefresh={onRefresh}
+        />
+      ) : null}
+      <div className="claude-account-actions">
+        {canSwitch && !account.isCurrent && !account.unreadable ? (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={disabled || account.needsRelogin}
+            title={
+              account.needsRelogin
+                ? "这个账号需要重新登录后才能切换"
+                : undefined
+            }
+            onClick={onSwitch}
+          >
+            {busy === `switch:${account.id}` ? (
+              <Loader2 size={14} className="animate-spin" aria-hidden="true" />
+            ) : (
+              <ArrowLeftRight size={14} aria-hidden="true" />
+            )}
+            切换到此账号
+          </Button>
+        ) : null}
+        {!account.unreadable ? (
+          <Button
+            size="icon"
+            variant="ghost"
+            disabled={disabled}
+            aria-label={`重命名 ${account.name}`}
+            title="重命名"
+            onClick={onRename}
+          >
+            <Pencil size={14} aria-hidden="true" />
+          </Button>
+        ) : null}
+        <Button
+          size="icon"
+          variant="ghost"
+          disabled={disabled}
+          aria-label={`删除 ${account.name}`}
+          title="删除"
+          onClick={onDelete}
+        >
+          <Trash2 size={14} aria-hidden="true" />
+        </Button>
+      </div>
+    </li>
+  );
+}
+
 type NameDialog =
   | { kind: "add-desktop" }
   /** `afterLoginFrom`: the saved login that was live before the guide. */
   | { kind: "save-code"; afterLoginFrom?: string | null }
-  | { kind: "rename"; id: string; name: string };
+  | { kind: "rename"; id: string; name: string; vault?: boolean };
 
-type DeleteTarget = { id: string; name: string; email?: string | null };
+type DeleteTarget = {
+  id: string;
+  name: string;
+  email?: string | null;
+  /** A saved Claude login (also listed on the Claude Desktop page). */
+  vault?: boolean;
+};
 
 export function ClaudeAccountsCard({
   mode,
@@ -261,12 +384,14 @@ export function ClaudeAccountsCard({
     };
   }, []);
 
+  /** `vault`: a saved Claude login shown on the Claude Desktop page. */
   const readQuota = useCallback(
-    async (id: string, force: boolean) => {
-      setQuota((all) => ({ ...all, [id]: { ...all[id], loading: true } }));
+    async (id: string, force: boolean, vault = false) => {
+      const key = vault && mode === "desktop" ? `vault:${id}` : id;
+      setQuota((all) => ({ ...all, [key]: { ...all[key], loading: true } }));
       try {
         const next: QuotaState =
-          mode === "code"
+          mode === "code" || vault
             ? {
                 view: await claudeAccountsApi.codeQuota(id, force),
                 loading: false,
@@ -279,14 +404,14 @@ export function ClaudeAccountsCard({
                   plan,
                   loading: false,
                 }));
-        if (mounted.current) setQuota((all) => ({ ...all, [id]: next }));
+        if (mounted.current) setQuota((all) => ({ ...all, [key]: next }));
       } catch {
         if (mounted.current)
           setQuota((all) => ({
             ...all,
-            [id]: {
-              view: all[id]?.view
-                ? { ...all[id].view!, status: "unavailable" }
+            [key]: {
+              view: all[key]?.view
+                ? { ...all[key].view!, status: "unavailable" }
                 : {
                     status: "unavailable",
                     windows: [],
@@ -319,6 +444,14 @@ export function ClaudeAccountsCard({
         void readQuota(DEFAULT_DESKTOP_ID, false);
         for (const profile of result)
           if (profile.signedIn) void readQuota(profile.id, false);
+        // The saved logins are shared with Claude Code; a failure here only
+        // hides that section.
+        const vault = await claudeAccountsApi.listCode().catch(() => null);
+        if (!mounted.current) return;
+        setCode(vault);
+        if (vault?.supported)
+          for (const account of vault.accounts)
+            if (!account.unreadable) void readQuota(account.id, false, true);
       }
     } catch (cause) {
       if (mounted.current) setLoadError(errorText(cause));
@@ -381,7 +514,7 @@ export function ClaudeAccountsCard({
     if (!name && dialog.kind !== "save-code") return;
     void run("name", async () => {
       if (dialog.kind === "rename") {
-        if (mode === "code")
+        if (mode === "code" || dialog.vault)
           await claudeAccountsApi.renameCode(dialog.id, name);
         else await claudeAccountsApi.renameDesktop(dialog.id, name);
         toast.success("已重命名");
@@ -425,11 +558,28 @@ export function ClaudeAccountsCard({
       setLoginGuide(true);
     });
 
+  const renameSaved = (account: ClaudeCodeAccount, vault: boolean) =>
+    openNameDialog({
+      kind: "rename",
+      id: account.id,
+      name: account.name,
+      vault,
+    });
+
+  const removeSaved = (account: ClaudeCodeAccount, vault: boolean) =>
+    setRemoving({
+      id: account.id,
+      name: account.name,
+      email: account.email,
+      vault,
+    });
+
   const confirmDelete = () => {
     const target = removing;
     if (!target) return;
     void run(`delete:${target.id}`, async () => {
-      if (mode === "code") await claudeAccountsApi.deleteCode(target.id);
+      if (mode === "code" || target.vault)
+        await claudeAccountsApi.deleteCode(target.id);
       else await claudeAccountsApi.deleteDesktop(target.id);
       setRemoving(null);
       toast.success(`已删除「${target.name}」`);
@@ -469,6 +619,7 @@ export function ClaudeAccountsCard({
     );
 
   const codeRows = code?.accounts ?? [];
+  const exportable = codeRows.filter((a) => !a.unreadable && a.email).length;
   const desktopRows = desktop ?? [];
   const defaultQuota = quota[DEFAULT_DESKTOP_ID];
   const defaultSignedIn =
@@ -547,10 +698,18 @@ export function ClaudeAccountsCard({
                 {code.liveError}
               </p>
             ) : null}
+            {code.supported ? (
+              <ClaudeLoginTools
+                disabled={disabled}
+                browserSupported={code.browserLoginSupported}
+                exportable={exportable}
+                onChanged={() => void load()}
+              />
+            ) : null}
             {codeRows.length === 0 ? (
               <p className="claude-accounts-empty">
                 还没有保存的账号。先在 Claude Code
-                中登录，再点「保存当前登录为账号」；之后用「登录新账号」添加更多账号。
+                中登录，再点「保存当前登录为账号」；也可以从浏览器授权添加，或导入凭证文件。
               </p>
             ) : (
               <ul
@@ -558,118 +717,19 @@ export function ClaudeAccountsCard({
                 aria-label="已保存的 Claude Code 账号"
               >
                 {codeRows.map((account) => (
-                  <li
+                  <SavedLoginRow
                     key={account.id}
-                    className="claude-account-row"
-                    data-current={account.isCurrent || undefined}
-                  >
-                    <span className="claude-account-avatar" aria-hidden="true">
-                      {Array.from(
-                        account.name || account.email || "?",
-                      )[0]?.toUpperCase()}
-                    </span>
-                    <div className="claude-account-identity">
-                      <div className="claude-account-name">
-                        <strong>{account.name}</strong>
-                        {account.isCurrent ? (
-                          <span className="claude-account-tag">使用中</span>
-                        ) : null}
-                        {account.plan ? (
-                          <span className="claude-accounts-plan">
-                            {account.plan}
-                          </span>
-                        ) : null}
-                        {account.needsRelogin && !account.unreadable ? (
-                          <span
-                            className="claude-account-tag"
-                            data-tone="warning"
-                          >
-                            需要重新登录
-                          </span>
-                        ) : null}
-                      </div>
-                      <span className="claude-account-meta">
-                        {account.unreadable
-                          ? "无法读取（可能因系统密码重置或迁移），只能删除"
-                          : (account.email ?? "未读到邮箱")}
-                        {account.fingerprint ? (
-                          <code title="令牌指纹（SHA-256 前 8 位）">
-                            #{account.fingerprint}
-                          </code>
-                        ) : null}
-                      </span>
-                    </div>
-                    {!account.unreadable ? (
-                      <QuotaStrip
-                        state={quota[account.id]}
-                        now={now}
-                        label={account.name}
-                        onRefresh={() => void readQuota(account.id, true)}
-                      />
-                    ) : null}
-                    <div className="claude-account-actions">
-                      {!account.isCurrent &&
-                      !account.unreadable &&
-                      code.supported ? (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={disabled || account.needsRelogin}
-                          title={
-                            account.needsRelogin
-                              ? "这个账号需要重新登录后才能切换"
-                              : undefined
-                          }
-                          onClick={() => void switchTo(account)}
-                        >
-                          {busy === `switch:${account.id}` ? (
-                            <Loader2
-                              size={14}
-                              className="animate-spin"
-                              aria-hidden="true"
-                            />
-                          ) : (
-                            <ArrowLeftRight size={14} aria-hidden="true" />
-                          )}
-                          切换到此账号
-                        </Button>
-                      ) : null}
-                      {!account.unreadable ? (
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          disabled={disabled}
-                          aria-label={`重命名 ${account.name}`}
-                          title="重命名"
-                          onClick={() =>
-                            openNameDialog({
-                              kind: "rename",
-                              id: account.id,
-                              name: account.name,
-                            })
-                          }
-                        >
-                          <Pencil size={14} aria-hidden="true" />
-                        </Button>
-                      ) : null}
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        disabled={disabled}
-                        aria-label={`删除 ${account.name}`}
-                        title="删除"
-                        onClick={() =>
-                          setRemoving({
-                            id: account.id,
-                            name: account.name,
-                            email: account.email,
-                          })
-                        }
-                      >
-                        <Trash2 size={14} aria-hidden="true" />
-                      </Button>
-                    </div>
-                  </li>
+                    account={account}
+                    quota={quota[account.id]}
+                    now={now}
+                    disabled={disabled}
+                    busy={busy}
+                    canSwitch={code.supported}
+                    onSwitch={() => void switchTo(account)}
+                    onRefresh={() => void readQuota(account.id, true)}
+                    onRename={() => renameSaved(account, false)}
+                    onDelete={() => removeSaved(account, false)}
+                  />
                 ))}
               </ul>
             )}
@@ -681,143 +741,191 @@ export function ClaudeAccountsCard({
           正在读取账号…
         </p>
       ) : (
-        <ul className="claude-accounts-list" aria-label="Claude Desktop 账号">
-          <li
-            className={
-              defaultSignedIn
-                ? "claude-account-row is-default has-quota"
-                : "claude-account-row is-default"
-            }
-          >
-            <span className="claude-account-avatar" aria-hidden="true">
-              默
-            </span>
-            <div className="claude-account-identity">
-              <div className="claude-account-name">
-                <strong>默认账号</strong>
-                <span className="claude-account-tag is-muted">系统默认</span>
-                {defaultQuota?.plan ? (
-                  <span className="claude-accounts-plan">
-                    {defaultQuota.plan}
-                  </span>
-                ) : null}
-              </div>
-              <span className="claude-account-meta">
-                {defaultQuota?.email ??
-                  "从开始菜单打开的 Claude Desktop；只读取它的登录来显示额度，不做改动。"}
-              </span>
-            </div>
-            {defaultSignedIn ? (
-              <QuotaStrip
-                state={defaultQuota}
-                now={now}
-                label="默认账号"
-                statusText={DESKTOP_STATUS_TEXT}
-                onRefresh={() => void readQuota(DEFAULT_DESKTOP_ID, true)}
-              />
-            ) : null}
-          </li>
-          {desktopRows.length === 0 ? (
-            <li className="claude-accounts-empty">
-              添加账号后，每个账号会有自己的独立目录，登录互不影响，可同时使用。首次登录前请先完全退出
-              Claude Desktop。
-            </li>
-          ) : null}
-          {desktopRows.map((profile) => (
-            <li key={profile.id} className="claude-account-row">
+        <>
+          <ul className="claude-accounts-list" aria-label="Claude Desktop 账号">
+            <li
+              className={
+                defaultSignedIn
+                  ? "claude-account-row is-default has-quota"
+                  : "claude-account-row is-default"
+              }
+            >
               <span className="claude-account-avatar" aria-hidden="true">
-                {Array.from(profile.name || "?")[0]?.toUpperCase()}
+                默
               </span>
               <div className="claude-account-identity">
                 <div className="claude-account-name">
-                  <strong>{profile.name}</strong>
-                  <span
-                    className="claude-account-tag"
-                    data-tone={profile.signedIn ? "success" : "muted"}
-                  >
-                    {profile.signedIn
-                      ? "已登录"
-                      : profile.initialized
-                        ? "未登录"
-                        : "尚未打开"}
-                  </span>
-                  {quota[profile.id]?.plan ? (
+                  <strong>默认账号</strong>
+                  <span className="claude-account-tag is-muted">系统默认</span>
+                  {defaultQuota?.plan ? (
                     <span className="claude-accounts-plan">
-                      {quota[profile.id]?.plan}
+                      {defaultQuota.plan}
                     </span>
                   ) : null}
                 </div>
                 <span className="claude-account-meta">
-                  {profile.signedIn
-                    ? (quota[profile.id]?.email ?? "可与其他账号同时打开")
-                    : "首次登录前请先完全退出 Claude Desktop（包括托盘图标）"}
+                  {defaultQuota?.email ??
+                    "从开始菜单打开的 Claude Desktop；只读取它的登录来显示额度，不做改动。"}
                 </span>
               </div>
-              {profile.signedIn ? (
+              {defaultSignedIn ? (
                 <QuotaStrip
-                  state={quota[profile.id]}
+                  state={defaultQuota}
                   now={now}
-                  label={profile.name}
+                  label="默认账号"
                   statusText={DESKTOP_STATUS_TEXT}
-                  onRefresh={() => void readQuota(profile.id, true)}
+                  onRefresh={() => void readQuota(DEFAULT_DESKTOP_ID, true)}
                 />
-              ) : (
-                <span aria-hidden="true" />
-              )}
-              <div className="claude-account-actions">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={disabled}
-                  onClick={() =>
-                    void run(`launch:${profile.id}`, () =>
-                      claudeAccountsApi.launchDesktop(profile.id),
-                    )
-                  }
-                >
-                  {busy === `launch:${profile.id}` ? (
-                    <Loader2
-                      size={14}
-                      className="animate-spin"
-                      aria-hidden="true"
-                    />
-                  ) : (
-                    <AppWindow size={14} aria-hidden="true" />
-                  )}
-                  打开 Claude Desktop
-                </Button>
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  disabled={disabled}
-                  aria-label={`重命名 ${profile.name}`}
-                  title="重命名"
-                  onClick={() =>
-                    openNameDialog({
-                      kind: "rename",
-                      id: profile.id,
-                      name: profile.name,
-                    })
-                  }
-                >
-                  <Pencil size={14} aria-hidden="true" />
-                </Button>
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  disabled={disabled}
-                  aria-label={`删除 ${profile.name}`}
-                  title="删除"
-                  onClick={() =>
-                    setRemoving({ id: profile.id, name: profile.name })
-                  }
-                >
-                  <Trash2 size={14} aria-hidden="true" />
-                </Button>
-              </div>
+              ) : null}
             </li>
-          ))}
-        </ul>
+            {desktopRows.length === 0 ? (
+              <li className="claude-accounts-empty">
+                添加账号后，每个账号会有自己的独立目录，登录互不影响，可同时使用。首次登录前请先完全退出
+                Claude Desktop。
+              </li>
+            ) : null}
+            {desktopRows.map((profile) => (
+              <li key={profile.id} className="claude-account-row">
+                <span className="claude-account-avatar" aria-hidden="true">
+                  {Array.from(profile.name || "?")[0]?.toUpperCase()}
+                </span>
+                <div className="claude-account-identity">
+                  <div className="claude-account-name">
+                    <strong>{profile.name}</strong>
+                    <span
+                      className="claude-account-tag"
+                      data-tone={profile.signedIn ? "success" : "muted"}
+                    >
+                      {profile.signedIn
+                        ? "已登录"
+                        : profile.initialized
+                          ? "未登录"
+                          : "尚未打开"}
+                    </span>
+                    {quota[profile.id]?.plan ? (
+                      <span className="claude-accounts-plan">
+                        {quota[profile.id]?.plan}
+                      </span>
+                    ) : null}
+                  </div>
+                  <span className="claude-account-meta">
+                    {profile.signedIn
+                      ? (quota[profile.id]?.email ?? "可与其他账号同时打开")
+                      : "首次登录前请先完全退出 Claude Desktop（包括托盘图标）"}
+                  </span>
+                </div>
+                {profile.signedIn ? (
+                  <QuotaStrip
+                    state={quota[profile.id]}
+                    now={now}
+                    label={profile.name}
+                    statusText={DESKTOP_STATUS_TEXT}
+                    onRefresh={() => void readQuota(profile.id, true)}
+                  />
+                ) : (
+                  <span aria-hidden="true" />
+                )}
+                <div className="claude-account-actions">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={disabled}
+                    onClick={() =>
+                      void run(`launch:${profile.id}`, () =>
+                        claudeAccountsApi.launchDesktop(profile.id),
+                      )
+                    }
+                  >
+                    {busy === `launch:${profile.id}` ? (
+                      <Loader2
+                        size={14}
+                        className="animate-spin"
+                        aria-hidden="true"
+                      />
+                    ) : (
+                      <AppWindow size={14} aria-hidden="true" />
+                    )}
+                    打开 Claude Desktop
+                  </Button>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    disabled={disabled}
+                    aria-label={`重命名 ${profile.name}`}
+                    title="重命名"
+                    onClick={() =>
+                      openNameDialog({
+                        kind: "rename",
+                        id: profile.id,
+                        name: profile.name,
+                      })
+                    }
+                  >
+                    <Pencil size={14} aria-hidden="true" />
+                  </Button>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    disabled={disabled}
+                    aria-label={`删除 ${profile.name}`}
+                    title="删除"
+                    onClick={() =>
+                      setRemoving({ id: profile.id, name: profile.name })
+                    }
+                  >
+                    <Trash2 size={14} aria-hidden="true" />
+                  </Button>
+                </div>
+              </li>
+            ))}
+          </ul>
+          {code?.supported ? (
+            <section
+              className="claude-login-section"
+              aria-label="已保存的 Claude 登录"
+            >
+              <div className="claude-login-section-head">
+                <div>
+                  <h3>已保存的 Claude 登录</h3>
+                  <p>
+                    与 Claude Code
+                    账号共用。可以从浏览器授权添加，或导入、导出凭证文件，在另一台电脑上继续使用。
+                  </p>
+                </div>
+                <ClaudeLoginTools
+                  disabled={disabled}
+                  browserSupported={code.browserLoginSupported}
+                  exportable={exportable}
+                  onChanged={() => void load()}
+                />
+              </div>
+              {codeRows.length === 0 ? (
+                <p className="claude-accounts-empty">还没有保存的登录。</p>
+              ) : (
+                <ul
+                  className="claude-accounts-list"
+                  aria-label="已保存的 Claude 登录列表"
+                >
+                  {codeRows.map((account) => (
+                    <SavedLoginRow
+                      key={account.id}
+                      account={account}
+                      quota={quota[`vault:${account.id}`]}
+                      now={now}
+                      disabled={disabled}
+                      busy={busy}
+                      canSwitch={false}
+                      onSwitch={() => {}}
+                      onRefresh={() => void readQuota(account.id, true, true)}
+                      onRename={() => renameSaved(account, true)}
+                      onDelete={() => removeSaved(account, true)}
+                    />
+                  ))}
+                </ul>
+              )}
+            </section>
+          ) : null}
+        </>
       )}
 
       <Dialog
@@ -927,7 +1035,7 @@ export function ClaudeAccountsCard({
         busy={busy?.startsWith("delete:") ?? false}
         title={`删除「${removing?.name ?? ""}」？`}
         message={
-          mode === "code"
+          mode === "code" || removing?.vault
             ? `只删除 Chimera 保存的这份登录${removing?.email ? `（${removing.email}）` : ""}。不会退出 Claude Code，不影响会话记录和其他账号；以后要再用这个账号需重新登录并保存。`
             : `将删除「${removing?.name ?? ""}」在本机的 Claude Desktop 独立目录：登录状态、设置、MCP 配置与缓存。不影响系统默认的 Claude Desktop 和其他账号，也不会删除服务器上的对话。此操作不可撤销。`
         }
