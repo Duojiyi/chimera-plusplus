@@ -199,7 +199,19 @@
                 <File Id="UpdateTaskUninstaller" Source="uninstall-task.ps1" KeyPath="yes" Checksum="yes"/>
             </Component>
             {{/if}}
-            {{resources}}
+            <!-- The license texts (bundle.resources), written out by hand: the
+                 generated resource components use the file as their key path,
+                 which a per-user install refuses (ICE38, ICE64). They come from
+                 where the build copies resources, beside the main binary. -->
+            <Directory Id="LicensesDir" Name="licenses">
+                <Component Id="LicenseFiles" Guid="*" Win64="$(var.Win64)">
+                    <File Id="LicenseMit" Name="LICENSE-MIT.txt" Source="$(sys.SOURCEFILEDIR)..\..\licenses\LICENSE-MIT.txt" KeyPath="no" Checksum="yes"/>
+                    <File Id="LicenseAgpl" Name="LICENSE-AGPL-3.0.txt" Source="$(sys.SOURCEFILEDIR)..\..\licenses\LICENSE-AGPL-3.0.txt" KeyPath="no" Checksum="yes"/>
+                    <File Id="ThirdPartyNotices" Name="THIRD_PARTY_NOTICES.md" Source="$(sys.SOURCEFILEDIR)..\..\licenses\THIRD_PARTY_NOTICES.md" KeyPath="no" Checksum="yes"/>
+                    <RemoveFolder Id="RemoveLicensesDir" On="uninstall"/>
+                    <RegistryValue Root="HKCU" Key="Software\\{{manufacturer}}\\{{product_name}}" Name="LicenseFiles" Type="integer" Value="1" KeyPath="yes"/>
+                </Component>
+            </Directory>
             <Component Id="CMP_UninstallShortcut" Guid="*">
 
                 <Shortcut Id="UninstallShortcut"
@@ -260,9 +272,7 @@
 
             <ComponentRef Id="RegistryEntries"/>
 
-            {{#each resource_file_ids as |resource_file_id| ~}}
-                <ComponentRef Id="{{ resource_file_id }}"/>
-            {{/each~}}
+            <ComponentRef Id="LicenseFiles"/>
 
             {{#if enable_elevated_update_task}}
                 <ComponentRef Id="UpdateTask" />
