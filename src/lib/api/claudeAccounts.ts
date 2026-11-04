@@ -24,6 +24,8 @@ export interface ClaudeCodeAccount {
   disabled: boolean;
   /** A terminal is open on this login (a parallel session). */
   sessionRunning: boolean;
+  /** The user's note. */
+  note?: string | null;
 }
 
 export interface ClaudeCodeLive {
@@ -257,6 +259,14 @@ export const claudeAccountsApi = {
       id,
       allowRunning,
     }),
+
+  /** Sets the note of a saved login; empty text clears it. */
+  setNote: (id: string, note: string): Promise<void> =>
+    invoke<void>("set_claude_account_note", { id, note }),
+
+  /** Imports logins from pasted JSON (a claude-swap export or .credentials.json). */
+  importLoginsText: (text: string): Promise<ClaudeLoginImportReport> =>
+    invoke<ClaudeLoginImportReport>("import_claude_logins_text", { text }),
 
   renameCode: (id: string, name: string): Promise<void> =>
     invoke<void>("rename_claude_code_account", { id, name }),

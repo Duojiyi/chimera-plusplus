@@ -122,6 +122,8 @@ pub struct CodeAccountDto {
     pub disabled: bool,
     /// A terminal is open on this login (a parallel session).
     pub session_running: bool,
+    /// The user's note.
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -214,6 +216,9 @@ pub(crate) struct Slot {
     position: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     api_key: Option<String>,
+    /// The user's own words about this login.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
 }
 
 enum SlotEntry {
@@ -752,6 +757,7 @@ impl Slot {
             kind: self.kind,
             disabled: self.disabled,
             session_running: false,
+            note: self.note.clone(),
         }
     }
 
@@ -781,6 +787,7 @@ fn unreadable_dto(id: String) -> CodeAccountDto {
         kind: SlotKind::Oauth,
         disabled: false,
         session_running: false,
+        note: None,
     }
 }
 
@@ -904,6 +911,7 @@ fn blank_slot(vault: &CodeVault, name: String) -> Result<Slot, AppError> {
         disabled: false,
         position: None,
         api_key: None,
+        note: None,
     })
 }
 
@@ -1342,6 +1350,26 @@ pub(crate) fn switch_in(
     })
 }
 
+const MAX_NOTE_CHARS: usize = 200;
+
+/// Sets or clears (empty text) a saved login's note.
+pub(crate) fn set_note_in(vault: &CodeVault, id: &str, note: &str) -> Result<(), AppError> {
+    let note = note.trim();
+    if note.chars().count() > MAX_NOTE_CHARS {
+        return Err(AppError::InvalidInput(format!(
+            "备注最多 {MAX_NOTE_CHARS} 个字"
+        )));
+    }
+    if note.chars().any(|c| c.is_control() && c != '\n') {
+        return Err(AppError::InvalidInput("备注里有不能使用的字符".to_string()));
+    }
+    let _guard = CODE_LOCK.lock()?;
+    let mut slot = vault.read_slot(id)?;
+    slot.note = (!note.is_empty()).then(|| note.to_string());
+    slot.updated_at = now_rfc3339();
+    vault.write_slot(&slot)
+}
+
 pub(crate) fn rename_in(vault: &CodeVault, id: &str, name: &str) -> Result<(), AppError> {
     let name = normalize_account_name(name)?;
     let _guard = CODE_LOCK.lock()?;
@@ -1720,6 +1748,20 @@ pub(crate) mod tests {
             fx.vault.read_slot(&work.id).unwrap().oauth()["accessToken"],
             "tok-work-2"
         );
+    }
+
+    #[test]
+    fn a_note_is_kept_trimmed_cleared_when_empty_and_bounded() {
+        let fx = fixture();
+        login(&fx.paths, "work@example.com", "u-work", "tok-work");
+        let work = save_current_in(&fx.vault, &fx.paths, None).unwrap();
+        set_note_in(&fx.vault, &work.id, "  团队账号\n别外借 ").unwrap();
+        let listed = list_in(&fx.vault, &fx.paths);
+        assert_eq!(listed.accounts[0].note.as_deref(), Some("团队账号\n别外借"));
+        set_note_in(&fx.vault, &work.id, "   ").unwrap();
+        assert!(list_in(&fx.vault, &fx.paths).accounts[0].note.is_none());
+        assert!(set_note_in(&fx.vault, &work.id, &"字".repeat(201)).is_err());
+        assert!(set_note_in(&fx.vault, &work.id, "a\u{7}b").is_err());
     }
 
     #[test]

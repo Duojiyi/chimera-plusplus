@@ -83,6 +83,32 @@ pub async fn rename_claude_code_account(id: String, name: String) -> Result<(), 
 }
 
 #[tauri::command]
+pub async fn set_claude_account_note(id: String, note: String) -> Result<(), AppError> {
+    crate::claude_accounts::validate_account_id(&id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let vault = CodeVault::open_default()?;
+        code::set_note_in(&vault, &id, &note)
+    })
+    .await
+    .map_err(unfinished)?
+}
+
+/// Imports logins from pasted text: a claude-swap export or a
+/// `.credentials.json`.
+#[tauri::command]
+pub async fn import_claude_logins_text(text: String) -> Result<ImportReport, AppError> {
+    if text.len() as u64 > transfer::MAX_IMPORT_BYTES {
+        return Err(AppError::InvalidInput("内容太大（最多 8 MiB）".to_string()));
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let vault = CodeVault::open_default()?;
+        transfer::import_in(&vault, &text)
+    })
+    .await
+    .map_err(unfinished)?
+}
+
+#[tauri::command]
 pub async fn delete_claude_code_account(id: String) -> Result<(), AppError> {
     crate::claude_accounts::validate_account_id(&id)?;
     let lock = code::account_lock(&id);

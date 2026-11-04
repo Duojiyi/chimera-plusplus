@@ -804,3 +804,292 @@
     transition: none;
   }
 }
+
+/* ===== The account overview: toolbar, cards, add dialog ===== */
+.claude-accounts-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-ring, 10px);
+  background: var(--glass-control-bg, var(--bg-subtle));
+}
+.claude-accounts-search {
+  display: inline-flex;
+  flex: 1 1 200px;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control, 8px);
+  background: var(--bg-surface);
+  color: var(--text-3);
+}
+.claude-accounts-search:focus-within {
+  border-color: var(--glass-accent, var(--brand));
+}
+.claude-accounts-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text-1);
+  font-size: 12.5px;
+}
+.claude-accounts-select {
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control, 8px);
+  background: var(--bg-surface);
+  color: var(--text-1);
+  font-size: 12.5px;
+}
+.claude-accounts-toolbar-icons {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.claude-accounts-view {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control, 8px);
+  background: var(--bg-surface);
+}
+.claude-accounts-view button,
+.claude-accounts-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 26px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.claude-accounts-icon-button {
+  height: 30px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control, 8px);
+  background: var(--bg-surface);
+}
+.claude-accounts-view button[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--glass-accent, #087bb9) 14%, transparent);
+  color: var(--glass-accent-strong, var(--brand-text));
+}
+.claude-accounts-icon-button[aria-pressed="true"] {
+  color: var(--glass-accent-strong, var(--brand-text));
+}
+.claude-accounts-icon-button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.claude-accounts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.claude-account-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 14px;
+  background: var(--bg-surface);
+  transition:
+    border-color var(--dur-fast, 120ms) ease,
+    box-shadow var(--dur-fast, 120ms) ease;
+}
+.claude-account-card:hover {
+  border-color: var(--glass-border, var(--border-control));
+  box-shadow: 0 6px 18px rgb(0 0 0 / 6%);
+}
+.claude-account-card[data-current="true"] {
+  border-color: color-mix(
+    in srgb,
+    var(--glass-accent, #087bb9) 55%,
+    transparent
+  );
+  box-shadow: 0 0 0 1px
+    color-mix(in srgb, var(--glass-accent, #087bb9) 30%, transparent);
+}
+.claude-account-card[data-disabled="true"] {
+  border-style: dashed;
+}
+.claude-account-card[data-dragging="true"] {
+  opacity: 0.45;
+}
+.claude-account-card[data-drop="before"] {
+  box-shadow: -3px 0 0 0 var(--glass-accent, var(--brand));
+}
+.claude-account-card[data-drop="after"] {
+  box-shadow: 3px 0 0 0 var(--glass-accent, var(--brand));
+}
+.claude-account-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.claude-account-card-head .claude-account-identity {
+  min-width: 0;
+}
+.claude-account-card-head strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.claude-account-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 20px;
+}
+.claude-account-note {
+  display: inline-flex;
+  align-self: flex-start;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 3px 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  color: var(--text-2);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.claude-account-note span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.claude-account-note[data-empty="true"] {
+  color: var(--text-3);
+}
+.claude-account-note:disabled {
+  cursor: default;
+}
+.claude-account-note-line {
+  display: block;
+  overflow: hidden;
+  color: var(--text-2);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.claude-account-card-quota {
+  flex: 1;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--glass-control-bg, var(--bg-subtle));
+}
+.claude-account-card-quota .claude-quota-meters {
+  grid-template-columns: minmax(0, 1fr);
+}
+.claude-account-card-quota .claude-account-noquota {
+  margin: 0;
+}
+.claude-account-card-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border-subtle);
+}
+.claude-account-card-date {
+  color: var(--text-3);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+}
+.claude-account-card-foot .claude-account-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.claude-add-dialog {
+  max-width: 520px;
+}
+.claude-add-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 10px;
+  background: var(--glass-control-bg, var(--bg-subtle));
+}
+.claude-add-tabs button {
+  display: inline-flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.claude-add-tabs button[aria-selected="true"] {
+  background: var(--bg-surface);
+  color: var(--glass-accent-strong, var(--brand-text));
+  box-shadow: 0 1px 3px rgb(0 0 0 / 10%);
+}
+.claude-add-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 150px;
+}
+.claude-add-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.claude-add-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--bg-surface);
+  color: var(--text-1);
+  text-align: left;
+  cursor: pointer;
+}
+.claude-add-option:hover,
+.claude-add-option:focus-visible {
+  border-color: var(--glass-accent, var(--brand));
+}
+.claude-add-option span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.claude-add-option small {
+  color: var(--text-3);
+}

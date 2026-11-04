@@ -28,7 +28,13 @@ import {
   type ClaudeDesktopSwapOutcome,
   type ClaudeDesktopSwapStatus,
 } from "@/lib/api/claudeAccounts";
-import { AccountRow } from "./AccountRow";
+import { AccountRow, maskEmail } from "./AccountRow";
+import {
+  AccountsToolbar,
+  visibleAccounts,
+  type AccountFilter,
+  type AccountSort,
+} from "./AccountsToolbar";
 import { AddAccountMenu } from "./AddAccountMenu";
 import {
   DESKTOP_STATUS_TEXT,
@@ -38,6 +44,7 @@ import {
 } from "./quota";
 import { useReturnFocus } from "./useReturnFocus";
 import { moveBy, useSortable } from "./useSortable";
+import { useStoredFlag } from "./useStoredFlag";
 
 export { clockText, errorText, resetText } from "./quota";
 
@@ -56,7 +63,8 @@ type NameDialog =
   | { kind: "add-desktop" }
   /** `afterLoginFrom`: the saved login that was live before the guide. */
   | { kind: "save-code"; afterLoginFrom?: string | null }
-  | { kind: "rename"; id: string; name: string; vault?: boolean };
+  | { kind: "rename"; id: string; name: string; vault?: boolean }
+  | { kind: "note"; id: string; note: string };
 
 type DeleteTarget = {
   id: string;
@@ -128,6 +136,15 @@ export function ClaudeAccountsCard({
   const [desktopConfirm, setDesktopConfirm] =
     useState<DesktopSwapTarget | null>(null);
   const [announcement, setAnnouncement] = useState("");
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<AccountFilter>("all");
+  const [sortBy, setSortBy] = useState<AccountSort>("custom");
+  const [grid, setGrid] = useStoredFlag("chimera.claude.accounts.grid", true);
+  const [hideEmail, setHideEmail] = useStoredFlag(
+    "chimera.claude.accounts.hideEmail",
+    false,
+  );
+  const [refreshingAll, setRefreshingAll] = useState(false);
   const mounted = useRef(true);
   const pending = useRef(false);
   /** The newest list read wins; a move invalidates the ones still on the way. */
@@ -285,7 +302,13 @@ export function ClaudeAccountsCard({
     });
 
   const openNameDialog = (dialog: NameDialog) => {
-    setNameValue(dialog.kind === "rename" ? dialog.name : "");
+    setNameValue(
+      dialog.kind === "rename"
+        ? dialog.name
+        : dialog.kind === "note"
+          ? dialog.note
+          : "",
+    );
     setNameDialog(dialog);
   };
 
@@ -293,9 +316,12 @@ export function ClaudeAccountsCard({
     const dialog = nameDialog;
     if (!dialog) return;
     const name = nameValue.trim();
-    if (!name && dialog.kind !== "save-code") return;
+    if (!name && dialog.kind !== "save-code" && dialog.kind !== "note") return;
     void run("name", async () => {
-      if (dialog.kind === "rename") {
+      if (dialog.kind === "note") {
+        await claudeAccountsApi.setNote(dialog.id, name);
+        toast.success(name ? "已保存备注" : "已清除备注");
+      } else if (dialog.kind === "rename") {
         if (mode === "code" || dialog.vault)
           await claudeAccountsApi.renameCode(dialog.id, name);
         else await claudeAccountsApi.renameDesktop(dialog.id, name);
@@ -512,6 +538,51 @@ export function ClaudeAccountsCard({
   );
 
   const codeRows = code?.accounts ?? [];
+  // Dragging and moving only make sense on the whole list in its own order.
+  const ordering = !query.trim() && filter === "all" && sortBy === "custom";
+  const shownRows = visibleAccounts(codeRows, {
+    query,
+    filter,
+    sort: sortBy,
+    quotaOf: (account) =>
+      quota[mode === "desktop" ? `vault:${account.id}` : account.id],
+  });
+  const refreshAll = async () => {
+    if (refreshingAll) return;
+    setRefreshingAll(true);
+    try {
+      await Promise.allSettled(
+        codeRows
+          .filter((a) => a.kind === "oauth" && !a.disabled && !a.unreadable)
+          .map((a) => readQuota(a.id, true, mode === "desktop")),
+      );
+    } finally {
+      if (mounted.current) setRefreshingAll(false);
+    }
+  };
+  const toolbar =
+    codeRows.length > 0 ? (
+      <AccountsToolbar
+        accounts={codeRows}
+        query={query}
+        onQuery={setQuery}
+        filter={filter}
+        onFilter={setFilter}
+        sort={sortBy}
+        onSort={setSortBy}
+        grid={grid}
+        onGrid={setGrid}
+        hideEmail={hideEmail}
+        onHideEmail={setHideEmail}
+        refreshing={refreshingAll}
+        onRefreshAll={() => void refreshAll()}
+      />
+    ) : null;
+  const listClass = grid ? "claude-accounts-grid" : "claude-accounts-list";
+  const noMatch =
+    shownRows.length === 0 && codeRows.length > 0 ? (
+      <p className="claude-accounts-empty">没有符合条件的账号。</p>
+    ) : null;
   const exportable = codeRows.filter(
     (a) => !a.unreadable && (a.kind !== "oauth" || a.email),
   ).length;
@@ -563,8 +634,17 @@ export function ClaudeAccountsCard({
       busy={busy}
       canSwitch={!forDesktop && code?.supported === true}
       canOpenSession={!forDesktop && code?.sessionsSupported === true}
+      variant={grid ? "card" : "row"}
+      hideEmail={hideEmail}
+      onNote={() =>
+        openNameDialog({
+          kind: "note",
+          id: account.id,
+          note: account.note ?? "",
+        })
+      }
       sortable={
-        readableIds.length > 1 && !account.unreadable
+        ordering && readableIds.length > 1 && !account.unreadable
           ? sortable(account.id)
           : undefined
       }
@@ -651,7 +731,9 @@ export function ClaudeAccountsCard({
                 </span>
                 <strong>
                   {code.live.signedIn
-                    ? (code.live.email ??
+                    ? ((code.live.email && hideEmail
+                        ? maskEmail(code.live.email)
+                        : code.live.email) ??
                       (code.live.plan === "API Key"
                         ? "API Key 登录"
                         : "已登录（未读到邮箱）"))
@@ -686,12 +768,16 @@ export function ClaudeAccountsCard({
                 中登录，再点「保存当前登录为账号」；也可以点右上角「添加账号」，从浏览器授权、粘贴令牌或导入凭证文件。
               </p>
             ) : (
-              <ul
-                className="claude-accounts-list"
-                aria-label="已保存的 Claude Code 账号"
-              >
-                {codeRows.map((account) => rowFor(account, false))}
-              </ul>
+              <>
+                {toolbar}
+                {noMatch}
+                <ul
+                  className={listClass}
+                  aria-label="已保存的 Claude Code 账号"
+                >
+                  {shownRows.map((account) => rowFor(account, false))}
+                </ul>
+              </>
             )}
           </>
         )
@@ -904,12 +990,16 @@ export function ClaudeAccountsCard({
               {codeRows.length === 0 ? (
                 <p className="claude-accounts-empty">还没有保存的登录。</p>
               ) : (
-                <ul
-                  className="claude-accounts-list"
-                  aria-label="已保存的 Claude 登录列表"
-                >
-                  {codeRows.map((account) => rowFor(account, true))}
-                </ul>
+                <>
+                  {toolbar}
+                  {noMatch}
+                  <ul
+                    className={listClass}
+                    aria-label="已保存的 Claude 登录列表"
+                  >
+                    {shownRows.map((account) => rowFor(account, true))}
+                  </ul>
+                </>
               )}
             </section>
           ) : null}
@@ -924,18 +1014,22 @@ export function ClaudeAccountsCard({
       >
         <DialogContent className="claude-accounts-dialog">
           <DialogTitle>
-            {nameDialog?.kind === "rename"
-              ? "重命名账号"
-              : nameDialog?.kind === "save-code"
-                ? "保存当前登录"
-                : "添加 Claude Desktop 账号"}
+            {nameDialog?.kind === "note"
+              ? "账号备注"
+              : nameDialog?.kind === "rename"
+                ? "重命名账号"
+                : nameDialog?.kind === "save-code"
+                  ? "保存当前登录"
+                  : "添加 Claude Desktop 账号"}
           </DialogTitle>
           <DialogDescription>
-            {nameDialog?.kind === "save-code"
-              ? "把 Claude Code 当前的登录加密保存到本机。名称可留空，默认使用登录邮箱。"
-              : nameDialog?.kind === "add-desktop"
-                ? "创建后会立即用这个账号的独立目录打开 Claude Desktop，在新窗口中登录即可。"
-                : "只修改在 Chimera 中显示的名称。"}
+            {nameDialog?.kind === "note"
+              ? "只保存在本机，用来区分账号（例如用途、谁在用）。留空即清除。"
+              : nameDialog?.kind === "save-code"
+                ? "把 Claude Code 当前的登录加密保存到本机。名称可留空，默认使用登录邮箱。"
+                : nameDialog?.kind === "add-desktop"
+                  ? "创建后会立即用这个账号的独立目录打开 Claude Desktop，在新窗口中登录即可。"
+                  : "只修改在 Chimera 中显示的名称。"}
           </DialogDescription>
           <form
             className="claude-accounts-form"
@@ -944,11 +1038,13 @@ export function ClaudeAccountsCard({
               submitName();
             }}
           >
-            <label htmlFor={nameInputId}>账号名称</label>
+            <label htmlFor={nameInputId}>
+              {nameDialog?.kind === "note" ? "备注" : "账号名称"}
+            </label>
             <Input
               id={nameInputId}
               value={nameValue}
-              maxLength={40}
+              maxLength={nameDialog?.kind === "note" ? 200 : 40}
               autoFocus
               placeholder={
                 nameDialog?.kind === "save-code"
@@ -970,7 +1066,9 @@ export function ClaudeAccountsCard({
                 type="submit"
                 disabled={
                   busy === "name" ||
-                  (nameDialog?.kind !== "save-code" && !nameValue.trim())
+                  (nameDialog?.kind !== "save-code" &&
+                    nameDialog?.kind !== "note" &&
+                    !nameValue.trim())
                 }
               >
                 {nameDialog?.kind === "add-desktop"

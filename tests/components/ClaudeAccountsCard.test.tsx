@@ -46,6 +46,8 @@ vi.mock("@/lib/api/claudeAccounts", () => ({
     prepareDesktopLogin: vi.fn(),
     exportLogins: vi.fn(),
     importLogins: vi.fn(),
+    importLoginsText: vi.fn(),
+    setNote: vi.fn(),
     beginBrowserLogin: vi.fn(),
     pollBrowserLogin: vi.fn(),
     cancelBrowserLogin: vi.fn(),
@@ -147,6 +149,12 @@ const quota: ClaudeQuota = {
 };
 
 beforeEach(() => {
+  // The view and the hidden-email choice are remembered between visits.
+  try {
+    window.localStorage.clear();
+  } catch {
+    // no storage in this environment
+  }
   vi.resetAllMocks();
   api.listCode.mockResolvedValue(structuredClone(accounts));
   api.codeQuota.mockResolvedValue(quota);
@@ -440,10 +448,33 @@ describe("ClaudeAccountsCard · Claude Desktop", () => {
 });
 
 /** Opens a menu by its trigger button and chooses an item (Radix menus need real pointer events). */
+/** The add dialog's tab that holds each way of adding a login. */
+const ADD_TABS: [RegExp, string][] = [
+  [/浏览器授权/, "浏览器授权"],
+  [/粘贴令牌|令牌或密钥/, "令牌 / JSON"],
+  [/导入凭证文件|在终端登录后保存/, "导入"],
+];
+
 async function pickFromMenu(trigger: RegExp | string, item: RegExp | string) {
   const user = userEvent.setup();
+  const addTrigger =
+    trigger instanceof RegExp && /^\^添加/.test(trigger.source);
+  if (addTrigger && String(item).includes("导出")) {
+    await user.click(
+      await screen.findByRole("button", { name: "导出凭证文件" }),
+    );
+    return;
+  }
   await user.click(await screen.findByRole("button", { name: trigger }));
-  await user.click(await screen.findByRole("menuitem", { name: item }));
+  if (!addTrigger) {
+    await user.click(await screen.findByRole("menuitem", { name: item }));
+    return;
+  }
+  const tab = ADD_TABS.find(([pattern]) => pattern.test(String(item)))?.[1];
+  if (tab) await user.click(await screen.findByRole("tab", { name: tab }));
+  // The token tab is the form itself.
+  if (tab !== "令牌 / JSON")
+    await user.click(await screen.findByRole("button", { name: item }));
 }
 
 describe("ClaudeAccountsCard · adding accounts and moving logins as files", () => {
@@ -454,18 +485,45 @@ describe("ClaudeAccountsCard · adding accounts and moving logins as files", () 
     email: "new@example.com",
   };
 
-  it("offers every way to add an account in one menu", async () => {
+  it("offers every way to add an account in one dialog", async () => {
     const user = userEvent.setup();
     render(<ClaudeAccountsCard mode="code" />);
+    expect(
+      await screen.findByRole("button", { name: "导出凭证文件" }),
+    ).toBeEnabled();
     await user.click(await screen.findByRole("button", { name: /^添加账号/ }));
-    for (const item of [
-      /从浏览器授权添加/,
-      /粘贴令牌或 API Key/,
-      /导入凭证文件/,
-      /在终端登录后保存/,
-      /导出凭证文件/,
-    ])
-      expect(await screen.findByRole("menuitem", { name: item })).toBeVisible();
+    const tabs = screen.getAllByRole("tab").map((tab) => tab.textContent);
+    expect(tabs).toEqual(["浏览器授权", "令牌 / JSON", "导入"]);
+    expect(
+      screen.getByRole("button", { name: /从浏览器授权添加/ }),
+    ).toBeVisible();
+    await user.click(screen.getByRole("tab", { name: "令牌 / JSON" }));
+    expect(screen.getByLabelText("令牌或密钥")).toBeVisible();
+    await user.click(screen.getByRole("tab", { name: "导入" }));
+    expect(screen.getByRole("button", { name: /导入凭证文件/ })).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: /在终端登录后保存/ }),
+    ).toBeVisible();
+  });
+
+  it("imports pasted login JSON from the token tab", async () => {
+    const user = userEvent.setup();
+    api.importLoginsText.mockResolvedValue({
+      imported: [savedAccount],
+      updated: [],
+      skipped: [],
+    });
+    render(<ClaudeAccountsCard mode="code" />);
+    await pickFromMenu(/^添加账号/, /粘贴令牌或 API Key/);
+    const field = await screen.findByLabelText("令牌或密钥");
+    fireEvent.change(field, { target: { value: '{"claudeAiOauth":{}}' } });
+    expect(screen.getByText(/凭证 JSON/)).toBeInTheDocument();
+    expect(screen.queryByLabelText("账号名称（可选）")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "导入" }));
+    await waitFor(() =>
+      expect(api.importLoginsText).toHaveBeenCalledWith('{"claudeAiOauth":{}}'),
+    );
+    expect(await screen.findByText("导入完成")).toBeInTheDocument();
   });
 
   it("hides browser authorization where the app cannot start it", async () => {
@@ -477,11 +535,9 @@ describe("ClaudeAccountsCard · adding accounts and moving logins as files", () 
     render(<ClaudeAccountsCard mode="code" />);
     await user.click(await screen.findByRole("button", { name: /^添加账号/ }));
     expect(
-      await screen.findByRole("menuitem", { name: /导入凭证文件/ }),
+      await screen.findByRole("tab", { name: "令牌 / JSON" }),
     ).toBeVisible();
-    expect(
-      screen.queryByRole("menuitem", { name: /从浏览器授权添加/ }),
-    ).toBeNull();
+    expect(screen.queryByRole("tab", { name: "浏览器授权" })).toBeNull();
   });
 
   it("has no add menu where saved logins are unsupported", async () => {
@@ -547,10 +603,10 @@ describe("ClaudeAccountsCard · adding accounts and moving logins as files", () 
       accounts: [],
     });
     render(<ClaudeAccountsCard mode="code" />);
-    await user.click(await screen.findByRole("button", { name: /^添加账号/ }));
     expect(
-      await screen.findByRole("menuitem", { name: /导出凭证文件/ }),
-    ).toHaveAttribute("aria-disabled", "true");
+      await screen.findByRole("button", { name: "导出凭证文件" }),
+    ).toBeDisabled();
+    void user;
   });
 
   it("reports what an import added, updated and skipped, and reloads", async () => {
@@ -1399,6 +1455,54 @@ describe("ClaudeAccountsCard · the default Claude Desktop", () => {
   });
 });
 
+describe("ClaudeAccountsCard · the overview", () => {
+  it("searches, filters and switches between cards and a list", async () => {
+    const user = userEvent.setup();
+    render(<ClaudeAccountsCard mode="code" />);
+    const list = await screen.findByRole("list", {
+      name: "已保存的 Claude Code 账号",
+    });
+    expect(list).toHaveClass("claude-accounts-grid");
+    expect(list.querySelectorAll(":scope > li")).toHaveLength(2);
+    await user.type(
+      screen.getByRole("searchbox", { name: "搜索账号" }),
+      "work",
+    );
+    expect(list.querySelectorAll(":scope > li")).toHaveLength(1);
+    await user.clear(screen.getByRole("searchbox", { name: "搜索账号" }));
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "筛选" }),
+      "current",
+    );
+    expect(list.querySelectorAll(":scope > li")).toHaveLength(1);
+    // Moving rows only makes sense on the whole list in its own order.
+    expect(screen.queryByRole("button", { name: /^移动 / })).toBeNull();
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "筛选" }),
+      "all",
+    );
+    await user.click(screen.getByRole("button", { name: "列表视图" }));
+    expect(
+      screen.getByRole("list", { name: "已保存的 Claude Code 账号" }),
+    ).toHaveClass("claude-accounts-list");
+    await user.click(screen.getByRole("button", { name: "隐藏邮箱" }));
+    expect(screen.queryByText("work@example.com")).toBeNull();
+  });
+
+  it("keeps a note on an account", async () => {
+    const user = userEvent.setup();
+    api.setNote.mockResolvedValue();
+    render(<ClaudeAccountsCard mode="code" />);
+    const notes = await screen.findAllByRole("button", { name: /加备注/ });
+    await user.click(notes[0]);
+    await user.type(await screen.findByLabelText("备注"), "团队账号");
+    await user.click(screen.getByRole("button", { name: "确定" }));
+    await waitFor(() =>
+      expect(api.setNote).toHaveBeenCalledWith(expect.any(String), "团队账号"),
+    );
+  });
+});
+
 describe("ClaudeAccountsCard · saved logins on the Claude Desktop page", () => {
   it("lists them with quota but without switching, and offers the same add menu", async () => {
     const user = userEvent.setup();
@@ -1415,15 +1519,12 @@ describe("ClaudeAccountsCard · saved logins on the Claude Desktop page", () => 
       expect(api.codeQuota).toHaveBeenCalledWith("me", false),
     );
     await user.click(screen.getByRole("button", { name: /^添加登录/ }));
-    expect(
-      await screen.findByRole("menuitem", { name: /导入凭证文件/ }),
-    ).toBeVisible();
     // A token or a key, and signing in from a terminal, are Claude Code things.
+    expect(screen.queryByRole("tab", { name: "令牌 / JSON" })).toBeNull();
+    await user.click(await screen.findByRole("tab", { name: "导入" }));
+    expect(screen.getByRole("button", { name: /导入凭证文件/ })).toBeVisible();
     expect(
-      screen.queryByRole("menuitem", { name: /粘贴令牌或 API Key/ }),
-    ).toBeNull();
-    expect(
-      screen.queryByRole("menuitem", { name: /在终端登录后保存/ }),
+      screen.queryByRole("button", { name: /在终端登录后保存/ }),
     ).toBeNull();
   });
 

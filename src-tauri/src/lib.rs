@@ -1766,6 +1766,8 @@ pub fn run() {
             commands::save_current_claude_code_login,
             commands::switch_claude_code_account,
             commands::rename_claude_code_account,
+            commands::set_claude_account_note,
+            commands::import_claude_logins_text,
             commands::delete_claude_code_account,
             commands::get_claude_code_account_quota,
             commands::add_claude_secret_account,
