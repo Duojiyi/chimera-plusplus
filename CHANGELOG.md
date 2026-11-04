@@ -10,6 +10,63 @@ numbers belong to a separate upstream line.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.8.10] - 2026-11-05
+
+### Changed
+
+- The local proxy now answers only requests that name the loopback interface and carry this install's proxy token. Taking a tool over writes `PROXY_MANAGED.<secret>` instead of the fixed `PROXY_MANAGED`; the live configs of tools already taken over are rewritten on the next start, and the old placeholder keeps working for 72 hours so a running Codex or Claude Code is not cut off. A tool configured by hand to use the proxy without a token now gets 401: turn takeover on again so the token is written. Request bodies are capped at 64 MiB and at most 128 requests run at once.
+- Editing a line that is not the current one saves it in place (**保存**) and no longer switches to it or restarts Codex; **保存并切换** is the second button. A new line offers **仅保存** beside **保存并切换**.
+- Clicking a line's name opens it for editing instead of switching to it; the row's own **切换** button switches.
+- Ctrl K no longer pre-selects the first entry: Enter does nothing until you type or move with the arrow keys.
+- The window's close button works while a line is being edited, and asks first when there is unsaved input.
+- A **跳到主要内容** link (first Tab stop) skips the sidebar; the invisible update button is no longer a keyboard stop. Plain notes are no longer announced as urgent alerts.
+- A changed application data folder is only used after the next start. Settings shows the saved folder, the current one stays in use until then, and the folder is checked (absolute, writable, not inside Codex's folder) when it is saved.
+- Codex history recovery only relabels sessions of routes that are not defined in config.toml (provider tables, profiles) or shipped by Codex (Ollama, LM Studio), and keeps the five newest backup generations.
+- Installers carry the MIT and AGPL-3.0 texts and the third-party notices, license metadata reads `MIT AND AGPL-3.0-only`, and Settings → 应用更新 links the matching source. Windows ARM64 is listed as a preview.
+- Many descriptions in settings, import, backups, failover, tools and accounts are shorter; repeated reassurances were removed.
+
+### Added
+
+- Claude accounts, Claude Code page and Claude Desktop page:
+  - **Account overview**: saved logins show as cards (or a compact list) with every quota window, the time left until each resets, tags for the plan, kind and state, the date added and the actions at hand. A toolbar searches by name, email or note, filters (in use, subscription, token / API key, held out of use, needing a new sign-in), sorts (own order, most quota left, name, newest) and hides emails for screen sharing; *刷新全部额度* reads every account again. Each login can carry a note.
+  - **添加账号** dialog with three tabs: authorize in the browser (Windows; the official `claude auth login --claudeai` runs in a private config folder, so the login Claude Code is using is never touched); paste a `claude setup-token` token, a Console API key (recognized by prefix, nothing is sent anywhere to check it) or login JSON (a claude-swap export or `.credentials.json`); or import a login file / save the current terminal login. Saved logins can be exported as a plaintext JSON file in claude-swap's format (a warning comes first); a file from `cswap --export` imports here and the other way round. An import validates every entry before writing, keeps a login the vault already has unless it needs a new sign-in, and reports what it added, updated and skipped.
+  - Accounts can be **held out of use** (not switched to, not opened in parallel, not bound, no quota reads; the login is kept), **reordered** by dragging the grip, with the arrow keys on it or from the row menu (上移 / 下移), and renamed. A token or key account switches like any other: a token is written as Claude Code's login, a key as `primaryApiKey` with its approval entry, and what was in use is saved first.
+  - **Parallel sessions** (Windows): *并行打开* starts a terminal that uses one saved login through its own `CLAUDE_CONFIG_DIR`, while the login Claude Code uses everywhere else stays as it is. Settings, skills, commands, agents and MCP servers are copied from the default config on every start (the provider and credential entries of `settings.json` — every `ANTHROPIC_*` and `CLAUDE_CODE_USE_*` variable, `apiKeyHelper` and the like — are left out, so a session uses only the login it was opened for; changes made inside a session to the copied items are replaced on the next start). A session has its own conversation history and does not see the conversations of other logins. A login's refresh token only ever lives in one place: the login in use cannot also run as a session, a session in progress blocks switching to, deleting or refreshing that login, and newer tokens a session wrote are taken back into the saved login. *复制启动命令* gives the cmd / PowerShell command for a terminal you already have open.
+  - **目录绑定**: bind a project folder to a login; opening Claude from Chimera in that folder or below uses it. Nothing outside the app is changed.
+  - **用量总览**: tokens and estimated cost by day, project (the folder Claude Code keeps the conversation in), model and source, read from Claude Code's own conversation logs (the default folder, every session folder and the conversations of deleted logins). Logins switched with *切换到此账号* all count under the default login, because the logs do not say whose they are. The card counts only when opened.
+  - **Default Claude Desktop** (Windows): a saved login can keep a snapshot of Claude Desktop's sign-in (cookies, the key that decrypts them, config and storage). *切换默认 Desktop* closes Desktop, keeps the sign-in that was in use (in its own snapshot, or a small stash when it matches no saved login), puts the other one in place, rolls back if anything fails, and reopens Desktop. For a login with no snapshot yet, *用此账号登录 Desktop* keeps the sign-in in use and takes Desktop back to its sign-in page without signing anyone out; sign in there, then *保存 Desktop 登录*, and from then on the switch is one click. Only the account's own keys of `config.json` are replaced, so Desktop's language, theme and update state stay. Writing a Claude Code token into Desktop's token cache was not done: Desktop's login is the cookies and the key beside them, and the cache's tokens belong to Desktop's own OAuth client, so a token written there could not switch the account. Snapshots work on this machine and Windows user only and are not exported.
+- The pricing picker fetches models.dev through the app (and its outbound proxy), so the page no longer needs direct network access.
+- Release checks: committed-credential scanning covers private keys and GitHub, Anthropic, OpenAI, AWS, Slack and Google tokens; release provenance lists every git-pinned build input and the verifier rejects an incomplete list.
+
+### Fixed
+
+- Codex 0.163 and newer no longer get HTTP 400 from xAI: the `output.encrypted_content` include marker is dropped for xAI.
+- On Windows, starting Chimera++ a second time while lightweight mode is on no longer freezes the app and its tray.
+- Tool detection no longer launches OpenCode Desktop, skips Windows app aliases, and prefers OpenCode's bundled CLI.
+- The runtime history dialog lists the newest Codex builds on its first page (releases are ordered by version).
+- Claude requests that expect JSON get JSON when a Chat or Responses upstream answers with an event stream, including `response.incomplete`. Gemini Native keeps `thoughtSignature` at part level, fills the documented skip value for Gemini 3+ when a signature cannot be recovered, and sends text that follows tool results as its own turn.
+- A Codex fork that references its parent's history by byte range is billed once its parent baseline verifies, instead of staying deferred and failing every strict rebuild. Request-log error messages are capped at 4096 characters.
+- Claude Desktop gateway tokens are compared in constant time and accepted in `x-api-key`.
+- When the database is newer than the app, the recovery screen's **升级应用** works (it needs state that was only registered after the early return).
+- The Gemini page no longer offers a login terminal that started Claude Code; opening a provider terminal uses a private, exclusive-create directory that is removed when the launch ends or fails.
+- A failed live write while adding an OpenCode line no longer leaves the saved line behind.
+- Applying or restoring a Codex skin, and the startup config repair, no longer overwrite a config.toml written in between.
+- Importing a SQL backup refuses SQL functions outside what an export contains and files over 64 MiB, and the error says Chimera++. Quota, balance and token responses are read with a size limit. The v8→v9 migration keeps existing model prices.
+- Values placed into a usage script (`{{apiKey}}`, `{{baseUrl}}` and others) are escaped so they stay inside their string literal.
+- Startup failure dialogs and the tray are always in Chinese, matching the interface; a failed Warp launch leaves no script in the project folder; crash logs drop URL secrets and bearer tokens and no longer set `RUST_BACKTRACE` for child processes.
+- Quitting from the tray while Codex is being installed, updated or re-skinned asks first.
+- The line table's latency column shows the current line's measurement, as the station sign does.
+
+### Removed
+
+- Unused commands (environment-variable cleanup, legacy deep-link import, Copilot optimizer settings, lightweight-mode probes and others), the `custom` session terminal launcher, and the unused three.js, dnd-kit and jsonc-parser dependencies.
+
+### Security
+
+- Release signing: a candidate build only receives the updater key for a commit that is on main or carries a release tag, and the key is removed from the job right after the build that signs.
+- The CSP no longer allows the renderer to connect to arbitrary hosts; the renderer's updater permission is limited to checking, and its process-restart permission is gone.
+- The session terminal accepts only a provider's resume command with an inert session id, and session files are read only from each tool's own folders.
+
 ## [2.8.9] - 2026-10-31
 
 ### Added
