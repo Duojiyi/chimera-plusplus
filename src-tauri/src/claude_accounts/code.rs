@@ -1751,6 +1751,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[cfg_attr(target_os = "macos", ignore = "the vault saves no login on macOS")]
     fn a_note_is_kept_trimmed_cleared_when_empty_and_bounded() {
         let fx = fixture();
         login(&fx.paths, "work@example.com", "u-work", "tok-work");

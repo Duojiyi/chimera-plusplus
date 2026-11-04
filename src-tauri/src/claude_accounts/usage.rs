@@ -1245,6 +1245,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(target_os = "macos", ignore = "the vault saves no login on macOS")]
     fn every_session_folder_and_the_kept_conversations_of_deleted_logins_are_sources() {
         use crate::claude_accounts::code::tests::{fixture, login};
         let f = fixture();

@@ -290,7 +290,8 @@ pub(crate) fn resolve_in(vault: &CodeVault, dir: &str) -> Result<Option<BindingD
     Ok(best.map(|entry| probed(dto_of(&slots, &entry))))
 }
 
-#[cfg(test)]
+// Binding a folder needs parallel sessions, which are Windows only.
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
     use crate::claude_accounts::code::tests::{fixture, login, Fixture};

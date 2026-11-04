@@ -204,7 +204,8 @@ pub(crate) fn reorder_in(vault: &CodeVault, ids: &[String]) -> Result<(), AppErr
     Ok(())
 }
 
-#[cfg(test)]
+// The vault saves no login on macOS (Claude Code keeps it in the keychain).
+#[cfg(all(test, not(target_os = "macos")))]
 mod tests {
     use super::*;
     use crate::claude_accounts::code::tests::{fixture, login, Fixture};

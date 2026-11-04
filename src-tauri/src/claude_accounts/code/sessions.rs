@@ -199,7 +199,7 @@ pub(crate) fn harvest_locked(vault: &CodeVault, id: &str) -> Result<bool, AppErr
     Ok(true)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "macos")))]
 pub(crate) fn harvest_in(vault: &CodeVault, id: &str) -> Result<bool, AppError> {
     let _guard = CODE_LOCK.lock()?;
     harvest_locked(vault, id)
@@ -706,7 +706,8 @@ pub(crate) fn running_error() -> AppError {
     )
 }
 
-#[cfg(test)]
+// The vault saves no login on macOS (Claude Code keeps it in the keychain).
+#[cfg(all(test, not(target_os = "macos")))]
 mod tests {
     use super::*;
     use crate::claude_accounts::code::tests::{fixture, login, Fixture};
