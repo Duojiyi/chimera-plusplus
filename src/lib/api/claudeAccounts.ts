@@ -1,5 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 
+/** What a saved login is made of. */
+export type ClaudeAccountKind = "oauth" | "setup_token" | "api_key";
+
 /** A saved Claude Code login. Never carries a token. */
 export interface ClaudeCodeAccount {
   id: string;
@@ -16,6 +19,11 @@ export interface ClaudeCodeAccount {
   needsRelogin: boolean;
   /** Cannot be decrypted here; it can only be deleted. */
   unreadable: boolean;
+  kind: ClaudeAccountKind;
+  /** Held out of use: not switched to, not opened in parallel, no quota. */
+  disabled: boolean;
+  /** A terminal is open on this login (a parallel session). */
+  sessionRunning: boolean;
 }
 
 export interface ClaudeCodeLive {
@@ -32,10 +40,105 @@ export interface ClaudeCodeAccounts {
   unsupportedReason?: string | null;
   /** Adding a login through the browser can be started from this app. */
   browserLoginSupported: boolean;
+  /** A terminal can be opened on a saved login (parallel sessions). */
+  sessionsSupported: boolean;
   live: ClaudeCodeLive;
   /** The live login files could not be read. */
   liveError?: string | null;
   accounts: ClaudeCodeAccount[];
+}
+
+export type ClaudeBindingState = "ready" | "missing" | "disabled";
+
+/** A folder bound to a saved login. */
+export interface ClaudeBinding {
+  path: string;
+  accountId: string;
+  accountName?: string | null;
+  accountEmail?: string | null;
+  state: ClaudeBindingState;
+  /** The folder is gone. */
+  pathMissing: boolean;
+}
+
+export interface ClaudeSessionLaunch {
+  accountId?: string | null;
+  accountName?: string | null;
+  dir?: string | null;
+  /** The folder's binding chose the account. */
+  viaBinding: boolean;
+  /** The account is Claude Code's current login: a plain terminal opened. */
+  usesDefaultLogin: boolean;
+}
+
+export interface ClaudeSessionCommands {
+  dir: string;
+  cmd: string;
+  powershell: string;
+}
+
+export interface ClaudeUsageTokens {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+export interface ClaudeUsageBucket {
+  tokens: ClaudeUsageTokens;
+  messages: number;
+  costUsd: number;
+  /** Some tokens are from a model with no known price. */
+  costPartial: boolean;
+}
+
+export interface ClaudeUsageDay extends ClaudeUsageBucket {
+  /** `YYYY-MM-DD`, local time. */
+  day: string;
+}
+
+export interface ClaudeUsageNamed extends ClaudeUsageBucket {
+  name: string;
+  /** The project folder, or the saved login's id. */
+  detail?: string | null;
+  lastDay?: string | null;
+}
+
+export interface ClaudeUsageOverview {
+  rangeDays?: number | null;
+  filesScanned: number;
+  truncated: boolean;
+  totals: ClaudeUsageBucket;
+  days: ClaudeUsageDay[];
+  projects: ClaudeUsageNamed[];
+  models: ClaudeUsageNamed[];
+  sources: ClaudeUsageNamed[];
+}
+
+export interface ClaudeDesktopSnapshot {
+  accountId: string;
+  capturedAt: string;
+  /** Desktop is signed in as this account now. */
+  isCurrent: boolean;
+}
+
+export interface ClaudeDesktopSwapStatus {
+  supported: boolean;
+  /** Claude Desktop has its data open. */
+  running: boolean;
+  signedIn: boolean;
+  accountUuid?: string | null;
+  /** The saved login Desktop is signed in as, when it is one. */
+  currentAccountId?: string | null;
+  snapshots: ClaudeDesktopSnapshot[];
+}
+
+export interface ClaudeDesktopSwapOutcome {
+  status: "done" | "desktop_running";
+  /** It was running, was closed for this, and has been opened again. */
+  restarted: boolean;
+  savedOutgoingFor?: string | null;
+  stashedOutgoing: boolean;
 }
 
 /** Written by an export: the file holds live tokens. */
@@ -153,6 +256,74 @@ export const claudeAccountsApi = {
   /** `force` is a manual refresh; otherwise a reading under 5 minutes old is reused. */
   codeQuota: (id: string, force = false): Promise<ClaudeQuota> =>
     invoke<ClaudeQuota>("get_claude_code_account_quota", { id, force }),
+
+  /** Saves a pasted setup-token or Console API key as an account. */
+  addSecret: (secret: string, name?: string): Promise<ClaudeCodeAccount> =>
+    invoke<ClaudeCodeAccount>("add_claude_secret_account", {
+      name: name?.trim() || null,
+      secret,
+    }),
+
+  setDisabled: (id: string, disabled: boolean): Promise<void> =>
+    invoke<void>("set_claude_account_disabled", { id, disabled }),
+
+  /** Puts the listed logins first, in this order. */
+  reorder: (ids: string[]): Promise<void> =>
+    invoke<void>("reorder_claude_accounts", { ids }),
+
+  /** A terminal on a login's session folder, a folder, or both. */
+  openSession: (
+    options: { id?: string; dir?: string } = {},
+  ): Promise<ClaudeSessionLaunch> =>
+    invoke<ClaudeSessionLaunch>("open_claude_session", {
+      id: options.id ?? null,
+      dir: options.dir ?? null,
+    }),
+
+  sessionCommands: (id: string): Promise<ClaudeSessionCommands> =>
+    invoke<ClaudeSessionCommands>("get_claude_session_commands", { id }),
+
+  listBindings: (): Promise<ClaudeBinding[]> =>
+    invoke<ClaudeBinding[]>("list_claude_bindings"),
+
+  setBinding: (path: string, accountId: string): Promise<ClaudeBinding> =>
+    invoke<ClaudeBinding>("set_claude_binding", { path, accountId }),
+
+  removeBinding: (path: string): Promise<void> =>
+    invoke<void>("remove_claude_binding", { path }),
+
+  /** A folder picked in the system dialog; `null` when it was cancelled. */
+  pickFolder: (): Promise<string | null> =>
+    invoke<string | null>("pick_claude_folder"),
+
+  /** `rangeDays` null/undefined means everything. */
+  usageOverview: (rangeDays?: number | null): Promise<ClaudeUsageOverview> =>
+    invoke<ClaudeUsageOverview>("get_claude_usage_overview", {
+      rangeDays: rangeDays ?? null,
+    }),
+
+  desktopSwapStatus: (): Promise<ClaudeDesktopSwapStatus> =>
+    invoke<ClaudeDesktopSwapStatus>("get_claude_desktop_swap_status"),
+
+  /** Saves the default Desktop's sign-in for a saved login. */
+  captureDesktopLogin: (
+    id: string,
+    closeDesktop = false,
+  ): Promise<ClaudeDesktopSwapOutcome> =>
+    invoke<ClaudeDesktopSwapOutcome>("capture_claude_desktop_login", {
+      id,
+      closeDesktop,
+    }),
+
+  /** Makes the default Desktop sign in as a saved login. */
+  switchDesktop: (
+    id: string,
+    closeDesktop = false,
+  ): Promise<ClaudeDesktopSwapOutcome> =>
+    invoke<ClaudeDesktopSwapOutcome>("switch_claude_desktop_account", {
+      id,
+      closeDesktop,
+    }),
 
   /** Opens a save dialog; `null` when it was cancelled. `ids` limits the export. */
   exportLogins: (ids?: string[]): Promise<ClaudeLoginExport | null> =>

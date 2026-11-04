@@ -3558,9 +3558,6 @@ fn launch_windows_terminal(
     config_file: &std::path::Path,
     cwd: Option<&Path>,
 ) -> Result<(), String> {
-    let preferred = crate::settings::get_preferred_terminal();
-    let terminal = preferred.as_deref().unwrap_or("cmd");
-
     let bat_file = launch_dir.join("launcher.bat");
     let launch_dir_for_batch = escape_windows_batch_value(&launch_dir.to_string_lossy());
     let config_path_for_batch = escape_windows_batch_value(&config_file.to_string_lossy());
@@ -3586,8 +3583,17 @@ rmdir \"{}\" >nul 2>&1
     write_private_file(&bat_file, content.as_bytes())
         .map_err(|e| format!("写入批处理文件失败: {e}"))?;
 
-    let bat_path = bat_file.to_string_lossy();
-    let ps_cmd = format!("& '{}'", bat_path);
+    run_script_in_preferred_terminal(&bat_file)
+}
+
+/// Runs a batch file in the terminal chosen in Settings (cmd, PowerShell or
+/// Windows Terminal), falling back to cmd, and leaves the window open.
+#[cfg(target_os = "windows")]
+pub(crate) fn run_script_in_preferred_terminal(script: &Path) -> Result<(), String> {
+    let preferred = crate::settings::get_preferred_terminal();
+    let terminal = preferred.as_deref().unwrap_or("cmd");
+    let bat_path = script.to_string_lossy();
+    let ps_cmd = format!("& '{}'", bat_path.replace('\'', "''"));
 
     // Try the preferred terminal first
     let result = match terminal {

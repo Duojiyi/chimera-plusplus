@@ -17,7 +17,9 @@ use crate::error::AppError;
 pub(crate) mod code;
 pub(crate) mod desktop;
 pub(crate) mod desktop_auth;
+pub(crate) mod desktop_swap;
 pub(crate) mod quota;
+pub(crate) mod usage;
 
 const MAX_ID_LEN: usize = 64;
 const MAX_NAME_CHARS: usize = 40;

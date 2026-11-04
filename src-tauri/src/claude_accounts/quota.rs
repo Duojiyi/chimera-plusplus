@@ -516,6 +516,22 @@ pub(crate) async fn read_quota(
                 Err(_) => return cached(QuotaStatus::Unavailable),
             }
         }
+        // A token, a key, or a login held out of use: nothing to read.
+        QuotaSource::Unsupported => return cached(QuotaStatus::Unavailable),
+        // Open in a session terminal: read with its token, never refresh it.
+        QuotaSource::Session(oauth) => {
+            if age.is_some_and(|age| (0..limit).contains(&age)) {
+                return cached(QuotaStatus::Cached);
+            }
+            let token = match token_of(&oauth, "accessToken") {
+                Some(token) if !needs_refresh(oauth.get("expiresAt"), now) => token,
+                _ => return cached(QuotaStatus::LiveExpired),
+            };
+            match http.usage(&token).await {
+                Ok(quota) if quota.success => quota,
+                _ => return cached(QuotaStatus::Unavailable),
+            }
+        }
         QuotaSource::Saved(slot) => {
             if slot.needs_relogin() {
                 return cached(QuotaStatus::NeedsRelogin);

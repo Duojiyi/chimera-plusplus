@@ -408,6 +408,33 @@ pub(crate) fn launch_plan(
     })
 }
 
+/// Program that opens the default Claude Desktop, the one that keeps its
+/// data in the app's own folder (no profile folder is passed).
+pub(crate) fn default_launch_plan(
+    installation: &Path,
+    local_app_data: Option<&Path>,
+) -> Result<DesktopLaunch, AppError> {
+    let mut plan = launch_plan(installation, Path::new(""), local_app_data)?;
+    if plan.kind == InstallKind::MacApp {
+        return Err(AppError::Message(
+            "打开默认 Claude Desktop 目前只支持 Windows".to_string(),
+        ));
+    }
+    plan.args.clear();
+    Ok(plan)
+}
+
+/// Opens the default Claude Desktop.
+pub(crate) fn launch_default(installation: Option<PathBuf>) -> Result<(), AppError> {
+    let installation = installation
+        .ok_or_else(|| AppError::Message("未检测到 Claude Desktop，请先安装后再试".to_string()))?;
+    let local_app_data = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    run_launch(&default_launch_plan(
+        &installation,
+        local_app_data.as_deref(),
+    )?)
+}
+
 const RUNNING_MESSAGE: &str = "Claude Desktop 正在运行。这个账号还没登录：登录要经过 claude:// 回调，会被已打开的 Claude 窗口接走。请先完全退出 Claude Desktop（包括托盘图标）再打开这个账号登录；登录后即可与其他账号同时使用。";
 
 /// Opens Claude Desktop on the profile. A profile that is not signed in yet

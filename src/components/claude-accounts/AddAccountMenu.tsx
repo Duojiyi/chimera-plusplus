@@ -1,5 +1,16 @@
-import { useEffect, useRef, useState } from "react";
-import { FileDown, FileUp, Globe, Loader2 } from "lucide-react";
+import { useEffect, useId, useRef, useState } from "react";
+import {
+  ChevronDown,
+  Eye,
+  EyeOff,
+  FileDown,
+  FileUp,
+  Globe,
+  KeyRound,
+  Loader2,
+  Plus,
+  Terminal,
+} from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -8,19 +19,22 @@ import {
   DialogDescription,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import {
   claudeAccountsApi,
   type ClaudeLoginImportReport,
 } from "@/lib/api/claudeAccounts";
+import { errorText } from "./quota";
 
 const POLL_INTERVAL_MS = 2_000;
-
-/** Backend errors arrive as text; drop the generic "无效输入: " prefix. */
-function messageOf(cause: unknown): string {
-  const text = (cause instanceof Error ? cause.message : String(cause)).trim();
-  return text.replace(/^(无效输入|并发冲突):\s*/, "") || "操作失败，请重试";
-}
 
 /** Stops a flow without waiting; a flow that is already over is not an error. */
 function endFlow(id: string) {
@@ -35,7 +49,24 @@ type Browser =
   | { phase: "waiting"; id: string }
   | { phase: "failed"; message: string };
 
-export interface ClaudeLoginToolsProps {
+/** What a pasted value looks like, by its prefix (the app checks it again). */
+export function secretKind(
+  value: string,
+): "setup_token" | "api_key" | "refresh" | null {
+  const text = value.trim();
+  if (text.startsWith("sk-ant-oat")) return "setup_token";
+  if (text.startsWith("sk-ant-ort")) return "refresh";
+  if (text.startsWith("sk-ant-")) return "api_key";
+  return null;
+}
+
+const SECRET_KIND_TEXT = {
+  setup_token: "setup-token：长期令牌，只能用来推理",
+  api_key: "Console API Key：按量计费",
+  refresh: "这是 refresh token，不能单独添加",
+} as const;
+
+export interface AddAccountMenuProps {
   /** Another change to the accounts is running. */
   disabled: boolean;
   /** The app can start a browser authorization on this system. */
@@ -44,23 +75,30 @@ export interface ClaudeLoginToolsProps {
   exportable: number;
   /** Called after the saved logins changed, so the lists reload. */
   onChanged: () => void;
+  /** Offered where signing in from a terminal and saving it makes sense. */
+  onTerminalGuide?: () => void;
+  /** The trigger's text. */
+  label?: string;
 }
 
 /**
- * Add a Claude login by browser authorization, or move logins in and out as a
- * JSON file. Shared by the Claude Code and Claude Desktop pages: both read the
- * same saved logins.
+ * Everything that adds a saved login or moves them as a file: browser
+ * authorization, a pasted setup-token or API key, a login file, and the
+ * export. Shared by the Claude Code and Claude Desktop pages.
  */
-export function ClaudeLoginTools({
+export function AddAccountMenu({
   disabled,
   browserSupported,
   exportable,
   onChanged,
-}: ClaudeLoginToolsProps) {
+  onTerminalGuide,
+  label = "添加账号",
+}: AddAccountMenuProps) {
   const [browser, setBrowser] = useState<Browser>({ phase: "idle" });
   const [report, setReport] = useState<ClaudeLoginImportReport | null>(null);
   const [confirmExport, setConfirmExport] = useState(false);
   const [working, setWorking] = useState<"import" | "export" | null>(null);
+  const [secretOpen, setSecretOpen] = useState(false);
   const mounted = useRef(true);
   const flowId = useRef<string | null>(null);
   const onChangedRef = useRef(onChanged);
@@ -114,7 +152,7 @@ export function ClaudeLoginTools({
         });
       } catch (cause) {
         if (!stopped)
-          setBrowser({ phase: "failed", message: messageOf(cause) });
+          setBrowser({ phase: "failed", message: errorText(cause) });
       }
     };
     timer = window.setTimeout(() => void tick(), POLL_INTERVAL_MS / 2);
@@ -132,7 +170,7 @@ export function ClaudeLoginTools({
       if (mounted.current) setBrowser({ phase: "waiting", id });
     } catch (cause) {
       if (mounted.current)
-        setBrowser({ phase: "failed", message: messageOf(cause) });
+        setBrowser({ phase: "failed", message: errorText(cause) });
     }
   };
 
@@ -151,7 +189,7 @@ export function ClaudeLoginTools({
       if (result.imported.length > 0 || result.updated.length > 0)
         onChangedRef.current();
     } catch (cause) {
-      if (mounted.current) toast.error(messageOf(cause));
+      if (mounted.current) toast.error(errorText(cause));
     } finally {
       if (mounted.current) setWorking(null);
     }
@@ -175,7 +213,7 @@ export function ClaudeLoginTools({
     } catch (cause) {
       if (mounted.current) {
         setConfirmExport(false);
-        toast.error(messageOf(cause));
+        toast.error(errorText(cause));
       }
     } finally {
       if (mounted.current) setWorking(null);
@@ -187,46 +225,70 @@ export function ClaudeLoginTools({
 
   return (
     <div className="claude-login-tools">
-      <div
-        className="claude-login-tools-actions"
-        role="group"
-        aria-label="登录凭证"
-      >
-        {browserSupported ? (
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={busy || browserOpen}
-            onClick={() => void startBrowser()}
-          >
-            <Globe size={14} aria-hidden="true" />
-            从浏览器授权添加
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button size="sm" variant="outline" disabled={busy || browserOpen}>
+            <Plus size={14} aria-hidden="true" />
+            {label}
+            <ChevronDown size={13} aria-hidden="true" />
           </Button>
-        ) : null}
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={busy}
-          onClick={() => void importFile()}
-        >
-          {working === "import" ? (
-            <Loader2 size={14} className="animate-spin" aria-hidden="true" />
-          ) : (
-            <FileUp size={14} aria-hidden="true" />
-          )}
-          导入凭证文件
-        </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={busy || exportable === 0}
-          title={exportable === 0 ? "还没有可导出的登录" : undefined}
-          onClick={() => setConfirmExport(true)}
-        >
-          <FileDown size={14} aria-hidden="true" />
-          导出凭证文件
-        </Button>
-      </div>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="claude-add-menu">
+          {browserSupported ? (
+            <DropdownMenuItem onSelect={() => void startBrowser()}>
+              <Globe size={15} aria-hidden="true" />
+              <span>
+                <strong>从浏览器授权添加</strong>
+                <small>用官方授权流程登录，不影响当前登录</small>
+              </span>
+            </DropdownMenuItem>
+          ) : null}
+          <DropdownMenuItem onSelect={() => setSecretOpen(true)}>
+            <KeyRound size={15} aria-hidden="true" />
+            <span>
+              <strong>粘贴令牌或 API Key</strong>
+              <small>claude setup-token 的令牌，或 Console 的密钥</small>
+            </span>
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => void importFile()}>
+            <FileUp size={15} aria-hidden="true" />
+            <span>
+              <strong>导入凭证文件</strong>
+              <small>claude-swap 的导出文件，或 .credentials.json</small>
+            </span>
+          </DropdownMenuItem>
+          {onTerminalGuide ? (
+            <DropdownMenuItem onSelect={onTerminalGuide}>
+              <Terminal size={15} aria-hidden="true" />
+              <span>
+                <strong>在终端登录后保存</strong>
+                <small>用 /login 登录新账号，再保存当前登录</small>
+              </span>
+            </DropdownMenuItem>
+          ) : null}
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            disabled={exportable === 0}
+            onSelect={() => setConfirmExport(true)}
+          >
+            <FileDown size={15} aria-hidden="true" />
+            <span>
+              <strong>导出凭证文件</strong>
+              <small>
+                {exportable === 0
+                  ? "还没有可导出的登录"
+                  : `${exportable} 个登录，明文保存`}
+              </small>
+            </span>
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+
+      <SecretDialog
+        open={secretOpen}
+        onOpenChange={setSecretOpen}
+        onSaved={() => onChangedRef.current()}
+      />
 
       <Dialog
         open={browserOpen}
@@ -338,7 +400,7 @@ export function ClaudeLoginTools({
         isOpen={confirmExport}
         busy={working === "export"}
         title="导出的文件里是明文令牌"
-        message={`文件包含 ${exportable} 个账号的 access token 和 refresh token，拿到它的人可以直接登录这些 Claude 账号。只保存在可信的位置，用完立即删除，不要上传或发给别人。格式与 claude-swap 兼容，可以导入那边使用。`}
+        message={`文件包含 ${exportable} 个账号的 access token 和 refresh token（API Key 也在其中），拿到它的人可以直接登录这些 Claude 账号。只保存在可信的位置，用完立即删除，不要上传或发给别人。格式与 claude-swap 兼容，可以导入那边使用。`}
         confirmText="我了解，选择保存位置"
         cancelText="取消"
         variant="destructive"
@@ -348,5 +410,160 @@ export function ClaudeLoginTools({
         onConfirm={() => void exportFile()}
       />
     </div>
+  );
+}
+
+function SecretDialog({
+  open,
+  onOpenChange,
+  onSaved,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSaved: () => void;
+}) {
+  const secretId = useId();
+  const nameId = useId();
+  const [secret, setSecret] = useState("");
+  const [name, setName] = useState("");
+  const [shown, setShown] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const kind = secretKind(secret);
+
+  const reset = () => {
+    setSecret("");
+    setName("");
+    setShown(false);
+    setError("");
+  };
+
+  const submit = async () => {
+    if (saving || (kind !== "setup_token" && kind !== "api_key")) return;
+    setSaving(true);
+    setError("");
+    try {
+      const saved = await claudeAccountsApi.addSecret(secret, name);
+      toast.success(`已添加「${saved.name}」`, {
+        description:
+          "没有联网验证。在终端切换到它并运行一次 claude，就能确认可用。",
+      });
+      onOpenChange(false);
+      reset();
+      onSaved();
+    } catch (cause) {
+      setError(errorText(cause));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (saving) return;
+        onOpenChange(next);
+        if (!next) reset();
+      }}
+    >
+      <DialogContent className="claude-accounts-dialog">
+        <DialogTitle>添加令牌或 API Key</DialogTitle>
+        <DialogDescription>
+          setup-token 在终端运行 <code>claude setup-token</code> 得到；API Key
+          在 Anthropic Console
+          创建。只保存在本机，加密存放，不会发送到任何地方。
+        </DialogDescription>
+        <form
+          className="claude-accounts-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void submit();
+          }}
+        >
+          <label htmlFor={secretId}>令牌或密钥</label>
+          <div className="claude-secret-field">
+            <Input
+              id={secretId}
+              type={shown ? "text" : "password"}
+              value={secret}
+              autoFocus
+              autoComplete="off"
+              spellCheck={false}
+              placeholder="sk-ant-…"
+              onChange={(event) => {
+                setSecret(event.target.value);
+                setError("");
+              }}
+            />
+            <button
+              type="button"
+              className="claude-secret-toggle"
+              aria-label={shown ? "隐藏" : "显示"}
+              aria-pressed={shown}
+              onClick={() => setShown((value) => !value)}
+            >
+              {shown ? (
+                <EyeOff size={15} aria-hidden="true" />
+              ) : (
+                <Eye size={15} aria-hidden="true" />
+              )}
+            </button>
+          </div>
+          <p
+            className="claude-secret-kind"
+            data-kind={kind ?? undefined}
+            role="status"
+          >
+            {kind
+              ? SECRET_KIND_TEXT[kind]
+              : secret.trim()
+                ? "无法识别：应以 sk-ant- 开头"
+                : "类型会根据开头自动识别"}
+          </p>
+          <label htmlFor={nameId}>账号名称（可选）</label>
+          <Input
+            id={nameId}
+            value={name}
+            maxLength={40}
+            placeholder="例如：CI 机器人"
+            onChange={(event) => setName(event.target.value)}
+          />
+          {error ? (
+            <p className="claude-secret-error" role="alert">
+              {error}
+            </p>
+          ) : null}
+          <footer>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={saving}
+              onClick={() => {
+                onOpenChange(false);
+                reset();
+              }}
+            >
+              取消
+            </Button>
+            <Button
+              type="submit"
+              disabled={
+                saving || (kind !== "setup_token" && kind !== "api_key")
+              }
+            >
+              {saving ? (
+                <Loader2
+                  size={14}
+                  className="animate-spin"
+                  aria-hidden="true"
+                />
+              ) : null}
+              保存
+            </Button>
+          </footer>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }

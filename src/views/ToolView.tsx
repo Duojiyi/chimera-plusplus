@@ -25,6 +25,8 @@ import type { AppId } from "@/lib/api/types";
 import { providersApi } from "@/lib/api/providers";
 import { vscodeApi } from "@/lib/api/vscode";
 import { ClaudeAccountsCard } from "@/components/claude-accounts/ClaudeAccountsCard";
+import { ClaudeBindingsCard } from "@/components/claude-accounts/ClaudeBindingsCard";
+import { ClaudeUsageCard } from "@/components/claude-accounts/ClaudeUsageCard";
 import type { ToolName } from "@/components/settings/AboutSection";
 import {
   toolProviderSummary,
@@ -779,7 +781,11 @@ function KnownToolView({
           )}
 
         {tool.appId === "claude" && !loading && !error ? (
-          <ClaudeAccountsCard mode="code" native={native} />
+          <>
+            <ClaudeAccountsCard mode="code" native={native} />
+            <ClaudeBindingsCard native={native} />
+            <ClaudeUsageCard native={native} />
+          </>
         ) : null}
 
         {error && !loading && (

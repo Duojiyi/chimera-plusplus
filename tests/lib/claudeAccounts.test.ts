@@ -82,6 +82,78 @@ describe("Claude accounts command contract", () => {
       { id: "flow-1" },
     ],
     [
+      () => claudeAccountsApi.addSecret("sk-ant-oat01-x", " CI "),
+      "add_claude_secret_account",
+      { name: "CI", secret: "sk-ant-oat01-x" },
+    ],
+    [
+      () => claudeAccountsApi.addSecret("sk-ant-api03-x"),
+      "add_claude_secret_account",
+      { name: null, secret: "sk-ant-api03-x" },
+    ],
+    [
+      () => claudeAccountsApi.setDisabled("a1", true),
+      "set_claude_account_disabled",
+      { id: "a1", disabled: true },
+    ],
+    [
+      () => claudeAccountsApi.reorder(["a", "b"]),
+      "reorder_claude_accounts",
+      { ids: ["a", "b"] },
+    ],
+    [
+      () => claudeAccountsApi.openSession({ id: "a1" }),
+      "open_claude_session",
+      { id: "a1", dir: null },
+    ],
+    [
+      () => claudeAccountsApi.openSession({ dir: "D:\w" }),
+      "open_claude_session",
+      { id: null, dir: "D:\w" },
+    ],
+    [
+      () => claudeAccountsApi.sessionCommands("a1"),
+      "get_claude_session_commands",
+      { id: "a1" },
+    ],
+    [() => claudeAccountsApi.listBindings(), "list_claude_bindings", undefined],
+    [
+      () => claudeAccountsApi.setBinding("D:\w", "a1"),
+      "set_claude_binding",
+      { path: "D:\w", accountId: "a1" },
+    ],
+    [
+      () => claudeAccountsApi.removeBinding("D:\w"),
+      "remove_claude_binding",
+      { path: "D:\w" },
+    ],
+    [() => claudeAccountsApi.pickFolder(), "pick_claude_folder", undefined],
+    [
+      () => claudeAccountsApi.usageOverview(30),
+      "get_claude_usage_overview",
+      { rangeDays: 30 },
+    ],
+    [
+      () => claudeAccountsApi.usageOverview(),
+      "get_claude_usage_overview",
+      { rangeDays: null },
+    ],
+    [
+      () => claudeAccountsApi.desktopSwapStatus(),
+      "get_claude_desktop_swap_status",
+      undefined,
+    ],
+    [
+      () => claudeAccountsApi.captureDesktopLogin("a1"),
+      "capture_claude_desktop_login",
+      { id: "a1", closeDesktop: false },
+    ],
+    [
+      () => claudeAccountsApi.switchDesktop("a1", true),
+      "switch_claude_desktop_account",
+      { id: "a1", closeDesktop: true },
+    ],
+    [
       () => claudeAccountsApi.listDesktop(),
       "list_claude_desktop_profiles",
       undefined,

@@ -12,6 +12,7 @@
 //! be newer than the file's, and Claude rotates refresh tokens) unless it was
 //! marked as needing a new sign-in, in which case the file's tokens heal it.
 
+use super::manage::{self, Secret};
 use super::*;
 use serde_json::json;
 
@@ -56,9 +57,33 @@ fn platform_tag() -> &'static str {
     }
 }
 
+/// An export entry for a token or key. claude-swap needs an email for every
+/// account, so it gets the placeholder one it uses for them too.
+fn token_entry(number: usize, slot: &Slot, label: &str, credentials: Value) -> Value {
+    let email = format!("{label}-{number}@token.local");
+    json!({
+        "number": number,
+        "email": email,
+        "uuid": "",
+        "organizationUuid": "",
+        "organizationName": "",
+        "added": slot.created_at,
+        "chimeraName": slot.name,
+        "credentials": credentials,
+        "config": { ACCOUNT_KEY: {
+            "emailAddress": email,
+            "accountUuid": "",
+            "organizationUuid": Value::Null,
+            "organizationName": Value::Null,
+        } },
+    })
+}
+
 /// The envelope for the saved logins named by `ids` (all of them for `None`).
 pub(crate) fn export_in(vault: &CodeVault, ids: Option<&[String]>) -> Result<Exported, AppError> {
     let _guard = CODE_LOCK.lock()?;
+    // Newer tokens a session wrote belong in the file.
+    sessions::harvest_all_locked(vault);
     let mut accounts = Vec::new();
     let mut skipped = 0usize;
     let mut slots = vault.readable_slots();
@@ -66,26 +91,46 @@ pub(crate) fn export_in(vault: &CodeVault, ids: Option<&[String]>) -> Result<Exp
         slots.retain(|slot| ids.contains(&slot.id));
     }
     for slot in slots {
-        let ident = slot.identity();
-        let account = slot
-            .oauth_account
-            .as_ref()
-            .filter(|value| value.is_object());
-        let (Some(email), Some(account)) = (ident.email.as_ref(), account) else {
-            skipped += 1;
-            continue;
-        };
-        accounts.push(json!({
-            "number": accounts.len() + 1,
-            "email": email,
-            "uuid": text_field(Some(account), "accountUuid").unwrap_or_default(),
-            "organizationUuid": text_field(Some(account), "organizationUuid").unwrap_or_default(),
-            "organizationName": text_field(Some(account), "organizationName").unwrap_or_default(),
-            "added": slot.created_at,
-            "chimeraName": slot.name,
-            "credentials": { CREDENTIALS_KEY: slot.claude_ai_oauth },
-            "config": { ACCOUNT_KEY: account },
-        }));
+        let number = accounts.len() + 1;
+        match slot.kind() {
+            SlotKind::Oauth => {
+                let ident = slot.identity();
+                let account = slot
+                    .oauth_account
+                    .as_ref()
+                    .filter(|value| value.is_object());
+                let (Some(email), Some(account)) = (ident.email.as_ref(), account) else {
+                    skipped += 1;
+                    continue;
+                };
+                accounts.push(json!({
+                    "number": number,
+                    "email": email,
+                    "uuid": text_field(Some(account), "accountUuid").unwrap_or_default(),
+                    "organizationUuid": text_field(Some(account), "organizationUuid")
+                        .unwrap_or_default(),
+                    "organizationName": text_field(Some(account), "organizationName")
+                        .unwrap_or_default(),
+                    "added": slot.created_at,
+                    "chimeraName": slot.name,
+                    "credentials": { CREDENTIALS_KEY: slot.claude_ai_oauth },
+                    "config": { ACCOUNT_KEY: account },
+                }));
+            }
+            SlotKind::SetupToken => accounts.push(token_entry(
+                number,
+                &slot,
+                "setup-token",
+                json!({ CREDENTIALS_KEY: slot.claude_ai_oauth }),
+            )),
+            SlotKind::ApiKey => {
+                let Some(key) = slot.api_key.clone() else {
+                    skipped += 1;
+                    continue;
+                };
+                accounts.push(token_entry(number, &slot, "api-key", Value::String(key)));
+            }
+        }
     }
     if accounts.is_empty() {
         return Err(AppError::InvalidInput(
@@ -112,11 +157,31 @@ pub(crate) fn export_in(vault: &CodeVault, ids: Option<&[String]>) -> Result<Exp
     })
 }
 
+/// What a file entry holds.
+enum Material {
+    Login {
+        oauth: Value,
+        account: Option<Value>,
+    },
+    Secret(Secret),
+}
+
 /// One login read from a file, validated, not yet stored.
 struct Candidate {
     name: Option<String>,
-    oauth: Value,
-    account: Option<Value>,
+    material: Material,
+}
+
+impl Candidate {
+    fn identity(&self) -> Identity {
+        match &self.material {
+            Material::Login { oauth, account } => identity(account.as_ref(), Some(oauth)),
+            Material::Secret(secret) => Identity {
+                fingerprint: Some(secret_fingerprint(secret.value())),
+                ..Identity::default()
+            },
+        }
+    }
 }
 
 fn invalid(message: impl Into<String>) -> AppError {
@@ -162,6 +227,35 @@ fn optional_account(value: Option<&Value>, label: &str) -> Result<Option<Value>,
     }
 }
 
+/// An entry's credentials: a subscription login, a setup-token (a
+/// `claudeAiOauth` without a refresh token) or an API key (a bare string).
+fn material_of(
+    credentials: Option<&Value>,
+    account: Option<&Value>,
+    label: &str,
+) -> Result<Material, AppError> {
+    if let Some(Value::String(text)) = credentials {
+        return match manage::parse_secret(text) {
+            Ok(secret @ Secret::ApiKey(_)) => Ok(Material::Secret(secret)),
+            _ => Err(invalid(format!("{label}的凭据不是有效的 API Key"))),
+        };
+    }
+    let oauth = credentials.and_then(|value| value.get(CREDENTIALS_KEY));
+    let setup_token = oauth
+        .filter(|oauth| oauth.get("refreshToken").is_none())
+        .and_then(|oauth| oauth.get("accessToken"))
+        .and_then(Value::as_str)
+        .and_then(|token| manage::parse_secret(token).ok())
+        .filter(|secret| matches!(secret, Secret::SetupToken(_)));
+    if let Some(secret) = setup_token {
+        return Ok(Material::Secret(secret));
+    }
+    Ok(Material::Login {
+        oauth: valid_oauth(oauth, label)?,
+        account: optional_account(account, label)?,
+    })
+}
+
 fn candidate_name(entry: &Value) -> Option<String> {
     ["chimeraName", "alias"]
         .iter()
@@ -196,18 +290,10 @@ fn candidates_of(root: &Value) -> Result<Vec<Candidate>, AppError> {
                 if !entry.is_object() {
                     return Err(invalid(format!("{label}必须是对象")));
                 }
-                let credentials = entry.get("credentials");
-                // A raw API key (`kind: api_key`) is not a subscription login.
-                if credentials.is_some_and(Value::is_string) {
-                    return Err(invalid(format!("{label}是 API Key，不是订阅登录")));
-                }
                 Ok(Candidate {
                     name: candidate_name(entry),
-                    oauth: valid_oauth(
-                        credentials.and_then(|value| value.get(CREDENTIALS_KEY)),
-                        &label,
-                    )?,
-                    account: optional_account(
+                    material: material_of(
+                        entry.get("credentials"),
                         entry.get("config").and_then(|value| value.get(ACCOUNT_KEY)),
                         &label,
                     )?,
@@ -219,8 +305,7 @@ fn candidates_of(root: &Value) -> Result<Vec<Candidate>, AppError> {
     if object.contains_key(CREDENTIALS_KEY) {
         return Ok(vec![Candidate {
             name: None,
-            oauth: valid_oauth(object.get(CREDENTIALS_KEY), "文件")?,
-            account: optional_account(object.get(ACCOUNT_KEY), "文件")?,
+            material: material_of(Some(root), object.get(ACCOUNT_KEY), "文件")?,
         }]);
     }
 
@@ -236,18 +321,37 @@ fn store_candidate(
     candidate: Candidate,
     report: &mut ImportReport,
 ) -> Result<(), AppError> {
-    let ident = identity(candidate.account.as_ref(), Some(&candidate.oauth));
+    let ident = candidate.identity();
     let skip = |report: &mut ImportReport, reason: &str| {
         report.skipped.push(SkippedLogin {
             email: ident.email.clone(),
             reason: reason.to_string(),
         });
     };
+    let (oauth, account) = match candidate.material {
+        Material::Login { oauth, account } => (oauth, account),
+        Material::Secret(secret) => {
+            if find_matching(vault, &ident).is_some() {
+                skip(report, "已经保存了相同的令牌或密钥");
+            } else if vault.slot_ids().len() >= MAX_ACCOUNTS {
+                skip(report, &format!("已达到 {MAX_ACCOUNTS} 个账号的上限"));
+            } else {
+                let name = candidate.name.unwrap_or_else(|| match secret {
+                    Secret::SetupToken(_) => manage::SETUP_TOKEN_NAME.to_string(),
+                    Secret::ApiKey(_) => manage::API_KEY_NAME.to_string(),
+                });
+                let slot = manage::new_secret_slot(vault, name, secret)?;
+                vault.write_slot(&slot)?;
+                report.imported.push(slot.dto(None));
+            }
+            return Ok(());
+        }
+    };
     if let Some(mut slot) = find_matching(vault, &ident) {
-        if refresh_token_of(&slot.claude_ai_oauth) == refresh_token_of(&candidate.oauth) {
+        if refresh_token_of(&slot.claude_ai_oauth) == refresh_token_of(&oauth) {
             skip(report, "已经保存了相同的登录");
         } else if slot.needs_relogin {
-            slot.absorb(candidate.oauth, candidate.account);
+            slot.absorb(oauth, account);
             vault.write_slot(&slot)?;
             report.updated.push(slot.dto(None));
         } else {
@@ -265,7 +369,7 @@ fn store_candidate(
     let name = candidate
         .name
         .unwrap_or_else(|| fitted_name(ident.email.as_deref().unwrap_or_default(), DEFAULT_NAME));
-    let slot = new_slot(vault, name, candidate.oauth, candidate.account)?;
+    let slot = new_slot(vault, name, oauth, account)?;
     vault.write_slot(&slot)?;
     report.imported.push(slot.dto(None));
     Ok(())
@@ -281,7 +385,7 @@ pub(crate) fn import_in(vault: &CodeVault, text: &str) -> Result<ImportReport, A
     let mut report = ImportReport::default();
     let mut seen: Vec<Identity> = Vec::new();
     for candidate in candidates {
-        let ident = identity(candidate.account.as_ref(), Some(&candidate.oauth));
+        let ident = candidate.identity();
         if seen.iter().any(|earlier| same_login(earlier, &ident)) {
             report.skipped.push(SkippedLogin {
                 email: ident.email.clone(),
@@ -494,6 +598,80 @@ mod tests {
         let report = import_in(&f.vault, &file).unwrap();
         assert_eq!((report.imported.len(), report.skipped.len()), (1, 1));
         assert_eq!(report.imported[0].name, "工作号");
+    }
+
+    const KEY: &str = concat!(
+        "sk-ant-api03-",
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA-xyz_1234567890"
+    );
+    const TOKEN: &str = concat!(
+        "sk-ant-oat01-",
+        "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB-xyz_1234567890"
+    );
+
+    #[test]
+    fn tokens_and_keys_travel_in_claude_swaps_shape_and_come_back_as_what_they_were() {
+        let source = fixture();
+        saved(&source, "a@example.com", "uuid-a", "token-a");
+        manage::add_secret_in(&source.vault, Some("CI"), TOKEN).unwrap();
+        manage::add_secret_in(&source.vault, Some("Console"), KEY).unwrap();
+
+        let exported = export_in(&source.vault, None).unwrap();
+        assert_eq!((exported.count, exported.skipped), (3, 0));
+        let envelope: Value = serde_json::from_str(&exported.json).unwrap();
+        let by_name = |name: &str| {
+            envelope["accounts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["chimeraName"] == name)
+                .unwrap()
+                .clone()
+        };
+        let token = by_name("CI");
+        assert_eq!(token["credentials"]["claudeAiOauth"]["accessToken"], TOKEN);
+        assert!(token["credentials"]["claudeAiOauth"]
+            .get("refreshToken")
+            .is_none());
+        assert!(token["email"].as_str().unwrap().ends_with("@token.local"));
+        let key = by_name("Console");
+        assert_eq!(key["credentials"], KEY, "an API key is a bare string");
+
+        let target = fixture();
+        let report = import_in(&target.vault, &exported.json).unwrap();
+        assert_eq!((report.imported.len(), report.skipped.len()), (3, 0));
+        let kinds: Vec<_> = target
+            .vault
+            .readable_slots()
+            .iter()
+            .map(|s| s.kind())
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![SlotKind::Oauth, SlotKind::SetupToken, SlotKind::ApiKey]
+        );
+        let names: Vec<_> = report.imported.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names[1..], ["CI", "Console"]);
+
+        // The same file again adds nothing.
+        let again = import_in(&target.vault, &exported.json).unwrap();
+        assert_eq!((again.imported.len(), again.skipped.len()), (0, 3));
+        let text = serde_json::to_string(&report).unwrap();
+        assert!(!text.contains("AAAAAAAA") && !text.contains("BBBBBBBB"));
+    }
+
+    #[test]
+    fn a_bare_setup_token_credentials_file_imports_as_a_token_account() {
+        let f = fixture();
+        let file = json!({"claudeAiOauth": {"accessToken": TOKEN, "scopes": ["user:inference"]}})
+            .to_string();
+        let report = import_in(&f.vault, &file).unwrap();
+        assert_eq!(report.imported[0].kind, SlotKind::SetupToken);
+        // A token that is not a setup-token still needs its refresh token.
+        let no_refresh =
+            json!({"claudeAiOauth": {"accessToken": "an-access-token-without-refresh"}})
+                .to_string();
+        assert!(import_in(&f.vault, &no_refresh).is_err());
     }
 
     #[test]

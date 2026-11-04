@@ -2,11 +2,9 @@ import "./ClaudeAccountsCard.css";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
   AppWindow,
-  ArrowLeftRight,
   Loader2,
   Pencil,
   Plus,
-  RotateCw,
   ShieldCheck,
   Trash2,
   UserRound,
@@ -21,16 +19,29 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { ClaudeLoginTools } from "./ClaudeLoginTools";
 import {
   claudeAccountsApi,
   DEFAULT_DESKTOP_ID,
   type ClaudeCodeAccount,
   type ClaudeCodeAccounts,
   type ClaudeDesktopProfile,
-  type ClaudeQuota,
-  type ClaudeQuotaWindow,
+  type ClaudeDesktopSwapOutcome,
+  type ClaudeDesktopSwapStatus,
 } from "@/lib/api/claudeAccounts";
+import { AccountRow } from "./AccountRow";
+import { AddAccountMenu } from "./AddAccountMenu";
+import {
+  DESKTOP_STATUS_TEXT,
+  QuotaStrip,
+  errorText,
+  type QuotaState,
+} from "./quota";
+import { moveBy, useSortable } from "./useSortable";
+
+export { clockText, errorText, resetText } from "./quota";
+
+/** Other cards on the page (folder bindings) reload when this fires. */
+export const BINDINGS_CHANGED_EVENT = "chimera-claude-bindings-changed";
 
 export type ClaudeAccountsMode = "code" | "desktop";
 
@@ -38,304 +49,6 @@ export interface ClaudeAccountsCardProps {
   mode: ClaudeAccountsMode;
   /** Running inside the desktop shell (native commands available). */
   native?: boolean;
-}
-
-/** Backend errors arrive as text; drop the generic "无效输入: " prefix. */
-export function errorText(cause: unknown): string {
-  const text = (cause instanceof Error ? cause.message : String(cause)).trim();
-  return text.replace(/^(无效输入|并发冲突):\s*/, "") || "操作失败，请重试";
-}
-
-const pad = (value: number) => String(value).padStart(2, "0");
-
-/** "18:40", or "11月2日 08:00" beyond today. */
-export function clockText(ms: number, now: number): string {
-  const date = new Date(ms);
-  const time = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
-  return new Date(now).toDateString() === date.toDateString()
-    ? time
-    : `${date.getMonth() + 1}月${date.getDate()}日 ${time}`;
-}
-
-/** "2 小时 13 分后重置 · 18:40". */
-export function resetText(resetsAt: string | null | undefined, now: number) {
-  if (!resetsAt) return "重置时间未知";
-  const at = Date.parse(resetsAt);
-  if (!Number.isFinite(at)) return "重置时间未知";
-  if (at <= now) return "已到重置时间";
-  const minutes = Math.max(1, Math.ceil((at - now) / 60_000));
-  const days = Math.floor(minutes / 1_440);
-  const hours = Math.floor((minutes % 1_440) / 60);
-  const rest = minutes % 60;
-  const span =
-    days > 0
-      ? `${days} 天${hours ? ` ${hours} 小时` : ""}`
-      : hours > 0
-        ? `${hours} 小时${rest ? ` ${rest} 分` : ""}`
-        : `${rest} 分钟`;
-  return `${span}后重置 · ${clockText(at, now)}`;
-}
-
-const QUOTA_STATUS_TEXT: Partial<Record<ClaudeQuota["status"], string>> = {
-  needs_relogin:
-    "需要重新登录：在 Claude Code 中 /login 这个账号，再保存当前登录",
-  live_expired: "当前登录已过期，请在 Claude Code 中继续使用以自动刷新",
-  unavailable: "暂时无法刷新",
-  not_signed_in: "未登录",
-};
-
-/** Claude Desktop reads with the app's own sign-in and never renews it. */
-const DESKTOP_STATUS_TEXT: Partial<Record<ClaudeQuota["status"], string>> = {
-  live_expired: "登录已过期：打开一次这个账号的 Claude Desktop 会自动续期",
-  unavailable: "暂时无法读取额度",
-  not_signed_in: "未登录",
-};
-
-type QuotaState = {
-  view?: ClaudeQuota;
-  loading: boolean;
-  /** Claude Desktop only: from the account's profile. */
-  email?: string | null;
-  plan?: string | null;
-};
-
-function QuotaMeter({
-  window: w,
-  now,
-}: {
-  window: ClaudeQuotaWindow;
-  now: number;
-}) {
-  const used = Math.max(0, Math.min(100, w.utilization));
-  const resetAt = w.resetAt ? Date.parse(w.resetAt) : Number.NaN;
-  return (
-    <div className="claude-quota-meter" data-kind={w.kind}>
-      <div className="claude-quota-meter-head">
-        <span>{w.label}</span>
-        <strong>{Math.round(used)}%</strong>
-      </div>
-      <div
-        className="claude-quota-bar"
-        role="meter"
-        aria-label={`${w.label}已用`}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={Math.round(used)}
-        data-level={used >= 90 ? "high" : used >= 70 ? "mid" : "low"}
-      >
-        <span style={{ width: `${used}%` }} />
-      </div>
-      <small>
-        {w.reset ? (
-          <span className="claude-quota-reset">
-            已重置
-            {Number.isFinite(resetAt) ? ` · ${clockText(resetAt, now)}` : ""}
-          </span>
-        ) : null}
-        {w.resetsAt ? (
-          resetText(w.resetsAt, now)
-            .split(" · ")
-            .map((part) => <span key={part}>{part}</span>)
-        ) : w.reset ? null : (
-          <span>重置时间未知</span>
-        )}
-      </small>
-    </div>
-  );
-}
-
-function QuotaStrip({
-  state,
-  now,
-  onRefresh,
-  label,
-  statusText = QUOTA_STATUS_TEXT,
-}: {
-  state?: QuotaState;
-  now: number;
-  onRefresh: () => void;
-  label: string;
-  statusText?: Partial<Record<ClaudeQuota["status"], string>>;
-}) {
-  const view = state?.view;
-  const main = view?.windows.filter((w) => w.kind !== "model") ?? [];
-  const models = view?.windows.filter((w) => w.kind === "model") ?? [];
-  const note = view ? statusText[view.status] : undefined;
-  return (
-    <div className="claude-quota" aria-label={`${label} 的额度`}>
-      {main.length > 0 ? (
-        <div className="claude-quota-meters">
-          {main.map((w) => (
-            <QuotaMeter key={w.name} window={w} now={now} />
-          ))}
-        </div>
-      ) : null}
-      {models.length > 0 ? (
-        <ul className="claude-quota-models" aria-label="按模型的每周额度">
-          {models.map((w) => (
-            <li key={w.name} data-reset={w.reset || undefined}>
-              <span>{w.label.replace(/^每周 · /, "")}</span>
-              <strong>{Math.round(w.utilization)}%</strong>
-              {w.reset ? (
-                <span className="claude-quota-reset">已重置</span>
-              ) : null}
-            </li>
-          ))}
-        </ul>
-      ) : null}
-      {view?.extraUsage ? (
-        <p className="claude-quota-extra">
-          超额用量 {view.extraUsage.used.toFixed(2)} /{" "}
-          {view.extraUsage.limit.toFixed(2)} {view.extraUsage.currency}
-        </p>
-      ) : null}
-      <div className="claude-quota-foot">
-        {state?.loading ? (
-          <span role="status" className="claude-quota-note">
-            <Loader2 size={12} className="animate-spin" aria-hidden="true" />
-            正在读取额度…
-          </span>
-        ) : note ? (
-          <span className="claude-quota-note is-warning" role="status">
-            {note}
-          </span>
-        ) : view && main.length === 0 && models.length === 0 ? (
-          <span className="claude-quota-note">服务未返回额度数据</span>
-        ) : view?.fetchedAt ? (
-          <span className="claude-quota-note">
-            更新于 {clockText(view.fetchedAt, now)}
-          </span>
-        ) : null}
-        <button
-          type="button"
-          className="claude-quota-refresh"
-          onClick={onRefresh}
-          disabled={state?.loading}
-          aria-label={`刷新 ${label} 的额度`}
-          title="刷新额度"
-        >
-          <RotateCw size={12} aria-hidden="true" />
-          刷新额度
-        </button>
-      </div>
-    </div>
-  );
-}
-
-type SavedLoginRowProps = {
-  account: ClaudeCodeAccount;
-  quota?: QuotaState;
-  now: number;
-  disabled: boolean;
-  busy: string | null;
-  /** Claude Code can switch to this login (Claude Desktop cannot). */
-  canSwitch: boolean;
-  onSwitch: () => void;
-  onRefresh: () => void;
-  onRename: () => void;
-  onDelete: () => void;
-};
-
-function SavedLoginRow({
-  account,
-  quota,
-  now,
-  disabled,
-  busy,
-  canSwitch,
-  onSwitch,
-  onRefresh,
-  onRename,
-  onDelete,
-}: SavedLoginRowProps) {
-  return (
-    <li
-      className="claude-account-row"
-      data-current={(canSwitch && account.isCurrent) || undefined}
-    >
-      <span className="claude-account-avatar" aria-hidden="true">
-        {Array.from(account.name || account.email || "?")[0]?.toUpperCase()}
-      </span>
-      <div className="claude-account-identity">
-        <div className="claude-account-name">
-          <strong>{account.name}</strong>
-          {canSwitch && account.isCurrent ? (
-            <span className="claude-account-tag">使用中</span>
-          ) : null}
-          {account.plan ? (
-            <span className="claude-accounts-plan">{account.plan}</span>
-          ) : null}
-          {account.needsRelogin && !account.unreadable ? (
-            <span className="claude-account-tag" data-tone="warning">
-              需要重新登录
-            </span>
-          ) : null}
-        </div>
-        <span className="claude-account-meta">
-          {account.unreadable
-            ? "无法读取（可能因系统密码重置或迁移），只能删除"
-            : (account.email ?? "未读到邮箱")}
-          {account.fingerprint ? (
-            <code title="令牌指纹（SHA-256 前 8 位）">
-              #{account.fingerprint}
-            </code>
-          ) : null}
-        </span>
-      </div>
-      {!account.unreadable ? (
-        <QuotaStrip
-          state={quota}
-          now={now}
-          label={account.name}
-          onRefresh={onRefresh}
-        />
-      ) : null}
-      <div className="claude-account-actions">
-        {canSwitch && !account.isCurrent && !account.unreadable ? (
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={disabled || account.needsRelogin}
-            title={
-              account.needsRelogin
-                ? "这个账号需要重新登录后才能切换"
-                : undefined
-            }
-            onClick={onSwitch}
-          >
-            {busy === `switch:${account.id}` ? (
-              <Loader2 size={14} className="animate-spin" aria-hidden="true" />
-            ) : (
-              <ArrowLeftRight size={14} aria-hidden="true" />
-            )}
-            切换到此账号
-          </Button>
-        ) : null}
-        {!account.unreadable ? (
-          <Button
-            size="icon"
-            variant="ghost"
-            disabled={disabled}
-            aria-label={`重命名 ${account.name}`}
-            title="重命名"
-            onClick={onRename}
-          >
-            <Pencil size={14} aria-hidden="true" />
-          </Button>
-        ) : null}
-        <Button
-          size="icon"
-          variant="ghost"
-          disabled={disabled}
-          aria-label={`删除 ${account.name}`}
-          title="删除"
-          onClick={onDelete}
-        >
-          <Trash2 size={14} aria-hidden="true" />
-        </Button>
-      </div>
-    </li>
-  );
 }
 
 type NameDialog =
@@ -352,6 +65,30 @@ type DeleteTarget = {
   vault?: boolean;
 };
 
+type DesktopSwapTarget = {
+  kind: "capture" | "switch";
+  account: ClaudeCodeAccount;
+};
+
+function swapMessage(
+  target: DesktopSwapTarget,
+  outcome: ClaudeDesktopSwapOutcome,
+  nameOf: (id: string) => string,
+) {
+  const notes: string[] = [];
+  if (outcome.restarted) notes.push("Claude Desktop 已重新打开。");
+  if (outcome.savedOutgoingFor)
+    notes.push(`原来的登录已保存到「${nameOf(outcome.savedOutgoingFor)}」。`);
+  if (outcome.stashedOutgoing)
+    notes.push("原来的登录不属于已保存的账号，已放进暂存区（保留最近 3 份）。");
+  toast.success(
+    target.kind === "switch"
+      ? `默认 Claude Desktop 已切换到「${target.account.name}」`
+      : `已保存默认 Claude Desktop 的登录，属于「${target.account.name}」`,
+    { description: notes.join("") || undefined },
+  );
+}
+
 export function ClaudeAccountsCard({
   mode,
   native = true,
@@ -360,6 +97,7 @@ export function ClaudeAccountsCard({
   const nameInputId = useId();
   const [code, setCode] = useState<ClaudeCodeAccounts | null>(null);
   const [desktop, setDesktop] = useState<ClaudeDesktopProfile[] | null>(null);
+  const [swap, setSwap] = useState<ClaudeDesktopSwapStatus | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [quota, setQuota] = useState<Record<string, QuotaState>>({});
@@ -372,6 +110,9 @@ export function ClaudeAccountsCard({
   const [runningSwitch, setRunningSwitch] = useState<ClaudeCodeAccount | null>(
     null,
   );
+  const [desktopConfirm, setDesktopConfirm] =
+    useState<DesktopSwapTarget | null>(null);
+  const [announcement, setAnnouncement] = useState("");
   const mounted = useRef(true);
   const pending = useRef(false);
 
@@ -429,14 +170,21 @@ export function ClaudeAccountsCard({
   const load = useCallback(async () => {
     if (!native) return;
     setLoadError(null);
+    const readQuotas = (accounts: ClaudeCodeAccount[], vault: boolean) => {
+      for (const account of accounts)
+        if (
+          account.kind === "oauth" &&
+          !account.disabled &&
+          !account.unreadable
+        )
+          void readQuota(account.id, false, vault);
+    };
     try {
       if (mode === "code") {
         const result = await claudeAccountsApi.listCode();
         if (!mounted.current) return;
         setCode(result);
-        if (result.supported)
-          for (const account of result.accounts)
-            if (!account.unreadable) void readQuota(account.id, false);
+        if (result.supported) readQuotas(result.accounts, false);
       } else {
         const result = await claudeAccountsApi.listDesktop();
         if (!mounted.current) return;
@@ -449,9 +197,11 @@ export function ClaudeAccountsCard({
         const vault = await claudeAccountsApi.listCode().catch(() => null);
         if (!mounted.current) return;
         setCode(vault);
-        if (vault?.supported)
-          for (const account of vault.accounts)
-            if (!account.unreadable) void readQuota(account.id, false, true);
+        if (vault?.supported) readQuotas(vault.accounts, true);
+        const status = await claudeAccountsApi
+          .desktopSwapStatus()
+          .catch(() => null);
+        if (mounted.current) setSwap(status);
       }
     } catch (cause) {
       if (mounted.current) setLoadError(errorText(cause));
@@ -586,25 +336,146 @@ export function ClaudeAccountsCard({
     });
   };
 
+  const toggleDisabled = (account: ClaudeCodeAccount) =>
+    run(`disable:${account.id}`, async () => {
+      await claudeAccountsApi.setDisabled(account.id, !account.disabled);
+      toast.success(
+        account.disabled
+          ? `已启用「${account.name}」`
+          : `已停用「${account.name}」`,
+        {
+          description: account.disabled
+            ? undefined
+            : "它不会被切换、并行打开或绑定到目录，也不再读取额度。登录仍保留。",
+        },
+      );
+    });
+
+  const openSession = (account: ClaudeCodeAccount) =>
+    run(`session:${account.id}`, async () => {
+      const launch = await claudeAccountsApi.openSession({ id: account.id });
+      toast.success(`已在新终端打开「${launch.accountName ?? account.name}」`, {
+        description: launch.usesDefaultLogin
+          ? "它就是 Claude Code 当前的登录，打开的是普通终端。"
+          : "这个终端只用这个账号，Claude Code 当前的登录不受影响。",
+      });
+    });
+
+  const copyCommands = (
+    account: ClaudeCodeAccount,
+    shell: "cmd" | "powershell",
+  ) =>
+    run(`commands:${account.id}`, async () => {
+      const commands = await claudeAccountsApi.sessionCommands(account.id);
+      const text = shell === "cmd" ? commands.cmd : commands.powershell;
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch {
+        throw new Error("无法写入剪贴板，请手动复制：" + text);
+      }
+      toast.success("已复制启动命令", {
+        description: `在${shell === "cmd" ? " cmd " : " PowerShell "}里粘贴运行，就会用「${account.name}」启动 claude。`,
+      });
+    });
+
+  const bindFolder = (account: ClaudeCodeAccount) =>
+    run(`bind:${account.id}`, async () => {
+      const folder = await claudeAccountsApi.pickFolder();
+      if (!folder) return;
+      await claudeAccountsApi.setBinding(folder, account.id);
+      window.dispatchEvent(new CustomEvent(BINDINGS_CHANGED_EVENT));
+      toast.success(`已把 ${folder} 绑定到「${account.name}」`, {
+        description: "从 Chimera 在这个目录打开 Claude 时，会用这个账号。",
+      });
+    });
+
+  const nameOf = (id: string) =>
+    code?.accounts.find((account) => account.id === id)?.name ?? "已保存的账号";
+
+  const runDesktopSwap = (target: DesktopSwapTarget, close: boolean) =>
+    run(`desktop:${target.account.id}`, async () => {
+      const call =
+        target.kind === "capture"
+          ? claudeAccountsApi.captureDesktopLogin
+          : claudeAccountsApi.switchDesktop;
+      const outcome = await call(target.account.id, close);
+      if (outcome.status === "desktop_running") {
+        setDesktopConfirm(target);
+        return;
+      }
+      setDesktopConfirm(null);
+      swapMessage(target, outcome, nameOf);
+    });
+
+  // ----- the saved logins: order -----
+  const readableIds = (code?.accounts ?? [])
+    .filter((account) => !account.unreadable)
+    .map((account) => account.id);
+
+  const commitOrder = (next: string[]) => {
+    setCode((current) => {
+      if (!current) return current;
+      const byId = new Map(current.accounts.map((a) => [a.id, a]));
+      const listed = next.flatMap((id) => byId.get(id) ?? []);
+      const rest = current.accounts.filter((a) => !next.includes(a.id));
+      return { ...current, accounts: [...listed, ...rest] };
+    });
+    void claudeAccountsApi.reorder(next).catch((cause) => {
+      toast.error(errorText(cause));
+      void load();
+    });
+  };
+  const sortable = useSortable(readableIds, commitOrder);
+  const moveAccount = (id: string, delta: -1 | 1) => {
+    const next = moveBy(readableIds, id, delta);
+    if (next === readableIds) return;
+    commitOrder(next);
+    setAnnouncement(
+      `已把「${nameOf(id)}」移到第 ${next.indexOf(id) + 1} 位，共 ${next.length} 个`,
+    );
+    // The row re-renders in its new place; keep the keyboard on its grip.
+    window.requestAnimationFrame(() =>
+      document
+        .querySelector<HTMLButtonElement>(
+          `[data-id="${id}"] .claude-account-grip`,
+        )
+        ?.focus(),
+    );
+  };
+
   const disabled = busy !== null;
   const title = mode === "code" ? "Claude Code 账号" : "Claude Desktop 账号";
   const description =
     mode === "code"
-      ? "切换账号不影响会话、设置与 MCP。"
+      ? "切换账号不影响会话、设置与 MCP；也可以让多个账号在各自的终端里同时用。"
       : "每个账号一个独立的 Claude Desktop 数据目录，登录互不影响，可以同时打开。";
+
+  const codeRows = code?.accounts ?? [];
+  const exportable = codeRows.filter(
+    (a) => !a.unreadable && (a.kind !== "oauth" || a.email),
+  ).length;
+  const desktopRows = desktop ?? [];
+  const defaultQuota = quota[DEFAULT_DESKTOP_ID];
+  const defaultSignedIn =
+    defaultQuota?.view !== undefined &&
+    defaultQuota.view.status !== "not_signed_in";
+  const currentSaved = swap?.currentAccountId
+    ? codeRows.find((a) => a.id === swap.currentAccountId)
+    : undefined;
+  const currentHasSnapshot = Boolean(
+    swap?.snapshots.some((s) => s.accountId === swap.currentAccountId),
+  );
 
   const headerAction =
     mode === "code" ? (
       code?.supported ? (
-        <Button
-          size="sm"
-          variant="outline"
+        <AddAccountMenu
           disabled={disabled}
-          onClick={() => void startLoginGuide()}
-        >
-          <Plus size={14} aria-hidden="true" />
-          登录新账号
-        </Button>
+          browserSupported={code.browserLoginSupported}
+          exportable={exportable}
+          onChanged={() => void load()}
+          onTerminalGuide={() => void startLoginGuide()}
+        />
       ) : null
     ) : (
       <Button
@@ -614,17 +485,51 @@ export function ClaudeAccountsCard({
         onClick={() => openNameDialog({ kind: "add-desktop" })}
       >
         <Plus size={14} aria-hidden="true" />
-        添加账号
+        添加 Desktop 账号
       </Button>
     );
 
-  const codeRows = code?.accounts ?? [];
-  const exportable = codeRows.filter((a) => !a.unreadable && a.email).length;
-  const desktopRows = desktop ?? [];
-  const defaultQuota = quota[DEFAULT_DESKTOP_ID];
-  const defaultSignedIn =
-    defaultQuota?.view !== undefined &&
-    defaultQuota.view.status !== "not_signed_in";
+  const rowFor = (account: ClaudeCodeAccount, forDesktop: boolean) => (
+    <AccountRow
+      key={account.id}
+      account={account}
+      quota={quota[forDesktop ? `vault:${account.id}` : account.id]}
+      now={now}
+      disabled={disabled}
+      busy={busy}
+      canSwitch={!forDesktop && code?.supported === true}
+      canOpenSession={!forDesktop && code?.sessionsSupported === true}
+      sortable={
+        readableIds.length > 1 && !account.unreadable
+          ? sortable(account.id)
+          : undefined
+      }
+      desktop={
+        forDesktop
+          ? {
+              supported: swap?.supported === true,
+              snapshot: swap?.snapshots.find((s) => s.accountId === account.id),
+              signedInHere: swap?.currentAccountId === account.id,
+            }
+          : undefined
+      }
+      onSwitch={() => void switchTo(account)}
+      onRefresh={() => void readQuota(account.id, true, forDesktop)}
+      onRename={() => renameSaved(account, forDesktop)}
+      onToggleDisabled={() => void toggleDisabled(account)}
+      onOpenSession={() => void openSession(account)}
+      onCopyCommands={(shell) => void copyCommands(account, shell)}
+      onBind={() => void bindFolder(account)}
+      onDelete={() => removeSaved(account, forDesktop)}
+      onMove={(delta) => moveAccount(account.id, delta)}
+      onSaveDesktop={() =>
+        void runDesktopSwap({ kind: "capture", account }, false)
+      }
+      onSwitchDesktop={() =>
+        void runDesktopSwap({ kind: "switch", account }, false)
+      }
+    />
+  );
 
   return (
     <section className="claude-accounts-card" aria-labelledby={headingId}>
@@ -638,6 +543,9 @@ export function ClaudeAccountsCard({
         </div>
         {headerAction}
       </header>
+      <p className="sr-only" role="status" aria-live="polite">
+        {announcement}
+      </p>
 
       {!native ? (
         <p className="claude-accounts-note">账号管理需要在桌面端使用。</p>
@@ -672,7 +580,10 @@ export function ClaudeAccountsCard({
                 </span>
                 <strong>
                   {code.live.signedIn
-                    ? (code.live.email ?? "已登录（未读到邮箱）")
+                    ? (code.live.email ??
+                      (code.live.plan === "API Key"
+                        ? "API Key 登录"
+                        : "已登录（未读到邮箱）"))
                     : code.liveError
                       ? "无法读取登录文件"
                       : "未登录"}
@@ -698,39 +609,17 @@ export function ClaudeAccountsCard({
                 {code.liveError}
               </p>
             ) : null}
-            {code.supported ? (
-              <ClaudeLoginTools
-                disabled={disabled}
-                browserSupported={code.browserLoginSupported}
-                exportable={exportable}
-                onChanged={() => void load()}
-              />
-            ) : null}
             {codeRows.length === 0 ? (
               <p className="claude-accounts-empty">
                 还没有保存的账号。先在 Claude Code
-                中登录，再点「保存当前登录为账号」；也可以从浏览器授权添加，或导入凭证文件。
+                中登录，再点「保存当前登录为账号」；也可以点右上角「添加账号」，从浏览器授权、粘贴令牌或导入凭证文件。
               </p>
             ) : (
               <ul
                 className="claude-accounts-list"
                 aria-label="已保存的 Claude Code 账号"
               >
-                {codeRows.map((account) => (
-                  <SavedLoginRow
-                    key={account.id}
-                    account={account}
-                    quota={quota[account.id]}
-                    now={now}
-                    disabled={disabled}
-                    busy={busy}
-                    canSwitch={code.supported}
-                    onSwitch={() => void switchTo(account)}
-                    onRefresh={() => void readQuota(account.id, true)}
-                    onRename={() => renameSaved(account, false)}
-                    onDelete={() => removeSaved(account, false)}
-                  />
-                ))}
+                {codeRows.map((account) => rowFor(account, false))}
               </ul>
             )}
           </>
@@ -750,8 +639,10 @@ export function ClaudeAccountsCard({
                   : "claude-account-row is-default"
               }
             >
-              <span className="claude-account-avatar" aria-hidden="true">
-                默
+              <span className="claude-account-lead">
+                <span className="claude-account-avatar" aria-hidden="true">
+                  默
+                </span>
               </span>
               <div className="claude-account-identity">
                 <div className="claude-account-name">
@@ -765,8 +656,36 @@ export function ClaudeAccountsCard({
                 </div>
                 <span className="claude-account-meta">
                   {defaultQuota?.email ??
-                    "从开始菜单打开的 Claude Desktop；只读取它的登录来显示额度，不做改动。"}
+                    "从开始菜单打开的 Claude Desktop；窗口里登录的是哪个账号，这里就显示哪个。"}
                 </span>
+                {swap?.supported && swap.signedIn ? (
+                  <span className="claude-swap-line">
+                    <span>
+                      {currentSaved
+                        ? currentHasSnapshot
+                          ? `这个登录已保存为「${currentSaved.name}」的 Desktop 登录，可以随时切换回来。`
+                          : `登录的是已保存的账号「${currentSaved.name}」，还没有保存它的 Desktop 登录。`
+                        : "登录的账号不在已保存的账号里。先用下面的「添加登录」加入它，再保存 Desktop 登录。"}
+                    </span>
+                    {currentSaved ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={disabled}
+                        onClick={() =>
+                          void runDesktopSwap(
+                            { kind: "capture", account: currentSaved },
+                            false,
+                          )
+                        }
+                      >
+                        {currentHasSnapshot
+                          ? "更新保存的登录"
+                          : "保存 Desktop 登录"}
+                      </Button>
+                    ) : null}
+                  </span>
+                ) : null}
               </div>
               {defaultSignedIn ? (
                 <QuotaStrip
@@ -786,8 +705,10 @@ export function ClaudeAccountsCard({
             ) : null}
             {desktopRows.map((profile) => (
               <li key={profile.id} className="claude-account-row">
-                <span className="claude-account-avatar" aria-hidden="true">
-                  {Array.from(profile.name || "?")[0]?.toUpperCase()}
+                <span className="claude-account-lead">
+                  <span className="claude-account-avatar" aria-hidden="true">
+                    {Array.from(profile.name || "?")[0]?.toUpperCase()}
+                  </span>
                 </span>
                 <div className="claude-account-identity">
                   <div className="claude-account-name">
@@ -889,14 +810,16 @@ export function ClaudeAccountsCard({
                   <h3>已保存的 Claude 登录</h3>
                   <p>
                     与 Claude Code
-                    账号共用。可以从浏览器授权添加，或导入、导出凭证文件，在另一台电脑上继续使用。
+                    账号共用。可以添加登录、导入导出凭证文件，并把默认 Claude
+                    Desktop 切换到某个账号。
                   </p>
                 </div>
-                <ClaudeLoginTools
+                <AddAccountMenu
                   disabled={disabled}
                   browserSupported={code.browserLoginSupported}
                   exportable={exportable}
                   onChanged={() => void load()}
+                  label="添加登录"
                 />
               </div>
               {codeRows.length === 0 ? (
@@ -906,21 +829,7 @@ export function ClaudeAccountsCard({
                   className="claude-accounts-list"
                   aria-label="已保存的 Claude 登录列表"
                 >
-                  {codeRows.map((account) => (
-                    <SavedLoginRow
-                      key={account.id}
-                      account={account}
-                      quota={quota[`vault:${account.id}`]}
-                      now={now}
-                      disabled={disabled}
-                      busy={busy}
-                      canSwitch={false}
-                      onSwitch={() => {}}
-                      onRefresh={() => void readQuota(account.id, true, true)}
-                      onRename={() => renameSaved(account, true)}
-                      onDelete={() => removeSaved(account, true)}
-                    />
-                  ))}
+                  {codeRows.map((account) => rowFor(account, true))}
                 </ul>
               )}
             </section>
@@ -1036,7 +945,7 @@ export function ClaudeAccountsCard({
         title={`删除「${removing?.name ?? ""}」？`}
         message={
           mode === "code" || removing?.vault
-            ? `只删除 Chimera 保存的这份登录${removing?.email ? `（${removing.email}）` : ""}。不会退出 Claude Code，不影响会话记录和其他账号；以后要再用这个账号需重新登录并保存。`
+            ? `只删除 Chimera 保存的这份登录${removing?.email ? `（${removing.email}）` : ""}。不会退出 Claude Code，不影响会话记录和其他账号；它的并行会话目录和已保存的 Desktop 登录也会一起删除。以后要再用这个账号需重新登录并保存。`
             : `将删除「${removing?.name ?? ""}」在本机的 Claude Desktop 独立目录：登录状态、设置、MCP 配置与缓存。不影响系统默认的 Claude Desktop 和其他账号，也不会删除服务器上的对话。此操作不可撤销。`
         }
         confirmText="确认删除"
@@ -1061,6 +970,26 @@ export function ClaudeAccountsCard({
         }}
         onConfirm={() => {
           if (runningSwitch) void switchTo(runningSwitch, true);
+        }}
+      />
+
+      <ConfirmDialog
+        isOpen={desktopConfirm !== null}
+        busy={busy?.startsWith("desktop:") ?? false}
+        title="需要先关闭 Claude Desktop"
+        message={
+          desktopConfirm?.kind === "switch"
+            ? `切换默认 Claude Desktop 到「${desktopConfirm.account.name}」要先把它关掉（包括托盘里的），换好登录后会自动重新打开。现在的登录会先保存起来，不会丢。未保存的输入会丢失，请先在 Desktop 里保存。`
+            : "保存默认 Claude Desktop 的登录要先把它关掉（包括托盘里的），保存好后会自动重新打开。未保存的输入会丢失，请先在 Desktop 里保存。"
+        }
+        confirmText="关闭并继续"
+        cancelText="取消"
+        variant="info"
+        onCancel={() => {
+          if (!busy) setDesktopConfirm(null);
+        }}
+        onConfirm={() => {
+          if (desktopConfirm) void runDesktopSwap(desktopConfirm, true);
         }}
       />
     </section>

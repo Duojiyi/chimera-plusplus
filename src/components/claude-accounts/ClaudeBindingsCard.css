@@ -1,0 +1,109 @@
+/* Folder bindings: one row per folder, in the same material as the account rows. */
+.claude-bindings-actions {
+  display: flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.claude-bindings-actions > button {
+  gap: 6px;
+}
+
+.claude-bindings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.claude-binding-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) minmax(160px, 240px) auto;
+  align-items: center;
+  gap: 12px 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-ring, 10px);
+  background: var(--bg-surface);
+}
+.claude-binding-row:hover {
+  border-color: var(--glass-border, var(--border-control));
+}
+.claude-binding-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  background: var(--glass-accent-soft, var(--bg-subtle));
+  color: var(--glass-accent, var(--brand-text));
+}
+.claude-binding-path {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.claude-binding-path strong {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.claude-binding-path code,
+.claude-binding-picked code {
+  color: var(--text-3);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.claude-binding-path .claude-account-tag {
+  align-self: flex-start;
+}
+.claude-binding-account {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.claude-binding-account select,
+.claude-binding-select {
+  height: 32px;
+  max-width: 100%;
+  padding: 0 28px 0 10px;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-control, 8px);
+  background-color: var(--bg-surface);
+  color: var(--text-1);
+  font-size: 13px;
+}
+.claude-binding-account select:focus-visible,
+.claude-binding-select:focus-visible {
+  outline: 2px solid var(--glass-accent, var(--brand));
+  outline-offset: 1px;
+}
+.claude-binding-picked {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-control, 8px);
+  background: var(--bg-subtle);
+  color: var(--text-3);
+}
+
+@container (max-width: 640px) {
+  .claude-binding-row {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  .claude-binding-account,
+  .claude-binding-row .claude-account-actions {
+    grid-column: 2 / -1;
+    justify-content: flex-start;
+  }
+}

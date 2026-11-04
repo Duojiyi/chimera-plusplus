@@ -31,7 +31,10 @@ use super::{
 use crate::error::AppError;
 use crate::security_limits::{is_link_or_reparse_point, read_limited};
 
+pub(crate) mod bindings;
 pub(crate) mod browser_login;
+pub(crate) mod manage;
+pub(crate) mod sessions;
 pub(crate) mod transfer;
 
 const VAULT_DIR: &str = "claude-vault";
@@ -51,6 +54,9 @@ const SEALED_MAGIC: &[u8] = b"CPPCLAUDE1\n";
 
 pub(crate) const CREDENTIALS_KEY: &str = "claudeAiOauth";
 pub(crate) const ACCOUNT_KEY: &str = "oauthAccount";
+/// Where Claude Code keeps a Console API key it was given at `/login`.
+const API_KEY_FIELD: &str = "primaryApiKey";
+const API_KEY_RESPONSES: &str = "customApiKeyResponses";
 
 /// Serializes every vault and live-file mutation.
 static CODE_LOCK: Mutex<()> = Mutex::new(());
@@ -104,6 +110,12 @@ pub struct CodeAccountDto {
     pub needs_relogin: bool,
     /// The saved entry cannot be decrypted here; it can only be deleted.
     pub unreadable: bool,
+    /// A subscription sign-in, a setup-token or a Console API key.
+    pub kind: SlotKind,
+    /// Held out of use: not switched to, not opened in parallel, no quota reads.
+    pub disabled: bool,
+    /// A terminal is open on this login (a parallel session).
+    pub session_running: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -124,6 +136,8 @@ pub struct CodeAccountsDto {
     pub unsupported_reason: Option<String>,
     /// Adding a login through the browser can be started from this app.
     pub browser_login_supported: bool,
+    /// A terminal can be opened on a saved login (parallel sessions).
+    pub sessions_supported: bool,
     pub live: CodeLiveDto,
     /// The live login files could not be read (shown instead of "signed out").
     pub live_error: Option<String>,
@@ -149,7 +163,27 @@ pub struct SwitchOutcome {
 
 // ===== vault =====
 
+/// What a saved login is made of.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SlotKind {
+    /// A subscription sign-in: access and refresh token, and the account.
+    #[default]
+    Oauth,
+    /// A long-lived `claude setup-token` token: inference only, no refresh token.
+    SetupToken,
+    /// A Console API key.
+    ApiKey,
+}
+
+fn is_oauth_kind(kind: &SlotKind) -> bool {
+    *kind == SlotKind::Oauth
+}
+
 /// A saved login. Deliberately not `Debug`: it holds tokens.
+///
+/// Fields added after the first version are skipped while they hold their
+/// default, so a subscription login is written exactly as before.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Slot {
@@ -162,7 +196,18 @@ pub(crate) struct Slot {
     needs_relogin: bool,
     #[serde(default)]
     oauth_account: Option<Value>,
+    /// `null` for an API key, which has no OAuth object.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
     claude_ai_oauth: Value,
+    #[serde(default, skip_serializing_if = "is_oauth_kind")]
+    kind: SlotKind,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    disabled: bool,
+    /// Manual order; `None` until the list is reordered once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    position: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    api_key: Option<String>,
 }
 
 enum SlotEntry {
@@ -427,10 +472,16 @@ impl CodeVault {
     }
 }
 
-fn entry_order(entry: &SlotEntry) -> (String, String) {
+/// Manually ordered logins first, then the rest by when they were added;
+/// entries that cannot be read last.
+fn entry_order(entry: &SlotEntry) -> (u64, String, String) {
     match entry {
-        SlotEntry::Readable(slot) => (slot.created_at.clone(), slot.id.clone()),
-        SlotEntry::Unreadable(id) => ("~".to_string(), id.clone()),
+        SlotEntry::Readable(slot) => (
+            slot.position.unwrap_or(u64::MAX - 1),
+            slot.created_at.clone(),
+            slot.id.clone(),
+        ),
+        SlotEntry::Unreadable(id) => (u64::MAX, "~".to_string(), id.clone()),
     }
 }
 
@@ -469,6 +520,9 @@ struct Live {
     claude_json: Option<Vec<u8>>,
     oauth: Option<Value>,
     account: Option<Value>,
+    /// The Console API key Claude Code was given, when it is not signed in
+    /// with a subscription (a subscription login wins over a key).
+    api_key: Option<String>,
 }
 
 fn parse_object(bytes: Option<&[u8]>) -> Option<Map<String, Value>> {
@@ -502,15 +556,31 @@ fn parse_live(
     (oauth, account)
 }
 
+fn parse_api_key(claude_json: Option<&[u8]>) -> Option<String> {
+    parse_object(claude_json)?
+        .get(API_KEY_FIELD)?
+        .as_str()
+        .map(str::trim)
+        .filter(|key| !key.is_empty() && key.len() <= manage::MAX_SECRET_LEN)
+        .filter(|key| manage::secret_chars_ok(key))
+        .map(str::to_string)
+}
+
 fn read_live(paths: &LivePaths) -> Result<Live, AppError> {
     let credentials = read_optional(&paths.credentials)?;
     let claude_json = read_optional(&paths.claude_json)?;
     let (oauth, account) = parse_live(credentials.as_deref(), claude_json.as_deref());
+    let api_key = if oauth.is_none() {
+        parse_api_key(claude_json.as_deref())
+    } else {
+        None
+    };
     Ok(Live {
         credentials,
         claude_json,
         oauth,
         account,
+        api_key,
     })
 }
 
@@ -534,19 +604,21 @@ fn text_field(value: Option<&Value>, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// First 8 hex digits of SHA-256 of a token or key.
+pub(crate) fn secret_fingerprint(secret: &str) -> String {
+    Sha256::digest(secret.as_bytes())
+        .iter()
+        .take(4)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 pub(crate) fn token_fingerprint(oauth: Option<&Value>) -> Option<String> {
     let token = oauth?.get("accessToken")?.as_str()?;
     if token.is_empty() {
         return None;
     }
-    let digest = Sha256::digest(token.as_bytes());
-    Some(
-        digest
-            .iter()
-            .take(4)
-            .map(|byte| format!("{byte:02x}"))
-            .collect(),
-    )
+    Some(secret_fingerprint(token))
 }
 
 fn refresh_token_of(oauth: &Value) -> Option<&str> {
@@ -611,7 +683,21 @@ fn plan_of(account: Option<&Value>, oauth: Option<&Value>) -> Option<String> {
 
 impl Slot {
     fn identity(&self) -> Identity {
-        identity(self.oauth_account.as_ref(), Some(&self.claude_ai_oauth))
+        match self.kind {
+            SlotKind::ApiKey => Identity {
+                fingerprint: self.api_key.as_deref().map(secret_fingerprint),
+                ..Identity::default()
+            },
+            _ => identity(self.oauth_account.as_ref(), Some(&self.claude_ai_oauth)),
+        }
+    }
+
+    pub(crate) fn kind(&self) -> SlotKind {
+        self.kind
+    }
+
+    pub(crate) fn name(&self) -> &str {
+        &self.name
     }
 
     pub(crate) fn oauth(&self) -> &Value {
@@ -628,13 +714,21 @@ impl Slot {
             id: self.id.clone(),
             name: self.name.clone(),
             email: ident.email.clone(),
-            plan: plan_of(self.oauth_account.as_ref(), Some(&self.claude_ai_oauth)),
+            plan: match self.kind {
+                SlotKind::Oauth => {
+                    plan_of(self.oauth_account.as_ref(), Some(&self.claude_ai_oauth))
+                }
+                SlotKind::SetupToken | SlotKind::ApiKey => None,
+            },
             fingerprint: ident.fingerprint.clone(),
             created_at: self.created_at.clone(),
             updated_at: self.updated_at.clone(),
             is_current: live.is_some_and(|live| same_login(live, &ident)),
             needs_relogin: self.needs_relogin,
             unreadable: false,
+            kind: self.kind,
+            disabled: self.disabled,
+            session_running: false,
         }
     }
 
@@ -661,13 +755,20 @@ fn unreadable_dto(id: String) -> CodeAccountDto {
         is_current: false,
         needs_relogin: true,
         unreadable: true,
+        kind: SlotKind::Oauth,
+        disabled: false,
+        session_running: false,
     }
 }
 
 fn live_identity(live: &Live) -> Option<Identity> {
-    live.oauth
-        .as_ref()
-        .map(|oauth| identity(live.account.as_ref(), Some(oauth)))
+    if let Some(oauth) = &live.oauth {
+        return Some(identity(live.account.as_ref(), Some(oauth)));
+    }
+    live.api_key.as_deref().map(|key| Identity {
+        fingerprint: Some(secret_fingerprint(key)),
+        ..Identity::default()
+    })
 }
 
 // ===== operations =====
@@ -684,7 +785,8 @@ pub(crate) fn list_in(vault: &CodeVault, paths: &LivePaths) -> CodeAccountsDto {
         .into_iter()
         .map(|entry| match entry {
             SlotEntry::Readable(slot) => {
-                let dto = slot.dto(live_ident.as_ref());
+                let mut dto = slot.dto(live_ident.as_ref());
+                dto.session_running = sessions::is_running(vault, &slot.id);
                 if dto.is_current && saved_id.is_none() {
                     saved_id = Some(dto.id.clone());
                 }
@@ -697,7 +799,11 @@ pub(crate) fn list_in(vault: &CodeVault, paths: &LivePaths) -> CodeAccountsDto {
         (Some(live), Some(ident)) => CodeLiveDto {
             signed_in: true,
             email: ident.email.clone(),
-            plan: plan_of(live.account.as_ref(), live.oauth.as_ref()),
+            plan: if live.api_key.is_some() {
+                Some("API Key".to_string())
+            } else {
+                plan_of(live.account.as_ref(), live.oauth.as_ref())
+            },
             fingerprint: ident.fingerprint.clone(),
             saved_id,
         },
@@ -707,6 +813,7 @@ pub(crate) fn list_in(vault: &CodeVault, paths: &LivePaths) -> CodeAccountsDto {
         supported: switching_supported(),
         unsupported_reason: (!switching_supported()).then(|| UNSUPPORTED_MESSAGE.to_string()),
         browser_login_supported: switching_supported() && browser_login::browser_login_supported(),
+        sessions_supported: switching_supported() && cfg!(windows),
         live: live_dto,
         live_error,
         accounts,
@@ -726,6 +833,14 @@ fn new_slot(
     oauth: Value,
     account: Option<Value>,
 ) -> Result<Slot, AppError> {
+    let mut slot = blank_slot(vault, name)?;
+    slot.claude_ai_oauth = oauth;
+    slot.oauth_account = account;
+    Ok(slot)
+}
+
+/// A new saved login with nothing in it yet.
+fn blank_slot(vault: &CodeVault, name: String) -> Result<Slot, AppError> {
     if vault.slot_ids().len() >= MAX_ACCOUNTS {
         return Err(AppError::InvalidInput(format!(
             "最多保存 {MAX_ACCOUNTS} 个账号"
@@ -743,8 +858,12 @@ fn new_slot(
         created_at: now.clone(),
         updated_at: now,
         needs_relogin: false,
-        oauth_account: account,
-        claude_ai_oauth: oauth,
+        oauth_account: None,
+        claude_ai_oauth: Value::Null,
+        kind: SlotKind::Oauth,
+        disabled: false,
+        position: None,
+        api_key: None,
     })
 }
 
@@ -764,6 +883,11 @@ pub(crate) fn save_current_in(
         .transpose()?;
     let _guard = CODE_LOCK.lock()?;
     let live = read_live(paths)?;
+    if live.oauth.is_none() {
+        if let Some(key) = live.api_key.clone() {
+            return save_api_key(vault, &key, name);
+        }
+    }
     let oauth = live
         .oauth
         .clone()
@@ -802,6 +926,16 @@ pub(crate) fn replace_key(
     value: Option<Value>,
     pretty_when_new: bool,
 ) -> Result<Option<Vec<u8>>, AppError> {
+    replace_keys(original, vec![(key, value)], pretty_when_new)
+}
+
+/// [`replace_key`] for several keys in one pass: each is set, or removed for
+/// `None`. `None` when there is nothing to write.
+pub(crate) fn replace_keys(
+    original: Option<&[u8]>,
+    edits: Vec<(&str, Option<Value>)>,
+    pretty_when_new: bool,
+) -> Result<Option<Vec<u8>>, AppError> {
     let (mut map, pretty, newline) = match original {
         Some(bytes) => {
             let text = std::str::from_utf8(bytes).map_err(|_| {
@@ -817,15 +951,17 @@ pub(crate) fn replace_key(
             };
             (map, text.contains('\n'), text.ends_with('\n'))
         }
-        None if value.is_none() => return Ok(None),
+        None if edits.iter().all(|(_, value)| value.is_none()) => return Ok(None),
         None => (Map::new(), pretty_when_new, pretty_when_new),
     };
-    match value {
-        Some(value) => {
-            map.insert(key.to_string(), value);
-        }
-        None => {
-            map.shift_remove(key);
+    for (key, value) in edits {
+        match value {
+            Some(value) => {
+                map.insert(key.to_string(), value);
+            }
+            None => {
+                map.shift_remove(key);
+            }
         }
     }
     let value = Value::Object(map);
@@ -881,6 +1017,109 @@ fn restore(path: &Path, original: Option<&[u8]>, private: bool) -> Result<(), Ap
     result
 }
 
+/// The `customApiKeyResponses` object with the last 20 characters of `key`
+/// approved, the form Claude Code looks for (otherwise it asks again).
+fn approved_responses(original: Option<&[u8]>, key: &str) -> Value {
+    let approved = manage::approved_form(key);
+    let mut responses = parse_object(original)
+        .and_then(|map| {
+            map.get(API_KEY_RESPONSES)
+                .and_then(Value::as_object)
+                .cloned()
+        })
+        .unwrap_or_default();
+    let mut list = responses
+        .get("approved")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if !list.iter().any(|value| value.as_str() == Some(approved)) {
+        list.push(Value::from(approved));
+    }
+    responses.insert("approved".to_string(), Value::Array(list));
+    responses
+        .entry("rejected")
+        .or_insert_with(|| Value::Array(Vec::new()));
+    Value::Object(responses)
+}
+
+/// The new contents of `.credentials.json` and `.claude.json`; `None` for a
+/// file that needs no write.
+type LiveFiles = (Option<Vec<u8>>, Option<Vec<u8>>);
+
+/// The two live files as they must look once `target` is the login.
+fn files_for(live: &Live, target: &Slot) -> Result<LiveFiles, AppError> {
+    let oauth = match target.kind {
+        SlotKind::ApiKey => None,
+        SlotKind::Oauth | SlotKind::SetupToken => Some(target.claude_ai_oauth.clone()),
+    };
+    let credentials = replace_key(live.credentials.as_deref(), CREDENTIALS_KEY, oauth, false)?;
+    let mut edits: Vec<(&str, Option<Value>)> = Vec::new();
+    match target.kind {
+        SlotKind::Oauth => edits.push((ACCOUNT_KEY, target.oauth_account.clone())),
+        SlotKind::SetupToken => edits.push((ACCOUNT_KEY, None)),
+        SlotKind::ApiKey => {
+            let key = target.api_key.as_deref().ok_or_else(|| {
+                AppError::Message("已保存的 API Key 账号里没有密钥，无法切换".to_string())
+            })?;
+            edits.push((ACCOUNT_KEY, None));
+            edits.push((API_KEY_FIELD, Some(Value::from(key))));
+            edits.push((
+                API_KEY_RESPONSES,
+                Some(approved_responses(live.claude_json.as_deref(), key)),
+            ));
+        }
+    }
+    // A login that was only an API key leaves with its key; a subscription
+    // login that also has one keeps it.
+    if target.kind != SlotKind::ApiKey && live.oauth.is_none() && live.api_key.is_some() {
+        edits.push((API_KEY_FIELD, None));
+    }
+    let claude_json = replace_keys(live.claude_json.as_deref(), edits, true)?;
+    Ok((credentials, claude_json))
+}
+
+/// Keeps an API key that is about to be replaced; `Some(id)` when it was not
+/// saved yet and is now.
+fn save_outgoing_api_key(vault: &CodeVault, key: &str) -> Result<Option<String>, AppError> {
+    let ident = Identity {
+        fingerprint: Some(secret_fingerprint(key)),
+        ..Identity::default()
+    };
+    if find_matching(vault, &ident).is_some() {
+        return Ok(None);
+    }
+    let slot = manage::new_secret_slot(
+        vault,
+        manage::API_KEY_NAME.to_string(),
+        manage::Secret::ApiKey(key.to_string()),
+    )?;
+    vault.write_slot(&slot)?;
+    Ok(Some(slot.id))
+}
+
+/// Saves the API key Claude Code is using as an account.
+fn save_api_key(
+    vault: &CodeVault,
+    key: &str,
+    name: Option<String>,
+) -> Result<CodeAccountDto, AppError> {
+    let ident = Identity {
+        fingerprint: Some(secret_fingerprint(key)),
+        ..Identity::default()
+    };
+    if let Some(slot) = find_matching(vault, &ident) {
+        return Ok(slot.dto(Some(&ident)));
+    }
+    let slot = manage::new_secret_slot(
+        vault,
+        name.unwrap_or_else(|| manage::API_KEY_NAME.to_string()),
+        manage::Secret::ApiKey(key.to_string()),
+    )?;
+    vault.write_slot(&slot)?;
+    Ok(slot.dto(Some(&ident)))
+}
+
 pub(crate) fn switch_in(
     vault: &CodeVault,
     paths: &LivePaths,
@@ -890,21 +1129,31 @@ pub(crate) fn switch_in(
 ) -> Result<SwitchOutcome, AppError> {
     ensure_supported()?;
     let _guard = CODE_LOCK.lock()?;
+    if sessions::is_running(vault, id) {
+        return Err(sessions::running_error());
+    }
+    sessions::harvest_locked(vault, id)?;
     let mut target = vault.read_slot(id)?;
     let live = read_live(paths)?;
     let target_ident = target.identity();
+    if target.disabled {
+        return Err(manage::disabled_error(&target));
+    }
 
-    if let (Some(oauth), Some(ident)) = (&live.oauth, live_identity(&live)) {
+    if let Some(ident) = live_identity(&live) {
         if same_login(&ident, &target_ident) {
-            target.absorb(oauth.clone(), live.account.clone());
-            vault.write_slot(&target)?;
+            // Take the newest tokens Claude Code holds for this login.
+            if let (Some(oauth), SlotKind::Oauth) = (&live.oauth, target.kind) {
+                target.absorb(oauth.clone(), live.account.clone());
+                vault.write_slot(&target)?;
+            }
             return Ok(SwitchOutcome {
                 status: SwitchStatus::AlreadyCurrent,
                 auto_saved_id: None,
             });
         }
     }
-    if target.needs_relogin {
+    if target.kind == SlotKind::Oauth && target.needs_relogin {
         return Err(AppError::Message(
             "这个账号的登录已失效。请在 Claude Code 中重新登录该账号，然后保存当前登录。"
                 .to_string(),
@@ -919,18 +1168,7 @@ pub(crate) fn switch_in(
 
     // Both new files are prepared first: a file that cannot be parsed stops
     // the switch before anything is written.
-    let new_credentials = replace_key(
-        live.credentials.as_deref(),
-        CREDENTIALS_KEY,
-        Some(target.claude_ai_oauth.clone()),
-        false,
-    )?;
-    let new_claude_json = replace_key(
-        live.claude_json.as_deref(),
-        ACCOUNT_KEY,
-        target.oauth_account.clone(),
-        true,
-    )?;
+    let (new_credentials, new_claude_json) = files_for(&live, &target)?;
     // Keep the outgoing login with its newest tokens (Claude Code refreshes
     // them, so a saved copy goes stale); save it if it never was.
     // Live tokens that are a copy of another saved login are skipped: that
@@ -957,6 +1195,13 @@ pub(crate) fn switch_in(
             }
         };
         vault.write_slot(&outgoing)?;
+    }
+    if live.oauth.is_none() {
+        if let Some(key) = &live.api_key {
+            if let Some(saved) = save_outgoing_api_key(vault, key)? {
+                auto_saved_id = auto_saved_id.or(Some(saved));
+            }
+        }
     }
 
     vault.backup(&[
@@ -999,10 +1244,54 @@ pub(crate) fn rename_in(vault: &CodeVault, id: &str, name: &str) -> Result<(), A
 /// Removes only the saved login; the live Claude Code login is untouched.
 pub(crate) fn delete_in(vault: &CodeVault, id: &str) -> Result<(), AppError> {
     let _guard = CODE_LOCK.lock()?;
+    // Its session folder holds a copy of the tokens, so it goes with it.
+    sessions::remove_profile_locked(vault, id)?;
     vault.remove_slot(id)
 }
 
 // ===== used by quota =====
+
+impl CodeVault {
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
+    }
+}
+
+/// The Anthropic account id of a subscription login, for matching it with
+/// the account Claude Desktop is signed in as.
+pub(crate) fn account_uuid_of(vault: &CodeVault, id: &str) -> Result<Option<String>, AppError> {
+    let slot = vault.read_slot(id)?;
+    if slot.kind != SlotKind::Oauth {
+        return Err(AppError::Message(
+            "只有订阅登录的账号才有 Claude Desktop 登录".to_string(),
+        ));
+    }
+    Ok(slot.identity().account_uuid)
+}
+
+/// The subscription login with this Anthropic account id.
+pub(crate) fn find_by_account_uuid(vault: &CodeVault, uuid: &str) -> Option<String> {
+    vault
+        .readable_slots()
+        .into_iter()
+        .find(|slot| {
+            slot.kind == SlotKind::Oauth && slot.identity().account_uuid.as_deref() == Some(uuid)
+        })
+        .map(|slot| slot.id)
+}
+
+pub(crate) fn is_disabled(vault: &CodeVault, id: &str) -> Result<bool, AppError> {
+    Ok(vault.read_slot(id)?.disabled)
+}
+
+/// The id and name of every saved login that can be read.
+pub(crate) fn saved_names(vault: &CodeVault) -> Vec<(String, String)> {
+    vault
+        .readable_slots()
+        .into_iter()
+        .map(|slot| (slot.id, slot.name))
+        .collect()
+}
 
 /// Which credentials a quota query may use.
 pub(crate) enum QuotaSource {
@@ -1011,6 +1300,11 @@ pub(crate) enum QuotaSource {
     /// refresh token under Claude Code and log it out).
     Live,
     Saved(Box<Slot>),
+    /// A token or key (no quota to read), or a login held out of use.
+    Unsupported,
+    /// A terminal is open on this login's session folder: that copy of the
+    /// tokens is the live one and is never refreshed from here.
+    Session(Value),
 }
 
 pub(crate) fn quota_source(
@@ -1019,6 +1313,21 @@ pub(crate) fn quota_source(
     id: &str,
 ) -> Result<QuotaSource, AppError> {
     let slot = vault.read_slot(id)?;
+    if slot.kind != SlotKind::Oauth || slot.disabled {
+        return Ok(QuotaSource::Unsupported);
+    }
+    if sessions::is_running(vault, id) {
+        return Ok(match sessions::profile_oauth(vault, id) {
+            Some(oauth) => QuotaSource::Session(oauth),
+            None => QuotaSource::Unsupported,
+        });
+    }
+    // Tokens a closed session left behind are newer than the saved ones.
+    let slot = {
+        let _guard = CODE_LOCK.lock()?;
+        sessions::harvest_locked(vault, id)?;
+        vault.read_slot(id)?
+    };
     let live = read_live(paths).ok();
     // Same login by identity, or the very tokens Claude Code holds now (the
     // live `.claude.json` may name someone else): either way refreshing the
