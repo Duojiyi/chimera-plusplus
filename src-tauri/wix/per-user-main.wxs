@@ -204,7 +204,8 @@
                  which a per-user install refuses (ICE38, ICE64). They come from
                  where the build copies resources, beside the main binary. -->
             <Directory Id="LicensesDir" Name="licenses">
-                <Component Id="LicenseFiles" Guid="*" Win64="$(var.Win64)">
+                <!-- A fixed GUID: with a registry key path WiX cannot make one. -->
+                <Component Id="LicenseFiles" Guid="AAC7B6A4-8065-411F-AD51-F8FCC24131C2" Win64="$(var.Win64)">
                     <File Id="LicenseMit" Name="LICENSE-MIT.txt" Source="$(sys.SOURCEFILEDIR)..\..\licenses\LICENSE-MIT.txt" KeyPath="no" Checksum="yes"/>
                     <File Id="LicenseAgpl" Name="LICENSE-AGPL-3.0.txt" Source="$(sys.SOURCEFILEDIR)..\..\licenses\LICENSE-AGPL-3.0.txt" KeyPath="no" Checksum="yes"/>
                     <File Id="ThirdPartyNotices" Name="THIRD_PARTY_NOTICES.md" Source="$(sys.SOURCEFILEDIR)..\..\licenses\THIRD_PARTY_NOTICES.md" KeyPath="no" Checksum="yes"/>
