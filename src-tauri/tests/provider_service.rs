@@ -1524,8 +1524,20 @@ fn sync_current_provider_for_app_keeps_live_takeover_and_updates_restore_backup(
     ProviderService::sync_current_provider_for_app(&state, AppType::Claude)
         .expect("sync current provider should succeed");
 
-    let live_after: serde_json::Value =
+    let mut live_after: serde_json::Value =
         read_json_file(&settings_path).expect("read live settings after sync");
+    // A bare placeholder from an older version may be rewritten to this
+    // install's token (PROXY_MANAGED.<secret>); either way it stays a proxy
+    // token and never becomes a provider credential.
+    let token = live_after["env"]["ANTHROPIC_AUTH_TOKEN"]
+        .as_str()
+        .expect("token stays set")
+        .to_string();
+    assert!(
+        token == "PROXY_MANAGED" || token.starts_with("PROXY_MANAGED."),
+        "unexpected token {token}"
+    );
+    live_after["env"]["ANTHROPIC_AUTH_TOKEN"] = json!("PROXY_MANAGED");
     let mut expected_live = taken_over_live.clone();
     expected_live["includeCoAuthoredBy"] = json!(false);
     assert_eq!(
