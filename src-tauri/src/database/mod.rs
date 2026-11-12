@@ -88,7 +88,7 @@ pub struct Database {
     pub(crate) conn: Mutex<Connection>,
 }
 
-fn register_db_change_hook(conn: &Connection) {
+fn register_db_change_hook(conn: &mut Connection) -> Result<(), AppError> {
     conn.update_hook(Some(
         |action: Action, _database: &str, table: &str, _row_id: i64| match action {
             Action::SQLITE_INSERT | Action::SQLITE_UPDATE | Action::SQLITE_DELETE => {
@@ -97,7 +97,8 @@ fn register_db_change_hook(conn: &Connection) {
             }
             _ => {}
         },
-    ));
+    ))
+    .map_err(|e| AppError::Database(format!("注册数据库变更通知失败: {e}")))
 }
 
 impl Database {
@@ -121,7 +122,7 @@ impl Database {
             std::fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
         }
 
-        let conn = Connection::open(&db_path).map_err(|e| AppError::Database(e.to_string()))?;
+        let mut conn = Connection::open(&db_path).map_err(|e| AppError::Database(e.to_string()))?;
         // MH-17: tighten the database, its directory and existing backups.
         #[cfg(unix)]
         backup::restrict_db_storage_permissions(&db_path);
@@ -146,7 +147,7 @@ impl Database {
             conn.execute("PRAGMA auto_vacuum = INCREMENTAL;", [])
                 .map_err(|e| AppError::Database(e.to_string()))?;
         }
-        register_db_change_hook(&conn);
+        register_db_change_hook(&mut conn)?;
 
         let db = Self {
             conn: Mutex::new(conn),
@@ -227,14 +228,15 @@ impl Database {
 
     /// 创建内存数据库（用于测试）
     pub fn memory() -> Result<Self, AppError> {
-        let conn = Connection::open_in_memory().map_err(|e| AppError::Database(e.to_string()))?;
+        let mut conn =
+            Connection::open_in_memory().map_err(|e| AppError::Database(e.to_string()))?;
 
         // 启用外键约束
         conn.execute("PRAGMA foreign_keys = ON;", [])
             .map_err(|e| AppError::Database(e.to_string()))?;
         conn.execute("PRAGMA auto_vacuum = INCREMENTAL;", [])
             .map_err(|e| AppError::Database(e.to_string()))?;
-        register_db_change_hook(&conn);
+        register_db_change_hook(&mut conn)?;
 
         let db = Self {
             conn: Mutex::new(conn),

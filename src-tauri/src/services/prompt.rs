@@ -1942,14 +1942,20 @@ mod audit_a03_tests {
             let target = path.clone();
             // The backup insert commits while the file is still original. Veto
             // the later user-edit commit and simulate an external file writer.
-            state.db.conn.lock().unwrap().commit_hook(Some(move || {
-                if fs::read(&target).ok().as_deref() == Some(b"replacement".as_slice()) {
-                    fs::write(&target, b"replacement\nexternal").unwrap();
-                    true
-                } else {
-                    false
-                }
-            }));
+            state
+                .db
+                .conn
+                .lock()
+                .unwrap()
+                .commit_hook(Some(move || {
+                    if fs::read(&target).ok().as_deref() == Some(b"replacement".as_slice()) {
+                        fs::write(&target, b"replacement\nexternal").unwrap();
+                        true
+                    } else {
+                        false
+                    }
+                }))
+                .unwrap();
             assert!(PromptService::upsert_prompt(
                 &state,
                 app.clone(),
@@ -1962,7 +1968,8 @@ mod audit_a03_tests {
                 .conn
                 .lock()
                 .unwrap()
-                .commit_hook(None::<fn() -> bool>);
+                .commit_hook(None::<fn() -> bool>)
+                .unwrap();
             let after = state.db.get_prompts(app.as_str()).unwrap();
             assert_eq!(after["rules"], prompt("rules", "saved", true));
             assert!(after

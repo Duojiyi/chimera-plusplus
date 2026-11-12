@@ -35,6 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Running a Skill's own Python script no longer makes the Skill look changed: `__pycache__` and `*.pyc` / `*.pyo` are left out of its content hash, so it is not reported as different on import and its copies are not listed twice.
 - Opening **Skills 与 MCP** for Codex after using it for another tool opens it for Codex, not the other tool. A dark bar that appeared over sidebar items on hover, a skin list that ran under the bottom action bar on 外观, rows cut in half at the bottom of the Skills cards, and account sections drawn without their card are fixed.
 
+### Security
+
+- The bundled SQLite is updated (rusqlite 0.31 to 0.41, libsqlite3-sys 0.39) for RUSTSEC-2026-0459, a memory-exposure bug in SQLite itself. Importing a SQL backup still runs under the import guard, and now refuses to run the file at all if the guard cannot be installed.
+- The OpenSSL bindings used by Linux builds are updated to 0.10.82, past the advisories fixed in 0.10.78 to 0.10.80 (RUSTSEC-2026-0463 and 0473 to 0479).
+
 ## [2.8.10] - 2026-11-05
 
 ### Changed

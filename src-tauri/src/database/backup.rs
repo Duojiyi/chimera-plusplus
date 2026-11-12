@@ -407,18 +407,22 @@ impl Database {
             source: e,
         })?;
         let temp_path = temp_file.path().to_path_buf();
-        let temp_conn =
+        let mut temp_conn =
             Connection::open(&temp_path).map_err(|e| AppError::Database(e.to_string()))?;
 
         // authorizer 只覆盖外部 SQL，执行完立刻摘掉：紧随其后的
         // `create_tables_on_conn` / `apply_schema_migrations_on_conn` 是本程序自己的
         // schema 维护语句，不属于需要设防的输入，没必要让它们也过一遍守卫。
-        temp_conn.authorizer(Some(import_authorizer));
+        // Without the guard nothing from the file is run.
+        temp_conn
+            .authorizer(Some(import_authorizer))
+            .map_err(|e| AppError::Database(format!("无法为 SQL 导入启用安全检查: {e}")))?;
         let batch_result = temp_conn.execute_batch(sql_content);
-        temp_conn.authorizer(
+        let unguarded = temp_conn.authorizer(
             None::<fn(rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization>,
         );
         batch_result.map_err(|e| AppError::Database(format!("执行 SQL 导入失败: {e}")))?;
+        unguarded.map_err(|e| AppError::Database(format!("无法结束 SQL 导入的安全检查: {e}")))?;
 
         // Reject executable schema before any trusted migration or local-data write.
         Self::validate_backup_schema(&temp_conn)?;
