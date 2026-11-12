@@ -222,6 +222,7 @@ pub(crate) fn default_user_data_dir() -> Option<PathBuf> {
 }
 
 /// The per-install folders under `Claude-Data` (`claude_<publisher>`).
+#[cfg(windows)]
 fn claude_data_dirs(local_app_data: &Path) -> Vec<PathBuf> {
     let Ok(entries) =
         crate::security_limits::read_dir_without_links(&local_app_data.join("Claude-Data"))
