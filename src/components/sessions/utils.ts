@@ -316,8 +316,8 @@ export const describeSessionReadError = (
 
 export const getRoleLabel = (role: string) => {
   const normalized = role.toLowerCase();
-  if (normalized === "assistant") return "AI";
-  if (normalized === "user") return "用户";
+  if (normalized === "assistant") return "助手";
+  if (normalized === "user") return "你";
   if (normalized === "system") return "系统";
   if (normalized === "tool") return "工具输出";
   return role;

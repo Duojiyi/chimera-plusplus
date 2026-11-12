@@ -35,7 +35,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
 vi.mock("sonner", () => ({
   toast: { success: mocks.success, error: mocks.error },
 }));
-import { NewRuntimeView } from "@/ChimeraApp";
+import { NewRuntimeView } from "@/views/CodexRuntimeView";
 
 type Props = ComponentProps<typeof NewRuntimeView>;
 const runtime = {
@@ -596,7 +596,10 @@ describe("runtime persisted preferences", () => {
     });
     const onOperationFinished = vi.fn();
     const onReceipt = vi.fn();
-    const { rerender, props } = renderRuntime({ onOperationFinished, onReceipt });
+    const { rerender, props } = renderRuntime({
+      onOperationFinished,
+      onReceipt,
+    });
     await openPreferences();
     fireEvent.click(
       screen.getByRole("button", { name: /安装历史版本 从镜像发布目录/ }),
@@ -608,7 +611,10 @@ describe("runtime persisted preferences", () => {
     await waitFor(() => expect(onOperationFinished).toHaveBeenCalledTimes(1));
     // The failure is reported as a persistent error receipt (not a toast)
     // that the open history dialog shows next to the locked plan.
-    const failure = onReceipt.mock.calls.map(([r]) => r).filter(Boolean).at(-1);
+    const failure = onReceipt.mock.calls
+      .map(([r]) => r)
+      .filter(Boolean)
+      .at(-1);
     expect(failure).toMatchObject({
       kind: "history",
       tone: "error",

@@ -232,6 +232,9 @@ pub(crate) fn set_in(
     if slot.disabled {
         return Err(manage::disabled_error(&slot));
     }
+    if slot.kind() == SlotKind::DesktopOnly {
+        return Err(AppError::Message(super::DESKTOP_ONLY_LOGIN.to_string()));
+    }
     let mut file = read_file(vault)?;
     if !file.entries.contains_key(&key) && file.entries.len() >= MAX_BINDINGS {
         return Err(AppError::InvalidInput(format!(

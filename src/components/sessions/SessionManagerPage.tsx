@@ -1,4 +1,5 @@
 import "./SessionManagerPage.css";
+import "@/theme/v3/sessions.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSessionSearch } from "@/hooks/useSessionSearch";
 import { useTranslation } from "react-i18next";
@@ -66,6 +67,11 @@ import {
   DELETE_BACKUPS_QUERY_KEY,
   SessionDeleteBackupsDialog,
 } from "./SessionDeleteBackupsDialog";
+import {
+  SESSION_MESSAGES_DESIGN_SAMPLE,
+  SESSIONS_DESIGN_SAMPLE,
+  isSessionsDesignPreview,
+} from "./SessionManagerPage.designSamples";
 import { SessionExportButton } from "./SessionExportButton";
 import { SessionItem } from "./SessionItem";
 import { SessionMessageItem } from "./SessionMessageItem";
@@ -218,14 +224,14 @@ const describeUnfinishedDeletes = (targets: SessionDeleteTarget[]) => {
 export function SessionManagerPage({ appId }: { appId: string }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const {
-    data,
-    isLoading,
-    isError: isListError,
-    error: listError,
-    isFetching: isFetchingList,
-    refetch,
-  } = useSessionsQuery();
+  // The browser design preview has no backend: show the L12 sample instead.
+  const [designPreview] = useState(isSessionsDesignPreview);
+  const listQuery = useSessionsQuery();
+  const { isFetching: isFetchingList, refetch } = listQuery;
+  const data = designPreview ? SESSIONS_DESIGN_SAMPLE : listQuery.data;
+  const isLoading = designPreview ? false : listQuery.isLoading;
+  const isListError = designPreview ? false : listQuery.isError;
+  const listError = listQuery.error;
   const sessions = useMemo(() => data ?? [], [data]);
   const listScrollRef = useRef<HTMLDivElement | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
@@ -357,17 +363,20 @@ export function SessionManagerPage({ appId }: { appId: string }) {
 
   const listViewModeLabel = listViewMode === "grouped" ? "分类" : "列表";
 
+  const messagesQuery = useSessionMessagesQuery(
+    designPreview ? undefined : selectedSession?.providerId,
+    designPreview ? undefined : selectedSession?.sourcePath,
+  );
   const {
-    data: messages = [],
-    isLoading: isLoadingMessages,
-    isError: isMessagesError,
     error: messagesError,
     isFetching: isFetchingMessages,
     refetch: refetchMessages,
-  } = useSessionMessagesQuery(
-    selectedSession?.providerId,
-    selectedSession?.sourcePath,
-  );
+  } = messagesQuery;
+  const messages = designPreview
+    ? SESSION_MESSAGES_DESIGN_SAMPLE
+    : (messagesQuery.data ?? []);
+  const isLoadingMessages = designPreview ? false : messagesQuery.isLoading;
+  const isMessagesError = designPreview ? false : messagesQuery.isError;
 
   const exportUnavailableReason =
     isLoadingMessages || isFetchingMessages
@@ -1268,8 +1277,12 @@ export function SessionManagerPage({ appId }: { appId: string }) {
       >
         <header className="session-page-heading">
           <div>
-            <h1>会话记录</h1>
-            <p>找回上下文，继续未完成的工作。</p>
+            <h1>会话</h1>
+            <p>
+              {sessions.length > 0
+                ? `本机 ${sessions.length.toLocaleString("zh-CN")} 个会话 · 找回上下文，继续未完成的工作`
+                : "找回上下文，继续未完成的工作。"}
+            </p>
           </div>
           <Select
             value={providerFilter}
@@ -1399,7 +1412,9 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                   <div className="session-list-header">
                     <div className="flex items-center gap-2 min-w-0">
                       <CardTitle className="text-sm font-semibold whitespace-nowrap">
-                        会话
+                        {singleProvider
+                          ? `${getProviderLabel(providerFilter)} 会话`
+                          : "全部会话"}
                       </CardTitle>
                       <Badge variant="secondary" className="text-xs">
                         {filteredSessions.length}

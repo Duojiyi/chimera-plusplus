@@ -817,6 +817,30 @@ pub async fn get_claude_desktop_swap_status() -> Result<desktop_swap::SwapStatus
     .map_err(unfinished)?
 }
 
+/// Saves the account the default Desktop is signed in as, when no saved
+/// login has it, as a Desktop-only login (no Claude Code tokens). Its
+/// Desktop sign-in is then captured with `capture_claude_desktop_login`.
+/// `email` is only the name shown for it.
+#[tauri::command]
+pub async fn save_claude_desktop_only_login(
+    email: Option<String>,
+) -> Result<CodeAccountDto, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let vault = CodeVault::open_default()?;
+        let main = desktop_main_dir()?;
+        let login = desktop_swap::login_of(&main);
+        let uuid = login
+            .account_uuid
+            .filter(|_| login.signed_in)
+            .ok_or_else(|| {
+                AppError::Message("本机的 Claude Desktop 没有登录，没有可导入的账号".to_string())
+            })?;
+        code::save_desktop_only_in(&vault, &uuid, email.as_deref())
+    })
+    .await
+    .map_err(unfinished)?
+}
+
 /// Saves the default Desktop's current sign-in for a saved login. With
 /// `close_desktop`, a running Desktop is closed first and reopened after.
 #[tauri::command]

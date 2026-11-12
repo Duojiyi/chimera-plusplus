@@ -6,6 +6,14 @@ import type { SubscriptionQuota } from "@/types/subscription";
 export type OfficialLiveState =
   "matched" | "unsaved" | "mismatch" | "third_party" | "unknown";
 
+export interface OfficialAccountGroup {
+  id: string;
+  name: string;
+  color?: string | null;
+  sortIndex: number;
+  accountCount: number;
+}
+
 export interface OfficialAccountDto {
   key: string;
   accountId: string;
@@ -26,6 +34,20 @@ export interface OfficialAccountDto {
   accessExpired?: boolean;
   providerId?: string | null;
   liveState?: OfficialLiveState;
+  /** The user's tags, normalized by the backend. */
+  tags?: string[];
+  groupId?: string | null;
+  groupName?: string | null;
+  note?: string | null;
+  /** Held out of use by the user; the credentials stay. */
+  disabled?: boolean;
+  /** Last time Codex was seen using this account (ms since epoch). */
+  lastUsedAt?: number | null;
+}
+
+export interface OfficialAccountRemovalDto {
+  removed: string[];
+  failed: { key: string; error: string }[];
 }
 
 /** A quota answer; `accessExpired` means nothing was queried. */
@@ -50,8 +72,15 @@ export const officialAccountsApi = {
     return invoke<OfficialAccountDto[]>("list_official_accounts");
   },
 
-  getQuota: async (key: string): Promise<OfficialQuota> => {
-    return invoke<OfficialQuota>("get_official_account_quota", { key });
+  /**
+   * `refresh` is the user asking for a new reading: without it a reading
+   * under 5 minutes old is answered from the stored one.
+   */
+  getQuota: async (key: string, refresh?: boolean): Promise<OfficialQuota> => {
+    return invoke<OfficialQuota>(
+      "get_official_account_quota",
+      refresh ? { key, refresh: true } : { key },
+    );
   },
 
   saveCurrentLogin: async (name?: string): Promise<string> => {
@@ -84,11 +113,64 @@ export const officialAccountsApi = {
     if (!account?.providerId)
       throw new Error("账号尚未关联线路，请先保存登录状态");
     if (account.needsRelogin) throw new Error("账号登录已过期，请重新登录");
+    if (account.disabled) throw new Error("这个账号已停用，请先启用它");
     await providersApi.switch(account.providerId, "codex");
   },
 
   removeAccount: async (key: string): Promise<void> => {
     return invoke<void>("remove_official_account", { key });
+  },
+
+  /** Removes several accounts one at a time; never all-or-nothing. */
+  removeAccounts: async (
+    keys: string[],
+  ): Promise<OfficialAccountRemovalDto> => {
+    return invoke<OfficialAccountRemovalDto>("remove_official_accounts", {
+      keys,
+    });
+  },
+
+  /** Groups in the user's order, with how many accounts each holds. */
+  listGroups: async (): Promise<OfficialAccountGroup[]> => {
+    return invoke<OfficialAccountGroup[]>("list_official_account_groups");
+  },
+
+  createGroup: async (name: string): Promise<OfficialAccountGroup> => {
+    return invoke<OfficialAccountGroup>("create_official_account_group", {
+      name,
+      color: null,
+    });
+  },
+
+  /** Removes a group; its accounts become ungrouped. Returns how many. */
+  deleteGroup: async (id: string): Promise<number> => {
+    return invoke<number>("delete_official_account_group", { id });
+  },
+
+  /** `null` takes the account out of every group. */
+  setGroup: async (key: string, group: string | null): Promise<void> => {
+    return invoke<void>("set_official_account_group", { key, group });
+  },
+
+  setTags: async (key: string, tags: string[]): Promise<string[]> => {
+    return invoke<string[]>("set_official_account_tags", { key, tags });
+  },
+
+  /** Blank clears the note. */
+  setNote: async (key: string, note: string): Promise<void> => {
+    return invoke<void>("set_official_account_note", {
+      key,
+      note: note.trim() || null,
+    });
+  },
+
+  /** Holds the account out of use (or back in); the login stays saved. */
+  setDisabled: async (key: string, disabled: boolean): Promise<void> => {
+    return invoke<void>("set_official_account_disabled", {
+      key,
+      disabled,
+      reason: null,
+    });
   },
 
   getNotes: async (table: string): Promise<Record<string, string>> => {

@@ -155,6 +155,8 @@ pub(crate) fn export_in(
                 "setup-token",
                 json!({ CREDENTIALS_KEY: slot.claude_ai_oauth }),
             )),
+            // Desktop sign-ins only work on this computer; never exported.
+            SlotKind::DesktopOnly => skipped += 1,
             SlotKind::ApiKey => {
                 let Some(key) = slot.api_key.clone() else {
                     skipped += 1;
@@ -387,7 +389,8 @@ fn store_candidate(
     if let Some(mut slot) = find_matching(vault, &ident) {
         if refresh_token_of(&slot.claude_ai_oauth) == refresh_token_of(&oauth) {
             skip(report, "已经保存了相同的登录");
-        } else if slot.needs_relogin {
+        } else if slot.needs_relogin || slot.kind() == SlotKind::DesktopOnly {
+            // A Desktop-only login has no Claude Code tokens to prefer.
             slot.absorb(oauth, account);
             vault.write_slot(&slot)?;
             report.updated.push(slot.dto(None));
@@ -588,6 +591,33 @@ mod tests {
         assert!(export_in(&f.vault, &f.paths, Some(&["nope".to_string()])).is_err());
         let empty = fixture();
         assert!(export_in(&empty.vault, &empty.paths, None).is_err());
+    }
+
+    #[test]
+    fn an_import_completes_a_desktop_only_login_of_the_same_account() {
+        let f = fixture();
+        let desktop = save_desktop_only_in(&f.vault, "uuid-a", Some("a@example.com")).unwrap();
+        assert_eq!(desktop.kind, SlotKind::DesktopOnly);
+        let file = json!({
+            "version": 1, "encrypted": false,
+            "accounts": [{
+                "number": 1, "email": "a@example.com",
+                "credentials": {"claudeAiOauth": {
+                    "accessToken": "token-new", "refreshToken": "r-new", "expiresAt": 1
+                }},
+                "config": {"oauthAccount": {"accountUuid": "uuid-a", "emailAddress": "a@example.com"}}
+            }]
+        })
+        .to_string();
+        let report = import_in(&f.vault, &file).unwrap();
+        // It had no Claude Code tokens to keep: the file's are taken, and the
+        // same saved login (with its Desktop sign-in) becomes a full one.
+        assert!(report.skipped.is_empty());
+        assert_eq!(report.updated.len(), 1);
+        assert_eq!(report.updated[0].id, desktop.id);
+        assert_eq!(report.updated[0].kind, SlotKind::Oauth);
+        let slot = f.vault.read_slot(&desktop.id).unwrap();
+        assert_eq!(slot.claude_ai_oauth["accessToken"], "token-new");
     }
 
     #[test]

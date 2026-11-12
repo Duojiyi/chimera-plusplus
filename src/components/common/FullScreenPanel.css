@@ -19,10 +19,6 @@
   cursor: pointer;
   transition: background-color var(--dur-instant, 100ms) var(--ease-out, ease);
 }
-.dark .fullscreen-panel-back,
-[data-theme="dark"] .fullscreen-panel-back {
-  border-color: var(--border-control);
-}
 .fullscreen-panel-back:hover {
   background: var(--bg-hover);
 }

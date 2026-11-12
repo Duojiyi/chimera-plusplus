@@ -67,8 +67,14 @@ pub(crate) const PRE_V17_BACKUP_PREFIX: &str = "pre_v17_";
 
 /// Device-local tables whose rows never leave the device in a SQL export
 /// (plan M3.5 data classification): the takeover Live backup (full Codex
-/// `auth.json`, MH-17) and the prompt template cache.
-const EXPORT_SKIP_TABLES: &[&str] = &["proxy_live_backup", "prompt_template_cache"];
+/// `auth.json`, MH-17), the prompt template cache, and the Codex official
+/// account quota cache (v18) — a reading taken by this machine's token, which
+/// the receiving machine must take for itself.
+const EXPORT_SKIP_TABLES: &[&str] = &[
+    "proxy_live_backup",
+    "prompt_template_cache",
+    "official_account_quota",
+];
 
 /// `settings` rows that describe this device's live files (projection
 /// ledgers) and are dropped from every export.
@@ -229,6 +235,11 @@ const SYNC_SKIP_TABLES: &[&str] = &[
     "usage_daily_rollups",
     "usage_rollup_dedup",
     "session_log_sync",
+    "official_account_quota",
+    // Labels of the logins saved on this machine (v18). The logins themselves
+    // never leave it, and 停用 / last used are facts about this machine.
+    "official_account_meta",
+    "official_account_groups",
 ];
 
 /// Tables whose local data is preserved (restored from local snapshot) during WebDAV import.
@@ -240,6 +251,13 @@ const SYNC_PRESERVE_TABLES: &[&str] = &[
     "usage_daily_rollups",
     "usage_rollup_dedup",
     "session_log_sync",
+    // Device-local reading of this machine's tokens; a synced import must not
+    // wipe it just because the remote SQL never carried it.
+    "official_account_quota",
+    // The user's labels for this machine's logins: a download (from another
+    // device, or from one that has no such tables yet) must not erase them.
+    "official_account_meta",
+    "official_account_groups",
 ];
 
 /// A database backup entry for the UI
@@ -2153,6 +2171,91 @@ mod tests {
             |row| row.get(0),
         )?;
         assert_eq!(name, "Provider One");
+
+        match old_test_home {
+            Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
+            None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    // Redirects `CC_SWITCH_TEST_HOME` for the same reason as the test below.
+    fn sync_keeps_official_account_labels_on_this_device() -> Result<(), AppError> {
+        let old_test_home = std::env::var_os("CC_SWITCH_TEST_HOME");
+        let test_home = std::env::temp_dir().join("cc-switch-sync-account-labels-test");
+        let _ = std::fs::remove_dir_all(&test_home);
+        std::fs::create_dir_all(&test_home).expect("create test home");
+        std::env::set_var("CC_SWITCH_TEST_HOME", &test_home);
+
+        let label = |db: &Database, key: &str, group: &str| -> Result<(), AppError> {
+            let conn = crate::database::lock_conn!(db.conn);
+            conn.execute(
+                "INSERT INTO official_account_groups (id, name, sort_index) VALUES (?1, ?1, 0)",
+                [group],
+            )?;
+            conn.execute(
+                "INSERT INTO official_account_meta (account_key, tags, group_id, note, disabled)
+                 VALUES (?1, '[]', ?2, 'note', 1)",
+                [key, group],
+            )?;
+            Ok(())
+        };
+        let remote_db = Database::memory()?;
+        label(&remote_db, "remote-key", "remote-group")?;
+        {
+            // An import is only accepted when it carries a line or an MCP server.
+            let conn = crate::database::lock_conn!(remote_db.conn);
+            conn.execute(
+                "INSERT INTO providers (id, app_type, name, settings_config, meta)
+                 VALUES ('remote-provider', 'claude', 'Remote Provider', '{}', '{}')",
+                [],
+            )?;
+        }
+        let local_db = Database::memory()?;
+        label(&local_db, "local-key", "local-group")?;
+
+        // What a device uploads does not carry its labels...
+        let sync_sql = remote_db.export_sql_string_for_sync()?;
+        assert!(!sync_sql.contains("remote-key"));
+        assert!(!sync_sql.contains("remote-group"));
+        // ...a backup file does...
+        assert!(remote_db.export_sql_string()?.contains("remote-key"));
+
+        // ...and a download keeps the local ones, whether the remote dump has
+        // the tables with other rows or (an older version) no such tables.
+        let full_sql = {
+            let snapshot = remote_db.snapshot_to_memory()?;
+            Database::dump_sql(&snapshot, &[])?
+        };
+        {
+            let conn = crate::database::lock_conn!(remote_db.conn);
+            conn.execute_batch(
+                "DROP TABLE official_account_meta; DROP TABLE official_account_groups;",
+            )?;
+        }
+        let old_version_sql = {
+            let snapshot = remote_db.snapshot_to_memory()?;
+            Database::dump_sql(&snapshot, &[])?
+        };
+        for sql in [&sync_sql, &full_sql, &old_version_sql] {
+            local_db.import_sql_string_for_sync(sql)?;
+            let conn = crate::database::lock_conn!(local_db.conn);
+            let metas: Vec<(String, String, i64)> = conn
+                .prepare("SELECT account_key, note, disabled FROM official_account_meta")?
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+                .collect::<Result<_, _>>()?;
+            assert_eq!(
+                metas,
+                vec![("local-key".to_string(), "note".to_string(), 1)]
+            );
+            let groups: Vec<String> = conn
+                .prepare("SELECT id FROM official_account_groups")?
+                .query_map([], |row| row.get(0))?
+                .collect::<Result<_, _>>()?;
+            assert_eq!(groups, vec!["local-group".to_string()]);
+        }
 
         match old_test_home {
             Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),

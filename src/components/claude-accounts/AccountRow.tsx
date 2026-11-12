@@ -35,6 +35,7 @@ export const KIND_LABEL = {
   oauth: "订阅登录",
   setup_token: "setup-token",
   api_key: "API Key",
+  desktop_only: "仅 Desktop",
 } as const;
 
 /** `someone@example.com` → `so***@example.com`, for screens others can see. */
@@ -91,7 +92,9 @@ function NoQuota({ account }: { account: ClaudeCodeAccount }) {
     ? "已停用：不读取额度"
     : account.kind === "api_key"
       ? "按量计费的 API Key，没有订阅额度"
-      : "长期令牌，读不到订阅额度";
+      : account.kind === "desktop_only"
+        ? "只保存了 Desktop 登录，读不到额度"
+        : "长期令牌，读不到订阅额度";
   return <p className="claude-account-noquota">{text}</p>;
 }
 
@@ -285,7 +288,9 @@ export function AccountRow({
       <Monitor size={14} aria-hidden="true" />
     );
   const desktopButton =
-    desktop?.supported && account.kind === "oauth" && usable ? (
+    desktop?.supported &&
+    (account.kind === "oauth" || account.kind === "desktop_only") &&
+    usable ? (
       snapshot ? (
         !snapshot.isCurrent ? (
           <Button

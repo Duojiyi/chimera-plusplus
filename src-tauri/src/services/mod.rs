@@ -10,6 +10,7 @@ pub mod config;
 pub mod live_backup;
 pub mod mcp;
 pub mod model_fetch;
+pub(crate) mod official_quota_cache;
 pub mod omo;
 pub mod pi_state;
 pub mod profile;

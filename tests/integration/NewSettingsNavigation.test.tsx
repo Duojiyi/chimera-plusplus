@@ -10,12 +10,14 @@ import { NewSettingsView } from "@/views/NewSettingsView";
 // Section tops inside the scrolled page. The page can scroll 1000px, so the
 // two trailing sections can never reach the top edge.
 const offsets: Record<string, number> = {
-  "settings-backups": 0,
+  "settings-general": 0,
+  "settings-backups": 200,
   "settings-connections": 400,
+  "settings-advanced": 480,
   "settings-directories": 560,
-  "settings-general": 680,
   "settings-codex": 1080,
   "settings-updates": 1260,
+  "settings-about": 1400,
 };
 const maxScroll = 1000;
 const viewportTop = 100;
@@ -93,9 +95,9 @@ it("keeps the clicked section current when the page cannot scroll it to the top"
   // The browser reports the jump as a scroll event at the bottom of the page.
   fireEvent.scroll(scroller);
   expect(current()).toBe("Codex 偏好");
-  open("应用更新");
+  open("更新");
   fireEvent.scroll(scroller);
-  expect(current()).toBe("应用更新");
+  expect(current()).toBe("更新");
 });
 
 it("follows the user's scrolling afterwards without jumping at the bottom", () => {
@@ -103,37 +105,35 @@ it("follows the user's scrolling afterwards without jumping at the bottom", () =
   open("Codex 偏好");
   fireEvent.scroll(scroller);
   userScrollTo(scroller, 700);
-  expect(current()).toBe("通用设置");
+  expect(current()).toBe("配置目录");
   userScrollTo(scroller, 380);
   expect(current()).toBe("代理与故障转移");
   userScrollTo(scroller, maxScroll);
-  expect(current()).toBe("通用设置");
+  expect(current()).toBe("配置目录");
 });
 
 it("moves focus to the chosen section for keyboard users", () => {
   mount();
-  open("通用设置");
+  open("通用");
   expect(document.getElementById("settings-general")).toHaveFocus();
 });
 
 it("opens at the top again after leaving Settings", () => {
   const { view } = mount();
-  open("通用设置");
+  open("通用");
   expect(window.location.hash).toBe("#settings-general");
   view.unmount();
   mount();
-  expect(current()).toBe("工具");
+  expect(current()).toBe("通用");
   expect(window.location.hash).toBe("");
 });
 
-it("keeps the reset action in the scroll flow so it never covers a row", () => {
+it("keeps the reset action in the page header so it never covers a row", () => {
   const { scroller } = mount();
-  open("应用更新");
+  open("更新");
   const reset = screen.getByRole("button", { name: "恢复默认设置" });
-  expect(scroller).toContainElement(reset);
-  expect(reset.closest("footer")).toHaveTextContent(
-    "恢复 Codex 偏好、安装方式和关闭行为的默认值",
-  );
+  expect(scroller).not.toContainElement(reset);
+  expect(reset.closest("header")).not.toBeNull();
 });
 
 it("puts the backup heading before its controls and the database row after them", async () => {

@@ -1,0 +1,1018 @@
+/* ============================================================
+   v3.0 · Skills 与 MCP（L07）+ MCP 服务详情抽屉（L23）
+   未分层：压过 @layer legacy 的 SkillsMcpView.css。
+   结构：页头 44 → 两张 418 宽玻璃卡并排（gap 16）→ 卡头 / 卡体滚动 / 卡底。
+   ============================================================ */
+
+.chimera-shell .v3-skills-page {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 18px 26px 18px;
+  background: transparent;
+  color: #0c1a24;
+  font-family: var(--font-cjk), system-ui, sans-serif;
+}
+
+/* ---------- 页头 ---------- */
+.chimera-shell .v3-skills-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 44px;
+  flex: none;
+}
+.chimera-shell .v3-skills-titles {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.chimera-shell .v3-skills-page h1 {
+  margin: 0;
+  font-size: 24px;
+  line-height: 30px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+  color: #0c1a24;
+}
+.chimera-shell .v3-skills-sub {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 18px;
+  font-size: 11px;
+  color: #454e58;
+}
+.chimera-shell .v3-skills-target {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: #454e58;
+}
+.chimera-shell .v3-skills-target select {
+  height: 20px;
+  padding: 0 18px 0 6px;
+  border: 0;
+  border-radius: 6px;
+  background-color: #0b1c2a0a;
+  color: #0c1a24;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.chimera-shell .v3-skills-target select:hover:not(:disabled) {
+  background-color: #0b1c2a12;
+}
+.chimera-shell .v3-skills-target select:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+/* The summary is a bare line in the header, not a glass card. */
+.chimera-shell .skills-mcp-page section.v3-skills-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+}
+.chimera-shell .v3-skills-summary::before {
+  content: "·";
+  margin-right: 6px;
+  color: #454e58;
+}
+.chimera-shell .v3-skills-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+/* ---------- 按钮（§3.2） ---------- */
+.chimera-shell .v3-skills-page .v3-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 14px;
+  border: 1px solid #ffffffd9;
+  border-radius: 9px;
+  background: #ffffffa8;
+  color: #33454f;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background 120ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 120ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.chimera-shell .v3-skills-page .v3-btn:hover:not(:disabled) {
+  background: #ffffffe0;
+  color: #0c1a24;
+}
+.chimera-shell .v3-skills-page .v3-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+.chimera-shell .v3-skills-page .v3-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.chimera-shell .v3-skills-page .v3-btn-primary {
+  border-color: #1f4d3a;
+  background: #1f4d3a;
+  color: #ffffff;
+  font-weight: 600;
+}
+.chimera-shell .v3-skills-page .v3-btn-primary:hover:not(:disabled) {
+  background: #193f30;
+  color: #ffffff;
+}
+.chimera-shell .v3-skills-page .v3-btn-ghost {
+  border-color: transparent;
+  background: transparent;
+}
+.chimera-shell .v3-skills-page .v3-btn-ghost:hover:not(:disabled) {
+  background: #0b1c2a0a;
+}
+.chimera-shell .v3-skills-page .v3-btn-small {
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 8px;
+}
+.chimera-shell .v3-skills-page .v3-btn-danger-text {
+  border-color: transparent;
+  background: transparent;
+  color: #b4342c;
+  padding: 0 8px;
+}
+.chimera-shell .v3-skills-page .v3-btn-danger-text:hover:not(:disabled) {
+  background: #b4342c0f;
+  color: #b4342c;
+}
+.chimera-shell .v3-skills-page .v3-icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #454e58;
+  cursor: pointer;
+}
+.chimera-shell .v3-skills-page .v3-icon-btn:hover:not(:disabled) {
+  background: #0b1c2a0a;
+  color: #0c1a24;
+}
+.chimera-shell .v3-skills-page .v3-icon-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ---------- 状态行 ---------- */
+.chimera-shell .v3-skills-status {
+  margin: 0;
+  font-size: 11px;
+  color: #454e58;
+}
+.chimera-shell .v3-skills-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  padding: 8px 12px;
+  border: 1px solid #ffffff;
+  border-radius: 10px;
+  background: #ffffffd0;
+  color: #33454f;
+  font-size: 11px;
+}
+.chimera-shell .v3-skills-notice > svg {
+  color: #b4342c;
+  flex: none;
+}
+.chimera-shell .v3-skills-notice > span {
+  flex: 1;
+}
+.chimera-shell .v3-skills-notice > button {
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid #ffffffd9;
+  border-radius: 8px;
+  background: #ffffffa8;
+  color: #1f4d3a;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.chimera-shell .v3-skills-page .v3-skills-error {
+  align-self: flex-start;
+  max-width: 480px;
+  padding: 20px 24px;
+  background: #ffffffd0;
+  border: 1px solid #ffffff;
+  box-shadow:
+    var(--v3-shadow-inner-top), var(--v3-shadow-inner-bottom),
+    var(--v3-shadow-outer);
+}
+
+/* ---------- 两卡并排 ---------- */
+.chimera-shell .v3-skills-grid {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+  flex: 1 1 0;
+  min-height: 0;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+/* The legacy rule paints every page section as glass; reset, then define the cards. */
+.chimera-shell .skills-mcp-page section.v3-res-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: #ffffffd0;
+  border: 1px solid #ffffff;
+  border-radius: 14px;
+  box-shadow:
+    var(--v3-shadow-inner-top), var(--v3-shadow-inner-bottom),
+    var(--v3-shadow-outer);
+  -webkit-backdrop-filter: blur(30px) saturate(150%);
+  backdrop-filter: blur(30px) saturate(150%);
+}
+.chimera-shell .v3-res-card-head {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+  min-height: 52px;
+  padding: 10px 19px 9px;
+  border-bottom: 1px solid #0b1c2a12;
+}
+.chimera-shell .v3-res-card-head h2 {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 18px;
+  font-weight: 600;
+  color: #0c1a24;
+}
+.chimera-shell .v3-res-card-head p {
+  margin: 0;
+  font-size: 10px;
+  line-height: 14px;
+  color: #454e58;
+}
+.chimera-shell .v3-res-card-head p strong {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-weight: 500;
+  color: #33454f;
+}
+.chimera-shell .v3-res-card-body {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 19px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  scrollbar-width: thin;
+  /* Rows scrolled under the footer fade out instead of being cut mid-line. */
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    #000 calc(100% - 16px),
+    transparent
+  );
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
+}
+.chimera-shell .v3-res-card-body > :last-child {
+  margin-bottom: 8px;
+}
+.chimera-shell .v3-res-skeleton {
+  display: grid;
+  gap: 8px;
+}
+
+/* ---------- 资源行（目录卡片） ---------- */
+.chimera-shell .v3-res-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  column-gap: 10px;
+  align-items: start;
+  flex: none;
+  min-height: 60px;
+  padding: 10px 12px 9px;
+  border-radius: 10px;
+  background: #ffffff8c;
+  transition: background 120ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.chimera-shell .v3-res-row:hover {
+  background: #ffffffc4;
+}
+/* 当前行：全站唯一编码（§4.1.1），左缘 2px 墨条。 */
+.chimera-shell .v3-res-row.is-current {
+  background: #eef1ee;
+}
+.chimera-shell .v3-res-row.is-current::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  border-radius: 1px;
+  background: #0c1a24;
+}
+.chimera-shell .v3-res-icon {
+  margin-top: 1px;
+  color: #33454f;
+}
+.chimera-shell .v3-res-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.chimera-shell .v3-res-title-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.chimera-shell .v3-res-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 17px;
+  font-weight: 500;
+  color: #0c1a24;
+}
+.chimera-shell .v3-skills-page .v3-res-name-button {
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+.chimera-shell .v3-skills-page .v3-res-name-button:hover {
+  color: #1f4d3a;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.chimera-shell .v3-res-chip {
+  flex: none;
+  height: 17px;
+  padding: 0 7px;
+  border-radius: 9px;
+  background: #0b1c2a0a;
+  color: #33454f;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 10px;
+  line-height: 17px;
+}
+.chimera-shell .v3-res-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 10px;
+  line-height: 14px;
+  color: #454e58;
+}
+.chimera-shell .v3-skills-page .v3-res-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  margin-top: 3px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #33454f;
+  font: inherit;
+  font-size: 10.5px;
+  line-height: 15px;
+  text-align: left;
+  cursor: pointer;
+}
+.chimera-shell .v3-skills-page .v3-res-note > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chimera-shell .v3-skills-page .v3-res-note > svg {
+  flex: none;
+  color: #454e58;
+}
+/* An empty note is an affordance, not content: quiet until hovered. */
+.chimera-shell .v3-skills-page .v3-res-note[data-empty="true"] {
+  color: #454e58;
+  opacity: 0.75;
+}
+.chimera-shell .v3-skills-page .v3-res-note:hover:not(:disabled) {
+  color: #1f4d3a;
+  opacity: 1;
+}
+.chimera-shell .v3-res-note-edit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+}
+.chimera-shell .v3-skills-page .skills-note-input {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: #0b1c2a08;
+  color: #0c1a24;
+  font-size: 11px;
+}
+.chimera-shell .v3-skills-page .skills-note-input:focus-visible {
+  outline: none;
+  border: 1.5px solid #1f4d3a;
+}
+.chimera-shell .v3-skills-page .skills-note-save {
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 8px;
+  background: #1f4d3a;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 600;
+}
+.chimera-shell .v3-res-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 8px;
+  align-self: stretch;
+}
+.chimera-shell .v3-res-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.chimera-shell .v3-res-state {
+  font-size: 10px;
+  line-height: 14px;
+  color: #454e58;
+  white-space: nowrap;
+}
+.chimera-shell .v3-res-state[data-state="on"] {
+  color: #0d7340;
+}
+.chimera-shell .v3-res-dot {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.chimera-shell .v3-res-dot::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* 开关：30×17，开 ok 绿，关 #0b1c2a1f（§3.3） */
+.chimera-shell .v3-skills-page .skills-resource-switch {
+  position: relative;
+  flex: none;
+  width: 30px;
+  height: 17px;
+  padding: 0;
+  border: 0;
+  border-radius: 9px;
+  background: #0b1c2a1f;
+  box-shadow: none;
+  transition: background 120ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.chimera-shell .v3-skills-page .skills-resource-switch[aria-checked="true"] {
+  background: #0d7340;
+}
+.chimera-shell .v3-skills-page .skills-resource-switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 2px #0b1c2a33;
+  transform: none;
+  transition: transform 120ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.chimera-shell
+  .v3-skills-page
+  .skills-resource-switch[aria-checked="true"]
+  .skills-resource-switch-thumb {
+  transform: translateX(13px);
+}
+.chimera-shell
+  .v3-skills-page
+  .skills-resource-switch:active:not(:disabled)
+  .skills-resource-switch-thumb {
+  transform: scale(0.9);
+}
+.chimera-shell
+  .v3-skills-page
+  .skills-resource-switch[aria-checked="true"]:active:not(:disabled)
+  .skills-resource-switch-thumb {
+  transform: translateX(13px) scale(0.9);
+}
+.chimera-shell .v3-skills-page .skills-resource-switch:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+/* ---------- 卡底 ---------- */
+.chimera-shell .v3-res-card-foot {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 19px 14px;
+  border-top: 1px solid #0b1c2a1f;
+}
+.chimera-shell .v3-res-card-foot > p {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 10px;
+  line-height: 14px;
+  color: #454e58;
+  min-width: 0;
+}
+.chimera-shell .v3-res-foot-label {
+  flex: none;
+  font-weight: 600;
+  color: #33454f;
+}
+.chimera-shell .v3-res-privacy > svg {
+  flex: none;
+}
+.chimera-shell .v3-res-foot-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.chimera-shell .v3-res-foot-actions .v3-btn {
+  padding: 0 12px;
+}
+
+/* ---------- 空态（§3.5：图标 + 一句 + 出口动作） ---------- */
+.chimera-shell .skills-mcp-page section.resource-empty.v3-res-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 6px 0 0;
+  padding: 18px 4px;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+}
+.chimera-shell .v3-res-empty .resource-empty-icon {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  background: none;
+  color: #1f4d3a;
+}
+.chimera-shell .v3-res-empty h2 {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 18px;
+  font-weight: 600;
+  color: #0c1a24;
+}
+.chimera-shell .v3-res-empty p {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.55;
+  color: #454e58;
+}
+.chimera-shell .v3-res-empty .resource-empty-paths {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  width: 100%;
+  margin-top: 6px;
+}
+.chimera-shell .v3-res-empty .resource-path {
+  gap: 8px;
+  padding: 9px 10px;
+  border: 1px solid #ffffff;
+  border-radius: 10px;
+  background: #ffffff8c;
+}
+.chimera-shell .v3-res-empty .resource-path:hover:not(:disabled) {
+  background: #ffffffd0;
+  border-color: #ffffff;
+}
+.chimera-shell .v3-res-empty .resource-path[aria-expanded="true"] {
+  background: #eef1ee;
+  border-color: #ffffff;
+}
+.chimera-shell .v3-res-empty .resource-path svg {
+  color: #1f4d3a;
+}
+.chimera-shell .v3-res-empty .resource-path strong {
+  font-size: 11.5px;
+  line-height: 16px;
+  color: #0c1a24;
+}
+.chimera-shell .v3-res-empty .resource-path small {
+  font-size: 10px;
+  line-height: 14px;
+  color: #454e58;
+}
+
+/* ---------- 卡内次级区块：维护结果 / 本机发现 ---------- */
+.chimera-shell .v3-res-lifecycle {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 0 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.chimera-shell .skills-mcp-page section.skills-discovery.v3-res-discovery {
+  margin: 8px 0 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+}
+.chimera-shell .v3-skills-page .skills-lifecycle-panel {
+  padding: 12px 0 4px;
+  border: 0;
+  border-top: 1px solid #0b1c2a12;
+  border-radius: 0;
+  background: none;
+  font-size: 11px;
+  color: #33454f;
+}
+.chimera-shell .v3-skills-page .skills-lifecycle-panel h2,
+.chimera-shell .v3-skills-page .skills-panel-heading h2 {
+  margin: 0;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #0c1a24;
+}
+.chimera-shell .v3-skills-page .skills-lifecycle-panel p {
+  margin: 0 0 6px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: #454e58;
+}
+.chimera-shell .v3-skills-page .skills-scan-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.chimera-shell .v3-skills-page .skills-scan-heading > span {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 10px;
+  color: #454e58;
+}
+.chimera-shell .v3-skills-page .skills-scan-scope {
+  margin-top: 6px;
+  font-size: 11px;
+  color: #33454f;
+}
+.chimera-shell .v3-skills-page .skills-scan-scope > input {
+  width: 14px;
+  height: 14px;
+  accent-color: #1f4d3a;
+}
+.chimera-shell .v3-skills-page .skills-scan-panel .skills-scan-scope-hint {
+  margin: 4px 0 8px;
+  font-size: 10px;
+}
+.chimera-shell .v3-skills-page .skills-lifecycle-panel button {
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid #ffffffd9;
+  border-radius: 8px;
+  background: #ffffffa8;
+  color: #33454f;
+  font-size: 11px;
+}
+.chimera-shell
+  .v3-skills-page
+  .skills-lifecycle-panel
+  button:hover:not(:disabled) {
+  background: #ffffffe0;
+}
+.chimera-shell .v3-skills-page .skills-scan-panel > button:last-child {
+  height: 26px;
+  margin-top: 4px;
+  border-color: #1f4d3a;
+  background: #1f4d3a;
+  color: #ffffff;
+  font-weight: 600;
+}
+.chimera-shell
+  .v3-skills-page
+  .skills-scan-panel
+  > button:last-child:hover:not(:disabled) {
+  background: #193f30;
+}
+.chimera-shell .v3-skills-page .skills-scan-panel .skills-scan-row {
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: #ffffff8c;
+}
+.chimera-shell
+  .v3-skills-page
+  .skills-scan-panel
+  .skills-scan-row[data-selected="true"] {
+  background: #eef1ee;
+  border-color: #ffffff;
+}
+.chimera-shell .v3-skills-page .skills-scan-details strong {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: #0c1a24;
+}
+.chimera-shell .v3-skills-page .skills-scan-path,
+.chimera-shell .v3-skills-page .skills-scan-source {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 10px;
+  color: #454e58;
+}
+.chimera-shell .v3-skills-page .skills-scan-warning {
+  border: 0;
+  border-radius: 6px;
+  background: #8a520912;
+  color: #8a5209;
+  font-size: 10px;
+}
+.chimera-shell .v3-skills-page .skills-lifecycle-panel p[role="alert"] {
+  color: #b4342c;
+}
+.chimera-shell .v3-skills-page .skills-install-close {
+  border: 0;
+  background: transparent;
+  color: #454e58;
+}
+
+/* ---------- 抽屉（L23） ---------- */
+.chimera-shell .v3-drawer-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: #0b1c2a29;
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+.chimera-shell .v3-drawer {
+  position: fixed;
+  top: 52px;
+  right: 0;
+  bottom: 0;
+  z-index: 41;
+  display: flex;
+  flex-direction: column;
+  width: min(504px, 100vw);
+  background: #fbfcfbf2;
+  border-left: 1px solid #ffffff;
+  border-top-left-radius: 14px;
+  box-shadow: var(--v3-shadow-inner-top), var(--v3-shadow-outer);
+  -webkit-backdrop-filter: blur(30px) saturate(150%);
+  backdrop-filter: blur(30px) saturate(150%);
+  outline: none;
+  animation: v3-drawer-in 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+@keyframes v3-drawer-in {
+  from {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chimera-shell .v3-drawer {
+    animation: none;
+  }
+}
+.chimera-shell .v3-drawer-head {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 26px 28px 18px;
+  border-bottom: 1px solid #0b1c2a12;
+}
+.chimera-shell .v3-drawer-head p {
+  margin: 6px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #33454f;
+}
+.chimera-shell .v3-drawer-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 17px;
+  line-height: 24px;
+  font-weight: 600;
+  color: #0c1a24;
+}
+.chimera-shell .v3-drawer-title-mono {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-weight: 500;
+}
+.chimera-shell .v3-drawer-body {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px 28px 12px;
+}
+.chimera-shell .v3-drawer-section {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 16px 0;
+  border-bottom: 1px solid #0b1c2a12;
+}
+.chimera-shell .v3-drawer-section:last-child {
+  border-bottom: 0;
+}
+.chimera-shell .v3-drawer-section h3 {
+  margin: 0;
+  font-size: 11px;
+  line-height: 16px;
+  font-weight: 600;
+  color: #0c1a24;
+}
+.chimera-shell .v3-drawer-section p {
+  margin: 0;
+  font-size: 10.5px;
+  line-height: 1.55;
+  color: #454e58;
+}
+.chimera-shell .v3-drawer-code {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 4px 10px;
+  width: 100%;
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: #f2f5f7;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 10.5px;
+  line-height: 1.75;
+}
+.chimera-shell .v3-drawer-code dt {
+  color: #454e58;
+}
+.chimera-shell .v3-drawer-code dd {
+  margin: 0;
+  color: #0c1a24;
+  overflow-wrap: anywhere;
+}
+.chimera-shell .v3-drawer-mono {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 10.5px;
+  color: #33454f;
+}
+.chimera-shell .v3-drawer-env {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+.chimera-shell .v3-drawer-inset {
+  flex: 1;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  border-radius: 8px;
+  background: #0b1c2a08;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 10.5px;
+  color: #0c1a24;
+}
+.chimera-shell .v3-drawer-section .v3-drawer-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #33454f;
+}
+.chimera-shell .v3-drawer-kv {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 10px;
+  width: 100%;
+  font-size: 11px;
+  color: #33454f;
+}
+.chimera-shell .v3-drawer-kv > span:first-child {
+  color: #454e58;
+}
+.chimera-shell .v3-drawer-kv code {
+  display: block;
+  margin-top: 2px;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 10.5px;
+  color: #0c1a24;
+}
+.chimera-shell .v3-drawer-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 28px 20px;
+  border-top: 1px solid #0b1c2a12;
+}
+.chimera-shell .v3-drawer-foot-gap {
+  flex: 1;
+}
+.chimera-shell .v3-drawer .skills-install-result {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 0;
+  border-top: 1px solid #0b1c2a12;
+}
+.chimera-shell .v3-drawer .skills-install-name {
+  min-width: 0;
+}
+.chimera-shell .v3-drawer .skills-install-name strong {
+  font-size: 11.5px;
+  font-weight: 500;
+}
+.chimera-shell .v3-drawer .skills-install-name small {
+  font-size: 10px;
+  color: #454e58;
+}
+.chimera-shell .v3-drawer .skills-install-state {
+  border-radius: 6px;
+  background: #0b1c2a0a;
+  color: #454e58;
+  font-size: 10px;
+}
+
+/* 窄窗：两卡上下叠放，卡体不再各自滚动。 */
+@media (max-width: 900px) {
+  .chimera-shell .v3-skills-page {
+    height: auto;
+  }
+  .chimera-shell .v3-skills-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .chimera-shell .v3-res-card-body {
+    overflow: visible;
+  }
+}

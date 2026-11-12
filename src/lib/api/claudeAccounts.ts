@@ -1,7 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 
 /** What a saved login is made of. */
-export type ClaudeAccountKind = "oauth" | "setup_token" | "api_key";
+/** `desktop_only`: only Claude Desktop's sign-in, saved from this computer. */
+export type ClaudeAccountKind =
+  "oauth" | "setup_token" | "api_key" | "desktop_only";
 
 /** A saved Claude Code login. Never carries a token. */
 export interface ClaudeCodeAccount {
@@ -327,6 +329,15 @@ export const claudeAccountsApi = {
     invoke<ClaudeDesktopSwapStatus>("get_claude_desktop_swap_status"),
 
   /** Saves the default Desktop's sign-in for a saved login. */
+  /**
+   * Saves the account the default Desktop is signed in as (when no saved
+   * login has it) as a Desktop-only login; `email` is only its name.
+   */
+  saveDesktopOnly: (email?: string | null): Promise<ClaudeCodeAccount> =>
+    invoke<ClaudeCodeAccount>("save_claude_desktop_only_login", {
+      email: email ?? null,
+    }),
+
   captureDesktopLogin: (
     id: string,
     closeDesktop = false,

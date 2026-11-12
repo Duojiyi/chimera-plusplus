@@ -35,32 +35,6 @@
   /* Mirrors the graphite design tokens in theme/tokens.css (bg-base,
      bg-surface, bg-subtle, text-1, text-2, border-subtle) so component-library
      surfaces match the shell instead of near-white text on a zinc ground. */
-  .dark {
-    --background: 210 11% 11%;
-    --foreground: 216 17% 94%;
-    --card: 213 13% 14%;
-    --card-foreground: 216 17% 94%;
-    --popover: 213 13% 14%;
-    --popover-foreground: 216 17% 94%;
-
-    --primary: 200 100% 31%;
-    --primary-foreground: 0 0% 100%;
-
-    --secondary: 207 11% 17%;
-    --secondary-foreground: 216 17% 94%;
-
-    --muted: 207 11% 17%;
-    --muted-foreground: 210 6% 72%;
-    --accent: 207 11% 17%;
-    --accent-foreground: 216 17% 94%;
-
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 216 17% 94%;
-
-    --border: 216 9% 22%;
-    --input: 216 9% 22%;
-    --ring: 200 100% 31%;
-  }
 }
 
 /* glass → solid panel surface (register-product: no glassmorphism default) */
@@ -69,30 +43,10 @@
   border: 1px solid var(--line, hsl(var(--border)));
 }
 
-.dark .glass {
-  background: hsl(var(--card));
-  border: 1px solid hsl(var(--border));
-}
-
 .glass-card {
   background: var(--panel, hsl(var(--background)));
   border: 1px solid var(--line, hsl(var(--border)));
   border-radius: var(--r-lg, 12px);
-}
-
-.dark .glass-card {
-  background: hsl(var(--card));
-  border: 1px solid hsl(var(--border));
-}
-
-.glass-card-active {
-  background: hsl(var(--primary) / 0.06);
-  border: 1px solid hsl(var(--primary) / 0.35);
-}
-
-.dark .glass-card-active {
-  background: hsl(var(--primary) / 0.1);
-  border: 1px solid hsl(var(--primary) / 0.25);
 }
 
 /* Windows drags only through Tauri's mousedown handler (drag.js). wry enables
@@ -166,29 +120,12 @@ html.dark {
     overflow-x: hidden;
   }
 
-  .border-default {
-    border-width: 1px;
-    border-color: hsl(var(--border));
-  }
-
-  .border-active {
-    border-width: 2px;
-  }
-
   .border-border-default {
     border-color: hsl(var(--border));
   }
 
   .border-border-active {
     border-color: hsl(var(--primary));
-  }
-
-  .border-border-hover {
-    border-color: hsl(var(--primary) / 0.4);
-  }
-
-  .border-border-dragging {
-    border-color: hsl(var(--primary) / 0.6);
   }
 }
 
@@ -216,12 +153,6 @@ input[type="password"]::-ms-clear {
   font-family:
     Inter, "Microsoft YaHei UI", "Segoe UI", ui-sans-serif, system-ui,
     sans-serif;
-}
-
-.dark .chimera-toaster {
-  --chimera-toast-surface: oklch(0.235 0.012 260);
-  --chimera-toast-ink: oklch(0.96 0.006 260);
-  --chimera-toast-muted: oklch(0.75 0.01 260);
 }
 
 .chimera-toaster .chimera-toast {

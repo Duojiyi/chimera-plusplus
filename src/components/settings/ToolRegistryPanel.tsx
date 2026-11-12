@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useState } from "react";
 import { toolRegistryApi, type ToolInfo } from "@/lib/api/toolRegistry";
 import registry from "@/shared/tool-registry.json";
 import type { Settings } from "@/types";
-import { toolBadgeMarks, toolDisplayNames } from "./toolBadges";
+import { toolDisplayNames } from "./toolBadges";
 
 const AboutSection = lazy(() =>
   import("./AboutSection").then((module) => ({ default: module.AboutSection })),
@@ -97,9 +97,11 @@ export function ToolRegistryPanel({
           {tools.map((tool) => (
             <details key={tool.id} className="settings-tool-row">
               <summary>
-                <span className="settings-tool-mark" aria-hidden="true">
-                  {toolBadgeMarks[tool.id] ?? "?"}
-                </span>
+                <span
+                  className="settings-tool-mark"
+                  data-tool={tool.id}
+                  aria-hidden="true"
+                />
                 <b>{toolDisplayNames[tool.id] ?? tool.id}</b>
                 <span className="settings-tool-mode">
                   {tool.mode === "switch" ? "切换型" : "增量型"}

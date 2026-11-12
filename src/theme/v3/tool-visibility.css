@@ -1,0 +1,404 @@
+/* —— 以下规则自 liquid-glass-v3.css 迁入：只在本页加载，不进首屏样式 —— */
+/* 14.6 管理工具 / 工具可见性 */
+.chimera-shell .tool-visibility-list {
+  border: 1px solid var(--v3-hairline);
+  border-radius: 14px;
+  background: var(--v3-glass-fill);
+  box-shadow: 0 1px 2px #1236680d;
+  overflow: hidden;
+}
+
+.chimera-shell .tool-visibility-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 40px;
+  padding: 6px 14px;
+  border-top: 1px solid var(--v3-hairline);
+  font-size: 11.5px;
+  color: var(--text-1);
+}
+
+.chimera-shell .tool-visibility-row:first-child {
+  border-top: 0;
+}
+
+.chimera-shell .tool-visibility-state {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+/* ============================================================
+   v3.0 · 管理工具（设计稿 L34）
+   未分层（见 postcss.config.cjs），完整取代旧的 ToolVisibilityPage.css。
+   选择器统一以 .chimera-shell .tool-visibility-page 开头。
+   ============================================================ */
+
+.chimera-shell .tool-visibility-page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: none;
+  padding: 26px 26px 18px;
+  color: var(--text-1);
+}
+
+.chimera-shell .tool-visibility-page .tool-visibility-header {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 44px;
+  margin: 0;
+}
+
+.chimera-shell .tool-visibility-page .tool-visibility-header h1 {
+  margin: 0;
+  font-size: 24px;
+  line-height: 30px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+}
+
+.chimera-shell .tool-visibility-page .tool-visibility-header p {
+  margin: 0;
+  font-size: 11px;
+  line-height: 15px;
+  color: var(--text-3);
+}
+
+.chimera-shell .tool-visibility-page .tool-visibility-notice {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+.chimera-shell .tool-visibility-page .tool-visibility-load-error {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid #b4342c33;
+  border-radius: 12px;
+  background: #fbefed;
+  color: var(--danger-fg);
+  font-size: 11px;
+}
+
+.chimera-shell .tool-visibility-page .tool-visibility-load-error button {
+  height: 28px;
+  margin-left: auto;
+  padding: 0 12px;
+  border: 1px solid #ffffffd9;
+  border-radius: 9px;
+  background: #ffffffa8;
+  color: #33454f;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+/* ---------- 双卡 ---------- */
+
+.chimera-shell .tool-visibility-page .tool-visibility-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 276px;
+  gap: 16px;
+  align-items: start;
+}
+
+.chimera-shell .tool-visibility-page .tool-visibility-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 0 19px 14px;
+  background: var(--v3-glass-fill);
+  border: 1px solid var(--v3-glass-border);
+  border-radius: 14px;
+  box-shadow:
+    var(--v3-shadow-inner-top), var(--v3-shadow-inner-bottom),
+    var(--v3-shadow-outer);
+  -webkit-backdrop-filter: blur(var(--v3-glass-blur)) saturate(150%);
+  backdrop-filter: blur(var(--v3-glass-blur)) saturate(150%);
+}
+
+.chimera-shell .tool-visibility-page .tool-visibility-card-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 16px 0 10px;
+  border-bottom: 1px solid var(--v3-hairline);
+}
+
+.chimera-shell .tool-visibility-page .tool-visibility-card-head h2 {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 18px;
+  font-weight: 600;
+}
+
+.chimera-shell .tool-visibility-page .tool-visibility-card-head p {
+  margin: 0;
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+/* ---------- 工具行 ---------- */
+
+.chimera-shell .tool-visibility-page .tool-visibility-list {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  list-style: none;
+}
+
+.chimera-shell .tool-visibility-page .tool-visibility-row {
+  display: grid;
+  grid-template-columns: 3px minmax(0, 1fr) 56px auto 40px;
+  align-items: center;
+  column-gap: 14px;
+  min-height: 52px;
+  padding: 9px 0;
+  border: 0;
+  border-bottom: 1px solid var(--v3-hairline);
+  background: transparent;
+}
+
+.chimera-shell .tool-visibility-page .tool-visibility-row:last-child {
+  border-bottom: 0;
+}
+
+.chimera-shell .tool-visibility-page .tool-visibility-row > .v3-tool-bar {
+  height: 16px;
+}
+
+.chimera-shell .tool-visibility-page .tool-visibility-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.chimera-shell .tool-visibility-page .tool-visibility-name {
+  font-family: var(--font-mono), ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  line-height: 17px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.chimera-shell .tool-visibility-page .tool-visibility-description {
+  margin: 0;
+  font-size: 10.5px;
+  line-height: 15px;
+  color: var(--text-3);
+}
+
+.chimera-shell .tool-visibility-page .tool-visibility-limits {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 3px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chimera-shell .tool-visibility-page .tool-visibility-limits li {
+  padding: 1px 7px;
+  border-radius: 6px;
+  background: #1a24200d;
+  color: var(--text-2);
+  font-size: 10px;
+}
+
+.chimera-shell .tool-visibility-page .tool-visibility-error {
+  margin: 3px 0 0;
+  font-size: 10.5px;
+  color: var(--danger-fg);
+}
+
+.chimera-shell .tool-visibility-page .tool-visibility-mode {
+  justify-self: start;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: #1a24200d;
+  color: var(--text-2);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.chimera-shell .tool-visibility-page .tool-visibility-state {
+  font-size: 10.5px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+.chimera-shell .tool-visibility-page .tool-visibility-fixed {
+  grid-column: 4 / 6;
+  justify-self: end;
+  font-size: 10.5px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+/* 开关：原生 checkbox，28px 点击区，内画 36×20 轨道 */
+.chimera-shell .tool-visibility-page .tool-visibility-switch {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  width: 36px;
+  height: 28px;
+  margin: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.chimera-shell .tool-visibility-page .tool-visibility-switch::before {
+  content: "";
+  position: absolute;
+  inset: 4px 0;
+  border-radius: 999px;
+  background: #1a24201f;
+  transition: background-color 120ms ease-out;
+}
+
+.chimera-shell .tool-visibility-page .tool-visibility-switch::after {
+  content: "";
+  position: absolute;
+  top: 6px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 2px #1a242033;
+  transition: transform 120ms ease-out;
+}
+
+.chimera-shell .tool-visibility-page .tool-visibility-switch:checked::before {
+  background: #1f6b4a;
+}
+
+.chimera-shell .tool-visibility-page .tool-visibility-switch:checked::after {
+  transform: translateX(16px);
+}
+
+.chimera-shell .tool-visibility-page .tool-visibility-switch:focus-visible {
+  outline: 2px solid #1f4d3a;
+  outline-offset: 2px;
+}
+
+.chimera-shell
+  .tool-visibility-page
+  .tool-visibility-switch[aria-disabled="true"] {
+  cursor: progress;
+  opacity: 0.55;
+}
+
+.chimera-shell .tool-visibility-page .tool-visibility-switch-placeholder {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  margin: 4px 0;
+  border-radius: 999px;
+  background: #1a24201a;
+}
+
+.chimera-shell .tool-visibility-page .tool-visibility-switch-placeholder.is-on {
+  background: #1f6b4a;
+  opacity: 0.6;
+}
+
+.chimera-shell
+  .tool-visibility-page
+  .tool-visibility-switch-placeholder.is-loading {
+  animation: v3-tool-visibility-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes v3-tool-visibility-pulse {
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.chimera-shell .tool-visibility-page .tool-visibility-foot {
+  margin: 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--v3-hairline);
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+/* ---------- 侧栏预览 ---------- */
+
+.chimera-shell .tool-visibility-page .tool-visibility-preview-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chimera-shell .tool-visibility-page .tool-visibility-preview-list li {
+  display: grid;
+  grid-template-columns: 3px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 26px;
+  font-family: var(--font-mono), ui-monospace, Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-1);
+}
+
+.chimera-shell
+  .tool-visibility-page
+  .tool-visibility-preview-list
+  .v3-tool-bar {
+  height: 12px;
+}
+
+.chimera-shell .tool-visibility-page .tool-visibility-preview-list small {
+  font-family: var(--font-sans, inherit);
+  font-size: 10px;
+  color: var(--text-3);
+}
+
+.chimera-shell .tool-visibility-page .tool-visibility-preview-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 12px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--v3-hairline);
+  font-size: 10.5px;
+  line-height: 15px;
+  color: var(--text-3);
+}
+
+.chimera-shell .tool-visibility-page .tool-visibility-preview-note svg {
+  flex: none;
+  margin-top: 1px;
+}
+
+@media (max-width: 860px) {
+  .chimera-shell .tool-visibility-page .tool-visibility-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chimera-shell .tool-visibility-page .tool-visibility-switch::before,
+  .chimera-shell .tool-visibility-page .tool-visibility-switch::after {
+    transition: none;
+  }
+
+  .chimera-shell
+    .tool-visibility-page
+    .tool-visibility-switch-placeholder.is-loading {
+    animation: none;
+  }
+}

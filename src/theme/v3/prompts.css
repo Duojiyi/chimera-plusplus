@@ -1,0 +1,1147 @@
+/* —— 以下规则自 liquid-glass-v3.css 迁入：只在本页加载，不进首屏样式 —— */
+/* ===== 11. 提示词页（L05 / L06） ===== */
+.chimera-shell .prompts-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 44px;
+}
+
+.chimera-shell .prompts-title-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.chimera-shell .prompts-title-row h1 {
+  font-size: 24px;
+  line-height: 30px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text-1);
+}
+
+/* 标题旁的应用选择器：做成 26 高的软底小控件，不要下拉框的厚重边框 */
+.chimera-shell .prompts-title-row select,
+.chimera-shell .prompts-title-row [role="combobox"] {
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--v3-hairline);
+  border-radius: 8px;
+  background: var(--v3-glass-fill-soft);
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+/* 页头下方的状态摘要：中性软底，不再是抢眼的告警块 */
+.chimera-shell .prompts-summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--v3-hairline);
+  border-radius: 12px;
+  background: var(--v3-glass-fill-soft);
+}
+
+.chimera-shell .prompts-summary-icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 14px;
+  background: #ffffffcc;
+  color: var(--text-2);
+  flex: none;
+}
+
+.chimera-shell .prompts-summary-copy {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.chimera-shell .prompts-summary-copy > *:first-child {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.chimera-shell .prompts-summary-copy > p,
+.chimera-shell .prompts-summary-copy > *:last-child {
+  margin: 0;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--text-2);
+}
+
+/* 提示条（读取失败 / 只读提示）一行放完，不要占两行高度 */
+.chimera-shell .prompts-notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--v3-hairline);
+  border-radius: 10px;
+  background: var(--v3-glass-fill-soft);
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+.chimera-shell .prompts-notice button {
+  height: 26px;
+  margin-left: auto;
+  font-size: 11px;
+}
+
+.chimera-shell .prompts-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.chimera-shell .prompts-search {
+  height: 30px;
+  border-radius: 8px;
+  background: var(--v3-glass-fill-soft);
+  border: 1px solid var(--v3-hairline);
+  font-size: 11.5px;
+}
+
+.chimera-shell .prompts-filters,
+.chimera-shell .prompts-category-filters {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 9px;
+  background: #0b1c2a0a;
+}
+
+.chimera-shell .prompts-filters button,
+.chimera-shell .prompts-category-filters button {
+  height: 24px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.chimera-shell .prompts-filters button[aria-pressed="true"],
+.chimera-shell .prompts-category-filters button[aria-pressed="true"],
+.chimera-shell .prompts-filters button[data-active="true"],
+.chimera-shell .prompts-category-filters button[data-active="true"] {
+  background: #ffffffdd;
+  color: var(--text-1);
+  font-weight: 600;
+}
+
+.chimera-shell .prompts-card-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.chimera-shell .prompt-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px 10px;
+  border: 1px solid var(--v3-hairline);
+  border-radius: 14px;
+  background: var(--v3-glass-fill);
+  box-shadow: 0 1px 2px #1236680d;
+}
+
+.chimera-shell .prompt-card-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chimera-shell .prompt-card-heading > .prompt-card-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.chimera-shell .prompt-card-icon {
+  flex: none;
+  color: var(--text-2);
+}
+
+.chimera-shell .prompt-card > p,
+.chimera-shell .prompt-card-body {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 17px;
+  color: var(--text-2);
+  min-height: 34px;
+}
+
+.chimera-shell .prompt-card-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 8px;
+  border-top: 1px solid var(--v3-hairline);
+  font-size: 10px;
+  color: var(--text-3);
+}
+
+.chimera-shell .prompt-card-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  color: var(--text-2);
+}
+
+.chimera-shell .prompt-card-actions button {
+  height: 22px;
+  padding: 0 6px;
+  font-size: 10.5px;
+  color: var(--text-2);
+}
+
+/* 开关统一 30×17；开=石墨绿，关=极浅槽 */
+.chimera-shell .glass-switch,
+.chimera-shell .chimera-shell button[role="switch"] {
+  width: 30px;
+  height: 17px;
+  border: 0;
+  border-radius: 9px;
+  flex: none;
+}
+
+.chimera-shell .glass-switch[data-state="checked"] {
+  background: #0d7340;
+}
+
+.chimera-shell .glass-switch[data-state="unchecked"] {
+  background: #0b1c2a1f;
+}
+
+/* 卡头元素的本体尺寸：图标是 18px 的小符号，不是一块底板 */
+.chimera-shell .prompt-card-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chimera-shell .prompt-card-icon {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  color: var(--text-2);
+}
+
+.chimera-shell .prompt-card-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.chimera-shell .prompt-card-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
+  height: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 开关滑块必须是白的，跟随状态左右移动 */
+.chimera-shell .glass-switch-thumb {
+  width: 13px;
+  height: 13px;
+  margin-left: 2px;
+  border-radius: 7px;
+  background: #ffffff;
+  box-shadow: 0 1px 2px #12366826;
+  transition: transform 140ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.chimera-shell .glass-switch[data-state="checked"] .glass-switch-thumb {
+  transform: translateX(13px);
+}
+
+/* 分类筛选条只占内容宽度，不要拉满整行 */
+.chimera-shell .prompts-category-filters {
+  flex: 0 0 auto;
+}
+
+.chimera-shell .prompts-category-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* ============================================================
+   v3 · 提示词（L05 主页面 / L06 编辑抽屉 / L22 注入预览抽屉）
+   未分层；只作用于 .chimera-shell .prompts-page 及其抽屉。
+   ============================================================ */
+
+.chimera-shell .prompts-page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  height: 100%;
+  min-height: 0;
+  padding: 18px 26px 18px;
+  background: transparent;
+  overflow: auto;
+}
+
+/* ---------- 页头 ---------- */
+.chimera-shell .prompts-page > .prompts-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 44px;
+  flex-wrap: nowrap;
+}
+
+.chimera-shell .prompts-page .prompts-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.chimera-shell .prompts-page .prompts-title-row h1 {
+  margin: 0;
+  font-size: 24px;
+  line-height: 30px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+  color: #0c1a24;
+}
+
+/* 目标工具：只在需要时才被注意到的小控件 */
+.chimera-shell .prompts-page .prompts-title-row select {
+  height: 24px;
+  max-width: 140px;
+  padding: 0 22px 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background-color: #0b1c2a0a;
+  color: #33454f;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.chimera-shell .prompts-page > header p.prompts-subtitle {
+  display: flex;
+  flex-wrap: wrap;
+  margin: 1px 0 0;
+  font-size: 11.5px;
+  line-height: 15px;
+  color: #454e58;
+}
+
+.chimera-shell .prompts-subtitle > span + span::before {
+  content: "·";
+  margin: 0 6px;
+}
+
+.chimera-shell .prompts-page .prompts-actions {
+  display: flex;
+  gap: 8px;
+  flex: none;
+}
+
+.chimera-shell .prompts-page .prompts-actions button {
+  height: 30px;
+  padding: 0 14px;
+  border-radius: 9px;
+  font-size: 11px;
+  gap: 6px;
+}
+
+.chimera-shell .prompts-page .prompts-actions button:first-child {
+  background: #ffffffa8;
+  border: 1px solid #ffffffd9;
+  color: #33454f;
+  font-weight: 500;
+}
+
+.chimera-shell .prompts-page .prompts-actions button:last-child {
+  background: #1f4d3a;
+  border: 0;
+  color: #ffffff;
+  font-weight: 600;
+}
+
+/* ---------- 工具条：段控件 + 搜索 + 排序 ---------- */
+.chimera-shell .prompts-page .prompts-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.chimera-shell .prompts-page .prompts-filters {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border: 0;
+  border-radius: 9px;
+  background: #0b1c2a0a;
+  flex: none;
+}
+
+.chimera-shell .prompts-page .prompts-filters button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #33454f;
+  font-size: 11px;
+  font-weight: 500;
+  box-shadow: none;
+}
+
+.chimera-shell .prompts-page .prompts-filters button span {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 10.5px;
+  color: inherit;
+}
+
+.chimera-shell .prompts-page .prompts-filters button[aria-pressed="true"] {
+  background: #ffffff;
+  color: #0c1a24;
+  font-weight: 600;
+}
+
+.chimera-shell .prompts-page .prompts-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 246px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid #ffffffd9;
+  border-radius: 9px;
+  background: #ffffffa8;
+  gap: 6px;
+}
+
+.chimera-shell .prompts-page .prompts-search > svg {
+  position: static;
+  flex: none;
+  color: #454e58;
+  transform: none;
+}
+
+.chimera-shell .prompts-page .prompts-search input {
+  height: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  font-size: 11.5px;
+  color: #0c1a24;
+}
+
+.chimera-shell .prompts-page .prompts-search input:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+.chimera-shell .prompts-page .prompts-search > button {
+  position: static;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #454e58;
+  transform: none;
+}
+
+.chimera-shell .prompts-page .prompts-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 4px 0 10px;
+  border: 1px solid #ffffffd9;
+  border-radius: 9px;
+  background: #ffffffa8;
+  color: #454e58;
+}
+
+.chimera-shell .prompts-page .prompts-sort select {
+  height: 28px;
+  padding: 0 6px 0 0;
+  border: 0;
+  background: transparent;
+  color: #33454f;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.chimera-shell .prompts-page .prompts-result-count {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  font-size: 10.5px;
+  color: #454e58;
+  white-space: nowrap;
+}
+
+/* 分类：比主筛选低一级 —— 纯文字链，选中项墨色下划线 */
+.chimera-shell .prompts-page .prompts-category-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: -4px;
+}
+
+.chimera-shell .prompts-page .prompts-category-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.chimera-shell .prompts-page .prompts-category-filters button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #454e58;
+  font-size: 11px;
+  font-weight: 400;
+  box-shadow: inset 0 -1px 0 transparent;
+}
+
+.chimera-shell .prompts-page .prompts-category-filters button span {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 10px;
+  color: #454e58;
+}
+
+.chimera-shell
+  .prompts-page
+  .prompts-category-filters
+  button[aria-pressed="true"] {
+  background: transparent;
+  color: #0c1a24;
+  font-weight: 600;
+  box-shadow: inset 0 -2px 0 #0c1a24;
+}
+
+.chimera-shell .prompts-page .prompts-category-bar > button {
+  height: 24px;
+  padding: 0 8px;
+  gap: 5px;
+  border-radius: 7px;
+  color: #1f4d3a;
+  font-size: 11px;
+  font-weight: 500;
+  flex: none;
+}
+
+/* ---------- 卡片网格 ---------- */
+.chimera-shell .prompts-page .prompts-catalog {
+  flex: none;
+  overflow: visible;
+}
+
+.chimera-shell .prompts-page .prompts-card-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 15px;
+}
+
+.chimera-shell .prompts-page article.prompt-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-height: 172px;
+  padding: 14px 16px 0;
+  border: 1px solid #ffffff;
+  border-radius: 14px;
+  background: var(--v3-glass-fill);
+  box-shadow:
+    var(--v3-shadow-inner-top), var(--v3-shadow-inner-bottom),
+    var(--v3-shadow-outer);
+  -webkit-backdrop-filter: blur(30px) saturate(150%);
+  backdrop-filter: blur(30px) saturate(150%);
+  transition: none;
+}
+
+.chimera-shell .prompts-page article.prompt-card:hover {
+  transform: none;
+  border-color: #ffffff;
+}
+
+.chimera-shell .prompts-page article.prompt-card.is-highlighted {
+  outline: 2px solid #1f4d3a;
+  outline-offset: 2px;
+}
+
+.chimera-shell .prompts-page .prompt-card-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.chimera-shell .prompts-page .prompt-card-icon {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid #ffffff;
+  border-radius: 9px;
+  background: #0b1c2a0a;
+  color: #33454f;
+  flex: none;
+}
+
+.chimera-shell .prompts-page .prompt-card.is-enabled .prompt-card-icon {
+  color: #1f4d3a;
+  background: #0b1c2a08;
+}
+
+.chimera-shell .prompts-page .prompt-card-icon svg {
+  width: 15px;
+  height: 15px;
+}
+
+.chimera-shell .prompts-page .prompt-card-name {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1 1 auto;
+  padding-top: 1px;
+}
+
+.chimera-shell .prompts-page .prompt-card-title {
+  display: block;
+  width: auto;
+  height: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  font-size: 12.5px;
+  line-height: 16px;
+  font-weight: 600;
+  color: #0c1a24;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.chimera-shell .prompts-page .prompt-card-title:hover {
+  color: #1f4d3a;
+  text-decoration: none;
+}
+
+.chimera-shell .prompts-page .prompt-card-category {
+  font-size: 10px;
+  line-height: 13px;
+  color: #454e58;
+}
+
+.chimera-shell .prompts-page .prompt-card-heading > button[role="switch"] {
+  margin-top: 6px;
+}
+
+.chimera-shell
+  .prompts-page
+  .prompt-card-heading
+  > button:not([role="switch"]):not(.prompt-card-title) {
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 8px;
+  font-size: 10.5px;
+}
+
+.chimera-shell .prompts-page .prompt-current {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid #ffffff;
+  border-radius: 6px;
+  background: #ffffffd8;
+  color: #1f4d3a;
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.chimera-shell .prompts-page .prompt-card .prompt-card-description {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  min-height: 34px;
+  margin: 10px 0 0;
+  font-size: 11px;
+  line-height: 17px;
+  color: #33454f;
+}
+
+.chimera-shell .prompts-page .prompt-card-vars {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: auto;
+  padding: 8px 0 8px;
+  font-size: 10px;
+  color: #454e58;
+}
+
+.chimera-shell .prompts-page .prompt-card-vars-label {
+  margin-right: 4px;
+  color: #454e58;
+}
+
+.chimera-shell .prompts-page .prompt-card-vars code {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: #f2f5f7;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 10px;
+  color: #33454f;
+}
+
+.chimera-shell .prompts-page .prompt-card-vars-none {
+  color: #454e58;
+}
+
+.chimera-shell .prompts-page .prompt-card-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 34px;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid #0b1c2a12;
+  font-size: 10px;
+  color: #454e58;
+}
+
+.chimera-shell .prompts-page .prompt-card-scope {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.chimera-shell .prompts-page .prompt-enabled-label {
+  color: #0d7340;
+  font-weight: 500;
+}
+
+.chimera-shell .prompts-page .prompt-enabled-label.is-pending {
+  color: #8a5209;
+}
+
+.chimera-shell .prompts-page .prompt-card-footer > .prompt-card-origin {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  margin: 0;
+  overflow: visible;
+  color: #454e58;
+  font-size: 10px;
+}
+
+.chimera-shell .prompts-page .prompt-card-badge {
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 5px;
+  background: #8a520914;
+  color: #8a5209;
+  font-size: 10px;
+  line-height: 16px;
+}
+
+.chimera-shell .prompts-page .prompt-card-footer > .prompt-card-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  margin: 0;
+  flex: none;
+}
+
+.chimera-shell .prompts-page .prompt-card-actions button {
+  height: 24px;
+  min-width: 24px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #1f4d3a;
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.chimera-shell .prompts-page .prompt-card-actions button:hover:not(:disabled) {
+  background: #0b1c2a0a;
+}
+
+.chimera-shell .prompts-page .prompt-card-actions button[aria-label^="操作"] {
+  color: #454e58;
+}
+
+/* ---------- 页底：注入说明一行（无状态问题时） ---------- */
+.chimera-shell .prompts-page .prompts-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.chimera-shell .prompts-page .prompts-summary-icon {
+  display: grid;
+  place-items: center;
+  width: auto;
+  height: auto;
+  background: transparent;
+  color: #454e58;
+  flex: none;
+}
+
+.chimera-shell .prompts-page .prompts-summary-copy {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.chimera-shell .prompts-page .prompts-summary-copy > *:first-child,
+.chimera-shell .prompts-page .prompts-summary-headline strong {
+  font-size: 11px;
+  font-weight: 600;
+  color: #0c1a24;
+  white-space: nowrap;
+}
+
+.chimera-shell .prompts-page .prompts-summary-headline {
+  display: inline-flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.chimera-shell .prompts-page .prompts-summary-copy > p {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 16px;
+  color: #454e58;
+}
+
+.chimera-shell .prompts-page .prompts-state-tag {
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 6px;
+  font-size: 10px;
+  line-height: 18px;
+  font-weight: 500;
+}
+
+.chimera-shell .prompts-page .prompts-state-tag.is-ok {
+  background: #ffffffd8;
+  color: #0d7340;
+}
+
+.chimera-shell .prompts-page .prompts-state-tag.is-warning {
+  background: #8a520914;
+  color: #8a5209;
+}
+
+.chimera-shell .prompts-page .prompts-summary-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.chimera-shell .prompts-page .prompts-summary-actions button {
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.chimera-shell .prompts-page .prompts-summary-actions .prompts-file-link {
+  padding: 0 4px;
+  background: transparent;
+  color: #1f4d3a;
+}
+
+/* 有问题时：同一结构，升为玻璃卡放在页头下方，warn 只着在图标与 tag 上 */
+.chimera-shell .prompts-page .prompts-summary.is-warning {
+  align-items: flex-start;
+  padding: 12px 16px;
+  border: 1px solid #ffffff;
+  border-radius: 14px;
+  background: var(--v3-glass-fill);
+  box-shadow: var(--v3-shadow-inner-top), var(--v3-shadow-inner-bottom);
+}
+
+.chimera-shell .prompts-page .prompts-summary.is-warning .prompts-summary-icon {
+  color: #8a5209;
+  padding-top: 2px;
+}
+
+.chimera-shell .prompts-page .prompts-summary.is-warning .prompts-summary-copy {
+  flex-direction: column;
+  gap: 2px;
+}
+
+.chimera-shell
+  .prompts-page
+  .prompts-summary.is-warning
+  .prompts-summary-copy
+  > p {
+  white-space: normal;
+}
+
+/* ---------- 提示条 ---------- */
+.chimera-shell .prompts-page .prompts-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 8px 0 14px;
+  border: 1px solid #ffffff;
+  border-radius: 12px;
+  background: var(--v3-glass-fill);
+  font-size: 11px;
+  color: #33454f;
+}
+
+.chimera-shell .prompts-page .prompts-notice > svg {
+  color: #454e58;
+  flex: none;
+}
+
+.chimera-shell .prompts-page .prompts-notice[role="alert"] > svg {
+  color: #b4342c;
+}
+
+.chimera-shell .prompts-page .prompts-notice button {
+  height: 26px;
+  margin-left: auto;
+  font-size: 11px;
+}
+
+/* ---------- 空态 ---------- */
+.chimera-shell .prompts-page .prompts-empty.empty-state {
+  margin-top: 0;
+  border: 1px solid #ffffff;
+  background: var(--v3-glass-fill);
+}
+
+.chimera-shell .prompts-page .prompts-empty .empty-state-icon {
+  color: #1f4d3a;
+}
+
+/* ---------- 抽屉：L06 编辑 / L22 注入预览 ---------- */
+.chimera-shell .prompt-drawer[role="dialog"],
+.prompt-drawer[role="dialog"] {
+  width: min(472px, 100vw);
+  border: 0;
+  border-left: 1px solid #ffffff;
+  border-radius: 0;
+  background: #f7f8f8f2;
+  box-shadow: -10px 0 24px #1236681a;
+  -webkit-backdrop-filter: blur(30px) saturate(150%);
+  backdrop-filter: blur(30px) saturate(150%);
+  color: #0c1a24;
+}
+
+.prompt-drawer[role="dialog"] > div:first-child {
+  padding: 26px 28px 12px;
+  border-bottom: 0;
+}
+
+.prompt-drawer .prompt-drawer-title h2 {
+  font-size: 17px;
+  line-height: 24px;
+  font-weight: 700;
+  color: #0c1a24;
+}
+
+.prompt-drawer .prompt-drawer-title + p,
+.prompt-drawer [id$="-description"] {
+  margin-top: 2px;
+  font-size: 11px;
+  color: #454e58;
+}
+
+.prompt-drawer .prompt-drawer-body {
+  padding: 8px 28px 16px;
+}
+
+.prompt-drawer .prompt-detail-note {
+  margin: 0;
+  font-size: 11px;
+  line-height: 17px;
+  color: #454e58;
+}
+
+.prompt-drawer .prompt-file-sections {
+  display: grid;
+  gap: 16px;
+  margin-top: 14px;
+  counter-reset: inject;
+}
+
+.prompt-drawer .prompt-file-section h3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #0c1a24;
+}
+
+.prompt-drawer .prompt-file-section h3::before {
+  counter-increment: inject;
+  content: counter(inject) " ·";
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-weight: 500;
+  color: #454e58;
+}
+
+.prompt-drawer .prompt-file-content,
+.prompt-drawer .prompt-file-section .prompt-file-content {
+  margin: 8px 0 0;
+  padding: 14px 16px;
+  border: 0;
+  border-radius: 10px;
+  background: #f2f5f7;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 11px;
+  line-height: 1.75;
+  color: #33454f;
+}
+
+.prompt-drawer .prompt-file-section.is-managed .prompt-file-content {
+  border: 0;
+  background: #eef1ee;
+  box-shadow: inset 2px 0 0 #0c1a24;
+}
+
+.prompt-drawer .prompt-file-section.is-foreign .prompt-file-content {
+  border: 1px dashed #0b1c2a24;
+  background: #f2f5f7;
+}
+
+.prompt-drawer .prompt-form-field label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #0c1a24;
+}
+
+.prompt-drawer .prompt-form-field input,
+.prompt-drawer .prompt-form-field select {
+  height: 30px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: #0b1c2a08;
+  font-size: 11.5px;
+  box-shadow: none;
+}
+
+.prompt-drawer .prompt-form-field input:focus-visible,
+.prompt-drawer .prompt-form-field select:focus-visible {
+  border-color: #1f4d3a;
+  outline: none;
+}
+
+.prompt-drawer[role="dialog"] > div:last-child {
+  gap: 8px;
+  padding: 14px 28px 22px;
+  border-top: 1px solid #0b1c2a12;
+}
+
+.prompt-drawer[role="dialog"] > div:last-child button {
+  height: 32px;
+  padding: 0 16px;
+  border-radius: 9px;
+  font-size: 11px;
+  gap: 6px;
+}
+
+/* 设计预览：写操作禁用，但不把整页刷成灰（真机不受影响） */
+.chimera-shell .prompts-page.is-design-preview .prompts-actions button:disabled,
+.chimera-shell
+  .prompts-page.is-design-preview
+  .prompt-card-actions
+  button:disabled,
+.chimera-shell
+  .prompts-page.is-design-preview
+  .prompt-card-heading
+  button[role="switch"]:disabled,
+.chimera-shell
+  .prompts-page.is-design-preview
+  .prompts-category-bar
+  > button:disabled {
+  opacity: 1;
+  cursor: not-allowed;
+}

@@ -20,10 +20,10 @@ import {
   type CodexRoutingReason,
 } from "@/utils/codexRouting";
 import { isOfficialLine } from "@/utils/lineBadge";
-import { DisabledReason, HelpTip } from "@/components/ui/help-tip";
-import { LineBadge, lineIdentityColor } from "@/components/LineBadge";
-import { routingExplanation } from "@/components/ProviderLineTable";
+import { DisabledReason } from "@/components/ui/help-tip";
+import { lineIdentityColor } from "@/components/LineBadge";
 import "./StationSignboard.css";
+import "@/theme/v3/lines.css";
 
 interface StationSignboardProps {
   currentProvider: Provider | null;
@@ -47,13 +47,23 @@ interface StationSignboardProps {
     toName: string;
     backupId: string;
     timestamp: string;
+    /** Epoch ms of the switch; drives the "x 分钟前" label. */
+    switchedAt?: number;
     onUndo: () => void;
   } | null;
+  /** Shown on the undo bar when Codex must restart for the switch to apply. */
+  onRestartCodex?: () => void;
   runtimeLabel?: string;
   runtimeHint?: string;
   onOpenCodex?: () => void;
   openCodexLabel?: string;
   openCodexDisabled?: boolean;
+}
+
+function receiptTime(receipt: { timestamp: string; switchedAt?: number }) {
+  if (!receipt.switchedAt) return receipt.timestamp;
+  const minutes = Math.floor((Date.now() - receipt.switchedAt) / 60_000);
+  return minutes < 1 ? "刚刚" : `${minutes} 分钟前`;
 }
 
 // The main reason in a few words; the help card lists all of them.
@@ -131,21 +141,16 @@ export const StationSignboard: React.FC<StationSignboardProps> = ({
   onOpenCodex,
   openCodexLabel,
   openCodexDisabled,
+  onRestartCodex,
 }) => {
-  const [undoCountdown, setUndoCountdown] = useState(8);
   const [undoing, setUndoing] = useState(false);
+  // Re-render every 30 s so "x 分钟前" stays true during the 10-minute window.
+  const [, setTick] = useState(0);
 
   useEffect(() => {
-    if (!undoReceipt) {
-      setUndoCountdown(8);
-      setUndoing(false);
-      return;
-    }
-    setUndoCountdown(8);
     setUndoing(false);
-    const interval = setInterval(() => {
-      setUndoCountdown((c) => (c > 1 ? c - 1 : 1));
-    }, 1000);
+    if (!undoReceipt) return;
+    const interval = setInterval(() => setTick((t) => t + 1), 30_000);
     return () => clearInterval(interval);
   }, [undoReceipt?.backupId]);
 
@@ -253,59 +258,6 @@ export const StationSignboard: React.FC<StationSignboardProps> = ({
       : measured
         ? "地址可达"
         : "未测速";
-
-  const stops: Stop[] = [
-    {
-      key: "codex",
-      name: "Codex",
-      note: (
-        <>
-          {sample?.runtimeLabel ?? runtimeLabel}
-          {runtimeHint && !sample && (
-            <span className="sr-only">{runtimeHint}</span>
-          )}
-        </>
-      ),
-      noteTitle: sample ? undefined : runtimeHint,
-    },
-  ];
-  if (sample || routing.routed) {
-    const main = routing.reasons[0];
-    stops.push({
-      key: "route",
-      name: sample ? (
-        sample.hopName
-      ) : (
-        <>
-          本地路由
-          <HelpTip title="本地路由">{routingExplanation(routing)}</HelpTip>
-        </>
-      ),
-      note: sample?.hopHint ?? (main ? ROUTE_NOTES[main] : ""),
-    });
-  }
-  stops.push({
-    key: "address",
-    name: official ? "ChatGPT 官方" : (host ?? "未设置请求地址"),
-    mono: !official && Boolean(host),
-    note:
-      sample?.endpointHint ??
-      (official
-        ? "直连 · 官方登录"
-        : routing.routed
-          ? addressState
-          : `直连 · ${addressState}`),
-    noteTitle: failed ? (connectionError ?? undefined) : undefined,
-    tone: failed ? "error" : undefined,
-    broken: failed,
-  });
-  stops.push({
-    key: "model",
-    name: model || (official ? "Codex 默认模型" : "未设置模型"),
-    mono: Boolean(model),
-    note: sample?.modelHint ?? "默认模型",
-  });
-
   const handleUndoClick = () => {
     if (sample || undoing) return;
     if (undoReceipt) {
@@ -345,11 +297,23 @@ export const StationSignboard: React.FC<StationSignboardProps> = ({
         <span className="station-band" aria-hidden="true" />
         <div className="station-body">
           <div className="station-top">
-            <LineBadge line={currentProvider} size="lg" onPlate />
+            {/* v3（L01）：墨色方块 + 线路名首字，不再用彩色双字母徽标。 */}
+            <span className="station-mark" aria-hidden="true">
+              {Array.from(lineName ?? currentProvider.name)[0]?.toUpperCase()}
+            </span>
             <div className="station-title">
               <span className="station-eyebrow">当前线路</span>
               <div className="station-name-row">
-                <p className="station-name" title={lineName}>
+                <p
+                  className="station-name"
+                  title={
+                    model
+                      ? `${lineName} · ${model}`
+                      : host
+                        ? `${lineName} · ${host}`
+                        : lineName
+                  }
+                >
                   {lineName}
                 </p>
                 <span className="station-kind">
@@ -359,11 +323,21 @@ export const StationSignboard: React.FC<StationSignboardProps> = ({
             </div>
             <div className="station-reading">
               <span className="station-latency">
-                {isTesting
-                  ? "测速中…"
-                  : measured
-                    ? `${displayLatency} ms`
-                    : "— ms"}
+                {isTesting ? (
+                  "测速中…"
+                ) : measured ? (
+                  <>
+                    <span className="station-latency-value">
+                      {displayLatency}
+                    </span>
+                    <span className="station-latency-unit"> ms</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="station-latency-value">—</span>
+                    <span className="station-latency-unit"> ms</span>
+                  </>
+                )}
               </span>
               <span
                 className="station-state"
@@ -378,23 +352,6 @@ export const StationSignboard: React.FC<StationSignboardProps> = ({
               </span>
             </div>
             <div className="station-actions">
-              {onOpenCodex && !sample && (
-                <button
-                  type="button"
-                  className="station-action"
-                  onClick={onOpenCodex}
-                  disabled={openCodexDisabled}
-                >
-                  {openCodexLabel}
-                </button>
-              )}
-              {!sample && !onTestSpeed && testSpeedUnavailable ? (
-                <DisabledReason reason={testSpeedUnavailable} align="end">
-                  {testButton}
-                </DisabledReason>
-              ) : (
-                testButton
-              )}
               {official && onManageAccount && !sample ? (
                 <button
                   type="button"
@@ -415,16 +372,68 @@ export const StationSignboard: React.FC<StationSignboardProps> = ({
                   <span>编辑</span>
                 </button>
               )}
+              {!sample && !onTestSpeed && testSpeedUnavailable ? (
+                <DisabledReason reason={testSpeedUnavailable} align="end">
+                  {testButton}
+                </DisabledReason>
+              ) : (
+                testButton
+              )}
+              {/* While the undo bar offers 重启 Codex, it owns that action. */}
+              {onOpenCodex && !(undoReceipt && onRestartCodex) && (
+                <button
+                  type="button"
+                  className="station-action station-action-primary"
+                  onClick={sample ? undefined : onOpenCodex}
+                  disabled={Boolean(sample) || openCodexDisabled}
+                >
+                  <span>{openCodexLabel}</span>
+                </button>
+              )}
             </div>
           </div>
-          <RouteBar
-            stops={stops}
-            label={
+          <div
+            className="station-foot"
+            role="list"
+            aria-label={
               routing.routed
                 ? "请求路径：经 Chimera++ 本地路由"
                 : "请求路径：直连"
             }
-          />
+          >
+            <span role="listitem" className="station-foot-item">
+              <span className="station-foot-address">
+                {official ? "ChatGPT 官方" : (host ?? "未设置请求地址")}
+              </span>
+              <span className="station-foot-state">
+                {official
+                  ? "直连 · 官方登录"
+                  : routing.routed
+                    ? addressState
+                    : `直连 · ${addressState}`}
+              </span>
+            </span>
+            <span role="listitem" className="station-foot-item">
+              <code className="station-foot-model">
+                {model || (official ? "Codex 默认模型" : "未设置模型")}
+              </code>
+            </span>
+            <span
+              role="listitem"
+              className="station-foot-item station-foot-runtime"
+              title={runtimeHint}
+            >
+              {sample?.runtimeLabel ?? runtimeLabel}
+              {runtimeHint && !sample && (
+                <span className="sr-only">{runtimeHint}</span>
+              )}
+            </span>
+            {!official && routing.routed && routing.reasons[0] && (
+              <span role="listitem" className="station-foot-note">
+                {ROUTE_NOTES[routing.reasons[0]]}
+              </span>
+            )}
+          </div>
         </div>
       </div>
 
@@ -434,7 +443,7 @@ export const StationSignboard: React.FC<StationSignboardProps> = ({
           <span className="station-receipt-text">
             {sample?.receipt ??
               (undoReceipt
-                ? `${undoReceipt.timestamp} 从 ${undoReceipt.fromName} 切换到 ${undoReceipt.toName}`
+                ? `${receiptTime(undoReceipt)} 从 ${undoReceipt.fromName} 切换到 ${undoReceipt.toName}${onRestartCodex ? " · 需重启 Codex 才生效" : ""}`
                 : "")}
           </span>
           <button
@@ -445,14 +454,18 @@ export const StationSignboard: React.FC<StationSignboardProps> = ({
             }
             onClick={handleUndoClick}
           >
-            {sample
-              ? "撤销"
-              : undoing
-                ? "切回中…"
-                : undoReceipt
-                  ? `切回 (${undoCountdown}s)`
-                  : "切回"}
+            {undoing ? "切回中…" : "撤销"}
           </button>
+          {(sample || onRestartCodex) && (
+            <button
+              type="button"
+              className="station-receipt-primary"
+              disabled={Boolean(sample)}
+              onClick={sample ? undefined : onRestartCodex}
+            >
+              重启 Codex
+            </button>
+          )}
         </div>
       )}
     </section>

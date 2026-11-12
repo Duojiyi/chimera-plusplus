@@ -202,5 +202,5 @@ export const CANONICAL_STATION = {
   endpointHint: "HTTP 200 · 已连通",
   modelHint: "默认模型 · 128K 上下文",
   receipt:
-    "2 分钟前 从 OpenAI 官方 · 主力 切换到 DeepSeek，已写入 config.toml，备份 #0412",
+    "2 分钟前 从 OpenAI 官方 · 主力 切换到 DeepSeek · 需重启 Codex 才生效",
 } as const;

@@ -36,35 +36,6 @@
   --glass-switch-off-thumb: #6c8194;
 }
 
-.dark,
-[data-theme="dark"] {
-  --glass-surface: rgb(34 45 57 / 88%);
-  --glass-surface-strong: rgb(31 42 54 / 98%);
-  --glass-border: rgb(162 196 226 / 24%);
-  --glass-control-border: #819bb1;
-  --glass-highlight: rgb(219 239 255 / 19%);
-  --glass-shadow:
-    0 10px 28px -14px rgb(0 7 16 / 65%), inset 0 1px 0 var(--glass-highlight);
-  --glass-control-bg: rgb(54 72 89 / 78%);
-  --glass-control-hover: rgb(66 91 114 / 92%);
-  --glass-accent: #86ccfc;
-  --glass-accent-strong: #b9e3ff;
-  --glass-accent-soft: rgb(98 183 244 / 16%);
-  --glass-focus: #94d6ff;
-  --glass-ink: #edf5fc;
-  --glass-muted: #b0c3d4;
-  --glass-canvas: #151e28;
-  --glass-canvas-glow: rgb(66 117 160 / 15%);
-  --glass-sheen: rgb(216 239 255 / 7%);
-  --glass-primary-top: #167caf;
-  --glass-primary-bottom: #096393;
-  --glass-primary-edge: rgb(132 207 255 / 56%);
-  --glass-selection: #203e57;
-  --glass-selection-ink: #daefff;
-  --glass-switch-off-track: #2a3846;
-  --glass-switch-off-thumb: #9fb4c7;
-}
-
 .chimera-shell.chimera-shell {
   background: var(--glass-canvas);
 }
@@ -87,69 +58,10 @@
     linear-gradient(160deg, #1c2a37, #131c25 65%, #172632);
   box-shadow: inset -1px 0 0 rgb(192 224 248 / 15%);
 }
-.chimera-shell .chimera-topbar {
-  background: var(--glass-surface);
-  border-bottom-color: var(--glass-border);
-  box-shadow: inset 0 1px 0 var(--glass-highlight);
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(125%);
-  backdrop-filter: blur(var(--glass-blur)) saturate(125%);
-}
-.chimera-shell .chimera-global-search {
-  border-radius: var(--radius-control);
-  background:
-    linear-gradient(175deg, var(--glass-sheen), transparent 75%),
-    var(--glass-control-bg);
-  box-shadow:
-    inset 0 0 0 1px var(--glass-border),
-    inset 0 1px 0 var(--glass-highlight),
-    0 2px 5px rgb(10 55 90 / 4%);
-}
-.chimera-shell .chimera-global-search:hover:not(:disabled) {
-  background: var(--glass-control-hover);
-}
 
 /* Inset rings do not change the size of these 32/36px navigation targets.
    Capability surfaces stay on the existing inset pseudo-element, beside the
    continuous tree rail. Other navigation rows use their own background. */
-.chimera-shell .chimera-nav-item {
-  border-radius: var(--radius-control);
-  background: transparent;
-  box-shadow: none;
-  transition:
-    background-color 150ms ease,
-    box-shadow 150ms ease;
-}
-.chimera-shell
-  .chimera-nav-item:not([data-pencil-name^="能力 · "]):hover:not(:disabled):not(
-    [aria-current="page"]
-  ),
-.chimera-shell
-  .chimera-sidebar
-  .chimera-nav-item[data-pencil-name^="能力 · "]:hover:not(:disabled):not(
-    [aria-current="page"]
-  )::before {
-  background: rgb(153 204 241 / 10%);
-  box-shadow: inset 0 0 0 1px rgb(193 225 250 / 13%);
-}
-.chimera-shell
-  .chimera-nav-item[aria-current="page"]:not([data-pencil-name^="能力 · "]),
-.chimera-shell
-  .chimera-sidebar
-  .chimera-navigation
-  .chimera-nav-item[data-pencil-name^="能力 · "][aria-current="page"]::before {
-  background:
-    radial-gradient(ellipse at 80% 0%, rgb(177 225 255 / 20%), transparent 70%),
-    linear-gradient(180deg, rgb(111 163 201 / 34%), rgb(61 103 139 / 36%));
-  box-shadow:
-    inset 0 0 0 1px rgb(184 223 252 / 38%),
-    inset 0 1px 1px rgb(224 245 255 / 39%),
-    inset 0 -1px 1px rgb(121 184 226 / 22%),
-    0 3px 9px rgb(0 9 19 / 20%);
-}
-.chimera-shell .chimera-nav-item:focus-visible {
-  outline: 2px solid var(--glass-focus);
-  outline-offset: -2px;
-}
 
 /* Custom controls share the same material as the Radix primitives. No
    generic button rule: destructive actions and native window controls stay
@@ -305,8 +217,6 @@
   -webkit-backdrop-filter: blur(5px);
   backdrop-filter: blur(5px);
 }
-.modal-backdrop
-  :is(.confirm-dialog, .model-picker, .diagnostics-dialog, .history-dialog),
 .command-palette-backdrop .command-palette,
 .route-line-manager-backdrop .route-line-manager,
 .chimera-shell .onboarding-card {
@@ -356,12 +266,6 @@
     --glass-surface-strong: #fcfeff;
     --glass-control-bg: #fff;
   }
-  .dark,
-  [data-theme="dark"] {
-    --glass-surface: #222d39;
-    --glass-surface-strong: #1f2a36;
-    --glass-control-bg: #364859;
-  }
 }
 @media (prefers-reduced-transparency: reduce) {
   :root {
@@ -369,13 +273,6 @@
     --glass-surface-strong: #fcfeff;
     --glass-control-bg: #fff;
   }
-  .dark,
-  [data-theme="dark"] {
-    --glass-surface: #222d39;
-    --glass-surface-strong: #1f2a36;
-    --glass-control-bg: #364859;
-  }
-  .chimera-shell .chimera-topbar,
   .modal-backdrop.modal-backdrop,
   .command-palette-backdrop.command-palette-backdrop {
     -webkit-backdrop-filter: none;
@@ -383,9 +280,6 @@
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .chimera-shell .chimera-nav-item {
-    transition: none;
-  }
   .chimera-shell button.primary:active:not(:disabled) {
     transform: none;
   }
@@ -394,15 +288,9 @@
   :root {
     --glass-border: #768a9b;
   }
-  .dark,
-  [data-theme="dark"] {
-    --glass-border: #839aad;
-  }
 }
 @media (forced-colors: active) {
-  :root,
-  .dark,
-  [data-theme="dark"] {
+  :root {
     --glass-surface: Canvas;
     --glass-surface-strong: Canvas;
     --glass-control-bg: ButtonFace;
@@ -418,13 +306,6 @@
     --glass-sheen: transparent;
     --glass-canvas: Canvas;
   }
-  .chimera-shell
-    :is(
-      .chimera-sidebar,
-      .chimera-topbar,
-      .chimera-global-search,
-      .station-plate
-    ),
   .modal-backdrop.modal-backdrop,
   .command-palette-backdrop.command-palette-backdrop {
     background: Canvas;
@@ -433,12 +314,6 @@
     backdrop-filter: none;
     box-shadow: none;
   }
-  .chimera-shell
-    .chimera-nav-item[aria-current="page"]:not([data-pencil-name^="能力 · "]),
-  .chimera-shell
-    .chimera-sidebar
-    .chimera-navigation
-    .chimera-nav-item[data-pencil-name^="能力 · "][aria-current="page"]::before,
   .chimera-shell .provider-table-row.is-current,
   .chimera-shell button.primary,
   .chimera-shell .provider-page-heading button.provider-add {
@@ -449,29 +324,16 @@
     box-shadow: none;
   }
   /* Preserve explicit system selection colours without browser text backplates. */
-  .chimera-shell .chimera-nav-item[aria-current="page"],
   .chimera-shell .provider-table-row.is-current,
   .chimera-shell button.primary,
   .chimera-shell .provider-page-heading button.provider-add {
     forced-color-adjust: none;
     color: HighlightText;
   }
-  .chimera-shell .chimera-nav-item[aria-current="page"] *,
   .chimera-shell .provider-table-row.is-current *,
   .chimera-shell button.primary *,
   .chimera-shell .provider-page-heading button.provider-add * {
     color: inherit;
-  }
-  .chimera-shell
-    .chimera-nav-item[aria-current="page"]:not(
-      [data-pencil-name^="能力 · "]
-    ):focus-visible,
-  .chimera-shell
-    .chimera-sidebar
-    .chimera-navigation
-    .chimera-nav-item[data-pencil-name^="能力 · "][aria-current="page"]:focus-visible::before {
-    outline: 2px solid HighlightText;
-    outline-offset: -2px;
   }
   .chimera-shell .station-plate {
     --plate-bg: Canvas;

@@ -9,6 +9,9 @@ const limits = {
   entryBytes: 720 * 1024,
   startupBytes: 1500 * 1024,
   chunkBytes: 850 * 1024,
+  // 2026-11-11: back to 200 KiB after the v2.8 layer cleanup (unreferenced
+  // selectors and dark-theme rules removed, page rules moved into the lazily
+  // loaded per-page stylesheets under src/theme/v3/).
   cssBytes: 200 * 1024,
   fontBytes: 12 * 1024 * 1024,
 };

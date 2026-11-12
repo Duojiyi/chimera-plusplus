@@ -448,6 +448,84 @@ impl tokio::io::AsyncWrite for ProxyStream {
     }
 }
 
+/// Deadline for a single TCP connect attempt.
+///
+/// `TcpStream::connect` carries no connect-level deadline of its own; the only
+/// bound used to be the whole-call timeout in `send_request` (600 s for a
+/// non-streaming request). On Windows, a host whose IPv6 route is half-broken
+/// swallows the SYN for ~21 s before the OS falls back to IPv4, so relying on
+/// the outer timeout means tens of seconds of added time-to-first-byte.
+const CONNECT_ATTEMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Stagger between consecutive address attempts in a race.
+///
+/// The Nth candidate waits `N * ADDRESS_RACE_STAGGER` before dialing: enough to
+/// let the OS-preferred address family go first, small enough that a healthy
+/// second candidate never has to wait for the first one to fail outright.
+const ADDRESS_RACE_STAGGER: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Connect to `host:port`, racing all resolved addresses instead of walking the
+/// address families one after another.
+///
+/// A single-address result degenerates to one bounded attempt, so the plain and
+/// the multi-address cases share one code path.
+async fn connect_with_race(host: &str, port: u16) -> Result<tokio::net::TcpStream, ProxyError> {
+    // An IP literal needs no DNS round-trip.
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return race_addresses(vec![std::net::SocketAddr::new(ip, port)]).await;
+    }
+
+    let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|e| ProxyError::ForwardFailed(format!("DNS resolve failed for {host}: {e}")))?
+        .collect();
+    if addrs.is_empty() {
+        return Err(ProxyError::ForwardFailed(format!(
+            "DNS returned no address for {host}:{port}"
+        )));
+    }
+
+    race_addresses(addrs).await
+}
+
+/// Dial every candidate with a staggered start; the first success wins.
+///
+/// Losing attempts are dropped (their sockets get closed). Only when every
+/// candidate has failed do we return an aggregated error listing each one, so a
+/// failure still names every address that was tried.
+async fn race_addresses(
+    addrs: Vec<std::net::SocketAddr>,
+) -> Result<tokio::net::TcpStream, ProxyError> {
+    let mut pending = futures::stream::FuturesUnordered::new();
+    for (index, addr) in addrs.into_iter().enumerate() {
+        pending.push(async move {
+            if index > 0 {
+                tokio::time::sleep(ADDRESS_RACE_STAGGER * index as u32).await;
+            }
+            tokio::time::timeout(
+                CONNECT_ATTEMPT_TIMEOUT,
+                tokio::net::TcpStream::connect(addr),
+            )
+            .await
+            .map_err(|_| format!("{addr}: timed out"))
+            .and_then(|result| result.map_err(|e| format!("{addr}: {e}")))
+        });
+    }
+
+    let mut failures: Vec<String> = Vec::new();
+    while let Some(result) = pending.next().await {
+        match result {
+            Ok(stream) => return Ok(stream),
+            Err(message) => failures.push(message),
+        }
+    }
+
+    Err(ProxyError::ForwardFailed(format!(
+        "TCP connect failed: {}",
+        failures.join("; ")
+    )))
+}
+
 /// Send request via raw TCP/TLS with exact original header casing.
 ///
 /// When `proxy_url` is provided, establishes an HTTP CONNECT tunnel through
@@ -479,11 +557,7 @@ async fn send_raw_request(
     let stream = if let Some(proxy) = proxy_url {
         connect_via_proxy(proxy, host, port).await?
     } else {
-        ProxyStream::Tcp(
-            tokio::net::TcpStream::connect((host, port))
-                .await
-                .map_err(|e| ProxyError::ForwardFailed(format!("TCP connect failed: {e}")))?,
-        )
+        ProxyStream::Tcp(connect_with_race(host, port).await?)
     };
 
     if scheme == "https" {
@@ -556,10 +630,17 @@ async fn connect_via_proxy(
         None
     };
 
-    // Connect to the proxy
-    let tcp = tokio::net::TcpStream::connect((proxy_host, proxy_port))
+    // Connect to the proxy — same address race and connect deadline as a direct hop
+    let tcp = connect_with_race(proxy_host, proxy_port)
         .await
-        .map_err(|e| ProxyError::ForwardFailed(format!("Proxy TCP connect failed: {e}")))?;
+        .map_err(|e| match e {
+            // Keep the "Proxy ..." prefix operators grep for; the inner detail
+            // already reads "TCP connect failed: <addr>: <reason>".
+            ProxyError::ForwardFailed(detail) => {
+                ProxyError::ForwardFailed(format!("Proxy {detail}"))
+            }
+            other => other,
+        })?;
 
     // Wrap with TLS if the proxy URL uses https://
     let mut stream: ProxyStream = if parsed.scheme() == "https" {
@@ -839,6 +920,25 @@ mod tests {
             );
         }
         ProxyResponse::buffered(http::StatusCode::OK, headers, Bytes::new())
+    }
+
+    #[tokio::test]
+    async fn connect_with_race_connects_to_a_reachable_address() {
+        // Deterministic half of the race: the IP-literal fast path must dial the
+        // address directly and return the stream before the connect deadline.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind local listener");
+        let addr = listener.local_addr().expect("listener addr");
+
+        let stream = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            connect_with_race("127.0.0.1", addr.port()),
+        )
+        .await
+        .expect("connect must not hit the attempt timeout")
+        .expect("local listener must accept");
+        assert_eq!(stream.peer_addr().expect("peer addr"), addr);
     }
 
     #[test]

@@ -1,3 +1,7 @@
+import {
+  OMP_SAMPLE_DOCUMENT,
+  isToolDesignPreview,
+} from "./ToolView.designSamples";
 import { createPortal } from "react-dom";
 import {
   ChevronLeft,
@@ -104,7 +108,11 @@ export function OmpProviders({
   actionsHost?: HTMLDivElement | null;
 }) {
   const pageActive = useContext(ToolPageActiveContext);
-  const [document, setDocument] = useState<PiDocument | null>(null);
+  // Browser design preview (L24): the sample file, read-only.
+  const [designPreview] = useState(() => !native && isToolDesignPreview());
+  const [document, setDocument] = useState<PiDocument | null>(() =>
+    designPreview ? OMP_SAMPLE_DOCUMENT : null,
+  );
   const [draft, setDraft] = useState<Draft | null>(null);
   const [dirty, setDirty] = useState(false);
   const [showKey, setShowKey] = useState(false);
@@ -351,7 +359,7 @@ export function OmpProviders({
       ) : (
         <div className="tool-actions">{actions}</div>
       )}
-      {!native && (
+      {!native && !designPreview && (
         <p className="tool-install-note">请在桌面应用中管理本地线路。</p>
       )}
       {/* The first read fills the page; later operations keep the list in

@@ -1,0 +1,1383 @@
+/* —— 以下规则自 liquid-glass-v3.css 迁入：只在本页加载，不进首屏样式 —— */
+/* ===== 13. 设置页（L13） ===== */
+.chimera-shell .new-settings-view {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.chimera-shell .settings-page-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 44px;
+}
+
+.chimera-shell .settings-page-header h1 {
+  font-size: 24px;
+  line-height: 30px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text-1);
+}
+
+.chimera-shell .settings-page-header p {
+  margin: 2px 0 0;
+  font-size: 11.5px;
+  line-height: 16px;
+  color: var(--text-2);
+}
+
+.chimera-shell .settings-page-layout {
+  display: grid;
+  grid-template-columns: 196px minmax(0, 1fr);
+  gap: 22px;
+  align-items: start;
+  min-height: 0;
+}
+
+/* 分类栏：无玻璃底，只有一条竖向导轨 */
+.chimera-shell .settings-page-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 2px 0;
+  background: transparent;
+  border: 0;
+  border-right: 1px solid var(--v3-hairline);
+  box-shadow: none;
+  border-radius: 0;
+}
+
+.chimera-shell .settings-page-nav button,
+.chimera-shell .settings-page-nav [role="tab"] {
+  height: 28px;
+  justify-content: flex-start;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-2);
+  text-align: left;
+}
+
+.chimera-shell .settings-page-nav button:hover {
+  background: #0b1c2a0a;
+  color: var(--text-1);
+}
+
+.chimera-shell .settings-page-nav button[aria-current="page"],
+.chimera-shell .settings-page-nav button[aria-selected="true"],
+.chimera-shell .settings-page-nav button[data-active="true"] {
+  background: #ffffffb0;
+  color: var(--text-1);
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px #ffffffe6;
+}
+
+.chimera-shell .settings-page-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.chimera-shell .settings-standard-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* 设置分组：玻璃卡 + 卡头 40 + 行 36 */
+.chimera-shell .settings-page-content section,
+.chimera-shell .settings-app-update,
+.chimera-shell .settings-licenses {
+  border: 1px solid var(--v3-hairline);
+  border-radius: 14px;
+  background: var(--v3-glass-fill);
+  box-shadow: 0 1px 2px #1236680d;
+  overflow: hidden;
+}
+
+/* 卡片化后补内边距（设计稿 L13：卡内 18/20）。 */
+.chimera-shell .settings-standard-sections > section {
+  padding: 18px 20px;
+}
+
+.chimera-shell .settings-page-content h2,
+.chimera-shell .settings-page-content h3 {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.chimera-shell .settings-tools-description {
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--text-2);
+}
+
+.chimera-shell .settings-reference-row,
+.chimera-shell .settings-disclosure-row,
+.chimera-shell .settings-app-update-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 36px;
+  padding: 6px 14px;
+  border-top: 1px solid var(--v3-hairline);
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+
+.chimera-shell .settings-reference-row:first-child,
+.chimera-shell .settings-disclosure-row:first-child {
+  border-top: 0;
+}
+
+.chimera-shell .settings-reference-row > :first-child,
+.chimera-shell .settings-disclosure-row > :first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-1);
+}
+
+.chimera-shell .settings-reference-list,
+.chimera-shell .settings-standard-sections > * {
+  min-width: 0;
+}
+
+/* 工具列表 */
+.chimera-shell .settings-tools-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.chimera-shell .settings-tool-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 40px;
+  padding: 6px 14px;
+  border-top: 1px solid var(--v3-hairline);
+}
+
+.chimera-shell .settings-tool-row:first-child {
+  border-top: 0;
+}
+
+.chimera-shell .settings-tool-mark {
+  width: 3px;
+  height: 16px;
+  border-radius: 2px;
+  flex: none;
+}
+
+.chimera-shell .settings-tool-mode {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: #0b1c2a0f;
+  font-size: 9.5px;
+  font-weight: 500;
+  color: var(--text-2);
+}
+
+.chimera-shell .settings-tool-details {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+/* 备份表 */
+.chimera-shell .settings-backup-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11.5px;
+}
+
+.chimera-shell .settings-backup-table th {
+  height: 30px;
+  padding: 0 12px;
+  text-align: left;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--text-3);
+  border-bottom: 1px solid var(--v3-hairline);
+  background: transparent;
+}
+
+.chimera-shell .settings-backup-table td {
+  height: 34px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--v3-hairline);
+  color: var(--text-2);
+}
+
+.chimera-shell .settings-backups-database {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+/* 分段与开关 */
+.chimera-shell .settings-segment,
+.chimera-shell .settings-close-options {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 9px;
+  background: #0b1c2a0a;
+}
+
+.chimera-shell .settings-segment button,
+.chimera-shell .settings-close-options button {
+  height: 24px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-2);
+}
+
+.chimera-shell .settings-segment button[aria-pressed="true"],
+.chimera-shell .settings-segment button[data-active="true"],
+.chimera-shell .settings-close-options button[aria-pressed="true"],
+.chimera-shell .settings-close-options button[data-active="true"] {
+  background: #ffffffdd;
+  color: var(--text-1);
+  font-weight: 600;
+}
+
+.chimera-shell .settings-switch {
+  width: 30px;
+  height: 17px;
+  border-radius: 9px;
+  border: 0;
+  flex: none;
+}
+
+.chimera-shell .settings-licenses-link {
+  font-size: 10.5px;
+  color: var(--brand);
+}
+
+/* 工具行的字母徽标：改成 3×16 的中性色条，避免 "Gm"/"Om" 这类自造缩写 */
+.chimera-shell .settings-tool-mark {
+  width: 3px;
+  height: 16px;
+  border-radius: 2px;
+  background: var(--text-3);
+  color: transparent;
+  font-size: 0;
+  line-height: 0;
+  flex: none;
+  overflow: hidden;
+}
+
+.chimera-shell .settings-tool-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 14px;
+}
+
+.chimera-shell .settings-tool-row > summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 28px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 11.5px;
+  color: var(--text-1);
+}
+
+.chimera-shell .settings-tool-row > summary::-webkit-details-marker {
+  display: none;
+}
+
+.chimera-shell .settings-tool-details {
+  font-size: 10px;
+  color: var(--text-3);
+  margin: 2px 0 6px 15px;
+}
+
+/* 折叠说明行：纯文字行，不要胶囊底 */
+.chimera-shell .settings-page-content details > summary {
+  list-style: none;
+}
+
+.chimera-shell .settings-page-content details[open] > summary {
+  color: var(--text-1);
+}
+
+/* 预览提示行：去掉旧的左侧竖条 */
+.chimera-shell .settings-tools-preview-note {
+  border-left: 0;
+  padding: 6px 14px;
+  font-size: 10.5px;
+  line-height: 15px;
+  color: var(--text-3);
+  background: transparent;
+}
+
+/* 备份与恢复的说明行 */
+
+.chimera-shell .settings-app-update-icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 14px;
+  background: var(--v3-glass-fill-soft);
+  color: var(--text-2);
+  flex: none;
+}
+
+.chimera-shell .settings-app-update-copy {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.chimera-shell .settings-app-update-copy > :first-child {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.chimera-shell .settings-app-update-copy > p {
+  margin: 1px 0 0;
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+/* ============================================================
+   v3.0 · 设置（L13；分区参考 L28 / L41 / L45 / L27）
+   未分层：压过 @layer legacy 的 NewSettingsView.css / LiveBackupsPanel.css。
+   结构：页头 44 → 左 196 分区导航（图标 + 文字，底部版本与检查更新）
+         → 右侧按分区排列的玻璃卡；卡内统一「标题 + 说明 | 控件」行。
+   ============================================================ */
+
+/* ---------- 页面骨架 ---------- */
+.chimera-shell .v3-settings-page {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  padding: 18px 26px 0;
+  background: transparent;
+  color: #0c1a24;
+}
+
+.chimera-shell .v3-settings-page .settings-page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 44px;
+  margin: 0;
+  flex: none;
+}
+.chimera-shell .v3-settings-page .settings-page-titles {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.chimera-shell .v3-settings-page .settings-page-header h1 {
+  margin: 0;
+  font-size: 24px;
+  line-height: 30px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+  color: #0c1a24;
+}
+.chimera-shell .v3-settings-page .settings-page-header p {
+  margin: 0;
+  font-size: 11px;
+  line-height: 15px;
+  color: #454e58;
+}
+
+.chimera-shell .v3-settings-page .settings-page-layout {
+  display: grid;
+  grid-template-columns: 196px minmax(0, 1fr);
+  gap: 16px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  align-items: stretch;
+}
+
+/* ---------- 分区导航（无玻璃底；选中项白玻璃 + 左缘墨条） ---------- */
+.chimera-shell .v3-settings-page .settings-page-aside {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 0;
+  padding-bottom: 18px;
+}
+.chimera-shell .v3-settings-page .settings-page-nav {
+  display: flex;
+  flex-direction: column;
+  align-self: stretch;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.chimera-shell .v3-settings-page .settings-page-nav a {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: #33454f;
+  font-size: 11px;
+  font-weight: 400;
+  text-decoration: none;
+  transition: background-color 120ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.chimera-shell .v3-settings-page .settings-page-nav a::before {
+  content: none;
+}
+.chimera-shell .v3-settings-page .settings-page-nav a svg {
+  flex: none;
+  color: #454e58;
+}
+.chimera-shell .v3-settings-page .settings-page-nav a:hover {
+  background: #0b1c2a0a;
+  color: #0c1a24;
+}
+.chimera-shell .v3-settings-page .settings-page-nav a[aria-current="location"] {
+  background: #ffffffa6;
+  border-color: #ffffffd9;
+  color: #0c1a24;
+  font-weight: 600;
+}
+.chimera-shell
+  .v3-settings-page
+  .settings-page-nav
+  a[aria-current="location"]::after {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: 1px;
+  background: #0c1a24;
+}
+.chimera-shell
+  .v3-settings-page
+  .settings-page-nav
+  a[aria-current="location"]
+  svg {
+  color: #1f4d3a;
+}
+.chimera-shell .v3-settings-page .settings-page-nav a:focus-visible {
+  outline: 2px solid #1f4d3a;
+  outline-offset: 2px;
+}
+
+.chimera-shell .v3-settings-page .settings-page-version {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 0 20px;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 10px;
+  line-height: 16px;
+  color: #454e58;
+}
+.chimera-shell .v3-settings-page .settings-text-button {
+  height: auto;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+  color: #1f4d3a;
+  font-family: var(--font-cjk), system-ui, sans-serif;
+  font-size: 10.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.chimera-shell .v3-settings-page .settings-text-button:hover:not(:disabled) {
+  text-decoration: underline;
+}
+.chimera-shell .v3-settings-page .settings-text-button:disabled {
+  color: #454e58;
+  cursor: default;
+}
+
+/* ---------- 内容滚动区 ---------- */
+.chimera-shell .v3-settings-page .settings-page-content {
+  display: block;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 4px 24px 0;
+  scrollbar-gutter: stable;
+}
+.chimera-shell .v3-settings-page .settings-page-content:focus-visible {
+  outline: none;
+}
+.chimera-shell .v3-settings-page .settings-standard-sections:not([hidden]),
+.chimera-shell .v3-settings-page .settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.chimera-shell .v3-settings-page .settings-group:focus,
+.chimera-shell .v3-settings-page .settings-card:focus {
+  outline: none;
+}
+
+/* ---------- 玻璃卡（§3.1）：卡头 44 + 发丝线，卡体行 ---------- */
+.chimera-shell .v3-settings-page .settings-card,
+.chimera-shell
+  .v3-settings-page
+  .settings-standard-sections
+  > section.settings-card {
+  position: relative;
+  padding: 0;
+  border: 1px solid #ffffff;
+  border-radius: 14px;
+  background: #ffffffd0;
+  box-shadow:
+    var(--v3-shadow-inner-top), var(--v3-shadow-inner-bottom),
+    var(--v3-shadow-outer);
+  -webkit-backdrop-filter: blur(30px) saturate(150%);
+  backdrop-filter: blur(30px) saturate(150%);
+  overflow: hidden;
+  scroll-margin-top: 0;
+}
+.chimera-shell .v3-settings-page .settings-card > h2 {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  margin: 0;
+  padding: 0 19px;
+  border-bottom: 1px solid #0b1c2a12;
+  font-size: 12.5px;
+  line-height: 18px;
+  font-weight: 600;
+  color: #0c1a24;
+}
+/* 卡头带副标时：标题与副标共用 44+ 的卡头，发丝线落在副标下面。 */
+.chimera-shell
+  .v3-settings-page
+  .settings-card
+  > h2:has(+ .settings-card-lead) {
+  min-height: 0;
+  padding-top: 16px;
+  border-bottom: 0;
+}
+.chimera-shell .v3-settings-page .settings-card-lead {
+  margin: 0;
+  padding: 2px 19px 12px;
+  border-bottom: 1px solid #0b1c2a12;
+  font-size: 10.5px;
+  line-height: 15px;
+  color: #454e58;
+}
+
+/* ---------- 统一行：标题 + 说明 | 控件 ---------- */
+.chimera-shell .v3-settings-page .settings-reference-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0 19px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.chimera-shell .v3-settings-page .settings-reference-row {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  min-height: 50px;
+  margin: 0;
+  padding: 8px 0;
+  border: 0;
+  border-top: 1px solid #0b1c2a12;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: #0c1a24;
+  font: inherit;
+  text-align: left;
+}
+.chimera-shell
+  .v3-settings-page
+  .settings-reference-list
+  > .settings-reference-row:first-child {
+  border-top: 0;
+}
+.chimera-shell .v3-settings-page button.settings-reference-row {
+  cursor: pointer;
+}
+.chimera-shell
+  .v3-settings-page
+  button.settings-reference-row:hover:not(:disabled) {
+  background: transparent;
+}
+.chimera-shell
+  .v3-settings-page
+  button.settings-reference-row:hover:not(:disabled)
+  b {
+  color: #1f4d3a;
+}
+.chimera-shell .v3-settings-page .settings-reference-row:disabled {
+  opacity: 1;
+  cursor: not-allowed;
+}
+.chimera-shell
+  .v3-settings-page
+  .settings-reference-row:disabled
+  > span:first-child {
+  opacity: 0.6;
+}
+.chimera-shell .v3-settings-page .settings-reference-row:focus-visible {
+  outline: 2px solid #1f4d3a;
+  outline-offset: -2px;
+  border-radius: 8px;
+}
+.chimera-shell .v3-settings-page .settings-reference-row > span:first-child {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+  color: #0c1a24;
+}
+.chimera-shell .v3-settings-page .settings-reference-row b {
+  font-size: 11.5px;
+  line-height: 16px;
+  font-weight: 500;
+  color: #0c1a24;
+}
+.chimera-shell .v3-settings-page .settings-reference-row small {
+  font-size: 10px;
+  line-height: 14px;
+  color: #454e58;
+  overflow-wrap: anywhere;
+}
+.chimera-shell .v3-settings-page .settings-reference-row small code {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 10px;
+  color: #33454f;
+}
+.chimera-shell .v3-settings-page .settings-row-control {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex: none;
+}
+.chimera-shell .v3-settings-page .settings-reference-row > svg {
+  flex: none;
+  color: #454e58;
+}
+.chimera-shell .v3-settings-page .settings-disclosure-icon {
+  transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* ---------- 次按钮（§3.2）：卡内与页头一致 ---------- */
+.chimera-shell .v3-settings-page button.secondary,
+.chimera-shell .v3-settings-page .settings-row-control > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 30px;
+  min-height: 30px;
+  min-width: 56px;
+  padding: 0 14px;
+  border: 1px solid #ffffffd9;
+  border-radius: 9px;
+  background: #ffffffa8;
+  box-shadow: 0 0 0 1px #0b1c2a0d;
+  color: #33454f;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 120ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.chimera-shell .v3-settings-page button.secondary:hover:not(:disabled),
+.chimera-shell
+  .v3-settings-page
+  .settings-row-control
+  > button:hover:not(:disabled) {
+  background: #ffffff;
+  color: #0c1a24;
+}
+.chimera-shell .v3-settings-page button.secondary:active:not(:disabled) {
+  transform: scale(0.97);
+}
+.chimera-shell .v3-settings-page button.secondary:disabled,
+.chimera-shell .v3-settings-page .settings-row-control > button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.chimera-shell .v3-settings-page button.primary {
+  height: 30px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 9px;
+  background: #1f4d3a;
+  box-shadow: none;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 600;
+}
+.chimera-shell .v3-settings-page button.primary:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+/* ---------- 开关（§3.3：30×17，开 #0d7340，关 #0b1c2a1f，滑块 13） ---------- */
+.chimera-shell .v3-settings-page .settings-switch {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 30px;
+  width: 30px;
+  height: 17px;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 9px;
+  background: #0b1c2a1f;
+  box-shadow: none;
+  filter: none;
+  transition: background-color 120ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.chimera-shell .v3-settings-page .settings-switch > u {
+  display: block;
+  flex: 0 0 13px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 2px #0b1c2a33;
+  transform: translateX(0);
+  transition: transform 120ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.chimera-shell .v3-settings-page .settings-switch.is-on {
+  background: #0d7340;
+  border: 0;
+  box-shadow: none;
+}
+.chimera-shell .v3-settings-page .settings-switch.is-on > u {
+  transform: translateX(13px);
+  background: #ffffff;
+}
+.chimera-shell
+  .v3-settings-page
+  button:hover:not(:disabled)
+  > .settings-switch {
+  border: 0;
+}
+.chimera-shell .v3-settings-page :disabled > .settings-switch {
+  opacity: 0.55;
+  filter: none;
+}
+
+/* ---------- 分段控件（§3.3：容器 #0b1c2a0a r9，选中白底 r7） ---------- */
+.chimera-shell .v3-settings-page .settings-segment {
+  display: inline-flex;
+  flex: none;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 0;
+  border-radius: 9px;
+  background: #0b1c2a0a;
+  white-space: nowrap;
+}
+.chimera-shell .v3-settings-page .settings-segment button,
+.chimera-shell .v3-settings-page .settings-segment label {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+  min-height: 24px;
+  min-width: 64px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  box-shadow: none;
+  color: #33454f;
+  font-size: 10.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 120ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.chimera-shell .v3-settings-page .settings-segment button:hover:not(:disabled),
+.chimera-shell .v3-settings-page .settings-segment label:hover {
+  color: #0c1a24;
+}
+.chimera-shell .v3-settings-page .settings-segment button.is-active,
+.chimera-shell .v3-settings-page .settings-segment label.is-active {
+  background: #ffffff;
+  color: #0c1a24;
+  font-weight: 600;
+  box-shadow: 0 1px 2px #0b1c2a14;
+}
+.chimera-shell .v3-settings-page .settings-segment button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+/* 关闭行为仍是原生单选（键盘与读屏语义不变），只把圆点藏起来画成分段。 */
+.chimera-shell .v3-settings-page .settings-close-options input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.chimera-shell .v3-settings-page .settings-close-options input:disabled {
+  cursor: not-allowed;
+}
+.chimera-shell
+  .v3-settings-page
+  .settings-close-options
+  label:has(input:focus-visible) {
+  outline: 2px solid #1f4d3a;
+  outline-offset: 1px;
+}
+
+/* ---------- 展开面板（旧表单在卡内的统一节奏） ---------- */
+.chimera-shell .v3-settings-page .settings-subpanel {
+  display: grid;
+  gap: 10px;
+  padding: 4px 0 16px;
+  border: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #33454f;
+}
+.chimera-shell .v3-settings-page .settings-subpanel > .settings-reference-list {
+  padding: 0;
+}
+.chimera-shell .v3-settings-page .settings-subpanel h2,
+.chimera-shell .v3-settings-page .settings-subpanel h3 {
+  margin: 0;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #0c1a24;
+}
+.chimera-shell .v3-settings-page .settings-subpanel button:not([class]) {
+  height: 30px;
+  padding: 0 14px;
+  border: 1px solid #ffffffd9;
+  border-radius: 9px;
+  background: #ffffffa8;
+  box-shadow: 0 0 0 1px #0b1c2a0d;
+  color: #33454f;
+  font-size: 11px;
+  font-weight: 500;
+}
+.chimera-shell
+  .v3-settings-page
+  .settings-subpanel
+  :is(input:not([type="checkbox"]):not([type="radio"]), select):not([class]),
+.chimera-shell .v3-settings-page .settings-subpanel .config-dir-input {
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: #0b1c2a08;
+  color: #0c1a24;
+  font-size: 11px;
+}
+.chimera-shell .v3-settings-page .settings-subpanel input:focus-visible,
+.chimera-shell .v3-settings-page .settings-subpanel select:focus-visible {
+  outline: none;
+  border-color: #1f4d3a;
+  box-shadow: 0 0 0 0.5px #1f4d3a;
+}
+.chimera-shell .v3-settings-page .settings-card-foot {
+  margin: 0;
+  padding: 8px 0 0;
+  font-size: 10px;
+  color: #454e58;
+}
+
+/* 关于 → 支持的工具：中性竖条代替双字母徽标，不再画「+」号。 */
+.chimera-shell .v3-settings-page .settings-tool-row {
+  display: block;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-top: 1px solid #0b1c2a12;
+}
+.chimera-shell .v3-settings-page .settings-tool-row > summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+  padding: 0;
+  cursor: pointer;
+  list-style: none;
+  font-size: 11.5px;
+  color: #0c1a24;
+}
+.chimera-shell .v3-settings-page .settings-tool-row > summary::before {
+  content: none;
+}
+.chimera-shell .v3-settings-page .settings-tool-row > summary b {
+  flex: 0 0 132px;
+  font-size: 11.5px;
+  font-weight: 500;
+}
+.chimera-shell .v3-settings-page .settings-tool-mark {
+  width: 3px;
+  height: 16px;
+  border: 0;
+  border-radius: 2px;
+  background: #454e58;
+  color: transparent;
+  font-size: 0;
+}
+.chimera-shell .v3-settings-page .settings-tool-mode {
+  padding: 1px 7px;
+  border: 0;
+  border-radius: 9px;
+  background: #0b1c2a0a;
+  font-size: 10px;
+  color: #33454f;
+}
+.chimera-shell .v3-settings-page .settings-tool-visibility {
+  flex: 1;
+  font-size: 10.5px;
+  color: #454e58;
+}
+.chimera-shell .v3-settings-page .settings-tool-details {
+  margin: 0;
+  padding: 0 0 10px 13px;
+  font-size: 10.5px;
+  color: #454e58;
+}
+.chimera-shell .v3-settings-page .settings-tool-details code {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 10px;
+}
+.chimera-shell .v3-settings-page .settings-tools-preview-note {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: 10.5px;
+  color: #454e58;
+}
+.chimera-shell .v3-settings-page .settings-tools-description {
+  margin: 0;
+  font-size: 10.5px;
+  color: #454e58;
+}
+.chimera-shell .v3-settings-page .settings-tools-panel-title,
+.chimera-shell .v3-settings-page .settings-subpanel #settings-tools-heading {
+  display: none;
+}
+
+/* 许可证链接：文字按钮，行内右对齐 */
+.chimera-shell .v3-settings-page .settings-licenses {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px 14px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.chimera-shell .v3-settings-page .settings-row-control > .settings-licenses {
+  min-width: 0;
+}
+.chimera-shell .v3-settings-page .settings-licenses-link {
+  height: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+  color: #1f4d3a;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.chimera-shell .v3-settings-page .settings-licenses-link:hover {
+  text-decoration: underline;
+}
+
+/* ---------- 读取失败条 ---------- */
+.chimera-shell .v3-settings-page .settings-load-error {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 19px;
+  border: 1px solid #ffffff;
+  border-radius: 14px;
+  background: #ffffffd0;
+  box-shadow: var(--v3-shadow-outer);
+  color: #b4342c;
+  font-size: 11px;
+}
+.chimera-shell .v3-settings-page .settings-load-error span {
+  flex: 1;
+  color: #0c1a24;
+}
+.chimera-shell .v3-settings-page .settings-load-error small {
+  display: block;
+  font-size: 10px;
+  color: #454e58;
+}
+
+/* ---------- 备份与恢复（L45 节奏：工具条 → 表 → 数据库行） ---------- */
+.chimera-shell .v3-settings-page .live-backups-panel {
+  gap: 10px;
+  padding: 14px 19px 4px;
+}
+.chimera-shell .v3-settings-page .live-backups-description,
+.chimera-shell .v3-settings-page .live-backups-note {
+  margin: 0;
+  font-size: 10.5px;
+  line-height: 15px;
+  color: #454e58;
+}
+.chimera-shell .v3-settings-page .live-backups-toolbar {
+  margin: 0;
+}
+.chimera-shell .v3-settings-page .live-backups-tool {
+  gap: 8px;
+  font-size: 11px;
+  color: #33454f;
+}
+.chimera-shell .v3-settings-page .live-backups-tool select {
+  height: 30px;
+  min-width: 148px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: #0b1c2a08;
+  color: #0c1a24;
+  font-size: 11px;
+}
+.chimera-shell .v3-settings-page .live-backups-actions {
+  gap: 8px;
+}
+.chimera-shell .v3-settings-page .live-backups-actions button {
+  height: 30px;
+  padding: 0 14px;
+  border-radius: 9px;
+  font-size: 11px;
+  font-weight: 500;
+}
+.chimera-shell .v3-settings-page .live-backups-actions button:not(:last-child) {
+  border: 1px solid #ffffffd9;
+  background: #ffffffa8;
+  box-shadow: 0 0 0 1px #0b1c2a0d;
+  color: #33454f;
+}
+.chimera-shell .v3-settings-page .live-backups-actions button:last-child {
+  border: 0;
+  background: #1f4d3a;
+  box-shadow: none;
+  color: #ffffff;
+  font-weight: 600;
+}
+.chimera-shell .v3-settings-page .settings-backup-table {
+  font-size: 11px;
+}
+.chimera-shell .v3-settings-page .settings-backup-table th {
+  height: 30px;
+  padding: 0 10px;
+  border-bottom: 1px solid #0b1c2a12;
+  background: transparent;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: #454e58;
+}
+.chimera-shell .v3-settings-page .settings-backup-table td {
+  height: 44px;
+  padding: 0 10px;
+  border-bottom: 1px solid #0b1c2a12;
+  color: #33454f;
+}
+.chimera-shell .v3-settings-page .settings-backup-table th:first-child,
+.chimera-shell .v3-settings-page .settings-backup-table td:first-child {
+  padding-left: 0;
+}
+.chimera-shell .v3-settings-page .settings-backup-table .is-size {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 10px;
+}
+.chimera-shell .v3-settings-page .settings-backup-table .is-actions button {
+  color: #1f4d3a;
+  font-size: 11px;
+}
+.chimera-shell
+  .v3-settings-page
+  .settings-backup-table
+  .is-actions
+  button.is-danger {
+  color: #b4342c;
+}
+.chimera-shell .v3-settings-page .live-backup-file {
+  font-size: 10px;
+  color: #33454f;
+}
+.chimera-shell .v3-settings-page .live-backups-table .live-backups-empty {
+  height: 96px;
+  font-size: 11px;
+  color: #454e58;
+}
+.chimera-shell .v3-settings-page .live-backups-empty [role="alert"] {
+  color: #b4342c;
+}
+.chimera-shell .v3-settings-page .settings-backups-unavailable {
+  min-height: 0;
+  padding: 14px 19px 4px;
+}
+.chimera-shell .v3-settings-page .settings-backups-columns {
+  height: 30px;
+  border-bottom: 1px solid #0b1c2a12;
+  font-size: 10px;
+  color: #454e58;
+}
+.chimera-shell .v3-settings-page .settings-backups-notice {
+  min-height: 120px;
+  font-size: 11px;
+  color: #454e58;
+}
+.chimera-shell .v3-settings-page .settings-backups-notice b {
+  font-size: 12.5px;
+  color: #0c1a24;
+}
+.chimera-shell .v3-settings-page .settings-backups-database {
+  margin: 0;
+  border-top: 0;
+  font-family: inherit;
+  font-size: inherit;
+}
+.chimera-shell .v3-settings-page .db-backups-notice {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: #b4342c;
+}
+
+/* ---------- 更新卡（L27 结构：标题 / 说明 / 动作，进度条 5 高） ---------- */
+.chimera-shell .v3-settings-page .settings-app-update {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.chimera-shell .v3-settings-page .settings-app-update-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 72px;
+  padding: 12px 19px;
+  border: 0;
+}
+.chimera-shell .v3-settings-page .settings-app-update-icon {
+  flex: 0 0 auto;
+  width: auto;
+  height: auto;
+  background: transparent;
+  color: #1f4d3a;
+}
+.chimera-shell
+  .v3-settings-page
+  .settings-app-update.is-ok
+  .settings-app-update-icon {
+  background: transparent;
+  color: #0d7340;
+}
+.chimera-shell
+  .v3-settings-page
+  .settings-app-update.is-available
+  .settings-app-update-icon {
+  background: transparent;
+  color: #1f4d3a;
+}
+.chimera-shell
+  .v3-settings-page
+  .settings-app-update.is-error
+  .settings-app-update-icon {
+  background: transparent;
+  color: #b4342c;
+}
+.chimera-shell .v3-settings-page .settings-app-update-copy b {
+  font-size: 12px;
+  font-weight: 600;
+  color: #0c1a24;
+}
+.chimera-shell .v3-settings-page .settings-app-update-copy small {
+  font-size: 10.5px;
+  color: #454e58;
+}
+.chimera-shell .v3-settings-page .settings-app-update-row > button {
+  min-width: 96px;
+  height: 30px;
+}
+.chimera-shell .v3-settings-page .settings-app-update-progress {
+  padding: 0 19px 14px 47px;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 10px;
+  color: #0d7340;
+}
+.chimera-shell .v3-settings-page .settings-app-update-progress > i {
+  height: 5px;
+  border-radius: 3px;
+  background: #0b1c2a14;
+}
+.chimera-shell .v3-settings-page .settings-app-update-progress u {
+  background: #0d7340;
+}
+.chimera-shell .v3-settings-page .settings-app-update-details {
+  padding: 12px 19px 14px 47px;
+  border-top: 1px solid #0b1c2a12;
+  background: transparent;
+  font-size: 11px;
+}
+.chimera-shell .v3-settings-page .settings-app-update-details b {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 11px;
+}
+.chimera-shell .v3-settings-page .settings-app-update-details small {
+  font-size: 10px;
+  color: #454e58;
+}
+
+/* ---------- 导入（独立页，卡内留白与其他分区一致） ---------- */
+.chimera-shell .v3-settings-page .settings-standalone:not([hidden]) {
+  display: block;
+  padding: 0;
+}
+.chimera-shell .v3-settings-page .settings-standalone > section {
+  padding: 0 19px 19px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.chimera-shell .v3-settings-page .settings-standalone h2 {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  margin: 0 -19px 12px;
+  padding: 0 19px;
+  border-bottom: 1px solid #0b1c2a12;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #0c1a24;
+}
+.chimera-shell .v3-settings-page .settings-import-form label,
+.chimera-shell .v3-settings-page .settings-import-file-note h3 {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #0c1a24;
+}
+.chimera-shell .v3-settings-page .settings-import-form input {
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: #0b1c2a08;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 11px;
+}
+.chimera-shell .v3-settings-page .settings-import-form input:focus-visible {
+  outline: none;
+  border-color: #1f4d3a;
+}
+.chimera-shell .v3-settings-page .settings-import-file-note {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid #0b1c2a12;
+  font-size: 11px;
+  color: #33454f;
+}
+.chimera-shell .v3-settings-page .settings-tools-description.is-error {
+  color: #b4342c;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chimera-shell .v3-settings-page .settings-switch,
+  .chimera-shell .v3-settings-page .settings-switch > u,
+  .chimera-shell .v3-settings-page .settings-segment button,
+  .chimera-shell .v3-settings-page .settings-disclosure-icon,
+  .chimera-shell .v3-settings-page .settings-page-nav a {
+    transition: none;
+  }
+}
+
+/* 卡内的面板（备份表、数据库、目录、故障转移、导入预览）自带 <section>，
+   liquid-glass-v3.css 会把每个 section 都画成卡 —— 这里拍平，避免卡套卡。 */
+.chimera-shell .v3-settings-page .settings-card section,
+.chimera-shell .v3-settings-page .settings-standalone section section {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+/* 工具身份：线路色竖条（§1.3 深色），不用双字母徽标。 */
+.chimera-shell .v3-settings-page .settings-tool-mark[data-tool="codex"] {
+  background: #3f6389;
+}
+.chimera-shell .v3-settings-page .settings-tool-mark[data-tool="claude"],
+.chimera-shell
+  .v3-settings-page
+  .settings-tool-mark[data-tool="claude-desktop"] {
+  background: #2c7175;
+}
+.chimera-shell .v3-settings-page .settings-tool-mark[data-tool="gemini"] {
+  background: #3d8a8e;
+}
+.chimera-shell .v3-settings-page .settings-tool-mark[data-tool="grokbuild"] {
+  background: #7d5738;
+}
+.chimera-shell .v3-settings-page .settings-tool-mark[data-tool="opencode"] {
+  background: #6b6f8a;
+}
+.chimera-shell .v3-settings-page .settings-tool-mark[data-tool="pi"] {
+  background: #54683f;
+}

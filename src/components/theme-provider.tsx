@@ -13,6 +13,11 @@ interface ThemeProviderProps {
   children: React.ReactNode;
   defaultTheme?: Theme;
   storageKey?: string;
+  /**
+   * v3 只提供一套浅色外观。设置后忽略存储值与系统偏好，恒用这个值，
+   * 以免出现「没人设计过」的深色界面。深色回来时把这个 prop 去掉即可。
+   */
+  forceTheme?: Theme;
 }
 
 interface ThemeContextValue {
@@ -28,8 +33,13 @@ export function ThemeProvider({
   children,
   defaultTheme = "system",
   storageKey = "cc-switch-theme",
+  forceTheme,
 }: ThemeProviderProps) {
   const getInitialTheme = () => {
+    if (forceTheme) {
+      return forceTheme;
+    }
+
     if (typeof window === "undefined") {
       return defaultTheme;
     }
@@ -49,8 +59,11 @@ export function ThemeProvider({
       return;
     }
 
-    window.localStorage.setItem(storageKey, theme);
-  }, [theme, storageKey]);
+    // A forced theme is a design decision, not a preference: don't record it.
+    if (!forceTheme) {
+      window.localStorage.setItem(storageKey, theme);
+    }
+  }, [theme, storageKey, forceTheme]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -59,6 +72,11 @@ export function ThemeProvider({
 
     const root = window.document.documentElement;
     root.classList.remove("light", "dark");
+
+    if (forceTheme && forceTheme !== "system") {
+      root.classList.add(forceTheme);
+      return;
+    }
 
     if (theme === "system") {
       const isDark =
@@ -69,10 +87,10 @@ export function ThemeProvider({
     }
 
     root.classList.add(theme);
-  }, [theme]);
+  }, [theme, forceTheme]);
 
   useEffect(() => {
-    if (typeof window === "undefined") {
+    if (typeof window === "undefined" || forceTheme) {
       return;
     }
 
@@ -93,7 +111,7 @@ export function ThemeProvider({
 
     mediaQuery.addEventListener("change", handleChange);
     return () => mediaQuery.removeEventListener("change", handleChange);
-  }, [theme]);
+  }, [theme, forceTheme]);
 
   // Sync native window theme (Windows/macOS title bar)
   useEffect(() => {

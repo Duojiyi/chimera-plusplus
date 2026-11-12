@@ -1,0 +1,696 @@
+/* ============================================================
+   v3.0 · 工具页（设计稿 L14 / L15 / L24 / L25 / L30–L33 / L44）
+   未分层（见 postcss.config.cjs），覆盖 ToolView.css、ToolViewDesktop.css、
+   PiManagement.css 与 liquid-glass-v3.css 中针对工具页的旧规则。
+   工具页一次只显示一个分区，分区由侧栏切换（规范 §4.1）。
+   ============================================================ */
+
+.chimera-shell .tool-view {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  padding: 26px 26px 18px;
+  overflow-y: auto;
+  background: transparent;
+  color: var(--text-1);
+}
+
+/* ---------- 页头：分区名 + 工具说明；无双字母徽标 ---------- */
+
+.chimera-shell .tool-view > .tool-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 44px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.chimera-shell .tool-view .tool-title {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.chimera-shell .tool-view .tool-title h1 {
+  margin: 0;
+  font-size: 24px;
+  line-height: 30px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+  color: var(--text-1);
+}
+
+.chimera-shell .tool-view .tool-title > p {
+  margin: 0;
+  overflow: hidden;
+  font-size: 11px;
+  line-height: 15px;
+  color: var(--text-3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chimera-shell .tool-view .tool-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+/* ---------- 按钮（规范 §3.2） ---------- */
+
+.chimera-shell .tool-view .tool-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 30px;
+  min-height: 30px;
+  padding: 0 14px;
+  border: 1px solid #ffffffd9;
+  border-radius: 9px;
+  background: #ffffffa8;
+  color: #33454f;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.chimera-shell .tool-view .tool-btn:hover:not(:disabled) {
+  background: #ffffffe0;
+}
+
+.chimera-shell .tool-view .tool-btn.is-primary {
+  border: 0;
+  background: #1f4d3a;
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.chimera-shell .tool-view .tool-btn.is-primary:hover:not(:disabled) {
+  background: #193f30;
+}
+
+.chimera-shell .tool-view .tool-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.chimera-shell .tool-view .tool-btn:focus-visible {
+  outline: 2px solid #1f4d3a;
+  outline-offset: 2px;
+}
+
+/* ---------- 页内分区导航（壳层不接管时才出现） ---------- */
+
+.chimera-shell .tool-view .tool-section-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.chimera-shell .tool-view .tool-section-nav button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 14px;
+  border: 1px solid #ffffff99;
+  border-radius: 9px;
+  background: #ffffff59;
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 500;
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.chimera-shell .tool-view .tool-section-nav button[aria-current="page"] {
+  border-color: #ffffff;
+  background: #ffffffe6;
+  color: var(--text-1);
+  font-weight: 600;
+}
+
+/* ---------- 工具类型说明条 ---------- */
+
+.chimera-shell .tool-view .tool-kind-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  margin: 0;
+  padding: 0 16px;
+  border: 1px solid #ffffffcc;
+  border-radius: 12px;
+  background: #ffffff8c;
+  color: var(--text-2);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.chimera-shell .tool-view .tool-kind-note svg {
+  flex: none;
+  color: var(--text-3);
+}
+
+/* ---------- 分区内容与卡片 ---------- */
+
+.chimera-shell .tool-view .tool-section-content {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.chimera-shell .tool-view .tool-section-content[hidden],
+.chimera-shell .tool-view [hidden] {
+  display: none !important;
+}
+
+.chimera-shell
+  .tool-view
+  :is(
+    .tool-lines-card,
+    .tool-discovery,
+    .tool-official-guide,
+    .tool-install-panel,
+    .tool-empty
+  ) {
+  position: relative;
+  margin: 0;
+  background: var(--v3-glass-fill);
+  border: 1px solid var(--v3-glass-border);
+  border-radius: 14px;
+  box-shadow:
+    var(--v3-shadow-inner-top), var(--v3-shadow-inner-bottom),
+    var(--v3-shadow-outer);
+  -webkit-backdrop-filter: blur(var(--v3-glass-blur)) saturate(150%);
+  backdrop-filter: blur(var(--v3-glass-blur)) saturate(150%);
+}
+
+/* 本机配置导入 / 官方账号登录：一行说明 + 右侧按钮 */
+.chimera-shell .tool-view :is(.tool-discovery, .tool-official-guide) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 16px 12px 19px;
+}
+
+.chimera-shell .tool-view .tool-official-guide strong,
+.chimera-shell .tool-view .tool-discovery-heading strong {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.chimera-shell .tool-view .tool-official-guide p,
+.chimera-shell .tool-view .tool-discovery p {
+  margin: 2px 0 0;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--text-2);
+}
+
+.chimera-shell .tool-view .tool-official-guide code {
+  padding: 0 4px;
+  border-radius: 4px;
+  background: #1a24200d;
+  font-size: 10.5px;
+}
+
+.chimera-shell .tool-view .tool-discovery-badge {
+  padding: 1px 7px;
+  border-radius: 6px;
+  background: #1a24200d;
+  color: var(--text-2);
+  font-size: 10px;
+}
+
+.chimera-shell .tool-view .tool-discovery-badge[data-found="true"] {
+  background: #e3efe7;
+  color: var(--success-fg);
+}
+
+.chimera-shell .tool-view .tool-discovery-button {
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid #ffffffd9;
+  border-radius: 9px;
+  background: #ffffffa8;
+  color: #33454f;
+  font-size: 11px;
+  box-shadow: none;
+}
+
+/* ---------- 线路卡：卡头 + 表格（当前行左缘墨线） ---------- */
+
+.chimera-shell .tool-view .tool-lines-card {
+  display: flex;
+  flex-direction: column;
+  padding: 0 19px 10px;
+}
+
+.chimera-shell .tool-view .tool-lines-caption {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin: 0;
+  padding: 16px 0 10px;
+  border-bottom: 1px solid var(--v3-hairline);
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+.chimera-shell .tool-view .tool-lines-title {
+  margin-right: auto;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+/* The source note joins the counts on the right instead of splitting them. */
+.chimera-shell .tool-view .tool-lines-caption .tool-lines-source {
+  margin-left: 0;
+}
+
+.chimera-shell .tool-view .tool-lines-current {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-2);
+  font-weight: 500;
+}
+
+.chimera-shell .tool-view .tool-lines-current::before {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #1a242033;
+}
+
+.chimera-shell .tool-view .tool-lines-current[data-active]::before {
+  background: var(--success-fg);
+}
+
+.chimera-shell .tool-view .tool-lines {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+}
+
+.chimera-shell .tool-view .tool-line-row {
+  position: relative;
+  min-height: 46px;
+  border: 0;
+  border-bottom: 1px solid var(--v3-hairline);
+  background: transparent;
+  font-size: 11.5px;
+}
+
+.chimera-shell .tool-view .tool-line-row:last-child {
+  border-bottom: 0;
+}
+
+.chimera-shell .tool-view .tool-line-head {
+  min-height: 34px;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.chimera-shell .tool-view .tool-line-row:not(.tool-line-head):hover {
+  background: #ffffff66;
+}
+
+.chimera-shell .tool-view .tool-line-row[data-current] {
+  background: #ffffffb3;
+}
+
+.chimera-shell .tool-view .tool-line-row[data-current]::before {
+  left: -19px;
+  top: 10px;
+  bottom: 10px;
+  width: 2px;
+  border-radius: 1px;
+  background: #1a2420;
+}
+
+.chimera-shell
+  .tool-view:not([data-kind="switch"])
+  .tool-line-row[data-current] {
+  background: transparent;
+}
+
+.chimera-shell
+  .tool-view:not([data-kind="switch"])
+  .tool-line-row[data-current]::before {
+  display: none;
+}
+
+.chimera-shell .tool-view .tool-line-name {
+  gap: 10px;
+  font-weight: 600;
+}
+
+/* 线路身份：彩色字母块改成 3×14 线路色竖条（反模式 #7） */
+.chimera-shell .tool-view .tool-line-name .line-badge {
+  width: 3px;
+  min-width: 3px;
+  height: 14px;
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  font-size: 0;
+  line-height: 0;
+  color: transparent;
+  box-shadow: none;
+}
+
+.chimera-shell .tool-view .tool-line-name .line-badge * {
+  display: none;
+}
+
+.chimera-shell .tool-view .tool-line-mono {
+  font-family: var(--font-mono), ui-monospace, Consolas, monospace;
+  font-size: 10.5px;
+  color: var(--text-2);
+}
+
+.chimera-shell .tool-view .tool-line-muted {
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+.chimera-shell .tool-view .tool-line-dot {
+  width: 7px;
+  height: 7px;
+  border: 0;
+  background: #1a242026;
+  box-shadow: none;
+}
+
+.chimera-shell .tool-view .tool-line-row[data-current] .tool-line-dot {
+  background: var(--success-fg);
+}
+
+.chimera-shell .tool-view .tool-line-switch,
+.chimera-shell .tool-view .tool-line-current {
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 500;
+  box-shadow: none;
+}
+
+.chimera-shell .tool-view .tool-line-switch:hover:not(:disabled) {
+  background: #ffffffd9;
+  color: var(--text-1);
+}
+
+.chimera-shell .tool-view .tool-line-current,
+.chimera-shell .tool-view .tool-line-current:disabled {
+  color: var(--text-1);
+  font-weight: 600;
+  opacity: 1;
+}
+
+.chimera-shell .tool-view :is(.tool-line-icon, .tool-provider-delete) {
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-3);
+  box-shadow: none;
+}
+
+.chimera-shell
+  .tool-view
+  :is(.tool-line-icon, .tool-provider-delete):hover:not(:disabled) {
+  background: #ffffffd9;
+  color: var(--text-1);
+}
+
+/* 累加型开关 */
+.chimera-shell .tool-view .tool-line-toggle {
+  position: relative;
+  width: 30px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: #1a24201f;
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.chimera-shell .tool-view .tool-line-toggle > span {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 2px #1a242033;
+  transition: transform 120ms ease-out;
+}
+
+.chimera-shell .tool-view .tool-line-toggle[aria-pressed="true"] {
+  background: #1f6b4a;
+}
+
+.chimera-shell .tool-view .tool-line-toggle[aria-pressed="true"] > span {
+  transform: translateX(12px);
+}
+
+/* ---------- 状态：读取中、空、失败 ---------- */
+
+.chimera-shell .tool-view .tool-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 18px 4px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.chimera-shell .tool-view .tool-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 22px 20px;
+}
+
+.chimera-shell .tool-view .tool-empty p {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 17px;
+  color: var(--text-2);
+}
+
+.chimera-shell .tool-view .tool-load-error {
+  padding: 14px 16px;
+  border: 1px solid #b4342c33;
+  border-radius: 14px;
+  background: #fbefedcc;
+}
+
+.chimera-shell .tool-view .tool-load-error strong {
+  font-size: 12px;
+  color: var(--danger-fg);
+}
+
+.chimera-shell .tool-view .tool-load-error p {
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+.chimera-shell .tool-view .tool-load-error pre {
+  border: 0;
+  border-radius: 8px;
+  background: #ffffffb3;
+  font-size: 10.5px;
+}
+
+/* ---------- 安装与更新 ---------- */
+
+.chimera-shell .tool-view .tool-install-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 19px 18px;
+}
+
+.chimera-shell .tool-view .tool-install-panel h2 {
+  margin: 0;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--v3-hairline);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.chimera-shell .tool-view .tool-install-note {
+  margin: 0;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--text-3);
+}
+
+/* ---------- 账号分区（L14 / L30）：外壳不再是一张卡，避免卡套卡 ---------- */
+
+.chimera-shell .tool-view .claude-accounts-card {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.chimera-shell .tool-view .claude-accounts-card > .claude-accounts-heading {
+  padding: 0 0 4px;
+}
+
+.chimera-shell
+  .tool-view
+  .claude-accounts-card
+  > .claude-accounts-heading
+  .claude-accounts-icon {
+  display: none;
+}
+
+.chimera-shell .tool-view .claude-accounts-title h2,
+.chimera-shell .tool-view .claude-accounts-title h3 {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.chimera-shell .tool-view .claude-accounts-title p {
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+/* A long warning in an account card takes the whole width; the refresh
+   button moves under it instead of squeezing it into a narrow column. */
+.chimera-shell .tool-view .claude-account-card-quota .claude-quota-foot {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+.chimera-shell
+  .tool-view
+  .claude-account-card-quota
+  .claude-quota-note.is-warning {
+  flex: 1 1 100%;
+}
+.chimera-shell
+  .tool-view
+  .claude-account-card-quota
+  .claude-quota-note.is-warning
+  + .claude-quota-refresh {
+  margin-left: auto;
+}
+
+/* The page heading and the first section heading need air between them. */
+.chimera-shell
+  .tool-view
+  .tool-section-content
+  > .claude-accounts-card:first-child {
+  margin-top: 8px;
+}
+
+/* Sections whose content is rows, not cards, sit in one glass card: the
+   Desktop accounts list, and the folder-binding and usage sections. */
+.chimera-shell .tool-view .claude-accounts-list,
+.chimera-shell
+  .tool-view
+  .claude-accounts-card:is(.claude-bindings-card, .claude-usage-card) {
+  padding: 14px 19px;
+  background: var(--v3-glass-fill);
+  border: 1px solid var(--v3-glass-border);
+  border-radius: 14px;
+  box-shadow:
+    var(--v3-shadow-inner-top), var(--v3-shadow-inner-bottom),
+    var(--v3-shadow-outer);
+}
+
+.chimera-shell .tool-view .claude-accounts-list {
+  padding: 6px 12px;
+}
+
+.chimera-shell .tool-view .claude-accounts-live {
+  background: var(--v3-glass-fill);
+  border: 1px solid var(--v3-glass-border);
+  border-radius: 12px;
+  box-shadow: var(--v3-shadow-inner-top), var(--v3-shadow-outer);
+}
+
+/* oh-my-pi：表格自身就是卡片（它没有 .tool-lines-card 外壳） */
+.chimera-shell .tool-view .tool-lines[data-variant="omp"] {
+  padding: 4px 19px 8px;
+  background: var(--v3-glass-fill);
+  border: 1px solid var(--v3-glass-border);
+  border-radius: 14px;
+  box-shadow:
+    var(--v3-shadow-inner-top), var(--v3-shadow-inner-bottom),
+    var(--v3-shadow-outer);
+}
+
+.chimera-shell .tool-view > .tool-section-content > div > .tool-lines-caption {
+  padding: 0 2px;
+  border: 0;
+}
+
+/* 线路页顶部：本机有登录还没导入时的提示条。 */
+.chimera-shell .claude-local-login {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 12px;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--brand) 35%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--brand) 7%, #ffffffb3);
+  color: var(--text-1);
+  font-size: 12px;
+}
+.chimera-shell .claude-local-login > svg {
+  flex: none;
+  color: var(--brand);
+}
+.chimera-shell .claude-local-login > span {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.chimera-shell .claude-local-login > button {
+  flex: none;
+}

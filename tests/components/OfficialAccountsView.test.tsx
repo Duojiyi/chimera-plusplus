@@ -412,13 +412,13 @@ describe("official account Vault quotas", () => {
     render(<OfficialAccountsView />);
     await waitFor(() => expect(screen.getAllByRole("article")).toHaveLength(2));
     const [first, second] = screen.getAllByRole("article");
-    await waitFor(() => expect(within(first).getByText("75%")).toBeVisible());
-    expect(within(first).getByText("70%")).toBeVisible();
-    expect(within(second).getByText("40%")).toBeVisible();
-    expect(within(second).getByText("35%")).toBeVisible();
+    await waitFor(() => expect(within(first).getByText("25%")).toBeVisible());
+    expect(within(first).getByText("30%")).toBeVisible();
+    expect(within(second).getByText("60%")).toBeVisible();
+    expect(within(second).getByText("65%")).toBeVisible();
     const current = screen.getByRole("region", { name: "Codex 当前登录" });
-    expect(within(current).getByText("75%")).toBeVisible();
-    expect(within(current).queryByText("40%")).not.toBeInTheDocument();
+    expect(within(current).getByText("25%")).toBeVisible();
+    expect(within(current).queryByText("60%")).not.toBeInTheDocument();
     expect(officialAccountsApi.getQuota).toHaveBeenCalledWith("vault-a");
     expect(officialAccountsApi.getQuota).toHaveBeenCalledWith("vault-b");
     expect(officialAccountsApi.getQuota).toHaveBeenCalledTimes(2);
@@ -534,7 +534,7 @@ describe("official account Vault quotas", () => {
     expect(
       within(first).getByRole("button", { name: "重新应用" }),
     ).toBeEnabled();
-    expect(within(second).getByText("75%")).toBeVisible();
+    expect(within(second).getByText("25%")).toBeVisible();
     const current = screen.getByRole("region", { name: "Codex 当前登录" });
     expect(within(current).getByText("额度查询失败，请刷新重试")).toBeVisible();
   });
@@ -727,6 +727,11 @@ describe("official account automatic quota refresh", () => {
       fireEvent.click(screen.getByRole("button", { name: "刷新" }));
     });
     expect(officialAccountsApi.getQuota).toHaveBeenCalledTimes(4);
+    // 刷新额度 asks for a new reading; opening the page does not.
+    expect(officialAccountsApi.getQuota).toHaveBeenLastCalledWith(
+      expect.any(String),
+      true,
+    );
   });
 
   it("does not overlap slow requests or update an unmounted page", async () => {
@@ -754,7 +759,7 @@ describe("official account automatic quota refresh", () => {
       new Error("offline"),
     );
     await advance(15);
-    expect(screen.getAllByText("75%").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("25%").length).toBeGreaterThan(0);
     expect(screen.getAllByText(/部分额度未更新/)).toHaveLength(1);
     vi.mocked(officialAccountsApi.list).mockRejectedValueOnce(
       new Error("offline"),
@@ -764,7 +769,7 @@ describe("official account automatic quota refresh", () => {
     vi.mocked(officialAccountsApi.getQuota).mockResolvedValue(quota(40));
     await advance(5);
     expect(screen.queryByText(/部分额度未更新/)).not.toBeInTheDocument();
-    expect(screen.getAllByText("60%").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("40%").length).toBeGreaterThan(0);
   });
 
   it.each([429, 503])(
@@ -779,15 +784,15 @@ describe("official account automatic quota refresh", () => {
         error: `API error (HTTP ${status})`,
       });
       await advance(10);
-      expect(screen.getAllByText("75%")).toHaveLength(2);
-      expect(screen.getAllByText("70%")).toHaveLength(2);
+      expect(screen.getAllByText("25%")).toHaveLength(2);
+      expect(screen.getAllByText("30%")).toHaveLength(2);
       expect(screen.getAllByText(/部分额度未更新/)).toHaveLength(1);
       expect(screen.getByRole("button", { name: "重新应用" })).toBeEnabled();
       vi.mocked(officialAccountsApi.getQuota).mockResolvedValue(quota(40));
       await advance(5);
       expect(screen.queryByText(/部分额度未更新/)).not.toBeInTheDocument();
-      expect(screen.queryByText("75%")).not.toBeInTheDocument();
-      expect(screen.getAllByText("60%")).toHaveLength(2);
+      expect(screen.queryByText("25%")).not.toBeInTheDocument();
+      expect(screen.getAllByText("40%")).toHaveLength(2);
     },
   );
 
@@ -851,7 +856,9 @@ describe("official account automatic quota refresh", () => {
     expect(officialAccountsApi.getQuota).toHaveBeenCalledTimes(2);
     await advance(5);
     expect(officialAccountsApi.getQuota).toHaveBeenCalledTimes(3);
-    expect(officialAccountsApi.getQuota).toHaveBeenLastCalledWith("live");
+    // Design change: a timer tick asks for a new reading (the stored one is
+    // answered for 5 minutes, which would make shorter intervals do nothing).
+    expect(officialAccountsApi.getQuota).toHaveBeenLastCalledWith("live", true);
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "刷新" }));
     });
@@ -885,7 +892,7 @@ describe("official account automatic quota refresh", () => {
     expect(officialAccountsApi.getQuota).toHaveBeenLastCalledWith(
       "added-elsewhere",
     );
-    expect(within(added).getByText("75%")).toBeVisible();
+    expect(within(added).getByText("25%")).toBeVisible();
   });
 
   it("surfaces unsuccessful quota responses and does not keep an expired quota visible", async () => {
@@ -898,7 +905,7 @@ describe("official account automatic quota refresh", () => {
     });
     await advance(5);
     expect(screen.getAllByText(/部分额度未更新/)).toHaveLength(1);
-    expect(screen.queryByText("75%")).not.toBeInTheDocument();
+    expect(screen.queryByText("25%")).not.toBeInTheDocument();
     expect(screen.getAllByText("需要重新登录")).toHaveLength(2);
   });
 
@@ -949,14 +956,14 @@ describe("official account quota windows", () => {
     const current = screen.getByRole("region", { name: "Codex 当前登录" });
     const bars = within(current).getAllByRole("progressbar");
     expect(bars.map((bar) => bar.getAttribute("aria-label"))).toEqual([
-      "5 小时额度剩余",
-      "7 天额度剩余",
-      "30 天额度剩余",
+      "5 小时额度已用",
+      "7 天额度已用",
+      "30 天额度已用",
     ]);
-    expect(bars[0]).toHaveAttribute("aria-valuenow", "62");
+    expect(bars[0]).toHaveAttribute("aria-valuenow", "38");
     expect(bars[0]).toHaveAttribute("aria-valuemin", "0");
     expect(bars[0]).toHaveAttribute("aria-valuemax", "100");
-    expect(bars[0]).toHaveAttribute("aria-valuetext", "剩余 62%");
+    expect(bars[0]).toHaveAttribute("aria-valuetext", "已用 38%");
     const reset = within(current).getByText(/^3 小时 31 分钟后重置 ·/);
     expect(reset).toBeVisible();
     expect(reset).toHaveTextContent("3 小时 31 分钟后重置 · 10月13日 13:55");
@@ -983,11 +990,11 @@ describe("official account quota windows", () => {
     await openAt([account("free", true)]);
     const current = screen.getByRole("region", { name: "Codex 当前登录" });
     const bar = within(current).getByRole("progressbar", {
-      name: "30 天额度剩余",
+      name: "30 天额度已用",
     });
-    expect(bar).toHaveAttribute("aria-valuenow", "5");
+    expect(bar).toHaveAttribute("aria-valuenow", "95");
     expect(bar.closest(".quota-meter")).toHaveAttribute("data-low", "true");
-    expect(within(current).getByText("5%")).toBeVisible();
+    expect(within(current).getByText("95%")).toBeVisible();
     expect(within(current).queryByText(/5 小时/)).not.toBeInTheDocument();
   });
 

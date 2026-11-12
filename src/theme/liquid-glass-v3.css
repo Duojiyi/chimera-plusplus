@@ -1,0 +1,1105 @@
+/* ============================================================
+   Chimera++ v3.0 · 液态玻璃（单套浅色）
+   ------------------------------------------------------------
+   只做三件事：
+   1) 把窗口底换成冷灰纵向渐变 + 24px 细网格（玻璃的「折射纹理」）；
+   2) 给外壳（侧栏 / 标题栏）一层真正的玻璃，而不是实色块；
+   3) 提供 .v3-glass / .v3-hairline 等原语，供新组件复用。
+
+   规范见 docs/design/v3.0-liquid-glass-design-system-zh.md。
+   玻璃成立的条件写在规范里：底不能是白、一屏最多三层玻璃、
+   玻璃不叠玻璃（卡内输入框用实色）。
+   ============================================================ */
+
+/* ---------- 1. 页面底 ---------- */
+
+/* 双类选择器：liquid-glass.css 用 `.chimera-shell.chimera-shell` 铺了深色底（0,2,0），
+   这里必须同特异性 + 更晚引入才能赢。 */
+.chimera-shell.chimera-shell {
+  position: relative;
+  isolation: isolate;
+  background: linear-gradient(
+    180deg,
+    var(--v3-page-top) 0%,
+    var(--v3-page-mid) 55%,
+    var(--v3-page-bottom) 100%
+  );
+}
+
+/* 网格必须压在内容下面：z-index:-1 + isolation，避免盖住非定位子节点。 */
+.chimera-shell::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right, var(--v3-grid-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--v3-grid-line) 1px, transparent 1px);
+  background-size:
+    var(--v3-grid-size) var(--v3-grid-size),
+    var(--v3-grid-size) var(--v3-grid-size);
+}
+
+/* 内容区自己不再铺实色，否则会盖掉渐变与网格。 */
+.chimera-shell .chimera-main {
+  background: transparent;
+}
+
+/* ---------- 2. 外壳玻璃 ---------- */
+
+/* 侧栏在 liquid-glass.css 里被写成了深色渐变（`.chimera-shell .chimera-sidebar`），
+   这里用同等特异性 + 更晚的引入顺序把它换回浅色玻璃。 */
+.chimera-shell .chimera-sidebar {
+  background: var(--v3-glass-fill-soft);
+  border-right: 1px solid #ffffffb8;
+  box-shadow: none;
+  -webkit-backdrop-filter: blur(var(--v3-glass-blur)) saturate(140%);
+  backdrop-filter: blur(var(--v3-glass-blur)) saturate(140%);
+}
+
+.chimera-titlebar {
+  background: var(--v3-glass-fill-soft);
+  border-bottom: 1px solid #ffffffb8;
+  -webkit-backdrop-filter: blur(var(--v3-glass-blur)) saturate(140%);
+  backdrop-filter: blur(var(--v3-glass-blur)) saturate(140%);
+}
+
+/* ---------- 3. 原语 ---------- */
+
+/* 一层玻璃：填充 + 顶部内侧高光 + 底部柔光 + 外投影。 */
+
+/* 嵌在玻璃里的输入框/代码块：用实色，避免玻璃叠玻璃。 */
+
+/* 发丝分隔线：永远 1px，不靠色块造容器感。 */
+
+/* 当前项：全站唯一编码 —— 浅底 + 左缘 2px 墨条 + 反白 chip。 */
+
+/* 工具身份：一条 3×16 的线路色竖条，替代原来的双字母徽标。 */
+.v3-tool-bar {
+  width: 3px;
+  height: 16px;
+  border-radius: 2px;
+  background: var(--p-line-cobalt);
+  flex: none;
+}
+.v3-tool-bar[data-tool="codex"] {
+  background: #4a6fa5;
+}
+.v3-tool-bar[data-tool="claude"] {
+  background: #2c7175;
+}
+.v3-tool-bar[data-tool="claude-desktop"] {
+  background: #2c7175;
+}
+.v3-tool-bar[data-tool="gemini"] {
+  background: #2c7175;
+}
+.v3-tool-bar[data-tool="opencode"] {
+  background: #6b6f8a;
+}
+.v3-tool-bar[data-tool="pi"] {
+  background: #54683f;
+}
+.v3-tool-bar[data-tool="omp"] {
+  background: #7d5570;
+}
+.v3-tool-bar[data-tool="grokbuild"] {
+  background: #7d5738;
+}
+
+/* ---------- 3b. 侧栏结构 ---------- */
+
+/* 232px：比 v2.8 的 216px 宽一点，给 4 字工具名和线路色竖条留位置。 */
+.chimera-shell .chimera-sidebar {
+  box-sizing: border-box;
+  width: var(--size-sidebar);
+  flex: none;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 14px 8px 10px;
+  z-index: 10;
+  user-select: none;
+}
+
+.v3-sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 40px;
+  padding: 0 6px;
+  flex: none;
+}
+
+.v3-sidebar-logo {
+  width: 26px;
+  height: 26px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--text-1);
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.v3-sidebar-brandtext {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.v3-sidebar-wordmark {
+  font-size: 14px;
+  line-height: 18px;
+  font-weight: 700;
+  color: var(--text-1);
+  white-space: nowrap;
+}
+
+.v3-sidebar-version {
+  font-size: 10px;
+  line-height: 12px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+/* 工具切换器：一块小玻璃，左侧一条线路色竖条。 */
+.v3-tool-switch {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 52px;
+  flex: none;
+  margin: 4px 0 6px;
+  padding: 0 10px;
+  border-radius: 12px;
+  border: 1px solid #ffffffcc;
+  background: #ffffffa8;
+  box-shadow: inset 0 -1px 0 0 #ffffffd9;
+  cursor: pointer;
+  text-align: left;
+  transition: background 120ms var(--ease);
+}
+.v3-tool-switch:hover {
+  background: #ffffffc4;
+}
+.v3-tool-switch > svg {
+  flex: none;
+  color: var(--text-3);
+}
+
+.v3-tool-switch-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+  min-width: 0;
+}
+
+.v3-tool-switch-name {
+  font-size: 12.5px;
+  line-height: 16px;
+  font-weight: 600;
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v3-tool-switch-sub {
+  font-size: 10px;
+  line-height: 12px;
+  color: var(--text-3);
+}
+
+.v3-nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  width: 100%;
+  flex: none;
+}
+
+.v3-nav-group + .v3-nav-group {
+  margin-top: 10px;
+}
+
+.v3-nav-group-label {
+  padding: 0 8px 4px;
+  font-size: 10px;
+  line-height: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-3);
+}
+
+/* 导航项：全站唯一形状 —— 30 高、圆角 9、无边框，选中靠浅底。 */
+.v3-nav-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 30px;
+  flex: none;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 12.5px;
+  line-height: 16px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 120ms var(--ease);
+}
+.v3-nav-item:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+.v3-nav-item:hover:not(:disabled):not([aria-current="page"]) {
+  background: #0b1c2a08;
+}
+.v3-nav-item[aria-current="page"] {
+  background: var(--nav-bg-active);
+  color: var(--text-1);
+  font-weight: 600;
+}
+/* 选中项左缘墨条：与表格当前行、命令面板选中行同一条线。 */
+.v3-nav-item[aria-current="page"]::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 7px;
+  bottom: 7px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--text-1);
+}
+.v3-nav-item[aria-current="page"] .v3-nav-icon {
+  color: var(--brand);
+}
+.v3-nav-item:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: -2px;
+}
+
+.v3-nav-icon {
+  flex: none;
+  color: var(--text-3);
+}
+
+.v3-nav-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v3-nav-hint {
+  flex: none;
+  font-size: 10px;
+  color: var(--text-3);
+}
+
+.v3-sidebar-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  width: 100%;
+  flex: none;
+  margin-top: auto;
+  padding-top: 8px;
+  border-top: 1px solid var(--v3-hairline);
+}
+
+/* ---------- 3c. 标题栏 ---------- */
+
+.chimera-shell .chimera-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  box-sizing: border-box;
+  width: 100%;
+  height: var(--size-titlebar);
+  min-height: var(--size-titlebar);
+  margin: 0;
+  padding: 0 12px;
+  border-bottom: 1px solid #ffffffb8;
+  user-select: none;
+  z-index: 5;
+}
+
+.v3-crumb {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  font-size: 12.5px;
+  line-height: 16px;
+}
+
+.v3-crumb-tool {
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+.v3-crumb-sep {
+  color: var(--text-3);
+  opacity: 0.6;
+}
+
+.v3-crumb-page {
+  color: var(--text-1);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.v3-preview-chip {
+  flex: none;
+  margin-left: 4px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: #0b1c2a0a;
+  color: var(--text-3);
+  font-size: 10px;
+  line-height: 14px;
+  white-space: nowrap;
+}
+
+.v3-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  width: 300px;
+  max-width: 38%;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px 0 10px;
+  border: 1px solid #ffffffcc;
+  border-radius: 9px;
+  background: #ffffffa8;
+  color: var(--text-3);
+  cursor: pointer;
+  text-align: left;
+  transition: background 120ms var(--ease);
+}
+.v3-search:hover {
+  background: #ffffffcc;
+}
+.v3-search > svg {
+  flex: none;
+}
+
+.v3-search-placeholder {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v3-kbd {
+  flex: none;
+  padding: 1px 5px;
+  border: 1px solid #ffffff;
+  border-radius: 5px;
+  background: #ffffffd8;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 14px;
+  white-space: nowrap;
+}
+
+.v3-window-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.v3-update-chip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 7px;
+  background: var(--brand);
+  color: #ffffff;
+  font-size: 11.5px;
+  line-height: 1;
+  cursor: pointer;
+}
+.v3-update-chip:hover {
+  background: var(--brand-hover);
+}
+
+/* ---------- 4. 键盘可达性 ---------- */
+
+.chimera-shell
+  :is(button, [role="button"], a, input, select, textarea):focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
+/* 高对比度（Windows 对比度主题）：当前页、当前工具与当前分区用系统选中色，
+   墨条与玻璃底在强制配色下会消失，必须显式交给 Highlight / HighlightText。 */
+@media (forced-colors: active) {
+  .chimera-shell .v3-nav-item[aria-current="page"],
+  .chimera-shell .v3-tool-switch,
+  .v3-tool-menu .v3-tool-menu-item[aria-current="true"] {
+    forced-color-adjust: none;
+    background: Highlight;
+    color: HighlightText;
+    box-shadow: none;
+  }
+
+  .chimera-shell .v3-nav-item[aria-current="page"]:focus-visible,
+  .v3-tool-menu .v3-tool-menu-item[aria-current="true"]:focus-visible {
+    outline: 2px solid HighlightText;
+    outline-offset: -2px;
+  }
+
+  .chimera-shell .v3-nav-item[aria-current="page"]::before,
+  .chimera-shell .v3-tool-bar {
+    forced-color-adjust: none;
+    background: CanvasText;
+  }
+}
+
+/* ---------- 5. 减少动效 ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .chimera-sidebar,
+  .chimera-titlebar {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+/* ---------- 6. 内容区：线路页 ---------- */
+
+/* The current line's plate is the page's one large glass surface: it keeps the
+   same three edge layers as every other card instead of being a dark slab. */
+.chimera-shell .station-plate {
+  --plate-bg: var(--v3-glass-fill);
+  --plate-fg-1: var(--text-1);
+  --plate-fg-2: var(--text-2);
+  --plate-fg-3: var(--text-3);
+  --plate-control-border: transparent;
+  --plate-control-hover: var(--bg-hover);
+  --plate-control-pressed: var(--bg-selected);
+  --plate-success: var(--success-fg);
+  --plate-warning: var(--warning-fg);
+  --plate-danger: var(--danger-fg);
+  border-bottom: 0;
+  outline: 0;
+  border-radius: 20px;
+  background: var(--v3-glass-fill);
+  box-shadow:
+    inset 0 -1px 0 0 #ffffffd9,
+    inset 0 1px 2px 0 #ffffffcc,
+    0 10px 24px #1236681a;
+  -webkit-backdrop-filter: blur(30px) saturate(140%);
+  backdrop-filter: blur(30px) saturate(140%);
+  color: var(--text-1);
+}
+
+/* The station band becomes the line's identity stroke, not a 4px colour bar. */
+.chimera-shell .station-band {
+  display: none;
+}
+
+.chimera-shell .station-body {
+  gap: 10px;
+  padding: 14px 20px;
+}
+
+.chimera-shell .station-eyebrow {
+  color: var(--text-3);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  line-height: 14px;
+}
+
+.chimera-shell .station-name {
+  color: var(--text-1);
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 26px;
+}
+
+.chimera-shell .station-kind {
+  border: 0;
+  background: var(--v3-glass-fill-soft);
+  color: var(--text-2);
+  font-size: 10px;
+  line-height: 16px;
+  padding: 1px 7px;
+}
+
+.chimera-shell .station-latency {
+  color: var(--text-1);
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 24px;
+}
+
+.chimera-shell .station-state {
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.chimera-shell .station-state-time {
+  color: var(--text-3);
+}
+
+.chimera-shell .station-action {
+  height: 28px;
+  padding: 0 12px;
+  gap: 5px;
+  border: 0;
+  background: var(--v3-glass-fill-soft);
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.chimera-shell
+  .station-action:hover:not(:disabled):not([aria-disabled="true"]) {
+  background: #ffffffc4;
+}
+
+/* The last action on the plate is the page's primary one. */
+.chimera-shell .station-actions .station-action:last-child:not(:disabled) {
+  background: var(--brand);
+  color: #ffffff;
+}
+
+.chimera-shell
+  .station-actions
+  .station-action:last-child:not(:disabled):hover {
+  background: var(--brand-hover);
+}
+
+/* ---------- 7. 内容区：撤销条与余额 ---------- */
+
+.chimera-shell .station-receipt {
+  border-top: 0;
+  border-radius: 10px;
+  background: var(--v3-glass-fill);
+  color: var(--text-2);
+  font-size: 11px;
+  box-shadow:
+    inset 0 -1px 0 0 #ffffffd9,
+    0 4px 12px #12366814;
+  padding: 0 10px;
+  height: 34px;
+}
+
+.chimera-shell .station-receipt button {
+  height: 22px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--v3-glass-fill-soft);
+  color: var(--text-1);
+  font-size: 10.5px;
+}
+
+.chimera-shell .station-receipt button:hover:not(:disabled) {
+  background: #ffffffc4;
+}
+
+/* 撤销条：撤销（白）+ 重启 Codex（石墨绿实底），设计稿 L01 */
+.chimera-shell .station-receipt button {
+  padding: 0 12px;
+  background: #ffffff;
+  font-weight: 600;
+}
+
+.chimera-shell .station-receipt .station-receipt-primary {
+  background: var(--brand, #1f4d3a);
+  color: #ffffff;
+}
+
+.chimera-shell .station-receipt .station-receipt-primary:hover:not(:disabled) {
+  background: #173c2d;
+}
+
+.chimera-shell .station-receipt .station-receipt-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chimera-shell .route-balance-bar {
+  height: 30px;
+  border: 0;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 10.5px;
+}
+
+.chimera-shell .route-balance-value {
+  color: var(--text-1);
+  font-family: var(--font-mono), monospace;
+  font-size: 11.5px;
+}
+
+/* ---------- 8. 内容区：页面标题与工具条 ---------- */
+
+.chimera-shell .provider-page {
+  padding: 18px 26px 24px;
+}
+
+.chimera-shell .provider-page-heading {
+  height: 44px;
+  align-items: flex-start;
+}
+
+.chimera-shell .provider-page-heading h2 {
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 30px;
+  letter-spacing: -0.01em;
+}
+
+.chimera-shell .provider-page-heading p {
+  color: var(--text-2);
+  font-size: 11.5px;
+  line-height: 15px;
+  margin-top: 1px;
+}
+
+.chimera-shell .provider-page-heading button {
+  height: 30px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 9px;
+  background: var(--v3-glass-fill-soft);
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.chimera-shell .provider-page-heading button:hover:not(:disabled) {
+  background: #ffffffc4;
+}
+
+.chimera-shell .provider-page-heading button.provider-add {
+  background: var(--brand);
+  color: #ffffff;
+}
+
+.chimera-shell .provider-page-heading button.provider-add:hover:not(:disabled) {
+  background: var(--brand-hover);
+}
+
+.chimera-shell .provider-page-signboard {
+  padding-top: 12px;
+}
+/* ===== 6d. 站牌底部信息行（地址 / 模型 / 协议） ===== */
+.chimera-shell .station-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--v3-hairline);
+  font-size: 10.5px;
+  line-height: 15px;
+  color: var(--text-3);
+}
+
+.chimera-shell .station-foot-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.chimera-shell .station-foot-address {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 10.5px;
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 260px;
+}
+
+.chimera-shell .station-foot-state,
+.chimera-shell .station-foot-note {
+  color: var(--text-3);
+}
+
+.chimera-shell .station-foot-model {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 10.5px;
+  color: var(--text-2);
+}
+
+/* ===== 10. 其余视图共用骨架（页头 / 卡 / 表 / 空态） ===== */
+.chimera-shell .usage-design-view,
+.chimera-shell .new-settings-view,
+.chimera-shell .prompts-page,
+.chimera-shell .skills-mcp-page,
+.chimera-shell .config-health-page,
+.chimera-shell .official-accounts-page {
+  padding: 18px 26px 24px;
+  color: var(--text-1);
+}
+
+.chimera-shell .usage-design-view h1,
+.chimera-shell .new-settings-view h1,
+.chimera-shell .prompts-page h1,
+.chimera-shell .skills-mcp-page h1,
+.chimera-shell .config-health-page h1 {
+  margin: 0;
+  font-size: 24px;
+  line-height: 30px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text-1);
+}
+
+.chimera-shell .usage-design-view > * > p,
+.chimera-shell .prompts-page > header p,
+.chimera-shell .config-health-page > header p {
+  font-size: 11.5px;
+  line-height: 16px;
+  color: var(--text-2);
+}
+
+/* 页头行：标题在左、动作在右 */
+.chimera-shell .prompts-page > header,
+.chimera-shell .health-header,
+.chimera-shell .tool-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 44px;
+}
+
+/* 统一页头按钮 */
+.chimera-shell .prompts-page header button,
+.chimera-shell .health-header button,
+.chimera-shell .tool-header button {
+  height: 30px;
+  border-radius: 9px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+/* 通用玻璃面板：把 v2.8 的高阴影/深底收敛成同一种材质 */
+.chimera-shell .prompts-page article,
+.chimera-shell .skills-mcp-page section,
+.chimera-shell .config-health-page section,
+.chimera-shell .usage-design-view section {
+  background: var(--v3-glass-fill);
+  border: 1px solid var(--v3-hairline);
+  border-radius: 14px;
+  box-shadow: none;
+}
+
+/* 表格：只留发丝线，不要斑马纹与重边框 */
+.chimera-shell .usage-design-view table,
+.chimera-shell .skills-mcp-page table {
+  border-collapse: collapse;
+  font-size: 11.5px;
+}
+
+.chimera-shell .usage-design-view th,
+.chimera-shell .skills-mcp-page th {
+  height: 30px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--text-3);
+  border-bottom: 1px solid var(--v3-hairline);
+  background: transparent;
+}
+
+.chimera-shell .usage-design-view td,
+.chimera-shell .skills-mcp-page td {
+  height: 36px;
+  border-bottom: 1px solid var(--v3-hairline);
+  color: var(--text-2);
+}
+
+/* 数字一律等宽 */
+.chimera-shell .usage-design-view [class*="value"],
+.chimera-shell .usage-design-view [class*="metric"] strong {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+
+/* 空态 / 错误态统一形状（对应 src/components/ui 新增原语） */
+.chimera-shell .empty-state,
+.chimera-shell .error-state {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 24px 20px;
+  border-radius: 14px;
+  background: var(--v3-glass-fill);
+  border: 1px solid var(--v3-hairline);
+  color: var(--text-2);
+}
+
+.chimera-shell .empty-state-icon,
+.chimera-shell .error-state-icon {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 18px;
+  background: var(--v3-glass-fill-soft);
+  color: var(--text-2);
+}
+
+.chimera-shell .empty-state h2,
+.chimera-shell .error-state h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.chimera-shell .empty-state p,
+.chimera-shell .error-state p {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 17px;
+  color: var(--text-2);
+}
+
+.chimera-shell .error-state {
+  border-color: #b4342c33;
+}
+
+.chimera-shell .error-state-icon {
+  color: #b4342c;
+  background: #fbe2df66;
+}
+
+.chimera-shell .skeleton {
+  border-radius: 8px;
+  background: linear-gradient(90deg, #0b1c2a0a, #0b1c2a14, #0b1c2a0a);
+  background-size: 200% 100%;
+  animation: v3-skeleton 1.4s ease-in-out infinite;
+}
+
+@keyframes v3-skeleton {
+  from {
+    background-position: 0% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chimera-shell .skeleton {
+    animation: none;
+  }
+}
+
+/* ===== 14. 其余页面：会话 / Codex 管理 / 外观 / 配置体检 / 管理工具 / 工具视图 ===== */
+
+/* 14.1 通用玻璃卡（v2.8 的 .glass-card 是重阴影厚边框，统一收敛） */
+.chimera-shell .glass-card {
+  border: 1px solid var(--v3-hairline);
+  border-radius: 14px;
+  background: var(--v3-glass-fill);
+  box-shadow: 0 1px 2px #1236680d;
+}
+
+.chimera-shell .glass-card-header {
+  min-height: 40px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--v3-hairline);
+  background: transparent;
+}
+
+.chimera-shell .glass-card-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+/* 14.3 Codex 管理（运行时） */
+.chimera-shell .runtime-reference-view {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px 26px 24px;
+  color: var(--text-1);
+}
+
+.chimera-shell .runtime-page-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 44px;
+}
+
+.chimera-shell .runtime-page-heading h1 {
+  font-size: 24px;
+  line-height: 30px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text-1);
+}
+
+.chimera-shell .runtime-page-heading p {
+  margin: 2px 0 0;
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+
+/* ===== 15. v2.8 玻璃变量族整体改色 =====
+   liquid-glass.css 在 :root 上定义了一整套画报蓝（accent / focus / ink /
+   canvas / primary / selection）。组件大量直接引用它们，所以只改 --brand
+   不够：主按钮、焦点环、选中态、开关都会继续发蓝。这一节把它们全部映射
+   到石墨绿 + 中性灰，作为唯一的色源。 */
+:root {
+  --radius-control: 8px;
+  --radius-ring: 10px;
+
+  --glass-surface: #ffffffd0;
+  --glass-surface-strong: #ffffffe8;
+  --glass-border: #0b1c2a14;
+  --glass-control-border: #8a939b;
+  --glass-highlight: #ffffffd9;
+  --glass-shadow: 0 8px 24px -16px #12366826, inset 0 1px 0 #ffffffd9;
+  --glass-blur: 30px;
+  --glass-control-bg: #ffffff9e;
+  --glass-control-hover: #ffffffc8;
+
+  --glass-accent: #1f4d3a;
+  --glass-accent-strong: #163a2c;
+  --glass-accent-soft: #1f4d3a14;
+  --glass-focus: #1f4d3a;
+  --glass-ink: #0c1a24;
+  --glass-muted: #454e58;
+  --glass-canvas: #e4e7e2;
+  --glass-canvas-glow: #ffffff66;
+  --glass-sheen: #ffffff73;
+
+  --glass-primary-top: #2a5f49;
+  --glass-primary-bottom: #1f4d3a;
+  --glass-primary-edge: #1a4433;
+
+  --glass-selection: #eef1ee;
+  --glass-selection-ink: #0c1a24;
+  --glass-switch-off-track: #0b1c2a1f;
+  --glass-switch-off-thumb: #ffffff;
+}
+
+/* 主按钮：石墨绿实底，白字；hover 略深，按下更深 */
+.chimera-shell .glass-button--default {
+  background-color: var(--glass-primary-bottom);
+  background-image: none;
+  border-color: var(--glass-primary-edge);
+  color: #ffffff;
+}
+
+/* 错误态不再独占整页：回到文档流，靠左，宽 340。
+   只作用于「页体里只有状态卡」的情形；有数据时页体仍是 legacy 的纵向 flex，
+   否则 .session-workspace 会被塞进 340 列（实机：详情栏被挤到 84px）。 */
+.chimera-shell .session-page-body:has(> .session-state.is-page) {
+  display: grid;
+  grid-template-columns: minmax(0, 340px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+  min-height: 0;
+}
+
+.chimera-shell .session-state.is-page {
+  align-self: start;
+  justify-self: stretch;
+  width: 100%;
+  height: auto;
+  padding: 18px 16px;
+  border: 1px solid var(--v3-hairline);
+  border-radius: 14px;
+  background: var(--v3-glass-fill);
+  text-align: left;
+  align-items: flex-start;
+}
+
+.chimera-shell .session-state.is-page > svg {
+  width: 20px;
+  height: 20px;
+  color: #b4342c;
+}
+
+/* ===== 16. Codex 管理页（L09/L19/L20/L21）：把深色四站板改成浅色数字带 ===== */
+
+/* 说明条：玻璃软底一行，不抢视线 */
+
+/* 维护列表：行高分 12 的卡片内行 */
+
+/* 16b. 运行时状态带：三个子块是「已安装状态 + 三列信息 + 文件夹按钮」，
+   不是四个等宽格，用 flex 布局才不会挤成一团。 */
+
+/* 17. 工具视图页头徽标：橙/紫/青的实心色块违背「同一时刻只有一种饱和色」，
+   改成中性玻璃方块，身份靠底部 14×3 线路色杠表达（身份一律用线，不用填色）。 */
+
+/* 页头 h1 对齐设计稿 24/700 */
+.chimera-shell .tool-header h1 {
+  font-size: 24px;
+  line-height: 30px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text-1);
+}
+
+.chimera-shell .tool-header p {
+  font-size: 11.5px;
+  line-height: 16px;
+  color: var(--text-3);
+}
+
+/* 页头按钮统一 30 高 r9，最后一个（主作用）用 accent 白字 */
+.chimera-shell .tool-header button {
+  height: 30px;
+  border-radius: 9px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+/* 侧栏子项：官方账号属于线路，缩进挂在「线路」下面。 */
+.chimera-shell .v3-nav-item.is-sub {
+  padding-left: 30px;
+  font-size: 12px;
+}
+.chimera-shell .v3-nav-item.is-sub .v3-nav-icon {
+  width: 13px;
+  height: 13px;
+}

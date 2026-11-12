@@ -2,1072 +2,1055 @@
 
 exports[`keeps the shell markup stable across views and the line editor > sidebar on another page 1`] = `
 <aside
-  class="chimera-sidebar box-border w-[216px] shrink-0 h-full flex flex-col gap-[2px] p-[0px_8px_12px_8px] justify-start items-start bg-[#13181C] select-none z-10"
+  class="chimera-sidebar"
   data-pencil-name="侧栏"
-  data-theme="dark"
 >
   <div
-    class="box-border w-full h-[40px] shrink-0 flex flex-row gap-0 p-[0px_8px] justify-start items-center"
+    class="v3-sidebar-brand"
     data-pencil-name="字标区"
     data-tauri-drag-region="deep"
   >
-    <div
-      class="text-[14px]/[20px] box-border text-[#EEF0F3] font-bold text-left whitespace-nowrap"
-      data-pencil-name="字标"
+    <span
+      aria-hidden="true"
+      class="v3-sidebar-logo"
     >
-      Chimera++
-    </div>
+      C
+    </span>
+    <span
+      class="v3-sidebar-brandtext"
+    >
+      <span
+        class="v3-sidebar-wordmark"
+        data-pencil-name="字标"
+      >
+        Chimera++
+      </span>
+      <span
+        class="v3-sidebar-version"
+      >
+        2.9.0
+      </span>
+    </span>
   </div>
+  <button
+    aria-expanded="false"
+    aria-haspopup="dialog"
+    aria-label="切换工具，当前：Codex"
+    class="v3-tool-switch"
+    data-pencil-name="工具切换器"
+    data-state="closed"
+    type="button"
+  >
+    <span
+      aria-hidden="true"
+      class="v3-tool-bar"
+      data-tool="codex"
+    />
+    <span
+      class="v3-tool-switch-text"
+    >
+      <span
+        class="v3-tool-switch-name"
+      >
+        Codex
+      </span>
+      <span
+        class="v3-tool-switch-sub"
+      >
+        当前工具
+      </span>
+    </span>
+    <svg
+      aria-hidden="true"
+      class="lucide lucide-chevrons-up-down"
+      fill="none"
+      height="14"
+      stroke="currentColor"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      stroke-width="2"
+      viewBox="0 0 24 24"
+      width="14"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="m7 15 5 5 5-5"
+      />
+      <path
+        d="m7 9 5-5 5 5"
+      />
+    </svg>
+  </button>
   <nav
     aria-label="工具与功能"
     class="chimera-navigation"
   >
     <div
-      class="box-border w-full h-fit shrink-0 flex flex-col gap-0 justify-start items-start"
-      data-pencil-name="干线"
+      class="v3-nav-group"
     >
       <div
-        class="box-border w-full h-[36px] shrink-0 flex flex-row gap-[10px] p-[0px_8px_0px_10px] justify-start items-center rounded-[4px] relative"
-        data-pencil-name="工具 · Codex"
+        class="v3-nav-group-label"
       >
-        <div
-          class="box-border w-[24px] shrink-0 h-[24px] flex flex-row gap-0 justify-center items-center bg-transparent border border-[#8D9398] rounded-[4px] relative z-10"
-          data-pencil-name="徽标"
-        >
-          <div
-            class="text-[12px]/[17px] box-border text-[#BABEC3] font-bold text-left whitespace-nowrap"
-            data-pencil-name="简称"
-          >
-            Cx
-          </div>
-        </div>
-        <div
-          class="text-[14px]/[20px] box-border flex-1 text-[#EEF0F3] font-normal text-left relative z-10"
-          data-pencil-name="名称"
-        >
-          Codex
-        </div>
-        <div
-          class="box-border w-[2px] h-[6px] absolute left-[21px] top-[30px] bg-[#7B9BC3] z-0"
-          data-pencil-name="干线起点"
-        />
+        工作区
       </div>
       <button
-        class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
+        class="v3-nav-item"
         data-pencil-name="能力 · 线路"
         type="button"
       >
-        <div
-          class="box-border w-[12px] shrink-0 h-fit flex flex-col gap-0 justify-start items-center"
-          data-pencil-name="站"
-        >
-          <div
-            class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3]"
-            data-pencil-name="上"
-          />
-          <div
-            class="box-border w-[8px] h-[8px] shrink-0 border-2 border-[#7B9BC3] rounded-full bg-[#13181C]"
-            data-pencil-name="点"
-          />
-          <div
-            class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3] "
-            data-pencil-name="下"
-          />
-        </div>
-        <div
-          class="text-[14px]/[20px] box-border flex-1 text-left text-[#BABEC3] font-normal"
-          data-pencil-name="文字"
-        >
-          线路
-        </div>
-      </button>
-      <button
-        class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
-        data-pencil-name="能力 · 官方账号"
-        type="button"
-      >
-        <div
-          class="box-border w-[12px] shrink-0 h-fit flex flex-col gap-0 justify-start items-center"
-          data-pencil-name="站"
-        >
-          <div
-            class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3]"
-            data-pencil-name="上"
-          />
-          <div
-            class="box-border w-[8px] h-[8px] shrink-0 border-2 border-[#7B9BC3] rounded-full bg-[#13181C]"
-            data-pencil-name="点"
-          />
-          <div
-            class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3] "
-            data-pencil-name="下"
-          />
-        </div>
-        <div
-          class="text-[14px]/[20px] box-border flex-1 text-left text-[#BABEC3] font-normal"
-          data-pencil-name="文字"
-        >
-          官方账号
-        </div>
-      </button>
-      <button
-        class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
-        data-pencil-name="能力 · 提示词"
-        type="button"
-      >
-        <div
-          class="box-border w-[12px] shrink-0 h-fit flex flex-col gap-0 justify-start items-center"
-          data-pencil-name="站"
-        >
-          <div
-            class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3]"
-            data-pencil-name="上"
-          />
-          <div
-            class="box-border w-[8px] h-[8px] shrink-0 border-2 border-[#7B9BC3] rounded-full bg-[#13181C]"
-            data-pencil-name="点"
-          />
-          <div
-            class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3] "
-            data-pencil-name="下"
-          />
-        </div>
-        <div
-          class="text-[14px]/[20px] box-border flex-1 text-left text-[#BABEC3] font-normal"
-          data-pencil-name="文字"
-        >
-          提示词
-        </div>
-      </button>
-      <button
-        class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
-        data-pencil-name="能力 · Skills 与 MCP"
-        type="button"
-      >
-        <div
-          class="box-border w-[12px] shrink-0 h-fit flex flex-col gap-0 justify-start items-center"
-          data-pencil-name="站"
-        >
-          <div
-            class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3]"
-            data-pencil-name="上"
-          />
-          <div
-            class="box-border w-[8px] h-[8px] shrink-0 border-2 border-[#7B9BC3] rounded-full bg-[#13181C]"
-            data-pencil-name="点"
-          />
-          <div
-            class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3] "
-            data-pencil-name="下"
-          />
-        </div>
-        <div
-          class="text-[14px]/[20px] box-border flex-1 text-left text-[#BABEC3] font-normal"
-          data-pencil-name="文字"
-        >
-          Skills 与 MCP
-        </div>
-      </button>
-      <button
-        class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
-        data-pencil-name="能力 · 用量"
-        type="button"
-      >
-        <div
-          class="box-border w-[12px] shrink-0 h-fit flex flex-col gap-0 justify-start items-center"
-          data-pencil-name="站"
-        >
-          <div
-            class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3]"
-            data-pencil-name="上"
-          />
-          <div
-            class="box-border w-[8px] h-[8px] shrink-0 border-2 border-[#7B9BC3] rounded-full bg-[#13181C]"
-            data-pencil-name="点"
-          />
-          <div
-            class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3] "
-            data-pencil-name="下"
-          />
-        </div>
-        <div
-          class="text-[14px]/[20px] box-border flex-1 text-left text-[#BABEC3] font-normal"
-          data-pencil-name="文字"
-        >
-          用量
-        </div>
-      </button>
-      <button
-        aria-current="page"
-        class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-[#23282D]"
-        data-pencil-name="能力 · Codex 管理"
-        type="button"
-      >
-        <div
-          class="box-border w-[12px] shrink-0 h-fit flex flex-col gap-0 justify-start items-center"
-          data-pencil-name="站"
-        >
-          <div
-            class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3]"
-            data-pencil-name="上"
-          />
-          <div
-            class="box-border w-[8px] h-[8px] shrink-0 border-2 border-[#7B9BC3] rounded-full bg-[#7B9BC3]"
-            data-pencil-name="点"
-          />
-          <div
-            class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3] "
-            data-pencil-name="下"
-          />
-        </div>
-        <div
-          class="text-[14px]/[20px] box-border flex-1 text-left text-[#EEF0F3] font-bold"
-          data-pencil-name="文字"
-        >
-          Codex 管理
-        </div>
-      </button>
-      <button
-        class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
-        data-pencil-name="能力 · 外观"
-        type="button"
-      >
-        <div
-          class="box-border w-[12px] shrink-0 h-fit flex flex-col gap-0 justify-start items-center"
-          data-pencil-name="站"
-        >
-          <div
-            class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3]"
-            data-pencil-name="上"
-          />
-          <div
-            class="box-border w-[8px] h-[8px] shrink-0 border-2 border-[#7B9BC3] rounded-full bg-[#13181C]"
-            data-pencil-name="点"
-          />
-          <div
-            class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3] "
-            data-pencil-name="下"
-          />
-        </div>
-        <div
-          class="text-[14px]/[20px] box-border flex-1 text-left text-[#BABEC3] font-normal"
-          data-pencil-name="文字"
-        >
-          外观
-        </div>
-      </button>
-      <button
-        class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
-        data-pencil-name="能力 · 配置体检"
-        type="button"
-      >
-        <div
-          class="box-border w-[12px] shrink-0 h-fit flex flex-col gap-0 justify-start items-center"
-          data-pencil-name="站"
-        >
-          <div
-            class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3]"
-            data-pencil-name="上"
-          />
-          <div
-            class="box-border w-[8px] h-[8px] shrink-0 border-2 border-[#7B9BC3] rounded-full bg-[#13181C]"
-            data-pencil-name="点"
-          />
-          <div
-            class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3] opacity-0"
-            data-pencil-name="下"
-          />
-        </div>
-        <div
-          class="text-[14px]/[20px] box-border flex-1 text-left text-[#BABEC3] font-normal"
-          data-pencil-name="文字"
-        >
-          配置体检
-        </div>
-      </button>
-    </div>
-    <div
-      class="w-full h-[40px] shrink-0 px-[10px] pt-[16px] pb-[6px] text-[13px]/[18px] text-[#8D9398]"
-    >
-      其他工具
-    </div>
-    <button
-      aria-label="Claude Code"
-      class="chimera-nav-item w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
-      data-pencil-name="工具 · Claude Code"
-      type="button"
-    >
-      <span
-        class="w-[24px] h-[24px] shrink-0 flex items-center justify-center border border-[#8D9398] rounded-[4px] text-[12px] font-bold"
-      >
-        CC
-      </span>
-      <span
-        class="flex-1 text-[14px]"
-      >
-        Claude Code
-      </span>
-    </button>
-    <button
-      aria-label="Claude Desktop"
-      class="chimera-nav-item w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
-      data-pencil-name="工具 · Claude Desktop"
-      type="button"
-    >
-      <span
-        class="w-[24px] h-[24px] shrink-0 flex items-center justify-center border border-[#8D9398] rounded-[4px] text-[12px] font-bold"
-      >
-        CD
-      </span>
-      <span
-        class="flex-1 text-[14px]"
-      >
-        Claude Desktop
-      </span>
-    </button>
-    <button
-      aria-label="Gemini CLI"
-      class="chimera-nav-item w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
-      data-pencil-name="工具 · Gemini CLI"
-      type="button"
-    >
-      <span
-        class="w-[24px] h-[24px] shrink-0 flex items-center justify-center border border-[#8D9398] rounded-[4px] text-[12px] font-bold"
-      >
-        Gm
-      </span>
-      <span
-        class="flex-1 text-[14px]"
-      >
-        Gemini CLI
-      </span>
-    </button>
-    <button
-      aria-label="OpenCode"
-      class="chimera-nav-item w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
-      data-pencil-name="工具 · OpenCode"
-      type="button"
-    >
-      <span
-        class="w-[24px] h-[24px] shrink-0 flex items-center justify-center border border-[#8D9398] rounded-[4px] text-[12px] font-bold"
-      >
-        OC
-      </span>
-      <span
-        class="flex-1 text-[14px]"
-      >
-        OpenCode
-      </span>
-    </button>
-    <button
-      aria-label="Pi"
-      class="chimera-nav-item w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
-      data-pencil-name="工具 · Pi"
-      type="button"
-    >
-      <span
-        class="w-[24px] h-[24px] shrink-0 flex items-center justify-center border border-[#8D9398] rounded-[4px] text-[12px] font-bold"
-      >
-        Pi
-      </span>
-      <span
-        class="flex-1 text-[14px]"
-      >
-        Pi
-      </span>
-    </button>
-    <button
-      aria-label="oh-my-pi"
-      class="chimera-nav-item w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
-      data-pencil-name="工具 · oh-my-pi"
-      type="button"
-    >
-      <span
-        class="w-[24px] h-[24px] shrink-0 flex items-center justify-center border border-[#8D9398] rounded-[4px] text-[12px] font-bold"
-      >
-        Om
-      </span>
-      <span
-        class="flex-1 text-[14px]"
-      >
-        oh-my-pi
-      </span>
-    </button>
-    <button
-      aria-label="Grok Build"
-      class="chimera-nav-item w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
-      data-pencil-name="工具 · Grok Build"
-      type="button"
-    >
-      <span
-        class="w-[24px] h-[24px] shrink-0 flex items-center justify-center border border-[#8D9398] rounded-[4px] text-[12px] font-bold"
-      >
-        Gk
-      </span>
-      <span
-        class="flex-1 text-[14px]"
-      >
-        Grok Build
-      </span>
-    </button>
-    <button
-      class="chimera-nav-item w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left cursor-pointer bg-transparent text-[#BABEC3] hover:bg-[#1A1E24]"
-      data-pencil-name="添加工具"
-      title="选择侧栏显示哪些工具"
-      type="button"
-    >
-      <span
-        class="w-[24px] h-[24px] flex items-center justify-center border border-[#8D9398] rounded-[4px]"
-      >
         <svg
           aria-hidden="true"
-          class="lucide lucide-plus"
+          class="lucide lucide-route v3-nav-icon"
           fill="none"
-          height="14"
+          height="15"
           stroke="currentColor"
           stroke-linecap="round"
           stroke-linejoin="round"
           stroke-width="2"
           viewBox="0 0 24 24"
-          width="14"
+          width="15"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <circle
+            cx="6"
+            cy="19"
+            r="3"
+          />
+          <path
+            d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"
+          />
+          <circle
+            cx="18"
+            cy="5"
+            r="3"
+          />
+        </svg>
+        <span
+          class="v3-nav-text"
+        >
+          线路
+        </span>
+      </button>
+      <button
+        class="v3-nav-item is-sub"
+        data-pencil-name="能力 · 官方账号"
+        type="button"
+      >
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-users v3-nav-icon"
+          fill="none"
+          height="15"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="15"
           xmlns="http://www.w3.org/2000/svg"
         >
           <path
-            d="M5 12h14"
+            d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"
           />
           <path
-            d="M12 5v14"
+            d="M16 3.128a4 4 0 0 1 0 7.744"
+          />
+          <path
+            d="M22 21v-2a4 4 0 0 0-3-3.87"
+          />
+          <circle
+            cx="9"
+            cy="7"
+            r="4"
           />
         </svg>
-      </span>
-      <span
-        class="text-[14px]"
+        <span
+          class="v3-nav-text"
+        >
+          官方账号
+        </span>
+      </button>
+      <button
+        class="v3-nav-item"
+        data-pencil-name="能力 · 提示词"
+        type="button"
       >
-        管理工具
-      </span>
-    </button>
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-file-text v3-nav-icon"
+          fill="none"
+          height="15"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="15"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path
+            d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"
+          />
+          <path
+            d="M14 2v5a1 1 0 0 0 1 1h5"
+          />
+          <path
+            d="M10 9H8"
+          />
+          <path
+            d="M16 13H8"
+          />
+          <path
+            d="M16 17H8"
+          />
+        </svg>
+        <span
+          class="v3-nav-text"
+        >
+          提示词
+        </span>
+      </button>
+      <button
+        class="v3-nav-item"
+        data-pencil-name="能力 · Skills 与 MCP"
+        type="button"
+      >
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-cpu v3-nav-icon"
+          fill="none"
+          height="15"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="15"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path
+            d="M12 20v2"
+          />
+          <path
+            d="M12 2v2"
+          />
+          <path
+            d="M17 20v2"
+          />
+          <path
+            d="M17 2v2"
+          />
+          <path
+            d="M2 12h2"
+          />
+          <path
+            d="M2 17h2"
+          />
+          <path
+            d="M2 7h2"
+          />
+          <path
+            d="M20 12h2"
+          />
+          <path
+            d="M20 17h2"
+          />
+          <path
+            d="M20 7h2"
+          />
+          <path
+            d="M7 20v2"
+          />
+          <path
+            d="M7 2v2"
+          />
+          <rect
+            height="16"
+            rx="2"
+            width="16"
+            x="4"
+            y="4"
+          />
+          <rect
+            height="8"
+            rx="1"
+            width="8"
+            x="8"
+            y="8"
+          />
+        </svg>
+        <span
+          class="v3-nav-text"
+        >
+          Skills 与 MCP
+        </span>
+      </button>
+      <button
+        class="v3-nav-item"
+        data-pencil-name="能力 · 用量"
+        type="button"
+      >
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-chart-column v3-nav-icon"
+          fill="none"
+          height="15"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="15"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path
+            d="M3 3v16a2 2 0 0 0 2 2h16"
+          />
+          <path
+            d="M18 17V9"
+          />
+          <path
+            d="M13 17V5"
+          />
+          <path
+            d="M8 17v-3"
+          />
+        </svg>
+        <span
+          class="v3-nav-text"
+        >
+          用量
+        </span>
+      </button>
+    </div>
+    <div
+      class="v3-nav-group"
+    >
+      <div
+        class="v3-nav-group-label"
+      >
+        本机
+      </div>
+      <button
+        aria-current="page"
+        class="v3-nav-item"
+        data-pencil-name="能力 · Codex 管理"
+        type="button"
+      >
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-package v3-nav-icon"
+          fill="none"
+          height="15"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="15"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path
+            d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z"
+          />
+          <path
+            d="M12 22V12"
+          />
+          <polyline
+            points="3.29 7 12 12 20.71 7"
+          />
+          <path
+            d="m7.5 4.27 9 5.15"
+          />
+        </svg>
+        <span
+          class="v3-nav-text"
+        >
+          Codex 管理
+        </span>
+      </button>
+      <button
+        class="v3-nav-item"
+        data-pencil-name="能力 · 外观"
+        type="button"
+      >
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-paintbrush v3-nav-icon"
+          fill="none"
+          height="15"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="15"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path
+            d="m14.622 17.897-10.68-2.913"
+          />
+          <path
+            d="M18.376 2.622a1 1 0 1 1 3.002 3.002L17.36 9.643a.5.5 0 0 0 0 .707l.944.944a2.41 2.41 0 0 1 0 3.408l-.944.944a.5.5 0 0 1-.707 0L8.354 7.348a.5.5 0 0 1 0-.707l.944-.944a2.41 2.41 0 0 1 3.408 0l.944.944a.5.5 0 0 0 .707 0z"
+          />
+          <path
+            d="M9 8c-1.804 2.71-3.97 3.46-6.583 3.948a.507.507 0 0 0-.302.819l7.32 8.883a1 1 0 0 0 1.185.204C12.735 20.405 16 16.792 16 15"
+          />
+        </svg>
+        <span
+          class="v3-nav-text"
+        >
+          外观
+        </span>
+      </button>
+      <button
+        class="v3-nav-item"
+        data-pencil-name="能力 · 配置体检"
+        type="button"
+      >
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-activity v3-nav-icon"
+          fill="none"
+          height="15"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="15"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path
+            d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"
+          />
+        </svg>
+        <span
+          class="v3-nav-text"
+        >
+          配置体检
+        </span>
+      </button>
+    </div>
   </nav>
   <div
-    class="box-border w-full h-[1px] shrink-0 bg-[#23282D] my-1"
-    data-pencil-name="分隔"
-  />
-  <button
-    class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[12px] p-[0px_8px_0px_12px] justify-start items-center rounded-[4px] cursor-pointer border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
-    data-pencil-name="会话"
-    type="button"
+    class="v3-sidebar-foot"
   >
-    <svg
-      aria-hidden="true"
-      class="lucide lucide-messages-square text-[#BABEC3]"
-      fill="none"
-      height="16"
-      stroke="currentColor"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-      stroke-width="2"
-      viewBox="0 0 24 24"
-      width="16"
-      xmlns="http://www.w3.org/2000/svg"
+    <button
+      class="v3-nav-item"
+      data-pencil-name="会话"
+      type="button"
     >
-      <path
-        d="M16 10a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 14.286V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"
-      />
-      <path
-        d="M20 9a2 2 0 0 1 2 2v10.286a.71.71 0 0 1-1.212.502l-2.202-2.202A2 2 0 0 0 17.172 19H10a2 2 0 0 1-2-2v-1"
-      />
-    </svg>
-    <div
-      class="text-[14px]/[20px] box-border flex-1 text-left text-[#BABEC3] font-normal"
-      data-pencil-name="文字"
+      <svg
+        aria-hidden="true"
+        class="lucide lucide-messages-square v3-nav-icon"
+        fill="none"
+        height="15"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+        width="15"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          d="M16 10a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 14.286V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"
+        />
+        <path
+          d="M20 9a2 2 0 0 1 2 2v10.286a.71.71 0 0 1-1.212.502l-2.202-2.202A2 2 0 0 0 17.172 19H10a2 2 0 0 1-2-2v-1"
+        />
+      </svg>
+      <span
+        class="v3-nav-text"
+      >
+        会话
+      </span>
+    </button>
+    <button
+      class="v3-nav-item"
+      data-pencil-name="设置"
+      type="button"
     >
-      会话
-    </div>
-  </button>
-  <button
-    class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[12px] p-[0px_8px_0px_12px] justify-start items-center rounded-[4px] cursor-pointer border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
-    data-pencil-name="设置"
-    type="button"
-  >
-    <svg
-      aria-hidden="true"
-      class="lucide lucide-settings2 lucide-settings-2 text-[#BABEC3]"
-      fill="none"
-      height="16"
-      stroke="currentColor"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-      stroke-width="2"
-      viewBox="0 0 24 24"
-      width="16"
-      xmlns="http://www.w3.org/2000/svg"
-    >
-      <path
-        d="M14 17H5"
-      />
-      <path
-        d="M19 7h-9"
-      />
-      <circle
-        cx="17"
-        cy="17"
-        r="3"
-      />
-      <circle
-        cx="7"
-        cy="7"
-        r="3"
-      />
-    </svg>
-    <div
-      class="text-[14px]/[20px] box-border flex-1 text-left text-[#BABEC3] font-normal"
-      data-pencil-name="文字"
-    >
-      设置
-    </div>
-  </button>
+      <svg
+        aria-hidden="true"
+        class="lucide lucide-settings2 lucide-settings-2 v3-nav-icon"
+        fill="none"
+        height="15"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+        width="15"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          d="M14 17H5"
+        />
+        <path
+          d="M19 7h-9"
+        />
+        <circle
+          cx="17"
+          cy="17"
+          r="3"
+        />
+        <circle
+          cx="7"
+          cy="7"
+          r="3"
+        />
+      </svg>
+      <span
+        class="v3-nav-text"
+      >
+        设置
+      </span>
+    </button>
+  </div>
 </aside>
 `;
 
 exports[`keeps the shell markup stable across views and the line editor > sidebar on the line overview 1`] = `
 <aside
-  class="chimera-sidebar box-border w-[216px] shrink-0 h-full flex flex-col gap-[2px] p-[0px_8px_12px_8px] justify-start items-start bg-[#13181C] select-none z-10"
+  class="chimera-sidebar"
   data-pencil-name="侧栏"
-  data-theme="dark"
 >
   <div
-    class="box-border w-full h-[40px] shrink-0 flex flex-row gap-0 p-[0px_8px] justify-start items-center"
+    class="v3-sidebar-brand"
     data-pencil-name="字标区"
     data-tauri-drag-region="deep"
   >
-    <div
-      class="text-[14px]/[20px] box-border text-[#EEF0F3] font-bold text-left whitespace-nowrap"
-      data-pencil-name="字标"
+    <span
+      aria-hidden="true"
+      class="v3-sidebar-logo"
     >
-      Chimera++
-    </div>
+      C
+    </span>
+    <span
+      class="v3-sidebar-brandtext"
+    >
+      <span
+        class="v3-sidebar-wordmark"
+        data-pencil-name="字标"
+      >
+        Chimera++
+      </span>
+      <span
+        class="v3-sidebar-version"
+      >
+        2.9.0
+      </span>
+    </span>
   </div>
+  <button
+    aria-expanded="false"
+    aria-haspopup="dialog"
+    aria-label="切换工具，当前：Codex"
+    class="v3-tool-switch"
+    data-pencil-name="工具切换器"
+    data-state="closed"
+    type="button"
+  >
+    <span
+      aria-hidden="true"
+      class="v3-tool-bar"
+      data-tool="codex"
+    />
+    <span
+      class="v3-tool-switch-text"
+    >
+      <span
+        class="v3-tool-switch-name"
+      >
+        Codex
+      </span>
+      <span
+        class="v3-tool-switch-sub"
+      >
+        当前工具
+      </span>
+    </span>
+    <svg
+      aria-hidden="true"
+      class="lucide lucide-chevrons-up-down"
+      fill="none"
+      height="14"
+      stroke="currentColor"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      stroke-width="2"
+      viewBox="0 0 24 24"
+      width="14"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="m7 15 5 5 5-5"
+      />
+      <path
+        d="m7 9 5-5 5 5"
+      />
+    </svg>
+  </button>
   <nav
     aria-label="工具与功能"
     class="chimera-navigation"
   >
     <div
-      class="box-border w-full h-fit shrink-0 flex flex-col gap-0 justify-start items-start"
-      data-pencil-name="干线"
+      class="v3-nav-group"
     >
       <div
-        class="box-border w-full h-[36px] shrink-0 flex flex-row gap-[10px] p-[0px_8px_0px_10px] justify-start items-center rounded-[4px] relative"
-        data-pencil-name="工具 · Codex"
+        class="v3-nav-group-label"
       >
-        <div
-          class="box-border w-[24px] shrink-0 h-[24px] flex flex-row gap-0 justify-center items-center bg-transparent border border-[#8D9398] rounded-[4px] relative z-10"
-          data-pencil-name="徽标"
-        >
-          <div
-            class="text-[12px]/[17px] box-border text-[#BABEC3] font-bold text-left whitespace-nowrap"
-            data-pencil-name="简称"
-          >
-            Cx
-          </div>
-        </div>
-        <div
-          class="text-[14px]/[20px] box-border flex-1 text-[#EEF0F3] font-normal text-left relative z-10"
-          data-pencil-name="名称"
-        >
-          Codex
-        </div>
-        <div
-          class="box-border w-[2px] h-[6px] absolute left-[21px] top-[30px] bg-[#7B9BC3] z-0"
-          data-pencil-name="干线起点"
-        />
+        工作区
       </div>
       <button
         aria-current="page"
-        class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-[#23282D]"
+        class="v3-nav-item"
         data-pencil-name="能力 · 线路"
         type="button"
       >
-        <div
-          class="box-border w-[12px] shrink-0 h-fit flex flex-col gap-0 justify-start items-center"
-          data-pencil-name="站"
-        >
-          <div
-            class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3]"
-            data-pencil-name="上"
-          />
-          <div
-            class="box-border w-[8px] h-[8px] shrink-0 border-2 border-[#7B9BC3] rounded-full bg-[#7B9BC3]"
-            data-pencil-name="点"
-          />
-          <div
-            class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3] "
-            data-pencil-name="下"
-          />
-        </div>
-        <div
-          class="text-[14px]/[20px] box-border flex-1 text-left text-[#EEF0F3] font-bold"
-          data-pencil-name="文字"
-        >
-          线路
-        </div>
-      </button>
-      <button
-        class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
-        data-pencil-name="能力 · 官方账号"
-        type="button"
-      >
-        <div
-          class="box-border w-[12px] shrink-0 h-fit flex flex-col gap-0 justify-start items-center"
-          data-pencil-name="站"
-        >
-          <div
-            class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3]"
-            data-pencil-name="上"
-          />
-          <div
-            class="box-border w-[8px] h-[8px] shrink-0 border-2 border-[#7B9BC3] rounded-full bg-[#13181C]"
-            data-pencil-name="点"
-          />
-          <div
-            class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3] "
-            data-pencil-name="下"
-          />
-        </div>
-        <div
-          class="text-[14px]/[20px] box-border flex-1 text-left text-[#BABEC3] font-normal"
-          data-pencil-name="文字"
-        >
-          官方账号
-        </div>
-      </button>
-      <button
-        class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
-        data-pencil-name="能力 · 提示词"
-        type="button"
-      >
-        <div
-          class="box-border w-[12px] shrink-0 h-fit flex flex-col gap-0 justify-start items-center"
-          data-pencil-name="站"
-        >
-          <div
-            class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3]"
-            data-pencil-name="上"
-          />
-          <div
-            class="box-border w-[8px] h-[8px] shrink-0 border-2 border-[#7B9BC3] rounded-full bg-[#13181C]"
-            data-pencil-name="点"
-          />
-          <div
-            class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3] "
-            data-pencil-name="下"
-          />
-        </div>
-        <div
-          class="text-[14px]/[20px] box-border flex-1 text-left text-[#BABEC3] font-normal"
-          data-pencil-name="文字"
-        >
-          提示词
-        </div>
-      </button>
-      <button
-        class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
-        data-pencil-name="能力 · Skills 与 MCP"
-        type="button"
-      >
-        <div
-          class="box-border w-[12px] shrink-0 h-fit flex flex-col gap-0 justify-start items-center"
-          data-pencil-name="站"
-        >
-          <div
-            class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3]"
-            data-pencil-name="上"
-          />
-          <div
-            class="box-border w-[8px] h-[8px] shrink-0 border-2 border-[#7B9BC3] rounded-full bg-[#13181C]"
-            data-pencil-name="点"
-          />
-          <div
-            class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3] "
-            data-pencil-name="下"
-          />
-        </div>
-        <div
-          class="text-[14px]/[20px] box-border flex-1 text-left text-[#BABEC3] font-normal"
-          data-pencil-name="文字"
-        >
-          Skills 与 MCP
-        </div>
-      </button>
-      <button
-        class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
-        data-pencil-name="能力 · 用量"
-        type="button"
-      >
-        <div
-          class="box-border w-[12px] shrink-0 h-fit flex flex-col gap-0 justify-start items-center"
-          data-pencil-name="站"
-        >
-          <div
-            class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3]"
-            data-pencil-name="上"
-          />
-          <div
-            class="box-border w-[8px] h-[8px] shrink-0 border-2 border-[#7B9BC3] rounded-full bg-[#13181C]"
-            data-pencil-name="点"
-          />
-          <div
-            class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3] "
-            data-pencil-name="下"
-          />
-        </div>
-        <div
-          class="text-[14px]/[20px] box-border flex-1 text-left text-[#BABEC3] font-normal"
-          data-pencil-name="文字"
-        >
-          用量
-        </div>
-      </button>
-      <button
-        class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
-        data-pencil-name="能力 · Codex 管理"
-        type="button"
-      >
-        <div
-          class="box-border w-[12px] shrink-0 h-fit flex flex-col gap-0 justify-start items-center"
-          data-pencil-name="站"
-        >
-          <div
-            class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3]"
-            data-pencil-name="上"
-          />
-          <div
-            class="box-border w-[8px] h-[8px] shrink-0 border-2 border-[#7B9BC3] rounded-full bg-[#13181C]"
-            data-pencil-name="点"
-          />
-          <div
-            class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3] "
-            data-pencil-name="下"
-          />
-        </div>
-        <div
-          class="text-[14px]/[20px] box-border flex-1 text-left text-[#BABEC3] font-normal"
-          data-pencil-name="文字"
-        >
-          Codex 管理
-        </div>
-      </button>
-      <button
-        class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
-        data-pencil-name="能力 · 外观"
-        type="button"
-      >
-        <div
-          class="box-border w-[12px] shrink-0 h-fit flex flex-col gap-0 justify-start items-center"
-          data-pencil-name="站"
-        >
-          <div
-            class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3]"
-            data-pencil-name="上"
-          />
-          <div
-            class="box-border w-[8px] h-[8px] shrink-0 border-2 border-[#7B9BC3] rounded-full bg-[#13181C]"
-            data-pencil-name="点"
-          />
-          <div
-            class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3] "
-            data-pencil-name="下"
-          />
-        </div>
-        <div
-          class="text-[14px]/[20px] box-border flex-1 text-left text-[#BABEC3] font-normal"
-          data-pencil-name="文字"
-        >
-          外观
-        </div>
-      </button>
-      <button
-        class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
-        data-pencil-name="能力 · 配置体检"
-        type="button"
-      >
-        <div
-          class="box-border w-[12px] shrink-0 h-fit flex flex-col gap-0 justify-start items-center"
-          data-pencil-name="站"
-        >
-          <div
-            class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3]"
-            data-pencil-name="上"
-          />
-          <div
-            class="box-border w-[8px] h-[8px] shrink-0 border-2 border-[#7B9BC3] rounded-full bg-[#13181C]"
-            data-pencil-name="点"
-          />
-          <div
-            class="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3] opacity-0"
-            data-pencil-name="下"
-          />
-        </div>
-        <div
-          class="text-[14px]/[20px] box-border flex-1 text-left text-[#BABEC3] font-normal"
-          data-pencil-name="文字"
-        >
-          配置体检
-        </div>
-      </button>
-    </div>
-    <div
-      class="w-full h-[40px] shrink-0 px-[10px] pt-[16px] pb-[6px] text-[13px]/[18px] text-[#8D9398]"
-    >
-      其他工具
-    </div>
-    <button
-      aria-label="Claude Code"
-      class="chimera-nav-item w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
-      data-pencil-name="工具 · Claude Code"
-      type="button"
-    >
-      <span
-        class="w-[24px] h-[24px] shrink-0 flex items-center justify-center border border-[#8D9398] rounded-[4px] text-[12px] font-bold"
-      >
-        CC
-      </span>
-      <span
-        class="flex-1 text-[14px]"
-      >
-        Claude Code
-      </span>
-    </button>
-    <button
-      aria-label="Claude Desktop"
-      class="chimera-nav-item w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
-      data-pencil-name="工具 · Claude Desktop"
-      type="button"
-    >
-      <span
-        class="w-[24px] h-[24px] shrink-0 flex items-center justify-center border border-[#8D9398] rounded-[4px] text-[12px] font-bold"
-      >
-        CD
-      </span>
-      <span
-        class="flex-1 text-[14px]"
-      >
-        Claude Desktop
-      </span>
-    </button>
-    <button
-      aria-label="Gemini CLI"
-      class="chimera-nav-item w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
-      data-pencil-name="工具 · Gemini CLI"
-      type="button"
-    >
-      <span
-        class="w-[24px] h-[24px] shrink-0 flex items-center justify-center border border-[#8D9398] rounded-[4px] text-[12px] font-bold"
-      >
-        Gm
-      </span>
-      <span
-        class="flex-1 text-[14px]"
-      >
-        Gemini CLI
-      </span>
-    </button>
-    <button
-      aria-label="OpenCode"
-      class="chimera-nav-item w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
-      data-pencil-name="工具 · OpenCode"
-      type="button"
-    >
-      <span
-        class="w-[24px] h-[24px] shrink-0 flex items-center justify-center border border-[#8D9398] rounded-[4px] text-[12px] font-bold"
-      >
-        OC
-      </span>
-      <span
-        class="flex-1 text-[14px]"
-      >
-        OpenCode
-      </span>
-    </button>
-    <button
-      aria-label="Pi"
-      class="chimera-nav-item w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
-      data-pencil-name="工具 · Pi"
-      type="button"
-    >
-      <span
-        class="w-[24px] h-[24px] shrink-0 flex items-center justify-center border border-[#8D9398] rounded-[4px] text-[12px] font-bold"
-      >
-        Pi
-      </span>
-      <span
-        class="flex-1 text-[14px]"
-      >
-        Pi
-      </span>
-    </button>
-    <button
-      aria-label="oh-my-pi"
-      class="chimera-nav-item w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
-      data-pencil-name="工具 · oh-my-pi"
-      type="button"
-    >
-      <span
-        class="w-[24px] h-[24px] shrink-0 flex items-center justify-center border border-[#8D9398] rounded-[4px] text-[12px] font-bold"
-      >
-        Om
-      </span>
-      <span
-        class="flex-1 text-[14px]"
-      >
-        oh-my-pi
-      </span>
-    </button>
-    <button
-      aria-label="Grok Build"
-      class="chimera-nav-item w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"
-      data-pencil-name="工具 · Grok Build"
-      type="button"
-    >
-      <span
-        class="w-[24px] h-[24px] shrink-0 flex items-center justify-center border border-[#8D9398] rounded-[4px] text-[12px] font-bold"
-      >
-        Gk
-      </span>
-      <span
-        class="flex-1 text-[14px]"
-      >
-        Grok Build
-      </span>
-    </button>
-    <button
-      class="chimera-nav-item w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left cursor-pointer bg-transparent text-[#BABEC3] hover:bg-[#1A1E24]"
-      data-pencil-name="添加工具"
-      title="选择侧栏显示哪些工具"
-      type="button"
-    >
-      <span
-        class="w-[24px] h-[24px] flex items-center justify-center border border-[#8D9398] rounded-[4px]"
-      >
         <svg
           aria-hidden="true"
-          class="lucide lucide-plus"
+          class="lucide lucide-route v3-nav-icon"
           fill="none"
-          height="14"
+          height="15"
           stroke="currentColor"
           stroke-linecap="round"
           stroke-linejoin="round"
           stroke-width="2"
           viewBox="0 0 24 24"
-          width="14"
+          width="15"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <circle
+            cx="6"
+            cy="19"
+            r="3"
+          />
+          <path
+            d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"
+          />
+          <circle
+            cx="18"
+            cy="5"
+            r="3"
+          />
+        </svg>
+        <span
+          class="v3-nav-text"
+        >
+          线路
+        </span>
+      </button>
+      <button
+        class="v3-nav-item is-sub"
+        data-pencil-name="能力 · 官方账号"
+        type="button"
+      >
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-users v3-nav-icon"
+          fill="none"
+          height="15"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="15"
           xmlns="http://www.w3.org/2000/svg"
         >
           <path
-            d="M5 12h14"
+            d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"
           />
           <path
-            d="M12 5v14"
+            d="M16 3.128a4 4 0 0 1 0 7.744"
+          />
+          <path
+            d="M22 21v-2a4 4 0 0 0-3-3.87"
+          />
+          <circle
+            cx="9"
+            cy="7"
+            r="4"
           />
         </svg>
-      </span>
-      <span
-        class="text-[14px]"
+        <span
+          class="v3-nav-text"
+        >
+          官方账号
+        </span>
+      </button>
+      <button
+        class="v3-nav-item"
+        data-pencil-name="能力 · 提示词"
+        type="button"
       >
-        管理工具
-      </span>
-    </button>
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-file-text v3-nav-icon"
+          fill="none"
+          height="15"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="15"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path
+            d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"
+          />
+          <path
+            d="M14 2v5a1 1 0 0 0 1 1h5"
+          />
+          <path
+            d="M10 9H8"
+          />
+          <path
+            d="M16 13H8"
+          />
+          <path
+            d="M16 17H8"
+          />
+        </svg>
+        <span
+          class="v3-nav-text"
+        >
+          提示词
+        </span>
+      </button>
+      <button
+        class="v3-nav-item"
+        data-pencil-name="能力 · Skills 与 MCP"
+        type="button"
+      >
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-cpu v3-nav-icon"
+          fill="none"
+          height="15"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="15"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path
+            d="M12 20v2"
+          />
+          <path
+            d="M12 2v2"
+          />
+          <path
+            d="M17 20v2"
+          />
+          <path
+            d="M17 2v2"
+          />
+          <path
+            d="M2 12h2"
+          />
+          <path
+            d="M2 17h2"
+          />
+          <path
+            d="M2 7h2"
+          />
+          <path
+            d="M20 12h2"
+          />
+          <path
+            d="M20 17h2"
+          />
+          <path
+            d="M20 7h2"
+          />
+          <path
+            d="M7 20v2"
+          />
+          <path
+            d="M7 2v2"
+          />
+          <rect
+            height="16"
+            rx="2"
+            width="16"
+            x="4"
+            y="4"
+          />
+          <rect
+            height="8"
+            rx="1"
+            width="8"
+            x="8"
+            y="8"
+          />
+        </svg>
+        <span
+          class="v3-nav-text"
+        >
+          Skills 与 MCP
+        </span>
+      </button>
+      <button
+        class="v3-nav-item"
+        data-pencil-name="能力 · 用量"
+        type="button"
+      >
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-chart-column v3-nav-icon"
+          fill="none"
+          height="15"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="15"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path
+            d="M3 3v16a2 2 0 0 0 2 2h16"
+          />
+          <path
+            d="M18 17V9"
+          />
+          <path
+            d="M13 17V5"
+          />
+          <path
+            d="M8 17v-3"
+          />
+        </svg>
+        <span
+          class="v3-nav-text"
+        >
+          用量
+        </span>
+      </button>
+    </div>
+    <div
+      class="v3-nav-group"
+    >
+      <div
+        class="v3-nav-group-label"
+      >
+        本机
+      </div>
+      <button
+        class="v3-nav-item"
+        data-pencil-name="能力 · Codex 管理"
+        type="button"
+      >
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-package v3-nav-icon"
+          fill="none"
+          height="15"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="15"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path
+            d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z"
+          />
+          <path
+            d="M12 22V12"
+          />
+          <polyline
+            points="3.29 7 12 12 20.71 7"
+          />
+          <path
+            d="m7.5 4.27 9 5.15"
+          />
+        </svg>
+        <span
+          class="v3-nav-text"
+        >
+          Codex 管理
+        </span>
+      </button>
+      <button
+        class="v3-nav-item"
+        data-pencil-name="能力 · 外观"
+        type="button"
+      >
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-paintbrush v3-nav-icon"
+          fill="none"
+          height="15"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="15"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path
+            d="m14.622 17.897-10.68-2.913"
+          />
+          <path
+            d="M18.376 2.622a1 1 0 1 1 3.002 3.002L17.36 9.643a.5.5 0 0 0 0 .707l.944.944a2.41 2.41 0 0 1 0 3.408l-.944.944a.5.5 0 0 1-.707 0L8.354 7.348a.5.5 0 0 1 0-.707l.944-.944a2.41 2.41 0 0 1 3.408 0l.944.944a.5.5 0 0 0 .707 0z"
+          />
+          <path
+            d="M9 8c-1.804 2.71-3.97 3.46-6.583 3.948a.507.507 0 0 0-.302.819l7.32 8.883a1 1 0 0 0 1.185.204C12.735 20.405 16 16.792 16 15"
+          />
+        </svg>
+        <span
+          class="v3-nav-text"
+        >
+          外观
+        </span>
+      </button>
+      <button
+        class="v3-nav-item"
+        data-pencil-name="能力 · 配置体检"
+        type="button"
+      >
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-activity v3-nav-icon"
+          fill="none"
+          height="15"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="15"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path
+            d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"
+          />
+        </svg>
+        <span
+          class="v3-nav-text"
+        >
+          配置体检
+        </span>
+      </button>
+    </div>
   </nav>
   <div
-    class="box-border w-full h-[1px] shrink-0 bg-[#23282D] my-1"
-    data-pencil-name="分隔"
-  />
-  <button
-    class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[12px] p-[0px_8px_0px_12px] justify-start items-center rounded-[4px] cursor-pointer border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
-    data-pencil-name="会话"
-    type="button"
+    class="v3-sidebar-foot"
   >
-    <svg
-      aria-hidden="true"
-      class="lucide lucide-messages-square text-[#BABEC3]"
-      fill="none"
-      height="16"
-      stroke="currentColor"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-      stroke-width="2"
-      viewBox="0 0 24 24"
-      width="16"
-      xmlns="http://www.w3.org/2000/svg"
+    <button
+      class="v3-nav-item"
+      data-pencil-name="会话"
+      type="button"
     >
-      <path
-        d="M16 10a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 14.286V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"
-      />
-      <path
-        d="M20 9a2 2 0 0 1 2 2v10.286a.71.71 0 0 1-1.212.502l-2.202-2.202A2 2 0 0 0 17.172 19H10a2 2 0 0 1-2-2v-1"
-      />
-    </svg>
-    <div
-      class="text-[14px]/[20px] box-border flex-1 text-left text-[#BABEC3] font-normal"
-      data-pencil-name="文字"
+      <svg
+        aria-hidden="true"
+        class="lucide lucide-messages-square v3-nav-icon"
+        fill="none"
+        height="15"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+        width="15"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          d="M16 10a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 14.286V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"
+        />
+        <path
+          d="M20 9a2 2 0 0 1 2 2v10.286a.71.71 0 0 1-1.212.502l-2.202-2.202A2 2 0 0 0 17.172 19H10a2 2 0 0 1-2-2v-1"
+        />
+      </svg>
+      <span
+        class="v3-nav-text"
+      >
+        会话
+      </span>
+    </button>
+    <button
+      class="v3-nav-item"
+      data-pencil-name="设置"
+      type="button"
     >
-      会话
-    </div>
-  </button>
-  <button
-    class="chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[12px] p-[0px_8px_0px_12px] justify-start items-center rounded-[4px] cursor-pointer border-0 transition-colors text-left bg-transparent hover:bg-[#1A1E24]"
-    data-pencil-name="设置"
-    type="button"
-  >
-    <svg
-      aria-hidden="true"
-      class="lucide lucide-settings2 lucide-settings-2 text-[#BABEC3]"
-      fill="none"
-      height="16"
-      stroke="currentColor"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-      stroke-width="2"
-      viewBox="0 0 24 24"
-      width="16"
-      xmlns="http://www.w3.org/2000/svg"
-    >
-      <path
-        d="M14 17H5"
-      />
-      <path
-        d="M19 7h-9"
-      />
-      <circle
-        cx="17"
-        cy="17"
-        r="3"
-      />
-      <circle
-        cx="7"
-        cy="7"
-        r="3"
-      />
-    </svg>
-    <div
-      class="text-[14px]/[20px] box-border flex-1 text-left text-[#BABEC3] font-normal"
-      data-pencil-name="文字"
-    >
-      设置
-    </div>
-  </button>
+      <svg
+        aria-hidden="true"
+        class="lucide lucide-settings2 lucide-settings-2 v3-nav-icon"
+        fill="none"
+        height="15"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+        width="15"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          d="M14 17H5"
+        />
+        <path
+          d="M19 7h-9"
+        />
+        <circle
+          cx="17"
+          cy="17"
+          r="3"
+        />
+        <circle
+          cx="7"
+          cy="7"
+          r="3"
+        />
+      </svg>
+      <span
+        class="v3-nav-text"
+      >
+        设置
+      </span>
+    </button>
+  </div>
 </aside>
 `;
 
 exports[`keeps the shell markup stable across views and the line editor > titlebar on another page 1`] = `
 <header
-  class="chimera-topbar box-border w-full h-[40px] shrink-0 flex flex-row gap-0 justify-start items-center bg-[#FDFDFE] dark:bg-[#1A1E24] border-b border-[#DDE0E3] dark:border-[#31363D] select-none z-10"
+  class="chimera-titlebar"
   data-pencil-name="标题栏"
 >
   <div
-    class="box-border flex-1 min-w-0 h-[40px] flex flex-row p-[0px_12px] justify-start items-center gap-2"
-    data-pencil-name="左"
+    class="v3-crumb"
     data-tauri-drag-region="deep"
   >
     <span
-      class="text-[12px] text-[#646970] dark:text-[#8D9398] truncate"
+      class="v3-crumb-tool"
+    >
+      Codex
+    </span>
+    <span
+      aria-hidden="true"
+      class="v3-crumb-sep"
+    >
+      /
+    </span>
+    <span
+      class="v3-crumb-page"
+    >
+      Codex 管理
+    </span>
+    <span
+      class="v3-preview-chip"
       title="浏览器预览 · 未连接本机，不读取或修改本机配置"
     >
       浏览器预览 · 未连接本机
@@ -1075,14 +1058,14 @@ exports[`keeps the shell markup stable across views and the line editor > titleb
   </div>
   <button
     aria-label="搜索线路、页面或命令"
-    class="chimera-global-search box-border w-[360px] max-w-[42%] min-w-0 shrink h-[28px] flex flex-row gap-[8px] px-2.5 justify-start items-center bg-[#F2F4F6] dark:bg-[#23282D] rounded-[4px] border-0 cursor-pointer hover:bg-[var(--bg-selected)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--focus)] transition"
+    class="v3-search"
     data-pencil-name="搜索"
     data-tauri-no-drag="true"
     type="button"
   >
     <svg
       aria-hidden="true"
-      class="lucide lucide-search text-[#646970] dark:text-[#8D9398]"
+      class="lucide lucide-search"
       fill="none"
       height="14"
       stroke="currentColor"
@@ -1103,126 +1086,107 @@ exports[`keeps the shell markup stable across views and the line editor > titleb
       />
     </svg>
     <span
-      class="text-[13px]/[18px] box-border flex-1 text-[#646970] dark:text-[#8D9398] font-normal text-left truncate"
-      data-pencil-name="占位"
+      class="v3-search-placeholder"
     >
       搜索线路、页面或命令
     </span>
-    <div
-      class="box-border w-fit shrink-0 h-[20px] flex flex-row gap-0 px-1.5 justify-start items-center bg-[#FDFDFE] dark:bg-[#1A1E24] border border-[#DDE0E3] dark:border-[#31363D] rounded-[4px]"
-      data-pencil-name="键帽"
+    <span
+      aria-hidden="true"
+      class="v3-kbd"
     >
-      <span
-        class="text-[12px]/[17px] box-border text-[#646970] dark:text-[#8D9398] font-mono whitespace-nowrap"
-        data-pencil-name="值"
-      >
-        Ctrl K
-      </span>
-    </div>
+      Ctrl K
+    </span>
   </button>
   <div
-    class="box-border shrink-0 h-[40px] flex flex-row justify-end items-center"
-    data-pencil-name="右"
+    class="v3-window-controls"
+    data-tauri-no-drag="true"
   >
     <div
-      class="flex items-center"
+      class="window-controls window-controls-windows"
       data-tauri-no-drag="true"
     >
       <button
-        aria-label="检查更新"
-        class="sr-only"
-        tabindex="-1"
+        aria-label="最小化窗口"
+        class="window-control-minimize"
+        disabled=""
+        title="仅桌面应用可用"
         type="button"
       >
-        检查更新
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-minus"
+          fill="none"
+          height="14"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="14"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path
+            d="M5 12h14"
+          />
+        </svg>
       </button>
-      <div
-        class="window-controls window-controls-windows"
-        data-tauri-no-drag="true"
+      <button
+        aria-label="最大化窗口"
+        class="window-control-maximize"
+        disabled=""
+        title="仅桌面应用可用"
+        type="button"
       >
-        <button
-          aria-label="最小化窗口"
-          class="window-control-minimize"
-          disabled=""
-          title="仅桌面应用可用"
-          type="button"
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-square"
+          fill="none"
+          height="12"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="12"
+          xmlns="http://www.w3.org/2000/svg"
         >
-          <svg
-            aria-hidden="true"
-            class="lucide lucide-minus"
-            fill="none"
-            height="14"
-            stroke="currentColor"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            viewBox="0 0 24 24"
-            width="14"
-            xmlns="http://www.w3.org/2000/svg"
-          >
-            <path
-              d="M5 12h14"
-            />
-          </svg>
-        </button>
-        <button
-          aria-label="最大化窗口"
-          class="window-control-maximize"
-          disabled=""
-          title="仅桌面应用可用"
-          type="button"
+          <rect
+            height="18"
+            rx="2"
+            width="18"
+            x="3"
+            y="3"
+          />
+        </svg>
+      </button>
+      <button
+        aria-label="关闭窗口"
+        class="window-control-close"
+        disabled=""
+        title="仅桌面应用可用"
+        type="button"
+      >
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-x"
+          fill="none"
+          height="14"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="14"
+          xmlns="http://www.w3.org/2000/svg"
         >
-          <svg
-            aria-hidden="true"
-            class="lucide lucide-square"
-            fill="none"
-            height="12"
-            stroke="currentColor"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            viewBox="0 0 24 24"
-            width="12"
-            xmlns="http://www.w3.org/2000/svg"
-          >
-            <rect
-              height="18"
-              rx="2"
-              width="18"
-              x="3"
-              y="3"
-            />
-          </svg>
-        </button>
-        <button
-          aria-label="关闭窗口"
-          class="window-control-close"
-          disabled=""
-          title="仅桌面应用可用"
-          type="button"
-        >
-          <svg
-            aria-hidden="true"
-            class="lucide lucide-x"
-            fill="none"
-            height="14"
-            stroke="currentColor"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            viewBox="0 0 24 24"
-            width="14"
-            xmlns="http://www.w3.org/2000/svg"
-          >
-            <path
-              d="M18 6 6 18"
-            />
-            <path
-              d="m6 6 12 12"
-            />
-          </svg>
-        </button>
-      </div>
+          <path
+            d="M18 6 6 18"
+          />
+          <path
+            d="m6 6 12 12"
+          />
+        </svg>
+      </button>
     </div>
   </div>
 </header>
@@ -1230,16 +1194,31 @@ exports[`keeps the shell markup stable across views and the line editor > titleb
 
 exports[`keeps the shell markup stable across views and the line editor > titlebar on the line overview 1`] = `
 <header
-  class="chimera-topbar box-border w-full h-[40px] shrink-0 flex flex-row gap-0 justify-start items-center bg-[#FDFDFE] dark:bg-[#1A1E24] border-b border-[#DDE0E3] dark:border-[#31363D] select-none z-10"
+  class="chimera-titlebar"
   data-pencil-name="标题栏"
 >
   <div
-    class="box-border flex-1 min-w-0 h-[40px] flex flex-row p-[0px_12px] justify-start items-center gap-2"
-    data-pencil-name="左"
+    class="v3-crumb"
     data-tauri-drag-region="deep"
   >
     <span
-      class="text-[12px] text-[#646970] dark:text-[#8D9398] truncate"
+      class="v3-crumb-tool"
+    >
+      Codex
+    </span>
+    <span
+      aria-hidden="true"
+      class="v3-crumb-sep"
+    >
+      /
+    </span>
+    <span
+      class="v3-crumb-page"
+    >
+      线路
+    </span>
+    <span
+      class="v3-preview-chip"
       title="浏览器预览 · 未连接本机，不读取或修改本机配置"
     >
       浏览器预览 · 未连接本机
@@ -1247,14 +1226,14 @@ exports[`keeps the shell markup stable across views and the line editor > titleb
   </div>
   <button
     aria-label="搜索线路、页面或命令"
-    class="chimera-global-search box-border w-[360px] max-w-[42%] min-w-0 shrink h-[28px] flex flex-row gap-[8px] px-2.5 justify-start items-center bg-[#F2F4F6] dark:bg-[#23282D] rounded-[4px] border-0 cursor-pointer hover:bg-[var(--bg-selected)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--focus)] transition"
+    class="v3-search"
     data-pencil-name="搜索"
     data-tauri-no-drag="true"
     type="button"
   >
     <svg
       aria-hidden="true"
-      class="lucide lucide-search text-[#646970] dark:text-[#8D9398]"
+      class="lucide lucide-search"
       fill="none"
       height="14"
       stroke="currentColor"
@@ -1275,126 +1254,107 @@ exports[`keeps the shell markup stable across views and the line editor > titleb
       />
     </svg>
     <span
-      class="text-[13px]/[18px] box-border flex-1 text-[#646970] dark:text-[#8D9398] font-normal text-left truncate"
-      data-pencil-name="占位"
+      class="v3-search-placeholder"
     >
       搜索线路、页面或命令
     </span>
-    <div
-      class="box-border w-fit shrink-0 h-[20px] flex flex-row gap-0 px-1.5 justify-start items-center bg-[#FDFDFE] dark:bg-[#1A1E24] border border-[#DDE0E3] dark:border-[#31363D] rounded-[4px]"
-      data-pencil-name="键帽"
+    <span
+      aria-hidden="true"
+      class="v3-kbd"
     >
-      <span
-        class="text-[12px]/[17px] box-border text-[#646970] dark:text-[#8D9398] font-mono whitespace-nowrap"
-        data-pencil-name="值"
-      >
-        Ctrl K
-      </span>
-    </div>
+      Ctrl K
+    </span>
   </button>
   <div
-    class="box-border shrink-0 h-[40px] flex flex-row justify-end items-center"
-    data-pencil-name="右"
+    class="v3-window-controls"
+    data-tauri-no-drag="true"
   >
     <div
-      class="flex items-center"
+      class="window-controls window-controls-windows"
       data-tauri-no-drag="true"
     >
       <button
-        aria-label="检查更新"
-        class="sr-only"
-        tabindex="-1"
+        aria-label="最小化窗口"
+        class="window-control-minimize"
+        disabled=""
+        title="仅桌面应用可用"
         type="button"
       >
-        检查更新
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-minus"
+          fill="none"
+          height="14"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="14"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path
+            d="M5 12h14"
+          />
+        </svg>
       </button>
-      <div
-        class="window-controls window-controls-windows"
-        data-tauri-no-drag="true"
+      <button
+        aria-label="最大化窗口"
+        class="window-control-maximize"
+        disabled=""
+        title="仅桌面应用可用"
+        type="button"
       >
-        <button
-          aria-label="最小化窗口"
-          class="window-control-minimize"
-          disabled=""
-          title="仅桌面应用可用"
-          type="button"
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-square"
+          fill="none"
+          height="12"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="12"
+          xmlns="http://www.w3.org/2000/svg"
         >
-          <svg
-            aria-hidden="true"
-            class="lucide lucide-minus"
-            fill="none"
-            height="14"
-            stroke="currentColor"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            viewBox="0 0 24 24"
-            width="14"
-            xmlns="http://www.w3.org/2000/svg"
-          >
-            <path
-              d="M5 12h14"
-            />
-          </svg>
-        </button>
-        <button
-          aria-label="最大化窗口"
-          class="window-control-maximize"
-          disabled=""
-          title="仅桌面应用可用"
-          type="button"
+          <rect
+            height="18"
+            rx="2"
+            width="18"
+            x="3"
+            y="3"
+          />
+        </svg>
+      </button>
+      <button
+        aria-label="关闭窗口"
+        class="window-control-close"
+        disabled=""
+        title="仅桌面应用可用"
+        type="button"
+      >
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-x"
+          fill="none"
+          height="14"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="14"
+          xmlns="http://www.w3.org/2000/svg"
         >
-          <svg
-            aria-hidden="true"
-            class="lucide lucide-square"
-            fill="none"
-            height="12"
-            stroke="currentColor"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            viewBox="0 0 24 24"
-            width="12"
-            xmlns="http://www.w3.org/2000/svg"
-          >
-            <rect
-              height="18"
-              rx="2"
-              width="18"
-              x="3"
-              y="3"
-            />
-          </svg>
-        </button>
-        <button
-          aria-label="关闭窗口"
-          class="window-control-close"
-          disabled=""
-          title="仅桌面应用可用"
-          type="button"
-        >
-          <svg
-            aria-hidden="true"
-            class="lucide lucide-x"
-            fill="none"
-            height="14"
-            stroke="currentColor"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            viewBox="0 0 24 24"
-            width="14"
-            xmlns="http://www.w3.org/2000/svg"
-          >
-            <path
-              d="M18 6 6 18"
-            />
-            <path
-              d="m6 6 12 12"
-            />
-          </svg>
-        </button>
-      </div>
+          <path
+            d="M18 6 6 18"
+          />
+          <path
+            d="m6 6 12 12"
+          />
+        </svg>
+      </button>
     </div>
   </div>
 </header>
@@ -1402,16 +1362,31 @@ exports[`keeps the shell markup stable across views and the line editor > titleb
 
 exports[`keeps the shell markup stable across views and the line editor > titlebar while editing a line 1`] = `
 <header
-  class="chimera-topbar box-border w-full h-[40px] shrink-0 flex flex-row gap-0 justify-start items-center bg-[#FDFDFE] dark:bg-[#1A1E24] border-b border-[#DDE0E3] dark:border-[#31363D] select-none z-10"
+  class="chimera-titlebar"
   data-pencil-name="标题栏"
 >
   <div
-    class="box-border flex-1 min-w-0 h-[40px] flex flex-row p-[0px_12px] justify-start items-center gap-2"
-    data-pencil-name="左"
+    class="v3-crumb"
     data-tauri-drag-region="deep"
   >
     <span
-      class="text-[12px] text-[#646970] dark:text-[#8D9398] truncate"
+      class="v3-crumb-tool"
+    >
+      Codex
+    </span>
+    <span
+      aria-hidden="true"
+      class="v3-crumb-sep"
+    >
+      /
+    </span>
+    <span
+      class="v3-crumb-page"
+    >
+      添加线路
+    </span>
+    <span
+      class="v3-preview-chip"
       title="浏览器预览 · 未连接本机，不读取或修改本机配置"
     >
       浏览器预览 · 未连接本机
@@ -1419,14 +1394,14 @@ exports[`keeps the shell markup stable across views and the line editor > titleb
   </div>
   <button
     aria-label="搜索线路、页面或命令"
-    class="chimera-global-search box-border w-[360px] max-w-[42%] min-w-0 shrink h-[28px] flex flex-row gap-[8px] px-2.5 justify-start items-center bg-[#F2F4F6] dark:bg-[#23282D] rounded-[4px] border-0 cursor-pointer hover:bg-[var(--bg-selected)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--focus)] transition"
+    class="v3-search"
     data-pencil-name="搜索"
     data-tauri-no-drag="true"
     type="button"
   >
     <svg
       aria-hidden="true"
-      class="lucide lucide-search text-[#646970] dark:text-[#8D9398]"
+      class="lucide lucide-search"
       fill="none"
       height="14"
       stroke="currentColor"
@@ -1447,126 +1422,107 @@ exports[`keeps the shell markup stable across views and the line editor > titleb
       />
     </svg>
     <span
-      class="text-[13px]/[18px] box-border flex-1 text-[#646970] dark:text-[#8D9398] font-normal text-left truncate"
-      data-pencil-name="占位"
+      class="v3-search-placeholder"
     >
       搜索线路、页面或命令
     </span>
-    <div
-      class="box-border w-fit shrink-0 h-[20px] flex flex-row gap-0 px-1.5 justify-start items-center bg-[#FDFDFE] dark:bg-[#1A1E24] border border-[#DDE0E3] dark:border-[#31363D] rounded-[4px]"
-      data-pencil-name="键帽"
+    <span
+      aria-hidden="true"
+      class="v3-kbd"
     >
-      <span
-        class="text-[12px]/[17px] box-border text-[#646970] dark:text-[#8D9398] font-mono whitespace-nowrap"
-        data-pencil-name="值"
-      >
-        Ctrl K
-      </span>
-    </div>
+      Ctrl K
+    </span>
   </button>
   <div
-    class="box-border shrink-0 h-[40px] flex flex-row justify-end items-center"
-    data-pencil-name="右"
+    class="v3-window-controls"
+    data-tauri-no-drag="true"
   >
     <div
-      class="flex items-center"
+      class="window-controls window-controls-windows"
       data-tauri-no-drag="true"
     >
       <button
-        aria-label="检查更新"
-        class="sr-only"
-        tabindex="-1"
+        aria-label="最小化窗口"
+        class="window-control-minimize"
+        disabled=""
+        title="仅桌面应用可用"
         type="button"
       >
-        检查更新
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-minus"
+          fill="none"
+          height="14"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="14"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path
+            d="M5 12h14"
+          />
+        </svg>
       </button>
-      <div
-        class="window-controls window-controls-windows"
-        data-tauri-no-drag="true"
+      <button
+        aria-label="最大化窗口"
+        class="window-control-maximize"
+        disabled=""
+        title="仅桌面应用可用"
+        type="button"
       >
-        <button
-          aria-label="最小化窗口"
-          class="window-control-minimize"
-          disabled=""
-          title="仅桌面应用可用"
-          type="button"
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-square"
+          fill="none"
+          height="12"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="12"
+          xmlns="http://www.w3.org/2000/svg"
         >
-          <svg
-            aria-hidden="true"
-            class="lucide lucide-minus"
-            fill="none"
-            height="14"
-            stroke="currentColor"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            viewBox="0 0 24 24"
-            width="14"
-            xmlns="http://www.w3.org/2000/svg"
-          >
-            <path
-              d="M5 12h14"
-            />
-          </svg>
-        </button>
-        <button
-          aria-label="最大化窗口"
-          class="window-control-maximize"
-          disabled=""
-          title="仅桌面应用可用"
-          type="button"
+          <rect
+            height="18"
+            rx="2"
+            width="18"
+            x="3"
+            y="3"
+          />
+        </svg>
+      </button>
+      <button
+        aria-label="关闭窗口"
+        class="window-control-close"
+        disabled=""
+        title="仅桌面应用可用"
+        type="button"
+      >
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-x"
+          fill="none"
+          height="14"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="14"
+          xmlns="http://www.w3.org/2000/svg"
         >
-          <svg
-            aria-hidden="true"
-            class="lucide lucide-square"
-            fill="none"
-            height="12"
-            stroke="currentColor"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            viewBox="0 0 24 24"
-            width="12"
-            xmlns="http://www.w3.org/2000/svg"
-          >
-            <rect
-              height="18"
-              rx="2"
-              width="18"
-              x="3"
-              y="3"
-            />
-          </svg>
-        </button>
-        <button
-          aria-label="关闭窗口"
-          class="window-control-close"
-          disabled=""
-          title="仅桌面应用可用"
-          type="button"
-        >
-          <svg
-            aria-hidden="true"
-            class="lucide lucide-x"
-            fill="none"
-            height="14"
-            stroke="currentColor"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            viewBox="0 0 24 24"
-            width="14"
-            xmlns="http://www.w3.org/2000/svg"
-          >
-            <path
-              d="M18 6 6 18"
-            />
-            <path
-              d="m6 6 12 12"
-            />
-          </svg>
-        </button>
-      </div>
+          <path
+            d="M18 6 6 18"
+          />
+          <path
+            d="m6 6 12 12"
+          />
+        </svg>
+      </button>
     </div>
   </div>
 </header>

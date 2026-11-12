@@ -37,10 +37,12 @@ describe("provider table scrolling and fixed row geometry", () => {
     expect(block).toContain("height: 6px");
   });
   it("keeps Pencil row and action dimensions", () => {
+    // v3 table: 36px rows from the shared scale, latency + actions as the
+    // last two tracks, and a 14px gutter that matches the card padding.
     const block = extractBlock(".provider-table-row", tableCss);
-    expect(block).toContain("height: 42px");
-    expect(block).toContain("90px 136px");
-    expect(block).toContain("gap: 12px");
+    expect(block).toContain("height: var(--size-row)");
+    expect(block).toContain("104px 112px");
+    expect(block).toContain("gap: 14px");
   });
   it("keeps long cell content inside its column", () => {
     const block = extractBlock(".provider-table-row > *", tableCss);
@@ -76,30 +78,5 @@ describe("chimera.css — Bug 2 update banner styles", () => {
     const block = extractBlock(".route-update-banner-actions button.primary");
     expect(block).toContain("background: var(--ch-accent)");
     expect(block).not.toContain("var(--accent");
-  });
-});
-
-describe("chimera.css — runtime information layout", () => {
-  it("reserves readable status columns while allowing the path to shrink", () => {
-    expect(extractBlock(".runtime-info-strip")).toContain(
-      "grid-template-columns: minmax(0, 1fr) 86px 86px",
-    );
-  });
-
-  it("ellipsizes long paths without expanding the information strip", () => {
-    expect(extractBlock(".runtime-info-strip > div")).toContain("min-width: 0");
-    expect(extractBlock(".runtime-info-strip span")).toContain("min-width: 0");
-    const path = extractBlock(".runtime-info-strip > div:first-child b");
-    expect(path).toContain("text-overflow: ellipsis");
-    expect(path).toContain("overflow: hidden");
-    expect(path).toContain("white-space: nowrap");
-    expect(path).toContain("user-select: text");
-  });
-
-  it("keeps short status text and icons intact", () => {
-    expect(
-      extractBlock(".runtime-info-strip > div:not(:first-child) span"),
-    ).toContain("white-space: nowrap");
-    expect(extractBlock(".runtime-info-strip svg")).toContain("flex-shrink: 0");
   });
 });

@@ -54,6 +54,7 @@
     "tool_registry": 1,
     "product_policy": 1,
     "settings": 1,
+    "official_account_meta": 1,
 
     "config": 0,
     "error": 0,

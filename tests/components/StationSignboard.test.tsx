@@ -12,7 +12,9 @@ describe("station signboard uses measured data", () => {
     expect(screen.getByText("未命名线路")).toBeVisible();
     expect(screen.getByText("未设置请求地址")).toBeVisible();
     expect(screen.getByText("未设置模型")).toBeVisible();
-    expect(screen.getByText("未测速", { selector: ".station-state" })).toBeVisible();
+    expect(
+      screen.getByText("未测速", { selector: ".station-state" }),
+    ).toBeVisible();
     // No protocol persisted: the line goes through the local router for auto-detection.
     expect(screen.getByText("自动识别协议")).toBeVisible();
     expect(
@@ -34,8 +36,15 @@ describe("station signboard uses measured data", () => {
     const { rerender } = render(
       <StationSignboard currentProvider={provider} latencyMs={0} />,
     );
-    expect(screen.getByText("0 ms")).toBeVisible();
-    expect(screen.getByText("地址可达", { selector: ".station-state" })).toBeVisible();
+    expect(
+      screen.getByText(
+        (_, el) =>
+          el?.className === "station-latency" && el.textContent === "0 ms",
+      ),
+    ).toBeVisible();
+    expect(
+      screen.getByText("地址可达", { selector: ".station-state" }),
+    ).toBeVisible();
     rerender(
       <StationSignboard
         currentProvider={provider}
@@ -43,8 +52,15 @@ describe("station signboard uses measured data", () => {
         testingLatency
       />,
     );
-    expect(screen.getByText("测速中", { selector: ".station-state" })).toBeVisible();
-    expect(screen.queryByText("0 ms")).not.toBeInTheDocument();
+    expect(
+      screen.getByText("测速中", { selector: ".station-state" }),
+    ).toBeVisible();
+    expect(
+      screen.queryByText(
+        (_, el) =>
+          el?.className === "station-latency" && el.textContent === "0 ms",
+      ),
+    ).not.toBeInTheDocument();
     expect(screen.queryByText("地址可达")).not.toBeInTheDocument();
   });
 
@@ -80,7 +96,11 @@ describe("station signboard uses measured data", () => {
       />,
     );
     expect(screen.getByText("刚刚 从 Alpha 切换到 Beta")).toBeVisible();
-    expect(screen.getByRole("button", { name: /切回/ })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "撤销" })).toBeEnabled();
+    // No restart handler, no restart button.
+    expect(
+      screen.queryByRole("button", { name: "重启 Codex" }),
+    ).not.toBeInTheDocument();
     expect(document.body.textContent).not.toMatch(/备份|sw-123|已写入/);
   });
 });
@@ -154,7 +174,12 @@ describe("station design sample isolation", () => {
         screen.getByText("未测速", { selector: ".station-state" }),
       ).toBeVisible();
       expect(screen.queryByText("地址可达")).not.toBeInTheDocument();
-      expect(screen.getByText("— ms")).toBeVisible();
+      expect(
+        screen.getByText(
+          (_, el) =>
+            el?.className === "station-latency" && el.textContent === "— ms",
+        ),
+      ).toBeVisible();
     },
   );
 });

@@ -48,7 +48,7 @@ function sample(): ModelStats[] {
 
 describe("topModelsByTokens", () => {
   it("ranks by tokens rather than the backend's cost order", () => {
-    expect(topModelsByTokens(sample()).map((m) => m.model)).toEqual([
+    expect(topModelsByTokens(sample(), 3).map((m) => m.model)).toEqual([
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "codex-auto-review",
@@ -58,7 +58,7 @@ describe("topModelsByTokens", () => {
   it("lets an unpriced model in when it has the tokens", () => {
     // The structural failure of cost-ranking: cost 0 could never place, no
     // matter the token count, so unpriced models were permanently invisible.
-    const ranked = topModelsByTokens(sample());
+    const ranked = topModelsByTokens(sample(), 3);
     expect(ranked.map((m) => m.model)).toContain("codex-auto-review");
     expect(ranked.map((m) => m.model)).not.toContain("gpt-5.5");
   });

@@ -126,13 +126,16 @@
 }
 .provider-table-row {
   display: grid;
-  grid-template-columns: 3px 24px minmax(100px, 1fr) 96px 108px 138px 90px 136px;
+  /* v3 (L01): line colour swatch, name, model, latency, two row icons.
+     Auth and protocol are no longer their own columns — the auth kind and the
+     protocol moved into the name's tooltip/second line. */
+  grid-template-columns: 3px 14px minmax(150px, 1fr) 236px 104px 112px;
   align-items: center;
-  gap: 12px;
-  padding: 0 12px 0 8px;
-  height: 42px;
+  gap: 14px;
+  padding: 0 14px 0 8px;
+  height: var(--size-row);
   border-radius: var(--radius-control);
-  font-size: 13px;
+  font-size: 12.5px;
   line-height: 18px;
 }
 .provider-table-row > * {
@@ -142,31 +145,36 @@
   white-space: nowrap;
 }
 .provider-table-head {
-  height: 34px;
-  margin-bottom: 6px;
-  border-bottom: 1px solid var(--border-subtle);
-  border-radius: var(--radius-control);
-  background: var(--bg-subtle);
-  color: var(--text-2);
-  font-size: 12px;
+  height: 30px;
+  margin-bottom: 2px;
+  border-bottom: 1px solid var(--v3-hairline);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 10px;
   font-weight: 500;
+  letter-spacing: 0.04em;
 }
-.provider-table-head [role="columnheader"]:nth-last-child(-n + 2) {
+.provider-table-head [role="columnheader"]:nth-last-child(-n + 1) {
+  text-align: right;
+}
+.provider-table-head .provider-col-latency {
   text-align: right;
 }
 .provider-table-row:not(.provider-table-head):hover {
   background: var(--row-bg-hover);
 }
 .provider-table-group {
-  height: 32px;
+  height: 30px;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 4px 0 12px;
+  padding: 0 4px 0 8px;
+  border-top: 1px solid var(--v3-hairline);
   line-height: 18px;
   color: var(--text-2);
-  font-size: 13px;
-  font-weight: 700;
+  font-size: 11px;
+  font-weight: 600;
 }
 .provider-table-group span {
   font-family: var(--font-latin), sans-serif;
@@ -174,7 +182,7 @@
   font-weight: 400;
 }
 .provider-table-row.is-current {
-  background: var(--row-bg-current);
+  background: var(--bg-selected);
 }
 .provider-row-indicator {
   height: 20px;
@@ -183,11 +191,18 @@
 .is-current .provider-row-indicator {
   background: var(--brand-indicator);
 }
-.provider-table-row > .provider-row-badge {
+/* The line's identity is a 14×3 stroke, the same shape the sidebar uses. */
+.provider-row-swatch {
   display: flex;
   align-items: center;
-  /* Two CJK or three Latin characters may widen the badge into the gap. */
   overflow: visible;
+}
+.provider-row-swatch > span {
+  display: block;
+  width: 14px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--line-color);
 }
 .provider-row-name {
   max-width: 100%;
@@ -198,14 +213,14 @@
   color: inherit;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
   cursor: pointer;
 }
 .provider-row-name b {
-  font-size: 15px;
-  line-height: 21px;
+  font-size: 12.5px;
+  line-height: 17px;
   font-family: var(--font-latin), var(--font-cjk), sans-serif;
-  font-weight: 400;
+  font-weight: 500;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -214,41 +229,53 @@
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-size: 13px;
-  line-height: 18px;
+  font-size: 10px;
+  line-height: 14px;
   font-family: var(--font-mono), monospace;
+  color: var(--text-3);
+}
+.provider-route-inline {
   color: var(--text-3);
 }
 .is-current .provider-row-name b {
   font-weight: 700;
 }
-.provider-table code {
-  font:
-    13px var(--font-mono),
-    monospace;
-}
-.provider-row-protocol {
+.provider-row-model {
   display: flex;
   flex-direction: column;
   justify-content: center;
   gap: 1px;
+  min-width: 0;
 }
-.provider-row-protocol > span:first-child {
+.provider-row-model code {
+  font:
+    11.5px var(--font-mono),
+    monospace;
+  color: var(--text-2);
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.provider-route-mark {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
+.provider-row-model small {
+  font-size: 10px;
+  line-height: 13px;
   color: var(--text-3);
-  font-size: 12px;
-  line-height: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.provider-table code {
+  font:
+    11.5px var(--font-mono),
+    monospace;
+  color: var(--text-2);
 }
 .provider-row-latency {
   text-align: right;
   font-family: var(--font-latin), var(--font-cjk), sans-serif;
+  font-size: 11.5px;
   font-variant-numeric: tabular-nums;
+  color: var(--text-2);
 }
 .provider-latency-muted {
   color: var(--text-3);
@@ -257,36 +284,45 @@
   display: flex;
   justify-content: flex-end;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
 }
+/* v3 (L01): the row ends with the switch action plus two 14px icons — nothing
+   else. The text action is a 22px ghost button, the icons are icon buttons. */
 .provider-row-actions button {
   display: flex;
   justify-content: center;
   align-items: center;
-  height: 28px;
-  min-width: 28px;
+  height: 22px;
+  min-width: 22px;
   padding: 0 8px;
-  border: 0;
-  border-radius: var(--radius-control);
+  border: 1px solid transparent;
+  border-radius: 6px;
   background: transparent;
-  color: inherit;
-  font-size: 13px;
-  font-weight: 700;
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
 }
 .provider-row-actions button:has(svg) {
-  width: 28px;
+  width: 22px;
   padding: 0;
 }
 .provider-row-actions button:hover:not(:disabled) {
   background: var(--bg-hover);
 }
+.provider-row-actions .provider-row-delete:disabled {
+  color: var(--text-3);
+}
+.provider-row-actions .provider-row-edit:disabled {
+  color: var(--text-3);
+}
 .provider-current-tag {
-  background: var(--tag-current-bg);
-  color: var(--tag-current-fg);
-  border-radius: var(--radius-pill);
+  background: var(--v3-current-chip-bg, #ffffffd8);
+  color: var(--brand);
+  border-radius: 6px;
   padding: 0 8px;
-  font-size: 12px;
-  font-weight: 700;
+  font-size: 10px;
+  font-weight: 600;
   line-height: 20px;
 }
 .provider-table-empty {
@@ -392,16 +428,10 @@
   font-weight: 600;
 }
 
-.provider-direct-protocol {
-  font-family: var(--font-latin), sans-serif;
-}
-
 @media (max-width: 1100px) {
   .provider-table-row {
-    grid-template-columns:
-      3px 24px minmax(110px, 1.2fr) 84px 92px minmax(76px, 1fr)
-      62px 108px;
-    gap: 8px;
+    grid-template-columns: 3px 14px minmax(130px, 1.2fr) 180px 96px 104px;
+    gap: 10px;
   }
 }
 
@@ -417,27 +447,6 @@
 }
 
 /* Loading: the page frame stays in place so nothing jumps when data lands. */
-.provider-page-loading {
-  display: grid;
-  gap: 12px;
-  padding-top: 8px;
-}
-.provider-page-loading-plate {
-  height: 176px;
-  border-radius: var(--radius-panel);
-  background: var(--plate-bg);
-  opacity: 0.88;
-}
-.provider-page-loading-row {
-  height: 42px;
-  border-radius: var(--radius-control);
-  background: var(--bg-subtle);
-}
-.provider-page-loading p {
-  margin: 4px 0 0;
-  color: var(--text-3);
-  font-size: 13px;
-}
 
 /* First run / no lines: the setup card sits under the page heading, aligned
    with it, instead of floating against the title bar. */
@@ -510,27 +519,4 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   user-select: text;
-}
-.provider-page-banner {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 8px;
-  padding: 8px 8px 8px 12px;
-  border: 1px solid var(--warning-border);
-  border-radius: var(--radius-panel);
-  background: var(--warning-bg);
-  color: var(--text-1);
-  font-size: 13px;
-}
-.provider-page-banner > svg {
-  flex: none;
-  color: var(--warning-fg);
-}
-.provider-page-banner span {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }

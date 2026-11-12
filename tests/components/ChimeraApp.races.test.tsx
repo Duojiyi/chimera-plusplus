@@ -115,6 +115,16 @@ beforeAll(async () => {
   await import("@/views/OmpView");
 }, 30000);
 
+/** Tools live in the tool switcher (design system §4.1), not the sidebar. */
+async function chooseTool(name: string) {
+  const menu = screen.queryByRole("group", { name: "工具" });
+  if (!menu)
+    fireEvent.click(await screen.findByRole("button", { name: /^切换工具/ }));
+  const item = await screen.findByRole("button", { name });
+  await waitFor(() => expect(item).toBeEnabled());
+  fireEvent.click(item);
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason: unknown) => void;
@@ -228,7 +238,10 @@ it("opens the saved-line manager and restores trigger focus on Escape", async ()
 it("exposes maintenance as a modal and restores keyboard focus after Escape", async () => {
   mount();
   fireEvent.click(await screen.findByRole("button", { name: "Codex 管理" }));
-  const trigger = screen.getByRole("button", { name: "安装方式与更新源" });
+  // Codex 管理 loads on demand, like the other pages.
+  const trigger = await screen.findByRole("button", {
+    name: "安装方式与更新源",
+  });
   await waitFor(() => expect(trigger).toBeEnabled());
   trigger.focus();
   fireEvent.click(trigger);
@@ -272,7 +285,9 @@ describe("Chimera runtime request ownership", () => {
         expect.anything(),
       ),
     );
-    fireEvent.click(screen.getByRole("button", { name: "安装方式与更新源" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "安装方式与更新源" }),
+    );
     fireEvent.click(screen.getByRole("button", { name: /卸载 Codex/ }));
     fireEvent.click(screen.getByRole("button", { name: "确认继续" }));
     expect(
@@ -288,9 +303,10 @@ describe("Chimera runtime request ownership", () => {
         sizeBytes: 123,
       }),
     );
+    // v3 removed the invisible update control; only the visible one remains.
     expect(
       screen.getAllByRole("button", { name: "检查更新" }).length,
-    ).toBeGreaterThan(1);
+    ).toBeGreaterThanOrEqual(1);
     expect(
       screen.queryByRole("button", { name: "下载并安装 标准安装" }),
     ).not.toBeInTheDocument();
@@ -528,16 +544,13 @@ describe("cold-start import through the real App and Chimera", () => {
 
 describe("release capability navigation", () => {
   const assertGatedNavigationDisabled = () => {
-    for (const name of [
-      "官方账号",
-      "提示词",
-      "Skills 与 MCP",
-      "配置体检",
-      "Claude Code",
-      "Gemini CLI",
-      "OpenCode",
-      "Pi",
-    ]) {
+    for (const name of ["官方账号", "提示词", "Skills 与 MCP", "配置体检"]) {
+      expect(screen.getByRole("button", { name })).toBeDisabled();
+    }
+    // The other tools are listed, disabled, in the tool switcher.
+    if (!screen.queryByRole("group", { name: "工具" }))
+      fireEvent.click(screen.getByRole("button", { name: /^切换工具/ }));
+    for (const name of ["Claude Code", "Gemini CLI", "OpenCode", "Pi"]) {
       expect(screen.getByRole("button", { name })).toBeDisabled();
     }
   };
@@ -763,16 +776,13 @@ describe("native tool editor ownership", () => {
   }
 
   async function openTool(label: string) {
-    const navigation = await screen.findByRole("button", {
-      name: label,
-    });
-    await waitFor(() => expect(navigation).toBeEnabled());
-    fireEvent.click(navigation);
+    await chooseTool(label);
     // ToolView is lazy-loaded; module transformation under CI/build load can
     // exceed Testing Library's 1s default before the page itself has mounted.
+    // The page heading names the section, so wait for the tool's actions.
     await screen.findByRole(
-      "heading",
-      { name: label, level: 1 },
+      "group",
+      { name: `${label} 工具操作` },
       { timeout: 5000 },
     );
   }
@@ -822,7 +832,9 @@ describe("native tool editor ownership", () => {
         ),
       ).toHaveValue(appId);
       expect(
-        await screen.findByRole("heading", { name: "尚未由 Chimera++ 管理 Skills" }),
+        await screen.findByRole("heading", {
+          name: "尚未由 Chimera++ 管理 Skills",
+        }),
       ).toBeVisible();
     },
   );
@@ -1084,7 +1096,7 @@ describe("native tool editor ownership", () => {
         screen.queryByRole("region", { name: "编辑线路" }),
       ).not.toBeInTheDocument();
       expect(
-        screen.getByRole("heading", { name: label, level: 1 }),
+        screen.getByRole("group", { name: `${label} 工具操作` }),
       ).toBeVisible();
     },
   );
@@ -1104,7 +1116,7 @@ describe("native tool editor ownership", () => {
         screen.queryByRole("region", { name: "编辑线路" }),
       ).not.toBeInTheDocument();
       expect(
-        screen.getByRole("heading", { name: label, level: 1 }),
+        screen.getByRole("group", { name: `${label} 工具操作` }),
       ).toBeVisible();
     },
   );
@@ -1145,7 +1157,7 @@ describe("native tool editor ownership", () => {
       expect.anything(),
     );
     expect(
-      screen.getByRole("heading", { name: "Gemini CLI", level: 1 }),
+      screen.getByRole("group", { name: "Gemini CLI 工具操作" }),
     ).toBeVisible();
   });
 
@@ -1173,7 +1185,8 @@ describe("native tool editor ownership", () => {
     fireEvent.click(screen.getByRole("button", { name: "添加线路" }));
     await screen.findByRole("region", { name: "新建线路" });
     fireEvent.click(screen.getByRole("button", { name: "返回线路" }));
-    fireEvent.click(screen.getByRole("button", { name: "线路" }));
+    // Back to the Codex workspace (its 线路 page) through the tool switcher.
+    await chooseTool("Codex");
     fireEvent.click(await screen.findByRole("button", { name: "管理线路" }));
     const manager = screen.getByRole("dialog", { name: "管理线路" });
     fireEvent.click(within(manager).getByRole("button", { name: "删除Beta" }));
@@ -1225,9 +1238,7 @@ describe("Pi page navigation retains work", () => {
   it("keeps both Pi drafts when leaving through the sidebar and returning", async () => {
     enablePiPages();
     mount();
-    const pi = await screen.findByRole("button", { name: "Pi" });
-    await waitFor(() => expect(pi).toBeEnabled());
-    fireEvent.click(pi);
+    await chooseTool("Pi");
     fireEvent.click(
       await screen.findByRole("button", { name: "默认模型与 MCP" }),
     );
@@ -1237,9 +1248,10 @@ describe("Pi page navigation retains work", () => {
     fireEvent.change(screen.getByLabelText("Pi MCP JSON"), {
       target: { value: '{"mcpServers":{"draft":{}}}' },
     });
+    await chooseTool("Codex");
     fireEvent.click(screen.getByRole("button", { name: "Codex 管理" }));
     expect(model).not.toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "Pi" }));
+    await chooseTool("Pi");
     expect(await screen.findByRole("textbox", { name: "模型 ID" })).toHaveValue(
       "retained-model",
     );
@@ -1257,9 +1269,7 @@ describe("Pi page navigation retains work", () => {
   it("keeps dirty Pi state protected from lightweight close while another route suspends", async () => {
     enablePiPages();
     mount();
-    const pi = await screen.findByRole("button", { name: "Pi" });
-    await waitFor(() => expect(pi).toBeEnabled());
-    fireEvent.click(pi);
+    await chooseTool("Pi");
     fireEvent.click(
       await screen.findByRole("button", { name: "默认模型与 MCP" }),
     );
@@ -1267,6 +1277,7 @@ describe("Pi page navigation retains work", () => {
     fireEvent.change(await screen.findByDisplayValue("original-model"), {
       target: { value: "keep-through-loading" },
     });
+    await chooseTool("Codex");
     fireEvent.click(screen.getByRole("button", { name: "用量" }));
     await screen.findByText("正在加载模块…");
     await act(async () => {
@@ -1276,7 +1287,7 @@ describe("Pi page navigation retains work", () => {
     });
     expect(mocks.invoke).toHaveBeenCalledWith("hide_main_window");
     expect(mocks.invoke).not.toHaveBeenCalledWith("enter_lightweight_mode");
-    fireEvent.click(screen.getByRole("button", { name: "Pi" }));
+    await chooseTool("Pi");
     expect(await screen.findByRole("textbox", { name: "模型 ID" })).toHaveValue(
       "keep-through-loading",
     );
@@ -1294,9 +1305,7 @@ describe("Pi page navigation retains work", () => {
           : normal(command, payload),
       );
       mount();
-      const tool = await screen.findByRole("button", { name });
-      await waitFor(() => expect(tool).toBeEnabled());
-      fireEvent.click(tool);
+      await chooseTool(name);
       if (name === "Pi" || name === "oh-my-pi")
         fireEvent.click(
           await screen.findByRole("button", { name: "插件市场" }),
@@ -1305,14 +1314,16 @@ describe("Pi page navigation retains work", () => {
         await screen.findByRole("button", { name: "刷新插件状态" }),
       );
       await screen.findByRole("status");
+      await chooseTool("Codex");
       fireEvent.click(screen.getByRole("button", { name: "Codex 管理" }));
-      fireEvent.click(screen.getByRole("button", { name }));
+      await chooseTool(name);
       expect(
         await screen.findByRole("button", { name: "刷新插件状态" }),
       ).toBeDisabled();
+      await chooseTool("Codex");
       fireEvent.click(screen.getByRole("button", { name: "Codex 管理" }));
       await act(async () => job.resolve('{"npm":[],"marketplace":[]}'));
-      fireEvent.click(screen.getByRole("button", { name }));
+      await chooseTool(name);
       expect(
         await screen.findByText('{"npm":[],"marketplace":[]}'),
       ).toBeVisible();

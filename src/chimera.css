@@ -68,35 +68,6 @@
   letter-spacing: 0;
 }
 
-.dark .chimera-shell,
-[data-theme="dark"] .chimera-shell {
-  --ink: var(--text-1);
-  --ink2: var(--text-2);
-  --canvas: var(--bg-base);
-  --panel: var(--bg-surface);
-  --line: var(--border-subtle);
-  --ch-muted: var(--text-3);
-  --shell-edge: var(--p-white-a16);
-  /* The light --focus blue is about 2.5:1 on the dark surfaces; the theme's
-     ring keeps every focus outline in the shell above 3:1. */
-  --focus: var(--focus-ring);
-  color: var(--text-1);
-  background: var(--bg-base);
-}
-
-.dark .chimera-shell button.secondary,
-[data-theme="dark"] .chimera-shell button.secondary {
-  background: var(--bg-surface);
-  color: var(--text-1);
-  border-color: var(--border-control);
-}
-
-.dark .chimera-shell button.secondary:hover:not(:disabled),
-[data-theme="dark"] .chimera-shell button.secondary:hover:not(:disabled) {
-  background: var(--bg-hover);
-  border-color: var(--border-subtle);
-}
-
 @media (max-width: 768px) {
   .chimera-shell {
     grid-template-columns: 56px minmax(0, 1fr);
@@ -323,92 +294,6 @@
   font-weight: 600;
   cursor: pointer;
 }
-.history-dialog {
-  width: min(540px, 100%);
-  max-height: calc(100vh - 56px);
-  display: flex;
-  flex-direction: column;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: #fff;
-  box-shadow: 0 12px 28px rgba(23, 32, 42, 0.18);
-}
-.history-dialog header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 20px 22px 16px;
-  border-bottom: 1px solid var(--line);
-}
-.history-dialog header h2 {
-  margin: 0;
-  font-size: 17px;
-}
-.history-dialog header p {
-  margin: 4px 0 0;
-  color: var(--ch-muted);
-  font-size: 11px;
-  line-height: 1.5;
-}
-.history-dialog-body {
-  overflow: auto;
-  padding: 16px 22px;
-}
-.history-dialog-body > p {
-  margin: 0;
-  color: var(--ch-muted);
-  font-size: 12px;
-  line-height: 1.6;
-}
-.history-dialog footer {
-  display: flex;
-  justify-content: flex-end;
-  gap: 9px;
-  padding: 14px 22px;
-  border-top: 1px solid var(--line);
-}
-.history-version-list {
-  display: grid;
-  gap: 8px;
-}
-.history-version-list button {
-  width: 100%;
-  min-height: 52px;
-  display: grid;
-  grid-template-columns: 22px minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: center;
-  padding: 10px 14px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: var(--glass-control-bg, #fff);
-  color: inherit;
-  text-align: left;
-}
-.history-version-list button:hover:not(:disabled) {
-  border-color: var(--ch-accent);
-}
-.history-version-list button:disabled {
-  opacity: 0.45;
-}
-.history-version-list strong,
-.history-version-list small {
-  display: block;
-}
-.history-version-list strong {
-  font-size: 12px;
-}
-.history-version-list small {
-  margin-top: 2px;
-  color: var(--ch-muted);
-  font-size: 10px;
-}
-.history-confirm-meta {
-  display: grid;
-  gap: 8px;
-  margin: 0;
-}
 /* A failed catalog read: the reason, its raw detail, and a retry. */
 .history-dialog-error {
   display: grid;
@@ -425,20 +310,6 @@
   font-size: 11px;
   line-height: 1.5;
   word-break: break-word;
-}
-.history-confirm-meta strong {
-  font-size: 14px;
-  color: var(--ink);
-}
-.history-confirm-meta small {
-  color: var(--ch-muted);
-  font-size: 11px;
-  line-height: 1.6;
-}
-.history-confirm-meta code {
-  font-size: 10px;
-  color: var(--ch-muted);
-  word-break: break-all;
 }
 /* Empty-state used by Empty() across every view. */
 .empty {
@@ -458,24 +329,6 @@
   line-height: 1.6;
 }
 /* Live dot in the titlebar page label. */
-.status-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--success);
-}
-.inline-error {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 9px 12px;
-  margin-bottom: 12px;
-  border: 1px solid #f5c8c2;
-  border-radius: 8px;
-  background: #fff4f2;
-  color: #b42318;
-  font-size: 11px;
-}
 /* Onboarding: shared by inline Onboarding() and StandaloneOnboarding().
    .onboarding-card / .onboarding-screen further down layer onto this. */
 .onboarding {
@@ -726,39 +579,6 @@
   color: var(--text-1);
 }
 /* Chimera 2.0 interaction states and real-data surfaces. */
-.setting-row {
-  width: 100%;
-  min-height: 64px;
-  gap: 18px;
-  border: 0;
-  border-bottom: 1px solid var(--line);
-  background: transparent;
-  text-align: left;
-  color: var(--ink);
-}
-.setting-row p,
-.setting-control p {
-  max-width: 60ch;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.setting-control {
-  min-height: 78px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 20px;
-  border-bottom: 1px solid var(--line);
-}
-.setting-control b {
-  font-size: 12px;
-}
-.setting-control p {
-  margin: 4px 0;
-  color: var(--ch-muted);
-  font-size: 10px;
-}
 .segmented {
   display: flex;
   padding: 3px;
@@ -780,28 +600,8 @@
   font-weight: 650;
   box-shadow: 0 1px 4px #17181c1a;
 }
-.connection-banner.is-warning {
-  background: #fff3e6;
-  color: #a04d00;
-}
-.connection-banner.is-warning em {
-  color: #a04d00;
-}
 .error-text {
   color: var(--danger-fg);
-}
-.version-compare b,
-.runtime-version b {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.runtime-facts small {
-  max-width: 210px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .diagnostics-dialog {
   width: min(680px, 100%);
@@ -995,10 +795,6 @@ select:focus-visible {
   overflow: hidden;
   background: #fdfdfe;
 }
-.dark .chimera-main,
-[data-theme="dark"] .chimera-main {
-  background: #171c21;
-}
 .chimera-navigation {
   display: flex;
   flex: 1;
@@ -1028,76 +824,6 @@ select:focus-visible {
   align-items: center;
   z-index: 5;
 }
-.route-brand {
-  display: inline-flex;
-  align-items: center;
-  gap: 9px;
-  color: var(--ink);
-  font-size: 14px;
-}
-.route-brand-mark {
-  width: 30px;
-  height: 30px;
-  display: grid;
-  place-items: center;
-  background: transparent;
-}
-.route-brand-mark img {
-  width: 27px;
-  height: 27px;
-}
-.route-page-label {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 13px;
-  font-weight: 700;
-}
-.route-window-tools {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-left: auto;
-}
-.route-window-tools > button,
-.route-window-tools .window-dots button {
-  width: 32px;
-  height: 32px;
-  border: 0;
-  border-radius: 50%;
-  display: grid;
-  place-items: center;
-  background: #f2f4f5;
-  color: var(--ch-muted);
-}
-.route-window-tools .window-dots {
-  padding: 0;
-  display: flex;
-  gap: 8px;
-}
-.route-window-tools .window-dots button {
-  background: #f2f4f5;
-}
-.route-window-tools .window-dots button:nth-child(n) {
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-}
-.route-window-tools .window-dots button {
-  color: var(--ch-muted);
-}
-.route-window-tools > button:hover,
-.route-window-tools .window-dots button:hover {
-  background: #e8ecef;
-  color: var(--ink);
-}
-.route-window-tools .window-dots button.is-close:hover {
-  background: #fce8e5;
-  color: #b9372d;
-}
 
 /* ── macOS window controls ──────────────────────────────────────────────
    macOS puts window buttons at the top-LEFT as red/yellow/green "traffic
@@ -1116,112 +842,13 @@ body.is-mac .chimera-titlebar {
   /* Space for the 3 lights + their inset, so the brand never sits under them. */
   padding-left: 88px;
 }
-body.is-mac .route-window-tools .window-dots.is-traffic-lights {
-  position: absolute;
-  /* Aligns with the traffic lights of a native window at this titlebar height. */
-  left: 20px;
-  top: 50%;
-  transform: translateY(-50%);
-  gap: 8px;
-  /* Sits above the drag region so clicks reach the buttons, not the drag. */
-  z-index: 1;
-}
-body.is-mac .route-window-tools .window-dots.is-traffic-lights button,
-body.is-mac
-  .route-window-tools
-  .window-dots.is-traffic-lights
-  button:nth-child(n) {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  padding: 0;
-  /* A hairline ring keeps the lights legible against a light titlebar. */
-  box-shadow: inset 0 0 0 0.5px rgb(0 0 0 / 12%);
-  transition:
-    background 120ms var(--ease),
-    filter 120ms var(--ease);
-}
 /* Icons appear only while the cluster is hovered — the macOS behaviour. */
-body.is-mac .route-window-tools .window-dots.is-traffic-lights svg {
-  opacity: 0;
-  transition: opacity 120ms var(--ease);
-}
-body.is-mac .route-window-tools .window-dots.is-traffic-lights:hover svg {
-  opacity: 1;
-}
-body.is-mac .route-window-tools .window-dots.is-traffic-lights button.is-close {
-  background: #ff5f57;
-  color: #4d0000;
-}
-body.is-mac
-  .route-window-tools
-  .window-dots.is-traffic-lights
-  button.is-minimize {
-  background: #febc2e;
-  color: #5a3a00;
-}
 /* Fixed-size window: the zoom light renders in the OS's disabled-window style
    rather than being removed, since a two-light macOS window reads as broken. */
-body.is-mac .route-window-tools .window-dots.is-traffic-lights button.is-zoom {
-  background: #dddfe2;
-  cursor: default;
-}
-body.is-mac
-  .route-window-tools
-  .window-dots.is-traffic-lights
-  button.is-close:hover,
-body.is-mac
-  .route-window-tools
-  .window-dots.is-traffic-lights
-  button.is-minimize:hover {
-  /* Keep the hue and just deepen it, as the OS does; no palette swap. */
-  filter: brightness(0.92);
-}
-body.is-mac
-  .route-window-tools
-  .window-dots.is-traffic-lights
-  button.is-zoom:hover {
-  background: #dddfe2;
-  filter: none;
-}
 /* One-click update check. Inherits the 32px circle from .route-window-tools >
    button above; this only adds the has-update accent and its badge dot. */
-.titlebar-update {
-  position: relative;
-  cursor: pointer;
-  transform: translateZ(0);
-  transition:
-    background-color 160ms var(--ease),
-    color 160ms var(--ease);
-}
-.titlebar-update:disabled {
-  cursor: default;
-}
-.route-window-tools > button.titlebar-update.is-available {
-  background: var(--soft);
-  color: var(--ch-accent);
-}
-.route-window-tools > button.titlebar-update.is-available:hover {
-  background: #fde8e4;
-  color: #c7372f;
-}
-.route-window-tools > button.titlebar-update.is-available:active {
-  background: #fbded9;
-  transform: translateZ(0);
-}
 /* Badge dot, so an available update reads at a glance without relying on the
    icon tint alone (which fails for red/green colour blindness). */
-.titlebar-update.is-available::after {
-  content: "";
-  position: absolute;
-  top: 5px;
-  right: 5px;
-  width: 7px;
-  height: 7px;
-  border: 1.5px solid #fff;
-  border-radius: 50%;
-  background: var(--ch-accent);
-}
 .chimera-content {
   min-height: 0;
   display: flex;
@@ -1329,218 +956,6 @@ body.is-mac
   color: var(--ch-muted);
   font-size: 12px;
 }
-.map-line {
-  position: absolute;
-  top: 168px;
-  height: 1px;
-  background: #e1e6e9;
-}
-.map-line-left {
-  left: 11%;
-  width: 29%;
-}
-.map-line-right {
-  right: 11%;
-  width: 29%;
-}
-.map-point {
-  position: absolute;
-  top: 163px;
-  width: 10px;
-  height: 10px;
-  border: 2px solid #d8dee2;
-  border-radius: 50%;
-  background: #fff;
-}
-.map-point-left {
-  left: 10%;
-}
-.map-point-right {
-  right: 10%;
-}
-.route-provider-node {
-  position: absolute;
-  left: 50%;
-  top: 84px;
-  transform: translateX(-50%);
-  width: 330px;
-  padding: 18px 20px;
-  display: grid;
-  grid-template-columns: 42px 1fr;
-  gap: 11px;
-  border: 1px solid #d7dee2;
-  border-radius: 11px;
-  background: #fff;
-  box-shadow: 0 8px 18px #17202a12;
-}
-.route-provider-node h2 {
-  margin: 1px 0 4px;
-  font-size: 16px;
-}
-.route-provider-node code {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--ch-muted);
-  font-size: 10px;
-}
-.route-status {
-  grid-column: 1 / -1;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 8px;
-  border-radius: 6px;
-  background: #eaf7f2;
-  color: var(--success);
-  font-size: 11px;
-  font-weight: 700;
-}
-.route-status i {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: currentColor;
-}
-.route-status.is-error {
-  color: #c7372f;
-  background: #fff0ed;
-}
-.route-side-node {
-  position: absolute;
-  top: 225px;
-  width: 146px;
-  min-height: 78px;
-  padding: 13px;
-  display: grid;
-  gap: 5px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: #fff;
-}
-.route-model-node {
-  left: 15%;
-}
-.route-codex-node {
-  right: 15%;
-}
-.route-side-node svg {
-  color: var(--ch-muted);
-}
-.route-side-node b {
-  font-size: 12px;
-}
-.route-side-node code,
-.route-side-node span {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  font-size: 10px;
-  color: var(--ch-muted);
-}
-.selector-mark {
-  width: 38px;
-  height: 38px;
-  border-radius: 8px;
-  display: grid;
-  place-items: center;
-  background: var(--soft);
-  color: var(--ch-accent);
-}
-.route-meta {
-  display: flex;
-  justify-content: center;
-  gap: 40px;
-  padding: 12px;
-  color: var(--ch-muted);
-  font-size: 11px;
-}
-.route-meta code {
-  color: var(--ink);
-}
-.route-meta-balance code {
-  color: var(--ch-accent, #2563eb);
-  font-weight: 600;
-}
-.route-meta .ok {
-  color: var(--success);
-}
-.route-provider-list {
-  max-width: 620px;
-  margin: 0 auto 14px;
-}
-.route-provider-list header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 7px;
-}
-.route-provider-list header b {
-  font-size: 13px;
-}
-.route-list-row {
-  width: 100%;
-  min-height: 45px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 11px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: #fff;
-  text-align: left;
-}
-.route-list-row + .route-list-row {
-  margin-top: 5px;
-}
-.route-list-row.is-active {
-  background: #fff8f5;
-  border-color: #f2c6be;
-}
-.provider-list-dot {
-  width: 8px;
-  height: 8px;
-  flex: none;
-  border-radius: 50%;
-  background: #aab5bc;
-}
-.route-list-row.is-active .provider-list-dot {
-  background: var(--success);
-}
-.route-list-row span:nth-child(2) {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-  flex: 1;
-}
-.route-list-row b {
-  font-size: 12px;
-}
-.route-list-row code {
-  color: var(--ch-muted);
-  font-size: 10px;
-}
-.route-list-row em {
-  font-style: normal;
-  color: var(--success);
-  font-size: 10px;
-  font-weight: 700;
-}
-.route-actions {
-  display: flex;
-  justify-content: center;
-  gap: 8px;
-}
-.route-actions button {
-  min-width: 112px;
-}
-.provider-sheet-backdrop {
-  position: absolute;
-  inset: 0;
-  z-index: 10;
-  background: var(--scrim);
-}
 /* password-field and model-input inside editor labels */
 .password-field,
 .model-input {
@@ -1613,8 +1028,7 @@ body.is-mac
   font-size: 28px;
   line-height: 36px;
 }
-.runtime-page-heading p,
-.runtime-local-records p {
+.runtime-page-heading p {
   margin: 2px 0 0;
   font-size: 13px;
   color: var(--ch-muted);
@@ -1622,209 +1036,13 @@ body.is-mac
 .runtime-reference-view button {
   flex-shrink: 0;
 }
-.runtime-status-board {
-  display: flex;
-  align-items: center;
-  gap: 24px;
-  padding: 16px 16px 16px 24px;
-  min-height: 97px;
-  border-radius: 6px;
-  background: #1a1e24;
-  color: #f5f7f9;
-}
-.runtime-installed {
-  width: 200px;
-  flex-shrink: 0;
-}
-.runtime-installed h2 {
-  margin: 0;
-  color: #94999e;
-  font-size: 13px;
-  font-weight: 400;
-}
-.runtime-installed code {
-  display: block;
-  font-size: 22px;
-  line-height: 27px;
-}
-.runtime-installed small {
-  color: #b4b8bc;
-  font-size: 13px;
-}
-.runtime-info-strip {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 86px 86px;
-  gap: 20px;
-  flex: 1;
-  min-width: 0;
-}
-.runtime-info-strip > div {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  gap: 8px;
-  padding-top: 6px;
-}
-.runtime-info-strip svg {
-  flex-shrink: 0;
-  color: #b4b8bc;
-}
-.runtime-info-strip span {
-  display: grid;
-  min-width: 0;
-  gap: 2px;
-  font-size: 12px;
-}
-.runtime-info-strip b {
-  color: #b4b8bc;
-  font-size: 11px;
-  font-weight: 400;
-}
-.runtime-info-strip > div:first-child b {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  user-select: text;
-}
-.runtime-info-strip > div:not(:first-child) span {
-  white-space: nowrap;
-}
-.runtime-folder {
-  display: grid;
-  place-items: center;
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  border: 1px solid #484e55;
-  border-radius: 4px;
-  background: transparent;
-  color: #b4b8bc;
-}
-.runtime-release-card {
-  display: grid;
-  gap: 12px;
-  margin: 16px 0;
-  padding: 16px;
-  min-height: 167px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--soft);
-}
-.runtime-release-card p {
-  margin: 0;
-  font-size: 15px;
-}
-.runtime-release-card small {
-  font-size: 13px;
-  color: var(--ch-muted);
-}
-.runtime-reference-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.runtime-maintenance-rows h2,
-.runtime-local-records h2 {
-  margin: 0;
-  font-size: 13px;
-  line-height: 18px;
-}
-.runtime-maintenance-rows > div {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  min-height: 65px;
-  padding: 12px 0;
-  border-bottom: 1px solid var(--line);
-}
-.runtime-maintenance-rows span {
-  flex: 1;
-  min-width: 0;
-  display: grid;
-  gap: 2px;
-}
-.runtime-maintenance-rows strong {
-  font-size: 15px;
-  font-weight: 400;
-}
-.runtime-maintenance-rows small,
-.runtime-local-records small {
-  font-size: 13px;
-  color: var(--ch-muted);
-}
-.runtime-maintenance-rows .danger {
-  color: var(--danger, #be2323);
-}
-.runtime-local-records {
-  margin-top: 16px;
-}
-.runtime-local-records > div {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 16px;
-  min-height: 36px;
-  font-size: 13px;
-}
 @media (max-width: 1000px) {
-  .runtime-status-board {
-    flex-wrap: wrap;
-    gap: 16px;
-  }
-  .runtime-info-strip {
-    flex-basis: 100%;
-    order: 1;
-  }
-  .runtime-folder {
-    margin-left: auto;
-  }
   .runtime-page-heading {
     align-items: flex-start;
   }
   .runtime-page-heading p {
     max-width: 330px;
   }
-}
-.runtime-update-ready {
-  width: min(700px, 100%);
-  margin: 0 auto 10px;
-  padding: 10px 12px;
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  border: 1px solid var(--soft-border);
-  border-radius: var(--r-md);
-  background: var(--soft);
-  color: var(--ch-accent);
-  text-align: left;
-}
-.runtime-update-ready > span {
-  min-width: 0;
-  flex: 1;
-  display: grid;
-  gap: 2px;
-}
-.runtime-update-ready b {
-  color: var(--ink);
-  font-size: 12px;
-}
-.runtime-update-ready small {
-  color: var(--ch-muted);
-  font-size: 11px;
-}
-.runtime-update-recheck {
-  flex: 0 0 auto;
-  border: 0;
-  padding: 4px 2px;
-  background: transparent;
-  color: var(--ch-accent);
-  font-size: 11px;
-  font-weight: 650;
-}
-.runtime-update-recheck:hover:not(:disabled) {
-  color: #c7372f;
-  text-decoration: underline;
-  text-underline-offset: 3px;
 }
 .runtime-reference-progress {
   max-width: 700px;
@@ -1860,39 +1078,6 @@ body.is-mac
     transform: translateX(275%);
   }
 }
-.range-segment {
-  display: flex;
-  gap: 3px;
-  padding: 3px;
-  background: #eef1f3;
-  border-radius: 7px;
-}
-.range-segment button {
-  height: 28px;
-  padding: 0 11px;
-  border: 0;
-  border-radius: 5px;
-  background: transparent;
-  color: var(--ch-muted);
-  font-size: 11px;
-  font-weight: 600;
-}
-.range-segment button.is-active {
-  background: #fff;
-  color: var(--ink);
-  box-shadow: 0 1px 2px #17202a10;
-}
-.chart-empty {
-  width: 100%;
-  display: grid;
-  place-items: center;
-  color: var(--ch-muted);
-  font-size: 12px;
-}
-.muted-copy {
-  color: var(--ch-muted);
-  font-size: 12px;
-}
 
 @media (max-width: 760px) {
   .chimera-content {
@@ -1901,152 +1086,17 @@ body.is-mac
   .usage-heading {
     display: block;
   }
-  .route-side-node {
-    top: 230px;
-  }
-  .route-model-node {
-    left: 5%;
-  }
-  .route-codex-node {
-    right: 5%;
-  }
 }
 @media (max-width: 520px) {
   .chimera-titlebar {
     padding: 0 12px;
   }
-  .route-brand {
-    gap: 6px;
-    font-size: 12px;
-  }
-  .route-brand-mark {
-    width: 26px;
-    height: 26px;
-    border-radius: 7px;
-  }
-  .route-brand-mark img {
-    width: 14px;
-    height: 14px;
-  }
-  .route-page-label {
-    font-size: 11px;
-  }
-  .route-window-tools {
-    gap: 4px;
-  }
-  .route-window-tools > button,
-  .route-window-tools .window-dots button,
-  .route-window-tools .window-dots button:nth-child(n) {
-    width: 26px;
-    height: 26px;
-  }
-  .route-window-tools .window-dots {
-    gap: 4px;
-  }
   /* macOS traffic lights keep their fixed 12px size at every width: they are a
      system affordance, not a scalable toolbar button. Re-stated after the
      compact overrides above, which would otherwise shrink them to 26px. */
-  body.is-mac .route-window-tools .window-dots.is-traffic-lights button,
-  body.is-mac
-    .route-window-tools
-    .window-dots.is-traffic-lights
-    button:nth-child(n) {
-    width: 12px;
-    height: 12px;
-  }
-  body.is-mac .route-window-tools .window-dots.is-traffic-lights {
-    gap: 8px;
-  }
 }
 
 /* Final Pencil route-gate composition. */
-.route-stage-label {
-  position: absolute;
-  top: 40px;
-  left: 50%;
-  transform: translateX(-50%);
-  color: #87939c;
-  font-size: 10px;
-  font-weight: 700;
-}
-.route-radar-field {
-  position: absolute;
-  top: 132px;
-  left: 50%;
-  width: min(720px, 72%);
-  height: 260px;
-  transform: translateX(-50%);
-  opacity: 0.9;
-  background-image: radial-gradient(circle, #d5dde2 1.3px, transparent 1.5px);
-  background-size: 27px 27px;
-  mask-image: radial-gradient(ellipse at center, #000 0 42%, transparent 76%);
-  pointer-events: none;
-}
-.route-stage-plus {
-  position: absolute;
-  top: 247px;
-  color: #b8c1c7;
-  font-size: 18px;
-  font-weight: 300;
-}
-.route-stage-plus-left {
-  left: 15%;
-}
-.route-stage-plus-right {
-  right: 15%;
-}
-.route-radar {
-  position: absolute;
-  top: 172px;
-  left: 50%;
-  width: 180px;
-  height: 180px;
-  transform: translateX(-50%);
-  display: grid;
-  place-items: center;
-  border-radius: 50%;
-  background: #fbe9e7;
-}
-.route-radar > span {
-  width: 122px;
-  height: 122px;
-  display: grid;
-  place-items: center;
-  border-radius: 50%;
-  background: #f8ceca;
-}
-.route-radar > span > span {
-  width: 64px;
-  height: 64px;
-  display: grid;
-  place-items: center;
-  border-radius: 50%;
-  background: #f3aaa2;
-}
-.route-radar i {
-  width: 11px;
-  height: 11px;
-  border-radius: 50%;
-  background: #d85647;
-}
-.route-radar.is-checking > span {
-  animation: route-pulse-middle 1.65s var(--ease) infinite;
-}
-.route-radar.is-checking > span > span {
-  animation: route-pulse-core 1.65s var(--ease) infinite;
-}
-.route-radar.is-connected {
-  animation: route-confirm 420ms var(--ease);
-}
-.route-radar.is-error {
-  background: #f8e2df;
-}
-.route-radar.is-error > span {
-  background: #f2bdb7;
-}
-.route-radar.is-error > span > span {
-  background: #e98f85;
-}
 @keyframes route-pulse-middle {
   0%,
   100% {
@@ -2077,106 +1127,6 @@ body.is-mac
   100% {
     transform: translateX(-50%) scale(1);
   }
-}
-.route-meta b {
-  font-weight: 700;
-}
-.route-meta .error {
-  color: #c7372f;
-}
-.route-picker {
-  position: absolute;
-  z-index: 3;
-  left: 50%;
-  bottom: 133px;
-  width: min(570px, 38vw);
-  min-width: 360px;
-  transform: translateX(-50%);
-  padding: 10px;
-  border: 1px solid #d7dee2;
-  border-radius: 9px;
-  background: #fff;
-  box-shadow: 0 12px 28px #17202a24;
-}
-.route-picker > label {
-  height: 38px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 11px;
-  border-radius: 7px;
-  background: #f1f3f4;
-  color: var(--ch-muted);
-}
-.route-picker input {
-  width: 100%;
-  border: 0;
-  outline: 0;
-  background: transparent;
-  font: inherit;
-}
-.route-picker > label:focus-within {
-  box-shadow: 0 0 0 2px rgba(255, 90, 61, 0.22);
-}
-.route-picker input:focus-visible {
-  outline: 0;
-}
-.route-picker-empty {
-  margin: 8px;
-  padding: 18px 10px;
-  color: var(--ch-muted);
-  font-size: 13px;
-  text-align: center;
-}
-.route-picker > div {
-  max-height: 210px;
-  overflow: auto;
-  padding: 7px 0;
-}
-.route-picker > div > button {
-  width: 100%;
-  min-height: 58px;
-  display: grid;
-  grid-template-columns: 38px minmax(0, 1fr) auto;
-  gap: 9px;
-  align-items: center;
-  padding: 7px 10px;
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
-  text-align: left;
-}
-.route-picker > div > button.is-active {
-  background: #fff0ed;
-  color: var(--ch-accent);
-}
-.route-picker > div > button span:nth-child(2) {
-  min-width: 0;
-}
-.route-picker > div > button b {
-  display: block;
-  color: var(--ink);
-  font-size: 13px;
-}
-.route-picker > div > button code {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--ch-muted);
-  font-size: 12px;
-}
-.route-picker-add {
-  height: 38px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 10px;
-  border: 0;
-  background: transparent;
-  color: var(--ch-accent);
-  font-size: 13px;
-  font-weight: 700;
 }
 .runtime-maintenance-page {
   position: fixed;
@@ -2387,201 +1337,40 @@ body.is-mac
   outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
-@media (max-width: 760px) {
-  .route-radar {
-    top: 120px;
-  }
-  .route-stage-plus {
-    top: 196px;
-  }
-  .route-picker {
-    width: min(570px, 90%);
-  }
-}
 @media (max-width: 1180px) {
   .chimera-main {
     padding: 0;
   }
-  .console-layout {
-    grid-template-columns: minmax(0, 1fr) 270px;
-  }
-  .runtime-update-layout {
-    grid-template-columns: minmax(0, 1fr) 300px;
-  }
-  .activity-table-head,
-  .activity-table-row {
-    grid-template-columns: 150px 180px minmax(0, 1fr) 90px;
-  }
 }
 
 /* Approved static-art provider home. */
-.route-globe-stage {
-  position: absolute;
-  top: 66px;
-  left: 50%;
-  width: min(500px, 58vw);
-  height: 390px;
-  transform: translateX(-50%);
-  isolation: isolate;
-}
 /* The rotating globe, in place of the old static art. The box stops 66px short
    of the stage bottom so it clears the launch card: the card is 58px tall at
    bottom:-3px, so its top edge sits at 335px of the 390px stage, and the globe
    box ends at 324px — an 11px gap instead of the art running under the card. */
 /* Base: a decorative fill layer. Placement is the caller's job, so the
    component stays reusable outside this hero. */
-.route-globe {
-  position: absolute;
-  inset: 0;
-  /* cqw/cqh below resolve against this box, so the CSS layers can be sized to
-     the exact same silhouette the WebGL camera frames. */
-  container-type: size;
-  /* Keep the layer stack self-contained rather than competing with the card. */
-  isolation: isolate;
-}
 /* Hero placement: stop 66px short of the stage bottom so the globe clears the
    "Codex 正在运行" card instead of sitting behind it. Card top is at 335px of
    the 390px stage; this box ends at 324px. */
-.route-globe-art {
-  inset: 0 0 66px;
-}
 /* The four layers, back to front: glow (halo spill) / fallback disc / WebGL
    canvas / shade (limb + highlight). The canvas is appended by the effect
    rather than by React, so the order is set explicitly here. */
-.route-globe-canvas {
-  position: absolute;
-  z-index: 2;
-  inset: 0;
-  display: block;
-  width: 100%;
-  height: 100%;
-  /* Let drag-to-spin work without the gesture being stolen for scrolling. */
-  touch-action: none;
-}
 /* Shared geometry: a circle matching the sphere's projected silhouette. --globe-fill
    is the same fraction the camera uses, against whichever axis is tighter. */
-.route-globe-glow,
-.route-globe-fallback,
-.route-globe-shade {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: min(
-    calc(var(--globe-fill, 0.92) * 100cqw),
-    calc(var(--globe-fill, 0.92) * 100cqh)
-  );
-  aspect-ratio: 1;
-  transform: translate(-50%, -50%);
-  border-radius: 50%;
-  pointer-events: none;
-}
 /* Halo. An outer box-shadow is clipped inside its own border box, so a
    transparent circle yields nothing but the spill around the sphere — no colour
    maths, and it can't tint the globe itself. */
-.route-globe-glow {
-  z-index: 0;
-  background: transparent;
-  box-shadow:
-    0 0 18px 3px rgb(var(--globe-glow-rgb, 125 184 220) / 0.34),
-    0 0 52px 14px rgb(var(--globe-glow-rgb, 125 184 220) / 0.16);
-}
 /* Visible until the first WebGL frame lands, and permanently where WebGL is
    unavailable (GPU-less VM, older WebView2, jsdom in tests). No assets — a
    dotted disc in the palette's own colours, so the handover isn't a visible
    jump. ~5px grid with ~1.8px dots tracks the real globe's 3.1px equator
    spacing closely enough. */
-.route-globe-fallback {
-  z-index: 1;
-  background-color: var(--globe-ocean, #8cc0e0);
-  background-image: radial-gradient(
-    circle,
-    var(--globe-land-mid, #ffab3d) 0.9px,
-    transparent 1px
-  );
-  background-size: 5px 5px;
-  opacity: 1;
-  transition: opacity 240ms var(--ease);
-}
-.route-globe-fallback.is-hidden {
-  opacity: 0;
-}
 /* Roundness. Two stacked radials: a soft specular up-left, and a darkened limb
    toward the edge. Both are screen-fixed, which is what makes them read as a
    light source — a texture on the sphere would rotate with it and read as
    painted-on markings instead. Light comes from the upper left, matching the
    launch card's own shadow direction. */
-.route-globe-shade {
-  z-index: 3;
-  background-image:
-    radial-gradient(
-      circle at 33% 26%,
-      rgba(255, 255, 255, 0.3) 0%,
-      rgba(255, 255, 255, 0.1) 22%,
-      transparent 48%
-    ),
-    radial-gradient(
-      circle at 50% 50%,
-      transparent 50%,
-      rgb(var(--globe-shade-rgb, 28 79 112) / 0.09) 76%,
-      rgb(var(--globe-shade-rgb, 28 79 112) / 0.32) 100%
-    );
-}
-.route-codex-launch {
-  position: absolute;
-  z-index: 2;
-  left: 50%;
-  bottom: -3px;
-  width: 368px;
-  height: 58px;
-  transform: translateX(-50%);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 7px;
-  border: 1px solid rgba(255, 255, 255, 0.94);
-  border-radius: 14px;
-  background: rgba(252, 253, 254, 0.94);
-  box-shadow:
-    inset 0 1px 0 #fff,
-    inset 0 -1px 0 rgba(104, 122, 133, 0.12),
-    0 5px 8px rgba(32, 40, 48, 0.1);
-}
-.route-codex-launch-status {
-  min-width: 0;
-  flex: 1 1 auto;
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding-left: 8px;
-}
-.route-codex-launch-status > i {
-  flex: 0 0 8px;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--success);
-}
-.route-codex-launch-status > span {
-  min-width: 0;
-  display: grid;
-  gap: 2px;
-}
-.route-codex-launch-status b {
-  color: #293138;
-  font-size: 12px;
-  line-height: 1.25;
-  white-space: nowrap;
-}
-.route-codex-launch-status code {
-  max-width: 174px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: #69737d;
-  font-size: 10px;
-  line-height: 1.25;
-  white-space: nowrap;
-}
 .route-balance-bar {
   margin: 0 0 12px;
   padding: 8px 12px;
@@ -2633,59 +1422,6 @@ body.is-mac
 .route-balance-refresh:hover {
   color: var(--text-1);
   background: var(--bg-selected);
-}
-.route-codex-unlock-hint {
-  position: absolute;
-  z-index: 3;
-  left: 50%;
-  bottom: calc(100% + 8px);
-  width: 368px;
-  transform: translateX(-50%);
-  margin: 0;
-  padding: 8px 10px;
-  border-radius: 10px;
-  background: rgba(35, 44, 51, 0.92);
-  color: #f2f5f7;
-  font-size: 11px;
-  line-height: 1.5;
-  text-align: left;
-  box-shadow: 0 4px 10px rgba(32, 40, 48, 0.18);
-}
-.route-codex-launch.is-missing .route-codex-launch-status > i {
-  background: #8d98a2;
-}
-.route-codex-launch > button {
-  flex: 0 0 144px;
-  width: 144px;
-  height: 44px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  border: 0;
-  border-radius: 10px;
-  background: #ff5a36;
-  color: #fff;
-  font-size: 12px;
-  font-weight: 800;
-  transition:
-    background 160ms var(--ease),
-    transform 120ms var(--ease);
-}
-.route-codex-launch > button:hover:not(:disabled) {
-  background: #ed4d32;
-}
-.route-codex-launch > button:active:not(:disabled) {
-  transform: scale(0.975);
-}
-.route-codex-launch > button:disabled {
-  cursor: not-allowed;
-  background: #c5ccd1;
-  color: #f8fafb;
-}
-.route-codex-launch > button:focus-visible {
-  outline: 2px solid rgba(190, 55, 30, 0.9);
-  outline-offset: 2px;
 }
 @keyframes globe-status-pulse {
   50% {
@@ -2933,27 +1669,9 @@ body.is-mac
   .runtime-reference-progress {
     margin-bottom: 0;
   }
-
-  .route-stage-label {
-    top: 24px;
-  }
-
-  .route-globe-stage {
-    top: 44px;
-    width: min(430px, 52vw);
-    height: 330px;
-  }
-
-  .route-picker {
-    bottom: 109px;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .route-codex-launch > button,
-  .route-line-add {
-    transition-duration: 0ms;
-  }
   .runtime-reference-progress u.is-indeterminate {
     width: 100% !important;
     animation: none;
@@ -2980,25 +1698,6 @@ body.is-mac
   display: flex;
   align-items: center;
   gap: 18px;
-}
-.runtime-task-icon {
-  display: grid;
-  place-items: center;
-  width: 56px;
-  height: 56px;
-  flex-shrink: 0;
-  border-radius: 16px;
-  color: var(--ch-accent);
-  background: var(--bg-surface);
-}
-.runtime-task-icon svg {
-  animation: runtime-task-spin 1.6s linear infinite;
-}
-.runtime-task-eyebrow {
-  color: var(--ch-accent);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.1em;
 }
 .runtime-task-heading h2 {
   margin: 5px 0;
@@ -3039,11 +1738,6 @@ body.is-mac
     transform: rotate(360deg);
   }
 }
-@media (prefers-reduced-motion: reduce) {
-  .runtime-task-icon svg {
-    animation: none;
-  }
-}
 
 @media (max-width: 900px) {
   .runtime-maintenance-workspace {
@@ -3055,80 +1749,7 @@ body.is-mac
   }
 }
 
-/* tool pages & shell (2.8.6)
-   Sidebar active and focus states. The Codex capability rows carry the
-   vertical tree (rail + station dot) in their first 28px; a full-width fill
-   or an outset focus outline would paint over that rail. The active surface
-   and the focus ring are drawn on a ::before that starts after the tree
-   column, so the rail stays continuous and the highlight sits beside it. */
-.chimera-sidebar .chimera-navigation button[data-pencil-name^="能力 · "] {
-  position: relative;
-  isolation: isolate;
-  background: transparent;
-}
-.chimera-sidebar
-  .chimera-navigation
-  button[data-pencil-name^="能力 · "]::before {
-  content: "";
-  position: absolute;
-  inset: 2px 0 2px 36px;
-  z-index: -1;
-  border-radius: var(--radius-control, 4px);
-  background: transparent;
-  transition: background-color var(--dur-instant, 100ms) var(--ease-out, ease);
-}
-.chimera-sidebar
-  .chimera-navigation
-  button[data-pencil-name^="能力 · "]:hover:not(:disabled)::before {
-  background: #1a1e24;
-}
-.chimera-sidebar
-  .chimera-navigation
-  button[data-pencil-name^="能力 · "][aria-current="page"]::before {
-  background: #23282d;
-}
-.chimera-sidebar
-  .chimera-navigation
-  button[data-pencil-name^="能力 · "]:focus-visible {
-  outline: none;
-}
-.chimera-sidebar
-  .chimera-navigation
-  button[data-pencil-name^="能力 · "]:focus-visible::before {
-  outline: 2px solid var(--focus-on-plate);
-  outline-offset: -2px;
-}
-/* Every other sidebar row: keep the focus ring inside the 216px rail so it
-   is not clipped by the nav scroller or drawn over neighbouring rows. */
-.chimera-sidebar button:not([data-pencil-name^="能力 · "]):focus-visible {
-  outline: 2px solid var(--focus-on-plate);
-  outline-offset: -2px;
-}
-/* Active accent: one straight 2px bar, 16px tall and centred on the row, at
-   the left edge of the highlight (after the tree column on capability rows).
-   An inset shadow on the rounded highlight bent round its corners into a
-   bracket. Every active sidebar row (capability, tool, 管理工具, 会话, 设置)
-   carries the same bar. */
-.chimera-sidebar button[aria-current="page"] {
-  position: relative;
-}
-.chimera-sidebar button[aria-current="page"]::after {
-  content: "";
-  position: absolute;
-  top: 50%;
-  left: 0;
-  width: 2px;
-  height: 16px;
-  margin-top: -8px;
-  border-radius: 1px;
-  background: #7b9bc3;
-  pointer-events: none;
-}
-.chimera-sidebar
-  .chimera-navigation
-  button[data-pencil-name^="能力 · "][aria-current="page"]::after {
-  left: 36px;
-}
+/* Sidebar row hover, active and focus states live in theme/liquid-glass-v3.css. */
 
 /* The tool list scrolls when the window is short (960x640 shows about two
    thirds of it). Scrollbars are hidden app-wide, so the list fades out at
@@ -3195,4 +1816,10 @@ body.is-mac
 }
 .skip-link:focus {
   transform: none;
+}
+
+/* Facts of a runtime confirmation (the dialog lives in the shell) break
+   between facts, never inside one. */
+.runtime-confirm-fact {
+  white-space: nowrap;
 }

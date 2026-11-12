@@ -7,17 +7,25 @@ import React, {
 } from "react";
 import {
   FileText,
-  Plus,
   MoreHorizontal,
   Search,
-  ArrowUpRight,
   Check,
   X,
-  Pencil,
   Upload,
   RefreshCw,
   FolderCog,
   AlertTriangle,
+  ArrowDownWideNarrow,
+  BookOpen,
+  Code2,
+  Copy,
+  Database,
+  FlaskConical,
+  GitCommitHorizontal,
+  Package,
+  PenLine,
+  ShieldAlert,
+  type LucideIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -59,7 +67,15 @@ import {
   describePromptError,
 } from "@/components/prompts/promptErrors";
 import { splitInstructionFile } from "@/components/prompts/instructionSections";
+import {
+  isPromptsDesignPreview,
+  SAMPLE_AGENTS_FILE,
+  SAMPLE_PROMPT_CATEGORIES,
+  SAMPLE_PROMPTS,
+} from "./PromptsView.designSamples";
+import { EmptyState } from "@/components/ui/empty-state";
 import "./PromptsView.css";
+import "@/theme/v3/prompts.css";
 
 const PromptFormModal = React.lazy(
   () => import("@/components/prompts/PromptFormModal"),
@@ -90,7 +106,37 @@ function visiblePromptTools(visibleApps?: Partial<VisibleApps>) {
 }
 const FOREIGN_BEGIN = "<!-- CODEX-X:INSTRUCTIONS:BEGIN -->";
 type Template = (typeof bundledPromptTemplates)[number];
-type Entry = { prompt: Prompt; saved: boolean; template?: Template };
+type Entry = {
+  prompt: Prompt;
+  saved: boolean;
+  template?: Template;
+  /** Design preview only: a sample that stands in for a built-in. */
+  builtin?: boolean;
+};
+type Filter = "all" | "enabled" | "builtin";
+type Sort = "default" | "recent" | "name";
+
+const designPreview = isPromptsDesignPreview();
+const PREVIEW_REFUSAL = "设计预览不会写入本机文件";
+
+const CATEGORY_ICONS: Record<string, LucideIcon> = {
+  "software-development": Code2,
+  writing: PenLine,
+  conventions: GitCommitHorizontal,
+  quality: FlaskConical,
+  docs: BookOpen,
+  maintenance: Package,
+  security: ShieldAlert,
+  data: Database,
+};
+
+/** `{{name}}` placeholders in a prompt, in first-seen order. */
+function promptVariables(content: string): string[] {
+  const seen = new Set<string>();
+  for (const match of content.matchAll(/\{\{\s*([\w.-]+)\s*\}\}/g))
+    seen.add(match[1]);
+  return [...seen];
+}
 type Editor = { entry?: Entry; readOnly: boolean };
 type FileIssue = ReturnType<typeof describeFileIssue>;
 
@@ -169,7 +215,10 @@ export const PromptsView: React.FC<{
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
   const [search, setSearch] = useState("");
-  const [enabledOnly, setEnabledOnly] = useState(false);
+  const [filter, setFilter] = useState<Filter>("all");
+  const setEnabledOnly = (value: boolean) =>
+    setFilter(value ? "enabled" : "all");
+  const [sort, setSort] = useState<Sort>("default");
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
   const [editor, setEditor] = useState<Editor | null>(null);
@@ -189,6 +238,25 @@ export const PromptsView: React.FC<{
     const fileName = PROMPT_TOOLS.find((tool) => tool.id === targetApp)!.file;
     setLoading(true);
     setError(false);
+    if (designPreview) {
+      // Fixtures only: the browser preview has no backend to read from.
+      setPrompts(SAMPLE_PROMPTS);
+      setCategories(SAMPLE_PROMPT_CATEGORIES);
+      setLive(targetApp === "codex" ? SAMPLE_AGENTS_FILE : null);
+      setLiveIssue(null);
+      setCodexStatus(
+        targetApp === "codex"
+          ? {
+              state: "in_sync",
+              enabledCount: SAMPLE_PROMPTS.filter((prompt) => prompt.enabled)
+                .length,
+              managedBytes: 4_300,
+            }
+          : null,
+      );
+      setLoading(false);
+      return;
+    }
     // The instruction file is read on its own: a link or an unreadable file
     // must not take the library down with it.
     const file = promptsApi.getCurrentFileContent(targetApp).then(
@@ -321,7 +389,13 @@ export const PromptsView: React.FC<{
     confirmation.current = null;
     setWriteConfirmation(null);
   };
-  const entries = libraryEntries(prompts, categories);
+  const entries: Entry[] = designPreview
+    ? SAMPLE_PROMPTS.map(({ builtin, ...prompt }) => ({
+        prompt,
+        saved: true,
+        builtin,
+      }))
+    : libraryEntries(prompts, categories);
   const categoryOf = (prompt: Prompt) =>
     categories.some((category) => category.id === prompt.categoryId)
       ? prompt.categoryId!
@@ -352,16 +426,31 @@ export const PromptsView: React.FC<{
     ? (prompts.find((prompt) => prompt.id === editor.entry!.prompt.id)
         ?.enabled ?? editor.entry.prompt.enabled)
     : false;
+  const isBuiltin = (entry: Entry) => Boolean(entry.template || entry.builtin);
+  const builtinCount = entries.filter(isBuiltin).length;
   const query = search.trim().toLocaleLowerCase();
-  const visible = entries.filter(
-    ({ prompt }) =>
-      (!enabledOnly || prompt.enabled) &&
-      (categoryFilter === "all" || categoryOf(prompt) === categoryFilter) &&
-      `${prompt.name}\n${prompt.description ?? ""}`
+  const filtered = entries.filter(
+    (entry) =>
+      (filter === "all" ||
+        (filter === "enabled" ? entry.prompt.enabled : isBuiltin(entry))) &&
+      (categoryFilter === "all" ||
+        categoryOf(entry.prompt) === categoryFilter) &&
+      `${entry.prompt.name}
+${entry.prompt.description ?? ""}`
         .toLocaleLowerCase()
         .includes(query),
   );
-  const disabled = loading || busy || error || writeConfirmation !== null;
+  const visible =
+    sort === "default"
+      ? filtered
+      : [...filtered].sort((a, b) =>
+          sort === "name"
+            ? a.prompt.name.localeCompare(b.prompt.name, "zh-CN")
+            : (b.prompt.updatedAt ?? b.prompt.createdAt ?? 0) -
+              (a.prompt.updatedAt ?? a.prompt.createdAt ?? 0),
+        );
+  const disabled =
+    designPreview || loading || busy || error || writeConfirmation !== null;
   const foreign = isCodex && live?.includes(FOREIGN_BEGIN);
   // What the file in effect says; null keeps the library's own summary.
   const statusView: CodexStatusView | null =
@@ -480,10 +569,80 @@ export const PromptsView: React.FC<{
         ?.scrollIntoView?.({ block: "nearest" });
   }, [highlightedId, loading]);
 
+  // Problems with the file in effect stay above the library; the routine
+  // "what gets injected" note sits quietly under it as one line.
+  const statusWarning = statusView?.tone === "warning";
+  const summary = (
+    <section
+      className={`prompts-summary${
+        statusWarning ? " is-warning" : active.length ? " has-active" : ""
+      }`}
+      aria-label="当前提示词状态"
+    >
+      <span className="prompts-summary-icon" aria-hidden="true">
+        {statusWarning ? (
+          <AlertTriangle size={14} />
+        ) : active.length ? (
+          <Check size={14} />
+        ) : (
+          <FileText size={14} />
+        )}
+      </span>
+      <div className="prompts-summary-copy">
+        {loading ? (
+          <strong role="status">正在读取提示词…</strong>
+        ) : error ? (
+          <strong>当前状态暂不可用</strong>
+        ) : (
+          <span className="prompts-summary-headline">
+            <strong>
+              {statusView?.headline ??
+                (active.length
+                  ? `已启用 ${active.length} 条`
+                  : "未启用 Chimera 提示词")}
+            </strong>
+            {statusView && (
+              <span className={`prompts-state-tag is-${statusView.tone}`}>
+                {statusView.tag}
+              </span>
+            )}
+          </span>
+        )}
+        <p id="prompts-summary-detail">
+          {statusView?.detail ??
+            (isCodex
+              ? "按启用顺序合并写入 AGENTS.md，区块外内容不变；修改前自动备份，下一次会话生效。"
+              : "每次使用一条，应用时替换整个指令文件；原文保留在提示词库。")}
+        </p>
+      </div>
+      <div className="prompts-summary-actions">
+        {statusView?.action && (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={designPreview || busy || writeConfirmation !== null}
+            onClick={() => runStatusAction(statusView.action!.kind)}
+          >
+            {statusView.action.label}
+          </Button>
+        )}
+        <Button
+          variant="ghost"
+          size="sm"
+          className="prompts-file-link"
+          onClick={openFile}
+          disabled={loading || busy}
+        >
+          {statusView?.fileLink ?? "查看当前指令"}
+        </Button>
+      </div>
+    </section>
+  );
+
   return (
-    <div className="prompts-page">
+    <div className={`prompts-page${designPreview ? " is-design-preview" : ""}`}>
       <header className="prompts-heading">
-        <div>
+        <div className="prompts-heading-copy">
           <div className="prompts-title-row">
             <h1>提示词</h1>
             <select
@@ -516,108 +675,45 @@ export const PromptsView: React.FC<{
               ))}
             </select>
           </div>
-          <p>配置 {target.name} 的全局工作指令，让常用习惯持续生效。</p>
+          <p className="prompts-subtitle">
+            {loading || error ? (
+              `配置 ${target.name} 的全局工作指令，让常用习惯持续生效。`
+            ) : (
+              <>
+                <span>{entries.length} 个提示词</span>
+                <span>{active.length} 个已启用</span>
+                <span>
+                  {isCodex ? "注入" : "写入"} {target.file}
+                </span>
+              </>
+            )}
+          </p>
         </div>
         <div className="prompts-actions">
           <Button
             variant="outline"
+            aria-label="导入 .md"
+            title={designPreview ? PREVIEW_REFUSAL : "导入 Markdown 文件"}
             onClick={importMarkdown}
             disabled={disabled}
           >
-            <Upload size={15} />
-            导入 .md
+            <Upload size={14} aria-hidden="true" />
+            导入
           </Button>
           <Button
             onClick={() => setEditor({ readOnly: false })}
             disabled={disabled}
+            title={designPreview ? PREVIEW_REFUSAL : undefined}
           >
-            <Plus size={15} />
             新建提示词
           </Button>
         </div>
       </header>
 
-      <section
-        className={`prompts-summary${
-          statusView?.tone === "warning"
-            ? " is-warning"
-            : active.length
-              ? " has-active"
-              : ""
-        }`}
-        aria-label="当前提示词状态"
-      >
-        <div className="prompts-summary-icon" aria-hidden="true">
-          {statusView?.tone === "warning" ? (
-            <AlertTriangle size={19} />
-          ) : active.length ? (
-            <Check size={19} />
-          ) : (
-            <FileText size={19} />
-          )}
-        </div>
-        <div className="prompts-summary-copy">
-          {loading ? (
-            <strong role="status">正在读取提示词…</strong>
-          ) : error ? (
-            <strong>当前状态暂不可用</strong>
-          ) : (
-            <div className="prompts-summary-headline">
-              <strong>
-                {statusView?.headline ??
-                  (active.length
-                    ? `已启用 ${active.length} 条`
-                    : "未启用 Chimera 提示词")}
-              </strong>
-              {statusView && (
-                <span className={`prompts-state-tag is-${statusView.tone}`}>
-                  {statusView.tag}
-                </span>
-              )}
-            </div>
-          )}
-          {!loading &&
-            !error &&
-            active.length > 0 &&
-            statusView?.tone !== "warning" && (
-              <span
-                className="prompts-active-names"
-                title={active.map(({ prompt }) => prompt.name).join("、")}
-              >
-                {active.map(({ prompt }) => prompt.name).join("、")}
-              </span>
-            )}
-          <p id="prompts-summary-detail">
-            {statusView?.detail ??
-              (isCodex
-                ? "多条内容合并写入，区块外的原有指令保持不变；修改前自动备份。"
-                : "每次使用一条，应用时替换整个指令文件；原文保留在提示词库。")}
-          </p>
-        </div>
-        <div className="prompts-summary-actions">
-          {statusView?.action && (
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={busy || writeConfirmation !== null}
-              onClick={() => runStatusAction(statusView.action!.kind)}
-            >
-              {statusView.action.label}
-            </Button>
-          )}
-          <Button
-            variant="ghost"
-            className="prompts-file-link"
-            onClick={openFile}
-            disabled={loading || busy}
-          >
-            {statusView?.fileLink ?? "查看当前指令"}
-            <ArrowUpRight size={15} />
-          </Button>
-        </div>
-      </section>
+      {statusWarning && summary}
       {error && (
         <div className="prompts-notice" role="alert">
+          <AlertTriangle size={14} aria-hidden="true" />
           <span>本地提示词暂时无法读取，仍可浏览内置内容。</span>
           <Button
             variant="outline"
@@ -631,6 +727,7 @@ export const PromptsView: React.FC<{
       )}
       {notice && (
         <div className="prompts-notice" role="status">
+          <Check size={14} aria-hidden="true" />
           <span>{notice}</span>
           <Button
             variant="ghost"
@@ -638,12 +735,13 @@ export const PromptsView: React.FC<{
             aria-label="关闭提示"
             onClick={() => setNotice("")}
           >
-            <X size={15} />
+            <X size={14} />
           </Button>
         </div>
       )}
       {foreign && !codexStatus && (
         <div className="prompts-notice">
+          <AlertTriangle size={14} aria-hidden="true" />
           <span>检测到其他工具写入的区块，原内容保持只读。</span>
           <Button
             variant="outline"
@@ -657,11 +755,30 @@ export const PromptsView: React.FC<{
       )}
 
       <div className="prompts-toolbar">
+        <div className="prompts-filters" role="group" aria-label="提示词筛选">
+          {(
+            [
+              ["all", "全部", entries.length],
+              ["enabled", "已启用", active.length],
+              ["builtin", "内置", builtinCount],
+            ] as const
+          ).map(([id, label, count]) => (
+            <button
+              key={id}
+              type="button"
+              aria-pressed={filter === id}
+              onClick={() => setFilter(id)}
+            >
+              {label}
+              {!loading && !error && <span>{count}</span>}
+            </button>
+          ))}
+        </div>
         <div className="prompts-search">
-          <Search size={16} aria-hidden="true" />
+          <Search size={14} aria-hidden="true" />
           <Input
             aria-label="搜索提示词"
-            placeholder="搜索名称或描述…"
+            placeholder="搜索提示词"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
           />
@@ -671,26 +788,22 @@ export const PromptsView: React.FC<{
               aria-label="清空搜索"
               onClick={() => setSearch("")}
             >
-              <X size={14} />
+              <X size={13} />
             </button>
           )}
         </div>
-        <div className="prompts-filters" role="group" aria-label="提示词筛选">
-          <button
-            type="button"
-            aria-pressed={!enabledOnly}
-            onClick={() => setEnabledOnly(false)}
+        <label className="prompts-sort">
+          <ArrowDownWideNarrow size={14} aria-hidden="true" />
+          <select
+            aria-label="排序"
+            value={sort}
+            onChange={(event) => setSort(event.target.value as Sort)}
           >
-            全部
-          </button>
-          <button
-            type="button"
-            aria-pressed={enabledOnly}
-            onClick={() => setEnabledOnly(true)}
-          >
-            已启用{!loading && !error && <span>{active.length}</span>}
-          </button>
-        </div>
+            <option value="default">默认顺序</option>
+            <option value="recent">最近编辑</option>
+            <option value="name">按名称</option>
+          </select>
+        </label>
         <span className="prompts-result-count">{visible.length} 条提示词</span>
       </div>
       <div className="prompts-category-bar">
@@ -725,7 +838,7 @@ export const PromptsView: React.FC<{
           disabled={disabled}
           onClick={() => setShowCategories(true)}
         >
-          <FolderCog size={15} />
+          <FolderCog size={14} aria-hidden="true" />
           管理分类
         </Button>
       </div>
@@ -742,6 +855,14 @@ export const PromptsView: React.FC<{
               (prompt.content.trim() !== template.content.trim() ||
                 prompt.name !== template.name ||
                 (prompt.description ?? "") !== template.description);
+            const categoryName =
+              categories.find((category) => category.id === prompt.categoryId)
+                ?.name ?? "未分类";
+            const Icon =
+              CATEGORY_ICONS[prompt.categoryId ?? ""] ??
+              CATEGORY_ICONS[template?.categoryId ?? ""] ??
+              FileText;
+            const variables = promptVariables(prompt.content);
             return (
               <article
                 id={`prompt-card-${prompt.id}`}
@@ -751,21 +872,24 @@ export const PromptsView: React.FC<{
               >
                 <div className="prompt-card-heading">
                   <span className="prompt-card-icon" aria-hidden="true">
-                    <FileText size={19} />
+                    <Icon size={15} />
                   </span>
-                  <button
-                    type="button"
-                    className="prompt-card-title"
-                    onClick={() => setEditor({ entry, readOnly: true })}
-                  >
-                    {prompt.name}
-                  </button>
+                  <div className="prompt-card-name">
+                    <button
+                      type="button"
+                      className="prompt-card-title"
+                      onClick={() => setEditor({ entry, readOnly: true })}
+                    >
+                      {prompt.name}
+                    </button>
+                    <span className="prompt-card-category">{categoryName}</span>
+                  </div>
                   {isCodex ? (
                     <Switch
                       aria-label={`启用 ${prompt.name}`}
                       checked={prompt.enabled}
                       disabled={disabled || linkedFile}
-                      title={blockedReason}
+                      title={designPreview ? PREVIEW_REFUSAL : blockedReason}
                       aria-describedby={
                         blockedReason ? "prompts-summary-detail" : undefined
                       }
@@ -773,7 +897,7 @@ export const PromptsView: React.FC<{
                     />
                   ) : prompt.enabled ? (
                     <span className="prompt-current">
-                      <Check size={13} />
+                      <Check size={12} />
                       当前使用
                     </span>
                   ) : (
@@ -797,21 +921,25 @@ export const PromptsView: React.FC<{
                     prompt.content.split("\n").find((line) => line.trim()) ||
                     "暂无描述，点击标题查看正文。"}
                 </p>
+                <div className="prompt-card-vars">
+                  <span className="prompt-card-vars-label">变量</span>
+                  {variables.length ? (
+                    variables
+                      .slice(0, 3)
+                      .map((name) => <code key={name}>{`{{${name}}}`}</code>)
+                  ) : (
+                    <span className="prompt-card-vars-none">无</span>
+                  )}
+                  {variables.length > 3 && (
+                    <span className="prompt-card-vars-none">
+                      +{variables.length - 3}
+                    </span>
+                  )}
+                </div>
                 <div className="prompt-card-footer">
-                  <span className="prompt-card-origin">
-                    {template ? "内置" : "自定义"}
-                    {modified && (
-                      <span
-                        className="prompt-card-badge"
-                        title="内容与内置模板不同，可在编辑时恢复内置内容"
-                      >
-                        本地已修改
-                      </span>
-                    )}
-                    <span className="prompt-card-category">
-                      {categories.find(
-                        (category) => category.id === prompt.categoryId,
-                      )?.name ?? "未分类"}
+                  <span className="prompt-card-scope">
+                    <span title={`写入全局 ${target.file}，对所有项目生效`}>
+                      所有项目
                     </span>
                     {prompt.enabled && isCodex && (
                       <span
@@ -821,6 +949,17 @@ export const PromptsView: React.FC<{
                       </span>
                     )}
                   </span>
+                  <span className="prompt-card-origin">
+                    {modified && (
+                      <span
+                        className="prompt-card-badge"
+                        title="内容与内置模板不同，可在编辑时恢复内置内容"
+                      >
+                        本地已修改
+                      </span>
+                    )}
+                    {isBuiltin(entry) ? "内置" : "自定义"}
+                  </span>
                   <div className="prompt-card-actions">
                     <Button
                       variant="ghost"
@@ -829,10 +968,9 @@ export const PromptsView: React.FC<{
                       disabled={disabled}
                       onClick={() => setEditor({ entry, readOnly: false })}
                     >
-                      <Pencil size={14} />
                       编辑
                     </Button>
-                    {saved && (
+                    {saved && !designPreview && (
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <Button
@@ -841,7 +979,7 @@ export const PromptsView: React.FC<{
                             aria-label={`操作 ${prompt.name}`}
                             disabled={disabled}
                           >
-                            <MoreHorizontal size={17} />
+                            <MoreHorizontal size={15} />
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
@@ -889,35 +1027,42 @@ export const PromptsView: React.FC<{
           })}
         </div>
         {visible.length === 0 && (
-          <div className="prompts-empty">
-            <Search size={24} />
-            <h2>
-              {query
+          <EmptyState
+            className="prompts-empty"
+            icon={<Search size={20} />}
+            title={
+              query
                 ? "没有匹配的提示词"
-                : enabledOnly
+                : filter === "enabled"
                   ? "还没有启用的提示词"
-                  : "这个分类还没有提示词"}
-            </h2>
-            <p>
-              {query
+                  : filter === "builtin"
+                    ? "没有内置提示词"
+                    : "这个分类还没有提示词"
+            }
+            description={
+              query
                 ? "试试其他名称或描述，或清除筛选查看全部。"
-                : enabledOnly
+                : filter === "enabled"
                   ? "从全部提示词中选择需要的指令，启用后会显示在这里。"
-                  : "新建提示词，或在编辑时将已有提示词移入此分类。"}
-            </p>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setSearch("");
-                setEnabledOnly(false);
-                setCategoryFilter("all");
-              }}
-            >
-              查看全部
-            </Button>
-          </div>
+                  : "新建提示词，或在编辑时将已有提示词移入此分类。"
+            }
+            action={
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setSearch("");
+                  setEnabledOnly(false);
+                  setCategoryFilter("all");
+                }}
+              >
+                查看全部
+              </Button>
+            }
+          />
         )}
       </section>
+      {!statusWarning && summary}
 
       <Dialog
         open={showFile}
@@ -1019,6 +1164,21 @@ export const PromptsView: React.FC<{
                 onClick={() => setAdopting(live)}
               >
                 接管这个区块
+              </Button>
+            )}
+            {live && !liveIssue && (
+              <Button
+                variant="outline"
+                disabled={loading}
+                onClick={() =>
+                  void navigator.clipboard
+                    ?.writeText(live)
+                    .then(() => toast.success?.("已复制全文"))
+                    .catch(() => toast.error("复制失败，请选中文本后手动复制"))
+                }
+              >
+                <Copy size={14} aria-hidden="true" />
+                复制全文
               </Button>
             )}
             <Button

@@ -34,6 +34,7 @@ mod proxy_marker;
 
 mod mcp;
 mod model_capabilities;
+mod official_account_meta;
 
 mod opencode_config;
 mod panic_hook;
@@ -1762,6 +1763,18 @@ pub fn run() {
             commands::poll_official_device_login,
             commands::cancel_official_device_login,
             commands::remove_official_account,
+            commands::query_official_accounts,
+            commands::remove_official_accounts,
+            commands::set_official_account_tags,
+            commands::set_official_account_group,
+            commands::set_official_account_note,
+            commands::set_official_account_disabled,
+            commands::mark_official_account_used,
+            commands::list_official_account_groups,
+            commands::create_official_account_group,
+            commands::update_official_account_group,
+            commands::delete_official_account_group,
+            commands::reorder_official_account_groups,
             commands::list_claude_code_accounts,
             commands::save_current_claude_code_login,
             commands::switch_claude_code_account,
@@ -1782,6 +1795,7 @@ pub fn run() {
             commands::get_claude_usage_overview,
             commands::get_claude_desktop_swap_status,
             commands::capture_claude_desktop_login,
+            commands::save_claude_desktop_only_login,
             commands::switch_claude_desktop_account,
             commands::prepare_claude_desktop_login,
             commands::export_claude_logins,

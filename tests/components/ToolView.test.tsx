@@ -465,9 +465,10 @@ describe("Claude Desktop page layout", () => {
       { timeout: 10000 },
     );
     const heading = screen.getByRole("heading", {
-      name: "Claude Desktop",
+      name: "线路",
       level: 1,
     });
+    expect(heading.nextElementSibling).toHaveTextContent(/^Claude Desktop/);
     expect(
       heading.compareDocumentPosition(panel) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();

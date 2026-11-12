@@ -159,7 +159,8 @@ pub(crate) fn set_disabled_in(
             return Err(sessions::running_error());
         }
         let live = read_live(paths)?;
-        if live_holds(&live, &slot) {
+        // A Desktop-only login is never Claude Code's, whoever is signed in.
+        if slot.kind != SlotKind::DesktopOnly && live_holds(&live, &slot) {
             return Err(AppError::Message(
                 "这个账号正是 Claude Code 现在使用的登录。先切换到别的账号，再停用它".to_string(),
             ));

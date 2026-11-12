@@ -25,9 +25,9 @@ import {
   type CodexRouting,
 } from "@/utils/codexRouting";
 import { vscodeApi, type EndpointLatencyResult } from "@/lib/api/vscode";
-import { HelpTip } from "@/components/ui/help-tip";
-import { LineBadge } from "@/components/LineBadge";
+import { lineIdentityColor } from "@/components/LineBadge";
 import "./ProviderLineTable.css";
+import "@/theme/v3/lines.css";
 
 const PROTOCOL_LABELS: Record<string, string> = {
   responses: "Responses",
@@ -248,257 +248,250 @@ export function ProviderLineTable({
   return (
     <>
       {toolbarContainer ? createPortal(toolbar, toolbarContainer) : toolbar}
-      {(onManage || readOnly) && filtered.length === 0 && (
-        <button
-          type="button"
-          className="provider-group-manage"
-          ref={managerTriggerRef}
-          onClick={readOnly ? undefined : onManage}
-          disabled={readOnly}
-        >
-          管理线路
-        </button>
-      )}
-      <div className="provider-table" role="table" aria-label="线路切换">
-        <div className="provider-table-row provider-table-head" role="row">
-          <span role="columnheader" aria-label="状态" />
-          <span role="columnheader" aria-label="标识" />
-          <span role="columnheader">线路</span>
-          <span role="columnheader">认证</span>
-          <span role="columnheader">协议</span>
-          <span role="columnheader">模型</span>
-          <span role="columnheader">延迟</span>
-          <span role="columnheader">操作</span>
+      {/* 卡头（设计稿 L01）：「全部线路 n」+ 右侧「管理线路 →」。
+          管理入口只有这一处，筛选为空时也不消失。 */}
+      <section className="provider-table-card" aria-label="全部线路">
+        <div className="provider-table-cardhead">
+          <span className="provider-table-cardtitle">
+            全部线路<span>{providers.length}</span>
+          </span>
+          {(onManage || readOnly) && (
+            <button
+              type="button"
+              ref={managerTriggerRef}
+              onClick={readOnly ? undefined : onManage}
+              disabled={readOnly}
+              className="provider-group-manage"
+              aria-label="管理线路"
+            >
+              管理线路 <span aria-hidden="true">→</span>
+            </button>
+          )}
         </div>
-        {[true, false].map((official) => {
-          const group = filtered.filter(
-            (p) => labels.get(p.id)?.official === official,
-          );
-          if (!group.length) return null;
-          return (
-            <div role="rowgroup" key={String(official)}>
-              <div role="row">
-                <div
-                  role="cell"
-                  aria-colspan={8}
-                  className="provider-table-group"
-                >
-                  {official ? "官方账号" : "第三方线路"}
-                  <span>{group.length}</span>
-                  {(onManage || readOnly) &&
-                    official ===
-                      filtered.some(
-                        (provider) => labels.get(provider.id)?.official,
-                      ) && (
-                      <button
-                        type="button"
-                        ref={managerTriggerRef}
-                        onClick={readOnly ? undefined : onManage}
-                        disabled={readOnly}
-                        className="provider-group-manage"
-                        aria-label="管理线路"
-                      >
-                        管理线路 <span aria-hidden="true">→</span>
-                      </button>
-                    )}
-                </div>
-              </div>
-              {group.map((p) => {
-                const label = labels.get(p.id)!;
-                const sample = readOnly
-                  ? designSamples?.find((line) => line.id === p.id)
-                  : undefined;
-                const config = lineConfig(p);
-                const endpoint = extractCodexBaseUrl(config);
-                const reading = readingFor(endpoint);
-                const active = p.id === currentId;
-                const protocol = sample?.protocol ?? protocolLabel(p, official);
-                const route = official ? DIRECT : (routing.get(p.id) ?? DIRECT);
-                const model =
-                  extractCodexModelName(config) ||
-                  (official ? "Codex 默认" : "未设置");
-                const busy =
-                  readOnly || Boolean(switchingId || deletingProviderId);
-                return (
+        <div className="provider-table" role="table" aria-label="线路切换">
+          <div className="provider-table-row provider-table-head" role="row">
+            <span role="columnheader" aria-label="状态" />
+            <span role="columnheader" aria-label="线路色" />
+            <span role="columnheader">线路</span>
+            <span role="columnheader">模型</span>
+            <span role="columnheader" className="provider-col-latency">
+              延迟
+            </span>
+            <span role="columnheader" aria-label="操作" />
+          </div>
+          {[true, false].map((official) => {
+            const group = filtered.filter(
+              (p) => labels.get(p.id)?.official === official,
+            );
+            if (!group.length) return null;
+            return (
+              <div role="rowgroup" key={String(official)}>
+                <div role="row">
                   <div
-                    className={`provider-table-row${active ? " is-current" : ""}${official ? " is-official" : ""}`}
-                    role="row"
-                    key={p.id}
+                    role="cell"
+                    aria-colspan={6}
+                    className="provider-table-group"
                   >
-                    <span role="cell" className="provider-row-indicator" />
-                    <span role="cell" className="provider-row-badge">
-                      <LineBadge line={p} />
-                    </span>
-                    <span role="cell">
-                      <button
-                        type="button"
-                        className="provider-row-name"
-                        aria-label={`${label.name}，${label.source}${active ? "，当前线路" : ""}`}
-                        // Reading a name is not a request to switch: it opens
-                        // the line for editing. Switching is the row's own button.
-                        onClick={() => onEdit(p)}
-                        disabled={busy || official}
-                      >
-                        <b title={label.name}>{label.name}</b>
-                        <small
-                          className={
-                            sample?.expired
-                              ? "is-expired"
-                              : sample?.timeout
-                                ? "is-timeout"
-                                : official
-                                  ? "is-account"
-                                  : undefined
-                          }
-                          title={sample?.sub ?? endpoint ?? label.source}
-                        >
-                          {sample?.sub ??
-                            (endpoint?.replace(/^https?:\/\//, "") ||
-                              label.source)}
-                        </small>
-                      </button>
-                    </span>
-                    <span role="cell">
-                      {official ? "ChatGPT 登录" : "API 密钥"}
-                    </span>
-                    <span role="cell" className="provider-row-protocol">
-                      <span
-                        className={
-                          /^[A-Za-z]+$/.test(protocol)
-                            ? "provider-direct-protocol"
-                            : undefined
-                        }
-                        title={protocol}
-                      >
-                        {protocol}
-                      </span>
-                      {route.routed && (
-                        <span className="provider-route-mark">
-                          本地路由
-                          <HelpTip title="本地路由">
-                            {routingExplanation(route)}
-                          </HelpTip>
-                        </span>
-                      )}
-                    </span>
-                    <code role="cell" title={model}>
-                      {model}
-                    </code>
-                    <span
-                      role="cell"
-                      className="provider-row-latency"
-                      title={
-                        reading.kind === "error" ? reading.message : undefined
-                      }
+                    {official ? "官方账号" : "第三方线路"}
+                    <span>{group.length}</span>
+                  </div>
+                </div>
+                {group.map((p) => {
+                  const label = labels.get(p.id)!;
+                  const sample = readOnly
+                    ? designSamples?.find((line) => line.id === p.id)
+                    : undefined;
+                  const config = lineConfig(p);
+                  const endpoint = extractCodexBaseUrl(config);
+                  const reading = readingFor(endpoint);
+                  const active = p.id === currentId;
+                  const protocol =
+                    sample?.protocol ?? protocolLabel(p, official);
+                  const route = official
+                    ? DIRECT
+                    : (routing.get(p.id) ?? DIRECT);
+                  const model =
+                    extractCodexModelName(config) ||
+                    (official ? "Codex 默认" : "未设置");
+                  const busy =
+                    readOnly || Boolean(switchingId || deletingProviderId);
+                  return (
+                    <div
+                      className={`provider-table-row${active ? " is-current" : ""}${official ? " is-official" : ""}`}
+                      role="row"
+                      key={p.id}
                     >
-                      {sample ? (
-                        sample.expired ? null : (
-                          <span
-                            className={`provider-sample-latency ${sample.timeout ? "is-timeout" : ""}`}
-                          >
-                            {sample.isSlow && (
-                              <AlertTriangle size={12} className="is-slow" />
-                            )}
-                            {sample.timeout ? (
-                              <CircleX size={12} />
-                            ) : (
-                              `${sample.latencyMs} ms`
-                            )}
-                            <strong
-                              className={
-                                sample.latencyGrade === "快"
-                                  ? "is-fast"
-                                  : sample.latencyGrade === "慢"
-                                    ? "is-slow"
-                                    : ""
-                              }
-                            >
-                              {sample.latencyGrade}
-                            </strong>
-                            {sample.timeout && <RefreshCw size={12} />}
-                          </span>
-                        )
-                      ) : reading.kind === "checking" ? (
-                        <span className="provider-latency-muted">测速中</span>
-                      ) : reading.kind === "error" ? (
-                        <span className="is-timeout">失败</span>
-                      ) : reading.kind === "ok" ? (
-                        <>
-                          <span>{`${reading.latencyMs} ms`}</span>
-                          {reading.latencyMs >= SLOW_LATENCY_MS && (
-                            <strong className="is-slow"> 慢</strong>
-                          )}
-                        </>
-                      ) : (
-                        <span className="provider-latency-muted">—</span>
-                      )}
-                    </span>
-                    <span role="cell" className="provider-row-actions">
-                      {active ? (
-                        <span className="provider-current-tag">当前</span>
-                      ) : (
+                      <span role="cell" className="provider-row-indicator" />
+                      <span
+                        role="cell"
+                        className="provider-row-swatch"
+                        aria-label={label.name}
+                        style={
+                          {
+                            "--line-color": official
+                              ? "var(--text-3)"
+                              : lineIdentityColor(p),
+                          } as React.CSSProperties
+                        }
+                      >
+                        <span aria-hidden="true" />
+                      </span>
+                      <span role="cell">
                         <button
                           type="button"
-                          onClick={() => void onSwitch(p)}
-                          disabled={busy}
-                          aria-label={
-                            sample?.expired
-                              ? `重新登录${label.name}`
-                              : `切换到${label.name}`
-                          }
+                          className="provider-row-name"
+                          aria-label={`${label.name}，${label.source}${active ? "，当前线路" : ""}`}
+                          // Reading a name is not a request to switch: it opens
+                          // the line for editing. Switching is the row's own button.
+                          onClick={() => onEdit(p)}
+                          disabled={busy || official}
                         >
-                          {switchingId === p.id ? (
-                            <LoaderCircle size={14} className="spin" />
-                          ) : sample?.expired ? (
-                            "重新登录"
-                          ) : (
-                            "切换"
-                          )}
-                        </button>
-                      )}
-                      {(!official || (readOnly && sample)) && (
-                        <>
-                          <button
-                            type="button"
-                            onClick={() => onEdit(p)}
-                            disabled={busy}
-                            aria-label={`编辑${label.name}`}
-                            title="编辑线路"
+                          <b title={label.name}>{label.name}</b>
+                          <small
+                            className={
+                              sample?.expired
+                                ? "is-expired"
+                                : sample?.timeout
+                                  ? "is-timeout"
+                                  : official
+                                    ? "is-account"
+                                    : undefined
+                            }
+                            title={`${official ? "ChatGPT 登录" : "API 密钥"} · ${protocol}`}
                           >
-                            <Pencil size={16} />
-                          </button>
+                            {sample?.sub ??
+                              (endpoint?.replace(/^https?:\/\//, "") ||
+                                label.source)}
+                            {route.routed && !official ? (
+                              <span className="provider-route-inline">
+                                {" "}
+                                · 本地路由
+                              </span>
+                            ) : null}
+                          </small>
+                        </button>
+                      </span>
+                      <span role="cell" className="provider-row-model">
+                        <code title={model}>{model}</code>
+                        <small title={protocol}>{protocol}</small>
+                      </span>
+                      <span
+                        role="cell"
+                        className="provider-row-latency"
+                        title={
+                          reading.kind === "error" ? reading.message : undefined
+                        }
+                      >
+                        {sample ? (
+                          sample.expired ? null : (
+                            <span
+                              className={`provider-sample-latency ${sample.timeout ? "is-timeout" : ""}`}
+                            >
+                              {sample.isSlow && (
+                                <AlertTriangle size={12} className="is-slow" />
+                              )}
+                              {sample.timeout ? (
+                                <CircleX size={12} />
+                              ) : (
+                                `${sample.latencyMs} ms`
+                              )}
+                              <strong
+                                className={
+                                  sample.latencyGrade === "快"
+                                    ? "is-fast"
+                                    : sample.latencyGrade === "慢"
+                                      ? "is-slow"
+                                      : ""
+                                }
+                              >
+                                {sample.latencyGrade}
+                              </strong>
+                              {sample.timeout && <RefreshCw size={12} />}
+                            </span>
+                          )
+                        ) : reading.kind === "checking" ? (
+                          <span className="provider-latency-muted">测速中</span>
+                        ) : reading.kind === "error" ? (
+                          <span className="is-timeout">失败</span>
+                        ) : reading.kind === "ok" ? (
+                          <>
+                            <span>{`${reading.latencyMs} ms`}</span>
+                            {reading.latencyMs >= SLOW_LATENCY_MS && (
+                              <strong className="is-slow"> 慢</strong>
+                            )}
+                          </>
+                        ) : (
+                          <span className="provider-latency-muted">—</span>
+                        )}
+                      </span>
+                      <span role="cell" className="provider-row-actions">
+                        {active ? (
+                          <span className="provider-current-tag">当前</span>
+                        ) : (
                           <button
                             type="button"
-                            className="provider-row-delete"
-                            onClick={() => onDelete(p)}
-                            disabled={busy || active}
-                            aria-label={`删除${label.name}`}
-                            title={
-                              active
-                                ? "当前线路正在使用，请先切换到其他线路"
-                                : "删除线路"
+                            onClick={() => void onSwitch(p)}
+                            disabled={busy}
+                            aria-label={
+                              sample?.expired
+                                ? `重新登录${label.name}`
+                                : `切换到${label.name}`
                             }
                           >
-                            <Trash2 size={16} />
+                            {switchingId === p.id ? (
+                              <LoaderCircle size={14} className="spin" />
+                            ) : sample?.expired ? (
+                              "重新登录"
+                            ) : (
+                              "切换"
+                            )}
                           </button>
-                        </>
-                      )}
-                    </span>
-                  </div>
-                );
-              })}
+                        )}
+                        {(!official || (readOnly && sample)) && (
+                          <>
+                            <button
+                              type="button"
+                              className="provider-row-edit"
+                              onClick={() => onEdit(p)}
+                              disabled={busy}
+                              aria-label={`编辑${label.name}`}
+                              title="编辑线路"
+                            >
+                              <Pencil size={14} />
+                            </button>
+                            <button
+                              type="button"
+                              className="provider-row-delete"
+                              onClick={() => onDelete(p)}
+                              disabled={busy || active}
+                              aria-label={`删除${label.name}`}
+                              title={
+                                active
+                                  ? "当前线路正在使用，请先切换到其他线路"
+                                  : "删除线路"
+                              }
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </>
+                        )}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })}
+          {!filtered.length && (
+            <div className="provider-table-empty">
+              <p>没有匹配的线路。</p>
+              <button type="button" onClick={() => setQuery("")}>
+                清除筛选
+              </button>
             </div>
-          );
-        })}
-        {!filtered.length && (
-          <div className="provider-table-empty">
-            <p>没有匹配的线路。</p>
-            <button type="button" onClick={() => setQuery("")}>
-              清除筛选
-            </button>
-          </div>
-        )}
-      </div>
+          )}
+        </div>
+      </section>
     </>
   );
 }

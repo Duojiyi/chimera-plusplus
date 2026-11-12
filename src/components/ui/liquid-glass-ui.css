@@ -18,15 +18,6 @@
 }
 
 /* Match the existing dark Card selector without redefining any theme tokens. */
-.dark .glass-ui.glass-card {
-  background-color: var(--glass-surface, var(--bg-surface, #20262e));
-  background-image: linear-gradient(
-    145deg,
-    var(--glass-highlight, rgb(255 255 255 / 8%)),
-    transparent 48%
-  );
-  border-color: var(--glass-border, var(--border-default, #3d4754));
-}
 
 .glass-ui:is(
   .glass-dialog,
@@ -425,8 +416,7 @@
     .glass-dropdown,
     .glass-tooltip,
     .glass-command
-  ),
-  .dark .glass-ui.glass-card {
+  ) {
     background-color: var(--bg-surface, #f8fbff);
     background-image: none;
   }
@@ -442,8 +432,7 @@
     .glass-dropdown,
     .glass-tooltip,
     .glass-command
-  ),
-  .dark .glass-ui.glass-card {
+  ) {
     background-color: var(--bg-surface, #f8fbff);
     background-image: none;
     -webkit-backdrop-filter: none;
@@ -467,7 +456,6 @@
 @media (forced-colors: active) {
   .glass-ui,
   .glass-ui.glass-card,
-  .dark .glass-ui.glass-card,
   .glass-card-content,
   .glass-card-header,
   .glass-card-footer,

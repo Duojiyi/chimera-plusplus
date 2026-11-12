@@ -32,6 +32,7 @@ mod schema;
 mod tests;
 
 // DAO 类型导出供外部使用
+pub(crate) use dao::official_accounts::OfficialQuotaRow;
 pub(crate) use dao::providers::ProviderUpdateSelection;
 pub(crate) use dao::providers_seed::{
     is_official_seed_id, CLAUDE_DESKTOP_OFFICIAL_PROVIDER_ID, CODEX_OFFICIAL_PROVIDER_ID,
@@ -56,7 +57,7 @@ use std::sync::Mutex;
 
 /// 当前 Schema 版本号
 /// 每次修改表结构时递增，并在 schema.rs 中添加相应的迁移逻辑
-pub(crate) const SCHEMA_VERSION: i32 = 17;
+pub(crate) const SCHEMA_VERSION: i32 = 18;
 
 /// `prompts.origin` of rows owned by the whole-file `AGENTS.md` writer (v17).
 pub(crate) const PROMPT_ORIGIN_LEGACY_WHOLE_FILE: &str = "legacy-whole-file";

@@ -735,7 +735,12 @@ fn tool_dedup_key(tool: &Value) -> String {
     format!("json:{tool}")
 }
 
-fn strip_null_reasoning_content(body: &mut Value) -> bool {
+/// Drop a `content: null` from `reasoning` input items.
+///
+/// Shared with the plain (non-xAI) native Responses path: a strict upstream
+/// rejects `"content": null` on a reasoning item, while the field is optional,
+/// so removing it is always safe and fixes the rejection everywhere.
+pub(crate) fn strip_null_reasoning_content(body: &mut Value) -> bool {
     let Some(input) = body.get_mut("input").and_then(Value::as_array_mut) else {
         return false;
     };

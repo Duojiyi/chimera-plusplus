@@ -32,25 +32,22 @@ beforeEach(() => {
 });
 
 describe("ToolView information hierarchy", () => {
-  it("puts routes before a closed native disclosure and preserves its contents on collapse", async () => {
-    const { container } = render(<ToolView toolId="claude-code" native />);
+  it("opens on routes and keeps installation checks in their own section", async () => {
+    render(<ToolView toolId="claude-code" native />);
     const route = await screen.findByText("已保存线路");
     const check = await screen.findByText("检测工具：claude");
-    const disclosure = container.querySelector("details")!;
-    const summary = disclosure.querySelector("summary")!;
-    expect(disclosure.open).toBe(false);
+    expect(route).toBeVisible();
     expect(check).not.toBeVisible();
-    expect(
-      route.compareDocumentPosition(disclosure) &
-        Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
     expect(screen.getByRole("button", { name: "刷新线路" })).toBeVisible();
-    fireEvent.click(summary);
-    expect(disclosure.open).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "安装与更新" }));
+    expect(
+      screen.getByRole("heading", { name: "安装与更新", level: 1 }),
+    ).toBeVisible();
     expect(check).toBeVisible();
     expect(screen.getByRole("button", { name: "刷新" })).toBeVisible();
     expect(screen.getByRole("button", { name: "安装与升级" })).toBeVisible();
-    fireEvent.click(summary);
+    expect(route).not.toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "线路" }));
     expect(check).toBeInTheDocument();
     expect(check).not.toBeVisible();
     expect(route).toBeVisible();

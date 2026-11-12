@@ -211,9 +211,8 @@ describe("UsageView", () => {
     );
     expect(
       ranking.getAllByTitle(/^model-/).map((el) => el.textContent),
-    ).toEqual(["model-400", "model-300", "model-200"]);
-    expect(ranking.getByText("40%")).toBeVisible();
-    expect(ranking.queryByText("model-100")).not.toBeInTheDocument();
+    ).toEqual(["model-400", "model-300", "model-200", "model-100"]);
+    expect(ranking.getByText("40.0%")).toBeVisible();
     await user.click(ranking.getByRole("button", { name: /查看全部/ }));
     const dialog = within(screen.getByRole("dialog", { name: "全部模型排行" }));
     expect(dialog.getAllByTitle(/^model-/).map((el) => el.textContent)).toEqual(
@@ -249,8 +248,10 @@ describe("UsageView", () => {
       },
       { ...day, date: "2026-09-20", requestCount: 2 },
     ]);
+    const user = userEvent.setup();
     render(<UsageView />);
     await loaded();
+    await user.click(screen.getByRole("button", { name: "表格" }));
     const scrollRegion = screen.getByRole("region", {
       name: "按日词元汇总表格",
     });

@@ -1,0 +1,1196 @@
+/* ============================================================
+   v3.0 · Codex 管理（设计稿 L09 / L19 / L20 / L21）
+   未分层（见 postcss.config.cjs），覆盖 chimera.css、CodexRuntimePage.css
+   与 liquid-glass-v3.css §14.3 / §16 中针对本页的旧规则。
+   选择器统一以 .chimera-shell 开头并限定到本页的类。
+   ============================================================ */
+
+/* ---------- 页面骨架 ---------- */
+
+.chimera-shell .runtime-reference-view {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 26px 26px 18px;
+  color: var(--text-1);
+  overflow-y: auto;
+}
+
+.chimera-shell .runtime-page-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 44px;
+  margin: 0;
+}
+
+.chimera-shell .runtime-page-heading h1 {
+  margin: 0;
+  font-size: 24px;
+  line-height: 30px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+  color: var(--text-1);
+}
+
+.chimera-shell .runtime-page-heading p {
+  margin: 0;
+  font-size: 11px;
+  line-height: 15px;
+  color: var(--text-3);
+}
+
+.chimera-shell .runtime-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ---------- 按钮（规范 §3.2） ---------- */
+
+.chimera-shell
+  :is(.runtime-reference-view, .runtime-maintenance-workspace)
+  button:is(.primary, .secondary) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 30px;
+  min-height: 30px;
+  padding: 0 14px;
+  border-radius: 9px;
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color 120ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 120ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.chimera-shell
+  :is(.runtime-reference-view, .runtime-maintenance-workspace)
+  button.primary {
+  border: 0;
+  background: #1f4d3a;
+  color: #ffffff;
+  font-weight: 600;
+  box-shadow: none;
+}
+
+.chimera-shell
+  :is(.runtime-reference-view, .runtime-maintenance-workspace)
+  button.primary:hover:not(:disabled) {
+  background: #193f30;
+}
+
+.chimera-shell
+  :is(.runtime-reference-view, .runtime-maintenance-workspace)
+  button.secondary {
+  border: 1px solid #ffffffd9;
+  background: #ffffffa8;
+  color: #33454f;
+  font-weight: 500;
+  box-shadow: none;
+}
+
+.chimera-shell
+  :is(.runtime-reference-view, .runtime-maintenance-workspace)
+  button.secondary:hover:not(:disabled) {
+  background: #ffffffe0;
+}
+
+.chimera-shell
+  :is(.runtime-reference-view, .runtime-maintenance-workspace)
+  button.secondary.danger {
+  color: #b4342c;
+}
+
+.chimera-shell
+  :is(.runtime-reference-view, .runtime-maintenance-workspace)
+  button:is(.primary, .secondary):active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.chimera-shell
+  :is(.runtime-reference-view, .runtime-maintenance-workspace)
+  button:is(.primary, .secondary):disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.chimera-shell
+  :is(.runtime-reference-view, .runtime-maintenance-workspace)
+  button:focus-visible {
+  outline: 2px solid #1f4d3a;
+  outline-offset: 2px;
+}
+
+/* ---------- 玻璃卡（规范 §3.1） ---------- */
+
+.chimera-shell
+  :is(.runtime-reference-view, .runtime-maintenance-workspace)
+  :is(.runtime-hero, .runtime-card, .runtime-task-card) {
+  position: relative;
+  background: var(--v3-glass-fill);
+  border: 1px solid var(--v3-glass-border);
+  border-radius: 14px;
+  box-shadow:
+    var(--v3-shadow-inner-top), var(--v3-shadow-inner-bottom),
+    var(--v3-shadow-outer);
+  -webkit-backdrop-filter: blur(var(--v3-glass-blur)) saturate(150%);
+  backdrop-filter: blur(var(--v3-glass-blur)) saturate(150%);
+}
+
+.chimera-shell .runtime-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 0 19px 16px;
+}
+
+.chimera-shell .runtime-card-head {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  min-height: 52px;
+  padding: 10px 0 8px;
+  border-bottom: 1px solid var(--v3-hairline);
+}
+
+.chimera-shell .runtime-card-head :is(h2, h3) {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 18px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.chimera-shell .runtime-card-head p {
+  margin: 0;
+  font-size: 10px;
+  line-height: 14px;
+  color: var(--text-3);
+}
+
+.chimera-shell .runtime-card-note {
+  margin: 10px 0 0;
+  font-size: 10.5px;
+  line-height: 16px;
+  color: var(--text-3);
+}
+
+.chimera-shell .runtime-card-foot {
+  margin: auto 0 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--v3-hairline);
+  font-size: 10px;
+  line-height: 15px;
+  color: var(--text-3);
+}
+
+/* ---------- 顶部大卡：终端块 + 版本 + 三行 mono + 操作 ---------- */
+
+.chimera-shell .runtime-hero {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1.05fr) minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 16px;
+  padding: 22px 24px;
+}
+
+.chimera-shell .runtime-hero-mark {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  background: #0c1a24;
+  color: #ffffff;
+  align-self: start;
+}
+
+.chimera-shell .runtime-hero-identity {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.chimera-shell .runtime-hero-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 19px;
+  line-height: 24px;
+  font-weight: 600;
+  letter-spacing: -0.1px;
+  color: var(--text-1);
+}
+
+.chimera-shell .runtime-hero-title code {
+  font: inherit;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+}
+
+.chimera-shell .runtime-hero-line {
+  margin: 0;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--text-2);
+}
+
+/* 安装状态：小号状态胶囊（只有状态色，没有装饰） */
+.chimera-shell .runtime-hero-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  height: 20px;
+  margin: 4px 0 0;
+  padding: 0 8px;
+  border-radius: 9px;
+  background: #0b1c2a0a;
+  font-size: 10px;
+  line-height: 1;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--text-3);
+}
+
+.chimera-shell .runtime-hero-state::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 3px;
+  background: currentColor;
+}
+
+.chimera-shell .runtime-hero-state.is-ok {
+  background: #0d73401a;
+  color: #0d7340;
+}
+
+.chimera-shell .runtime-hero-state.is-bad {
+  background: #b4342c14;
+  color: #b4342c;
+}
+
+.chimera-shell .runtime-hero-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+}
+
+.chimera-shell .runtime-hero-facts > div {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.chimera-shell .runtime-hero-facts dt {
+  font-size: 10px;
+  line-height: 14px;
+  color: var(--text-3);
+}
+
+.chimera-shell .runtime-hero-facts dd {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 10.5px;
+  line-height: 15px;
+  color: var(--text-1);
+  user-select: text;
+}
+
+.chimera-shell .runtime-hero-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  width: 168px;
+}
+
+.chimera-shell .runtime-hero-actions small {
+  margin-top: 2px;
+  font-size: 10px;
+  line-height: 14px;
+  color: var(--text-3);
+  text-align: right;
+}
+
+.chimera-shell .runtime-hero-actions small b {
+  font-weight: 500;
+  color: var(--text-2);
+}
+
+/* 找到更新时的安装按钮：次按钮外形，accent 字，不与页头主按钮抢层级 */
+.chimera-shell .runtime-hero-actions button.secondary.runtime-update-action {
+  color: #1f4d3a;
+  font-weight: 600;
+}
+
+/* ---------- 安装进行中（L21）：顶部同位大卡，左缘墨条 ---------- */
+
+.chimera-shell .runtime-reference-view .runtime-task-card {
+  margin: 0;
+  padding: 20px 24px 18px 26px;
+  overflow: hidden;
+}
+
+.chimera-shell .runtime-reference-view .runtime-task-card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: #1f4d3a;
+}
+
+.chimera-shell .runtime-task-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.chimera-shell .runtime-task-heading h2 {
+  margin: 0 0 4px;
+  font-size: 17px;
+  line-height: 22px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.chimera-shell .runtime-task-heading p {
+  margin: 0;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--text-3);
+}
+
+.chimera-shell .runtime-task-heading > strong {
+  margin-left: auto;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 19px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.chimera-shell .runtime-task-heading > strong small {
+  font-size: 11px;
+}
+
+.chimera-shell .runtime-task-card .runtime-reference-progress {
+  max-width: none;
+  margin: 14px 0 8px;
+}
+
+.chimera-shell .runtime-task-card .runtime-reference-progress i {
+  height: 5px;
+  margin: 0;
+  border-radius: 3px;
+  background: #0b1c2a14;
+}
+
+.chimera-shell .runtime-task-card .runtime-reference-progress u {
+  background: #1f4d3a;
+}
+
+.chimera-shell .runtime-task-detail {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 10px;
+  color: var(--text-3);
+}
+
+/* ---------- 主体：维护 560 + 侧栏 276 ---------- */
+
+.chimera-shell .runtime-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 276px;
+  gap: 16px;
+  align-items: stretch;
+  min-height: 0;
+}
+
+.chimera-shell .runtime-side {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.chimera-shell .runtime-maintenance-items {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0 12px;
+  padding: 0;
+  list-style: none;
+}
+
+.chimera-shell .runtime-maintenance-items li {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 12px;
+  min-height: 56px;
+  padding: 8px 12px 8px 14px;
+  border-radius: 10px;
+  background: #ffffffa8;
+  border: 1px solid #ffffff;
+}
+
+.chimera-shell .runtime-maintenance-items li > svg {
+  align-self: start;
+  margin-top: 2px;
+  color: var(--text-2);
+}
+
+.chimera-shell .runtime-maintenance-items li > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.chimera-shell .runtime-maintenance-items strong {
+  font-size: 11.5px;
+  line-height: 16px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.chimera-shell .runtime-maintenance-items small {
+  font-size: 10px;
+  line-height: 15px;
+  color: var(--text-3);
+}
+
+.chimera-shell .runtime-maintenance-items li.is-danger strong,
+.chimera-shell .runtime-maintenance-items li.is-danger > svg {
+  color: #b4342c;
+}
+
+.chimera-shell .runtime-maintenance-items button {
+  min-width: 84px;
+}
+
+/* 版本历史 */
+.chimera-shell .runtime-version-rows {
+  display: flex;
+  flex-direction: column;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chimera-shell .runtime-version-rows li {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: 36px;
+  margin: 0 -10px;
+  padding: 0 10px;
+  border-radius: 8px;
+}
+
+.chimera-shell .runtime-version-rows li.is-current {
+  background: #eef1ee;
+}
+
+.chimera-shell .runtime-version-rows li.is-current::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: 1px;
+  background: #0c1a24;
+}
+
+.chimera-shell .runtime-version-rows code {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-1);
+  background: transparent;
+  padding: 0;
+}
+
+.chimera-shell .runtime-version-rows span {
+  font-size: 10px;
+  color: var(--text-3);
+}
+
+.chimera-shell .runtime-version-rows li.is-current span {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 6px;
+  background: #ffffffd8;
+  border: 1px solid #ffffff;
+  color: #1f4d3a;
+  font-weight: 600;
+}
+
+/* 本机环境 */
+.chimera-shell .runtime-env-rows {
+  display: flex;
+  flex-direction: column;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chimera-shell .runtime-env-rows li {
+  display: grid;
+  grid-template-columns: 6px auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: 8px;
+  min-height: 28px;
+  border-bottom: 1px solid var(--v3-hairline);
+}
+
+.chimera-shell .runtime-env-rows li:last-child {
+  border-bottom: 0;
+}
+
+.chimera-shell .runtime-env-rows i {
+  width: 6px;
+  height: 6px;
+  border-radius: 3px;
+  background: #454e58;
+}
+
+.chimera-shell .runtime-env-rows span {
+  font-size: 11px;
+  color: var(--text-1);
+}
+
+.chimera-shell .runtime-env-rows em {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-style: normal;
+  font-size: 10px;
+  text-align: right;
+  color: var(--text-3);
+}
+
+.chimera-shell .runtime-env-rows li.is-ok :is(i) {
+  background: #0d7340;
+}
+.chimera-shell .runtime-env-rows li.is-ok em {
+  color: #0d7340;
+}
+.chimera-shell .runtime-env-rows li.is-warn i {
+  background: #8a5209;
+}
+.chimera-shell .runtime-env-rows li.is-warn em {
+  color: #8a5209;
+}
+.chimera-shell .runtime-env-rows li.is-bad i {
+  background: #b4342c;
+}
+.chimera-shell .runtime-env-rows li.is-bad em {
+  color: #b4342c;
+}
+
+/* ---------- 回执、提示条：与卡片同材质 ---------- */
+
+.chimera-shell .runtime-reference-view .runtime-receipt {
+  margin: 0;
+  border: 1px solid #ffffff;
+  border-radius: 14px;
+  background: var(--v3-glass-fill);
+  box-shadow: var(--v3-shadow-inner-top), var(--v3-shadow-inner-bottom);
+}
+
+.chimera-shell .runtime-reference-view .runtime-notice,
+.chimera-shell .runtime-reference-view .runtime-inline-alert {
+  margin: 0;
+  border-radius: 12px;
+  background: var(--v3-glass-fill);
+}
+
+/* ---------- 全屏工作区：安装与维护（L19）/ 安装历史版本（L20） ---------- */
+
+.chimera-shell .runtime-maintenance-page {
+  position: fixed;
+  inset: var(--size-titlebar) 0 0 var(--size-sidebar);
+  z-index: 60;
+  background: linear-gradient(
+    180deg,
+    var(--v3-page-top) 0%,
+    var(--v3-page-mid) 55%,
+    var(--v3-page-bottom) 100%
+  );
+}
+
+.chimera-shell .runtime-maintenance-page::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right, var(--v3-grid-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--v3-grid-line) 1px, transparent 1px);
+  background-size:
+    var(--v3-grid-size) var(--v3-grid-size),
+    var(--v3-grid-size) var(--v3-grid-size);
+}
+
+.chimera-shell .runtime-maintenance-workspace {
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  margin: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 16px;
+  padding: 26px 26px 18px;
+  overflow: hidden;
+  color: var(--text-1);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.chimera-shell .runtime-maintenance-workspace > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+}
+
+.chimera-shell .runtime-maintenance-workspace > header h2 {
+  margin: 0;
+  font-size: 24px;
+  line-height: 30px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+}
+
+.chimera-shell .runtime-maintenance-workspace > header p {
+  margin: 0;
+  font-size: 11px;
+  line-height: 15px;
+  color: var(--text-3);
+}
+
+.chimera-shell .runtime-maintenance-workspace > header button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  height: 30px;
+  min-height: 30px;
+  padding: 0 14px 0 10px;
+  border: 1px solid #ffffffd9;
+  border-radius: 9px;
+  background: #ffffffa8;
+  color: #33454f;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.chimera-shell
+  .runtime-maintenance-workspace
+  > header
+  button:hover:not(:disabled) {
+  background: #ffffffe0;
+}
+
+.chimera-shell .runtime-maintenance-workspace > header button:focus-visible {
+  outline: 2px solid #1f4d3a;
+  outline-offset: 2px;
+}
+
+.chimera-shell .runtime-maintenance-content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 276px;
+  gap: 16px;
+  align-items: start;
+  min-height: 0;
+  padding: 0;
+  overflow: auto;
+}
+
+.chimera-shell .runtime-workspace-main,
+.chimera-shell .runtime-workspace-side {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+/* 单选行（规范 §3.3：14×14 r7，选中 accent + 6px 白点） */
+.chimera-shell .runtime-choice-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.chimera-shell .runtime-maintenance-workspace .runtime-mode-card,
+.chimera-shell .runtime-source-option > button {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  align-items: start;
+  column-gap: 12px;
+  width: 100%;
+  min-height: 0;
+  margin: 0;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  box-shadow: none;
+  text-align: left;
+  color: var(--text-1);
+  cursor: pointer;
+}
+
+.chimera-shell
+  .runtime-maintenance-workspace
+  .runtime-mode-card
+  + .runtime-mode-card {
+  margin-top: 0;
+}
+
+.chimera-shell .runtime-maintenance-workspace .runtime-mode-card.is-active,
+.chimera-shell .runtime-source-option > button.is-active {
+  background: transparent;
+  background-image: none;
+  border: 0;
+  box-shadow: none;
+}
+
+.chimera-shell
+  .runtime-maintenance-workspace
+  .runtime-mode-card:hover:not(:disabled),
+.chimera-shell .runtime-source-option > button:hover:not(:disabled) {
+  background: #0b1c2a0a;
+}
+
+.chimera-shell .runtime-maintenance-workspace .runtime-mode-card:disabled,
+.chimera-shell .runtime-source-option > button:disabled {
+  cursor: default;
+}
+
+.chimera-shell .runtime-radio {
+  position: relative;
+  width: 14px;
+  height: 14px;
+  margin-top: 1px;
+  border-radius: 7px;
+  box-shadow: inset 0 0 0 1.5px #b9c2ca;
+  background: #ffffff;
+}
+
+.chimera-shell :is(.is-active, [aria-pressed="true"]) > .runtime-radio {
+  background: #1f4d3a;
+  box-shadow: none;
+}
+
+.chimera-shell :is(.is-active, [aria-pressed="true"]) > .runtime-radio::after {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border-radius: 3px;
+  background: #ffffff;
+}
+
+.chimera-shell
+  .runtime-maintenance-workspace
+  .runtime-mode-card
+  > span:last-child {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: auto;
+  height: auto;
+  background: transparent;
+}
+
+.chimera-shell .runtime-maintenance-workspace .runtime-mode-card strong,
+.chimera-shell .runtime-source-option > button {
+  font-size: 11.5px;
+  line-height: 16px;
+  font-weight: 600;
+}
+
+.chimera-shell .runtime-maintenance-workspace .runtime-mode-card small {
+  font-size: 10px;
+  line-height: 15px;
+  font-weight: 400;
+  color: var(--text-3);
+}
+
+.chimera-shell .runtime-maintenance-workspace .runtime-source-segment {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.chimera-shell .runtime-source-option {
+  display: flex;
+  flex-direction: column;
+}
+
+.chimera-shell .runtime-source-option > small {
+  margin: -6px 0 0 36px;
+  padding-bottom: 6px;
+  font-size: 10px;
+  line-height: 15px;
+  color: var(--text-3);
+}
+
+.chimera-shell .runtime-maintenance-workspace .runtime-source-note {
+  margin: 8px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--v3-hairline);
+  font-size: 10px;
+  line-height: 15px;
+  color: var(--text-3);
+}
+
+.chimera-shell .runtime-maintenance-workspace .runtime-source-note code {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 10px;
+  background: transparent;
+  color: var(--text-2);
+}
+
+/* 当前状态 / 安装计划：标签左、mono 值右 */
+.chimera-shell .runtime-state-list {
+  display: flex;
+  flex-direction: column;
+  margin: 6px 0 0;
+}
+
+.chimera-shell .runtime-state-list > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 30px;
+  border-bottom: 1px solid var(--v3-hairline);
+}
+
+.chimera-shell .runtime-state-list > div:last-child {
+  border-bottom: 0;
+}
+
+.chimera-shell .runtime-state-list dt {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+.chimera-shell .runtime-state-list dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 10.5px;
+  color: var(--text-1);
+  user-select: text;
+}
+
+.chimera-shell .runtime-state-list dd code {
+  font: inherit;
+  background: transparent;
+  padding: 0;
+}
+
+.chimera-shell .runtime-state-summary {
+  margin: 10px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--v3-hairline);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.chimera-shell .runtime-state-summary.is-ok {
+  color: #0d7340;
+}
+
+/* 维护操作：行 + 右箭头 */
+.chimera-shell .runtime-maintenance-workspace .runtime-maintenance-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin-top: 4px;
+}
+
+.chimera-shell .runtime-maintenance-workspace .runtime-maintenance-list button {
+  display: grid;
+  grid-template-columns: 15px minmax(0, 1fr) 14px;
+  align-items: center;
+  column-gap: 10px;
+  width: 100%;
+  min-height: 42px;
+  margin: 0;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-2);
+  text-align: left;
+  cursor: pointer;
+}
+
+.chimera-shell
+  .runtime-maintenance-workspace
+  .runtime-maintenance-list
+  button:hover:not(:disabled) {
+  background: #0b1c2a0a;
+}
+
+.chimera-shell
+  .runtime-maintenance-workspace
+  .runtime-maintenance-list
+  button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.chimera-shell .runtime-maintenance-workspace .runtime-maintenance-list span {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.chimera-shell .runtime-maintenance-workspace .runtime-maintenance-list strong {
+  font-size: 11px;
+  line-height: 15px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.chimera-shell .runtime-maintenance-workspace .runtime-maintenance-list small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  line-height: 14px;
+  color: var(--text-3);
+}
+
+.chimera-shell
+  .runtime-maintenance-workspace
+  .runtime-maintenance-list
+  button.danger
+  :is(strong, svg:first-child) {
+  color: #b4342c;
+}
+
+.chimera-shell .runtime-maintenance-workspace .runtime-maintenance-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0;
+  border: 0;
+}
+
+/* 历史版本：版本列表（≤4 列）+ 安装计划 */
+.chimera-shell .runtime-history-workspace {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.chimera-shell .runtime-history-workspace .runtime-maintenance-content {
+  align-items: stretch;
+}
+
+.chimera-shell .runtime-history-list {
+  min-height: 0;
+}
+
+.chimera-shell .runtime-history-columns,
+.chimera-shell .runtime-history-rows > button {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr) 16px;
+  align-items: center;
+  column-gap: 12px;
+}
+
+.chimera-shell .runtime-history-columns {
+  height: 30px;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-3);
+}
+
+.chimera-shell .runtime-history-columns span:nth-child(3) {
+  grid-column: 3 / span 2;
+}
+
+.chimera-shell .runtime-history-rows {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
+}
+
+.chimera-shell .runtime-history-rows > button {
+  position: relative;
+  width: 100%;
+  height: 38px;
+  margin: 0;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  box-shadow: none;
+  text-align: left;
+  color: var(--text-1);
+  cursor: pointer;
+}
+
+.chimera-shell .runtime-history-rows > button:hover:not(:disabled) {
+  background: #0b1c2a0a;
+}
+
+.chimera-shell .runtime-history-rows > button:disabled {
+  cursor: default;
+}
+
+.chimera-shell .runtime-history-rows > button.is-selected {
+  background: #eef1ee;
+}
+
+.chimera-shell .runtime-history-rows > button.is-selected::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: 1px;
+  background: #0c1a24;
+}
+
+.chimera-shell .runtime-history-rows strong {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.chimera-shell .runtime-history-rows small {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 10px;
+  color: var(--text-3);
+}
+
+.chimera-shell .runtime-history-rows em {
+  font-style: normal;
+  font-size: 10px;
+  color: var(--text-2);
+}
+
+.chimera-shell .runtime-history-rows em.is-ok {
+  color: #0d7340;
+  font-weight: 600;
+}
+
+.chimera-shell .runtime-history-rows em.is-mute {
+  color: var(--text-3);
+}
+
+.chimera-shell .runtime-history-rows .history-dialog-error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 8px 0;
+  padding: 12px;
+  border-radius: 10px;
+  background: #b4342c0d;
+  color: #b4342c;
+  font-size: 11px;
+}
+
+.chimera-shell .runtime-history-rows .history-dialog-error small {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.chimera-shell .runtime-history-pager {
+  display: flex;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--v3-hairline);
+}
+
+.chimera-shell .runtime-history-plan-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.chimera-shell .runtime-history-plan .runtime-dialog-receipt {
+  margin-top: 10px;
+}
+
+@media (max-width: 1000px) {
+  .chimera-shell .runtime-hero {
+    grid-template-columns: 44px minmax(0, 1fr) auto;
+    row-gap: 14px;
+  }
+  .chimera-shell .runtime-hero-facts {
+    grid-column: 2 / -1;
+    grid-row: 2;
+  }
+}
+
+@media (max-width: 900px) {
+  .chimera-shell .runtime-grid,
+  .chimera-shell .runtime-maintenance-content {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chimera-shell
+    :is(.runtime-reference-view, .runtime-maintenance-workspace)
+    button {
+    transition: none;
+  }
+}

@@ -105,6 +105,8 @@ beforeEach(() => {
   vi.mocked(mcpApi.getAllServers).mockResolvedValue({});
   vi.mocked(officialAccountsApi.getNotes).mockResolvedValue({});
 });
+/** The MCP card; the Skills card beside it shows its own "n / m" count. */
+const mcpCard = () => screen.getByRole("region", { name: "MCP 服务" });
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -155,7 +157,6 @@ describe("connected Skills/MCP page", () => {
         expect(toggle).toBeEnabled();
       });
       expect(installed.apps.codex).toBe(true);
-      fireEvent.click(screen.getByRole("button", { name: "MCP 1" }));
       const mcpToggle = screen.getByRole("switch", {
         name: "启用 MCP Real MCP",
       });
@@ -218,7 +219,6 @@ describe("connected Skills/MCP page", () => {
     vi.mocked(mcpApi.getAllServers).mockResolvedValue({ real: server });
     const { unmount } = render(<SkillsMcpView initialApp="claude" />);
     await screen.findByText("Real Skill");
-    fireEvent.click(screen.getByRole("button", { name: "MCP 1" }));
     fireEvent.click(screen.getByRole("button", { name: "添加 MCP" }));
     const props = JSON.parse(
       (await screen.findByTestId("mcp-editor")).textContent!,
@@ -236,7 +236,6 @@ describe("connected Skills/MCP page", () => {
     unmount();
     render(<SkillsMcpView initialApp="claude" />);
     await screen.findByText("Real Skill");
-    fireEvent.click(screen.getByRole("button", { name: "MCP 1" }));
     fireEvent.click(screen.getByRole("button", { name: "查看 MCP Real MCP" }));
     fireEvent.click(screen.getByRole("button", { name: "编辑" }));
     expect(
@@ -256,7 +255,6 @@ describe("connected Skills/MCP page", () => {
     });
     render(<SkillsMcpView />);
     await screen.findByText("Real Skill");
-    fireEvent.click(screen.getByRole("button", { name: "MCP 1" }));
     const trigger = screen.getByRole("button", { name: "查看 MCP HTTP MCP" });
     expect(trigger).toHaveAttribute("aria-expanded", "false");
     fireEvent.click(trigger);
@@ -312,7 +310,7 @@ describe("connected Skills/MCP page", () => {
     expect(exportButton).toHaveAccessibleDescription("导出前请检查敏感信息");
     expect(exportButton).toHaveAttribute("title", exportScope);
     expect(
-      screen.getByRole("heading", { level: 1, name: "Codex · Skills 与 MCP" }),
+      screen.getByRole("heading", { level: 1, name: "Skills 与 MCP" }),
     ).toBeVisible();
     expect(screen.queryByText(/密钥与令牌值已脱敏/)).not.toBeInTheDocument();
     fireEvent.click(exportButton);
@@ -370,11 +368,12 @@ describe("connected Skills/MCP page", () => {
       });
       render(<SkillsMcpView />);
       await screen.findByText("Real Skill");
-      fireEvent.click(screen.getByRole("button", { name: /MCP 1/ }));
       expect(
         screen.getByRole("switch", { name: "启用 MCP Real MCP" }),
       ).toHaveAttribute("aria-checked", String(enabled));
-      expect(screen.getByText(`${enabled ? 1 : 0} / 1`)).toBeVisible();
+      expect(
+        within(mcpCard()).getByText(`${enabled ? 1 : 0} / 1`),
+      ).toBeVisible();
     },
   );
 
@@ -400,7 +399,6 @@ describe("connected Skills/MCP page", () => {
     );
     render(<SkillsMcpView />);
     await screen.findByText("Real Skill");
-    fireEvent.click(screen.getByRole("button", { name: /MCP 1/ }));
     const toggle = screen.getByRole("switch", { name: "启用 MCP Real MCP" });
     expect(toggle).toHaveAttribute("aria-checked", "false");
     for (const [index, enabled] of [true, false, true].entries()) {
@@ -415,7 +413,9 @@ describe("connected Skills/MCP page", () => {
         expect(toggle).toHaveAttribute("aria-checked", String(enabled));
         expect(toggle).toBeEnabled();
       });
-      expect(screen.getByText(`${enabled ? 1 : 0} / 1`)).toBeVisible();
+      expect(
+        within(mcpCard()).getByText(`${enabled ? 1 : 0} / 1`),
+      ).toBeVisible();
       expect(server.apps.codex).toBe(true);
     }
     expect(mcpApi.getAllServers).toHaveBeenCalledTimes(4);
@@ -443,7 +443,6 @@ describe("connected Skills/MCP page", () => {
       );
       render(<SkillsMcpView />);
       await screen.findByText("Real Skill");
-      fireEvent.click(screen.getByRole("button", { name: "MCP 1" }));
       const toggle = screen.getByRole("switch", { name: "启用 MCP Real MCP" });
       const target = screen.getByRole("combobox", { name: "目标工具" });
       expect(toggle).toHaveAttribute("aria-checked", "true");
@@ -472,7 +471,9 @@ describe("connected Skills/MCP page", () => {
           expect(toggle).toHaveAttribute("aria-checked", String(enabled));
           expect(toggle).toBeEnabled();
         });
-        expect(screen.getByText(`${enabled ? 1 : 0} / 1`)).toBeVisible();
+        expect(
+          within(mcpCard()).getByText(`${enabled ? 1 : 0} / 1`),
+        ).toBeVisible();
         expect(server.apps[app]).toBe(enabled);
         expect(server.apps.codex).toBe(true);
         expect(server.server.enabled).toBe(false);
@@ -538,15 +539,21 @@ describe("connected Skills/MCP page", () => {
     render(<SkillsMcpView />);
     expect(await screen.findByRole("alert")).toHaveTextContent("读取失败");
     // A failed read claims nothing: no counts, summary card or empty state.
-    expect(screen.getByRole("button", { name: "Skills" })).toBeInTheDocument();
-    expect(screen.queryByText("已启用 Skills")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { level: 1, name: "Skills 与 MCP" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("region", { name: "Codex 资源概览" }),
+    ).not.toBeInTheDocument();
     expect(
       screen.queryByText("尚未由 Chimera++ 管理 Skills"),
     ).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "导出" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "重试" }));
     expect(await screen.findByText("Real Skill")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Skills 1" })).toBeVisible();
+    expect(
+      screen.getByRole("region", { name: "Codex 资源概览" }),
+    ).toHaveTextContent("1 个技能");
   });
   it("drops rows and counts when a later refresh fails", async () => {
     const view = render(<SkillsMcpView refreshVersion={0} />);
@@ -557,8 +564,12 @@ describe("connected Skills/MCP page", () => {
     view.rerender(<SkillsMcpView refreshVersion={1} />);
     expect(await screen.findByRole("alert")).toHaveTextContent("读取失败");
     expect(screen.queryByText("Real Skill")).not.toBeInTheDocument();
-    expect(screen.queryByText("已启用 Skills")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Skills" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("region", { name: "Codex 资源概览" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { level: 1, name: "Skills 与 MCP" }),
+    ).toBeInTheDocument();
   });
   it("uses the existing ZIP picker and installer", async () => {
     vi.mocked(skillsApi.openZipFileDialog).mockResolvedValue("D:/skills.zip");
@@ -615,14 +626,21 @@ describe("connected Skills/MCP page", () => {
       },
     });
     render(<SkillsMcpView />);
-    fireEvent.click(await screen.findByRole("button", { name: "添加备注" }));
+    await screen.findByText("Real MCP");
+    const [skillNote, mcpNote] = screen.getAllByRole("button", {
+      name: "添加备注",
+    });
+    fireEvent.click(skillNote);
     fireEvent.change(screen.getByRole("textbox", { name: "备注" }), {
       target: { value: "skill-only note" },
     });
-    fireEvent.click(screen.getByRole("button", { name: /MCP 1/ }));
+    // Opening the MCP's note with the same ID starts empty, not with the Skill draft.
+    fireEvent.click(mcpNote);
+    expect(screen.getAllByRole("textbox", { name: "备注" })).toHaveLength(1);
+    expect(screen.getByRole("textbox", { name: "备注" })).toHaveValue("");
     expect(
-      screen.queryByRole("textbox", { name: "备注" }),
-    ).not.toBeInTheDocument();
+      within(mcpCard()).getByRole("textbox", { name: "备注" }),
+    ).toBeInTheDocument();
     expect(officialAccountsApi.setNotes).not.toHaveBeenCalled();
   });
 
@@ -638,7 +656,6 @@ describe("connected Skills/MCP page", () => {
     vi.mocked(mcpApi.deleteUnifiedServer).mockResolvedValue(false);
     render(<SkillsMcpView />);
     await screen.findByText("Real Skill");
-    fireEvent.click(screen.getByRole("button", { name: /MCP 1/ }));
     fireEvent.click(screen.getByText("Real MCP"));
     fireEvent.click(screen.getByRole("button", { name: "移除…" }));
     expect(mcpApi.deleteUnifiedServer).not.toHaveBeenCalled();
@@ -667,7 +684,6 @@ describe("connected Skills/MCP page", () => {
     });
     render(<SkillsMcpView />);
     await screen.findByText("Real Skill");
-    fireEvent.click(screen.getByRole("button", { name: /MCP 1/ }));
     fireEvent.click(screen.getByText("Real MCP"));
     expect(screen.getByText("[已设置]")).toBeInTheDocument();
     for (const secret of [
@@ -1136,7 +1152,6 @@ describe("empty and loading states", () => {
     await screen.findByRole("heading", {
       name: "尚未由 Chimera++ 管理 Skills",
     });
-    fireEvent.click(screen.getByRole("button", { name: "MCP 0" }));
     expect(
       screen.getByRole("heading", { name: "还没有 MCP 服务" }),
     ).toBeVisible();
@@ -1158,15 +1173,18 @@ describe("empty and loading states", () => {
     expect(screen.getByRole("status")).toHaveTextContent(
       "正在读取 Skills 与 MCP…",
     );
-    expect(screen.getByRole("button", { name: "Skills" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { level: 1, name: "Skills 与 MCP" }),
+    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "导出" })).toBeDisabled();
     expect(
       screen.queryByText("尚未由 Chimera++ 管理 Skills"),
     ).not.toBeInTheDocument();
     await act(async () => finish([skill]));
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Skills 1" })).toBeVisible();
-    expect(screen.getByText("已启用 Skills")).toBeVisible();
+    expect(
+      screen.getByRole("region", { name: "Codex 资源概览" }),
+    ).toHaveTextContent("1 个技能");
   });
 });
 
@@ -1730,38 +1748,28 @@ describe("automatic local Skills discovery", () => {
 });
 
 describe("resource visual hierarchy", () => {
-  it("names the current tool in the heading and summary and exposes the active resource", async () => {
+  it("names the current tool in the target picker and summary and shows both cards side by side", async () => {
     render(<SkillsMcpView />);
     await screen.findByRole("region", { name: "Codex 资源概览" });
     expect(
-      screen.getByRole("heading", { level: 1, name: "Codex · Skills 与 MCP" }),
+      screen.getByRole("heading", { level: 1, name: "Skills 与 MCP" }),
     ).toBeVisible();
+    const skillsCard = screen.getByRole("region", { name: "Skills" });
+    expect(within(skillsCard).getByText("0 / 1")).toBeVisible();
+    expect(within(skillsCard).getByText("Real Skill")).toBeVisible();
     expect(
-      screen.getByRole("button", { name: "Skills 1", pressed: true }),
+      within(mcpCard()).getByRole("heading", { name: "还没有 MCP 服务" }),
     ).toBeVisible();
-    expect(screen.getByText("0 / 1")).toBeVisible();
     fireEvent.change(screen.getByRole("combobox", { name: "目标工具" }), {
       target: { value: "claude" },
     });
-    expect(
-      screen.getByRole("heading", {
-        level: 1,
-        name: "Claude Code · Skills 与 MCP",
-      }),
-    ).toBeVisible();
+    expect(screen.getByRole("combobox", { name: "目标工具" })).toHaveValue(
+      "claude",
+    );
     expect(
       screen.getByRole("region", { name: "Claude Code 资源概览" }),
     ).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "MCP 0" }));
-    expect(
-      screen.getByRole("button", { name: "MCP 0", pressed: true }),
-    ).toBeVisible();
-    expect(
-      screen.getByRole("heading", { name: "还没有 MCP 服务" }),
-    ).toBeVisible();
-    expect(
-      screen.queryByRole("region", { name: "Claude Code 资源概览" }),
-    ).not.toBeInTheDocument();
+    expect(skillsCard).toHaveTextContent("Claude Code 已启用");
   });
 
   it("shows discovered and selected counts beside the scan heading without importing", async () => {

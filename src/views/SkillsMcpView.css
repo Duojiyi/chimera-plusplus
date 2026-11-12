@@ -1,89 +1,4 @@
-.skills-mcp-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 12px;
-  width: 100%;
-  padding: 8px 0;
-}
 /* skills (2.8.6): same title scale as 用量 / 配置体检 / 提示词. */
-.skills-mcp-header h1 {
-  font-size: 26px;
-  line-height: 36px;
-  font-weight: 700;
-  white-space: normal;
-}
-.skills-mcp-subtitle {
-  color: var(--text-3);
-  font-size: 13px;
-  line-height: 1.6;
-}
-.skills-mcp-target {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 10px;
-  color: var(--text-2);
-  font-size: 13px;
-}
-.skills-mcp-target select {
-  min-height: 32px;
-  padding: 4px 28px 4px 10px;
-  border: 1px solid var(--border-control);
-  font: inherit;
-}
-.skills-mcp-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 20px;
-  width: 100%;
-  border-bottom: 1px solid var(--border-subtle);
-}
-.skills-mcp-tabs button[aria-pressed="true"] {
-  border-bottom: 2px solid var(--brand-text);
-}
-.skills-mcp-tabs button > span + span {
-  min-width: 22px;
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: var(--bg-subtle);
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-}
-.skills-mcp-summary {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 16px 24px;
-  width: 100%;
-  padding: 14px 16px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 8px;
-  background: var(--bg-subtle);
-  color: var(--text-2);
-  font-size: 12px;
-}
-.skills-mcp-summary > div,
-.skills-mcp-summary p {
-  display: grid;
-  gap: 4px;
-  margin: 0;
-}
-.skills-mcp-summary strong {
-  font-size: 22px;
-  line-height: 1.2;
-  font-variant-numeric: tabular-nums;
-  color: var(--text-1);
-}
-.skills-mcp-summary b {
-  font-size: 14px;
-  color: var(--text-1);
-}
-.skills-mcp-summary-related {
-  margin-left: auto;
-}
 .skills-mcp-page :is(button, select, input):focus-visible {
   outline: 2px solid var(--brand-text);
   outline-offset: 3px;
@@ -125,68 +40,6 @@
   .skills-mcp-page .resource-empty-paths {
     grid-template-columns: 1fr;
   }
-}
-
-.skills-mcp-panel {
-  overflow-wrap: anywhere;
-}
-
-@media (max-width: 1100px) {
-  .skills-mcp-workspace {
-    flex-direction: column;
-    flex: 0 0 auto;
-  }
-  .skills-mcp-list,
-  .skills-mcp-panel {
-    width: 100%;
-  }
-  .skills-mcp-panel {
-    min-height: 0;
-    padding: 20px 0 0;
-    border-left: 0;
-    border-top: 1px solid var(--border-subtle);
-  }
-}
-
-.skills-mcp-status {
-  margin: 0;
-  font-size: 13px;
-  line-height: 1.6;
-  color: var(--text-3);
-}
-.skills-mcp-notice {
-  box-sizing: border-box;
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin: 0;
-  padding: 10px 14px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 6px;
-  background: var(--bg-subtle);
-  color: var(--text-1);
-  font-size: 13px;
-  line-height: 1.6;
-}
-.skills-mcp-notice-action {
-  flex-shrink: 0;
-  height: 28px;
-  padding: 0 12px;
-  border: 1px solid var(--border-control);
-  border-radius: 4px;
-  background: var(--bg-surface);
-  color: var(--text-1);
-  font-size: 13px;
-  cursor: pointer;
-}
-.skills-mcp-notice-action:hover:not(:disabled) {
-  background: var(--bg-hover);
-}
-.skills-mcp-notice-action:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
 }
 
 /* Empty state: what the resource is for and the ways to add one. */
@@ -288,77 +141,8 @@
   line-height: 18px;
   color: var(--text-3);
 }
-.resource-empty-primary {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 32px;
-  margin-top: 12px;
-  padding: 0 14px;
-  border: 0;
-  border-radius: 4px;
-  background: var(--btn-primary-bg);
-  color: var(--btn-primary-fg);
-  font-size: 14px;
-  cursor: pointer;
-}
-.resource-empty-primary:hover:not(:disabled) {
-  background: var(--btn-primary-bg-hover);
-}
-.resource-empty-primary:active:not(:disabled) {
-  background: var(--btn-primary-bg-pressed);
-}
-.resource-empty-primary:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
 
 /* Maintenance actions stay available but quiet: text buttons, one row. */
-.skills-lifecycle {
-  width: 100%;
-  margin-bottom: 8px;
-}
-.skills-lifecycle fieldset {
-  display: grid;
-  gap: 8px;
-  min-width: 0;
-  margin: 0;
-  padding: 0;
-  border: 0;
-}
-.skills-maintenance {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 2px;
-}
-.skills-maintenance-label {
-  margin-right: 6px;
-  font-size: 12px;
-  color: var(--text-3);
-}
-.skills-maintenance button {
-  height: 28px;
-  padding: 0 8px;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--text-2);
-  font-size: 13px;
-  white-space: nowrap;
-  cursor: pointer;
-  transition:
-    background var(--dur-fast) var(--ease-out),
-    color var(--dur-fast) var(--ease-out);
-}
-.skills-maintenance button:hover:not(:disabled) {
-  background: var(--bg-subtle);
-  color: var(--text-1);
-}
-.skills-maintenance button:disabled {
-  color: var(--text-disabled);
-  cursor: not-allowed;
-}
 .skills-lifecycle-panel {
   padding: 12px 14px;
   border: 1px solid var(--border-subtle);
@@ -435,41 +219,6 @@ details.skills-lifecycle-panel > button {
 .skills-install-close:hover {
   background: var(--bg-subtle);
   color: var(--text-1);
-}
-.skills-install-section {
-  display: grid;
-  justify-items: start;
-  gap: 8px;
-  width: 100%;
-  padding-top: 12px;
-  border-top: 1px solid var(--border-subtle);
-}
-.skills-install-section h3 {
-  margin: 0;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-1);
-}
-.skills-install-action {
-  max-width: 100%;
-  min-height: 32px;
-  padding: 5px 12px;
-  border: 1px solid var(--border-control);
-  border-radius: 4px;
-  background: var(--bg-surface);
-  color: var(--text-1);
-  font-size: 13px;
-  line-height: 20px;
-  text-align: left;
-  overflow-wrap: anywhere;
-  cursor: pointer;
-}
-.skills-install-action:hover:not(:disabled) {
-  background: var(--bg-subtle);
-}
-.skills-install-action:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
 }
 .skills-install-result {
   display: flex;
@@ -670,11 +419,6 @@ details.skills-lifecycle-panel > button {
   color: var(--text-3);
   font-size: 12px;
   line-height: 1.5;
-}
-.skills-install-result .skills-install-action {
-  flex-shrink: 0;
-  min-height: 28px;
-  padding: 3px 10px;
 }
 .skills-install-state {
   flex-shrink: 0;

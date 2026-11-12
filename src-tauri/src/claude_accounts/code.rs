@@ -182,6 +182,12 @@ pub enum SlotKind {
     SetupToken,
     /// A Console API key.
     ApiKey,
+    /// Only Claude Desktop's sign-in of an account (a snapshot), saved from
+    /// the Desktop on this computer. It has no Claude Code tokens: it cannot
+    /// be switched to in Claude Code, opened in a terminal or exported, and
+    /// becomes a subscription login once Claude Code's login of the same
+    /// account is saved.
+    DesktopOnly,
 }
 
 fn is_oauth_kind(kind: &SlotKind) -> bool {
@@ -746,12 +752,14 @@ impl Slot {
                 SlotKind::Oauth => {
                     plan_of(self.oauth_account.as_ref(), Some(&self.claude_ai_oauth))
                 }
-                SlotKind::SetupToken | SlotKind::ApiKey => None,
+                SlotKind::SetupToken | SlotKind::ApiKey | SlotKind::DesktopOnly => None,
             },
             fingerprint: ident.fingerprint.clone(),
             created_at: self.created_at.clone(),
             updated_at: self.updated_at.clone(),
-            is_current: live.is_some_and(|live| same_login(live, &ident)),
+            // Claude Code cannot be signed in with a Desktop-only login.
+            is_current: self.kind != SlotKind::DesktopOnly
+                && live.is_some_and(|live| same_login(live, &ident)),
             needs_relogin: self.needs_relogin,
             unreadable: false,
             kind: self.kind,
@@ -763,6 +771,11 @@ impl Slot {
 
     /// Takes the newest tokens (and profile) of the same login.
     fn absorb(&mut self, oauth: Value, account: Option<Value>) {
+        // A Desktop-only login of the same account gains its Claude Code
+        // tokens and keeps its Desktop snapshot.
+        if self.kind == SlotKind::DesktopOnly {
+            self.kind = SlotKind::Oauth;
+        }
         self.claude_ai_oauth = oauth;
         if account.is_some() {
             self.oauth_account = account;
@@ -913,6 +926,43 @@ fn blank_slot(vault: &CodeVault, name: String) -> Result<Slot, AppError> {
         api_key: None,
         note: None,
     })
+}
+
+const DESKTOP_ONLY_LOGIN: &str =
+    "这个账号只保存了 Claude Desktop 的登录，Claude Code 用不了。在 Claude Code 里登录它并保存后即可切换。";
+
+/// Saves the account Claude Desktop is signed in as, as a Desktop-only
+/// login, unless a saved login of that account exists. Returns the saved
+/// login (new or existing); its Desktop sign-in is captured separately.
+pub(crate) fn save_desktop_only_in(
+    vault: &CodeVault,
+    account_uuid: &str,
+    email: Option<&str>,
+) -> Result<CodeAccountDto, AppError> {
+    let uuid = account_uuid.trim();
+    if uuid.is_empty() || uuid.len() > 64 {
+        return Err(AppError::Message(
+            "没有读到 Claude Desktop 登录的账号编号".to_string(),
+        ));
+    }
+    let email = email
+        .map(str::trim)
+        .filter(|email| !email.is_empty() && email.len() <= 320 && email.contains('@'));
+    let _guard = CODE_LOCK.lock()?;
+    if let Some(id) = find_by_account_uuid(vault, uuid) {
+        return Ok(vault.read_slot(&id)?.dto(None));
+    }
+    let name = fitted_name(email.unwrap_or_default(), DEFAULT_NAME);
+    let mut slot = blank_slot(vault, name)?;
+    slot.kind = SlotKind::DesktopOnly;
+    let mut account = serde_json::Map::new();
+    account.insert("accountUuid".to_string(), Value::from(uuid));
+    if let Some(email) = email {
+        account.insert("emailAddress".to_string(), Value::from(email));
+    }
+    slot.oauth_account = Some(Value::Object(account));
+    vault.write_slot(&slot)?;
+    Ok(slot.dto(None))
 }
 
 const NO_LIVE_LOGIN: &str =
@@ -1111,6 +1161,10 @@ type LiveFiles = (Option<Vec<u8>>, Option<Vec<u8>>);
 /// The two live files as they must look once `target` is the login.
 fn files_for(live: &Live, target: &Slot) -> Result<LiveFiles, AppError> {
     let oauth = match target.kind {
+        // Never written to Claude Code: switch_in refuses it first.
+        SlotKind::DesktopOnly => {
+            return Err(AppError::Message(DESKTOP_ONLY_LOGIN.to_string()));
+        }
         SlotKind::ApiKey => None,
         SlotKind::Oauth | SlotKind::SetupToken => Some(target.claude_ai_oauth.clone()),
     };
@@ -1118,7 +1172,7 @@ fn files_for(live: &Live, target: &Slot) -> Result<LiveFiles, AppError> {
     let mut edits: Vec<(&str, Option<Value>)> = Vec::new();
     match target.kind {
         SlotKind::Oauth => edits.push((ACCOUNT_KEY, target.oauth_account.clone())),
-        SlotKind::SetupToken => edits.push((ACCOUNT_KEY, None)),
+        SlotKind::SetupToken | SlotKind::DesktopOnly => edits.push((ACCOUNT_KEY, None)),
         SlotKind::ApiKey => {
             let key = target.api_key.as_deref().ok_or_else(|| {
                 AppError::Message("已保存的 API Key 账号里没有密钥，无法切换".to_string())
@@ -1225,6 +1279,9 @@ pub(crate) fn switch_in(
     let target_ident = target.identity();
     if target.disabled {
         return Err(manage::disabled_error(&target));
+    }
+    if target.kind == SlotKind::DesktopOnly {
+        return Err(AppError::Message(DESKTOP_ONLY_LOGIN.to_string()));
     }
 
     if let Some(ident) = live_identity(&live) {
@@ -1404,7 +1461,7 @@ pub(crate) fn all_account_ids(vault: &CodeVault) -> Vec<String> {
 
 pub(crate) fn account_uuid_of(vault: &CodeVault, id: &str) -> Result<Option<String>, AppError> {
     let slot = vault.read_slot(id)?;
-    if slot.kind != SlotKind::Oauth {
+    if !matches!(slot.kind, SlotKind::Oauth | SlotKind::DesktopOnly) {
         return Err(AppError::Message(
             "只有订阅登录的账号才有 Claude Desktop 登录".to_string(),
         ));
@@ -1418,7 +1475,7 @@ pub(crate) fn find_by_account_uuid(vault: &CodeVault, uuid: &str) -> Option<Stri
         .readable_slots()
         .into_iter()
         .find(|slot| {
-            slot.kind == SlotKind::Oauth
+            matches!(slot.kind, SlotKind::Oauth | SlotKind::DesktopOnly)
                 && slot
                     .identity()
                     .account_uuid
@@ -1594,6 +1651,38 @@ pub(crate) mod tests {
             .as_str()
             .unwrap()
             .to_string()
+    }
+
+    #[test]
+    fn desktop_only_login_is_saved_once_refused_for_code_and_upgraded_by_its_code_login() {
+        let f = fixture();
+        let saved = save_desktop_only_in(&f.vault, "uuid-d", Some("d@example.com")).unwrap();
+        assert_eq!(saved.kind, SlotKind::DesktopOnly);
+        assert_eq!(saved.email.as_deref(), Some("d@example.com"));
+        // The same account again is the same saved login.
+        let again = save_desktop_only_in(&f.vault, "UUID-D", None).unwrap();
+        assert_eq!(again.id, saved.id);
+        assert_eq!(
+            find_by_account_uuid(&f.vault, "uuid-d"),
+            Some(saved.id.clone())
+        );
+
+        // Claude Code signed in to that account: the Desktop-only login is
+        // not its login, and cannot be switched to.
+        login(&f.paths, "d@example.com", "uuid-d", "tok-d");
+        let list = list_in(&f.vault, &f.paths);
+        assert_eq!(list.live.saved_id, None);
+        assert!(list.accounts.iter().all(|account| !account.is_current));
+        if switching_supported() {
+            let refused = switch_in(&f.vault, &f.paths, &saved.id, true, || false);
+            assert!(refused.is_err());
+
+            // Saving Claude Code's login of it makes it a subscription login.
+            let upgraded = save_current_in(&f.vault, &f.paths, None).unwrap();
+            assert_eq!(upgraded.id, saved.id);
+            assert_eq!(upgraded.kind, SlotKind::Oauth);
+            assert!(upgraded.is_current);
+        }
     }
 
     #[test]

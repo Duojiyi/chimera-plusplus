@@ -15,7 +15,7 @@ vi.mock("@/lib/api/settings", () => ({
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn().mockResolvedValue([]),
 }));
-import { NewRuntimeView } from "@/ChimeraApp";
+import { NewRuntimeView } from "@/views/CodexRuntimeView";
 
 const runtime = {
   supported: true,

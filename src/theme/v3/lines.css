@@ -1,0 +1,97 @@
+/* ============================================================
+   v3.0 · 线路页（设计稿 L01）——表格卡头、表格卡
+   未分层（见 postcss.config.cjs），覆盖 ProviderLineTable.css 与
+   liquid-glass.css 里的 `.chimera-shell .provider-table`。
+   ============================================================ */
+
+/* 玻璃卡挪到外层 section：卡头与表格同在一张卡里 */
+.chimera-shell .provider-table-card {
+  margin-top: 10px;
+  border: 1px solid #ffffff;
+  border-radius: 14px;
+  background: var(--v3-glass-fill, #ffffffd0);
+  box-shadow:
+    var(--v3-shadow-inner-top, inset 0 1px 0 #ffffffd9),
+    var(--v3-shadow-outer, 0 10px 24px #1236681a);
+  -webkit-backdrop-filter: blur(var(--v3-glass-blur, 30px)) saturate(150%);
+  backdrop-filter: blur(var(--v3-glass-blur, 30px)) saturate(150%);
+  overflow: hidden;
+}
+
+.chimera-shell .provider-table-card > .provider-table {
+  margin: 0;
+  padding: 0 8px 8px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+/* 卡头恒 44 高（规范 §3.1），下方发丝线 */
+.chimera-shell .provider-table-cardhead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 44px;
+  padding: 0 19px;
+  border-bottom: 1px solid var(--v3-hairline, #0b1c2a12);
+}
+
+.chimera-shell .provider-table-cardtitle {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px;
+  color: var(--text-1);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.chimera-shell .provider-table-cardtitle > span {
+  color: var(--text-3);
+  font-family: var(--font-mono), monospace;
+  font-size: 10.5px;
+  font-weight: 500;
+}
+
+/* 文字按钮：accent 字，无底（规范 §3.2） */
+.chimera-shell .provider-table-cardhead .provider-group-manage {
+  height: 26px;
+  margin: 0;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--brand, #1f4d3a);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.chimera-shell
+  .provider-table-cardhead
+  .provider-group-manage:hover:not(:disabled) {
+  background: transparent;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.chimera-shell .provider-table-cardhead .provider-group-manage:disabled {
+  color: var(--text-3);
+  opacity: 1;
+}
+
+/* 当前线路标记：36×36 墨色方块 + 白色首字（L01）。 */
+.chimera-shell .station-mark {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
+  background: #0c1a24;
+  color: #ffffff;
+  font-family: var(--font-latin), var(--font-cjk), sans-serif;
+  font-size: 14px;
+  font-weight: 600;
+}

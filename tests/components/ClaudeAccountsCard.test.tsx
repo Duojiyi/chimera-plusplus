@@ -42,6 +42,7 @@ vi.mock("@/lib/api/claudeAccounts", () => ({
     usageOverview: vi.fn(),
     desktopSwapStatus: vi.fn(),
     captureDesktopLogin: vi.fn(),
+    saveDesktopOnly: vi.fn(),
     switchDesktop: vi.fn(),
     prepareDesktopLogin: vi.fn(),
     exportLogins: vi.fn(),
@@ -1262,17 +1263,63 @@ describe("ClaudeAccountsCard · the default Claude Desktop", () => {
     );
   });
 
-  it("explains an account that is not saved yet instead of guessing", async () => {
+  // Design change: a Desktop sign-in that no saved login has is imported on
+  // its own (a Desktop-only login) instead of only being explained.
+  it("imports a Desktop sign-in on its own when Claude Code has another account", async () => {
     api.desktopSwapStatus.mockResolvedValue(
       swapStatus({ currentAccountId: null, accountUuid: "uuid-stranger" }),
     );
+    api.saveDesktopOnly.mockResolvedValue({
+      ...accounts.accounts[0],
+      id: "stranger",
+      name: "stranger@example.com",
+      kind: "desktop_only",
+      isCurrent: false,
+    });
+    api.captureDesktopLogin.mockResolvedValue(outcome());
     render(<ClaudeAccountsCard mode="desktop" />);
-    expect(
-      await screen.findByText(/登录的账号不在已保存的账号里/),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/还没有导入/)).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "保存 Desktop 登录" }),
     ).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "一键导入" }));
+    await waitFor(() => expect(api.saveDesktopOnly).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(api.captureDesktopLogin).toHaveBeenCalledWith("stranger", false),
+    );
+    // Claude Code here is signed in to another account: its login is not saved.
+    expect(api.saveCurrentCode).not.toHaveBeenCalled();
+  });
+
+  it("imports the Desktop sign-in in one step when Claude Code has the same account", async () => {
+    api.desktopSwapStatus.mockResolvedValue(
+      swapStatus({ currentAccountId: null, accountUuid: "uuid-new" }),
+    );
+    api.desktopQuota.mockResolvedValue({
+      email: "New@Example.com",
+      plan: "Pro",
+      quota,
+    });
+    api.listCode.mockResolvedValue({
+      ...structuredClone(accounts),
+      live: { ...accounts.live, savedId: null, email: "new@example.com" },
+    });
+    api.saveCurrentCode.mockResolvedValue({
+      ...accounts.accounts[0],
+      id: "new",
+      name: "new@example.com",
+      isCurrent: true,
+    });
+    api.captureDesktopLogin.mockResolvedValue(outcome());
+    render(<ClaudeAccountsCard mode="desktop" />);
+    expect(
+      await screen.findByText(/检测到本机 Desktop 已登录 New@Example.com/),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "一键导入" }));
+    await waitFor(() => expect(api.saveCurrentCode).toHaveBeenCalledWith());
+    await waitFor(() =>
+      expect(api.captureDesktopLogin).toHaveBeenCalledWith("new", false),
+    );
   });
 
   it("switches the default Desktop to an account that has a saved sign-in", async () => {

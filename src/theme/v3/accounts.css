@@ -1,0 +1,1678 @@
+/* —— 以下规则自 liquid-glass-v3.css 迁入：只在本页加载，不进首屏样式 —— */
+/* ===== 9. 官方账号页（L02） ===== */
+.chimera-shell .official-accounts-page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px 26px 24px;
+}
+
+.chimera-shell .accounts-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 44px;
+}
+
+.chimera-shell .accounts-heading h1 {
+  margin: 0;
+  font-size: 24px;
+  line-height: 30px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text-1);
+}
+
+.chimera-shell .accounts-heading p {
+  margin: 3px 0 0;
+  font-size: 11.5px;
+  line-height: 16px;
+  color: var(--text-2);
+}
+
+.chimera-shell .accounts-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chimera-shell .official-accounts-page .accounts-header-actions button {
+  height: 30px;
+  border-radius: 9px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.chimera-shell
+  .official-accounts-page
+  .accounts-header-actions
+  button:last-child {
+  background: var(--brand);
+  border-color: transparent;
+  color: #fff;
+}
+
+/* 提示条 / 通知条 */
+.chimera-shell .accounts-notice,
+.chimera-shell .accounts-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: var(--v3-glass-fill-soft);
+  border: 1px solid var(--v3-hairline);
+  font-size: 11.5px;
+  line-height: 16px;
+  color: var(--text-2);
+}
+
+.chimera-shell .accounts-notice.is-error,
+.chimera-shell .accounts-banner.is-warning {
+  border-color: #b4342c33;
+  background: #fbe2df66;
+}
+
+.chimera-shell .accounts-notice strong,
+.chimera-shell .accounts-banner strong {
+  display: block;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.chimera-shell .accounts-notice p,
+.chimera-shell .accounts-banner p {
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+.chimera-shell .accounts-route-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+/* Codex 当前登录卡 */
+.chimera-shell .account-current {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+  gap: 18px;
+  align-items: center;
+  padding: 16px 20px;
+  border-radius: 14px;
+  background: var(--v3-glass-fill);
+  border: 1px solid var(--v3-hairline);
+  box-shadow: var(--v3-glass-shadow);
+}
+
+.chimera-shell .account-eyebrow {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--text-3);
+}
+
+.chimera-shell .account-current h2 {
+  margin: 2px 0 0;
+  font-size: 16px;
+  line-height: 22px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.chimera-shell .account-current p {
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+.chimera-shell .account-current-meters {
+  display: flex;
+  gap: 22px;
+}
+
+.chimera-shell .account-current-checked {
+  display: block;
+  margin-top: 6px;
+  font-size: 10px;
+  color: var(--text-3);
+}
+
+/* 空态 */
+.chimera-shell .accounts-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 26px 22px;
+  border-radius: 14px;
+  background: var(--v3-glass-fill);
+  border: 1px solid var(--v3-hairline);
+}
+
+.chimera-shell .accounts-empty-icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 20px;
+  background: var(--v3-glass-fill-soft);
+  color: var(--text-2);
+}
+
+.chimera-shell .accounts-empty h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.chimera-shell .accounts-empty p {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 17px;
+  color: var(--text-2);
+}
+
+/* 账号卡网格 */
+.chimera-shell .accounts-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(268px, 1fr));
+  gap: 14px;
+  align-items: start;
+}
+
+.chimera-shell .accounts-refresh-error {
+  grid-column: 1 / -1;
+}
+
+.chimera-shell .accounts-checked {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+
+.chimera-shell .accounts-refresh-error {
+  margin: 0;
+  font-size: 10.5px;
+  color: #8a5209;
+}
+
+/* 单张账号卡 */
+.chimera-shell .account-row {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  grid-template-rows: auto auto auto;
+  gap: 10px 12px;
+  padding: 14px;
+  border-radius: 14px;
+  background: var(--v3-glass-fill);
+  border: 1px solid var(--v3-hairline);
+  box-shadow: var(--v3-glass-shadow);
+}
+
+.chimera-shell .account-row[data-current="true"] {
+  border-color: #ffffff;
+  background: #ffffffe6;
+}
+
+.chimera-shell .account-row[data-attention="true"] {
+  border-color: #b4342c40;
+}
+
+.chimera-shell .account-avatar {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 19px;
+  background: var(--v3-glass-fill-soft, #e7ece7);
+  color: var(--brand);
+  font-family: var(--font-display, "Overpass", system-ui, sans-serif);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.chimera-shell .account-identity {
+  min-width: 0;
+}
+
+.chimera-shell .account-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chimera-shell .account-title strong {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chimera-shell .account-current-tag {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 6px;
+  background: #ffffffd8;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--brand);
+}
+
+.chimera-shell .account-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--text-3);
+}
+
+.chimera-shell .account-meta small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chimera-shell .account-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  font-size: 10px;
+  color: #8a5209;
+}
+
+.chimera-shell .account-row-quota,
+.chimera-shell .account-row-actions {
+  grid-column: 1 / -1;
+}
+
+.chimera-shell .account-quota-meters {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.chimera-shell .account-quota-note {
+  margin: 0;
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+.chimera-shell .account-quota-note.is-warning {
+  color: #8a5209;
+}
+
+.chimera-shell .account-quota-query {
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 6px;
+  border: 1px solid var(--v3-hairline);
+  background: var(--v3-glass-fill-soft);
+  font-size: 10px;
+  color: var(--brand);
+  cursor: pointer;
+}
+
+.chimera-shell .account-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--v3-hairline);
+}
+
+.chimera-shell .account-row-actions button:first-child {
+  height: 26px;
+  border-radius: 8px;
+  font-size: 11px;
+}
+
+.chimera-shell .account-remove {
+  margin-left: auto;
+  color: var(--text-3);
+}
+
+/* 额度条（紧凑态） */
+.chimera-shell .quota-meter {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 3px 8px;
+  min-width: 0;
+}
+
+.chimera-shell .quota-meter-label {
+  font-size: 10px;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chimera-shell .quota-meter-value {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.chimera-shell .quota-meter-bar {
+  grid-column: 1 / -1;
+  height: 5px;
+  border-radius: 3px;
+  background: #0b1c2a14;
+  overflow: hidden;
+}
+
+.chimera-shell .quota-meter-bar > span {
+  display: block;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--brand);
+}
+
+.chimera-shell .quota-meter[data-low] .quota-meter-bar > span {
+  background: #8a5209;
+}
+
+.chimera-shell .quota-meter[data-low] .quota-meter-value {
+  color: #8a5209;
+}
+
+.chimera-shell .quota-meter-reset {
+  grid-column: 1 / -1;
+  font-size: 9.5px;
+  color: var(--text-3);
+}
+
+.chimera-shell .accounts-privacy {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--text-3);
+}
+
+.chimera-shell .accounts-privacy p {
+  margin: 0;
+  font-size: 10.5px;
+}
+
+/* ============================================================
+   v3 · 官方账号（L02 主页面 / L03 切换确认 / L38 批量结果）
+   未分层；只作用于 .chimera-shell .official-accounts-page 与它的对话框。
+   ============================================================ */
+
+.chimera-shell .official-accounts-page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 100%;
+  padding: 18px 26px 24px;
+  background: transparent;
+  color: #0c1a24;
+}
+
+/* ---------- 页头 ---------- */
+.chimera-shell .official-accounts-page .accounts-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: nowrap;
+  gap: 16px;
+  min-height: 44px;
+}
+
+.chimera-shell .official-accounts-page .accounts-heading h1 {
+  margin: 0;
+  font-size: 24px;
+  line-height: 30px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+  color: #0c1a24;
+}
+
+.chimera-shell .official-accounts-page .accounts-subtitle {
+  display: flex;
+  flex-wrap: wrap;
+  margin: 1px 0 0;
+  font-size: 11.5px;
+  line-height: 15px;
+  color: #454e58;
+}
+
+.chimera-shell .accounts-subtitle > span + span::before {
+  content: "·";
+  margin: 0 6px;
+}
+
+.chimera-shell .official-accounts-page .accounts-header-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.chimera-shell .official-accounts-page .accounts-header-actions button {
+  height: 30px;
+  padding: 0 14px;
+  gap: 6px;
+  border: 1px solid #ffffffd9;
+  border-radius: 9px;
+  background: #ffffffa8;
+  color: #33454f;
+  font-size: 11px;
+  font-weight: 500;
+  box-shadow: none;
+}
+
+.chimera-shell
+  .official-accounts-page
+  .accounts-header-actions
+  button.accounts-text-action {
+  padding: 0 6px;
+  border-color: transparent;
+  background: transparent;
+  color: #1f4d3a;
+}
+
+.chimera-shell
+  .official-accounts-page
+  .accounts-header-actions
+  button:last-child {
+  border-color: transparent;
+  background: #1f4d3a;
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.chimera-shell
+  .official-accounts-page
+  .accounts-header-actions
+  button:last-child:hover:not(:disabled) {
+  background: #173d2e;
+}
+
+/* ---------- 工具条 ---------- */
+.chimera-shell .accounts-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.chimera-shell .accounts-toolbar-spacer {
+  flex: 1 1 auto;
+}
+
+.chimera-shell .accounts-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 240px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid #ffffffd9;
+  border-radius: 9px;
+  background: #ffffffa8;
+  color: #454e58;
+}
+
+.chimera-shell .accounts-search input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  font-size: 11.5px;
+  color: #0c1a24;
+}
+
+.chimera-shell .accounts-segment {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 9px;
+  background: #0b1c2a0a;
+}
+
+.chimera-shell .accounts-segment button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #33454f;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.chimera-shell .accounts-segment button span {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 10.5px;
+}
+
+.chimera-shell .accounts-segment button[aria-pressed="true"] {
+  background: #ffffff;
+  color: #0c1a24;
+  font-weight: 600;
+}
+
+.chimera-shell .official-accounts-page .accounts-select {
+  height: 30px;
+  padding: 0 24px 0 10px;
+  border: 1px solid #ffffffd9;
+  border-radius: 9px;
+  background-color: #ffffffa8;
+  color: #33454f;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.chimera-shell .accounts-view-toggle {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 9px;
+  background: #0b1c2a0a;
+}
+
+.chimera-shell .accounts-view-toggle button {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 24px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #454e58;
+}
+
+.chimera-shell .accounts-view-toggle button[aria-pressed="true"] {
+  background: #ffffff;
+  color: #0c1a24;
+}
+
+/* ---------- 批量条（L38） ---------- */
+.chimera-shell .accounts-batch-bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  height: 40px;
+  padding: 0 10px 0 16px;
+  border: 1px solid #ffffff;
+  border-radius: 12px;
+  background: var(--v3-glass-fill);
+  font-size: 11px;
+  color: #33454f;
+}
+
+.chimera-shell .accounts-batch-bar strong {
+  color: #0c1a24;
+  font-weight: 600;
+}
+
+.chimera-shell .accounts-batch-bar button {
+  height: 26px;
+  padding: 0 8px;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #1f4d3a;
+}
+
+.chimera-shell .accounts-batch-bar button.is-danger {
+  color: #b4342c;
+}
+
+.chimera-shell .accounts-batch-bar .accounts-batch-cancel {
+  margin-left: auto;
+}
+
+.chimera-shell .official-accounts-page .accounts-refresh-error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 0 2px;
+  font-size: 11px;
+  color: #33454f;
+}
+
+.chimera-shell .official-accounts-page .accounts-refresh-error svg {
+  color: #8a5209;
+}
+
+/* ---------- 账号卡网格 ---------- */
+.chimera-shell .official-accounts-page .accounts-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 15px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.chimera-shell .official-accounts-page .accounts-list.is-list {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+
+.chimera-shell .official-accounts-page .account-row {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: stretch;
+  min-height: 0;
+  padding: 14px 16px 12px;
+  border: 1px solid #ffffff;
+  border-radius: 14px;
+  background: var(--v3-glass-fill);
+  box-shadow:
+    var(--v3-shadow-inner-top), var(--v3-shadow-inner-bottom),
+    var(--v3-shadow-outer);
+  -webkit-backdrop-filter: blur(30px) saturate(150%);
+  backdrop-filter: blur(30px) saturate(150%);
+  grid-template-columns: none;
+}
+
+/* 当前账号：一条线贯穿 —— 左缘 2px 墨条 */
+.chimera-shell .official-accounts-page .account-row[data-current="true"] {
+  background: var(--v3-glass-fill);
+  border-color: #ffffff;
+}
+
+.chimera-shell
+  .official-accounts-page
+  .account-row[data-current="true"]::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 18px;
+  width: 2px;
+  height: 32px;
+  border-radius: 1px;
+  background: #0c1a24;
+}
+
+.chimera-shell .official-accounts-page .account-row[data-attention="true"] {
+  border-color: #ffffff;
+}
+
+.chimera-shell .official-accounts-page .account-row[data-checked="true"] {
+  outline: 1.5px solid #1f4d3a;
+  outline-offset: -1px;
+}
+
+.chimera-shell .account-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.chimera-shell .official-accounts-page .account-avatar {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border-radius: 15px;
+  background: #e6eaec;
+  color: #33454f;
+  font-size: 11px;
+  font-weight: 600;
+  border: 0;
+}
+
+.chimera-shell .official-accounts-page .account-avatar[data-unreadable] {
+  color: #b4342c;
+}
+
+.chimera-shell .official-accounts-page .account-identity {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.chimera-shell .official-accounts-page .account-title strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: #0c1a24;
+}
+
+.chimera-shell .official-accounts-page .account-meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  font-size: 10.5px;
+  color: #454e58;
+}
+
+.chimera-shell .official-accounts-page .account-meta small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10.5px;
+  color: #454e58;
+}
+
+.chimera-shell
+  .official-accounts-page
+  .account-meta
+  small
+  + .account-plan::before {
+  content: "·";
+  margin-right: 4px;
+}
+
+.chimera-shell .official-accounts-page .account-plan {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: 10.5px;
+  font-weight: 400;
+  color: #454e58;
+}
+
+.chimera-shell .account-select {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  margin: 0;
+  accent-color: #1f4d3a;
+  cursor: pointer;
+}
+
+/* 状态行：状态 chip 左、切换/删除右 */
+.chimera-shell .account-status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 22px;
+}
+
+.chimera-shell .account-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.chimera-shell .official-accounts-page .account-chip::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 3px;
+  background: currentColor;
+}
+
+.chimera-shell .official-accounts-page .account-chip > svg {
+  display: none;
+}
+
+.chimera-shell .official-accounts-page .account-chip.account-current-tag {
+  border: 1px solid #ffffff;
+  background: #ffffffd8;
+  color: #1f4d3a;
+}
+
+.chimera-shell .official-accounts-page .account-chip.is-ok {
+  background: #0d73400f;
+  color: #0d7340;
+}
+
+.chimera-shell .official-accounts-page .account-chip.is-bad,
+.chimera-shell .official-accounts-page .account-status {
+  background: #b4342c12;
+  color: #b4342c;
+}
+
+.chimera-shell .official-accounts-page .account-chip.is-warn {
+  background: #8a520914;
+  color: #8a5209;
+}
+
+.chimera-shell .official-accounts-page .account-chip.is-muted {
+  background: #0b1c2a0a;
+  color: #454e58;
+}
+
+.chimera-shell .official-accounts-page .account-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+}
+
+.chimera-shell
+  .official-accounts-page
+  .account-row-actions
+  .account-primary-action {
+  height: 22px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #1f4d3a;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.chimera-shell
+  .official-accounts-page
+  .account-row-actions
+  .account-primary-action:hover:not(:disabled) {
+  background: #0b1c2a0a;
+}
+
+.chimera-shell .official-accounts-page .account-remove {
+  width: 24px;
+  height: 22px;
+  color: #454e58;
+}
+
+.chimera-shell .official-accounts-page .account-remove:hover:not(:disabled) {
+  color: #b4342c;
+  background: #0b1c2a0a;
+}
+
+/* ---------- 额度条（条长 = 已用） ---------- */
+.chimera-shell .official-accounts-page .account-row-quota {
+  min-height: 62px;
+}
+
+.chimera-shell .official-accounts-page .account-quota-meters {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chimera-shell .official-accounts-page .quota-meter,
+.chimera-shell .official-accounts-page .quota-meter.is-compact {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(64px, auto);
+  grid-template-areas:
+    "label used reset"
+    "bar bar bar";
+  align-items: baseline;
+  column-gap: 10px;
+  row-gap: 5px;
+  min-width: 0;
+}
+
+.chimera-shell .official-accounts-page .quota-meter-label {
+  grid-area: label;
+}
+
+.chimera-shell .official-accounts-page .quota-meter-used {
+  grid-area: used;
+}
+
+.chimera-shell .official-accounts-page .quota-meter-reset {
+  grid-area: reset;
+}
+
+.chimera-shell .official-accounts-page .quota-meter .quota-meter-bar {
+  grid-area: bar;
+}
+
+.chimera-shell .official-accounts-page .quota-meter-label {
+  font-size: 10.5px;
+  font-weight: 400;
+  letter-spacing: 0;
+  color: #33454f;
+}
+
+.chimera-shell .official-accounts-page .quota-meter-used {
+  font-size: 10.5px;
+  color: #33454f;
+}
+
+.chimera-shell .official-accounts-page .quota-meter-value {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: #0c1a24;
+}
+
+.chimera-shell .official-accounts-page .quota-meter-reset {
+  font-family: inherit;
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
+  color: #454e58;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.chimera-shell .official-accounts-page .quota-meter-bar {
+  height: 5px;
+  border-radius: 3px;
+  background: #0b1c2a14;
+  overflow: hidden;
+}
+
+.chimera-shell .official-accounts-page .quota-meter-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: #1f4d3a;
+}
+
+.chimera-shell
+  .official-accounts-page
+  .quota-meter[data-level="warn"]
+  .quota-meter-bar
+  > span {
+  background: #8a5209;
+}
+
+.chimera-shell
+  .official-accounts-page
+  .quota-meter[data-level="warn"]
+  .quota-meter-value {
+  color: #8a5209;
+}
+
+.chimera-shell
+  .official-accounts-page
+  .quota-meter[data-level="bad"]
+  .quota-meter-bar
+  > span {
+  background: #b4342c;
+}
+
+.chimera-shell
+  .official-accounts-page
+  .quota-meter[data-level="bad"]
+  .quota-meter-value {
+  color: #b4342c;
+}
+
+.chimera-shell .official-accounts-page .account-quota-note {
+  margin: 0;
+  font-size: 11px;
+  line-height: 16px;
+  color: #454e58;
+}
+
+.chimera-shell .official-accounts-page .account-quota-note.is-warning {
+  color: #8a5209;
+}
+
+.chimera-shell .official-accounts-page .account-quota-query {
+  margin-left: 6px;
+  border: 0;
+  background: transparent;
+  color: #1f4d3a;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+/* 卡底：标签 + 最近使用 */
+.chimera-shell .account-card-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 20px;
+  margin-top: auto;
+}
+
+.chimera-shell .account-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.chimera-shell .account-tag {
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 6px;
+  background: #0b1c2a0a;
+  font-size: 10px;
+  line-height: 20px;
+  color: #33454f;
+}
+
+.chimera-shell .account-last-used {
+  margin-left: auto;
+  font-size: 10px;
+  color: #454e58;
+  white-space: nowrap;
+}
+
+/* 列表视图：一行一个账号，额度在右 */
+.chimera-shell .accounts-list.is-list .account-row {
+  display: grid;
+  grid-template-columns: minmax(200px, 1.1fr) auto minmax(220px, 1.4fr) auto;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 16px;
+}
+
+.chimera-shell .accounts-list.is-list .account-row-quota {
+  grid-column: 3;
+  grid-row: 1;
+  min-height: 0;
+}
+
+.chimera-shell .accounts-list.is-list .account-status-row {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.chimera-shell .accounts-list.is-list .account-card-foot {
+  grid-column: 4;
+  grid-row: 1;
+  margin: 0;
+}
+
+/* 末格：添加账号虚位 */
+.chimera-shell .account-add-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 178px;
+  border: 1px solid #ffffffb8;
+  border-radius: 14px;
+  background: #ffffff59;
+  color: #33454f;
+  cursor: pointer;
+}
+
+.chimera-shell .account-add-tile:hover:not(:disabled) {
+  background: #ffffff8c;
+}
+
+.chimera-shell .account-add-tile:disabled {
+  cursor: not-allowed;
+}
+
+.chimera-shell .account-add-icon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  margin-bottom: 4px;
+  border: 1px solid #ffffff;
+  border-radius: 16px;
+  background: #ffffffd8;
+  color: #0c1a24;
+}
+
+.chimera-shell .account-add-tile strong {
+  font-size: 12px;
+  font-weight: 600;
+  color: #0c1a24;
+}
+
+.chimera-shell .account-add-tile small {
+  font-size: 10.5px;
+  color: #454e58;
+}
+
+.chimera-shell .accounts-no-match {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 8px;
+  padding: 20px;
+  border: 1px solid #ffffff;
+  border-radius: 14px;
+  background: var(--v3-glass-fill);
+  font-size: 11.5px;
+  color: #33454f;
+}
+
+.chimera-shell .accounts-no-match p {
+  margin: 0;
+}
+
+/* ---------- 底部两卡：当前登录 + 额度刷新 ---------- */
+.chimera-shell .accounts-bottom {
+  display: grid;
+  grid-template-columns: minmax(0, 1.65fr) minmax(0, 1fr);
+  gap: 16px;
+}
+
+.chimera-shell .official-accounts-page .account-current,
+.chimera-shell .accounts-refresh-card,
+.chimera-shell .accounts-batch-result {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 20px 16px;
+  border: 1px solid #ffffff;
+  border-radius: 14px;
+  background: var(--v3-glass-fill);
+  box-shadow:
+    var(--v3-shadow-inner-top), var(--v3-shadow-inner-bottom),
+    var(--v3-shadow-outer);
+  -webkit-backdrop-filter: blur(30px) saturate(150%);
+  backdrop-filter: blur(30px) saturate(150%);
+}
+
+.chimera-shell .official-accounts-page .account-current {
+  display: flex;
+  align-items: stretch;
+  margin: 0;
+  color: #0c1a24;
+}
+
+.chimera-shell .official-accounts-page .account-current-identity {
+  justify-content: flex-start;
+  flex-direction: row;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #0b1c2a12;
+}
+
+.chimera-shell .official-accounts-page .account-eyebrow {
+  flex: 0 0 100%;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  color: #0c1a24;
+}
+
+.chimera-shell .official-accounts-page .account-current-identity h2 {
+  margin: 2px 0 0;
+  line-height: 16px;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 500;
+  color: #33454f;
+}
+
+.chimera-shell .official-accounts-page .account-current-identity p {
+  display: flex;
+  gap: 6px;
+  margin: 0;
+  font-size: 10.5px;
+  color: #454e58;
+}
+
+.chimera-shell .official-accounts-page .account-current-meters {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 24px;
+}
+
+.chimera-shell .official-accounts-page .account-current-checked,
+.chimera-shell .official-accounts-page .account-current-message {
+  display: block;
+  margin: 8px 0 0;
+  font-size: 10.5px;
+  color: #454e58;
+}
+
+.chimera-shell .official-accounts-page .account-current-message p {
+  margin: 0 0 8px;
+}
+
+.chimera-shell .accounts-refresh-card header,
+.chimera-shell .accounts-batch-result header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #0b1c2a12;
+}
+
+.chimera-shell .accounts-refresh-card h2,
+.chimera-shell .accounts-batch-result h2 {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #0c1a24;
+}
+
+.chimera-shell .official-accounts-page .accounts-checked {
+  font-family: inherit;
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
+  color: #454e58;
+}
+
+.chimera-shell .accounts-refresh-card dl {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+}
+
+.chimera-shell .accounts-refresh-card dl > div {
+  display: grid;
+  grid-template-columns: 84px 1fr;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+}
+
+.chimera-shell .accounts-refresh-card dt {
+  color: #454e58;
+}
+
+.chimera-shell .accounts-refresh-card dd {
+  margin: 0;
+  color: #33454f;
+}
+
+.chimera-shell .accounts-refresh-card .accounts-select {
+  height: 26px;
+}
+
+.chimera-shell .accounts-privacy-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: auto 0 0;
+  font-size: 10.5px;
+  color: #454e58;
+}
+
+/* 批量删除结果（L38） */
+.chimera-shell .accounts-batch-result ul {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chimera-shell .accounts-batch-result li {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: 14px;
+}
+
+.chimera-shell .accounts-batch-result li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 6px;
+  width: 6px;
+  height: 6px;
+  border-radius: 3px;
+}
+
+.chimera-shell .accounts-batch-result li.is-ok::before {
+  background: #0d7340;
+}
+
+.chimera-shell .accounts-batch-result li.is-bad::before {
+  background: #b4342c;
+}
+
+.chimera-shell .accounts-batch-result li strong {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: #0c1a24;
+}
+
+.chimera-shell .accounts-batch-result li small {
+  font-size: 10.5px;
+  color: #454e58;
+}
+
+.chimera-shell .accounts-batch-result li.is-bad small {
+  color: #b4342c;
+}
+
+.chimera-shell .accounts-batch-result footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid #0b1c2a12;
+}
+
+.chimera-shell .accounts-batch-result footer p {
+  flex: 1;
+  margin: 0;
+  font-size: 10.5px;
+  color: #454e58;
+}
+
+/* ---------- 提示条 ---------- */
+.chimera-shell .official-accounts-page .accounts-notice,
+.chimera-shell .official-accounts-page .accounts-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px 10px 16px;
+  border: 1px solid #ffffff;
+  border-radius: 12px;
+  background: var(--v3-glass-fill);
+  font-size: 11px;
+  color: #33454f;
+}
+
+.chimera-shell .official-accounts-page .accounts-notice.is-error,
+.chimera-shell .official-accounts-page .accounts-banner.is-warning {
+  border-color: #ffffff;
+  background: var(--v3-glass-fill);
+}
+
+.chimera-shell .official-accounts-page .accounts-notice.is-error > svg {
+  color: #b4342c;
+}
+
+.chimera-shell .official-accounts-page .accounts-banner.is-warning > svg {
+  color: #8a5209;
+}
+
+.chimera-shell .official-accounts-page .accounts-notice strong,
+.chimera-shell .official-accounts-page .accounts-banner strong {
+  font-size: 12px;
+  font-weight: 600;
+  color: #0c1a24;
+}
+
+.chimera-shell .official-accounts-page .accounts-notice p,
+.chimera-shell .official-accounts-page .accounts-banner p {
+  margin: 1px 0 0;
+  font-size: 11px;
+  color: #454e58;
+}
+
+.chimera-shell .official-accounts-page .accounts-route-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 11px;
+  color: #33454f;
+}
+
+/* 空态（§3.5：图标 + 一句说明 + 一个主按钮） */
+.chimera-shell .official-accounts-page .accounts-empty {
+  align-items: flex-start;
+  gap: 8px;
+  padding: 24px;
+  border: 1px solid #ffffff;
+  border-radius: 14px;
+  background: var(--v3-glass-fill);
+  text-align: left;
+}
+
+.chimera-shell .official-accounts-page .accounts-empty-icon {
+  width: auto;
+  height: auto;
+  background: transparent;
+  color: #1f4d3a;
+}
+
+.chimera-shell .official-accounts-page .accounts-empty h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: #0c1a24;
+}
+
+.chimera-shell .official-accounts-page .accounts-empty p {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 18px;
+  color: #33454f;
+}
+
+.chimera-shell .official-accounts-page .accounts-privacy {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #454e58;
+}
+
+.chimera-shell .official-accounts-page .accounts-privacy p {
+  margin: 0;
+}
+
+/* 设计预览：写操作禁用，但保持原有观感 */
+.chimera-shell .official-accounts-page.is-design-preview button:disabled {
+  opacity: 1;
+  cursor: not-allowed;
+}
+
+/* ---------- 切换确认对话框（L03） ---------- */
+.account-dialog .account-switch-path {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.account-dialog .account-switch-path li {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 54px;
+  padding: 0 16px;
+  border-radius: 12px;
+  background: #0b1c2a08;
+  color: #33454f;
+}
+
+.account-dialog .account-switch-path li.account-switch-to {
+  background: #eef1ee;
+}
+
+.account-dialog .account-switch-path li.account-switch-to::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 11px;
+  bottom: 11px;
+  width: 2px;
+  border-radius: 1px;
+  background: #0c1a24;
+}
+
+.account-dialog .account-switch-path .account-avatar {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  border-radius: 14px;
+  background: #e6eaec;
+  color: #33454f;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.account-dialog .account-switch-name {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.account-dialog .account-switch-name strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: #0c1a24;
+}
+
+.account-dialog .account-switch-name small {
+  font-size: 10.5px;
+  color: #454e58;
+}
+
+.account-dialog .account-switch-tag {
+  font-size: 10.5px;
+  color: #454e58;
+}
+
+.chimera-shell .official-accounts-page .account-current-quota {
+  gap: 4px;
+  padding-left: 0;
+  border-left: 0;
+}
+
+/* 当前登录卡里的完整重置时间较长：独占一行，放在条下 */
+.chimera-shell .official-accounts-page .account-current-meters .quota-meter {
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "label used"
+    "bar bar"
+    "reset reset";
+}
+
+.chimera-shell
+  .official-accounts-page
+  .account-current-meters
+  .quota-meter-reset {
+  text-align: left;
+}
+
+/* ---------- 编辑（备注 / 标签 / 分组 / 停用） ---------- */
+.chimera-shell .official-accounts-page .account-edit {
+  width: 24px;
+  height: 22px;
+  color: #454e58;
+}
+.chimera-shell .official-accounts-page .account-edit:hover:not(:disabled) {
+  background: #0b1c2a0a;
+  color: var(--text-1);
+}
+.chimera-shell .account-note {
+  overflow: hidden;
+  margin: 0;
+  color: var(--text-2);
+  font-size: 11px;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.account-details-form {
+  display: grid;
+  gap: 6px;
+}
+.account-details-form > label:not(.account-details-check) {
+  margin-top: 6px;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 500;
+}
+.account-details-select {
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--bg-surface);
+  color: var(--text-1);
+  font-size: 13px;
+}
+.account-details-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.account-details-check span {
+  display: grid;
+  gap: 2px;
+}
+.account-details-check small {
+  color: var(--text-3);
+  font-size: 11px;
+}
+.account-details-form .account-dialog-actions {
+  margin-top: 12px;
+}
+.account-details-group-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--text-2);
+  font-size: 12px;
+}
+.account-details-group-actions > span {
+  flex: 1 1 100%;
+}
+.account-details-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-3);
+  font-size: 12px;
+  cursor: pointer;
+}
+.account-details-link:hover:not(:disabled) {
+  color: #b4342c;
+  text-decoration: underline;
+}
+.account-details-link:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+.account-batch-names {
+  max-height: 140px;
+  margin: 0;
+  padding: 8px 10px 8px 26px;
+  overflow-y: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  color: var(--text-1);
+  font-size: 12px;
+  line-height: 1.7;
+}

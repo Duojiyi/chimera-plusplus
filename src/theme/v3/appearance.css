@@ -1,0 +1,800 @@
+/* —— 以下规则自 liquid-glass-v3.css 迁入：只在本页加载，不进首屏样式 —— */
+/* 14.4 外观（皮肤） */
+.chimera-shell .skin-market-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 44px;
+}
+
+.chimera-shell .skin-market-heading h1 {
+  font-size: 24px;
+  line-height: 30px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text-1);
+}
+
+.chimera-shell .skin-market-heading p {
+  margin: 2px 0 0;
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+
+.chimera-shell .skin-market-state {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 24px 20px;
+  border: 1px solid var(--v3-hairline);
+  border-radius: 14px;
+  background: var(--v3-glass-fill);
+}
+
+.chimera-shell .skin-market-state h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.chimera-shell .skin-market-state p {
+  margin: 0;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--text-2);
+}
+
+/* ============================================================
+   v3.0 · 外观（设计稿 L10 / L26）
+   未分层（见 postcss.config.cjs），完整取代旧的 AppearanceView.css。
+   选择器统一以 .chimera-shell .skin-market-reference 开头。
+   ============================================================ */
+
+.chimera-shell .skin-market-reference {
+  --skin-sheen: #ffffffb3;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  height: 100%;
+  min-height: 0;
+  padding: 26px 26px 18px;
+  color: var(--text-1);
+  overflow-y: auto;
+}
+
+/* ---------- 页头 ---------- */
+
+.chimera-shell .skin-market-reference .skin-market-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 44px;
+  margin: 0;
+}
+
+.chimera-shell .skin-market-reference .skin-market-heading h1 {
+  margin: 0;
+  font-size: 24px;
+  line-height: 30px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+  color: var(--text-1);
+}
+
+.chimera-shell .skin-market-reference .skin-market-heading p {
+  margin: 0;
+  font-size: 11px;
+  line-height: 15px;
+  color: var(--text-3);
+}
+
+.chimera-shell .skin-market-reference .skin-heading-actions,
+.chimera-shell .skin-market-reference .skin-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ---------- 按钮（规范 §3.2） ---------- */
+
+.chimera-shell .skin-market-reference button:is(.primary, .secondary) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 30px;
+  min-height: 30px;
+  padding: 0 14px;
+  border-radius: 9px;
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: none;
+  transition:
+    background-color 120ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 120ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.chimera-shell .skin-market-reference button.primary {
+  border: 0;
+  background: #1f4d3a;
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.chimera-shell .skin-market-reference button.primary:hover:not(:disabled) {
+  background: #193f30;
+}
+
+.chimera-shell .skin-market-reference button.secondary {
+  border: 1px solid #ffffffd9;
+  background: #ffffffa8;
+  color: #33454f;
+  font-weight: 500;
+}
+
+.chimera-shell .skin-market-reference button.secondary:hover:not(:disabled) {
+  background: #ffffffe0;
+}
+
+.chimera-shell
+  .skin-market-reference
+  button:is(.primary, .secondary):active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.chimera-shell .skin-market-reference button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.chimera-shell .skin-market-reference button:focus-visible,
+.chimera-shell .skin-market-reference input:focus-visible {
+  outline: 2px solid #1f4d3a;
+  outline-offset: 2px;
+}
+
+/* ---------- 筛选与搜索 ---------- */
+
+.chimera-shell .skin-market-reference .skin-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.chimera-shell .skin-market-reference .skin-filter-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.chimera-shell .skin-market-reference .skin-filter-tabs button {
+  height: 28px;
+  padding: 0 16px;
+  border: 1px solid #ffffff99;
+  border-radius: 9px;
+  background: #ffffff59;
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 500;
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.chimera-shell .skin-market-reference .skin-filter-tabs button:hover {
+  background: #ffffff99;
+}
+
+.chimera-shell .skin-market-reference .skin-filter-tabs button.is-active {
+  border-color: #ffffff;
+  background: #ffffffe6;
+  color: var(--text-1);
+  font-weight: 600;
+  box-shadow: 0 1px 2px #1a24200f;
+}
+
+.chimera-shell .skin-market-reference .skin-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 180px;
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid #ffffffcc;
+  border-radius: 9px;
+  background: #ffffffb3;
+  color: var(--text-3);
+}
+
+.chimera-shell .skin-market-reference .skin-search input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-1);
+  font-size: 11px;
+  outline: none;
+  box-shadow: none;
+}
+
+/* ---------- 双卡布局 ---------- */
+
+.chimera-shell .skin-market-reference .skin-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 288px;
+  grid-template-rows: minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+  /* The page fills the window and the action bar stays below both cards;
+     a long skin list scrolls inside its own card instead of running under
+     the bar. */
+  flex: 1 1 auto;
+  min-height: 320px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.chimera-shell .skin-market-reference :is(.skin-detail, .skin-list),
+.chimera-shell .skin-market-reference .skin-actionbar,
+.chimera-shell .skin-market-reference .skin-market-state {
+  position: relative;
+  background: var(--v3-glass-fill);
+  border: 1px solid var(--v3-glass-border);
+  border-radius: 14px;
+  box-shadow:
+    var(--v3-shadow-inner-top), var(--v3-shadow-inner-bottom),
+    var(--v3-shadow-outer);
+  -webkit-backdrop-filter: blur(var(--v3-glass-blur)) saturate(150%);
+  backdrop-filter: blur(var(--v3-glass-blur)) saturate(150%);
+}
+
+/* 详情卡 */
+.chimera-shell .skin-market-reference .skin-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+  max-height: 100%;
+  padding: 16px 19px 18px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.chimera-shell .skin-market-reference .skin-detail-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--v3-hairline);
+}
+
+.chimera-shell .skin-market-reference .skin-detail-head h2 {
+  margin: 0;
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.chimera-shell .skin-market-reference .skin-detail-head p {
+  margin: 0;
+  font-size: 11px;
+  line-height: 15px;
+  color: var(--text-2);
+}
+
+.chimera-shell .skin-market-reference .skin-detail-head .skin-detail-meta {
+  color: var(--text-3);
+}
+
+.chimera-shell .skin-market-reference .skin-preview {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.chimera-shell .skin-market-reference .skin-facts {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.chimera-shell .skin-market-reference .skin-facts > div {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.chimera-shell .skin-market-reference .skin-facts dt {
+  color: var(--text-3);
+  font-weight: 500;
+}
+
+.chimera-shell .skin-market-reference .skin-facts dd {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+  color: var(--text-1);
+}
+
+.chimera-shell .skin-market-reference .skin-facts dd svg {
+  color: #1f4d3a;
+}
+
+/* 列表卡 */
+.chimera-shell .skin-market-reference .skin-list {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  max-height: 100%;
+  padding: 0 12px 12px;
+  overflow: hidden;
+}
+
+.chimera-shell .skin-market-reference .skin-list-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 16px 7px 10px;
+}
+
+.chimera-shell .skin-market-reference .skin-list-head h2 {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 18px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.chimera-shell .skin-market-reference .skin-list-head p {
+  margin: 0;
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+.chimera-shell .skin-market-reference .skin-list-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+  margin: 0 -4px;
+  padding: 0 4px 2px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.chimera-shell .skin-market-reference .skin-list-rows > button {
+  position: relative;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 52px;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-1);
+  text-align: left;
+  box-shadow: none;
+  cursor: pointer;
+  transition: background-color 120ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.chimera-shell .skin-market-reference .skin-list-rows > button:hover {
+  background: #ffffff80;
+}
+
+/* 母题：选中行左缘一条墨线 */
+.chimera-shell .skin-market-reference .skin-list-rows > button.active {
+  border-color: #ffffff;
+  background: #ffffffd9;
+}
+
+.chimera-shell .skin-market-reference .skin-list-rows > button.active::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 12px;
+  bottom: 12px;
+  width: 2px;
+  border-radius: 1px;
+  background: #1a2420;
+}
+
+.chimera-shell .skin-market-reference .skin-row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.chimera-shell .skin-market-reference .skin-row-text b {
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chimera-shell .skin-market-reference .skin-row-text small {
+  overflow: hidden;
+  font-size: 10.5px;
+  line-height: 14px;
+  color: var(--text-3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chimera-shell .skin-market-reference .skin-row-state {
+  font-size: 10.5px;
+  font-style: normal;
+  font-weight: 500;
+  color: var(--text-3);
+}
+
+.chimera-shell .skin-market-reference .skin-row-state.is-applied {
+  color: var(--success-fg);
+  font-weight: 600;
+}
+
+.chimera-shell .skin-market-reference .skin-row-chevron {
+  color: var(--text-3);
+}
+
+/* 色块：无预览图时按外观给一块中性色，不做装饰渐变 */
+.chimera-shell .skin-market-reference .skin-card-miniature {
+  display: block;
+  width: 30px;
+  height: 30px;
+  border: 1px solid #1a24201a;
+  border-radius: 7px;
+  background: #d8dcd6;
+}
+
+.chimera-shell
+  .skin-market-reference
+  .skin-card-miniature[data-appearance="dark"] {
+  background: #2c3430;
+}
+
+.chimera-shell
+  .skin-market-reference
+  .skin-card-miniature[data-appearance="light"] {
+  background: #efece4;
+}
+
+.chimera-shell
+  .skin-market-reference
+  .skin-card-miniature[data-appearance="dual"] {
+  background: linear-gradient(135deg, #efece4 50%, #2c3430 50%);
+}
+
+/* ---------- 图片框 ---------- */
+
+.chimera-shell .skin-market-reference .skin-art {
+  position: relative;
+  display: block;
+  min-width: 0;
+  min-height: 0;
+  aspect-ratio: 16 / 10;
+  overflow: hidden;
+  background: #ffffff8c;
+}
+
+.chimera-shell .skin-market-reference .skin-art img {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  opacity: 0;
+  transition: opacity 240ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.chimera-shell .skin-market-reference .skin-art[data-state="loaded"] {
+  background: transparent;
+}
+
+.chimera-shell .skin-market-reference .skin-art[data-state="loaded"] img {
+  opacity: 1;
+}
+
+.chimera-shell .skin-market-reference .skin-art[data-state="failed"] {
+  background: #ffffff8c;
+  box-shadow: inset 0 0 0 1px var(--v3-hairline);
+}
+
+.chimera-shell .skin-market-reference .skin-art[data-state="loading"]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    100deg,
+    transparent 30%,
+    var(--skin-sheen) 50%,
+    transparent 70%
+  );
+  transform: translateX(-100%);
+  animation: v3-skin-sheen 1.6s ease-in-out infinite;
+}
+
+@keyframes v3-skin-sheen {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+.chimera-shell .skin-market-reference .skin-art-thumb {
+  width: 30px;
+  height: 30px;
+  aspect-ratio: auto;
+  border-radius: 7px;
+}
+
+.chimera-shell .skin-market-reference .skin-art-thumb img {
+  object-fit: cover;
+}
+
+.chimera-shell .skin-market-reference .skin-art-stage {
+  width: 100%;
+  border: 1px solid #ffffffcc;
+  border-radius: 10px;
+}
+
+.chimera-shell .skin-market-reference .skin-art-failure {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 4px;
+  color: var(--text-3);
+  font-size: 9px;
+  line-height: 1.3;
+  text-align: center;
+}
+
+.chimera-shell .skin-market-reference .skin-art-stage .skin-art-failure {
+  gap: 8px;
+  padding: 16px;
+  font-size: 11px;
+}
+
+.chimera-shell .skin-market-reference .skin-art-failure strong {
+  color: var(--text-1);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* 无预览图：一张中性的窗口线框 */
+.chimera-shell .skin-market-reference .skin-mock {
+  position: absolute;
+  inset: 14px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid #1a24201f;
+  border-radius: 8px;
+  background: #f7f6f2;
+}
+
+.chimera-shell .skin-market-reference .skin-mock[data-appearance="dark"] {
+  background: #252c29;
+  border-color: #00000040;
+}
+
+.chimera-shell .skin-market-reference .skin-mock-bar {
+  display: flex;
+  gap: 5px;
+  height: 22px;
+  align-items: center;
+  padding: 0 10px;
+  border-bottom: 1px solid #1a242014;
+}
+
+.chimera-shell .skin-market-reference .skin-mock-bar i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #1a242026;
+}
+
+.chimera-shell .skin-market-reference .skin-mock-body {
+  display: grid;
+  flex: 1;
+  grid-template-columns: 28% 1fr;
+  min-height: 0;
+}
+
+.chimera-shell .skin-market-reference :is(.skin-mock-side, .skin-mock-main) {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 14px 12px;
+}
+
+.chimera-shell .skin-market-reference .skin-mock-side {
+  border-right: 1px solid #1a242014;
+  background: #1a242008;
+}
+
+.chimera-shell .skin-market-reference .skin-mock i {
+  display: block;
+  height: 6px;
+  border-radius: 3px;
+  background: #1a24201f;
+}
+
+.chimera-shell .skin-market-reference .skin-mock[data-appearance="dark"] i {
+  background: #ffffff1f;
+}
+
+.chimera-shell .skin-market-reference .skin-mock-side i:first-child {
+  background: #1f4d3a;
+  width: 70%;
+}
+
+.chimera-shell .skin-market-reference .skin-mock-main i {
+  height: 22px;
+  border-radius: 5px;
+  background: #1a24200f;
+}
+
+.chimera-shell .skin-market-reference .skin-mock-main i:first-child {
+  width: 46%;
+  height: 8px;
+  background: #1a24202e;
+}
+
+/* ---------- 操作条 ---------- */
+
+.chimera-shell .skin-market-reference .skin-actionbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 54px;
+  padding: 10px 12px 10px 19px;
+}
+
+.chimera-shell .skin-market-reference .skin-actionbar p {
+  margin: 0;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--text-2);
+}
+
+.chimera-shell .skin-market-reference .skin-footnote {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: auto 0 0;
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+/* ---------- 加载与状态 ---------- */
+
+.chimera-shell .skin-market-reference .skin-market-status {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.chimera-shell .skin-market-reference .skin-card-skeleton {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 8px 10px;
+}
+
+.chimera-shell .skin-market-reference .skin-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.chimera-shell .skin-market-reference .skin-lines i {
+  display: block;
+  height: 7px;
+  border-radius: 4px;
+  background: #1a242014;
+}
+
+.chimera-shell .skin-market-reference .skin-lines i:nth-child(2) {
+  width: 60%;
+}
+
+.chimera-shell .skin-market-reference .skin-market-state {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 22px 20px;
+}
+
+.chimera-shell .skin-market-reference .skin-market-state-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border: 1px solid #ffffff;
+  border-radius: 10px;
+  background: #ffffffb3;
+  color: var(--text-2);
+}
+
+.chimera-shell .skin-market-reference .skin-market-state h2 {
+  margin: 4px 0 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.chimera-shell .skin-market-reference .skin-market-state p {
+  margin: 0;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--text-2);
+}
+
+.chimera-shell
+  .skin-market-reference
+  .skin-market-state
+  .skin-market-state-detail {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--text-3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 860px) {
+  .chimera-shell .skin-market-reference .skin-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: none;
+    flex: none;
+  }
+  .chimera-shell .skin-market-reference :is(.skin-detail, .skin-list) {
+    max-height: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chimera-shell .skin-market-reference .skin-art[data-state="loading"]::after {
+    display: none;
+  }
+
+  .chimera-shell .skin-market-reference .skin-art img {
+    transition: none;
+  }
+}

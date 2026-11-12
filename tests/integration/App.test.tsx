@@ -41,9 +41,16 @@ describe("Chimera++ application shell", () => {
       "Pi",
     ];
     for (const label of backendEnabledLabels) {
+      // Other tools are chosen in the tool switcher (design system §4.1).
+      if (label !== "官方账号")
+        fireEvent.click(screen.getByRole("button", { name: /^切换工具/ }));
       const button = screen.getByRole("button", { name: label });
       expect(button).toBeEnabled();
       fireEvent.click(button);
+      if (label !== "官方账号") {
+        fireEvent.click(screen.getByRole("button", { name: /^切换工具/ }));
+        fireEvent.click(screen.getByRole("button", { name: "Codex" }));
+      }
       fireEvent.click(screen.getByRole("button", { name: "线路" }));
     }
     for (const label of ["提示词", "Skills 与 MCP", "配置体检"]) {
@@ -81,8 +88,9 @@ describe("Chimera++ application shell", () => {
     renderApp();
 
     fireEvent.click(screen.getByRole("button", { name: "Codex 管理" }));
+    // Codex 管理 loads on demand, like the other pages.
     expect(
-      screen.getByRole("heading", {
+      await screen.findByRole("heading", {
         name: "Codex 管理",
         level: 1,
       }),
@@ -106,7 +114,7 @@ describe("Chimera++ application shell", () => {
       await screen.findByRole("heading", { name: "设置" }),
     ).toBeInTheDocument();
     // Settings opens at 工具; the preference rows are one section away.
-    fireEvent.click(screen.getByRole("link", { name: "通用设置" }));
+    fireEvent.click(screen.getByRole("link", { name: "通用" }));
     // Data folder and log file are separate entries under 配置目录.
     expect(
       screen.getByRole("button", { name: /^打开数据目录/ }),

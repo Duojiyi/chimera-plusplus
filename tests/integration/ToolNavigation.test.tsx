@@ -17,6 +17,9 @@ vi.mock("@/views/ToolView", () => ({
   ),
 }));
 import ChimeraApp from "@/ChimeraApp";
+// Tools are listed in the tool switcher (design system §4.1), not the sidebar.
+const openSwitcher = () =>
+  fireEvent.click(screen.getByRole("button", { name: /^切换工具/ }));
 // Keep Vite's cold module transform outside RTL's one-second DOM wait.
 beforeAll(async () => {
   await import("@/views/OmpView");
@@ -38,7 +41,8 @@ it.each([
         <ChimeraApp providerRefreshVersion={0} />
       </QueryClientProvider>,
     );
-    fireEvent.click(screen.getByRole("button", { name }));
+    openSwitcher();
+    fireEvent.click(await screen.findByRole("button", { name }));
     expect(await screen.findByText(`tool:${toolId}:refresh:0`)).toBeVisible();
     view.rerender(
       <QueryClientProvider client={client}>
@@ -55,14 +59,19 @@ it("keeps Claude tools adjacent and opens oh-my-pi as an independent page", asyn
       <ChimeraApp />
     </QueryClientProvider>,
   );
-  const code = screen.getByRole("button", { name: "Claude Code" });
+  openSwitcher();
+  const code = await screen.findByRole("button", { name: "Claude Code" });
   const desktop = screen.getByRole("button", {
     name: "Claude Desktop",
   });
   expect(code.nextElementSibling).toBe(desktop);
   fireEvent.click(screen.getByRole("button", { name: "oh-my-pi" }));
+  // The page heading names the section; the sidebar lists the sections.
   expect(
-    await screen.findByRole("heading", { name: "oh-my-pi" }),
+    await screen.findByRole("heading", { name: "模型线路", level: 1 }),
+  ).toBeVisible();
+  expect(
+    screen.getByRole("button", { name: /^切换工具，当前：oh-my-pi/ }),
   ).toBeVisible();
   expect(screen.getByRole("button", { name: "模型线路" })).toBeVisible();
   fireEvent.click(screen.getByRole("button", { name: "插件市场" }));

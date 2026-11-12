@@ -177,12 +177,17 @@ pub(crate) fn read_token(user_data: &Path, now_ms: i64) -> TokenRead {
 }
 
 /// Claude Desktop's own (default) data folder. A Microsoft Store install
-/// may keep it in the package's redirected AppData; the one whose
-/// `config.json` changed last is the one in use.
+/// may keep it in the package's redirected AppData, and newer packaged
+/// builds move it to `%LOCALAPPDATA%\Claude-Data\claude_<publisher>`; the
+/// one whose `config.json` changed last is the one in use.
 pub(crate) fn default_user_data_dir() -> Option<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(roaming) = dirs::config_dir() {
         candidates.push(roaming.join("Claude"));
+    }
+    #[cfg(windows)]
+    if let Some(local) = dirs::data_local_dir() {
+        candidates.extend(claude_data_dirs(&local));
     }
     #[cfg(windows)]
     if let Some(local) = dirs::data_local_dir() {
@@ -214,6 +219,26 @@ pub(crate) fn default_user_data_dir() -> Option<PathBuf> {
         })
         .max_by_key(|(modified, _)| *modified)
         .map(|(_, dir)| dir)
+}
+
+/// The per-install folders under `Claude-Data` (`claude_<publisher>`).
+fn claude_data_dirs(local_app_data: &Path) -> Vec<PathBuf> {
+    let Ok(entries) =
+        crate::security_limits::read_dir_without_links(&local_app_data.join("Claude-Data"))
+    else {
+        return Vec::new();
+    };
+    entries
+        .into_iter()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .starts_with("claude_")
+        })
+        .map(|entry| entry.path())
+        .collect()
 }
 
 #[cfg(test)]

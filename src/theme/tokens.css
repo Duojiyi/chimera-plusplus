@@ -380,110 +380,169 @@
   --skin-ui-border: var(--border-subtle);
 }
 
-.dark,
-[data-theme="dark"] {
-  /* Dark Theme Semantics & Overrides */
-  --bg-base: var(--p-n-225);
-  --bg-base-hover: var(--p-n-255);
-  --bg-base-active: var(--p-n-285);
-  --bg-surface: var(--p-n-255);
-  --bg-subtle: var(--p-n-285);
-  --bg-selected: var(--p-n-300);
-  --bg-sunken: var(--p-n-225);
-  --bg-raised: var(--p-n-285);
-  --bg-well: var(--p-n-225);
-  --bg-thumb: var(--p-n-340);
-  --bg-plate: var(--p-n-170);
-  --border-subtle: var(--p-n-340);
-  --border-control: var(--p-n-560);
-  --border-plate: var(--p-n-560);
-  --text-1: var(--p-n-955);
-  --text-2: var(--p-n-780);
-  --text-3: var(--p-n-680);
-  --text-disabled: var(--p-n-520);
-  --text-inverse: var(--p-n-200);
-  --text-plate-1: var(--p-n-975);
-  --text-plate-2: var(--p-n-780);
-  --text-plate-3: var(--p-n-680);
-  --text-on-accent: var(--p-n-995);
-  --action-primary: var(--p-n-955);
-  --action-primary-hover: var(--p-n-905);
-  --action-primary-pressed: var(--p-n-860);
-  --action-disabled: var(--p-n-285);
-  --plate-control-border: var(--p-n-560);
-  --plate-control-hover: var(--p-n-285);
-  --plate-track: var(--p-n-340);
-  --focus: var(--p-brand-text-dark);
-  --focus-on-plate: var(--p-brand-text-dark);
-  --danger-action: var(--p-red-52);
-  --danger-action-hover: var(--p-red-48);
-  --danger-action-pressed: var(--p-red-44);
-  --success-fg: var(--p-green-80);
-  --success-bg: var(--p-green-28);
-  --success-border: var(--p-green-42);
-  --success-solid: var(--p-green-70);
-  --warning-fg: var(--p-amber-84);
-  --warning-bg: var(--p-amber-29);
-  --warning-border: var(--p-amber-45);
-  --warning-solid: var(--p-amber-78);
-  --danger-fg: var(--p-red-76);
-  --danger-bg: var(--p-red-29);
-  --danger-border: var(--p-red-45);
-  --danger-solid: var(--p-red-66);
-  --info-fg: var(--p-blue-78);
-  --info-bg: var(--p-blue-28);
-  --info-border: var(--p-blue-44);
-  --info-solid: var(--p-blue-70);
-  --plate-success: var(--p-green-80);
-  --plate-warning: var(--p-amber-84);
-  --plate-danger: var(--p-red-76);
-  --badge-official-bg: var(--p-n-860);
-  --badge-official-fg: var(--p-n-200);
-  --badge-tool-border: var(--p-n-680);
-  --badge-tool-fg: var(--p-n-780);
-  --shell-edge: var(--p-white-a16);
-  --scrim: var(--p-black-a60);
-  --shadow-overlay: var(--p-black-a36);
-  --shadow-soft: var(--p-black-a20);
-  --dialog-border: var(--border-control);
-  --titlebar-close-hover: var(--p-win-close);
-  --id-cobalt: var(--p-line-cobalt-hi);
-  --id-violet: var(--p-line-violet-hi);
-  --id-magenta: var(--p-line-magenta-hi);
-  --id-teal: var(--p-line-teal-hi);
-  --id-moss: var(--p-line-moss-hi);
-  --id-ochre: var(--p-line-ochre-hi);
-  --brand: var(--p-brand);
-  --brand-hover: var(--p-brand-hover);
-  --brand-pressed: var(--p-brand-pressed);
-  --bg-hover: var(--p-n-315);
-  --chrome-fg-2: var(--p-chrome-fg2);
-  --chrome-fg-1: var(--p-n-955);
-  --chrome-hover: var(--p-chrome-d-hover);
-  --chrome-active: var(--p-chrome-d-active);
-  --chrome-bg: var(--p-chrome-d);
-  --badge-line-fg: var(--p-n-200);
-  --clear: var(--p-clear);
-  --chrome-field: var(--p-chrome-d-field);
-  --chrome-fg-3: var(--p-chrome-fg3);
-  --chrome-border: var(--p-chrome-fg3);
-  --brand-text: var(--p-brand-text-dark);
-  --sheet-edge: var(--p-white-a8);
-  --plate-control-pressed: var(--p-n-315);
-  --chart-bar: var(--p-n-560);
-  --brand-indicator: var(--p-brand-text-dark);
-  --text-on-indicator: var(--p-n-200);
-  --control-on-hover: var(--p-n-975);
-  --control-on-pressed: var(--p-n-905);
-  --scrim-chrome: var(--p-black-a20);
-  --skin-ui-bg: var(--bg-base);
-  --skin-ui-side: var(--bg-surface);
-  --skin-ui-text: var(--text-1);
-  --skin-ui-text-2: var(--text-2);
-  --skin-ui-accent: var(--brand);
-  --skin-ui-accent-fg: var(--text-on-accent);
-  --skin-ui-bubble: var(--bg-subtle);
-  --skin-ui-border: var(--border-subtle);
+/* ============================================================
+   v3.0 · 液态玻璃（单套浅色）
+   ------------------------------------------------------------
+   这一层覆盖前面 v2.8 的语义令牌，不做破坏性重命名：
+   class 名与变量名保持不变，只换值，因此旧组件会一起换上新配色。
+   深色主题（.dark / [data-theme="dark"]）同样收到这套值 ——
+   v3.0 只提供一套外观，避免出现「没人设计过」的深色界面。
+   ============================================================ */
+
+:root {
+  /* 页面与玻璃层 */
+  --v3-page-top: #e4e7e2;
+  --v3-page-mid: #d3d7d1;
+  --v3-page-bottom: #bfc4be;
+  --v3-grid-line: #0b1c2a10;
+  --v3-grid-size: 24px;
+  --v3-glass-fill: #ffffffd0;
+  --v3-glass-fill-soft: #ffffff9e;
+  --v3-glass-border: #ffffff;
+  --v3-glass-blur: 30px;
+  --v3-glass-radius: 14px;
+  --v3-shadow-outer: 0 10px 24px #1236681a;
+  --v3-shadow-inner-top: inset 0 -1px 0 0 #ffffffd9;
+  --v3-shadow-inner-bottom: inset 0 1px 2px 0 #ffffffcc;
+  --v3-scrim: #0b1c2a47;
+  --v3-sheen: linear-gradient(180deg, #ffffffe0 0%, #ffffff00 100%);
+  --v3-hairline: #0b1c2a12;
+
+  /* 表面 */
+  --bg-base: #e6e9e5;
+  --bg-base-hover: #dfe3df;
+  --bg-base-active: #d7dbd7;
+  --bg-surface: #f7f8f7;
+  --bg-subtle: #edf0ee;
+  --bg-selected: #eef1ee;
+  --bg-sunken: #e2e5e1;
+  --bg-raised: #fafbfa;
+  --bg-well: #dfe3df;
+  --bg-thumb: #ffffff;
+  --bg-hover: #e9ede9;
+  --row-bg-hover: #eef1ee;
+  --row-bg-current: #eef1ee;
+  --meter-track: #dfe3df;
+
+  /* 线 */
+  --border-subtle: #dfe3df;
+  --border-control: #b6bdb8;
+  --shell-edge: #0b1c2a1f;
+  --dialog-border: #ffffff;
+
+  /* 字 */
+  --text-1: #0c1a24;
+  --text-2: #33454f;
+  --text-3: #454e58;
+  --text-disabled: #7d878b;
+  --text-inverse: #ffffff;
+  --text-on-accent: #ffffff;
+
+  /* 强调色 = 石墨绿（唯一饱和色） */
+  --brand: #1f4d3a;
+  --brand-hover: #1a4232;
+  --brand-pressed: #15352a;
+  --brand-text: #1f4d3a;
+  --brand-indicator: #1f4d3a;
+  --btn-primary-bg: #1f4d3a;
+  --btn-primary-bg-hover: #1a4232;
+  --btn-primary-bg-pressed: #15352a;
+  --btn-primary-fg: #ffffff;
+  --action-primary: #1f4d3a;
+  --action-primary-hover: #1a4232;
+  --action-primary-pressed: #15352a;
+  --focus: #1f4d3a;
+  --focus-ring: #1f4d3a;
+  --focus-on-plate: #a9cdb8;
+  --check-on-bg: #1f4d3a;
+  --check-glyph: #ffffff;
+  --switch-on-bg: #0d7340;
+  --switch-thumb-on: #ffffff;
+  --meter-fill: #1f4d3a;
+  --tab-indicator: #1f4d3a;
+  --text-on-indicator: #ffffff;
+
+  /* 状态：绿只表达「可用/连通/已启用」，绝不用于失败次数 */
+  --success-fg: #0d7340;
+  --success-solid: #0d7340;
+  --success-bg: #e7f0ea;
+  --success-border: #b9d4c4;
+  --warning-fg: #8a5209;
+  --warning-solid: #8a5209;
+  --warning-bg: #f6efe1;
+  --warning-border: #e6d3b3;
+  --danger-fg: #b4342c;
+  --danger-solid: #b4342c;
+  --danger-bg: #f9e7e5;
+  --danger-border: #e8c2bd;
+  --info-fg: #1f4d3a;
+  --info-solid: #1f4d3a;
+  --info-bg: #e7ece7;
+  --info-border: #c3d2c8;
+
+  /* 次/ghost 按钮落到玻璃上 */
+  --btn-secondary-bg: #ffffffa8;
+  --btn-secondary-border: #ffffffd9;
+  --btn-secondary-bg-hover: #ffffffcc;
+  --btn-secondary-bg-pressed: #ffffffdb;
+  --btn-secondary-fg: #33454f;
+  --btn-ghost-fg: #33454f;
+  --btn-ghost-bg-hover: #ffffff8f;
+  --btn-text-fg: #1f4d3a;
+
+  /* 输入、分段、开关 */
+  --input-bg: #ffffffcc;
+  --input-border: #c6ccc7;
+  --input-border-hover: #aeb6b0;
+  --input-fg: #0c1a24;
+  --input-placeholder: #7d878b;
+  --input-label: #33454f;
+  --input-help: #454e58;
+  --seg-track: #0b1c2a0a;
+  --seg-thumb: #ffffffdd;
+  --seg-fg: #454e58;
+  --seg-fg-active: #0c1a24;
+  --keycap-bg: #ffffffb8;
+  --keycap-border: #dfe3df;
+  --keycap-fg: #454e58;
+
+  /* 外壳 */
+  --sidebar-bg: #ffffff8f;
+  --titlebar-bg: #ffffffb8;
+  --content-bg: transparent;
+  --chrome-bg: #ffffff8f;
+  --chrome-fg-1: #0c1a24;
+  --chrome-fg-2: #33454f;
+  --nav-fg-active: #0c1a24;
+  --nav-bg-hover: #ffffff8f;
+  --nav-bg-active: #ffffffa6;
+  --nav-indicator: #0c1a24;
+  --menu-bg: #fbfcfb;
+  --dialog-bg: #ffffffd9;
+  --toast-bg: #fbfcfb;
+  --scrim: #0b1c2a47;
+  --shadow-overlay: #0b1c2a1a;
+  --shadow-soft: #0b1c2a0f;
+  --tag-current-bg: #ffffffd8;
+  --tag-current-fg: #1f4d3a;
+
+  /* 圆角与尺寸 */
+  --radius-control: 9px;
+  --radius-panel: 14px;
+  --radius-ring: 8px;
+  --radius-pill: 999px;
+  --size-titlebar: 52px;
+  --size-sidebar: 232px;
+  --size-row: 36px;
+
+  /* 图表 */
+  --chart-bar: #9aa5a0;
+  --meter-low: #8a5209;
+}
+
+/* 页面底：冷灰纵向渐变 + 24px 细网格（液态玻璃的「折射纹理」） */
+:root {
+  color-scheme: light;
 }
 
 /* === Global WCAG 2.4.7 Focus Ring System === */

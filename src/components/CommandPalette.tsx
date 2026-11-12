@@ -1,6 +1,7 @@
 import React, { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   Gauge,
+  GitBranch,
   Pencil,
   Plus,
   RefreshCw,
@@ -14,8 +15,9 @@ import {
   extractCodexBaseUrl,
   extractCodexModelName,
 } from "@/utils/providerConfigUtils";
-import { LineBadge } from "@/components/LineBadge";
+import { lineIdentityColor } from "@/components/LineBadge";
 import "./CommandPalette.css";
+import "@/theme/v3/command-palette.css";
 
 export interface PalettePage {
   id: string;
@@ -334,13 +336,24 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
                         if (!selected) setSelectedIndex(index);
                       }}
                     >
-                      {/* One fixed slot for badges and icons, so a two-character
-                          badge (自建, 智谱) does not push its title right. */}
-                      <span className="command-palette-icon">
+                      {/* v3：线路不用双字母徽标，用线路图标 + 线路色（与线路表同一身份色）。 */}
+                      <span
+                        className="command-palette-icon"
+                        data-line={item.line ? "" : undefined}
+                        style={
+                          item.line
+                            ? ({
+                                "--line-color": isOfficialLine(item.line)
+                                  ? "var(--text-3)"
+                                  : lineIdentityColor(item.line),
+                              } as React.CSSProperties)
+                            : undefined
+                        }
+                      >
                         {item.line ? (
-                          <LineBadge line={item.line} size="sm" />
+                          <GitBranch size={15} aria-hidden="true" />
                         ) : (
-                          Icon && <Icon size={16} aria-hidden="true" />
+                          Icon && <Icon size={15} aria-hidden="true" />
                         )}
                       </span>
                       <span className="command-palette-text">

@@ -97,10 +97,6 @@
 .runtime-maintenance-list {
   border-bottom: 0;
 }
-/* Facts of a runtime confirmation break between facts, never inside one. */
-.runtime-confirm-fact {
-  white-space: nowrap;
-}
 .runtime-dialog-receipt {
   margin-bottom: 12px;
 }
@@ -140,47 +136,6 @@
   height: 6px;
   border-radius: 50%;
   background: var(--info-solid);
-}
-.runtime-version-list {
-  display: grid;
-  margin: 8px 0 0;
-  padding: 0;
-  list-style: none;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-panel);
-  background: var(--bg-surface);
-  overflow: hidden;
-}
-.runtime-version-list > li {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 4px 14px;
-  min-height: 40px;
-  padding: 10px 14px;
-  font-size: 13px;
-  color: var(--text-2);
-}
-.runtime-version-list > li + li {
-  border-top: 1px solid var(--border-subtle);
-}
-.runtime-version-list code {
-  min-width: 128px;
-  color: var(--text-1);
-  font: 600 13px / 20px var(--font-mono);
-}
-.runtime-version-list > li.is-current code::before {
-  content: "";
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  margin: 0 8px 2px 0;
-  border-radius: 50%;
-  background: var(--success-solid);
-  vertical-align: middle;
-}
-.runtime-version-note {
-  color: var(--text-3);
 }
 /* The back control was a 50% radius ellipse; match the editor's back button. */
 .runtime-maintenance-workspace header button {

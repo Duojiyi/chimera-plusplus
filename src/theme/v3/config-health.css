@@ -1,0 +1,477 @@
+/* —— 以下规则自 liquid-glass-v3.css 迁入：只在本页加载，不进首屏样式 —— */
+/* 14.5 配置体检 */
+.chimera-shell .connected-page.config-health-page,
+.chimera-shell .connected-page.tool-visibility-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px 26px 24px;
+  color: var(--text-1);
+}
+
+.chimera-shell .config-health-page > header h1,
+.chimera-shell .tool-visibility-header h1 {
+  font-size: 24px;
+  line-height: 30px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text-1);
+}
+
+/* ============================================================
+   v3.0 液态玻璃 · 配置体检（L11）
+   页头 + 「重新检查」主按钮 → 4 格统计卡 → 「检查项」卡（按严重程度分组）。
+   未分层（见 postcss.config.cjs），加载晚于 liquid-glass-v3.css。
+   ============================================================ */
+
+.chimera-shell .connected-page.config-health-page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 100%;
+  padding: 18px 26px 24px;
+  background: transparent;
+  color: #0c1a24;
+  font-size: 12.5px;
+}
+
+.chimera-shell .config-health-page > * {
+  flex-shrink: 0;
+}
+
+/* ---------- 页头 ---------- */
+
+.chimera-shell .config-health-page .health-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 44px;
+}
+
+.chimera-shell .config-health-page .health-header h1 {
+  margin: 0;
+  font-size: 24px;
+  line-height: 30px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+  color: #0c1a24;
+}
+
+.chimera-shell .config-health-page .health-header p {
+  margin: 2px 0 0;
+  font-size: 11px;
+  line-height: 16px;
+  color: #454e58;
+}
+
+.chimera-shell .config-health-page .health-actions {
+  display: flex;
+  gap: 8px;
+  flex: none;
+}
+
+.chimera-shell .config-health-page .health-header button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 14px;
+  border-radius: 9px;
+  font-size: 11px;
+  box-shadow: none;
+  transition:
+    background 120ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 120ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.chimera-shell .config-health-page .health-header button.health-primary {
+  border: 0;
+  background: #1f4d3a;
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.chimera-shell
+  .config-health-page
+  .health-header
+  button.health-primary:hover:not(:disabled) {
+  background: #183f2f;
+}
+
+.chimera-shell
+  .config-health-page
+  :is(.health-secondary, .health-item-action, .health-manual) {
+  border: 1px solid #ffffffd9;
+  background: #ffffffa8;
+  color: #33454f;
+  font-weight: 500;
+}
+
+.chimera-shell
+  .config-health-page
+  :is(.health-secondary, .health-item-action):hover:not(:disabled) {
+  background: #ffffffe0;
+  color: #0c1a24;
+}
+
+.chimera-shell
+  .config-health-page
+  button:active:not(:disabled):not([aria-disabled="true"]) {
+  transform: scale(0.97);
+}
+
+.chimera-shell .config-health-page .health-header button:disabled {
+  opacity: 0.7;
+}
+
+/* ---------- 玻璃卡 ---------- */
+
+.chimera-shell .config-health-page .health-summary,
+.chimera-shell .config-health-page .health-checks {
+  position: relative;
+  margin: 0;
+  padding: 0;
+  border: 1px solid #ffffff;
+  border-radius: 14px;
+  background: #ffffffd0;
+  box-shadow:
+    inset 0 -1px 0 0 #ffffffd9,
+    inset 0 1px 2px 0 #ffffffcc,
+    0 10px 24px #1236681a;
+  -webkit-backdrop-filter: blur(30px) saturate(150%);
+  backdrop-filter: blur(30px) saturate(150%);
+  overflow: hidden;
+}
+
+/* ---------- 统计卡 ---------- */
+
+.chimera-shell .config-health-page .health-stats {
+  display: grid;
+  grid-template-columns: 1.35fr repeat(3, minmax(0, 1fr));
+  margin: 0;
+  padding: 18px 24px 12px;
+}
+
+.chimera-shell .config-health-page .health-stat {
+  min-width: 0;
+  padding: 0 20px;
+  border-left: 1px solid #0b1c2a12;
+}
+
+.chimera-shell .config-health-page .health-stat:first-child {
+  padding-left: 2px;
+  border-left: 0;
+}
+
+.chimera-shell .config-health-page .health-stat dt {
+  font-size: 10px;
+  line-height: 14px;
+  font-weight: 500;
+  color: #454e58;
+}
+
+.chimera-shell .config-health-page .health-stat dd {
+  margin: 3px 0 0;
+  color: #0c1a24;
+}
+
+.chimera-shell .config-health-page .health-count {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 19px;
+  line-height: 26px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.chimera-shell .config-health-page .health-verdict {
+  font-size: 17px;
+  line-height: 26px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* 数字着语义色：只在数量 > 0 时着色；结论文字同理 */
+.chimera-shell .config-health-page .health-stat[data-tone="ok"] dd {
+  color: #0d7340;
+}
+.chimera-shell .config-health-page .health-stat[data-tone="warn"] dd {
+  color: #8a5209;
+}
+.chimera-shell .config-health-page .health-stat[data-tone="bad"] dd {
+  color: #b4342c;
+}
+
+.chimera-shell .config-health-page .health-summary-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 24px;
+  padding: 8px 0 12px;
+  border-top: 1px solid #0b1c2a12;
+  font-size: 10px;
+  line-height: 14px;
+  color: #454e58;
+}
+
+.chimera-shell .config-health-page .health-summary-foot .health-message {
+  margin: 0;
+  font-size: 10px;
+  color: #454e58;
+}
+
+.chimera-shell .config-health-page .health-plate-help {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #454e58;
+  cursor: pointer;
+}
+
+.chimera-shell .config-health-page .health-plate-help:hover {
+  background: #0b1c2a0a;
+  color: #0c1a24;
+}
+
+/* ---------- 检查项 ---------- */
+
+.chimera-shell .config-health-page .health-checks-head {
+  padding: 16px 19px 6px;
+}
+
+.chimera-shell .config-health-page .health-checks-head h2 {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 18px;
+  font-weight: 600;
+  color: #0c1a24;
+}
+
+.chimera-shell .config-health-page .health-checks-head p {
+  margin: 1px 0 0;
+  font-size: 10px;
+  line-height: 15px;
+  color: #454e58;
+}
+
+.chimera-shell .config-health-page .health-group {
+  margin: 0;
+  padding: 0 19px;
+  border: 0;
+  background: transparent;
+}
+
+.chimera-shell .config-health-page .health-group-title {
+  margin: 12px 0 2px;
+  font-size: 10px;
+  line-height: 14px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  color: #454e58;
+}
+
+/* 组标题落在卡上，可以用语义色 */
+.chimera-shell
+  .config-health-page
+  .health-group[data-tone="critical"]
+  .health-group-title {
+  color: #b4342c;
+}
+.chimera-shell
+  .config-health-page
+  .health-group[data-tone="warning"]
+  .health-group-title {
+  color: #8a5209;
+}
+
+.chimera-shell .config-health-page .health-list {
+  display: block;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 0;
+  background: transparent;
+}
+
+.chimera-shell .config-health-page .health-item {
+  display: grid;
+  grid-template-columns: 6px minmax(0, 1fr) auto;
+  align-items: start;
+  column-gap: 10px;
+  padding: 9px 0;
+  border: 0;
+  border-bottom: 1px solid #0b1c2a12;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.chimera-shell .config-health-page .health-list > .health-item:last-child {
+  border-bottom: 0;
+}
+
+.chimera-shell .config-health-page .health-item-dot {
+  width: 6px;
+  height: 6px;
+  margin-top: 6px;
+  border-radius: 3px;
+  background: #454e58;
+}
+
+.chimera-shell
+  .config-health-page
+  .health-item[data-tone="critical"]
+  .health-item-dot {
+  background: #b4342c;
+}
+.chimera-shell
+  .config-health-page
+  .health-item[data-tone="warning"]
+  .health-item-dot {
+  background: #8a5209;
+}
+
+.chimera-shell .config-health-page .health-item-body {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.chimera-shell .config-health-page .health-item-body p {
+  margin: 0;
+}
+
+.chimera-shell .config-health-page .health-item-title {
+  font-size: 11.5px;
+  line-height: 17px;
+  font-weight: 600;
+  color: #0c1a24;
+}
+
+.chimera-shell
+  .config-health-page
+  :is(.health-item-impact, .health-item-solution) {
+  font-size: 10.5px;
+  line-height: 15px;
+  color: #33454f;
+}
+
+.chimera-shell .config-health-page .health-item-label {
+  color: #454e58;
+}
+
+.chimera-shell .config-health-page .health-item-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 10px;
+  line-height: 15px;
+  color: #454e58;
+}
+
+.chimera-shell .config-health-page .health-item-field code {
+  padding: 0;
+  background: transparent;
+  font: inherit;
+  color: #33454f;
+}
+
+.chimera-shell .config-health-page :is(.health-item-action, .health-manual) {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 90px;
+  height: 30px;
+  padding: 0 14px;
+  border-radius: 9px;
+  font-size: 11px;
+  box-shadow: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.chimera-shell .config-health-page .health-manual {
+  background: transparent;
+  border-color: transparent;
+  color: #454e58;
+  cursor: help;
+}
+
+.chimera-shell .config-health-page .health-manual:hover {
+  background: #0b1c2a0a;
+}
+
+.chimera-shell .config-health-page .health-footnote {
+  margin: 8px 19px 0;
+  padding: 10px 0 16px;
+  border-top: 1px solid #0b1c2a12;
+  font-size: 10px;
+  line-height: 15px;
+  color: #454e58;
+}
+
+.chimera-shell .config-health-page .health-clean {
+  margin: 6px 19px 0;
+  font-size: 11px;
+  color: #33454f;
+}
+
+/* 页面底上的提示 / 错误 */
+.chimera-shell .config-health-page > .health-message {
+  margin: 0;
+  font-size: 11px;
+  color: #33454f;
+}
+
+.chimera-shell .config-health-page .health-message.is-error {
+  padding: 10px 14px;
+  border: 1px solid #ffffff;
+  border-radius: 12px;
+  background: #ffffffd0;
+  color: #b4342c;
+}
+
+/* 加载：4 行骨架，保留标题 */
+.chimera-shell .config-health-page .health-skeleton {
+  display: grid;
+  gap: 10px;
+  padding: 10px 19px 18px;
+}
+
+.chimera-shell .config-health-page .health-skeleton span {
+  display: block;
+  height: 10px;
+  border-radius: 6px;
+  background: #0b1c2a0a;
+}
+
+.chimera-shell .config-health-page .health-skeleton span:first-child {
+  height: 14px;
+  width: 60%;
+}
+
+@media (max-width: 760px) {
+  .chimera-shell .config-health-page .health-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    row-gap: 12px;
+  }
+  .chimera-shell .config-health-page .health-stat:nth-child(3) {
+    padding-left: 2px;
+    border-left: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chimera-shell .config-health-page button {
+    transition-duration: 0ms;
+  }
+}

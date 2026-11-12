@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import {
   Eye,
   EyeOff,
+  MonitorCheck,
   FileDown,
   FileUp,
   Globe,
@@ -82,6 +83,21 @@ export interface AddAccountMenuProps {
    * signed in once before it can switch to the login.
    */
   mode?: "code" | "desktop";
+  /**
+   * Sign-ins found on this computer that are not saved yet. Offered first
+   * under 导入, which then opens by default; each imports in one click.
+   */
+  detected?: readonly DetectedLogin[];
+}
+
+/** A sign-in on this computer that can be saved without picking a file. */
+export interface DetectedLogin {
+  id: string;
+  /** Where it was found, e.g. 本机 Claude Desktop. */
+  source: string;
+  /** Who is signed in. */
+  email: string | null;
+  onImport: () => void;
 }
 
 /**
@@ -97,6 +113,7 @@ export function AddAccountMenu({
   onTerminalGuide,
   label = "添加账号",
   mode = "code",
+  detected = [],
 }: AddAccountMenuProps) {
   const tabsId = useId();
   const [browser, setBrowser] = useState<Browser>({ phase: "idle" });
@@ -272,7 +289,7 @@ export function AddAccountMenu({
         size="sm"
         disabled={busy || browserOpen}
         onClick={() => {
-          setTab(tabs[0].id);
+          setTab(detected.length > 0 ? "import" : tabs[0].id);
           setAddOpen(true);
         }}
       >
@@ -347,6 +364,27 @@ export function AddAccountMenu({
               />
             ) : (
               <div className="claude-add-options">
+                {detected.map((login) => (
+                  <button
+                    key={login.id}
+                    type="button"
+                    className="claude-add-option is-detected"
+                    onClick={() => {
+                      setAddOpen(false);
+                      login.onImport();
+                    }}
+                  >
+                    <MonitorCheck size={16} aria-hidden="true" />
+                    <span>
+                      <strong>导入{login.source}的登录</strong>
+                      <small>
+                        {login.email
+                          ? `已检测到 ${login.email}，一键导入，不用选文件`
+                          : "已检测到登录，一键导入，不用选文件"}
+                      </small>
+                    </span>
+                  </button>
+                ))}
                 <button
                   type="button"
                   className="claude-add-option"

@@ -180,11 +180,11 @@ describe("keyboard access", () => {
     const content = document.getElementById("chimera-content");
     expect(content).not.toBeNull();
     expect(content).toHaveFocus();
-    // The invisible update control would be a stop with no visible focus.
-    expect(screen.getByRole("button", { name: "检查更新" })).toHaveAttribute(
-      "tabindex",
-      "-1",
-    );
+    // v3 dropped the invisible "检查更新" control: keyboard focus must never
+    // land on a button the user cannot see.
+    expect(
+      screen.queryByRole("button", { name: "检查更新", hidden: true }),
+    ).toBeNull();
   });
 });
 
@@ -852,7 +852,8 @@ describe("Codex runtime diagnostics", () => {
     });
     mount();
     fireEvent.click(await screen.findByRole("button", { name: "Codex 管理" }));
-    const drawerTrigger = screen.getByRole("button", {
+    // Codex 管理 loads on demand, like the other pages.
+    const drawerTrigger = await screen.findByRole("button", {
       name: "安装方式与更新源",
     });
     await waitFor(() => expect(drawerTrigger).toBeEnabled());

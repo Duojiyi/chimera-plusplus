@@ -1,15 +1,8 @@
 import { isTauri } from "@tauri-apps/api/core";
 import "./ConfigHealthView.css";
+import "@/theme/v3/config-health.css";
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import {
-  AlertTriangle,
-  HelpCircle,
-  Info,
-  RotateCw,
-  Wrench,
-  XCircle,
-  type LucideIcon,
-} from "lucide-react";
+import { HelpCircle, RotateCw, Wrench } from "lucide-react";
 import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
@@ -19,6 +12,10 @@ import {
   type ConfigHealthIssue,
   type ConfigHealthReport,
 } from "@/lib/api/configHealth";
+import {
+  configHealthSampleReport,
+  isConfigHealthDesignPreview,
+} from "./ConfigHealthView.designSamples";
 
 type Tone = "critical" | "warning" | "info";
 
@@ -35,11 +32,22 @@ const toneOf = (issue: ConfigHealthIssue): Tone =>
     ? "info"
     : issue.severity;
 
-const groups: { tone: Tone; label: string; Icon: LucideIcon }[] = [
-  { tone: "critical", label: "需要处理", Icon: XCircle },
-  { tone: "warning", label: "建议", Icon: AlertTriangle },
-  { tone: "info", label: "提示", Icon: Info },
+const groups: { tone: Tone; label: string }[] = [
+  { tone: "critical", label: "需要处理" },
+  { tone: "warning", label: "建议" },
+  { tone: "info", label: "提示" },
 ];
+
+/** "刚刚" / "N 分钟前" / "N 小时前", then the local date and time. */
+const sinceChecked = (iso: string, now = Date.now()) => {
+  const at = Date.parse(iso);
+  if (!Number.isFinite(at)) return "";
+  const minutes = Math.floor((now - at) / 60_000);
+  if (minutes < 1) return "刚刚";
+  if (minutes < 60) return `${minutes} 分钟前`;
+  if (minutes < 24 * 60) return `${Math.floor(minutes / 60)} 小时前`;
+  return new Date(at).toLocaleString();
+};
 
 // A parameter the backend could not place has no line: say so, never guess one.
 const issueLocation = (issue: ConfigHealthIssue) =>
@@ -65,8 +73,16 @@ export const ConfigHealthView: React.FC = () => {
   const [repairOffered, setRepairOffered] = useState(false);
   const mutation = useRef(false);
   useLightweightCloseBlocker(repairing);
+  const preview = !isTauri() && isConfigHealthDesignPreview();
   const handleRecheck = useCallback(async () => {
     if (!isTauri()) {
+      // `?preview=design` shows a fixture so the layout can be reviewed in a
+      // browser; nothing is read from disk and repair stays disabled.
+      if (isConfigHealthDesignPreview()) {
+        const sample = configHealthSampleReport();
+        setReport(sample);
+        setRepairOffered(Boolean(sample.repairToken));
+      }
       setChecking(false);
       return;
     }
@@ -128,7 +144,11 @@ export const ConfigHealthView: React.FC = () => {
   // The backend only issues a token when it found a repair it can perform.
   const repairToken = report?.repairToken ?? null;
   const canRepair =
-    repairToken !== null && !checking && !repairing && confirmation === null;
+    !preview &&
+    repairToken !== null &&
+    !checking &&
+    !repairing &&
+    confirmation === null;
   const headline = checking
     ? "正在检查…"
     : error
@@ -150,16 +170,41 @@ export const ConfigHealthView: React.FC = () => {
         .join(" · ")
     : "尚无有效检测结果";
 
-  if (!isTauri())
+  const checkedNote = report ? sinceChecked(report.checkedAt) : "";
+  // The one place the check time is shown; the exact time is on hover.
+  const headerNote = checking ? (
+    "正在检查…"
+  ) : report ? (
+    <time
+      dateTime={report.checkedAt}
+      title={new Date(report.checkedAt).toLocaleString()}
+    >
+      上次 {checkedNote}
+    </time>
+  ) : (
+    "尚未检查"
+  );
+  const verdictTone =
+    error || critical > 0 ? "bad" : warning > 0 ? "warn" : report ? "ok" : "";
+  const subtitle = (
+    <p>
+      扫描 Codex 的 config.toml、auth.json 与引用文件 · 修复需单独确认 ·{" "}
+      {headerNote}
+    </p>
+  );
+
+  if (!isTauri() && !preview)
     return (
       <div className="connected-page config-health-page">
         <header className="health-header">
           <div>
             <h1>配置体检</h1>
-            <p>检查 config.toml、auth.json 与引用文件 · 修复需单独确认</p>
+            <p>
+              扫描 Codex 的 config.toml、auth.json 与引用文件 · 修复需单独确认
+            </p>
           </div>
         </header>
-        <p role="status">
+        <p role="status" className="health-message">
           浏览器预览未连接本机，无法检查配置。请在桌面应用中运行配置体检。
         </p>
       </div>
@@ -169,29 +214,36 @@ export const ConfigHealthView: React.FC = () => {
       <header className="health-header">
         <div>
           <h1>配置体检</h1>
-          <p>检查 config.toml、auth.json 与引用文件 · 修复需单独确认</p>
+          {subtitle}
         </div>
         {/* The optional action comes first so it never moves 重新检查. */}
         <div className="health-actions">
           {repairOffered && (
             <Button
+              variant="outline"
               size="sm"
+              className="health-secondary"
               disabled={!canRepair}
               onClick={() => setConfirmation(repairToken)}
-              title="仅清理 Chimera 自有的失效指令引用，不改用户外部路径"
+              title={
+                preview
+                  ? "设计示例不修改配置"
+                  : "仅清理 Chimera 自有的失效指令引用，不改用户外部路径"
+              }
             >
-              <Wrench size={16} aria-hidden="true" />
+              <Wrench size={14} aria-hidden="true" />
               {repairing ? "正在修复…" : "修复自有引用"}
             </Button>
           )}
           <Button
-            variant="outline"
             size="sm"
+            className="health-primary"
             onClick={() => void handleRecheck()}
-            disabled={checking || repairing || confirmation !== null}
+            disabled={preview || checking || repairing || confirmation !== null}
+            title={preview ? "设计示例不读取本机配置" : undefined}
           >
             <RotateCw
-              size={16}
+              size={14}
               className={checking ? "spin" : undefined}
               aria-hidden="true"
             />
@@ -200,123 +252,127 @@ export const ConfigHealthView: React.FC = () => {
         </div>
       </header>
 
-      {/* Summary plate: the dark graphite lightbox of the design. */}
-      <div className="health-plate">
-        <div className="health-plate-summary">
-          <p className="health-plate-label">
-            {checking
-              ? "正在检查本地配置"
-              : report
-                ? "本次检查已完成"
-                : "尚无检查结果"}
-          </p>
-          <p className="health-plate-title" role="status">
-            {headline}
-          </p>
-          <p className="health-plate-detail">{detail}</p>
+      <section className="health-summary" aria-label="体检结论">
+        <dl className="health-stats">
+          <div className="health-stat" data-tone={verdictTone || undefined}>
+            <dt>结论</dt>
+            <dd className="health-verdict" role="status">
+              {headline}
+            </dd>
+          </div>
+          <div
+            className="health-stat"
+            data-tone={report && critical > 0 ? "bad" : undefined}
+          >
+            <dt>需要处理</dt>
+            <dd className="health-count">{report ? critical : "—"}</dd>
+          </div>
+          <div
+            className="health-stat"
+            data-tone={report && warning > 0 ? "warn" : undefined}
+          >
+            <dt>建议</dt>
+            <dd className="health-count">{report ? warning : "—"}</dd>
+          </div>
+          <div className="health-stat">
+            <dt>提示</dt>
+            <dd className="health-count">{report ? info : "—"}</dd>
+          </div>
+        </dl>
+        <div className="health-summary-foot">
+          <span className="health-plate-detail">{detail}</span>
+          <button
+            aria-label="了解配置体检范围"
+            type="button"
+            className="health-plate-help"
+            onClick={() =>
+              toast.info(
+                "检查配置结构、供应商与文件引用。不检测端口连通性、不修改配置、不回显密钥。",
+              )
+            }
+          >
+            <HelpCircle size={14} aria-hidden="true" />
+          </button>
         </div>
-        <ol className="health-plate-steps">
-          <li>
-            <b className="is-mono">config.toml / auth.json</b>
-            <span>仅检查本机配置与文件引用</span>
-          </li>
-          <li>
-            <b>结构与引用检查</b>
-            <span>
-              {report
-                ? `${critical} 需处理 · ${warning} 建议${info > 0 ? ` · ${info} 提示` : ""}`
-                : "等待检查完成"}
-            </span>
-          </li>
-          <li>
-            <b>只读报告</b>
-            <span>不会写入配置或生成备份</span>
-          </li>
-        </ol>
-        <button
-          aria-label="了解配置体检范围"
-          type="button"
-          className="health-plate-help"
-          onClick={() =>
-            toast.info(
-              "检查配置结构、供应商与文件引用。不检测端口连通性、不修改配置、不回显密钥。",
-            )
-          }
-        >
-          <HelpCircle size={16} aria-hidden="true" />
-        </button>
-      </div>
+      </section>
 
       {error && (
         <p className="health-message is-error" role="alert">
           配置体检失败，请点击「重新检查」重试。未显示旧结果。
         </p>
       )}
-      {report && items.length === 0 && (
-        <p className="health-message" role="status">
-          本次已检查范围内未发现问题；这不代表所有运行时状态均正常。
-        </p>
-      )}
-      {report && (
-        <p className="health-message">
-          检查时间：
-          <time dateTime={report.checkedAt}>
-            {new Date(report.checkedAt).toLocaleString()}
-          </time>
-        </p>
-      )}
-      {items.length > 0 && (
-        <div className="health-results">
-          {groups.map(({ tone, label, Icon }) => {
+
+      {(report || checking) && (
+        <section
+          className="health-checks"
+          aria-labelledby="health-checks-title"
+        >
+          <header className="health-checks-head">
+            <h2 id="health-checks-title">检查项</h2>
+            <p>
+              {checking
+                ? "正在读取本机配置…"
+                : `按严重程度排序 · 共 ${items.length} 项发现`}
+            </p>
+          </header>
+          {checking && !report && (
+            <div className="health-skeleton" aria-hidden="true">
+              {[0, 1, 2, 3].map((row) => (
+                <span key={row} />
+              ))}
+            </div>
+          )}
+          {report && items.length === 0 && (
+            <p className="health-message health-clean" role="status">
+              本次已检查范围内未发现问题；这不代表所有运行时状态均正常。
+            </p>
+          )}
+          {groups.map(({ tone, label }) => {
             const group = items.filter((item) => toneOf(item) === tone);
             if (group.length === 0) return null;
             return (
-              <section
+              <div
                 key={tone}
                 className="health-group"
+                data-tone={tone}
+                role="group"
                 aria-labelledby={`health-group-${tone}`}
               >
-                <h2 id={`health-group-${tone}`} className="health-group-title">
+                <h3 id={`health-group-${tone}`} className="health-group-title">
                   {label} · {group.length}
-                </h2>
+                </h3>
                 <ul className="health-list">
                   {group.map((item) => (
                     <li key={item.id} className="health-item" data-tone={tone}>
-                      <Icon
-                        className="health-item-icon"
-                        size={20}
-                        aria-hidden="true"
-                      />
+                      <i className="health-item-dot" aria-hidden="true" />
                       <div className="health-item-body">
                         <p className="health-item-title">{item.title}</p>
-                        <p className="health-item-location">
-                          {issueLocation(item)}
-                        </p>
-                        {item.field && (
-                          <p className="health-item-field">
-                            参数：<code>{item.field}</code>
-                          </p>
-                        )}
                         {tone === "info" ? (
                           <p className="health-item-solution">
                             {firstUseHints[issueCode(item)]}
                           </p>
                         ) : (
-                          <>
-                            {item.impact && (
-                              <p className="health-item-impact">
-                                {item.impact}
-                              </p>
-                            )}
-                            {item.solution && (
-                              <p className="health-item-solution">
-                                <span className="health-item-label">
-                                  修复建议：
-                                </span>
-                                {item.solution}
-                              </p>
-                            )}
-                          </>
+                          item.impact && (
+                            <p className="health-item-impact">{item.impact}</p>
+                          )
+                        )}
+                        <p className="health-item-meta">
+                          <span className="health-item-location">
+                            {issueLocation(item)}
+                          </span>
+                          {item.field && (
+                            <span className="health-item-field">
+                              参数：<code>{item.field}</code>
+                            </span>
+                          )}
+                        </p>
+                        {tone !== "info" && item.solution && (
+                          <p className="health-item-solution">
+                            <span className="health-item-label">
+                              修复建议：
+                            </span>
+                            {item.solution}
+                          </p>
                         )}
                       </div>
                       {tone === "info" ? null : item.repairable &&
@@ -324,12 +380,13 @@ export const ConfigHealthView: React.FC = () => {
                         <Button
                           variant="outline"
                           size="sm"
+                          className="health-item-action"
                           disabled={!canRepair}
                           aria-label={`修复「${item.title}」`}
                           title="修复全部 Chimera 自有失效引用，需确认"
                           onClick={() => setConfirmation(repairToken)}
                         >
-                          修复
+                          修复…
                         </Button>
                       ) : (
                         // Focusable so keyboard users can reach the reason.
@@ -349,10 +406,14 @@ export const ConfigHealthView: React.FC = () => {
                     </li>
                   ))}
                 </ul>
-              </section>
+              </div>
             );
           })}
-        </div>
+          <p className="health-footnote">
+            体检只读取配置，不会修改任何文件。「修复自有引用」只清理 Chimera++
+            自己目录里失效的指令引用，修改前先备份 config.toml。
+          </p>
+        </section>
       )}
       <ConfirmDialog
         isOpen={confirmation !== null}

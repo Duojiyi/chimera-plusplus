@@ -1,8 +1,11 @@
 import "./NewSettingsView.css";
+import "@/theme/v3/settings.css";
 import { ImportPanel } from "@/components/settings/ImportPanel";
 import { ToolRegistryPanel } from "@/components/settings/ToolRegistryPanel";
+import { LogSettingsPanel } from "@/components/settings/LogSettingsPanel";
+import { SettingsRow, SwitchRow } from "@/components/settings/SettingsRow";
+import { settingsDesignSamples } from "./NewSettingsView.designSamples";
 import { useTranslation } from "react-i18next";
-import { useTheme } from "@/components/theme-provider";
 import { LiveBackupsPanel } from "@/components/LiveBackupsPanel";
 import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
 import {
@@ -15,14 +18,21 @@ import {
 } from "react";
 import { toast } from "sonner";
 import {
+  ArchiveRestore,
+  ArrowDownToLine,
   ChevronDown,
   CircleAlert,
   CircleCheck,
   Download,
-  FileSearch,
-  FolderOpen,
+  FolderCog,
+  Info,
   LoaderCircle,
   RefreshCw,
+  ScrollText,
+  Settings as SettingsIcon,
+  SlidersHorizontal,
+  Waypoints,
+  type LucideIcon,
 } from "lucide-react";
 import type { Settings } from "@/types";
 import { settingsApi, type PreferencesPatch } from "@/lib/api/settings";
@@ -52,21 +62,23 @@ const FailoverSettingsPanel = lazy(() =>
   })),
 );
 
+// Design L13 order. Only sections with a real backend are listed: project
+// profiles and cloud sync are not exposed in this build.
 const settingsSections = [
-  ["settings-tools", "工具"],
-  ["settings-import", "导入"],
-  ["settings-backups", "备份与恢复"],
-  ["settings-connections", "代理与故障转移"],
-  ["settings-directories", "配置目录"],
-  ["settings-general", "通用设置"],
-  ["settings-codex", "Codex 偏好"],
-  ["settings-updates", "应用更新"],
-] as const;
+  ["settings-general", "通用", SettingsIcon],
+  ["settings-import", "导入", ArrowDownToLine],
+  ["settings-backups", "备份与恢复", ArchiveRestore],
+  ["settings-connections", "代理与故障转移", Waypoints],
+  ["settings-advanced", "高级修复与日志", ScrollText],
+  ["settings-directories", "配置目录", FolderCog],
+  ["settings-codex", "Codex 偏好", SlidersHorizontal],
+  ["settings-updates", "更新", RefreshCw],
+  ["settings-about", "关于", Info],
+] as const satisfies readonly (readonly [string, string, LucideIcon])[];
 type SectionId = (typeof settingsSections)[number][0];
 const firstSection: SectionId = settingsSections[0][0];
-// 工具 and 导入 are pages of their own; the other sections share one scroll.
-const isStandalone = (id: SectionId) =>
-  id === "settings-tools" || id === "settings-import";
+// 导入 is a page of its own; the other sections share one scroll.
+const isStandalone = (id: SectionId) => id === "settings-import";
 const scrolledSections = settingsSections
   .map(([id]) => id)
   .filter((id) => !isStandalone(id));
@@ -82,6 +94,18 @@ const sectionFromLocation = (): SectionId =>
 
 const runningInTauri =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+// Browser preview with the design-review sample values (never in the app).
+const designPreview =
+  import.meta.env.DEV &&
+  !runningInTauri &&
+  typeof window !== "undefined" &&
+  new URLSearchParams(window.location.search).get("preview") === "design";
+
+/** get_app_config_path points at config.json; the folder is what users want. */
+const configFolder = (path: string) =>
+  /\.json$/i.test(path) ? path.replace(/[\/][^\/]+$/, "") : path;
+const joinPath = (dir: string, name: string) =>
+  `${dir}${dir.includes("\\") ? "\\" : "/"}${name}`;
 
 const defaultPreferences: PreferencesPatch = {
   codexUpdateSource: "auto",
@@ -186,7 +210,6 @@ export function NewSettingsView({
     checkUpdate,
     installUpdate,
   } = useUpdate();
-  const { theme, setTheme } = useTheme();
   const { t } = useTranslation();
   const [recoveryBusy, setRecoveryBusy] = useState(false);
   const [directoryBusy, setDirectoryBusy] = useState(false);
@@ -211,6 +234,10 @@ export function NewSettingsView({
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [autoLaunchBusy, setAutoLaunchBusy] = useState(false);
   const [appVersion, setAppVersion] = useState("正在读取版本");
+  // Folder that holds config.json, chimera.db, backups and logs.
+  const [configDir, setConfigDir] = useState<string | null>(null);
+  const [logsOpen, setLogsOpen] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);
 
   useEffect(() => {
     if (isSectionHash(window.location.hash)) {
@@ -288,6 +315,12 @@ export function NewSettingsView({
   };
   useEffect(() => {
     if (!runningInTauri) {
+      if (designPreview) {
+        setSettings({ ...settingsDesignSamples.settings });
+        setAppVersion(settingsDesignSamples.appVersion);
+        setConfigDir(settingsDesignSamples.configDir);
+        return;
+      }
       setSettings({
         codexUpdateSource: "auto",
         codexInstallMode: "standard",
@@ -295,6 +328,10 @@ export function NewSettingsView({
       setAppVersion("开发预览");
       return;
     }
+    void settingsApi
+      .getAppConfigPath()
+      .then((path) => setConfigDir(configFolder(path)))
+      .catch(() => setConfigDir(null));
     void getCurrentVersion()
       .then((version) => setAppVersion(version || "未知版本"))
       .catch(() => setAppVersion("未知版本"));
@@ -514,31 +551,84 @@ export function NewSettingsView({
         : `${appUpdatePercent}%`;
   const releaseNotes = updateInfo?.notes?.trim();
 
+  const sectionLabel = (id: SectionId) =>
+    settingsSections.find(([sectionId]) => sectionId === id)?.[1] ?? "";
+  const heading = (id: SectionId) => (
+    <h2 id={`${id}-heading`}>{sectionLabel(id)}</h2>
+  );
+  const openDirectoriesPanel = () => {
+    setDirectoriesOpen(true);
+    openSection("settings-directories");
+  };
+  const openLogsPanel = () => {
+    setLogsOpen(true);
+    openSection("settings-advanced");
+  };
+  const native = runningInTauri;
+  const dbPath = configDir ? joinPath(configDir, "chimera.db") : null;
+  const backupDir = configDir ? joinPath(configDir, "backups") : null;
+  const logDir = configDir ? joinPath(configDir, "logs") : null;
+  const pathText = (path: string | null) =>
+    path ?? (native ? "正在读取路径…" : "浏览器预览不读取本机路径");
+
   return (
-    <section className="new-settings-view">
+    <section className="new-settings-view v3-settings-page">
       <header className="settings-page-header">
-        <h1>{t("settings.title", { defaultValue: "设置" })}</h1>
-        <p>
-          Chimera++ {appVersion}
-          {runningInTauri ? "" : " · 浏览器预览，不读取本机数据"}
-        </p>
+        <div className="settings-page-titles">
+          <h1>{t("settings.title", { defaultValue: "设置" })}</h1>
+          <p>
+            Chimera++ {appVersion} ·{" "}
+            {runningInTauri || designPreview
+              ? "这些设置只影响本应用，不改 Codex 配置"
+              : "浏览器预览，不读取本机数据"}
+          </p>
+        </div>
+        {!isStandalone(activeSection) && (
+          <button
+            type="button"
+            className="secondary"
+            aria-label="恢复默认设置"
+            title="恢复 Codex 偏好、安装方式和关闭行为的默认值"
+            disabled={!settings || pendingKeys.size > 0}
+            onClick={resetPreferences}
+          >
+            恢复默认
+          </button>
+        )}
       </header>
       <div className="settings-page-layout">
-        <nav className="settings-page-nav" aria-label="设置目录">
-          {settingsSections.map(([id, label]) => (
-            <a
-              key={id}
-              href={`#${id}`}
-              aria-current={activeSection === id ? "location" : undefined}
-              onClick={(event) => {
-                event.preventDefault();
-                openSection(id);
+        <aside className="settings-page-aside">
+          <nav className="settings-page-nav" aria-label="设置目录">
+            {settingsSections.map(([id, label, Icon]) => (
+              <a
+                key={id}
+                href={`#${id}`}
+                aria-current={activeSection === id ? "location" : undefined}
+                onClick={(event) => {
+                  event.preventDefault();
+                  openSection(id);
+                }}
+              >
+                <Icon size={14} aria-hidden="true" />
+                <span>{label}</span>
+              </a>
+            ))}
+          </nav>
+          <div className="settings-page-version">
+            <span>Chimera++ {appVersion}</span>
+            <button
+              type="button"
+              className="settings-text-button"
+              disabled={isChecking || installingAppUpdate}
+              onClick={() => {
+                openSection("settings-updates");
+                if (!hasUpdate) void checkAppUpdate();
               }}
             >
-              {label}
-            </a>
-          ))}
-        </nav>
+              {hasUpdate ? "查看更新" : "检查应用更新"}
+            </button>
+          </div>
+        </aside>
         <div
           className="settings-page-content"
           ref={scrollRef}
@@ -547,18 +637,10 @@ export function NewSettingsView({
           onScroll={followScroll}
         >
           <div
-            id="settings-tools"
-            tabIndex={-1}
-            hidden={activeSection !== "settings-tools"}
-          >
-            {activeSection === "settings-tools" && (
-              <ToolRegistryPanel settings={settings} native={runningInTauri} />
-            )}
-          </div>
-          <div
             id="settings-import"
             tabIndex={-1}
             hidden={activeSection !== "settings-import"}
+            className="settings-card settings-standalone"
           >
             {activeSection === "settings-import" && (
               <ImportPanel native={runningInTauri} onImported={onImported} />
@@ -584,12 +666,197 @@ export function NewSettingsView({
                 </button>
               </div>
             )}
+            {/* 通用 is two cards (preferences, then data and folders); the
+                wrapper is the scroll target so the directory highlight
+                covers both. */}
+            <div id="settings-general" className="settings-group" tabIndex={-1}>
+              <section
+                className="settings-card"
+                aria-labelledby="settings-general-heading"
+              >
+                {heading("settings-general")}
+                <div className="settings-reference-list">
+                  <SwitchRow
+                    title="开机自启动"
+                    description="登录系统后自动启动 Chimera++"
+                    checked={launchOnStartup}
+                    disabled={!settings || autoLaunchBusy}
+                    onToggle={() => void toggleLaunchOnStartup()}
+                  />
+                  {/* The backend only starts hidden when the tray flag is on too
+                    (`AppSettings::starts_hidden`), because the tray icon is
+                    what brings the window back. Turning the switch on sets
+                    both, so the switch always shows what the next launch
+                    will do. */}
+                  <SwitchRow
+                    title="静默启动"
+                    description="启动时不打开主窗口，只留托盘图标"
+                    checked={silentStartup}
+                    disabled={
+                      !settings ||
+                      pendingKeys.has("silentStartup") ||
+                      pendingKeys.has("showInTray")
+                    }
+                    onToggle={() =>
+                      void save(
+                        silentStartup
+                          ? { silentStartup: false }
+                          : { silentStartup: true, showInTray: true },
+                      )
+                    }
+                  />
+                  <SettingsRow
+                    title="关闭主窗口时"
+                    titleId="close-behavior-label"
+                    descriptionId="close-behavior-note"
+                    description={
+                      closeBehaviors.find(
+                        ([value]) => value === closeBehavior,
+                      )?.[2]
+                    }
+                  >
+                    <div
+                      className="settings-segment settings-close-options"
+                      role="radiogroup"
+                      aria-labelledby="close-behavior-label"
+                      aria-describedby="close-behavior-note"
+                    >
+                      {closeBehaviors.map(([value, label]) => (
+                        <label
+                          key={value}
+                          className={
+                            closeBehavior === value ? "is-active" : undefined
+                          }
+                        >
+                          <input
+                            type="radio"
+                            name="close-behavior"
+                            value={value}
+                            checked={closeBehavior === value}
+                            disabled={
+                              !settings ||
+                              pendingKeys.has("minimizeToTrayOnClose") ||
+                              pendingKeys.has("lightweightOnClose")
+                            }
+                            onChange={() =>
+                              void save({
+                                minimizeToTrayOnClose: value !== "exit",
+                                lightweightOnClose: value === "lightweight",
+                              })
+                            }
+                          />
+                          {label}
+                        </label>
+                      ))}
+                    </div>
+                  </SettingsRow>
+                  <SwitchRow
+                    title="显示线路余额"
+                    description="仅部分服务商支持；开启后在当前线路卡上显示余额"
+                    checked={showProviderBalance}
+                    disabled={
+                      !settings || pendingKeys.has("showProviderBalance")
+                    }
+                    onToggle={() =>
+                      void save({ showProviderBalance: !showProviderBalance })
+                    }
+                  />
+                </div>
+              </section>
+              <section
+                className="settings-card"
+                aria-labelledby="settings-data-heading"
+              >
+                <h2 id="settings-data-heading">数据与目录</h2>
+                <p className="settings-card-lead">
+                  线路、备份和运行日志都保存在本机这个目录里
+                </p>
+                <div className="settings-reference-list">
+                  <SettingsRow
+                    title="数据目录"
+                    description={<code>{pathText(configDir)}</code>}
+                  >
+                    <button
+                      type="button"
+                      className="secondary"
+                      aria-label="打开数据目录"
+                      disabled={!native}
+                      onClick={() => void openDataFolder()}
+                    >
+                      打开
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary"
+                      aria-label="更改数据目录"
+                      disabled={!native || directoryBusy}
+                      onClick={openDirectoriesPanel}
+                    >
+                      更改
+                    </button>
+                  </SettingsRow>
+                  <SettingsRow
+                    title="日志目录"
+                    description={<code>{pathText(logDir)}</code>}
+                  >
+                    <button
+                      type="button"
+                      className="secondary"
+                      aria-label="定位日志文件"
+                      disabled={!native}
+                      onClick={() => void revealLogFile()}
+                    >
+                      定位
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary"
+                      aria-label="日志设置"
+                      onClick={openLogsPanel}
+                    >
+                      设置
+                    </button>
+                  </SettingsRow>
+                  <SettingsRow
+                    title="备份目录"
+                    description={<code>{pathText(backupDir)}</code>}
+                  >
+                    <button
+                      type="button"
+                      className="secondary"
+                      aria-label="管理备份"
+                      onClick={() => openSection("settings-backups")}
+                    >
+                      管理
+                    </button>
+                  </SettingsRow>
+                  <SettingsRow
+                    title="数据库"
+                    description={<code>{pathText(dbPath)}</code>}
+                  >
+                    <button
+                      type="button"
+                      className="secondary"
+                      aria-label="备份应用数据库"
+                      disabled={!native || recoveryBusy}
+                      onClick={() => {
+                        setDbOpen(true);
+                        openSection("settings-backups");
+                      }}
+                    >
+                      备份
+                    </button>
+                  </SettingsRow>
+                </div>
+              </section>
+            </div>
             <section
               id="settings-backups"
+              className="settings-card"
               aria-labelledby="settings-backups-heading"
               tabIndex={-1}
             >
-              <h2 id="settings-backups-heading">备份与恢复</h2>
+              {heading("settings-backups")}
               {liveBackupsEnabled ? (
                 <LiveBackupsPanel onRestored={onImported} />
               ) : (
@@ -646,11 +913,12 @@ export function NewSettingsView({
             </section>
             <section
               id="settings-connections"
+              className="settings-card"
               aria-labelledby="settings-connections-heading"
               tabIndex={-1}
             >
-              <h2 id="settings-connections-heading">代理与故障转移</h2>
-              <p className="settings-section-lead">
+              {heading("settings-connections")}
+              <p className="settings-card-lead">
                 默认都不启用。展开只读取当前状态，保存、测试和启用都需要你手动操作。
               </p>
               <div className="settings-reference-list">
@@ -700,11 +968,50 @@ export function NewSettingsView({
               </div>
             </section>
             <section
+              id="settings-advanced"
+              className="settings-card"
+              aria-labelledby="settings-advanced-heading"
+              tabIndex={-1}
+            >
+              {heading("settings-advanced")}
+              <p className="settings-card-lead">
+                排查问题时使用；日志只保存在本机，不会自动上传
+              </p>
+              <div className="settings-reference-list">
+                <DisclosureRow
+                  id="settings-logs"
+                  title="运行日志"
+                  description="日志开关与级别，修改后立即生效"
+                  expanded={logsOpen}
+                  onToggle={() => setLogsOpen((open) => !open)}
+                />
+                {logsOpen && (
+                  <div id="settings-logs-panel" className="settings-subpanel">
+                    <LogSettingsPanel native={runningInTauri} />
+                  </div>
+                )}
+                <SettingsRow
+                  title="定位日志文件"
+                  description="在文件管理器中选中运行日志，反馈问题时可以附上"
+                >
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={!native}
+                    onClick={() => void revealLogFile()}
+                  >
+                    定位
+                  </button>
+                </SettingsRow>
+              </div>
+            </section>
+            <section
               id="settings-directories"
+              className="settings-card"
               aria-labelledby="settings-directories-heading"
               tabIndex={-1}
             >
-              <h2 id="settings-directories-heading">配置目录</h2>
+              {heading("settings-directories")}
               <div className="settings-reference-list">
                 <DisclosureRow
                   id="settings-config-dirs"
@@ -724,258 +1031,46 @@ export function NewSettingsView({
                     </Suspense>
                   </div>
                 )}
-                <button
-                  type="button"
-                  className="settings-reference-row settings-link-row"
-                  disabled={!runningInTauri}
-                  onClick={() => void openDataFolder()}
-                >
-                  <span>
-                    <b>打开数据目录</b>
-                    <small>线路、备份和运行日志都保存在这里</small>
-                  </span>
-                  <FolderOpen size={16} aria-hidden="true" />
-                </button>
-                <button
-                  type="button"
-                  className="settings-reference-row settings-link-row"
-                  disabled={!runningInTauri}
-                  onClick={() => void revealLogFile()}
-                >
-                  <span>
-                    <b>定位日志文件</b>
-                    <small>
-                      在文件管理器中选中运行日志，反馈问题时可以附上
-                    </small>
-                  </span>
-                  <FileSearch size={16} aria-hidden="true" />
-                </button>
-              </div>
-            </section>
-            <section
-              id="settings-general"
-              aria-labelledby="settings-general-heading"
-              tabIndex={-1}
-            >
-              <h2 id="settings-general-heading">通用设置</h2>
-              <div className="settings-reference-list">
-                <div className="settings-reference-row">
-                  <span>
-                    <b id="settings-theme-label">
-                      {t("settings.theme", { defaultValue: "应用主题" })}
-                    </b>
-                    <small>Codex 皮肤在「外观」页设置</small>
-                  </span>
-                  <div
-                    className="settings-segment"
-                    role="group"
-                    aria-labelledby="settings-theme-label"
-                  >
-                    {(
-                      [
-                        [
-                          "system",
-                          t("settings.themeSystem", {
-                            defaultValue: "跟随系统",
-                          }),
-                        ],
-                        [
-                          "light",
-                          t("settings.themeLight", { defaultValue: "浅色" }),
-                        ],
-                        [
-                          "dark",
-                          t("settings.themeDark", { defaultValue: "深色" }),
-                        ],
-                      ] as const
-                    ).map(([value, label]) => (
-                      <button
-                        key={value}
-                        type="button"
-                        className={theme === value ? "is-active" : undefined}
-                        aria-pressed={theme === value}
-                        onClick={() => setTheme(value)}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  className="settings-reference-row"
-                  role="switch"
-                  aria-checked={launchOnStartup}
-                  disabled={!settings || autoLaunchBusy}
-                  onClick={() => void toggleLaunchOnStartup()}
-                >
-                  <span>
-                    <b>开机自启动</b>
-                  </span>
-                  <i
-                    className={`settings-switch ${launchOnStartup ? "is-on" : ""}`}
-                  >
-                    <u />
-                  </i>
-                </button>
-                {/* The backend only starts hidden when the tray flag is on too
-                    (`AppSettings::starts_hidden`), because the tray icon is
-                    what brings the window back. Turning the switch on sets
-                    both, so the switch always shows what the next launch
-                    will do. */}
-                <button
-                  type="button"
-                  className="settings-reference-row"
-                  role="switch"
-                  aria-checked={silentStartup}
-                  disabled={
-                    !settings ||
-                    pendingKeys.has("silentStartup") ||
-                    pendingKeys.has("showInTray")
-                  }
-                  onClick={() =>
-                    void save(
-                      silentStartup
-                        ? { silentStartup: false }
-                        : { silentStartup: true, showInTray: true },
-                    )
-                  }
-                >
-                  <span>
-                    <b>静默启动</b>
-                    <small>启动时不打开主窗口</small>
-                  </span>
-                  <i
-                    className={`settings-switch ${silentStartup ? "is-on" : ""}`}
-                  >
-                    <u />
-                  </i>
-                </button>
-                <div className="settings-reference-row">
-                  <span>
-                    <b id="close-behavior-label">关闭主窗口时</b>
-                    <small id="close-behavior-note">
-                      {
-                        closeBehaviors.find(
-                          ([value]) => value === closeBehavior,
-                        )?.[2]
-                      }
-                    </small>
-                  </span>
-                  <div
-                    className="settings-close-options"
-                    role="radiogroup"
-                    aria-labelledby="close-behavior-label"
-                    aria-describedby="close-behavior-note"
-                  >
-                    {closeBehaviors.map(([value, label]) => (
-                      <label key={value}>
-                        <input
-                          type="radio"
-                          name="close-behavior"
-                          value={value}
-                          checked={closeBehavior === value}
-                          disabled={
-                            !settings ||
-                            pendingKeys.has("minimizeToTrayOnClose") ||
-                            pendingKeys.has("lightweightOnClose")
-                          }
-                          onChange={() =>
-                            void save({
-                              minimizeToTrayOnClose: value !== "exit",
-                              lightweightOnClose: value === "lightweight",
-                            })
-                          }
-                        />
-                        {label}
-                      </label>
-                    ))}
-                  </div>
-                </div>
               </div>
             </section>
             <section
               id="settings-codex"
+              className="settings-card"
               aria-labelledby="settings-codex-heading"
               tabIndex={-1}
             >
-              <h2 id="settings-codex-heading">Codex 偏好</h2>
+              {heading("settings-codex")}
               <div className="settings-reference-list">
-                <button
-                  type="button"
-                  className="settings-reference-row"
-                  role="switch"
-                  aria-checked={updateChecks}
+                <SwitchRow
+                  title="启动时检查 Codex 更新"
+                  description="只提醒，不自动安装"
+                  checked={updateChecks}
                   disabled={
                     !settings || pendingKeys.has("checkCodexUpdatesOnStart")
                   }
-                  onClick={() =>
+                  onToggle={() =>
                     void save({ checkCodexUpdatesOnStart: !updateChecks })
                   }
-                >
-                  <span>
-                    <b>启动时检查 Codex 更新</b>
-                    <small>只提醒，不自动安装</small>
-                  </span>
-                  <i
-                    className={`settings-switch ${updateChecks ? "is-on" : ""}`}
-                  >
-                    <u />
-                  </i>
-                </button>
-                <button
-                  type="button"
-                  className="settings-reference-row"
-                  role="switch"
-                  aria-checked={providerChecks}
+                />
+                <SwitchRow
+                  title="自动检查线路状态"
+                  description="启动时测试当前线路地址"
+                  checked={providerChecks}
                   disabled={
                     !settings || pendingKeys.has("checkProviderStatusOnStart")
                   }
-                  onClick={() =>
+                  onToggle={() =>
                     void save({ checkProviderStatusOnStart: !providerChecks })
                   }
-                >
-                  <span>
-                    <b>自动检查线路状态</b>
-                    <small>启动时测试当前线路地址</small>
-                  </span>
-                  <i
-                    className={`settings-switch ${providerChecks ? "is-on" : ""}`}
-                  >
-                    <u />
-                  </i>
-                </button>
-                <button
-                  type="button"
-                  className="settings-reference-row"
-                  role="switch"
-                  aria-checked={showProviderBalance}
-                  disabled={!settings || pendingKeys.has("showProviderBalance")}
-                  onClick={() =>
-                    void save({ showProviderBalance: !showProviderBalance })
+                />
+                <SettingsRow
+                  title="Codex 更新源"
+                  titleId="settings-update-source-label"
+                  descriptionId="settings-update-source-note"
+                  description={
+                    updateSources.find(([value]) => value === updateSource)?.[2]
                   }
                 >
-                  <span>
-                    <b>显示线路余额</b>
-                    <small>仅部分服务商支持</small>
-                  </span>
-                  <i
-                    className={`settings-switch ${showProviderBalance ? "is-on" : ""}`}
-                  >
-                    <u />
-                  </i>
-                </button>
-                <div className="settings-reference-row">
-                  <span>
-                    <b id="settings-update-source-label">Codex 更新源</b>
-                    <small id="settings-update-source-note">
-                      {
-                        updateSources.find(
-                          ([value]) => value === updateSource,
-                        )?.[2]
-                      }
-                    </small>
-                  </span>
                   <div
                     className="settings-segment"
                     role="group"
@@ -999,15 +1094,16 @@ export function NewSettingsView({
                       </button>
                     ))}
                   </div>
-                </div>
+                </SettingsRow>
               </div>
             </section>
             <section
               id="settings-updates"
+              className="settings-card"
               aria-labelledby="settings-updates-heading"
               tabIndex={-1}
             >
-              <h2 id="settings-updates-heading">应用更新</h2>
+              {heading("settings-updates")}
               <div className={`settings-app-update is-${updateTone}`}>
                 <div className="settings-app-update-row">
                   <span className="settings-app-update-icon" aria-hidden="true">
@@ -1097,36 +1193,54 @@ export function NewSettingsView({
                   </div>
                 )}
               </div>
-              <div
-                className="settings-licenses"
-                role="group"
-                aria-label="许可证与源代码"
-              >
-                <small>Chimera++ 按 MIT 与 AGPL-3.0 许可发行。</small>
-                {licenseLinks(appVersion).map((link) => (
-                  <button
-                    key={link.label}
-                    type="button"
-                    className="settings-licenses-link"
-                    onClick={() => void settingsApi.openExternal(link.url)}
+            </section>
+            <section
+              id="settings-about"
+              className="settings-card"
+              aria-labelledby="settings-about-heading"
+              tabIndex={-1}
+            >
+              {heading("settings-about")}
+              <div className="settings-reference-list">
+                <DisclosureRow
+                  id="settings-tools"
+                  title="支持的工具"
+                  description="各工具的切换方式、配置文件位置与安装检测"
+                  expanded={toolsOpen}
+                  onToggle={() => setToolsOpen((open) => !open)}
+                />
+                {toolsOpen && (
+                  <div id="settings-tools-panel" className="settings-subpanel">
+                    <ToolRegistryPanel
+                      settings={settings}
+                      native={runningInTauri}
+                    />
+                  </div>
+                )}
+                <SettingsRow
+                  title="许可证与源代码"
+                  description="Chimera++ 按 MIT 与 AGPL-3.0 许可发行"
+                  className="settings-licenses-row"
+                >
+                  <span
+                    className="settings-licenses"
+                    role="group"
+                    aria-label="许可证与源代码"
                   >
-                    {link.label}
-                  </button>
-                ))}
+                    {licenseLinks(appVersion).map((link) => (
+                      <button
+                        key={link.label}
+                        type="button"
+                        className="settings-licenses-link"
+                        onClick={() => void settingsApi.openExternal(link.url)}
+                      >
+                        {link.label}
+                      </button>
+                    ))}
+                  </span>
+                </SettingsRow>
               </div>
             </section>
-            {/* Part of the scroll flow, so it can never cover the last rows. */}
-            <footer className="settings-page-footer">
-              <p>恢复 Codex 偏好、安装方式和关闭行为的默认值</p>
-              <button
-                type="button"
-                className="secondary"
-                disabled={!settings || pendingKeys.size > 0}
-                onClick={resetPreferences}
-              >
-                恢复默认设置
-              </button>
-            </footer>
           </div>
         </div>
       </div>

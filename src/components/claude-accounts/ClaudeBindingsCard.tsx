@@ -123,7 +123,10 @@ export function ClaudeBindingsCard({
     }
   };
 
-  const usable = accounts.filter((a) => !a.unreadable && !a.disabled);
+  // A Desktop-only login has no Claude Code tokens to open a session with.
+  const usable = accounts.filter(
+    (a) => !a.unreadable && !a.disabled && a.kind !== "desktop_only",
+  );
 
   const startAdd = () =>
     run("pick", async () => {

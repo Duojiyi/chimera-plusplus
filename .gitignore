@@ -51,3 +51,26 @@ mainWindow.js
 /designs/guide-images/
 /designs/provider-editor-*
 /designs/providers-redesign.html
+
+# Working notes, probes and screenshots from design and audit passes
+/.agents/
+/.dsh-analysis/
+/docs/HANDOVER-*.md
+/docs/design/_*
+/docs/design/screens/
+/docs/design/palette/
+/docs/design/*.png
+/scripts/design/_*
+/designs/**/*.bak
+/assets/首页图片.png
+/designs/chimera-user-guide.html
+/docs/design/audit-*
+/docs/design/taste-review-*
+/docs/design/feature-entry-audit-*
+/docs/design/ui-coverage-*
+/docs/design/REVIEW-*
+/docs/audits/2026-11-10-known-issues.md
+/docs/upstream/merge-log-2026-11.md
+/docs/upstream/merge-plan-2026-11.md
+/docs/upstream/sync-audit-2026-11.md
+/scripts/design/

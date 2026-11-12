@@ -1,39 +1,51 @@
-import { useContext, useState, type CSSProperties } from "react";
+import { useContext, useState } from "react";
 import { ToolPageActiveContext } from "@/components/RetainedToolPage";
 import { PiPluginMarket } from "./PiPluginMarket";
 import { OmpProviders } from "./OmpProviders";
+import {
+  TOOL_SECTIONS,
+  ToolSectionNav,
+  resolveSection,
+} from "./ToolSectionNav";
 import "./ToolView.css";
+import "@/theme/v3/tool-views.css";
 
-const tabs = [
-  ["routes", "模型线路"],
-  ["plugins", "插件市场"],
-  ["runtime", "安装与更新"],
-] as const;
-type Tab = (typeof tabs)[number][0];
+const sections = TOOL_SECTIONS.omp;
 
-export default function OmpView({ native }: { native: boolean }) {
+const subtitles: Record<string, string> = {
+  routes: "oh-my-pi · 独立配置 · 管理 OMP 自定义线路与模型，不影响 Pi",
+  plugins: "oh-my-pi 的插件与市场源",
+  install: "oh-my-pi 的安装、版本与环境检查",
+};
+
+export default function OmpView({
+  native,
+  section,
+  onSectionChange,
+}: {
+  native: boolean;
+  /** Section shown, driven by the shell sidebar; uncontrolled when omitted. */
+  section?: string;
+  onSectionChange?: (id: string) => void;
+}) {
   const [actionsHost, setActionsHost] = useState<HTMLDivElement | null>(null);
-  const [tab, setTab] = useState<Tab>("routes");
-  const [marketVisited, setMarketVisited] = useState(false);
+  const [ownSection, setOwnSection] = useState("routes");
+  const controlled = Boolean(onSectionChange);
+  const tab = resolveSection(
+    sections,
+    controlled ? section : ownSection,
+    "routes",
+  );
+  const [marketVisited, setMarketVisited] = useState(tab !== "routes");
+  if (tab !== "routes" && !marketVisited) setMarketVisited(true);
   const active = useContext(ToolPageActiveContext);
+  const label = sections.find((item) => item.id === tab)?.label ?? "oh-my-pi";
   return (
-    <div className="tool-view text-[var(--text-1)] box-border w-full h-full flex flex-col gap-[12px] p-[12px_24px] bg-[var(--bg-surface)] overflow-y-auto">
-      {/* Same header as the other tool pages (ToolView); the mark matches the
-          sidebar and 管理工具 ("Om"). */}
+    <div className="tool-view">
       <header className="tool-header">
-        <div
-          className="tool-mark"
-          style={{ "--tool-color": "#8B5CF6" } as CSSProperties}
-          aria-hidden="true"
-        >
-          Om
-        </div>
         <div className="tool-title">
-          <div className="tool-title-row">
-            <h1>oh-my-pi</h1>
-            <span className="tool-kind">独立配置</span>
-          </div>
-          <p>管理 OMP 自定义线路与模型，不影响 Pi；默认模型仍在 OMP 中选择。</p>
+          <h1>{label}</h1>
+          <p>{subtitles[tab]}</p>
         </div>
         <div
           ref={setActionsHost}
@@ -43,21 +55,17 @@ export default function OmpView({ native }: { native: boolean }) {
           aria-label="oh-my-pi 工具操作"
         />
       </header>
-      <nav aria-label="oh-my-pi 管理导航" className="tool-section-nav">
-        {tabs.map(([id, label]) => (
-          <button
-            key={id}
-            type="button"
-            aria-current={tab === id ? "page" : undefined}
-            onClick={() => {
-              setTab(id);
-              if (id !== "routes") setMarketVisited(true);
-            }}
-          >
-            {label}
-          </button>
-        ))}
-      </nav>
+      {!controlled && (
+        <ToolSectionNav
+          label="oh-my-pi 管理导航"
+          sections={sections}
+          current={tab}
+          onChange={(id) => {
+            setOwnSection(id);
+            onSectionChange?.(id);
+          }}
+        />
+      )}
       <div className="tool-section-content">
         <ToolPageActiveContext.Provider value={active && tab === "routes"}>
           <div hidden={tab !== "routes"}>
@@ -70,7 +78,7 @@ export default function OmpView({ native }: { native: boolean }) {
               <PiPluginMarket
                 native={native}
                 runtime="omp"
-                panel={tab === "runtime" ? "runtime" : "plugins"}
+                panel={tab === "install" ? "runtime" : "plugins"}
               />
             </div>
           </ToolPageActiveContext.Provider>

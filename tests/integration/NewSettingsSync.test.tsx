@@ -8,7 +8,11 @@ const mocks = vi.hoisted(() => {
   return { get: vi.fn() };
 });
 vi.mock("@/lib/api/settings", () => ({
-  settingsApi: { get: mocks.get, getAutoLaunchStatus: async () => false },
+  settingsApi: {
+    get: mocks.get,
+    getAutoLaunchStatus: async () => false,
+    getAppConfigPath: async () => "C:\Users\me\.chimera-plus-plus\config.json",
+  },
 }));
 vi.mock("@/lib/updater", () => ({ getCurrentVersion: async () => "test" }));
 vi.mock("@/contexts/UpdateContext", () => ({ useUpdate: () => ({}) }));

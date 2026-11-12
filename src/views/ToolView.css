@@ -41,12 +41,6 @@
   flex-shrink: 0;
   font-size: 13px;
 }
-.tool-installation-hint {
-  margin-left: 4px;
-  color: var(--text-3);
-  font-size: 12px;
-  font-weight: 400;
-}
 @media (max-width: 760px) {
   .tool-actions {
     width: 100%;
@@ -163,36 +157,9 @@
   min-height: 64px;
   padding: 4px 0 8px;
 }
-.tool-mark {
-  --tool-color: var(--brand);
-  position: relative;
-  display: flex;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 40px;
-  border-radius: var(--radius-panel, 8px);
-  background: var(--tool-color);
-  color: #fff;
-  font:
-    700 13px/1 var(--font-latin),
-    var(--font-cjk),
-    sans-serif;
-  letter-spacing: 0.02em;
-  box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, #000 12%, transparent),
-    inset 0 1px 0 color-mix(in srgb, #fff 22%, transparent);
-}
 .tool-title {
   flex: 1;
   min-width: 0;
-}
-.tool-title-row {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 10px;
 }
 .tool-title h1 {
   margin: 0;
@@ -213,18 +180,6 @@
   text-wrap-style: balance;
   word-break: keep-all;
   overflow-wrap: anywhere;
-}
-.tool-kind {
-  display: inline-flex;
-  align-items: center;
-  height: 22px;
-  padding: 0 8px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-pill, 999px);
-  color: var(--text-2);
-  font-size: 12px;
-  line-height: 1;
-  white-space: nowrap;
 }
 
 /* Shared control used by header, empty state and load-error retry. */
@@ -612,10 +567,6 @@
 .tool-discovery-button {
   height: 30px;
   white-space: nowrap;
-}
-.tool-official-guide p.tool-official-note {
-  color: var(--text-3);
-  font-size: 12px;
 }
 .tool-install-note {
   margin: 0;

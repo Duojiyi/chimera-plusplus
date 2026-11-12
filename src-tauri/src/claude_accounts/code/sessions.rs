@@ -226,7 +226,7 @@ fn profile_credentials_current(dir: &Path, slot: &Slot) -> bool {
     };
     let want = &slot.claude_ai_oauth;
     match slot.kind {
-        SlotKind::ApiKey => false,
+        SlotKind::ApiKey | SlotKind::DesktopOnly => false,
         SlotKind::SetupToken => have.get("accessToken") == want.get("accessToken"),
         SlotKind::Oauth => {
             let theirs = account_identity(profile_account(dir).as_ref());
@@ -248,7 +248,7 @@ fn seed_credentials(dir: &Path, slot: &Slot) -> Result<(), AppError> {
     let path = dir.join(CREDENTIALS_FILE);
     let existing = read_optional(&path)?;
     let oauth = match slot.kind {
-        SlotKind::ApiKey => None,
+        SlotKind::ApiKey | SlotKind::DesktopOnly => None,
         SlotKind::Oauth | SlotKind::SetupToken => Some(slot.claude_ai_oauth.clone()),
     };
     if let Some(data) = replace_key(existing.as_deref(), CREDENTIALS_KEY, oauth, false)? {
@@ -316,6 +316,9 @@ fn seed_claude_json(
         SlotKind::SetupToken => {
             edits.push((ACCOUNT_KEY, None));
             edits.push((API_KEY_FIELD, None));
+        }
+        SlotKind::DesktopOnly => {
+            return Err(AppError::Message(super::DESKTOP_ONLY_LOGIN.to_string()));
         }
         SlotKind::ApiKey => {
             let key = slot.api_key.as_deref().ok_or_else(|| {
@@ -589,6 +592,10 @@ pub(crate) fn prepare_in(
     let slot = vault.read_slot(id)?;
     if slot.disabled {
         return Err(manage::disabled_error(&slot));
+    }
+    if slot.kind == SlotKind::DesktopOnly {
+        // Before anything is created for it: it has no login to run with.
+        return Err(AppError::Message(super::DESKTOP_ONLY_LOGIN.to_string()));
     }
     if live_matches(paths, &slot) {
         return Err(live_login_error());

@@ -1896,6 +1896,22 @@ impl RequestForwarder {
             );
         }
 
+        // Plain native Responses upstream (Azure/Bedrock/OpenAI-compatible):
+        // `"content": null` on a reasoning item is optional-but-strictly-typed,
+        // so strict lines reject it with 400. The xAI sanitizer above already
+        // does this for its own path; run the same removal here, once.
+        if codex_protocol == Some(super::codex_url::CodexUpstreamProtocol::Native)
+            && !xai_native_responses
+            && super::providers::transform_codex_responses_xai_sanitize::strip_null_reasoning_content(
+                &mut request_body,
+            )
+        {
+            log::debug!(
+                "[Codex] Stripped null reasoning content for native Responses upstream (provider={})",
+                provider.id
+            );
+        }
+
         // Third-party native Responses upstream: never forward a service tier
         // the line's catalog did not declare (the Chat bridge never copies it).
         if codex_protocol == Some(super::codex_url::CodexUpstreamProtocol::Native)

@@ -5,6 +5,7 @@
 pub mod failover;
 pub mod mcp;
 pub mod notes;
+pub mod official_accounts;
 pub mod profiles;
 pub mod prompts;
 pub mod providers;

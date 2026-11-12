@@ -3,10 +3,7 @@ import { ToolVisibilityView } from "./views/ToolVisibilityView";
 import { isProductToolVisible } from "@/lib/productCapabilities";
 import { WindowControls } from "@/components/WindowControls";
 import { DRAG_REGION_ATTR, isMac } from "@/lib/platform";
-import {
-  useLightweightClose,
-  useLightweightCloseBlocker,
-} from "@/hooks/useLightweightClose";
+import { useLightweightClose } from "@/hooks/useLightweightClose";
 import {
   Fragment,
   lazy,
@@ -21,13 +18,13 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { open as openNativeFileDialog } from "@tauri-apps/plugin-dialog";
 import {
   Activity,
   BarChart3,
   Check,
   ChevronDown,
   ChevronLeft,
+  ChevronsUpDown,
   CircleCheck,
   CircleAlert,
   type Command,
@@ -36,10 +33,8 @@ import {
   Eye,
   EyeOff,
   FileText,
-  Info,
   ListChecks,
   LoaderCircle,
-  FolderOpen,
   MessagesSquare,
   Package,
   Paintbrush,
@@ -52,7 +47,6 @@ import {
   Trash2,
   TriangleAlert,
   Users,
-  Wrench,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -69,7 +63,6 @@ import { settingsApi } from "@/lib/api/settings";
 import { configApi } from "@/lib/api";
 import { vscodeApi } from "@/lib/api/vscode";
 import { useUpdate } from "@/contexts/UpdateContext";
-import type { Settings } from "@/types";
 import {
   classifyModelFetchError,
   fetchModelsForConfig,
@@ -148,22 +141,14 @@ import { autoLineBadgeText } from "@/utils/lineBadge";
 import { describeCodexRouting } from "@/utils/codexRouting";
 import { readContextWindowState } from "@/utils/codexContextWindow";
 import { Empty } from "@/components/Empty";
-import {
-  OperationReceipt,
-  type ReceiptAction,
-  type ReceiptTone,
-} from "@/components/OperationReceipt";
-import { copyText } from "@/lib/clipboard";
+import { type ReceiptTone } from "@/components/OperationReceipt";
 import {
   CODEX_CLOSE_SCOPE,
   CODEX_RESTART_SCOPE,
-  buildReport,
   conclusionLine,
   describeNotes,
   errorText,
-  formatReceiptTime,
   isPlainChinese,
-  journalTimeMs,
   parseOperationError,
   suggestNextSteps,
   type ReceiptNextStep,
@@ -188,7 +173,20 @@ import { useSettingsQuery } from "@/lib/query/queries";
 import routeGateIcon from "@/assets/icons/chimera-dragon-mark.png";
 import "./chimera.css";
 import "./components/ProviderEditorPage.css";
-import "./components/CodexRuntimePage.css";
+import "@/theme/v3/shell.css";
+import { TOOL_SECTIONS, TOOLS_WITH_ACCOUNTS } from "./views/ToolSectionNav";
+import { version as APP_VERSION } from "../package.json";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+// Codex 管理 loads on demand like the other pages, with its stylesheets.
+const NewRuntimeView = lazy(() =>
+  import("./views/CodexRuntimeView").then(({ NewRuntimeView }) => ({
+    default: NewRuntimeView,
+  })),
+);
 
 const runningInTauri =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -207,6 +205,9 @@ const browserPreviewCapabilities: ProductCapability[] = [
 ];
 
 // Explicitly opt in to fixtures only in the browser development renderer.
+/** 切换线路后撤销条的保留时长（用户定调：10 分钟）。 */
+const LINE_UNDO_WINDOW_MS = 10 * 60 * 1000;
+
 const designPreview =
   import.meta.env.DEV &&
   !runningInTauri &&
@@ -303,7 +304,7 @@ type View =
   | "tool-claude-desktop"
   | "tool-grokbuild"
   | "tool-settings";
-type RuntimeStatus = {
+export type RuntimeStatus = {
   supported: boolean;
   installed: boolean;
   version?: string | null;
@@ -380,7 +381,7 @@ export function notifyLaunchFollowUps(result: CodexLaunchResult) {
     toast.warning("免安装版目录结构未升级", { description: migration.message });
   }
 }
-type ReleaseStatus = {
+export type ReleaseStatus = {
   currentVersion?: string | null;
   latestVersion: string;
   updateAvailable: boolean;
@@ -398,15 +399,15 @@ type Diagnostic = {
   /** One plain-Chinese sentence: the specific reason and the next step. */
   detail?: string | null;
 };
-type DownloadProgress = {
+export type DownloadProgress = {
   downloaded: number;
   total: number;
   stage?: "downloading" | "installing";
   /** Times the download started over after a dropped connection. */
   retries?: number;
 };
-type RuntimeAction = "update" | "repair" | "rollback" | "uninstall";
-type RuntimeUpdatePreferences = {
+export type RuntimeAction = "update" | "repair" | "rollback" | "uninstall";
+export type RuntimeUpdatePreferences = {
   source: "auto" | "mirror";
   installMode: "standard" | "portable";
 };
@@ -414,12 +415,12 @@ type PendingRuntimeAction = {
   action: RuntimeAction;
   preferences?: RuntimeUpdatePreferences;
 };
-type RuntimeOperation = {
+export type RuntimeOperation = {
   action: RuntimeAction;
   stage: "preparing" | "downloading" | "installing";
 };
 /** What a runtime mutation reports; older builds may return nothing. */
-type RuntimeOperationResult = {
+export type RuntimeOperationResult = {
   version: string;
   requestedMode: string;
   actualMode: string;
@@ -428,10 +429,10 @@ type RuntimeOperationResult = {
   message: string;
   notes: string[];
 };
-type RuntimeReceiptKind =
+export type RuntimeReceiptKind =
   RuntimeAction | "install" | "check" | "diagnose" | "history" | "offline";
 /** The persistent "最近一次操作" record on the Codex 管理 page. */
-type RuntimeReceipt = {
+export type RuntimeReceipt = {
   id: number;
   kind: RuntimeReceiptKind;
   tone: ReceiptTone;
@@ -444,14 +445,14 @@ type RuntimeReceipt = {
   preferences?: RuntimeUpdatePreferences;
 };
 // v2.5.0 M3：历史版本 / 离线安装 / 安装事务恢复
-type CodexRuntimeReleaseItem = {
+export type CodexRuntimeReleaseItem = {
   tag: string;
   name?: string | null;
   publishedAt?: string | null;
   prerelease: boolean;
   installable: boolean;
 };
-type CodexRuntimeReleasePlan = {
+export type CodexRuntimeReleasePlan = {
   version: string;
   packageVersion: string;
   packageMoniker: string;
@@ -460,7 +461,7 @@ type CodexRuntimeReleasePlan = {
   sizeBytes: number;
   releasedAt?: string | null;
 };
-type CodexOfflineInspection = {
+export type CodexOfflineInspection = {
   fileName: string;
   sizeBytes: number;
   sha256: string;
@@ -472,7 +473,7 @@ type CodexOfflineInspection = {
   architectureMatches: boolean;
   identityValid: boolean;
 };
-type CodexInstallRecoveryEntry = {
+export type CodexInstallRecoveryEntry = {
   id: string;
   startedAt: number;
   version: string;
@@ -509,17 +510,6 @@ const viewLabels: Record<View, string> = Object.fromEntries(
   nav.map(([id, label]) => [id, label]),
 ) as Record<View, string>;
 
-const codexViews: View[] = [
-  "providers",
-  "official-accounts",
-  "prompts",
-  "skills-mcp",
-  "usage",
-  "runtime",
-  "appearance",
-  "health",
-];
-
 // Other tools carry an outlined two-character tool mark.
 const toolViews: Array<[View, string]> = [
   ["tool-claude", "CC"],
@@ -531,44 +521,97 @@ const toolViews: Array<[View, string]> = [
   ["tool-grokbuild", "Gk"],
 ];
 
-const runtimeText = (mode?: string | null) =>
+/**
+ * v3 sidebar groups. The sidebar shows one tool at a time (the tool switcher
+ * above the nav picks it); these two groups are the Codex workspace, which is
+ * the tool the app opens on.
+ */
+const workspaceViews: View[] = [
+  // 官方账号 is the second tab of 线路 (LinesAccountsTabs), not its own item.
+  "providers",
+  "prompts",
+  "skills-mcp",
+  "usage",
+];
+const localViews: View[] = ["runtime", "appearance", "health"];
+
+const navIconFor = (id: View): typeof Command => {
+  switch (id) {
+    case "providers":
+      return Route;
+    case "official-accounts":
+      return Users;
+    case "prompts":
+      return FileText;
+    case "skills-mcp":
+      return Cpu;
+    case "usage":
+      return BarChart3;
+    case "runtime":
+      return Package;
+    case "appearance":
+      return Paintbrush;
+    case "health":
+      return Activity;
+    default:
+      return FileText;
+  }
+};
+
+/** Sidebar tool identity: one line-coloured bar per tool, like a transit line. */
+const toolKeyFor = (id: View): string =>
+  id === "tool-claude"
+    ? "claude"
+    : id === "tool-claude-desktop"
+      ? "claude-desktop"
+      : id === "tool-gemini"
+        ? "gemini"
+        : id === "tool-opencode"
+          ? "opencode"
+          : id === "tool-pi"
+            ? "pi"
+            : id === "tool-omp"
+              ? "omp"
+              : id === "tool-grokbuild"
+                ? "grokbuild"
+                : "codex";
+
+/** The ToolView / TOOL_SECTIONS id of each tool view. */
+const toolPageIdFor: Partial<Record<View, string>> = {
+  "tool-claude": "claude-code",
+  "tool-claude-desktop": "claude-desktop",
+  "tool-gemini": "gemini-cli",
+  "tool-opencode": "opencode",
+  "tool-pi": "pi",
+  "tool-omp": "omp",
+  "tool-grokbuild": "grokbuild",
+};
+/** The 提示词 target of each tool whose prompt file this app manages. */
+const toolPromptsAppFor: Partial<Record<View, AppId | "omp">> = {
+  "tool-claude": "claude",
+  "tool-gemini": "gemini",
+  "tool-opencode": "opencode",
+  "tool-grokbuild": "grokbuild",
+  "tool-pi": "pi",
+  "tool-omp": "omp",
+};
+/** The Skills 与 MCP target of each tool that has managed resources. */
+const toolResourcesAppFor: Partial<Record<View, AppId>> = {
+  "tool-claude": "claude",
+  "tool-gemini": "gemini",
+  "tool-opencode": "opencode",
+  "tool-grokbuild": "grokbuild",
+};
+
+export const runtimeText = (mode?: string | null) =>
   mode === "standard"
     ? "标准安装"
     : mode === "portable"
       ? "免安装版"
       : "未识别安装方式";
 
-const runtimeChannelText = (source?: string | null) =>
-  source === "mirror" ? "GitHub 镜像" : "自动（镜像）";
-
-// UTC slicing (`publishedAt.slice(0, 10)`) shows the wrong calendar day in
-// timezones ahead of UTC (e.g. UTC+8 late-evening releases). Format in the
-// viewer's local timezone instead, and fall back gracefully for
-// missing/unparseable timestamps rather than throwing or showing 1970-01-01
-// (`new Date(null)` resolves to the epoch, not an invalid date).
-const formatReleaseDate = (publishedAt?: string | null): string => {
-  if (!publishedAt) return "发布时间未知";
-  const parsed = new Date(publishedAt);
-  if (Number.isNaN(parsed.getTime())) return "发布时间未知";
-  return new Intl.DateTimeFormat("zh-CN", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(parsed);
-};
-
-const formatMegabytes = (bytes: number) =>
+export const formatMegabytes = (bytes: number) =>
   `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-
-// Journal sources read `mirror:latest`, `mirror:<package>` or `offline:<file>`.
-const installSourceText = (source: string) =>
-  source.startsWith("offline:")
-    ? `离线安装包 ${source.slice("offline:".length)}`.trim()
-    : source === "mirror:latest"
-      ? "镜像最新版"
-      : source.startsWith("mirror")
-        ? "镜像"
-        : source;
 
 const RUNTIME_RECEIPT_ACTIONS: Record<RuntimeReceiptKind, string> = {
   update: "更新",
@@ -582,12 +625,12 @@ const RUNTIME_RECEIPT_ACTIONS: Record<RuntimeReceiptKind, string> = {
   offline: "离线安装",
 };
 
-const ensureStop = (text: string) =>
+export const ensureStop = (text: string) =>
   /[。.!?！？]$/.test(text) ? text : `${text}。`;
 
 let runtimeReceiptSeq = 0;
 
-function runtimeFailureReceipt(
+export function runtimeFailureReceipt(
   kind: RuntimeReceiptKind,
   error: unknown,
   preferences?: RuntimeUpdatePreferences,
@@ -616,7 +659,7 @@ function runtimeFailureReceipt(
   };
 }
 
-function runtimeSuccessReceipt(
+export function runtimeSuccessReceipt(
   kind: RuntimeReceiptKind,
   result: RuntimeOperationResult | null | undefined,
   fallbackVersion?: string | null,
@@ -674,35 +717,10 @@ function runtimeSuccessReceipt(
   };
 }
 
-const withReceiptLine = (
+export const withReceiptLine = (
   receipt: RuntimeReceipt,
   line: string,
 ): RuntimeReceipt => ({ ...receipt, lines: [...receipt.lines, line] });
-
-const runtimeReportFields = (runtime: RuntimeStatus | null) =>
-  [
-    [
-      "本机 Codex",
-      runtime?.installed
-        ? `${runtime.version ?? "版本未知"} · ${runtimeText(runtime.installMode)}`
-        : runtime
-          ? "未检测到安装"
-          : "未读取到安装状态",
-    ],
-    ["安装位置", runtime?.installPath],
-  ] as const;
-
-const reportTime = (at: number) =>
-  new Date(at).toLocaleString("zh-CN", { hour12: false });
-
-async function copyDiagnosticReport(report: string) {
-  try {
-    await copyText(report);
-    toast.success("已复制诊断信息");
-  } catch (error) {
-    toast.error("复制诊断信息失败", { description: errorText(error) });
-  }
-}
 
 type CodexEndpointInput = {
   baseUrl: string;
@@ -888,6 +906,11 @@ export default function ChimeraApp({
     if (canNavigate(target)) {
       editorOpenSeqRef.current += 1;
       setRequestedView(target);
+      setResourcesTool(null);
+      setPromptsTool(null);
+      setFootTool(null);
+      // Skills 与 MCP opened any other way than from a tool is Codex's.
+      setSkillsAppId("codex");
     }
   };
   const view = canNavigate(requestedView) ? requestedView : "providers";
@@ -898,12 +921,34 @@ export default function ChimeraApp({
     },
     [view],
   );
+  // Section of each tool page shown in its sidebar (design system §4.1).
+  const [toolSections, setToolSections] = useState<Record<string, string>>({});
+  const [toolSwitcherOpen, setToolSwitcherOpen] = useState(false);
+  // Skills 与 MCP opened from a tool keeps that tool's sidebar.
+  const [resourcesTool, setResourcesTool] = useState<View | null>(null);
+  // 会话 and 设置 opened from a tool keep that tool's sidebar.
+  const [footTool, setFootTool] = useState<View | null>(null);
   const manageToolResources = canNavigate("skills-mcp")
     ? (appId: AppId) => {
-        setSkillsAppId(appId);
+        const owner =
+          (Object.entries(toolResourcesAppFor).find(
+            ([, app]) => app === appId,
+          )?.[0] as View | undefined) ?? null;
         setView("skills-mcp");
+        setSkillsAppId(appId);
+        setResourcesTool(owner);
       }
     : undefined;
+  // 提示词 opened from a tool keeps that tool's sidebar, like Skills 与 MCP.
+  const [promptsTool, setPromptsTool] = useState<View | null>(null);
+  const [promptsAppId, setPromptsAppId] = useState<AppId | "omp">("codex");
+  const openToolPrompts = (tool: View) => {
+    const app = toolPromptsAppFor[tool];
+    if (!app || !canNavigate("prompts")) return;
+    setPromptsAppId(app);
+    setView("prompts");
+    setPromptsTool(tool);
+  };
   const multiToolEnabled = hasEnabledCapability(capabilities, "multi_tool");
   const skinEnabled = hasEnabledCapability(capabilities, "codex_themes");
   const [providers, setProviders] = useState<Provider[]>([]);
@@ -2636,6 +2681,154 @@ export default function ChimeraApp({
     );
   }
 
+  // --- v3 sidebar: one tool at a time, three groups, one nav-item shape ---
+  // Tool views and the tool's Skills 与 MCP page show that tool's sidebar;
+  // everything else is the Codex workspace.
+  const toolView: View | null =
+    view.startsWith("tool-") && view !== "tool-settings"
+      ? view
+      : view === "skills-mcp" && resourcesTool && canNavigate(resourcesTool)
+        ? resourcesTool
+        : view === "prompts" && promptsTool && canNavigate(promptsTool)
+          ? promptsTool
+          : (view === "sessions" || view === "settings") &&
+              footTool &&
+              canNavigate(footTool)
+            ? footTool
+            : null;
+  const currentToolKey = toolView ? toolKeyFor(toolView) : "codex";
+  const currentToolName = toolView ? viewLabels[toolView] : "Codex";
+  const toolPageId = toolView ? toolPageIdFor[toolView] : undefined;
+  const toolSectionList = toolPageId ? TOOL_SECTIONS[toolPageId] : undefined;
+  const defaultToolSection =
+    toolView === "tool-pi" || toolView === "tool-omp" ? "routes" : "lines";
+  const toolHasAccounts = Boolean(
+    toolPageId && TOOLS_WITH_ACCOUNTS.has(toolPageId),
+  );
+  const currentToolSection =
+    toolView === view && toolPageId
+      ? (toolHasAccounts && toolSections[toolPageId] === "accounts") ||
+        toolSectionList?.some((item) => item.id === toolSections[toolPageId])
+        ? toolSections[toolPageId]
+        : defaultToolSection
+      : view === "skills-mcp"
+        ? "resources"
+        : view === "prompts"
+          ? "prompts"
+          : "";
+  const sectionChangeFor = (pageId: string) => (id: string) =>
+    setToolSections((current) =>
+      current[pageId] === id ? current : { ...current, [pageId]: id },
+    );
+  const openToolSection = (tool: View, id: string) => {
+    const pageId = toolPageIdFor[tool];
+    if (!pageId) return;
+    if (id === "resources") {
+      const app = toolResourcesAppFor[tool];
+      if (app) manageToolResources?.(app);
+      return;
+    }
+    if (id === "prompts") {
+      openToolPrompts(tool);
+      return;
+    }
+    setToolSections((current) => ({ ...current, [pageId]: id }));
+    setView(tool);
+  };
+  const crumbPage = toolView
+    ? currentToolSection === "accounts"
+      ? "官方账号"
+      : (toolSectionList?.find((item) => item.id === currentToolSection)
+          ?.label ?? viewLabels[view])
+    : viewLabels[view];
+  const switchTool = (target: View) => {
+    setToolSwitcherOpen(false);
+    setView(target);
+  };
+
+  /** `sub`: shown as part of the item above it (官方账号 under 线路). */
+  const renderNavItem = (id: View, sub = false) => {
+    const label = viewLabels[id];
+    const Icon = navIconFor(id);
+    const active = view === id;
+    const available = canNavigate(id);
+    return (
+      <button
+        key={id}
+        type="button"
+        onClick={() => setView(id)}
+        disabled={!available}
+        aria-current={active ? "page" : undefined}
+        title={available ? undefined : `${label}：此版本未开放`}
+        data-pencil-name={`能力 · ${label}`}
+        className={sub ? "v3-nav-item is-sub" : "v3-nav-item"}
+      >
+        <Icon size={15} aria-hidden="true" className="v3-nav-icon" />
+        <span className="v3-nav-text">{label}</span>
+        {!available && (
+          <span aria-hidden="true" className="v3-nav-hint">
+            未开放
+          </span>
+        )}
+      </button>
+    );
+  };
+
+  const renderToolSectionItem = (item: {
+    id: string;
+    label: string;
+    icon: typeof Command;
+  }) => {
+    if (!toolView) return null;
+    const Icon = item.icon;
+    const resources = item.id === "resources";
+    const available = resources
+      ? Boolean(manageToolResources)
+      : item.id === "prompts"
+        ? canNavigate("prompts")
+        : true;
+    return (
+      <button
+        key={item.id}
+        type="button"
+        onClick={() => openToolSection(toolView, item.id)}
+        disabled={!available}
+        aria-current={currentToolSection === item.id ? "page" : undefined}
+        aria-label={
+          resources ? `管理 ${currentToolName} 的 Skills 与 MCP` : undefined
+        }
+        data-pencil-name={`分区 · ${item.label}`}
+        className={
+          item.id === "accounts" ? "v3-nav-item is-sub" : "v3-nav-item"
+        }
+      >
+        <Icon size={15} aria-hidden="true" className="v3-nav-icon" />
+        <span className="v3-nav-text">{item.label}</span>
+      </button>
+    );
+  };
+
+  const renderFootItem = (id: View, Icon: typeof Command) => {
+    const label = viewLabels[id];
+    const active = view === id;
+    return (
+      <button
+        key={id}
+        type="button"
+        onClick={() => {
+          const from = toolView;
+          setView(id);
+          setFootTool(from);
+        }}
+        aria-current={active ? "page" : undefined}
+        data-pencil-name={label}
+        className="v3-nav-item"
+      >
+        <Icon size={15} aria-hidden="true" className="v3-nav-icon" />
+        <span className="v3-nav-text">{label}</span>
+      </button>
+    );
+  };
   return (
     <div className="chimera-shell">
       {/* The sidebar alone is eighteen tab stops; this jumps past it. */}
@@ -2652,352 +2845,252 @@ export default function ChimeraApp({
       {/* 216px Sidebar (Frame 01 HdG9j). The graphite chrome is dark in both
           themes, so its tokens resolve as dark (designer-notes §31). */}
       {!editor && (
-        <aside
-          data-pencil-name="侧栏"
-          data-theme="dark"
-          className="chimera-sidebar box-border w-[216px] shrink-0 h-full flex flex-col gap-[2px] p-[0px_8px_12px_8px] justify-start items-start bg-[#13181C] select-none z-10"
-        >
+        <aside data-pencil-name="侧栏" className="chimera-sidebar">
           {/* 字标区 */}
           <div
             data-pencil-name="字标区"
-            className="box-border w-full h-[40px] shrink-0 flex flex-row gap-0 p-[0px_8px] justify-start items-center"
+            className="v3-sidebar-brand"
             {...DRAG_REGION_ATTR}
           >
             {isMac() && <WindowControls onBeforeClose={guardWindowClose} />}
-            <div
-              data-pencil-name="字标"
-              className="text-[14px]/[20px] box-border text-[#EEF0F3] font-bold text-left whitespace-nowrap"
-            >
-              Chimera++
-            </div>
+            <span aria-hidden="true" className="v3-sidebar-logo">
+              C
+            </span>
+            <span className="v3-sidebar-brandtext">
+              <span data-pencil-name="字标" className="v3-sidebar-wordmark">
+                Chimera++
+              </span>
+              <span className="v3-sidebar-version">{APP_VERSION}</span>
+            </span>
           </div>
 
-          <nav className="chimera-navigation" aria-label="工具与功能">
-            {/* 干线 (Codex 主干轨道) */}
-            <div
-              data-pencil-name="干线"
-              className="box-border w-full h-fit shrink-0 flex flex-col gap-0 justify-start items-start"
-            >
-              {/* 宿主行 · Codex */}
-              <div
-                data-pencil-name="工具 · Codex"
-                className="box-border w-full h-[36px] shrink-0 flex flex-row gap-[10px] p-[0px_8px_0px_10px] justify-start items-center rounded-[4px] relative"
+          {/* 工具切换器：当前工具 + 线路色竖条，点开是工具列表。 */}
+          <Popover open={toolSwitcherOpen} onOpenChange={setToolSwitcherOpen}>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                data-pencil-name="工具切换器"
+                aria-label={`切换工具，当前：${currentToolName}`}
+                className="v3-tool-switch"
               >
-                <div
-                  data-pencil-name="徽标"
-                  className="box-border w-[24px] shrink-0 h-[24px] flex flex-row gap-0 justify-center items-center bg-transparent border border-[#8D9398] rounded-[4px] relative z-10"
-                >
-                  <div
-                    data-pencil-name="简称"
-                    className="text-[12px]/[17px] box-border text-[#BABEC3] font-bold text-left whitespace-nowrap"
-                  >
-                    Cx
-                  </div>
-                </div>
-                <div
-                  data-pencil-name="名称"
-                  className="text-[14px]/[20px] box-border flex-1 text-[#EEF0F3] font-normal text-left relative z-10"
-                >
-                  Codex
-                </div>
-                {/* Switch-type tool: its status is the current line's badge;
-                    with no current line the row carries no badge. */}
-                {activeProvider && (
-                  <div
-                    data-pencil-name="尾部"
-                    className="box-border w-fit shrink-0 h-fit flex flex-row gap-[4px] justify-start items-center relative z-10"
-                  >
-                    <LineBadge
-                      line={activeProvider}
-                      size="sm"
-                      onPlate
-                      label={`当前线路：${lineName(activeProvider)}`}
-                    />
-                  </div>
-                )}
-                {/* 干线起点向下的引线 */}
-                <div
-                  data-pencil-name="干线起点"
-                  className="box-border w-[2px] h-[6px] absolute left-[21px] top-[30px] bg-[#7B9BC3] z-0"
+                <span
+                  aria-hidden="true"
+                  className="v3-tool-bar"
+                  data-tool={currentToolKey}
                 />
-              </div>
-
-              {/* 8 个站点能力项 */}
-              {codexViews.map((id, index) => {
-                const label = viewLabels[id];
-                const available = canNavigate(id);
-                const active = view === id;
-                const isLast = index === codexViews.length - 1;
-                return (
-                  <button
-                    key={id}
-                    type="button"
-                    onClick={() => setView(id)}
-                    disabled={!available}
-                    aria-current={active ? "page" : undefined}
-                    title={available ? undefined : `${label}：此版本未开放`}
-                    data-pencil-name={`能力 · ${label}`}
-                    className={`chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[16px] p-[0px_8px_0px_16px] justify-start items-center rounded-[4px] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-0 transition-colors text-left ${
-                      active
-                        ? "bg-[#23282D]"
-                        : "bg-transparent hover:bg-[#1A1E24]"
-                    }`}
-                  >
-                    {/* 站点轴线 */}
-                    <div
-                      data-pencil-name="站"
-                      className="box-border w-[12px] shrink-0 h-fit flex flex-col gap-0 justify-start items-center"
-                    >
-                      <div
-                        data-pencil-name="上"
-                        className="box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3]"
-                      />
-                      <div
-                        data-pencil-name="点"
-                        className={`box-border w-[8px] h-[8px] shrink-0 border-2 border-[#7B9BC3] rounded-full ${
-                          active ? "bg-[#7B9BC3]" : "bg-[#13181C]"
-                        }`}
-                      />
-                      <div
-                        data-pencil-name="下"
-                        className={`box-border w-[2px] h-[12px] shrink-0 bg-[#7B9BC3] ${
-                          isLast ? "opacity-0" : ""
-                        }`}
-                      />
-                    </div>
-                    {/* 文字 */}
-                    <div
-                      data-pencil-name="文字"
-                      className={`text-[14px]/[20px] box-border flex-1 text-left ${
-                        active
-                          ? "text-[#EEF0F3] font-bold"
-                          : "text-[#BABEC3] font-normal"
-                      }`}
-                    >
-                      {label}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-
-            <div className="w-full h-[40px] shrink-0 px-[10px] pt-[16px] pb-[6px] text-[13px]/[18px] text-[#8D9398]">
-              其他工具
-            </div>
-            {toolViews
-              .filter(
-                ([id]) =>
-                  !runningInTauri ||
-                  isProductToolVisible(id, toolSettings?.visibleApps),
-              )
-              .map(([id, badge]) => {
-                const label = viewLabels[id];
-                const available = canNavigate(id);
-                return (
-                  <button
-                    key={id}
-                    type="button"
-                    disabled={!available}
-                    aria-current={view === id ? "page" : undefined}
-                    title={available ? undefined : `${label}：此版本未开放`}
-                    onClick={() => setView(id)}
-                    aria-label={label}
-                    data-pencil-name={`工具 · ${label}`}
-                    className={`chimera-nav-item w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left disabled:cursor-not-allowed disabled:opacity-50 ${view === id ? "bg-[#23282D] text-[#EEF0F3]" : "bg-transparent text-[#BABEC3] enabled:hover:bg-[#1A1E24]"}`}
-                  >
-                    <span className="w-[24px] h-[24px] shrink-0 flex items-center justify-center border border-[#8D9398] rounded-[4px] text-[12px] font-bold">
-                      {badge}
-                    </span>
-                    <span className="flex-1 text-[14px]">{label}</span>
-                    {!available && (
-                      <span aria-hidden="true" className="text-[11px]">
-                        未开放
-                      </span>
-                    )}
-                  </button>
-                );
-              })}
-            <button
-              type="button"
-              onClick={() => {
-                setView("tool-settings");
-              }}
-              title="选择侧栏显示哪些工具"
-              disabled={!canNavigate("tool-settings")}
-              aria-current={view === "tool-settings" ? "page" : undefined}
-              data-pencil-name="添加工具"
-              className={`chimera-nav-item w-full h-[36px] shrink-0 flex gap-[10px] items-center px-[10px] rounded-[4px] border-0 text-left cursor-pointer ${view === "tool-settings" ? "bg-[#23282D] text-[#EEF0F3]" : "bg-transparent text-[#BABEC3] hover:bg-[#1A1E24]"}`}
+                <span className="v3-tool-switch-text">
+                  <span className="v3-tool-switch-name">{currentToolName}</span>
+                  <span className="v3-tool-switch-sub">当前工具</span>
+                </span>
+                <ChevronsUpDown size={14} aria-hidden="true" />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent
+              align="start"
+              sideOffset={6}
+              className="v3-tool-menu"
+              aria-label="切换工具"
             >
-              <span className="w-[24px] h-[24px] flex items-center justify-center border border-[#8D9398] rounded-[4px]">
-                <Plus size={14} aria-hidden="true" />
-              </span>
-              <span className="text-[14px]">{viewLabels["tool-settings"]}</span>
-            </button>
+              <div className="v3-tool-menu-list" role="group" aria-label="工具">
+                <button
+                  type="button"
+                  className="v3-tool-menu-item"
+                  aria-current={!toolView ? "true" : undefined}
+                  aria-label="Codex"
+                  onClick={() => switchTool("providers")}
+                >
+                  <span
+                    aria-hidden="true"
+                    className="v3-tool-bar"
+                    data-tool="codex"
+                  />
+                  <span className="v3-tool-menu-name">Codex</span>
+                  <span className="v3-tool-menu-kind">切换型</span>
+                  {!toolView && <Check size={13} aria-hidden="true" />}
+                </button>
+                {/* Tools hidden in 管理工具 are left out; tools this build or
+                    policy has not opened stay listed, disabled. */}
+                {toolViews
+                  .filter(
+                    ([id]) =>
+                      !runningInTauri ||
+                      isProductToolVisible(id, toolSettings?.visibleApps),
+                  )
+                  .map(([id]) => (
+                    <button
+                      key={id}
+                      type="button"
+                      className="v3-tool-menu-item"
+                      aria-current={toolView === id ? "true" : undefined}
+                      aria-label={viewLabels[id]}
+                      disabled={!canNavigate(id)}
+                      title={
+                        canNavigate(id)
+                          ? undefined
+                          : `${viewLabels[id]}：此版本未开放`
+                      }
+                      onClick={() => switchTool(id)}
+                    >
+                      <span
+                        aria-hidden="true"
+                        className="v3-tool-bar"
+                        data-tool={toolKeyFor(id)}
+                      />
+                      <span className="v3-tool-menu-name">
+                        {viewLabels[id]}
+                      </span>
+                      <span className="v3-tool-menu-kind">
+                        {id === "tool-opencode" || id === "tool-pi"
+                          ? "累加型"
+                          : id === "tool-omp"
+                            ? "独立配置"
+                            : "切换型"}
+                      </span>
+                      {toolView === id && (
+                        <Check size={13} aria-hidden="true" />
+                      )}
+                    </button>
+                  ))}
+              </div>
+              {canNavigate("tool-settings") && (
+                <button
+                  type="button"
+                  className="v3-tool-menu-manage"
+                  onClick={() => switchTool("tool-settings")}
+                >
+                  <Plus size={14} aria-hidden="true" />
+                  管理工具
+                </button>
+              )}
+            </PopoverContent>
+          </Popover>
+
+          <nav className="chimera-navigation" aria-label="工具与功能">
+            {toolSectionList ? (
+              <div className="v3-nav-group">
+                <div className="v3-nav-group-label">工作区</div>
+                {/* 提示词 sits right after the tool's lines, as in Codex. */}
+                {/* 官方账号 is part of 线路: a sub-item right under it. */}
+                {toolSectionList
+                  .flatMap((item, index) =>
+                    index === 0
+                      ? [
+                          item,
+                          ...(toolHasAccounts
+                            ? [
+                                {
+                                  id: "accounts",
+                                  label: "官方账号",
+                                  icon: Users,
+                                },
+                              ]
+                            : []),
+                          ...(toolView && toolPromptsAppFor[toolView]
+                            ? [
+                                {
+                                  id: "prompts",
+                                  label: "提示词",
+                                  icon: FileText,
+                                },
+                              ]
+                            : []),
+                        ]
+                      : [item],
+                  )
+                  .map(renderToolSectionItem)}
+              </div>
+            ) : (
+              <>
+                <div className="v3-nav-group">
+                  <div className="v3-nav-group-label">工作区</div>
+                  {workspaceViews.flatMap((id) =>
+                    id === "providers"
+                      ? [
+                          renderNavItem(id),
+                          renderNavItem("official-accounts", true),
+                        ]
+                      : [renderNavItem(id)],
+                  )}
+                </div>
+
+                <div className="v3-nav-group">
+                  <div className="v3-nav-group-label">本机</div>
+                  {localViews.map((id) => renderNavItem(id))}
+                </div>
+              </>
+            )}
           </nav>
 
-          {/* 分隔线 */}
-          <div
-            data-pencil-name="分隔"
-            className="box-border w-full h-[1px] shrink-0 bg-[#23282D] my-1"
-          />
-
-          {/* 会话 */}
-          <button
-            type="button"
-            onClick={() => setView("sessions")}
-            aria-current={view === "sessions" ? "page" : undefined}
-            data-pencil-name="会话"
-            className={`chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[12px] p-[0px_8px_0px_12px] justify-start items-center rounded-[4px] cursor-pointer border-0 transition-colors text-left ${
-              view === "sessions"
-                ? "bg-[#23282D]"
-                : "bg-transparent hover:bg-[#1A1E24]"
-            }`}
-          >
-            <MessagesSquare
-              size={16}
-              aria-hidden="true"
-              className={
-                view === "sessions" ? "text-[#EEF0F3]" : "text-[#BABEC3]"
-              }
-            />
-            <div
-              data-pencil-name="文字"
-              className={`text-[14px]/[20px] box-border flex-1 text-left ${
-                view === "sessions"
-                  ? "text-[#EEF0F3] font-bold"
-                  : "text-[#BABEC3] font-normal"
-              }`}
-            >
-              {viewLabels.sessions}
-            </div>
-          </button>
-
-          {/* 设置 */}
-          <button
-            type="button"
-            onClick={() => setView("settings")}
-            aria-current={view === "settings" ? "page" : undefined}
-            data-pencil-name="设置"
-            className={`chimera-nav-item box-border w-full h-[32px] shrink-0 flex flex-row gap-[12px] p-[0px_8px_0px_12px] justify-start items-center rounded-[4px] cursor-pointer border-0 transition-colors text-left ${
-              view === "settings"
-                ? "bg-[#23282D]"
-                : "bg-transparent hover:bg-[#1A1E24]"
-            }`}
-          >
-            <Settings2
-              size={16}
-              aria-hidden="true"
-              className={
-                view === "settings" ? "text-[#EEF0F3]" : "text-[#BABEC3]"
-              }
-            />
-            <div
-              data-pencil-name="文字"
-              className={`text-[14px]/[20px] box-border flex-1 text-left ${
-                view === "settings"
-                  ? "text-[#EEF0F3] font-bold"
-                  : "text-[#BABEC3] font-normal"
-              }`}
-            >
-              {viewLabels.settings}
-            </div>
-          </button>
+          <div className="v3-sidebar-foot">
+            {renderFootItem("sessions", MessagesSquare)}
+            {renderFootItem("settings", Settings2)}
+          </div>
         </aside>
       )}
 
       <main
         className={`chimera-main${view === "usage" ? " is-usage-view" : ""}${editor ? " is-editing-provider" : ""}`}
       >
-        {/* Pencil wnYKj: fixed search and window controls, flexible left drag area. */}
+        {/* 标题栏 52px：左面包屑，右搜索胶囊与窗口按钮。 */}
         <header
           data-pencil-name="标题栏"
-          className="chimera-topbar box-border w-full h-[40px] shrink-0 flex flex-row gap-0 justify-start items-center bg-[#FDFDFE] dark:bg-[#1A1E24] border-b border-[#DDE0E3] dark:border-[#31363D] select-none z-10"
+          className="chimera-titlebar"
           onMouseDown={handleTitlebarMouseDown}
           onDoubleClick={preventTitlebarDoubleClick}
         >
-          {/* 左侧站牌与拖拽区 (Frame 01 1:1) */}
-          <div
-            data-pencil-name="左"
-            className="box-border flex-1 min-w-0 h-[40px] flex flex-row p-[0px_12px] justify-start items-center gap-2"
-            {...DRAG_REGION_ATTR}
-          >
+          <div className="v3-crumb" {...DRAG_REGION_ATTR}>
             {isMac() && editor && (
               <WindowControls onBeforeClose={guardWindowClose} />
             )}
+            <span className="v3-crumb-tool">{currentToolName}</span>
+            <span aria-hidden="true" className="v3-crumb-sep">
+              /
+            </span>
+            <span className="v3-crumb-page">
+              {editor ? (editor.original ? "编辑线路" : "添加线路") : crumbPage}
+            </span>
             {!runningInTauri && (
               <span
-                className="text-[12px] text-[#646970] dark:text-[#8D9398] truncate"
+                className="v3-preview-chip"
                 title={
                   designPreview
                     ? "设计示例 · 非本机数据 · 写入及测速已禁用"
                     : "浏览器预览 · 未连接本机，不读取或修改本机配置"
                 }
               >
-                {designPreview
-                  ? "设计示例 · 非本机数据 · 写入及测速已禁用"
-                  : "浏览器预览 · 未连接本机"}
+                {designPreview ? "设计示例" : "浏览器预览 · 未连接本机"}
               </span>
             )}
           </div>
 
-          {/* 搜索入口随窗口宽度收缩，始终保留窗口控制。 */}
           <button
             type="button"
             aria-label="搜索线路、页面或命令"
             data-pencil-name="搜索"
             onClick={() => setCmdPaletteOpen(true)}
-            className="chimera-global-search box-border w-[360px] max-w-[42%] min-w-0 shrink h-[28px] flex flex-row gap-[8px] px-2.5 justify-start items-center bg-[#F2F4F6] dark:bg-[#23282D] rounded-[4px] border-0 cursor-pointer hover:bg-[var(--bg-selected)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--focus)] transition"
+            className="v3-search"
             data-tauri-no-drag
           >
-            <Search size={14} className="text-[#646970] dark:text-[#8D9398]" />
-            <span
-              data-pencil-name="占位"
-              className="text-[13px]/[18px] box-border flex-1 text-[#646970] dark:text-[#8D9398] font-normal text-left truncate"
-            >
-              搜索线路、页面或命令
+            <Search size={14} aria-hidden="true" />
+            <span className="v3-search-placeholder">搜索线路、页面或命令</span>
+            <span aria-hidden="true" className="v3-kbd">
+              {isMac() ? "⌘ K" : "Ctrl K"}
             </span>
-            <div
-              data-pencil-name="键帽"
-              className="box-border w-fit shrink-0 h-[20px] flex flex-row gap-0 px-1.5 justify-start items-center bg-[#FDFDFE] dark:bg-[#1A1E24] border border-[#DDE0E3] dark:border-[#31363D] rounded-[4px]"
-            >
-              <span
-                data-pencil-name="值"
-                className="text-[12px]/[17px] box-border text-[#646970] dark:text-[#8D9398] font-mono whitespace-nowrap"
-              >
-                {isMac() ? "⌘ K" : "Ctrl K"}
-              </span>
-            </div>
           </button>
 
-          {/* 右侧窗口控制三键 */}
-          <div
-            data-pencil-name="右"
-            className="box-border shrink-0 h-[40px] flex flex-row justify-end items-center"
-          >
-            <div className="flex items-center" data-tauri-no-drag>
+          <div className="v3-window-controls" data-tauri-no-drag>
+            {titlebarHasUpdate && (
               <button
                 type="button"
-                aria-label="检查更新"
                 onClick={() => void runTitlebarUpdateCheck()}
-                className="sr-only"
-                // Invisible, so it must not be a keyboard stop where focus vanishes.
-                tabIndex={-1}
+                title={`发现新版本 ${titlebarUpdateInfo?.availableVersion ?? ""}，点击更新`}
+                className="v3-update-chip"
               >
-                检查更新
+                <Download size={13} aria-hidden="true" />
+                <span>更新</span>
               </button>
-              {titlebarHasUpdate && (
-                <button
-                  type="button"
-                  onClick={() => void runTitlebarUpdateCheck()}
-                  title={`发现新版本 ${titlebarUpdateInfo?.availableVersion ?? ""}，点击更新`}
-                  className="h-[26px] px-2 mr-2 flex items-center gap-1.5 rounded text-[12px] font-medium bg-[#006AA0] text-white hover:bg-[#005a88] transition cursor-pointer border-0"
-                >
-                  <Download size={13} />
-                  <span>更新</span>
-                </button>
-              )}
-              {!isMac() && <WindowControls onBeforeClose={guardWindowClose} />}
-            </div>
+            )}
+            {!isMac() && <WindowControls onBeforeClose={guardWindowClose} />}
           </div>
         </header>
 
@@ -3091,26 +3184,34 @@ export default function ChimeraApp({
             />
           )}
           {view === "runtime" && (
-            <NewRuntimeView
-              runtime={runtime}
-              runtimeError={runtimeError}
-              release={release}
-              progress={downloadProgress}
-              operation={runtimeOperation}
-              receipt={runtimeReceipt}
-              onCheck={checkRuntime}
-              onDiagnose={diagnose}
-              diagnosing={diagnosing}
-              onAction={(action, preferences) =>
-                setPendingAction({ action, preferences })
+            <Suspense
+              fallback={
+                <div className="route-loading" role="status">
+                  正在加载模块…
+                </div>
               }
-              onRuntimeChanged={refreshRuntimeAfterInstall}
-              onOperationFinished={() => setDownloadProgress(null)}
-              onRetryRuntime={() => void loadRuntime()}
-              onRefreshStatus={loadRuntime}
-              onReceipt={setRuntimeReceipt}
-              onOpenProxySettings={openProxySettings}
-            />
+            >
+              <NewRuntimeView
+                runtime={runtime}
+                runtimeError={runtimeError}
+                release={release}
+                progress={downloadProgress}
+                operation={runtimeOperation}
+                receipt={runtimeReceipt}
+                onCheck={checkRuntime}
+                onDiagnose={diagnose}
+                diagnosing={diagnosing}
+                onAction={(action, preferences) =>
+                  setPendingAction({ action, preferences })
+                }
+                onRuntimeChanged={refreshRuntimeAfterInstall}
+                onOperationFinished={() => setDownloadProgress(null)}
+                onRetryRuntime={() => void loadRuntime()}
+                onRefreshStatus={loadRuntime}
+                onReceipt={setRuntimeReceipt}
+                onOpenProxySettings={openProxySettings}
+              />
+            </Suspense>
           )}
           <Suspense
             fallback={
@@ -3140,12 +3241,15 @@ export default function ChimeraApp({
             )}
             {view === "prompts" && (
               <PromptsView
+                key={promptsTool ? promptsAppId : "codex"}
+                initialApp={promptsTool ? promptsAppId : "codex"}
                 refreshVersion={providerRefreshVersion}
                 visibleApps={toolSettings?.visibleApps ?? {}}
               />
             )}
             {view === "skills-mcp" && (
               <SkillsMcpView
+                key={skillsAppId}
                 initialApp={skillsAppId}
                 refreshVersion={providerRefreshVersion}
               />
@@ -3166,6 +3270,8 @@ export default function ChimeraApp({
             {view === "tool-claude-desktop" && (
               <ToolView
                 toolId="claude-desktop"
+                section={toolSections["claude-desktop"]}
+                onSectionChange={sectionChangeFor("claude-desktop")}
                 native={runningInTauri}
                 refreshVersion={providerRefreshVersion}
               />
@@ -3173,6 +3279,8 @@ export default function ChimeraApp({
             {view === "tool-grokbuild" && (
               <ToolView
                 toolId="grokbuild"
+                section={toolSections["grokbuild"]}
+                onSectionChange={sectionChangeFor("grokbuild")}
                 onManageResources={manageToolResources}
                 native={runningInTauri}
                 refreshVersion={providerRefreshVersion}
@@ -3183,6 +3291,8 @@ export default function ChimeraApp({
               <ToolView
                 refreshVersion={providerRefreshVersion}
                 toolId="claude-code"
+                section={toolSections["claude-code"]}
+                onSectionChange={sectionChangeFor("claude-code")}
                 onEditLine={openToolEditor}
                 native={runningInTauri}
                 onManageResources={manageToolResources}
@@ -3192,6 +3302,8 @@ export default function ChimeraApp({
               <ToolView
                 refreshVersion={providerRefreshVersion}
                 toolId="gemini-cli"
+                section={toolSections["gemini-cli"]}
+                onSectionChange={sectionChangeFor("gemini-cli")}
                 onEditLine={openToolEditor}
                 native={runningInTauri}
                 onManageResources={manageToolResources}
@@ -3201,6 +3313,8 @@ export default function ChimeraApp({
               <ToolView
                 refreshVersion={providerRefreshVersion}
                 toolId="opencode"
+                section={toolSections["opencode"]}
+                onSectionChange={sectionChangeFor("opencode")}
                 onEditLine={openToolEditor}
                 native={runningInTauri}
                 onManageResources={manageToolResources}
@@ -3208,12 +3322,18 @@ export default function ChimeraApp({
             )}
           </Suspense>
           <RetainedToolPage active={view === "tool-omp"}>
-            <OmpView native={runningInTauri} />
+            <OmpView
+              native={runningInTauri}
+              section={toolSections.omp}
+              onSectionChange={sectionChangeFor("omp")}
+            />
           </RetainedToolPage>
           <RetainedToolPage active={view === "tool-pi"}>
             <ToolView
               refreshVersion={providerRefreshVersion}
               toolId="pi"
+              section={toolSections.pi}
+              onSectionChange={sectionChangeFor("pi")}
               onEditLine={openToolEditor}
               native={runningInTauri}
             />
@@ -3490,1469 +3610,6 @@ export default function ChimeraApp({
   );
 }
 
-// Writes survive navigation; remounted views must wait before reading preferences.
-let runtimePreferenceSaveQueue = Promise.resolve();
-
-// Re-read the installation at most this often when the window regains focus.
-const RUNTIME_FOCUS_REFRESH_MS = 3000;
-
-export function NewRuntimeView({
-  runtime,
-  runtimeError = null,
-  release,
-  progress,
-  operation,
-  receipt = null,
-  onCheck,
-  onDiagnose,
-  diagnosing,
-  onAction,
-  onRuntimeChanged,
-  onOperationFinished,
-  onRetryRuntime,
-  onRefreshStatus,
-  onReceipt,
-  onOpenProxySettings,
-}: {
-  runtime: RuntimeStatus | null;
-  runtimeError?: string | null;
-  release: ReleaseStatus | null;
-  progress: DownloadProgress | null;
-  operation: RuntimeOperation | null;
-  receipt?: RuntimeReceipt | null;
-  onCheck: (preferences?: RuntimeUpdatePreferences) => unknown;
-  onDiagnose: () => void;
-  diagnosing: boolean;
-  onAction: (
-    value: RuntimeAction,
-    preferences?: RuntimeUpdatePreferences,
-  ) => void;
-  onOperationFinished?: () => void;
-  /** Resolves false when the update status could not be refreshed. */
-  onRuntimeChanged?: (preferences?: RuntimeUpdatePreferences) => unknown;
-  onRetryRuntime?: () => void;
-  /** Re-reads the installation; called when the window regains focus. */
-  onRefreshStatus?: () => unknown;
-  onReceipt?: (receipt: RuntimeReceipt | null) => void;
-  onOpenProxySettings?: () => void;
-}) {
-  const [maintenanceOpen, setMaintenanceOpen] = useState(false);
-  const [preferences, setPreferences] = useState<Pick<
-    Settings,
-    "codexInstallMode" | "codexUpdateSource" | "checkCodexUpdatesOnStart"
-  > | null>(runningInTauri ? null : {});
-  const [preferencesError, setPreferencesError] = useState(false);
-  const [preferencesRetry, setPreferencesRetry] = useState(0);
-  const [pendingPreferenceKeys, setPendingPreferenceKeys] = useState<
-    Set<string>
-  >(new Set());
-  const preferencesMounted = useRef(false);
-  useEffect(() => {
-    preferencesMounted.current = true;
-    return () => {
-      preferencesMounted.current = false;
-    };
-  }, []);
-  const installMode = preferences?.codexInstallMode ?? "standard";
-  const updateSource = preferences?.codexUpdateSource ?? "auto";
-  const preferencesBusy = !preferences || pendingPreferenceKeys.size > 0;
-
-  useEffect(() => {
-    if (!runningInTauri) return;
-    let cancelled = false;
-    setPreferencesError(false);
-    void runtimePreferenceSaveQueue
-      .then(() => settingsApi.get())
-      .then(
-        (saved) => {
-          if (!cancelled) setPreferences(saved);
-        },
-        (reason) => {
-          if (cancelled) return;
-          setPreferencesError(true);
-          toast.error("读取更新偏好失败", { description: String(reason) });
-        },
-      );
-    return () => {
-      cancelled = true;
-    };
-  }, [preferencesRetry]);
-  // v2.5.0 M3：历史版本 / 离线导入 / 安装事务恢复
-  const [recovery, setRecovery] = useState<CodexInstallRecoveryEntry[]>([]);
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const [historyPage, setHistoryPage] = useState(1);
-  const [historyLoading, setHistoryLoading] = useState(false);
-  const [historyReleases, setHistoryReleases] = useState<
-    CodexRuntimeReleaseItem[]
-  >([]);
-  const [pendingPlan, setPendingPlan] =
-    useState<CodexRuntimeReleasePlan | null>(null);
-  const [planningTag, setPlanningTag] = useState<string | null>(null);
-  const [installingHistory, setInstallingHistory] = useState(false);
-  const [offlineInspection, setOfflineInspection] = useState<
-    (CodexOfflineInspection & { filePath: string }) | null
-  >(null);
-  const [inspectingOffline, setInspectingOffline] = useState(false);
-  const [installingOffline, setInstallingOffline] = useState(false);
-  const [historyError, setHistoryError] = useState<{
-    title: string;
-    raw: string;
-    retry: () => void;
-  } | null>(null);
-  const [checking, setChecking] = useState(false);
-  useLightweightCloseBlocker(
-    preferencesBusy ||
-      installingHistory ||
-      installingOffline ||
-      inspectingOffline ||
-      Boolean(planningTag),
-  );
-
-  const maintenanceDialogRef = useDialogFocus<HTMLElement>(
-    () => setMaintenanceOpen(false),
-    maintenanceOpen,
-  );
-  const historyDialogRef = useDialogFocus<HTMLElement>(
-    () => setHistoryOpen(false),
-    historyOpen,
-  );
-  const offlineDialogRef = useDialogFocus<HTMLElement>(
-    () => setOfflineInspection(null),
-    Boolean(offlineInspection),
-  );
-
-  const loadRecovery = useCallback(async () => {
-    if (!runningInTauri) return;
-    try {
-      const entries = await invoke<CodexInstallRecoveryEntry[]>(
-        "get_codex_install_recovery",
-      );
-      if (preferencesMounted.current) setRecovery(entries);
-    } catch {
-      // 恢复记录是提示性信息，读取失败不打扰用户
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadRecovery();
-  }, [loadRecovery]);
-
-  // Codex can be updated or removed outside Chimera++ while this page sits in
-  // the background, so re-read the installation when the window comes back.
-  // Throttled, skipped while anything here is running, and the page entry
-  // read counts as the first refresh.
-  const refreshBusy =
-    Boolean(operation) ||
-    diagnosing ||
-    checking ||
-    installingHistory ||
-    installingOffline ||
-    inspectingOffline ||
-    Boolean(planningTag);
-  const lastStatusRefreshRef = useRef(Date.now());
-  const refreshStatusRef = useRef(onRefreshStatus);
-  useLayoutEffect(() => {
-    refreshStatusRef.current = onRefreshStatus;
-  });
-  useEffect(() => {
-    if (!runningInTauri || refreshBusy) return;
-    const refresh = () => {
-      if (document.visibilityState !== "visible" || !refreshStatusRef.current)
-        return;
-      const now = Date.now();
-      if (now - lastStatusRefreshRef.current < RUNTIME_FOCUS_REFRESH_MS) return;
-      lastStatusRefreshRef.current = now;
-      void refreshStatusRef.current();
-      void loadRecovery();
-    };
-    window.addEventListener("focus", refresh);
-    document.addEventListener("visibilitychange", refresh);
-    return () => {
-      window.removeEventListener("focus", refresh);
-      document.removeEventListener("visibilitychange", refresh);
-    };
-  }, [refreshBusy, loadRecovery]);
-
-  const acknowledgeRecovery = async (id: string) => {
-    try {
-      await invoke("acknowledge_codex_install_recovery", { id });
-      await loadRecovery();
-    } catch (reason) {
-      toast.error("更新恢复记录失败", { description: String(reason) });
-    }
-  };
-
-  const loadHistoryReleases = useCallback(async (page: number) => {
-    setHistoryLoading(true);
-    setHistoryError(null);
-    try {
-      const items = await invoke<CodexRuntimeReleaseItem[]>(
-        "list_codex_runtime_releases",
-        { page },
-      );
-      setHistoryReleases(items);
-      setHistoryPage(page);
-    } catch (reason) {
-      // An empty list would read as "no versions"; say the read failed.
-      setHistoryError({
-        title: "无法读取版本目录",
-        raw: errorText(reason),
-        retry: () => void loadHistoryReleases(page),
-      });
-    } finally {
-      setHistoryLoading(false);
-    }
-  }, []);
-
-  const openHistory = () => {
-    setMaintenanceOpen(false);
-    setHistoryOpen(true);
-    setPendingPlan(null);
-    if (!historyReleases.length) void loadHistoryReleases(1);
-  };
-
-  const planHistoryRelease = async (tag: string) => {
-    setPlanningTag(tag);
-    setHistoryError(null);
-    try {
-      const plan = await invoke<CodexRuntimeReleasePlan>(
-        "plan_codex_runtime_release",
-        { tag },
-      );
-      setPendingPlan(plan);
-    } catch (reason) {
-      setHistoryError({
-        title: "无法读取这个版本的安装包信息",
-        raw: errorText(reason),
-        retry: () => void planHistoryRelease(tag),
-      });
-    } finally {
-      setPlanningTag(null);
-    }
-  };
-
-  const refreshFailedLine =
-    "更新状态没有刷新成功，可以稍后重新检查；已安装的版本不受影响。";
-
-  const installHistoryRelease = async () => {
-    if (!pendingPlan || preferencesBusy) return;
-    const plan = pendingPlan;
-    const choice: RuntimeUpdatePreferences = {
-      source: updateSource,
-      installMode,
-    };
-    setInstallingHistory(true);
-    onReceipt?.(null);
-    try {
-      // 确认对象原样传回：版本、资产、SHA-256 与下载地址全部锁定，
-      // 目录刷新不会改变本次安装的目标。
-      const result = await invoke<RuntimeOperationResult | null>(
-        "install_codex_runtime_release",
-        {
-          plan,
-          installMode,
-          confirm: true,
-        },
-      );
-      let next = runtimeSuccessReceipt("history", result, plan.version, choice);
-      setPendingPlan(null);
-      setHistoryOpen(false);
-      if ((await onRuntimeChanged?.(choice)) === false)
-        next = withReceiptLine(next, refreshFailedLine);
-      onReceipt?.(next);
-      await loadRecovery();
-    } catch (reason) {
-      // The dialog stays open on the locked plan and shows this receipt.
-      onReceipt?.(runtimeFailureReceipt("history", reason, choice));
-    } finally {
-      setInstallingHistory(false);
-      onOperationFinished?.();
-    }
-  };
-
-  const pickOfflinePackage = async () => {
-    setMaintenanceOpen(false);
-    let filePath: string | null = null;
-    try {
-      const selected = await openNativeFileDialog({
-        multiple: false,
-        title: "选择 Codex 安装包",
-        filters: [{ name: "Codex 安装包", extensions: ["msix", "Msix"] }],
-      });
-      filePath = typeof selected === "string" ? selected : null;
-    } catch (reason) {
-      toast.error("无法打开文件选择窗口", { description: errorText(reason) });
-      return;
-    }
-    if (!filePath) return;
-    setInspectingOffline(true);
-    onReceipt?.(null);
-    try {
-      const inspection = await invoke<CodexOfflineInspection>(
-        "inspect_codex_runtime_package",
-        { filePath },
-      );
-      setOfflineInspection({ ...inspection, filePath });
-    } catch (reason) {
-      onReceipt?.(runtimeFailureReceipt("offline", reason));
-    } finally {
-      setInspectingOffline(false);
-    }
-  };
-
-  const installOfflinePackage = async () => {
-    if (!offlineInspection) return;
-    const inspection = offlineInspection;
-    setInstallingOffline(true);
-    onReceipt?.(null);
-    try {
-      const result = await invoke<RuntimeOperationResult | null>(
-        "install_codex_runtime_offline",
-        {
-          filePath: inspection.filePath,
-          expectedSha256: inspection.sha256,
-          confirm: true,
-        },
-      );
-      let next = runtimeSuccessReceipt(
-        "offline",
-        result,
-        inspection.packageVersion,
-      );
-      setOfflineInspection(null);
-      if (
-        (await onRuntimeChanged?.({ source: updateSource, installMode })) ===
-        false
-      )
-        next = withReceiptLine(next, refreshFailedLine);
-      onReceipt?.(next);
-      await loadRecovery();
-    } catch (reason) {
-      onReceipt?.(runtimeFailureReceipt("offline", reason));
-    } finally {
-      setInstallingOffline(false);
-      onOperationFinished?.();
-    }
-  };
-  const version = runtime?.version ?? "等待识别";
-  const runtimeSupported = runtime?.supported !== false;
-  const runtimeUnreadable = runningInTauri && !runtime && Boolean(runtimeError);
-  const installed = runningInTauri && runtime?.installed === true;
-  const previousVersion =
-    runtime?.history?.find((item) => item.state === "previous")?.version ??
-    null;
-  const updateAvailable = release?.updateAvailable === true;
-  const selectedInstallLabel = runtimeText(installMode);
-  const updateActionLabel = updateAvailable
-    ? `下载并安装 ${selectedInstallLabel}`
-    : "检查更新";
-  const percent = progress?.total
-    ? Math.min(100, Math.round((progress.downloaded / progress.total) * 100))
-    : 0;
-  const retries = progress?.retries ?? 0;
-  const actionsLocked =
-    !runningInTauri ||
-    !runtimeSupported ||
-    preferencesBusy ||
-    Boolean(operation);
-  const startAction = (
-    action: RuntimeAction,
-    preferences?: RuntimeUpdatePreferences,
-  ) => {
-    if (actionsLocked) return;
-    setMaintenanceOpen(false);
-    onAction(action, preferences);
-  };
-  const selectedPreferences: RuntimeUpdatePreferences = {
-    source: updateSource,
-    installMode,
-  };
-  const checkSelectedRuntime = async () => {
-    if (actionsLocked || checking) return;
-    setChecking(true);
-    try {
-      await onCheck(selectedPreferences);
-    } finally {
-      if (preferencesMounted.current) setChecking(false);
-    }
-  };
-  const runDiagnostics = () => {
-    setMaintenanceOpen(false);
-    onDiagnose();
-  };
-  const operationLabel = progress
-    ? progress.stage === "installing"
-      ? "正在校验并安装，请勿关闭窗口"
-      : progress.total > 0
-        ? `${retries ? "连接中断，正在重新下载" : "正在下载"} ${percent}%`
-        : retries
-          ? "连接中断，正在重新下载"
-          : "正在下载，等待获取文件大小"
-    : operation?.action === "uninstall"
-      ? "正在卸载 Codex，请稍候"
-      : operation?.action === "rollback"
-        ? "正在恢复上一版本，请稍候"
-        : operation
-          ? "正在准备操作，请稍候"
-          : null;
-  // Next steps a receipt offers; the first one available is the primary.
-  const retryReceipt = (current: RuntimeReceipt): (() => void) | null => {
-    switch (current.kind) {
-      case "update":
-      case "install":
-        return () =>
-          startAction("update", current.preferences ?? selectedPreferences);
-      case "repair":
-      case "rollback":
-      case "uninstall":
-        return () => startAction(current.kind as RuntimeAction);
-      case "check":
-        return () => void checkSelectedRuntime();
-      case "diagnose":
-        return onDiagnose;
-      case "history":
-        return openHistory;
-      case "offline":
-        return () => void pickOfflinePackage();
-    }
-  };
-  const receiptActions = (current: RuntimeReceipt): ReceiptAction[] => {
-    const actions: ReceiptAction[] = [];
-    for (const step of current.steps) {
-      if (step === "retry") {
-        const retry = retryReceipt(current);
-        if (retry)
-          actions.push({
-            label: "重试",
-            onClick: retry,
-            disabled: actionsLocked || checking,
-          });
-      } else if (step === "proxy" && onOpenProxySettings) {
-        actions.push({ label: "打开代理设置", onClick: onOpenProxySettings });
-      } else if (step === "offline" && current.kind !== "offline") {
-        actions.push({
-          label: "离线导入安装包",
-          onClick: () => void pickOfflinePackage(),
-          disabled: actionsLocked || inspectingOffline,
-        });
-      } else if (step === "repair" && runtime?.canRepair) {
-        actions.push({
-          label: "修复安装",
-          onClick: () => startAction("repair"),
-          disabled: actionsLocked,
-        });
-      } else if (step === "diagnose" && current.kind !== "diagnose") {
-        actions.push({
-          label: "运行诊断",
-          onClick: onDiagnose,
-          disabled: diagnosing || Boolean(operation),
-          busy: diagnosing,
-        });
-      }
-    }
-    return actions.map((action, index) =>
-      index === 0 ? { ...action, primary: true } : action,
-    );
-  };
-  const copyReceipt = (current: RuntimeReceipt) =>
-    void copyDiagnosticReport(
-      buildReport(
-        `Chimera++ · Codex 管理 · ${current.title}`,
-        [
-          ["时间", reportTime(current.at)],
-          ...runtimeReportFields(runtime),
-          ["结论", current.lines.join(" ")],
-          ["提示", current.notes.join(" ")],
-        ],
-        current.detail,
-      ),
-    );
-  const renderReceipt = (current: RuntimeReceipt, inline = false) => (
-    <OperationReceipt
-      key={current.id}
-      className={inline ? "runtime-dialog-receipt" : "runtime-receipt"}
-      tone={current.tone}
-      eyebrow={inline ? undefined : "最近一次操作"}
-      time={formatReceiptTime(current.at)}
-      title={current.title}
-      lines={current.lines}
-      notes={current.notes}
-      detail={current.detail}
-      actions={inline ? [] : receiptActions(current)}
-      onCopy={() => copyReceipt(current)}
-      onDismiss={!inline && onReceipt ? () => onReceipt(null) : undefined}
-    />
-  );
-  const dialogReceipt = (kind: RuntimeReceiptKind) =>
-    receipt?.kind === kind && receipt.tone === "error"
-      ? renderReceipt(receipt, true)
-      : null;
-  // Why an installation-bound action is unavailable right now.
-  const unavailableReason = !runningInTauri
-    ? "浏览器预览不执行本机操作。"
-    : !runtime
-      ? runtimeUnreadable
-        ? "读取到安装状态后可用。"
-        : "正在读取安装状态。"
-      : "尚未安装 Codex，安装后可用。";
-  const noRollbackReason = !installed
-    ? unavailableReason
-    : runtime?.installMode === "standard"
-      ? "标准安装由 Windows 管理，没有本地回滚副本。"
-      : "只有通过 Chimera++ 更新过的免安装版才会保留上一版本。";
-  const recoveryEntry = recovery[0];
-  // Portable layout and a second, unmanaged standard install: one callout
-  // under the status board. An interrupted migration keeps the Codex files in
-  // the .layout- staging folder, so its title carries the "do not delete".
-  const layoutInterrupted = runtime?.portableLayout === "interrupted";
-  const unmanagedStandard = runtime?.unmanagedStandardVersion;
-  const runtimeNotice =
-    runningInTauri && (runtime?.layoutNotice || unmanagedStandard)
-      ? {
-          tone: layoutInterrupted ? ("warning" as const) : ("info" as const),
-          title: layoutInterrupted
-            ? "免安装版目录升级被中断 · 请勿删除 .layout- 暂存目录"
-            : runtime?.layoutNotice
-              ? "免安装版目录结构待升级"
-              : `另检测到标准安装 ${unmanagedStandard}`,
-          lines: [
-            runtime?.layoutNotice,
-            unmanagedStandard
-              ? runtime?.layoutNotice
-                ? `另检测到标准安装 ${unmanagedStandard}，它不由 Chimera++ 管理。`
-                : "它不由 Chimera++ 管理；本页的更新、修复与卸载只作用于免安装版。"
-              : null,
-          ].filter((line): line is string => Boolean(line)),
-        }
-      : null;
-  const saveRuntimePreference = (
-    patch: Partial<Pick<Settings, "codexInstallMode" | "codexUpdateSource">>,
-  ) => {
-    if (!preferences) return;
-    if (!runningInTauri) {
-      setPreferences((current) => current && { ...current, ...patch });
-      return;
-    }
-    const keys = Object.keys(patch);
-    setPendingPreferenceKeys((current) => new Set([...current, ...keys]));
-    // Patch only the selected fields; serialize replies so an older save cannot
-    // overwrite a newer selection. Failed saves leave the confirmed values intact.
-    runtimePreferenceSaveQueue = runtimePreferenceSaveQueue.then(async () => {
-      try {
-        const saved = await settingsApi.patchPreferences(patch);
-        if (preferencesMounted.current) {
-          setPreferences(saved);
-          toast.success("更新偏好已保存");
-        }
-      } catch (reason) {
-        toast.error("保存更新偏好失败", { description: String(reason) });
-      } finally {
-        if (preferencesMounted.current) {
-          setPendingPreferenceKeys((current) => {
-            const next = new Set(current);
-            keys.forEach((key) => next.delete(key));
-            return next;
-          });
-        }
-      }
-    });
-  };
-  const openInstallDirectory = async () => {
-    if (!runningInTauri) return;
-    try {
-      await invoke("open_codex_runtime_directory");
-    } catch (reason) {
-      toast.error("无法打开安装目录", { description: String(reason) });
-    }
-  };
-  return (
-    <>
-      <section className="runtime-reference-view" aria-label="Codex 管理">
-        <header className="runtime-page-heading">
-          <div>
-            <h1>Codex 管理</h1>
-            <p>Codex 的安装、升级、修复、回滚与卸载 · 只改动本机</p>
-          </div>
-          <button
-            className="secondary"
-            onClick={() => void checkSelectedRuntime()}
-            disabled={actionsLocked || checking}
-            aria-busy={checking || undefined}
-            title={checking ? "正在查询镜像上的最新版本" : undefined}
-          >
-            {checking ? (
-              <LoaderCircle className="spin" size={14} aria-hidden="true" />
-            ) : (
-              <RefreshCw size={14} aria-hidden="true" />
-            )}
-            {updateAvailable ? "重新检查" : "检查更新"}
-          </button>
-        </header>
-        {!operationLabel && receipt && renderReceipt(receipt)}
-        {operationLabel && (
-          <section
-            className="runtime-task-card"
-            aria-label="当前安装任务"
-            aria-busy="true"
-          >
-            <div className="runtime-task-heading">
-              <span className="runtime-task-icon">
-                <LoaderCircle size={28} aria-hidden="true" />
-              </span>
-              <div>
-                <span className="runtime-task-eyebrow">CODEX · 正在处理</span>
-                <h2 role="status">{operationLabel}</h2>
-                <p>请保持 Chimera++ 运行。完成后会自动刷新本机安装状态。</p>
-              </div>
-              {progress?.stage !== "installing" &&
-                progress &&
-                progress.total > 0 && (
-                  <strong>
-                    {percent}
-                    <small>%</small>
-                  </strong>
-                )}
-            </div>
-            <div className="runtime-reference-progress">
-              <i
-                role="progressbar"
-                aria-label="安装进度"
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-valuenow={
-                  progress &&
-                  progress.total > 0 &&
-                  progress.stage !== "installing"
-                    ? percent
-                    : undefined
-                }
-                aria-valuetext={operationLabel}
-              >
-                <u
-                  className={
-                    !progress ||
-                    !progress.total ||
-                    progress.stage === "installing"
-                      ? "is-indeterminate"
-                      : ""
-                  }
-                  style={{
-                    width:
-                      progress && progress.total > 0 ? `${percent}%` : "38%",
-                  }}
-                />
-              </i>
-            </div>
-            <div className="runtime-task-detail">
-              <span>
-                {progress && progress.stage !== "installing"
-                  ? `${formatMegabytes(progress.downloaded)}${progress.total > 0 ? ` / ${formatMegabytes(progress.total)}` : " 已接收"}`
-                  : "本机操作进行中，请勿关闭窗口"}
-              </span>
-              <span>
-                {progress?.stage === "installing"
-                  ? "下载完成 · 校验并安装"
-                  : retries
-                    ? `已自动重试 ${retries} 次`
-                    : "完成后自动刷新安装状态"}
-              </span>
-            </div>
-          </section>
-        )}
-        <div className="runtime-status-board">
-          <div className="runtime-installed">
-            <h2>
-              {!runningInTauri
-                ? "浏览器预览 · 未检测本机"
-                : runtimeSupported
-                  ? !runtime
-                    ? runtimeUnreadable
-                      ? "无法读取本机 Codex"
-                      : "正在识别本机 Codex"
-                    : runtime.installed
-                      ? "已安装"
-                      : "尚未安装 Codex"
-                  : "Codex 更新管理仅支持 Windows"}
-            </h2>
-            <code>
-              {!runningInTauri ? "未检测" : runtime?.installed ? version : "—"}
-            </code>
-            <small>
-              {!runningInTauri
-                ? "请在桌面应用中查看安装状态"
-                : runtime?.installed
-                  ? runtimeText(runtime.installMode)
-                  : runtimeUnreadable
-                    ? "安装状态读取失败"
-                    : runtime
-                      ? "安装后显示版本与位置"
-                      : "正在读取安装状态"}
-            </small>
-          </div>
-          <div className="runtime-info-strip">
-            <div>
-              <FolderOpen size={14} />
-              <span>
-                安装位置
-                <b
-                  title={
-                    runningInTauri
-                      ? runtime?.installPath || undefined
-                      : undefined
-                  }
-                >
-                  {!runningInTauri
-                    ? "未访问本机文件"
-                    : !runtimeSupported
-                      ? "不适用"
-                      : runtime?.installed
-                        ? runtime.installPath || "路径未识别"
-                        : runtime
-                          ? "未检测到"
-                          : runtimeUnreadable
-                            ? "读取失败"
-                            : "正在识别"}
-                </b>
-              </span>
-            </div>
-            <div>
-              <Download size={14} />
-              <span>
-                更新源
-                <b title="GitHub · Duojiyi/codex-app-mirror">
-                  {!runningInTauri
-                    ? "未读取"
-                    : preferences
-                      ? runtimeChannelText(updateSource)
-                      : preferencesError
-                        ? "读取失败"
-                        : "读取中"}
-                </b>
-              </span>
-            </div>
-            <div>
-              <Activity size={14} />
-              <span>
-                启动时检查
-                <b>
-                  {!runningInTauri
-                    ? "未读取"
-                    : preferences
-                      ? preferences.checkCodexUpdatesOnStart === false
-                        ? "已关闭"
-                        : "已开启"
-                      : preferencesError
-                        ? "读取失败"
-                        : "读取中"}
-                </b>
-              </span>
-            </div>
-          </div>
-          <button
-            className="runtime-folder"
-            aria-label="打开安装目录"
-            title={
-              installed ? "打开安装目录" : "尚未安装 Codex，没有可打开的目录"
-            }
-            onClick={() => void openInstallDirectory()}
-            disabled={!installed || !runtimeSupported || Boolean(operation)}
-          >
-            <FolderOpen size={16} />
-          </button>
-        </div>
-        {runtimeNotice && (
-          <div
-            className={`runtime-notice is-${runtimeNotice.tone}`}
-            role="status"
-            aria-labelledby="runtime-notice-title"
-          >
-            <span className="runtime-notice-icon" aria-hidden="true">
-              {runtimeNotice.tone === "warning" ? (
-                <TriangleAlert size={18} />
-              ) : (
-                <Info size={18} />
-              )}
-            </span>
-            <div>
-              <h3 id="runtime-notice-title">{runtimeNotice.title}</h3>
-              {runtimeNotice.lines.map((line) => (
-                <p key={line}>{line}</p>
-              ))}
-            </div>
-          </div>
-        )}
-        {runtimeUnreadable && runtimeError && (
-          <OperationReceipt
-            className="runtime-receipt"
-            tone="error"
-            title="无法读取本机 Codex 安装状态"
-            lines={[
-              conclusionLine(parseOperationError(runtimeError)) ??
-                "没有收到可以直接显示的原因，可展开技术详情查看。",
-              "读到安装状态之前，修复、回滚和卸载暂不可用。",
-            ]}
-            detail={runtimeError}
-            actions={
-              onRetryRuntime
-                ? [
-                    {
-                      label: "重新读取",
-                      primary: true,
-                      onClick: onRetryRuntime,
-                    },
-                  ]
-                : []
-            }
-            onCopy={() =>
-              void copyDiagnosticReport(
-                buildReport(
-                  "Chimera++ · Codex 管理 · 无法读取本机 Codex 安装状态",
-                  [["时间", reportTime(Date.now())]],
-                  runtimeError,
-                ),
-              )
-            }
-          />
-        )}
-        {preferencesError && (
-          <div className="runtime-inline-alert" role="alert">
-            <CircleAlert size={16} aria-hidden="true" />
-            <span>读取更新偏好失败，重试前无法检查或安装更新。</span>
-            <button
-              type="button"
-              className="secondary compact"
-              onClick={() => setPreferencesRetry((current) => current + 1)}
-            >
-              重试读取更新偏好
-            </button>
-          </div>
-        )}
-        {pendingPreferenceKeys.size > 0 && (
-          <p className="runtime-inline-status" role="status">
-            正在保存更新偏好…
-          </p>
-        )}
-        {recoveryEntry &&
-          !operationLabel &&
-          !installingHistory &&
-          !installingOffline && (
-            <OperationReceipt
-              className="runtime-receipt"
-              tone="warning"
-              eyebrow={
-                recovery.length > 1
-                  ? `共 ${recovery.length} 次安装没有完成，这是最近的一次`
-                  : undefined
-              }
-              time={formatReceiptTime(journalTimeMs(recoveryEntry.startedAt))}
-              title="上次安装没有完成"
-              lines={[
-                `Codex ${recoveryEntry.version} · ${runtimeText(recoveryEntry.installMode)} · ${installSourceText(recoveryEntry.source)}`,
-                recoveryEntry.detail && isPlainChinese(recoveryEntry.detail)
-                  ? ensureStop(recoveryEntry.detail)
-                  : null,
-                recoveryEntry.backupPath && runtime?.canRollback
-                  ? "上一版本的备份还在，可以回滚恢复；如果 Codex 能正常打开，也可以忽略这条记录。"
-                  : "如果 Codex 能正常打开，可以忽略这条记录；否则可以修复安装。",
-              ]}
-              actions={[
-                ...(recoveryEntry.backupPath && runtime?.canRollback
-                  ? [
-                      {
-                        label: previousVersion
-                          ? `回滚到 ${previousVersion}`
-                          : "回滚到上一版本",
-                        primary: true,
-                        onClick: () => startAction("rollback"),
-                        disabled: actionsLocked,
-                      },
-                    ]
-                  : []),
-                {
-                  label: "我已处理",
-                  onClick: () => void acknowledgeRecovery(recoveryEntry.id),
-                },
-              ]}
-            />
-          )}
-        <div
-          className="runtime-release-card"
-          role={updateAvailable && runningInTauri ? "status" : undefined}
-        >
-          <strong>
-            {!runningInTauri
-              ? "更新状态待检测"
-              : updateAvailable && release
-                ? `Codex ${release.latestVersion} 可用`
-                : release
-                  ? "未发现可用更新"
-                  : "尚未检查更新"}
-          </strong>
-          <p>
-            {!runningInTauri
-              ? "浏览器预览不读取本机安装，也不执行下载、修复或卸载。"
-              : release
-                ? [
-                    updateAvailable
-                      ? release.currentVersion
-                        ? `当前 ${release.currentVersion} → ${release.latestVersion}`
-                        : `将安装 ${release.latestVersion}`
-                      : `镜像上的最新版本是 ${release.latestVersion}`,
-                    updateAvailable ? selectedInstallLabel : null,
-                    updateAvailable && release.sizeBytes > 0
-                      ? formatMegabytes(release.sizeBytes)
-                      : null,
-                    release.releasedAt
-                      ? `${formatReleaseDate(release.releasedAt)} 发布`
-                      : null,
-                  ]
-                    .filter(Boolean)
-                    .join(" · ")
-                : "点“检查更新”查询镜像上的最新版本。"}
-          </p>
-          <small>安装和维护会先关闭正在运行的 Codex，请先保存工作。</small>
-          <div className="runtime-reference-actions">
-            {updateAvailable && runningInTauri && (
-              <button
-                className="primary"
-                onClick={() => startAction("update", selectedPreferences)}
-                disabled={
-                  !runtimeSupported || Boolean(operation) || preferencesBusy
-                }
-              >
-                <Download size={14} />
-                {updateActionLabel}
-              </button>
-            )}
-            <button
-              className="secondary"
-              onClick={() => setMaintenanceOpen(true)}
-              disabled={
-                !runtimeSupported || Boolean(operation) || preferencesBusy
-              }
-            >
-              <Settings2 size={14} />
-              安装方式与更新源
-            </button>
-          </div>
-        </div>
-        <section className="runtime-maintenance-rows" aria-label="维护">
-          <h2>维护</h2>
-          <div>
-            <Activity size={18} />
-            <span>
-              <strong>运行诊断</strong>
-              <small>
-                {installed
-                  ? "检查安装、系统注册、运行依赖与启动情况，不修改本机文件。"
-                  : "尚未安装 Codex 时，诊断只会确认安装状态。"}
-              </small>
-            </span>
-            <button
-              className="secondary"
-              onClick={onDiagnose}
-              disabled={
-                !runningInTauri ||
-                !runtimeSupported ||
-                diagnosing ||
-                Boolean(operation)
-              }
-              aria-busy={diagnosing || undefined}
-            >
-              {diagnosing && (
-                <LoaderCircle className="spin" size={14} aria-hidden="true" />
-              )}
-              {diagnosing ? "正在诊断" : "诊断"}
-            </button>
-          </div>
-          <div>
-            <Wrench size={18} />
-            <span>
-              <strong>修复安装</strong>
-              <small>
-                {runtime?.canRepair
-                  ? "重新下载最新版本并按当前安装方式覆盖安装；操作前会再次确认。"
-                  : unavailableReason}
-              </small>
-            </span>
-            <button
-              className="secondary"
-              onClick={() => startAction("repair")}
-              disabled={actionsLocked || !runtime?.canRepair}
-            >
-              修复
-            </button>
-          </div>
-          <div>
-            <RefreshCw size={18} />
-            <span>
-              <strong>回滚</strong>
-              <small>
-                {runningInTauri && runtime?.canRollback
-                  ? previousVersion
-                    ? `恢复到上一版本 ${previousVersion}；当前版本会被替换。`
-                    : "恢复到上一版本；当前版本会被替换。"
-                  : noRollbackReason}
-              </small>
-            </span>
-            <button
-              className="secondary"
-              onClick={() => startAction("rollback")}
-              disabled={actionsLocked || !runtime?.canRollback}
-            >
-              {runtime?.canRollback && previousVersion
-                ? `回滚到 ${previousVersion}`
-                : "回滚"}
-            </button>
-          </div>
-          <div>
-            <Trash2 size={18} />
-            <span>
-              <strong>卸载</strong>
-              <small>
-                {runtime?.canUninstall
-                  ? "从本机移除 Codex；线路配置和 ~/.codex 中的会话与设置会保留。"
-                  : unavailableReason}
-              </small>
-            </span>
-            <button
-              className="secondary danger"
-              onClick={() => startAction("uninstall")}
-              disabled={actionsLocked || !runtime?.canUninstall}
-            >
-              卸载…
-            </button>
-          </div>
-        </section>
-        <section className="runtime-local-records" aria-label="本机版本">
-          <h2>本机版本</h2>
-          {installed ? (
-            <ul className="runtime-version-list">
-              <li className="is-current">
-                <code>
-                  {runtime?.history?.find((item) => item.state !== "previous")
-                    ?.version ?? version}
-                </code>
-                <span>当前版本 · {runtimeText(runtime?.installMode)}</span>
-              </li>
-              <li>
-                {previousVersion ? (
-                  <>
-                    <code>{previousVersion}</code>
-                    <span>上一版本 · 可在“维护”中回滚</span>
-                  </>
-                ) : (
-                  <span className="runtime-version-note">
-                    没有可回滚的上一版本。{noRollbackReason}
-                  </span>
-                )}
-              </li>
-            </ul>
-          ) : (
-            <p>
-              {!runningInTauri
-                ? "连接本机后显示实际版本。"
-                : runtimeUnreadable
-                  ? "读取安装状态后显示版本。"
-                  : runtime
-                    ? "尚未安装 Codex，安装后显示当前版本与可回滚的上一版本。"
-                    : "正在读取本机版本。"}
-            </p>
-          )}
-        </section>
-      </section>
-      {maintenanceOpen && (
-        <div
-          className="runtime-maintenance-page"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setMaintenanceOpen(false);
-          }}
-        >
-          <section
-            ref={maintenanceDialogRef}
-            className="runtime-maintenance-workspace"
-            role="dialog"
-            aria-modal="true"
-            aria-label="安装与维护"
-            tabIndex={-1}
-          >
-            <header>
-              <div>
-                <h2>安装与维护</h2>
-                <p>分别选择安装方式与下载更新源</p>
-              </div>
-              <button
-                aria-label="关闭安装与维护"
-                onClick={() => setMaintenanceOpen(false)}
-              >
-                <ChevronLeft size={18} /> 返回 Codex 管理
-              </button>
-            </header>
-            <div className="runtime-maintenance-content">
-              <b>安装方式</b>
-              <button
-                className={`runtime-mode-card ${installMode === "standard" ? "is-active" : ""}`}
-                disabled={
-                  !preferences || pendingPreferenceKeys.has("codexInstallMode")
-                }
-                aria-pressed={installMode === "standard"}
-                onClick={() =>
-                  saveRuntimePreference({ codexInstallMode: "standard" })
-                }
-              >
-                <span>
-                  <Download size={18} />
-                </span>
-                <span>
-                  <strong>标准安装</strong>
-                  <small>自动集成到 Windows，适合大多数用户</small>
-                </span>
-                {installMode === "standard" && <Check size={16} />}
-              </button>
-              <button
-                className={`runtime-mode-card ${installMode === "portable" ? "is-active" : ""}`}
-                disabled={
-                  !preferences || pendingPreferenceKeys.has("codexInstallMode")
-                }
-                aria-pressed={installMode === "portable"}
-                onClick={() =>
-                  saveRuntimePreference({ codexInstallMode: "portable" })
-                }
-              >
-                <span>
-                  <Package size={18} />
-                </span>
-                <span>
-                  <strong>免安装版</strong>
-                  <small>便携运行，可放在任意目录</small>
-                </span>
-                {installMode === "portable" && <Check size={16} />}
-              </button>
-              <b>更新源</b>
-              <div className="runtime-source-segment">
-                <button
-                  className={updateSource === "auto" ? "is-active" : ""}
-                  disabled={
-                    !preferences ||
-                    pendingPreferenceKeys.has("codexUpdateSource")
-                  }
-                  aria-pressed={updateSource === "auto"}
-                  onClick={() =>
-                    saveRuntimePreference({ codexUpdateSource: "auto" })
-                  }
-                >
-                  自动选择
-                </button>
-                <button
-                  className={updateSource === "mirror" ? "is-active" : ""}
-                  disabled={
-                    !preferences ||
-                    pendingPreferenceKeys.has("codexUpdateSource")
-                  }
-                  aria-pressed={updateSource === "mirror"}
-                  onClick={() =>
-                    saveRuntimePreference({ codexUpdateSource: "mirror" })
-                  }
-                >
-                  镜像安装
-                </button>
-              </div>
-              <p className="runtime-source-note">
-                当前安装包来自 GitHub 镜像：
-                <code>Duojiyi/codex-app-mirror</code>，非 OpenAI 官方下载站。
-              </p>
-              <b>维护</b>
-              <div className="runtime-maintenance-list">
-                <button onClick={runDiagnostics} disabled={diagnosing}>
-                  <Activity size={16} />
-                  <span>
-                    <strong>{diagnosing ? "正在诊断" : "诊断"}</strong>
-                    <small>只检查，不修改本机文件</small>
-                  </span>
-                  <ChevronDown size={15} />
-                </button>
-                <button
-                  onClick={() => startAction("repair")}
-                  disabled={!runtime?.canRepair || preferencesBusy}
-                >
-                  <Wrench size={16} />
-                  <span>
-                    <strong>修复</strong>
-                    <small>修复损坏的 Codex 安装文件</small>
-                  </span>
-                  <ChevronDown size={15} />
-                </button>
-                <button
-                  onClick={() => startAction("rollback")}
-                  disabled={!runtime?.canRollback || preferencesBusy}
-                >
-                  <RefreshCw size={16} />
-                  <span>
-                    <strong>回滚</strong>
-                    <small>恢复上一个可用版本</small>
-                  </span>
-                  <ChevronDown size={15} />
-                </button>
-                <button
-                  onClick={openHistory}
-                  disabled={Boolean(operation) || preferencesBusy}
-                >
-                  <Activity size={16} />
-                  <span>
-                    <strong>安装历史版本</strong>
-                    <small>从镜像发布目录选择并锁定指定版本</small>
-                  </span>
-                  <ChevronDown size={15} />
-                </button>
-                <button
-                  onClick={() => void pickOfflinePackage()}
-                  disabled={
-                    Boolean(operation) || preferencesBusy || inspectingOffline
-                  }
-                >
-                  <Package size={16} />
-                  <span>
-                    <strong>
-                      {inspectingOffline ? "正在检查安装包…" : "离线导入安装包"}
-                    </strong>
-                    <small>
-                      校验本地 .Msix 的哈希与 OpenAI 签名后安装（免安装版）
-                    </small>
-                  </span>
-                  <ChevronDown size={15} />
-                </button>
-                <button
-                  className="danger"
-                  onClick={() => startAction("uninstall")}
-                  disabled={!runtime?.canUninstall || preferencesBusy}
-                >
-                  <Trash2 size={16} />
-                  <span>
-                    <strong>卸载 Codex</strong>
-                    <small>保留 Chimera++ 与供应商配置</small>
-                  </span>
-                  <ChevronDown size={15} />
-                </button>
-              </div>
-            </div>
-            <footer className="runtime-maintenance-footer">
-              <button
-                className="primary runtime-maintenance-primary"
-                onClick={() => startAction("update", selectedPreferences)}
-                disabled={Boolean(operation) || preferencesBusy}
-              >
-                <Download size={15} />
-                下载并安装 {selectedInstallLabel}
-              </button>
-            </footer>
-          </section>
-        </div>
-      )}
-      {historyOpen && (
-        <div
-          className="modal-backdrop"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget && !installingHistory)
-              setHistoryOpen(false);
-          }}
-        >
-          <section
-            ref={historyDialogRef}
-            className="history-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="runtime-history-title"
-            tabIndex={-1}
-          >
-            <header>
-              <div>
-                <h2 id="runtime-history-title">安装历史版本</h2>
-                <p>
-                  版本来自 Chimera 镜像发布目录；选定后版本、安装包与 SHA-256
-                  即被锁定。
-                </p>
-              </div>
-              <button
-                className="icon-button"
-                aria-label="关闭历史版本"
-                onClick={() => setHistoryOpen(false)}
-                disabled={installingHistory}
-              >
-                <X size={16} />
-              </button>
-            </header>
-            {pendingPlan ? (
-              <div className="history-dialog-body">
-                {/* A failed install keeps the locked plan; show why here. */}
-                {dialogReceipt("history")}
-                <div className="history-confirm-meta">
-                  <strong>
-                    Codex {pendingPlan.version}
-                    {pendingPlan.packageVersion
-                      ? `（包版本 ${pendingPlan.packageVersion}）`
-                      : ""}
-                    {pendingPlan.sizeBytes > 0
-                      ? ` · ${(pendingPlan.sizeBytes / 1024 / 1024).toFixed(1)} MB`
-                      : ""}
-                  </strong>
-                  <small>
-                    SHA-256：<code>{pendingPlan.sha256}</code>
-                  </small>
-                  <small>
-                    安装方式：{runtimeText(installMode)}
-                    ；历史版本降级不会被后台更新静默覆盖，安装前后都会复核哈希与
-                    OpenAI 签名。
-                  </small>
-                </div>
-              </div>
-            ) : (
-              <div className="history-dialog-body">
-                {dialogReceipt("history")}
-                {historyLoading && <p role="status">正在加载版本目录…</p>}
-                {/* A failed read must not look like an empty catalog. */}
-                {!historyLoading && historyError && (
-                  <div className="history-dialog-error" role="alert">
-                    <strong>{historyError.title}</strong>
-                    <small>{historyError.raw}</small>
-                    <button onClick={historyError.retry}>重试</button>
-                  </div>
-                )}
-                {!historyLoading &&
-                  !historyError &&
-                  !historyReleases.length && <p>该页没有可安装的版本。</p>}
-                <div className="history-version-list">
-                  {historyReleases.map((item) => (
-                    <button
-                      key={item.tag}
-                      onClick={() => void planHistoryRelease(item.tag)}
-                      disabled={!item.installable || planningTag !== null}
-                    >
-                      <Download size={16} />
-                      <span>
-                        <strong>
-                          {item.name || item.tag}
-                          {item.prerelease ? "（预发布）" : ""}
-                        </strong>
-                        <small>
-                          {item.installable
-                            ? formatReleaseDate(item.publishedAt)
-                            : "缺少 Windows 安装资产"}
-                          {planningTag === item.tag ? " · 正在解析…" : ""}
-                        </small>
-                      </span>
-                      <ChevronDown size={15} />
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-            <footer>
-              {pendingPlan ? (
-                <>
-                  <button
-                    onClick={() => setPendingPlan(null)}
-                    disabled={installingHistory}
-                  >
-                    返回列表
-                  </button>
-                  <button
-                    className="primary"
-                    onClick={() => void installHistoryRelease()}
-                    disabled={installingHistory}
-                  >
-                    {installingHistory ? "正在安装…" : "确认安装此版本"}
-                  </button>
-                </>
-              ) : (
-                <>
-                  <button
-                    onClick={() => void loadHistoryReleases(historyPage - 1)}
-                    disabled={historyLoading || historyPage <= 1}
-                  >
-                    上一页
-                  </button>
-                  <button
-                    onClick={() => void loadHistoryReleases(historyPage + 1)}
-                    disabled={historyLoading || historyReleases.length < 10}
-                  >
-                    下一页
-                  </button>
-                </>
-              )}
-            </footer>
-          </section>
-        </div>
-      )}
-      {offlineInspection && (
-        <div className="modal-backdrop">
-          <section
-            ref={offlineDialogRef}
-            className="confirm-dialog"
-            role="alertdialog"
-            aria-modal="true"
-            aria-labelledby="runtime-offline-title"
-            tabIndex={-1}
-          >
-            {offlineInspection.signatureValid &&
-            offlineInspection.identityValid &&
-            offlineInspection.architectureMatches ? (
-              <CircleCheck size={26} />
-            ) : (
-              <CircleAlert size={26} />
-            )}
-            <h2 id="runtime-offline-title">确认离线安装？</h2>
-            {dialogReceipt("offline")}
-            <p>
-              {offlineInspection.fileName} · Codex{" "}
-              {offlineInspection.packageVersion} ·{" "}
-              {offlineInspection.architecture} ·{" "}
-              {(offlineInspection.sizeBytes / 1024 / 1024).toFixed(1)} MB
-            </p>
-            <p>
-              <small>
-                SHA-256：<code>{offlineInspection.sha256}</code>
-              </small>
-            </p>
-            <p>
-              <small>
-                OpenAI 发行者签名：
-                {offlineInspection.signatureValid ? "已通过" : "未通过"} ·
-                包身份：
-                {offlineInspection.identityValid
-                  ? "Codex"
-                  : offlineInspection.packageName}{" "}
-                · 架构
-                {offlineInspection.architectureMatches ? "匹配" : "不匹配"}
-                。安装走免安装版，安装前会再次复核哈希。
-              </small>
-            </p>
-            <footer>
-              <button
-                onClick={() => setOfflineInspection(null)}
-                disabled={installingOffline}
-              >
-                取消
-              </button>
-              <button
-                className="primary"
-                onClick={() => void installOfflinePackage()}
-                disabled={
-                  installingOffline ||
-                  !offlineInspection.signatureValid ||
-                  !offlineInspection.identityValid ||
-                  !offlineInspection.architectureMatches
-                }
-              >
-                {installingOffline ? "正在安装…" : "确认安装"}
-              </button>
-            </footer>
-          </section>
-        </div>
-      )}
-    </>
-  );
-}
-
 type CodexLineLabel = { name: string; source: string; official: boolean };
 
 /**
@@ -5074,6 +3731,8 @@ export function NewProvidersView({
     toName: string;
     backupId: string;
     timestamp: string;
+    /** Epoch ms of the switch; the bar shows the elapsed time from it. */
+    switchedAt?: number;
     onUndo: () => void;
   } | null>(null);
   const undoTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -5214,6 +3873,7 @@ export function NewProvidersView({
           toName: lineName(provider),
           backupId: `sw-${Date.now()}`,
           timestamp: "刚刚",
+          switchedAt: Date.now(),
           onUndo: () => {
             if (undoTimerRef.current) {
               clearTimeout(undoTimerRef.current);
@@ -5223,10 +3883,11 @@ export function NewProvidersView({
             setUndoReceipt(null);
           },
         });
+        // 用户定调：切线路不弹确认框，靠撤销条兜底，撤销窗口 10 分钟。
         undoTimerRef.current = setTimeout(() => {
           setUndoReceipt(null);
           undoTimerRef.current = null;
-        }, 8000);
+        }, LINE_UNDO_WINDOW_MS);
       }
     } finally {
       setSwitchingId(null);
@@ -5256,27 +3917,31 @@ export function NewProvidersView({
               : "Codex 已就绪"
           : "未检测到 Codex"
         : "macOS 暂不支持快速启动";
-  const codexButtonLabel = launchingCodex
-    ? "正在启动…"
-    : codexProcess === null
-      ? "正在检测…"
-      : codexProcess?.supported === false
-        ? "仅 Windows 支持"
-        : codexProcess?.installed === false
-          ? "尚未安装"
-          : codexProcess?.running &&
-              (restartRequired ||
-                (rendererUnlock?.attachable &&
-                  rendererUnlock.injected === false &&
-                  Boolean(rendererUnlock.error)))
-            ? officialLoginRequired
-              ? "重启并登录"
-              : "重启 Codex"
-            : officialLoginRequired
-              ? "启动并登录"
-              : codexProcess?.running
-                ? "打开 Codex"
-                : "启动 Codex";
+  // The design sample never starts a process, so the detection branch would
+  // show "正在检测…" forever; the sample mirrors a running CLI instead.
+  const codexButtonLabel = designPreview
+    ? "打开 Codex"
+    : launchingCodex
+      ? "正在启动…"
+      : codexProcess === null
+        ? "正在检测…"
+        : codexProcess?.supported === false
+          ? "仅 Windows 支持"
+          : codexProcess?.installed === false
+            ? "尚未安装"
+            : codexProcess?.running &&
+                (restartRequired ||
+                  (rendererUnlock?.attachable &&
+                    rendererUnlock.injected === false &&
+                    Boolean(rendererUnlock.error)))
+              ? officialLoginRequired
+                ? "重启并登录"
+                : "重启 Codex"
+              : officialLoginRequired
+                ? "启动并登录"
+                : codexProcess?.running
+                  ? "打开 Codex"
+                  : "启动 Codex";
 
   return (
     <section className="provider-page">
@@ -5399,6 +4064,11 @@ export function NewProvidersView({
           }
           onEdit={!designPreview && current ? () => onEdit(current) : undefined}
           undoReceipt={undoReceipt}
+          onRestartCodex={
+            !designPreview && codexProcess?.running && restartRequired
+              ? () => void onOpenCodex()
+              : undefined
+          }
         />
       </div>
       {balanceEnabled && !balanceNotice && (

@@ -11,6 +11,7 @@ import "./theme/typography.css";
 import "./theme/liquid-glass.css";
 import "./components/ui/liquid-glass-ui.css";
 import "./theme/liquid-glass-pages.css";
+import "./theme/liquid-glass-v3.css";
 // 导入国际化配置
 import i18n, { i18nReady } from "./i18n";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -113,7 +114,8 @@ async function bootstrap() {
           <React.StrictMode>
             <FrontendErrorBoundary>
               <ThemeProvider
-                defaultTheme="system"
+                defaultTheme="light"
+                forceTheme="light"
                 storageKey="chimera-plus-plus-theme"
               >
                 <DatabaseUpgrade payload={initError} />
@@ -145,8 +147,10 @@ async function bootstrap() {
     <React.StrictMode>
       <FrontendErrorBoundary>
         <QueryClientProvider client={queryClient}>
+          {/* v3 只有一套浅色外观：强制 light，避免出现没人设计过的深色界面。 */}
           <ThemeProvider
-            defaultTheme="system"
+            defaultTheme="light"
+            forceTheme="light"
             storageKey="chimera-plus-plus-theme"
           >
             <UpdateProvider>

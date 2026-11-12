@@ -1,3 +1,11 @@
+import {
+  CLAUDE_DESKTOP_SAMPLE_ACCOUNTS,
+  CLAUDE_DESKTOP_SAMPLE_QUOTA,
+  CLAUDE_DESKTOP_SAMPLE_SWAP,
+  CLAUDE_SAMPLE_ACCOUNTS,
+  CLAUDE_SAMPLE_QUOTA,
+  isToolDesignPreview,
+} from "@/views/ToolView.designSamples";
 import "./ClaudeAccountsCard.css";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
@@ -35,7 +43,7 @@ import {
   type AccountFilter,
   type AccountSort,
 } from "./AccountsToolbar";
-import { AddAccountMenu } from "./AddAccountMenu";
+import { AddAccountMenu, type DetectedLogin } from "./AddAccountMenu";
 import {
   DESKTOP_STATUS_TEXT,
   QuotaStrip,
@@ -118,6 +126,9 @@ export function ClaudeAccountsCard({
 }: ClaudeAccountsCardProps) {
   const headingId = useId();
   const nameInputId = useId();
+  // Browser design preview (L14/L30): sample accounts, every write disabled.
+  const [designPreview] = useState(() => !native && isToolDesignPreview());
+  const live = native || designPreview;
   const [code, setCode] = useState<ClaudeCodeAccounts | null>(null);
   const [desktop, setDesktop] = useState<ClaudeDesktopProfile[] | null>(null);
   const [swap, setSwap] = useState<ClaudeDesktopSwapStatus | null>(null);
@@ -203,6 +214,28 @@ export function ClaudeAccountsCard({
   );
 
   const load = useCallback(async () => {
+    if (designPreview) {
+      const sample =
+        mode === "code"
+          ? CLAUDE_SAMPLE_ACCOUNTS
+          : CLAUDE_DESKTOP_SAMPLE_ACCOUNTS;
+      const quotas =
+        mode === "code" ? CLAUDE_SAMPLE_QUOTA : CLAUDE_DESKTOP_SAMPLE_QUOTA;
+      setCode(sample);
+      if (mode === "desktop") {
+        setDesktop([]);
+        setSwap(CLAUDE_DESKTOP_SAMPLE_SWAP);
+      }
+      setQuota(
+        Object.fromEntries(
+          Object.entries(quotas).map(([id, view]) => [
+            mode === "desktop" ? `vault:${id}` : id,
+            { view, loading: false },
+          ]),
+        ),
+      );
+      return;
+    }
     if (!native) return;
     const mine = ++loadGeneration.current;
     const stale = () => !mounted.current || mine !== loadGeneration.current;
@@ -243,7 +276,7 @@ export function ClaudeAccountsCard({
     } catch (cause) {
       if (!stale()) setLoadError(errorText(cause));
     }
-  }, [mode, native, readQuota]);
+  }, [designPreview, mode, native, readQuota]);
 
   useEffect(() => {
     void load();
@@ -477,9 +510,41 @@ export function ClaudeAccountsCard({
       swapMessage(target, outcome, nameOf);
     });
 
+  /** Desktop is signed in to an account Claude Code on this computer is
+   *  also signed in to, but it is not saved yet: save Claude Code's login,
+   *  then keep Desktop's sign-in for it, in one step. The backend checks the
+   *  account numbers match before keeping anything. */
+  const importDesktopLogin = () =>
+    run("desktop:import", async () => {
+      // With Claude Code signed in to the same account, save that login so
+      // the account works in both; otherwise save Desktop's sign-in alone.
+      const saved = importable
+        ? await claudeAccountsApi.saveCurrentCode()
+        : await claudeAccountsApi.saveDesktopOnly(desktopEmail);
+      const target: DesktopSwapTarget = { kind: "capture", account: saved };
+      const outcome = await claudeAccountsApi.captureDesktopLogin(
+        saved.id,
+        false,
+      );
+      if (outcome.status === "desktop_running") {
+        toast.success(`已保存登录「${saved.name}」`);
+        setDesktopConfirm(target);
+        return;
+      }
+      swapMessage(target, outcome, (id) =>
+        id === saved.id ? saved.name : nameOf(id),
+      );
+    });
+
   // ----- the saved logins: order -----
+  // Only the logins this page lists: a hidden Desktop-only login must not
+  // take a place in the order being edited.
   const readableIds = (code?.accounts ?? [])
-    .filter((account) => !account.unreadable)
+    .filter(
+      (account) =>
+        !account.unreadable &&
+        (mode === "desktop" || account.kind !== "desktop_only"),
+    )
     .map((account) => account.id);
 
   const commitOrder = (next: string[]) => {
@@ -537,7 +602,10 @@ export function ClaudeAccountsCard({
       desktopConfirm !== null,
   );
 
-  const codeRows = code?.accounts ?? [];
+  // Desktop-only logins have no Claude Code tokens: not shown for Code.
+  const codeRows = (code?.accounts ?? []).filter(
+    (account) => mode === "desktop" || account.kind !== "desktop_only",
+  );
   // Dragging and moving only make sense on the whole list in its own order.
   const ordering = !query.trim() && filter === "all" && sortBy === "custom";
   const shownRows = visibleAccounts(codeRows, {
@@ -584,7 +652,10 @@ export function ClaudeAccountsCard({
       <p className="claude-accounts-empty">没有符合条件的账号。</p>
     ) : null;
   const exportable = codeRows.filter(
-    (a) => !a.unreadable && (a.kind !== "oauth" || a.email),
+    (a) =>
+      !a.unreadable &&
+      a.kind !== "desktop_only" &&
+      (a.kind !== "oauth" || a.email),
   ).length;
   const desktopRows = desktop ?? [];
   const defaultQuota = quota[DEFAULT_DESKTOP_ID];
@@ -597,6 +668,48 @@ export function ClaudeAccountsCard({
   const currentHasSnapshot = Boolean(
     swap?.snapshots.some((s) => s.accountId === swap.currentAccountId),
   );
+  const desktopEmail = defaultQuota?.email ?? null;
+  // Claude Code here is signed in to the same, not yet saved, account.
+  const importable = Boolean(
+    swap?.signedIn &&
+    !currentSaved &&
+    desktopEmail &&
+    code?.live.signedIn &&
+    !code.live.savedId &&
+    code.live.email?.toLowerCase() === desktopEmail.toLowerCase(),
+  );
+
+  // Sign-ins on this computer that are not saved yet, offered under 导入.
+  const saveLiveCode = () =>
+    run("save-code", async () => {
+      const saved = await claudeAccountsApi.saveCurrentCode();
+      toast.success(`已导入本机 Claude Code 登录「${saved.name}」`);
+    });
+  const detectedLogins: DetectedLogin[] = [
+    ...(mode === "desktop" && swap?.supported && swap.signedIn && !currentSaved
+      ? [
+          {
+            id: "desktop",
+            source: "本机 Claude Desktop ",
+            email: desktopEmail,
+            onImport: () => void importDesktopLogin(),
+          },
+        ]
+      : []),
+    ...(code?.supported &&
+    code.live?.signedIn &&
+    !code.live.savedId &&
+    !importable
+      ? [
+          {
+            id: "code",
+            source: "本机 Claude Code ",
+            email: code.live?.email ?? null,
+            onImport: () => void saveLiveCode(),
+          },
+        ]
+      : []),
+  ];
 
   const headerAction =
     mode === "code" ? (
@@ -605,6 +718,7 @@ export function ClaudeAccountsCard({
           disabled={disabled}
           browserSupported={code.browserLoginSupported}
           exportable={exportable}
+          detected={detectedLogins}
           onChanged={() => {
             void load();
             window.dispatchEvent(new CustomEvent(BINDINGS_CHANGED_EVENT));
@@ -698,7 +812,7 @@ export function ClaudeAccountsCard({
         {announcement}
       </p>
 
-      {!native ? (
+      {!live ? (
         <p className="claude-accounts-note">账号管理需要在桌面端使用。</p>
       ) : loadError ? (
         <div className="claude-accounts-error" role="alert">
@@ -822,8 +936,19 @@ export function ClaudeAccountsCard({
                         ? currentHasSnapshot
                           ? `这个登录已保存为「${currentSaved.name}」的 Desktop 登录，可以切换回来。要换别的账号，用它们那一行的按钮；不要在 Desktop 里退出登录，退出会让保存的登录失效。`
                           : `登录的是已保存的账号「${currentSaved.name}」，还没有保存它的 Desktop 登录。`
-                        : "登录的账号不在已保存的账号里。先用下面的「添加登录」加入它，再保存 Desktop 登录。"}
+                        : importable
+                          ? `检测到本机 Desktop 已登录 ${desktopEmail}，Claude Code 也登录着同一个账号。一键导入会保存这个登录，并保存它的 Desktop 登录，之后就能一键切换。`
+                          : `检测到本机 Desktop 已登录${desktopEmail ? ` ${desktopEmail}` : ""}，还没有导入。一键导入会保存它的 Desktop 登录，之后换了别的账号也能一键切换回来。`}
                     </span>
+                    {!currentSaved ? (
+                      <Button
+                        size="sm"
+                        disabled={disabled || defaultQuota?.loading === true}
+                        onClick={() => void importDesktopLogin()}
+                      >
+                        一键导入
+                      </Button>
+                    ) : null}
                     {currentSaved ? (
                       <Button
                         size="sm"
@@ -985,6 +1110,7 @@ export function ClaudeAccountsCard({
                   }}
                   label="添加登录"
                   mode="desktop"
+                  detected={detectedLogins}
                 />
               </div>
               {codeRows.length === 0 ? (

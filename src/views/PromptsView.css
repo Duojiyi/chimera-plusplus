@@ -141,16 +141,6 @@
 }
 /* prompts (2.8.6): names get their own line, one ellipsized row (full list in
    the title), instead of wrapping a lone character under the headline. */
-.prompts-active-names {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  margin-top: 2px;
-  font-size: 13px;
-  line-height: 1.7;
-  color: var(--text-2);
-}
 .prompts-summary-copy p {
   margin: 4px 0 0;
   color: var(--text-3);
@@ -467,7 +457,7 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   font: 12px/1.9 var(--font-mono);
-  /* Show markers such as <!-- and --> exactly as they are in the file. */
+  /* Show markers such as \3c !-- and --> exactly as they are in the file. */
   font-variant-ligatures: none;
   font-feature-settings:
     "liga" 0,
@@ -589,10 +579,6 @@
   }
   .prompts-summary-copy {
     min-width: 170px;
-  }
-  .prompts-active-names {
-    display: block;
-    margin-left: 0;
   }
   .prompts-summary-actions {
     margin-left: auto;

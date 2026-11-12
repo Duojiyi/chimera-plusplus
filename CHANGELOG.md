@@ -10,6 +10,31 @@ numbers belong to a separate upstream line.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.0] - 2026-11-12
+
+### Changed
+
+- **New look.** Every page is redrawn in one light "liquid glass" theme: frosted cards over a cool grey grid, one ink-coloured accent, and a coloured bar instead of two-letter badges to tell the tools apart. The dark theme is gone, and with it the **应用主题** switch in Settings.
+- **One tool at a time in the sidebar.** A tool switcher at the top picks Codex, Claude Code, Claude Desktop, Gemini CLI, OpenCode, Pi, oh-my-pi or Grok Build; the sidebar then lists that tool's own pages. **官方账号** sits under **线路** as its sub-item (Codex, Claude Code and Claude Desktop), and **提示词** is listed for every tool that has a prompt file. **会话** and **设置** stay at the bottom.
+- **线路**: the table has a card header with the line count and the one **管理线路** entry; the current line is marked with an ink square. After a switch, an undo bar stays for 10 minutes (**撤销**, and **重启 Codex** while Codex is running and has to restart). The lines pages of the other tools no longer repeat under the title what the subtitle already says.
+- **Skills 与 MCP** is two cards side by side, with an MCP server's details in a drawer on the right.
+- **Codex 官方账号** is an overview of cards (or a compact list) with both quota windows, plan, state, tags and the last time each account was used; it searches by name, email or tag and filters by state and group. Quota readings are kept in the app database: opening the page shows a reading under 5 minutes old without a request, **刷新额度** and the automatic refresh ask for a new one, a failed query is not retried for a minute, and a second refresh within 10 seconds reuses the answer.
+- The command palette, Settings, 用量, 配置体检, Codex 管理, 外观 (formerly 皮肤市场), 提示词, 会话 and 管理工具 follow the same layout rules; several descriptions that said the same thing twice were cut.
+- Exported backups and sync leave the Codex account quota cache out: a reading belongs to the machine whose login took it.
+
+### Added
+
+- **Codex official accounts — notes, tags, groups and 停用.** The pencil on an account card edits its note, tags and group (a new group can be created on the spot) and can hold the account out of use: a held account is not offered for switching on this page and its quota is not read; its login stays saved, and **启用** brings it back. The account Codex is using cannot be held, and a held account's line can still be chosen on 线路. A group can be deleted from the same dialog; its accounts become ungrouped. Several accounts can be selected and deleted together, and the confirmation names each one. The labels are stored in the app database (schema v18, migrated on first start), never in the login vault. They are part of a backup file but stay on this machine during sync, like the logins they describe: a download from another device does not replace them.
+- **Claude Desktop sign-in found where new builds keep it.** Store builds of Claude Desktop now keep their data under `%LOCALAPPDATA%\Claude-Data\claude_*`; the default account row reads it from there, so it shows who is signed in, the plan and the quota again.
+- **Importing the sign-ins on this computer without picking a file.** When the default Claude Desktop is signed in to an account that is not saved yet, its row offers **一键导入**. If Claude Code is signed in to the same account, that login is saved and Desktop's sign-in with it; otherwise Desktop's sign-in is saved on its own as a **仅 Desktop** login, which can be switched back to in Desktop, is not listed for Claude Code, cannot be exported, and becomes a full login once Claude Code's login of the same account is saved. Importing a login file that holds Claude Code's login of such an account completes it too. The 添加账号 dialog opens on **导入** and lists the sign-ins it found first, and the lines pages of Claude Code and Claude Desktop say so when a local sign-in has not been imported.
+
+### Fixed
+
+- The local proxy gives each TCP connect 10 seconds and tries a host's addresses in a staggered race, instead of waiting for the operating system to give up on one before trying the next. A host whose IPv6 route swallows packets no longer adds some 20 seconds to the first byte. A failure now names every address tried and why each failed.
+- Codex lines that speak native Responses to a strict upstream (Azure, Bedrock, OpenAI-compatible) no longer fail with 400 on a reasoning item carrying `"content": null`: the field is removed before the request is sent, as it already was for xAI.
+- Running a Skill's own Python script no longer makes the Skill look changed: `__pycache__` and `*.pyc` / `*.pyo` are left out of its content hash, so it is not reported as different on import and its copies are not listed twice.
+- Opening **Skills 与 MCP** for Codex after using it for another tool opens it for Codex, not the other tool. A dark bar that appeared over sidebar items on hover, a skin list that ran under the bottom action bar on 外观, rows cut in half at the bottom of the Skills cards, and account sections drawn without their card are fixed.
+
 ## [2.8.10] - 2026-11-05
 
 ### Changed

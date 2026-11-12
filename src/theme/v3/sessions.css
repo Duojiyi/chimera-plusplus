@@ -1,0 +1,402 @@
+/* —— 以下规则自 liquid-glass-v3.css 迁入：只在本页加载，不进首屏样式 —— */
+/* 14.2 会话页 */
+.chimera-shell .session-manager-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px 26px 24px;
+  color: var(--text-1);
+}
+
+.chimera-shell .session-page-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 44px;
+}
+
+.chimera-shell .session-page-heading h1 {
+  font-size: 24px;
+  line-height: 30px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text-1);
+}
+
+.chimera-shell .session-page-heading p {
+  margin: 2px 0 0;
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+
+.chimera-shell .session-page-heading button {
+  height: 30px;
+  border-radius: 9px;
+  font-size: 11px;
+}
+
+.chimera-shell .session-app-label {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--text-3);
+}
+
+.chimera-shell .session-list-toolbar {
+  min-height: 36px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--v3-hairline);
+  gap: 8px;
+}
+
+.chimera-shell .session-list-toolbar input,
+.chimera-shell .session-list-toolbar select {
+  height: 26px;
+  border-radius: 8px;
+  border: 1px solid var(--v3-hairline);
+  background: var(--v3-glass-fill-soft);
+  font-size: 11px;
+}
+
+.chimera-shell .session-skeleton-row {
+  height: 34px;
+  border-bottom: 1px solid var(--v3-hairline);
+}
+
+.chimera-shell .session-state {
+  padding: 18px 16px;
+  font-size: 11.5px;
+  line-height: 17px;
+  color: var(--text-2);
+}
+
+/* ============================================================
+   v3.0 · 会话（设计稿 L12）
+   未分层（见 postcss.config.cjs），覆盖 SessionManagerPage.css 与
+   liquid-glass-v3.css §14 中针对本页的旧规则。
+   选择器统一以 .chimera-shell .session-manager-page 开头。
+   ============================================================ */
+
+.chimera-shell .session-manager-page {
+  gap: 14px;
+  padding: 26px 26px 18px;
+}
+
+/* ---------- 页头 ---------- */
+
+.chimera-shell .session-manager-page .session-page-heading {
+  align-items: center;
+  margin: 0;
+}
+
+.chimera-shell .session-manager-page .session-page-heading h1 {
+  margin: 0;
+  font-size: 24px;
+  line-height: 30px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+}
+
+.chimera-shell .session-manager-page .session-page-heading p {
+  margin: 0;
+  font-size: 11px;
+  line-height: 15px;
+  color: var(--text-3);
+}
+
+.chimera-shell .session-manager-page .session-app-select {
+  height: 30px;
+  min-width: 156px;
+  padding: 0 10px 0 12px;
+  border: 1px solid #ffffffd9;
+  border-radius: 9px;
+  background: #ffffffa8;
+  box-shadow: none;
+  font-size: 11px;
+}
+
+/* ---------- 双卡 ---------- */
+
+.chimera-shell .session-manager-page .session-workspace {
+  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+  gap: 16px;
+}
+
+.chimera-shell
+  .session-manager-page
+  :is(.session-list-panel, .session-detail-panel) {
+  background: var(--v3-glass-fill);
+  border: 1px solid var(--v3-glass-border);
+  border-radius: 14px;
+  box-shadow:
+    var(--v3-shadow-inner-top), var(--v3-shadow-inner-bottom),
+    var(--v3-shadow-outer);
+  -webkit-backdrop-filter: blur(var(--v3-glass-blur)) saturate(150%);
+  backdrop-filter: blur(var(--v3-glass-blur)) saturate(150%);
+}
+
+/* 列表卡头：标题 + 计数 + 图标工具条 */
+.chimera-shell .session-manager-page .session-list-head {
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--v3-hairline);
+}
+
+.chimera-shell .session-manager-page .session-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 28px;
+}
+
+.chimera-shell
+  .session-manager-page
+  .session-list-header
+  [data-slot="card-title"],
+.chimera-shell .session-manager-page .session-list-header h3 {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.chimera-shell .session-manager-page .session-list-header [data-slot="badge"] {
+  padding: 0 6px;
+  border: 0;
+  background: transparent;
+  color: var(--text-3);
+  font-family: var(--font-mono), ui-monospace, Consolas, monospace;
+  font-size: 10.5px;
+  font-weight: 500;
+}
+
+.chimera-shell .session-manager-page .session-list-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  flex-shrink: 0;
+}
+
+.chimera-shell .session-manager-page .session-list-toolbar button {
+  width: 26px;
+  height: 26px;
+  min-width: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-3);
+  box-shadow: none;
+}
+
+.chimera-shell .session-manager-page .session-list-toolbar button:hover {
+  background: #ffffffb3;
+  color: var(--text-1);
+}
+
+.chimera-shell .session-manager-page .session-search {
+  margin-top: 10px;
+}
+
+.chimera-shell .session-manager-page .session-search input {
+  height: 30px;
+  border: 1px solid #ffffffcc;
+  border-radius: 9px;
+  background: #ffffffb3;
+  box-shadow: none;
+  font-size: 11px;
+}
+
+/* ---------- 列表行：标题在上，目录与时间在下；选中行左缘墨线 ---------- */
+
+.chimera-shell .session-manager-page .session-list-row {
+  position: relative;
+  margin: 0 8px;
+  border-radius: 10px;
+  border-bottom: 0;
+  background: transparent;
+}
+
+.chimera-shell .session-manager-page .session-list-row + .session-list-row {
+  margin-top: 2px;
+}
+
+.chimera-shell .session-manager-page .session-list-row:hover {
+  background: #ffffff80;
+}
+
+.chimera-shell .session-manager-page .session-list-row.is-selected {
+  background: #ffffffd9;
+  box-shadow: inset 0 0 0 1px #ffffff;
+}
+
+.chimera-shell .session-manager-page .session-list-row.is-selected::before {
+  left: 0;
+  top: 12px;
+  bottom: 12px;
+  width: 2px;
+  border-radius: 1px;
+  background: #1a2420;
+}
+
+.chimera-shell .session-manager-page .session-list-row {
+  padding: 9px 12px;
+}
+
+.chimera-shell .session-manager-page .session-list-row-main {
+  gap: 3px;
+  padding: 0;
+}
+
+.chimera-shell .session-manager-page .session-list-row-text {
+  display: block;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.chimera-shell .session-manager-page .session-list-row-title {
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 17px;
+  color: var(--text-1);
+}
+
+/* 品牌图标去色，只作辅助识别 */
+.chimera-shell .session-manager-page .session-list-row-icon {
+  opacity: 0.55;
+  filter: grayscale(1);
+}
+
+.chimera-shell .session-manager-page .session-list-row-meta {
+  margin-top: 0;
+  gap: 8px;
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+.chimera-shell .session-manager-page .session-list-row-folder {
+  font-family: var(--font-mono), ui-monospace, Consolas, monospace;
+}
+
+.chimera-shell .session-manager-page .session-group-row {
+  margin: 0 8px;
+  border-radius: 8px;
+  font-size: 11px;
+}
+
+/* ---------- 详情卡 ---------- */
+
+.chimera-shell .session-manager-page .session-detail-head {
+  padding: 16px 19px 12px;
+  border-bottom: 1px solid var(--v3-hairline);
+}
+
+.chimera-shell .session-manager-page .session-detail-title {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 20px;
+  color: var(--text-1);
+}
+
+.chimera-shell .session-manager-page .session-detail-actions button {
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid #ffffffd9;
+  border-radius: 9px;
+  background: #ffffffa8;
+  color: #33454f;
+  font-size: 11px;
+  font-weight: 500;
+  box-shadow: none;
+}
+
+.chimera-shell
+  .session-manager-page
+  .session-detail-actions
+  button:hover:not(:disabled) {
+  background: #ffffffe0;
+}
+
+.chimera-shell .session-manager-page .session-detail-meta {
+  margin-top: 6px;
+  gap: 14px;
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+.chimera-shell .session-manager-page .session-resume-row {
+  margin-top: 10px;
+}
+
+.chimera-shell .session-manager-page .session-resume-command {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid #ffffffcc;
+  border-radius: 8px;
+  background: #ffffff8c;
+  color: var(--text-2);
+  font-size: 11px;
+  line-height: 26px;
+}
+
+.chimera-shell .session-manager-page .session-conversation-head {
+  padding: 12px 19px 6px;
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+.chimera-shell
+  .session-manager-page
+  .session-conversation-head
+  [data-slot="badge"] {
+  border: 0;
+  background: transparent;
+  color: var(--text-3);
+  font-family: var(--font-mono), ui-monospace, Consolas, monospace;
+}
+
+/* 消息：你 = 透明底，助手 = 浅灰底；不加多余描边 */
+.chimera-shell .session-manager-page .session-message {
+  border: 0;
+  border-radius: 10px;
+  padding: 10px 14px;
+  background: transparent;
+}
+
+.chimera-shell .session-manager-page .session-message-assistant {
+  background: #1a24200a;
+}
+
+.chimera-shell .session-manager-page .session-message-tool,
+.chimera-shell .session-manager-page .session-message-context {
+  border: 1px dashed var(--v3-hairline);
+  background: transparent;
+}
+
+.chimera-shell .session-manager-page .session-message-active {
+  background: #ffffffd9;
+  box-shadow: inset 2px 0 #1a2420;
+}
+
+.chimera-shell .session-manager-page .session-message-role {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.chimera-shell .session-manager-page .session-message-time {
+  font-size: 10px;
+}
+
+.chimera-shell .session-manager-page .session-message-body {
+  font-size: 12px;
+  line-height: 19px;
+}
+
+.chimera-shell .session-manager-page .session-tag {
+  border-radius: 6px;
+  font-size: 10px;
+}

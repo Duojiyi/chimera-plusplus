@@ -490,6 +490,8 @@ impl Database {
             [],
         );
 
+        Self::create_official_account_tables(conn)?;
+
         Ok(())
     }
 
@@ -603,6 +605,11 @@ impl Database {
                         log::info!("迁移数据库从 v16 到 v17（提示词库与 Skills/MCP 备注）");
                         Self::migrate_v16_to_v17(conn)?;
                         Self::set_user_version(conn, 17)?;
+                    }
+                    17 => {
+                        log::info!("迁移数据库从 v17 到 v18（官方账号元数据、分组与配额缓存）");
+                        Self::migrate_v17_to_v18(conn)?;
+                        Self::set_user_version(conn, 18)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -1639,6 +1646,54 @@ impl Database {
             }
         }
         Self::create_prompt_library_tables(conn)
+    }
+
+    /// v17 -> v18: metadata, groups and the quota cache for Codex official
+    /// accounts. Purely additive (three new tables, no column changes), so
+    /// existing data is untouched. `official_account_meta` and
+    /// `official_account_groups` are the user's labels for the logins saved
+    /// on this machine: a backup file carries them, sync leaves them on the
+    /// device (the logins never sync either). `official_account_quota` is a
+    /// device-local cache, skipped by both.
+    fn migrate_v17_to_v18(conn: &Connection) -> Result<(), AppError> {
+        Self::create_official_account_tables(conn)
+    }
+
+    /// v18 tables for Codex official accounts. Kept in one place so the
+    /// fresh-install path and the v17 -> v18 migration cannot drift.
+    fn create_official_account_tables(conn: &Connection) -> Result<(), AppError> {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS official_account_meta (
+                account_key TEXT PRIMARY KEY,
+                tags TEXT NOT NULL DEFAULT '[]',
+                group_id TEXT,
+                note TEXT,
+                disabled BOOLEAN NOT NULL DEFAULT 0,
+                disabled_at INTEGER,
+                disabled_reason TEXT,
+                last_used_at INTEGER,
+                created_at INTEGER,
+                updated_at INTEGER
+            );
+            CREATE TABLE IF NOT EXISTS official_account_groups (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                color TEXT,
+                sort_index INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER,
+                updated_at INTEGER
+            );
+            CREATE TABLE IF NOT EXISTS official_account_quota (
+                account_key TEXT PRIMARY KEY,
+                payload TEXT NOT NULL DEFAULT '',
+                fetched_at INTEGER NOT NULL DEFAULT 0,
+                last_attempt_at INTEGER NOT NULL DEFAULT 0,
+                access_expired BOOLEAN NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_official_account_meta_group
+                ON official_account_meta(group_id);",
+        )
+        .map_err(|e| AppError::Database(format!("创建官方账号元数据表失败: {e}")))
     }
 
     /// v17 prompt library tables. `prompt_template_cache` is a local cache
@@ -4062,7 +4117,9 @@ mod tests {
 
         Database::apply_schema_migrations_on_conn(&conn)?;
 
-        assert_eq!(Database::get_user_version(&conn)?, 17);
+        // The chain runs on to the newest version; this case is only about what
+        // v17 added, so it must not pin the *current* version.
+        assert!(Database::get_user_version(&conn)? >= 17);
         for column in ["filename", "category_id", "origin", "template_id"] {
             assert!(Database::has_column(&conn, "prompts", column)?, "{column}");
         }
@@ -4100,6 +4157,74 @@ mod tests {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
         assert_eq!(kept, ("pdf".to_string(), "github".to_string()));
+        Ok(())
+    }
+
+    /// v18 只建三张新表：旧库的每一行都必须原样留着。
+    #[test]
+    fn migrate_v17_to_v18_adds_account_metadata_without_touching_existing_rows(
+    ) -> Result<(), AppError> {
+        let conn = Connection::open_in_memory()?;
+        Database::create_tables_on_conn(&conn)?;
+        conn.execute_batch(
+            "INSERT INTO providers (id, app_type, name, settings_config)
+                VALUES ('codex-official', 'codex', 'Codex 官方', '{}');
+             INSERT INTO providers (id, app_type, name, settings_config)
+                VALUES ('claude-official', 'claude', 'Claude 官方', '{}');",
+        )?;
+        // Pretend the three tables never existed, as on a real v17 database.
+        conn.execute_batch(
+            "DROP TABLE official_account_meta;
+             DROP TABLE official_account_groups;
+             DROP TABLE official_account_quota;",
+        )?;
+        Database::set_user_version(&conn, 17)?;
+
+        Database::apply_schema_migrations_on_conn(&conn)?;
+
+        assert_eq!(Database::get_user_version(&conn)?, 18);
+        for table in [
+            "official_account_meta",
+            "official_account_groups",
+            "official_account_quota",
+        ] {
+            assert!(Database::table_exists(&conn, table)?, "{table}");
+        }
+        for column in [
+            "account_key",
+            "tags",
+            "group_id",
+            "note",
+            "disabled",
+            "disabled_at",
+            "disabled_reason",
+            "last_used_at",
+            "created_at",
+            "updated_at",
+        ] {
+            assert!(
+                Database::has_column(&conn, "official_account_meta", column)?,
+                "{column}"
+            );
+        }
+        for column in ["account_key", "payload", "fetched_at", "last_attempt_at"] {
+            assert!(
+                Database::has_column(&conn, "official_account_quota", column)?,
+                "{column}"
+            );
+        }
+        let providers: Vec<String> = conn
+            .prepare("SELECT name FROM providers ORDER BY id")?
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        assert_eq!(
+            providers,
+            vec!["Claude 官方".to_string(), "Codex 官方".to_string()]
+        );
+
+        // Running the migration again on a v18 database is a no-op, not an error.
+        Database::apply_schema_migrations_on_conn(&conn)?;
+        assert_eq!(Database::get_user_version(&conn)?, 18);
         Ok(())
     }
 }

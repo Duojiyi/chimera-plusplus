@@ -694,7 +694,7 @@ describe("liquid glass stylesheet safeguards", () => {
     expect(pressed.selector.trim()).toMatch(/:active$/);
   });
 
-  it.each(["light", "dark"])(
+  it.each(["light"])(
     "keeps white primary text above WCAG AA across the %s gradient and hover/pressed fill",
     (mode) => {
       const theme = parse(
@@ -742,10 +742,7 @@ describe("liquid glass stylesheet safeguards", () => {
     },
   );
 
-  it.each([
-    ["light", "#ffffff"],
-    ["dark", "#1f2a36"],
-  ])(
+  it.each([["light", "#ffffff"]])(
     "keeps an off switch visible on a %s card: thumb, track and edge at 3:1",
     (mode, card) => {
       const theme = parse(
@@ -837,7 +834,7 @@ describe("liquid glass stylesheet safeguards", () => {
     expect(declarations.has("background-color")).toBe(false);
   });
 
-  it.each(["", "dark"])(
+  it.each([""])(
     "preserves opaque card fallbacks with the %s theme ancestor",
     (themeClass) => {
       const ancestor = document.createElement("div");
@@ -854,16 +851,6 @@ describe("liquid glass stylesheet safeguards", () => {
       );
       expect(declarations.get("background-image")?.value).toBe("none");
       expect(declarations.get("backdrop-filter")?.value).toBe("none");
-      const darkFallbacks: string[] = [];
-      stylesheet.walkAtRules("supports", (supports) => {
-        if (!supports.params.startsWith("not ")) return;
-        supports.walkRules((rule) => {
-          if (rule.selector.includes(".dark .glass-ui.glass-card"))
-            darkFallbacks.push(rule.toString());
-        });
-      });
-      expect(darkFallbacks).toHaveLength(1);
-      expect(darkFallbacks[0]).toContain("background-image: none");
     },
   );
 
@@ -963,22 +950,6 @@ describe("liquid glass page cascade safeguards", () => {
     ),
   );
 
-  it("keeps capability selection above the legacy navigation hover rule", () => {
-    const selections: string[] = [];
-    shell.walkRules((rule) => {
-      if (
-        rule.selector.includes(
-          '[data-pencil-name^="能力 · "][aria-current="page"]::before',
-        )
-      )
-        selections.push(rule.selector);
-    });
-    expect(selections).toHaveLength(2);
-    selections.forEach((selector) =>
-      expect(selector).toContain(".chimera-navigation"),
-    );
-  });
-
   it("keeps lazy page canvases below the material layer", () => {
     const canvases: string[] = [];
     pages.walkRules((rule) => {
@@ -992,66 +963,73 @@ describe("liquid glass page cascade safeguards", () => {
     expect(canvases[0]).toMatch(/^\.chimera-shell\s+:is\(/);
   });
 
-  it("preserves explicit system selection colours for every selected navigation item", () => {
-    const normalize = (selector: string) =>
-      selector.replace(/\s+/g, " ").trim();
-    const selections: Rule[] = [];
-    shell.walkAtRules("media", (media) => {
-      if (media.params !== "(forced-colors: active)") return;
-      media.walkRules((rule) => {
-        if (
-          list
-            .comma(rule.selector)
-            .map(normalize)
-            .includes('.chimera-shell .chimera-nav-item[aria-current="page"]')
-        )
-          selections.push(rule);
-      });
+  const v3 = parse(
+    readFileSync(
+      path.resolve(__dirname, "../../src/theme/liquid-glass-v3.css"),
+      "utf8",
+    ),
+  );
+  const forcedRules = (sheet: typeof v3) => {
+    const rules: Rule[] = [];
+    sheet.walkAtRules("media", (media) => {
+      if (media.params === "(forced-colors: active)")
+        media.walkRules((rule) => {
+          rules.push(rule);
+        });
     });
-    expect(selections).toHaveLength(1);
-    // Highlight-filled controls need the same treatment, or the forced-colour
-    // backplate hides their HighlightText label.
-    expect(list.comma(selections[0].selector).map(normalize)).toEqual(
-      expect.arrayContaining([
-        ".chimera-shell .provider-table-row.is-current",
-        ".chimera-shell button.primary",
-        ".chimera-shell .provider-page-heading button.provider-add",
-      ]),
-    );
+    return rules;
+  };
+  const normalize = (selector: string) => selector.replace(/\s+/g, " ").trim();
+  const declarationsOf = (rule: Rule) => {
     const declarations = new Map<string, string>();
-    selections[0].walkDecls((declaration) => {
+    rule.walkDecls((declaration) => {
       declarations.set(declaration.prop, declaration.value);
     });
+    return declarations;
+  };
+
+  it("preserves explicit system selection colours for every selected navigation item", () => {
+    // Highlight-filled controls need forced-color-adjust: none, or the
+    // forced-colour backplate hides their HighlightText label.
+    const legacy = forcedRules(shell).filter((rule) =>
+      list
+        .comma(rule.selector)
+        .map(normalize)
+        .includes(".chimera-shell .provider-table-row.is-current"),
+    );
+    expect(
+      legacy.some(
+        (rule) => declarationsOf(rule).get("forced-color-adjust") === "none",
+      ),
+    ).toBe(true);
+    const selected = forcedRules(v3).filter((rule) =>
+      list
+        .comma(rule.selector)
+        .map(normalize)
+        .includes('.chimera-shell .v3-nav-item[aria-current="page"]'),
+    );
+    expect(selected).toHaveLength(1);
+    expect(list.comma(selected[0].selector).map(normalize)).toEqual(
+      expect.arrayContaining([
+        '.v3-tool-menu .v3-tool-menu-item[aria-current="true"]',
+      ]),
+    );
+    const declarations = declarationsOf(selected[0]);
     expect(declarations.get("forced-color-adjust")).toBe("none");
+    expect(declarations.get("background")).toBe("Highlight");
     expect(declarations.get("color")).toBe("HighlightText");
   });
 
   it("keeps a contrasting keyboard focus ring on both selected navigation surfaces", () => {
-    const focused: Rule[] = [];
-    shell.walkAtRules("media", (media) => {
-      if (media.params !== "(forced-colors: active)") return;
-      media.walkRules((rule) => {
-        if (rule.selector.includes(":focus-visible")) focused.push(rule);
-      });
-    });
+    const focused = forcedRules(v3).filter((rule) =>
+      rule.selector.includes(":focus-visible"),
+    );
     expect(focused).toHaveLength(1);
-    const selectors = list
-      .comma(focused[0].selector)
-      .map((selector) =>
-        selector
-          .replace(/\s+/g, " ")
-          .replace(/\(\s+/g, "(")
-          .replace(/\s+\)/g, ")")
-          .trim(),
-      );
-    expect(selectors).toEqual([
-      '.chimera-shell .chimera-nav-item[aria-current="page"]:not([data-pencil-name^="能力 · "]):focus-visible',
-      '.chimera-shell .chimera-sidebar .chimera-navigation .chimera-nav-item[data-pencil-name^="能力 · "][aria-current="page"]:focus-visible::before',
+    expect(list.comma(focused[0].selector).map(normalize)).toEqual([
+      '.chimera-shell .v3-nav-item[aria-current="page"]:focus-visible',
+      '.v3-tool-menu .v3-tool-menu-item[aria-current="true"]:focus-visible',
     ]);
-    const declarations = new Map<string, string>();
-    focused[0].walkDecls((declaration) => {
-      declarations.set(declaration.prop, declaration.value);
-    });
+    const declarations = declarationsOf(focused[0]);
     expect(declarations.get("outline")).toBe("2px solid HighlightText");
     expect(declarations.get("outline-offset")).toBe("-2px");
   });

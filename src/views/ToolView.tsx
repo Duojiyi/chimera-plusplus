@@ -9,9 +9,8 @@ import {
   useMemo,
   useRef,
   useState,
-  type CSSProperties,
 } from "react";
-import { Loader2, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Loader2, Pencil, Plus, RefreshCw, Trash2, Users } from "lucide-react";
 import { toast } from "sonner";
 import { providerPresets } from "@/config/claudeProviderPresets";
 import { geminiProviderPresets } from "@/config/geminiProviderPresets";
@@ -20,11 +19,23 @@ import { LineBadge } from "@/components/LineBadge";
 import { Button } from "@/components/ui/button";
 import { DisabledReason } from "@/components/ui/help-tip";
 import "./ToolView.css";
+import "@/theme/v3/tool-views.css";
+import {
+  TOOL_SECTIONS,
+  TOOLS_WITH_ACCOUNTS,
+  ToolSectionNav,
+  resolveSection,
+} from "./ToolSectionNav";
+import {
+  TOOL_SAMPLE_LINES,
+  isToolDesignPreview,
+} from "./ToolView.designSamples";
 import type { Provider } from "@/types";
 import type { AppId } from "@/lib/api/types";
 import { providersApi } from "@/lib/api/providers";
 import { vscodeApi } from "@/lib/api/vscode";
 import { ClaudeAccountsCard } from "@/components/claude-accounts/ClaudeAccountsCard";
+import { LocalLoginNotice } from "@/components/claude-accounts/LocalLoginNotice";
 import { ClaudeBindingsCard } from "@/components/claude-accounts/ClaudeBindingsCard";
 import { ClaudeUsageCard } from "@/components/claude-accounts/ClaudeUsageCard";
 import type { ToolName } from "@/components/settings/AboutSection";
@@ -39,6 +50,10 @@ export interface ToolViewProps {
   onEditLine?: (lineId: string, appId: AppId) => void;
   native?: boolean;
   onManageResources?: (appId: AppId) => void;
+  /** Section shown, driven by the shell sidebar; uncontrolled when omitted. */
+  section?: string;
+  /** Called when the page asks for another section (in-page navigation). */
+  onSectionChange?: (id: string) => void;
 }
 
 const AboutSection = lazy(() =>
@@ -69,11 +84,9 @@ const liveConfigImporters: Partial<
 type ToolMeta = {
   appId: Exclude<AppId, "codex">;
   name: string;
-  shortName: string;
   category: "switch" | "accumulate";
   categoryLabel: string;
   description: string;
-  color: string;
 };
 
 const ToolProviderEditor = lazy(() => import("./ToolViewEditor"));
@@ -87,58 +100,46 @@ const TOOL_META: Record<string, ToolMeta> = {
   grokbuild: {
     appId: "grokbuild",
     name: "Grok Build",
-    shortName: "Gk",
     category: "switch",
     categoryLabel: "单线路",
     description: "配置不代表已安装或登录。",
-    color: "#2563EB",
   },
 
   "claude-desktop": {
     appId: "claude-desktop",
     name: "Claude Desktop",
-    shortName: "CD",
     category: "switch",
     categoryLabel: "桌面客户端",
     description: "连接官方客户端，安装、线路与登录分开管理。",
-    color: "#C46D50",
   },
 
   "claude-code": {
     appId: "claude",
     name: "Claude Code",
-    shortName: "CC",
     category: "switch",
     categoryLabel: "单线路",
     description: `切换后重新打开 ${keepTogether("Claude Code")} 生效。`,
-    color: "#D97706",
   },
   "gemini-cli": {
     appId: "gemini",
     name: "Gemini CLI",
-    shortName: "Gm",
     category: "switch",
     categoryLabel: "单线路",
     description: `切换后重新打开 ${keepTogether("Gemini CLI")} 生效。`,
-    color: "#2563EB",
   },
   opencode: {
     appId: "opencode",
     name: "OpenCode",
-    shortName: "OC",
     category: "accumulate",
     categoryLabel: "多线路",
     description: "可以同时启用多条线路，停用后仍保留已保存的配置。",
-    color: "#10B981",
   },
   pi: {
     appId: "pi",
     name: "Pi",
-    shortName: "Pi",
     category: "accumulate",
     categoryLabel: "多线路",
     description: "可以同时启用多条线路，默认模型仍在 Pi 中选择。",
-    color: "#8B5CF6",
   },
 };
 
@@ -166,12 +167,36 @@ function KnownToolView({
   onEditLine,
   native = false,
   onManageResources,
+  section,
+  onSectionChange,
 }: ToolViewProps) {
   const tool = TOOL_META[toolId];
+  const [designPreview] = useState(isToolDesignPreview);
+  const sections = TOOL_SECTIONS[toolId];
+  const defaultSection = tool.appId === "pi" ? "routes" : "lines";
+  const [ownSection, setOwnSection] = useState(defaultSection);
+  // The shell sidebar shows the sections when it passes `onSectionChange`.
+  const controlled = Boolean(onSectionChange);
+  const hasAccounts = TOOLS_WITH_ACCOUNTS.has(toolId);
+  const wantedSection = controlled ? section : ownSection;
+  // Official accounts are a tab of the lines section, not a section of the
+  // sidebar, so "accounts" is valid here without being in `sections`.
+  const currentSection =
+    hasAccounts && wantedSection === "accounts"
+      ? "accounts"
+      : resolveSection(sections, wantedSection, defaultSection);
+  const selectSection = (id: string) => {
+    // Skills 与 MCP is one shared page, opened with this tool preselected.
+    if (id === "resources") {
+      onManageResources?.(tool.appId);
+      return;
+    }
+    setOwnSection(id);
+    onSectionChange?.(id);
+  };
   const [statusRefresh, setStatusRefresh] = useState(0);
   const [desktopSupported, setDesktopSupported] = useState(false);
   const canMutate = tool.appId !== "claude-desktop" || desktopSupported;
-  const [piSection, setPiSection] = useState("routes");
   const [removing, setRemoving] = useState<Provider | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [editing, setEditing] = useState<Provider | "new" | null>(null);
@@ -248,6 +273,12 @@ function KnownToolView({
     const generation = ++loadGeneration.current;
     try {
       setError(null);
+      const sample = designPreview ? TOOL_SAMPLE_LINES[tool.appId] : undefined;
+      if (sample) {
+        setProviders(sample.lines);
+        setCurrentId(sample.current);
+        return;
+      }
       const [all, current] = await Promise.all([
         providersApi.getAll(tool.appId),
         providersApi.getCurrent(tool.appId),
@@ -276,7 +307,7 @@ function KnownToolView({
         setRefreshing(false);
       }
     }
-  }, [tool.appId]);
+  }, [designPreview, tool.appId]);
 
   useEffect(() => {
     activeApp.current = tool.appId;
@@ -553,11 +584,24 @@ function KnownToolView({
       </>
     );
 
+  const sectionLabel =
+    currentSection === "accounts"
+      ? "官方账号"
+      : (sections.find((item) => item.id === currentSection)?.label ??
+        tool.name);
+  const onLines = currentSection === "lines" || currentSection === "routes";
+  const show = (id: string) => currentSection === id;
+  const subtitle: Record<string, string> = {
+    accounts: `${tool.name} 一次只能用一套凭据 · 切换账号不影响会话、设置与 MCP`,
+    lines: `${tool.name} · ${tool.categoryLabel} · ${tool.description}`,
+    routes: `${tool.name} · ${tool.categoryLabel} · ${tool.description}`,
+    settings: `${tool.name} 的默认模型与 MCP 全局配置`,
+    plugins: `${tool.name} 的插件与市场源`,
+    install: `${tool.name} 的安装、版本与环境检查`,
+  };
+
   return (
-    <div
-      className="tool-view text-[var(--text-1)] box-border w-full h-full flex flex-col gap-[12px] p-[12px_24px] bg-[var(--bg-surface)] overflow-y-auto"
-      data-kind={tool.category}
-    >
+    <div className="tool-view" data-kind={tool.category}>
       {editing && !isNativeToolAppId(tool.appId) && (
         <Suspense fallback={<p role="status">正在打开编辑器…</p>}>
           <ToolProviderEditor
@@ -577,39 +621,16 @@ function KnownToolView({
         </Suspense>
       )}
       <header className="tool-header">
-        <div
-          className="tool-mark"
-          style={{ "--tool-color": tool.color } as CSSProperties}
-          aria-hidden="true"
-        >
-          {tool.shortName}
-        </div>
         <div className="tool-title">
-          <div className="tool-title-row">
-            <h1>{tool.name}</h1>
-            <span className="tool-kind">{tool.categoryLabel}</span>
-          </div>
-          <p>{tool.description}</p>
+          <h1>{sectionLabel}</h1>
+          <p>{subtitle[currentSection] ?? tool.name}</p>
         </div>
         <div
           className="tool-actions"
-          hidden={tool.appId === "pi" && piSection !== "routes"}
+          hidden={!onLines}
           role="group"
           aria-label={`${tool.name} 工具操作`}
         >
-          {["claude", "gemini", "opencode", "grokbuild"].includes(
-            tool.appId,
-          ) ? (
-            <button
-              type="button"
-              className="tool-btn"
-              aria-label={`管理 ${tool.name} 的 Skills 与 MCP`}
-              disabled={!onManageResources}
-              onClick={() => onManageResources?.(tool.appId)}
-            >
-              Skills 与 MCP
-            </button>
-          ) : null}
           <button
             type="button"
             className="tool-btn"
@@ -626,7 +647,7 @@ function KnownToolView({
           <button
             type="button"
             className="tool-btn is-primary"
-            disabled={!canMutate || importing}
+            disabled={!canMutate || importing || designPreview}
             onClick={() => editLine("new")}
           >
             <Plus size={15} aria-hidden="true" />
@@ -635,29 +656,54 @@ function KnownToolView({
         </div>
       </header>
 
-      {tool.appId === "pi" && (
-        <nav className="tool-section-nav" aria-label="Pi 管理分区">
-          {[
-            ["routes", "模型线路"],
-            ["settings", "默认模型与 MCP"],
-            ["plugins", "插件市场"],
-            ["install", "安装与更新"],
-          ].map(([id, label]) => (
-            <button
-              key={id}
-              type="button"
-              aria-current={piSection === id ? "page" : undefined}
-              onClick={() => setPiSection(id)}
-            >
-              {label}
-            </button>
-          ))}
-        </nav>
+      {!controlled && (
+        <ToolSectionNav
+          label={`${tool.name} 管理分区`}
+          sections={
+            hasAccounts
+              ? [
+                  sections[0],
+                  { id: "accounts", label: "官方账号", icon: Users },
+                  ...sections.slice(1),
+                ]
+              : sections
+          }
+          current={currentSection}
+          onChange={selectSection}
+          ariaLabels={
+            onManageResources
+              ? { resources: `管理 ${tool.name} 的 Skills 与 MCP` }
+              : undefined
+          }
+          disabled={onManageResources ? undefined : ["resources"]}
+        />
       )}
-      <div
-        className="tool-section-content"
-        hidden={tool.appId === "pi" && piSection !== "routes"}
-      >
+
+      {/* 单线路 / 多线路 and what a switch needs are in the subtitle. */}
+
+      {hasAccounts && (
+        <div className="tool-section-content" hidden={!show("accounts")}>
+          {tool.appId === "claude" ? (
+            <>
+              <ClaudeAccountsCard mode="code" native={native} />
+              <ClaudeBindingsCard native={native} />
+              <ClaudeUsageCard native={native} />
+            </>
+          ) : (
+            <ClaudeAccountsCard mode="desktop" native={native} />
+          )}
+        </div>
+      )}
+
+      <div className="tool-section-content" hidden={!onLines}>
+        {hasAccounts && onLines ? (
+          <LocalLoginNotice
+            mode={tool.appId === "claude" ? "code" : "desktop"}
+            native={native}
+            refreshVersion={refreshVersion + statusRefresh}
+            onOpen={() => selectSection("accounts")}
+          />
+        ) : null}
         {tool.appId === "claude-desktop" ? (
           <Suspense
             fallback={<p role="status">正在读取 Claude Desktop 状态…</p>}
@@ -669,9 +715,6 @@ function KnownToolView({
               onSupported={setDesktopSupported}
             />
           </Suspense>
-        ) : null}
-        {tool.appId === "claude-desktop" ? (
-          <ClaudeAccountsCard mode="desktop" native={native} />
         ) : null}
 
         {canImport(tool.appId) && importApplies && !loading && !error && (
@@ -750,14 +793,29 @@ function KnownToolView({
                     ? "使用 Claude 官方账号"
                     : "使用 Google 官方账号"}
                 </strong>
-                <p>官方线路无需 API 密钥。切换到官方线路后，{loginCommand}</p>
+                <p>
+                  官方线路无需 API 密钥。切换到官方线路后，{loginCommand}
+                  {hasAccounts
+                    ? " 多个账号在「官方账号」里保存和一键切换。"
+                    : null}
+                </p>
               </div>
+              {hasAccounts ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="tool-discovery-button"
+                  onClick={() => selectSection("accounts")}
+                >
+                  管理官方账号
+                </Button>
+              ) : null}
               {tool.appId === "claude" && currentId === officialProvider.id && (
                 <Button
                   variant="outline"
                   size="sm"
                   className="tool-discovery-button"
-                  disabled={busy}
+                  disabled={busy || designPreview}
                   onClick={async () => {
                     setBusyId(officialProvider.id);
                     try {
@@ -779,14 +837,6 @@ function KnownToolView({
               )}
             </section>
           )}
-
-        {tool.appId === "claude" ? (
-          <>
-            <ClaudeAccountsCard mode="code" native={native} />
-            <ClaudeBindingsCard native={native} />
-            <ClaudeUsageCard native={native} />
-          </>
-        ) : null}
 
         {error && !loading && (
           <div className="tool-load-error" role="alert">
@@ -837,8 +887,14 @@ function KnownToolView({
         )}
 
         {!loading && !error && visibleProviders.length > 0 && (
-          <>
+          <section
+            className="tool-lines-card"
+            aria-label={`${tool.name} 线路列表`}
+          >
             <div className="tool-lines-caption">
+              <strong className="tool-lines-title">
+                {tool.category === "switch" ? "已保存的线路" : "已配置的线路"}
+              </strong>
               {tool.category === "switch" ? (
                 <span
                   className="tool-lines-current"
@@ -923,7 +979,7 @@ function KnownToolView({
                           aria-label={`${enabled ? "停用" : "启用"}${provider.name}`}
                           aria-pressed={enabled}
                           onClick={() => void toggleProvider(provider)}
-                          disabled={busy}
+                          disabled={busy || designPreview}
                         >
                           <span aria-hidden="true" />
                         </button>
@@ -970,7 +1026,7 @@ function KnownToolView({
                             type="button"
                             className="tool-line-switch"
                             onClick={() => void changeProvider(provider)}
-                            disabled={!canMutate || busy}
+                            disabled={!canMutate || busy || designPreview}
                             aria-busy={rowBusy || undefined}
                           >
                             {rowBusy ? (
@@ -997,7 +1053,7 @@ function KnownToolView({
                           className="tool-line-icon"
                           aria-label={`编辑${provider.name}`}
                           title="编辑线路"
-                          disabled={!canMutate || busy}
+                          disabled={!canMutate || busy || designPreview}
                           onClick={() => editLine(provider.id)}
                         >
                           <Pencil size={15} aria-hidden="true" />
@@ -1018,34 +1074,27 @@ function KnownToolView({
                 );
               })}
             </div>
-          </>
+          </section>
         )}
       </div>
-      <div hidden={tool.appId === "pi" && piSection !== "install"}>
-        {tool.appId === "pi" ? (
-          <section className="tool-install-panel" aria-labelledby="pi-install">
-            <h2 id="pi-install">安装与环境检查</h2>
-            <InstallChecks toolId={toolId} name={tool.name} native={native} />
-            <p className="tool-install-note">
-              Pi 支持原生 MCP 和扩展包，可在「默认模型与 MCP」管理全局配置；统一
-              Skills 同步暂未接入。
-            </p>
-          </section>
-        ) : tool.appId !== "claude-desktop" ? (
-          <details
-            key={toolId}
-            className="tool-installation chimera-disclosure"
+
+      {sections.some((item) => item.id === "install") && (
+        <div className="tool-section-content" hidden={!show("install")}>
+          <section
+            className="tool-install-panel"
+            aria-labelledby={`${toolId}-install`}
           >
-            <summary>
-              安装与环境检查
-              <span className="tool-installation-hint">版本与更新</span>
-            </summary>
-            <div className="chimera-disclosure-body">
-              <InstallChecks toolId={toolId} name={tool.name} native={native} />
-            </div>
-          </details>
-        ) : null}
-      </div>
+            <h2 id={`${toolId}-install`}>安装与环境检查</h2>
+            <InstallChecks toolId={toolId} name={tool.name} native={native} />
+            {tool.appId === "pi" ? (
+              <p className="tool-install-note">
+                Pi 支持原生 MCP 和扩展包，可在「默认模型与
+                MCP」管理全局配置；统一 Skills 同步暂未接入。
+              </p>
+            ) : null}
+          </section>
+        </div>
+      )}
       <ConfirmDialog
         isOpen={removing !== null}
         busy={deleting}
@@ -1065,10 +1114,10 @@ function KnownToolView({
       />
       {tool.appId === "pi" && (
         <>
-          <div hidden={piSection !== "plugins"}>
+          <div className="tool-section-content" hidden={!show("plugins")}>
             <PiPluginMarket native={native} />
           </div>
-          <div hidden={piSection !== "settings"}>
+          <div className="tool-section-content" hidden={!show("settings")}>
             <PiManagement native={native} />
           </div>
         </>

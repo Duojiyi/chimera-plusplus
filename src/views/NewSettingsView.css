@@ -100,12 +100,6 @@
   display: grid;
   gap: 24px;
 }
-.settings-section-lead {
-  margin: 0 0 4px;
-  color: var(--text-3);
-  font-size: 13px;
-  line-height: 1.5;
-}
 
 /* Rows: label and explanation on the left, the control on the right. */
 .settings-reference-list {
@@ -173,11 +167,6 @@ button.settings-reference-row:hover:not(:disabled) > svg {
 .settings-reference-row > svg {
   flex-shrink: 0;
   color: var(--text-3);
-}
-.settings-static-value {
-  flex-shrink: 0;
-  color: var(--text-2);
-  font-size: 13px;
 }
 .settings-disclosure-icon {
   transition: transform var(--dur-fast) ease-out;
@@ -753,28 +742,6 @@ button.settings-reference-row:hover:not(:disabled) > svg {
   text-decoration: underline;
 }
 
-.settings-page-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding-top: 16px;
-  border-top: 1px solid var(--border-subtle);
-}
-.settings-page-footer p {
-  margin: 0;
-  color: var(--text-3);
-  font-size: 13px;
-  line-height: 1.5;
-  /* Break between phrases, never leaving "不变。" alone on a line. */
-  text-wrap-style: balance;
-  word-break: keep-all;
-  overflow-wrap: anywhere;
-}
-.settings-page-footer button {
-  flex-shrink: 0;
-}
-
 @media (prefers-reduced-motion: reduce) {
   .settings-app-update-progress u,
   .settings-disclosure-icon,
@@ -1126,15 +1093,6 @@ button.settings-reference-row:hover:not(:disabled) > svg {
 }
 
 /* settings (2.8.6): rows that open a folder or file in the OS. */
-.settings-link-row > svg {
-  transition: transform var(--dur-fast) var(--ease-out);
-}
-button.settings-link-row:hover:not(:disabled) > svg {
-  transform: translateX(2px);
-}
-button.settings-link-row:hover:not(:disabled) b {
-  color: var(--brand-text);
-}
 /* settings (2.8.6): DatabaseRecoveryPanel now uses the .db-backups layout above. */
 .db-backups > h3,
 .db-backups > p {

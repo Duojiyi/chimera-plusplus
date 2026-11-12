@@ -79,11 +79,12 @@ describe("connected provider line table", () => {
       expect(screen.getAllByRole("button", { name: "管理线路" })).toHaveLength(
         1,
       );
+      // v3（设计稿 L01）：管理入口在表格卡头，不再挂在第一个分组行里。
       expect(
-        within(screen.getAllByRole("rowgroup")[0]).getByRole("button", {
-          name: "管理线路",
-        }),
-      ).toBeVisible();
+        screen
+          .getByRole("button", { name: "管理线路" })
+          .closest(".provider-table-cardhead"),
+      ).not.toBeNull();
       fireEvent.change(within(heading).getByRole("textbox"), {
         target: { value: "not-a-provider" },
       });
@@ -289,8 +290,10 @@ describe("Pencil populated table states", () => {
     ).toBeDisabled();
     expect(screen.getByText("1200 ms")).toBeVisible();
     expect(screen.getByText("超时")).toBeVisible();
-    expect(screen.getByText("DS")).toBeVisible();
-    expect(screen.getByText("OR")).toBeVisible();
+    expect(
+      screen.getAllByRole("cell", { name: "OpenAI 官方 · 主力" }),
+    ).toHaveLength(1);
+    expect(screen.getAllByRole("cell", { name: "OpenRouter" })).toHaveLength(1);
     expect(screen.getAllByText("自动 · Chat")).toHaveLength(3);
     expect(vscodeApi.testApiEndpoints).not.toHaveBeenCalled();
   });

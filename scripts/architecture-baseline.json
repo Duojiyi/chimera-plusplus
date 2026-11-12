@@ -29,8 +29,8 @@
     "claude_desktop_config->database": 2,
     "codex_accounts->database": 1,
     "codex_history_migration->database": 1,
-    "database->codex_config": 5,
-    "database->codex_key_ownership": 4,
+    "database->codex_config": 4,
+    "database->codex_key_ownership": 1,
     "database->mcp": 1,
     "mcp->database": 2
   },

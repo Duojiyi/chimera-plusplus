@@ -70,7 +70,7 @@ describe("settings application update", () => {
         <NewSettingsView />
       </ThemeProvider>,
     );
-    fireEvent.click(screen.getByRole("link", { name: "应用更新" }));
+    fireEvent.click(screen.getByRole("link", { name: "更新" }));
 
     expect(screen.getByText(/First fix/)).toHaveTextContent(
       "First fix Second fix",
@@ -113,7 +113,7 @@ describe("settings application update", () => {
         <NewSettingsView />
       </ThemeProvider>,
     );
-    fireEvent.click(screen.getByRole("link", { name: "应用更新" }));
+    fireEvent.click(screen.getByRole("link", { name: "更新" }));
 
     expect(
       screen.getByRole("button", { name: /\u5b89\u88c5\u5e76\u91cd\u542f/ }),
@@ -148,7 +148,7 @@ describe("settings application update", () => {
         <NewSettingsView />
       </ThemeProvider>,
     );
-    fireEvent.click(screen.getByRole("link", { name: "应用更新" }));
+    fireEvent.click(screen.getByRole("link", { name: "更新" }));
 
     expect(screen.getByRole("progressbar")).toHaveAttribute(
       "aria-valuenow",
@@ -163,7 +163,9 @@ describe("settings application update", () => {
     // The phase is announced through the polite live region next to the title.
     const copy = document.querySelector(".settings-app-update-copy");
     expect(copy).toHaveAttribute("aria-live", "polite");
-    expect(copy).toHaveTextContent("\u6b63\u5728\u4e0b\u8f7d\u66f4\u65b0\u5305\uff0c\u5b8c\u6210\u540e\u81ea\u52a8\u5b89\u88c5\u5e76\u91cd\u542f");
+    expect(copy).toHaveTextContent(
+      "\u6b63\u5728\u4e0b\u8f7d\u66f4\u65b0\u5305\uff0c\u5b8c\u6210\u540e\u81ea\u52a8\u5b89\u88c5\u5e76\u91cd\u542f",
+    );
     expect(
       screen.getByRole("button", { name: /\u6b63\u5728\u66f4\u65b0\u2026/ }),
     ).toBeDisabled();

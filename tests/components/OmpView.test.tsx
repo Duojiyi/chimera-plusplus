@@ -355,10 +355,9 @@ it("shares route editor structure, inherits the shell and closes unchanged draft
 it("aligns the route list with tool headers, navigation and endpoint tables", async () => {
   const { container } = render(<OmpView native />);
   const table = await screen.findByRole("table", { name: "OMP 自定义线路" });
-  // Same header and list as the other tool pages.
-  expect(
-    container.querySelector("header.tool-header .tool-mark"),
-  ).toHaveTextContent(/^Om$/);
+  // Same header and list as the other tool pages, without a letter mark.
+  expect(container.querySelector("header.tool-header")).not.toBeNull();
+  expect(container.querySelector(".tool-mark")).toBeNull();
   expect(table).toHaveClass("tool-lines");
   expect(
     within(table)
@@ -383,8 +382,8 @@ it("aligns the route list with tool headers, navigation and endpoint tables", as
     "tool-provider-delete",
   );
   expect(
-    screen.queryByRole("heading", { name: "模型线路" }),
-  ).not.toBeInTheDocument();
+    screen.getAllByRole("heading", { name: "模型线路" }).map((h) => h.tagName),
+  ).toEqual(["H1"]);
   const actions = screen.getByRole("group", { name: "oh-my-pi 工具操作" });
   expect(actions.closest("header")).not.toBeNull();
   expect(

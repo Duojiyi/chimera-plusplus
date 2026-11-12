@@ -1266,6 +1266,20 @@ impl SkillService {
         Ok(format!("{:x}", hasher.finalize()))
     }
 
+    /// 判断条目名是否是解释器生成物，而不是 Skill 内容。
+    ///
+    /// 用户在投影目录里跑一次 Skill 自带的 Python 脚本，就会生成
+    /// `__pycache__/` 与 `*.pyc`（Python 2 遗留名 `*.pyo`）。这两个名字
+    /// 都不以 `.` 开头，上面的隐藏文件规则盖不住，于是被计入哈希，导致：
+    /// 导入时被判「内容不同，未覆盖已有文件」；同一 Skill 的两份副本因
+    /// 哈希不同不再合并而重复出现；扫描与导入之间报「已变化」。
+    ///
+    /// 两个哈希入口（`compute_dir_hash` / `compute_import_hash`）必须对
+    /// 它们一致地视而不见，否则比较两侧永远不相等。
+    fn is_interpreter_artifact(name: &str) -> bool {
+        name == "__pycache__" || name.ends_with(".pyc") || name.ends_with(".pyo")
+    }
+
     /// 递归收集目录下所有非隐藏普通文件，并拒绝符号链接和特殊文件。
     fn collect_files_for_hash(
         current: &Path,
@@ -1300,6 +1314,11 @@ impl SkillService {
                     "Skill 哈希源包含符号链接或 junction: {}",
                     path.display()
                 ));
+            }
+            // 解释器产物先按原规则校验完链接/重解析点再跳过，保持既有的
+            // 「Skill 目录内不得含链接」约束不变，只是不把它们计入哈希。
+            if Self::is_interpreter_artifact(&name) {
+                continue;
             }
             if metadata.is_dir() {
                 Self::collect_files_for_hash(&path, files, budget, depth + 1, include_hidden)?;
@@ -5159,6 +5178,43 @@ mod tests {
             format!("---\nname: {name}\ndescription: Test skill\n---\n"),
         )
         .expect("write SKILL.md");
+    }
+
+    #[test]
+    fn interpreter_artifacts_do_not_change_the_skill_hash() {
+        let root = tempdir().unwrap();
+        let skill = root.path().join("skill");
+        write_skill(&skill, "artifact-free");
+        fs::write(skill.join("run.py"), "print('hi')\n").unwrap();
+
+        // The two hash calibers are intentionally distinct (the import hash also
+        // feeds each file length), so each is compared against itself.
+        let dir_before = SkillService::compute_dir_hash(&skill).unwrap();
+        let import_before = SkillService::compute_import_hash(&skill).unwrap();
+        assert_ne!(
+            dir_before, import_before,
+            "update-check and import hashes are different calibers by construction"
+        );
+
+        // Python leaves these behind the first time the Skill's script runs.
+        fs::create_dir_all(skill.join("__pycache__")).unwrap();
+        fs::write(
+            skill.join("__pycache__/run.cpython-312.pyc"),
+            b"\x00compiled",
+        )
+        .unwrap();
+        fs::write(skill.join("legacy.pyo"), b"\x00pyo").unwrap();
+
+        assert_eq!(
+            SkillService::compute_dir_hash(&skill).unwrap(),
+            dir_before,
+            "__pycache__/*.pyc must not drift the update-check hash"
+        );
+        assert_eq!(
+            SkillService::compute_import_hash(&skill).unwrap(),
+            import_before,
+            "interpreter artifacts must not make an import look like a different Skill"
+        );
     }
 
     pub(super) fn link_skill_directory(target: &Path, link: &Path) {
