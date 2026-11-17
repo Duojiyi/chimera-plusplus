@@ -240,7 +240,11 @@ mod tests {
 
     impl TempHome {
         fn new() -> Self {
-            let dir = TempDir::new().expect("failed to create temp home");
+            let temp_root = env::temp_dir();
+            // Keep history tests outside macOS's /var system symlink.
+            #[cfg(target_os = "macos")]
+            let temp_root = temp_root.canonicalize().expect("resolve temp home parent");
+            let dir = TempDir::new_in(temp_root).expect("failed to create temp home");
             let original_home = env::var("HOME").ok();
             #[cfg(windows)]
             let original_local_app_data = env::var("LOCALAPPDATA").ok();

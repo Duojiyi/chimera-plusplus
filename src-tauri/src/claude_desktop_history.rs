@@ -1034,8 +1034,16 @@ mod tests {
         })).unwrap());
         path
     }
+    fn tempdir() -> tempfile::TempDir {
+        let root = std::env::temp_dir();
+        // macOS exposes its temporary directory through the /var system symlink.
+        #[cfg(target_os = "macos")]
+        let root = fs::canonicalize(root).unwrap();
+        tempfile::tempdir_in(root).unwrap()
+    }
+
     fn setup() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempdir();
         let normal = dir.path().join("normal");
         let api = dir.path().join("api");
         let projects = dir.path().join("projects");
@@ -1354,7 +1362,7 @@ mod tests {
 
     #[test]
     fn metadata_conflict_restores_payloads_without_overwriting_external_metadata() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempdir();
         let mut payloads = PayloadChangeset::default();
         let mut metadata = Changeset::new();
         let source = dir.path().join("source-body");
@@ -1381,7 +1389,7 @@ mod tests {
 
     #[test]
     fn payload_commit_failure_restores_already_replaced_files() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempdir();
         let mut changes = PayloadChangeset::default();
         let mut bytes = 0;
         let first = dir.path().join("first-target");
@@ -1406,7 +1414,7 @@ mod tests {
 
     #[test]
     fn payload_rollback_keeps_external_edits_and_a_recoverable_original() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempdir();
         let source = dir.path().join("source");
         let target = dir.path().join("target");
         write(&source, b"new");
@@ -1430,7 +1438,7 @@ mod tests {
     #[test]
     fn payload_source_or_target_changed_after_staging_is_rejected() {
         for change_source in [false, true] {
-            let dir = tempfile::tempdir().unwrap();
+            let dir = tempdir();
             let source = dir.path().join("source");
             let target = dir.path().join("target");
             write(&source, b"new");
@@ -1458,7 +1466,7 @@ mod tests {
     #[test]
     fn long_payload_paths_support_both_copying_and_updates() {
         use std::os::windows::ffi::OsStrExt;
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempdir();
         let source = dir.path().join("source.jsonl");
         let target = dir.path().join("nested-".repeat(32)).join("body.jsonl");
         assert!(target.as_os_str().encode_wide().count() > 260);

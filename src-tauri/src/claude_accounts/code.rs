@@ -1843,7 +1843,15 @@ pub(crate) mod tests {
     fn desktop_import_deduplicates_by_uuid_and_preserves_existing_metadata() {
         let f = fixture();
         login(&f.paths, "same@example.com", "uuid-a", "token-a");
-        let a = save_current_in(&f.vault, &f.paths, Some("工作账号")).unwrap();
+        let live = read_live(&f.paths).unwrap();
+        let a = new_slot(
+            &f.vault,
+            "工作账号".into(),
+            live.oauth.unwrap(),
+            live.account,
+        )
+        .unwrap();
+        f.vault.write_slot(&a).unwrap();
         set_note_in(&f.vault, &a.id, "团队订阅").unwrap();
         let updated =
             save_desktop_login_in(&f.vault, "UUID-A", Some("renamed@example.com"), |id| {
